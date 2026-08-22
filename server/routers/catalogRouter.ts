@@ -21,6 +21,8 @@ import { syncActiveFullStocktakeScopes } from "../services/stocktakeService";
 import { canSeeCostForUser, productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../shared/priceSanity";
+import { generateProductContentDraft } from "../services/productContentAiService";
+import { aiProductDraftSchema, productFactsSchema, validateAiProductDraft } from "../../shared/productContentAi";
 import {
   getProductCustomizationTemplate,
   saveProductCustomizationTemplate,
@@ -381,6 +383,15 @@ export const catalogRouter = router({
   checkBarcodes: productsManagerProcedure
     .input(z.object({ codes: z.array(z.string().min(1)).max(2000) }))
     .query(({ input }) => checkBarcodesTaken(input.codes)),
+
+  // product-content-ai: يولّد مسودة محتوى فقط من حقائق مرسلة ومتحقق منها؛ لا يكتب المنتجات مباشرة.
+  generateContentDraft: productsManagerProcedure
+    .input(z.object({ facts: productFactsSchema, forceRefresh: z.boolean().optional() }))
+    .mutation(async ({ input }) => generateProductContentDraft(input.facts, { forceRefresh: input.forceRefresh })),
+
+  validateContentDraft: productsManagerProcedure
+    .input(z.object({ facts: productFactsSchema, draft: aiProductDraftSchema }))
+    .mutation(({ input }) => validateAiProductDraft(input.draft, input.facts)),
 
   // name-assistant: مشابهات اسم حيّة أثناء إضافة/تعديل منتج — تمنع ازدواج الكتالوج عند المصدر
   // (٩٤٠٠+ صنف مستورد بأسماء غير منضبطة). نفس بوّابة الشاشة (مدير فأعلى)، لا تكشف تكلفة.

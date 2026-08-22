@@ -12,6 +12,7 @@ import { AlertCircle, Boxes, Layers, Package, Wrench, X } from "lucide-react";
 import ServiceForm from "@/components/product/ServiceForm";
 import SimpleProductForm from "@/components/product/SimpleProductForm";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
 import BundleForm from "@/components/product/BundleForm";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -146,6 +147,17 @@ export default function ProductNew() {
     [productType, brand, modelName]
   );
   const baseRetail = units.find((u) => u.isBase)?.retail.trim() ?? "";
+  const aiProductFacts = useMemo(() => ({
+    category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
+    productType: productType.trim() || null,
+    brand: brand.trim() || null,
+    modelName: modelName.trim() || null,
+    attributes: {},
+    variants: variants.map((v) => ({ color: v.color.trim() || null, size: v.size.trim() || null })),
+    saleUnits: units.filter((u) => u.name.trim()).map((u) => ({ name: u.name.trim(), conversionFactor: u.isBase ? "1" : u.factor.trim() || "1" })),
+    verifiedClaims: [],
+    audience: null,
+  }), [brand, categoriesQ.data, categoryId, modelName, productType, units, variants]);
 
   const includedCount = colors.length
     ? sizes.length
@@ -567,6 +579,13 @@ export default function ProductNew() {
                 )}
               </div>
               <NameAssistant name={productName.trim() || composedName} onApply={setProductName} warnColors />
+              <AiProductContentAssistant
+                facts={aiProductFacts}
+                onApply={(draft) => {
+                  setProductName(draft.seoTitle);
+                  setDescription(draft.description);
+                }}
+              />
             </Field>
             <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً.">
               <Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="قلم جاف" />
