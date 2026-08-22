@@ -374,6 +374,8 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       }
       lineCost = round2(lineCost);
       const unitCost = baseQuantity > 0 ? round2(lineCost.div(baseQuantity)) : new Decimal(0);
+      const lineVariant = varMap.get(l.variantId);
+      if (!lineVariant) throw new TRPCError({ code: "NOT_FOUND", message: `الخدمة ${l.variantId} غير موجودة` });
       computed.push({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -382,7 +384,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         quantity: lineRes.quantity,
         total: lineRes.total,
         unitCost: unitCost.toFixed(2),
-        invoiceName: titleForChannel({ name: v.productName, invoiceLabel: v.invoiceLabel, shortTitle: v.shortTitle }, "invoice"),
+        invoiceName: titleForChannel({ name: lineVariant.productName, invoiceLabel: lineVariant.invoiceLabel, shortTitle: lineVariant.shortTitle }, "invoice"),
       });
     }
 
