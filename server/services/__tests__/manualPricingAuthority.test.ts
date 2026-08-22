@@ -55,7 +55,7 @@ async function seed() {
   await d.insert(s.users).values({ id: 1, openId: "c1", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1 });
   await d.insert(s.products).values([
     { id: 1, name: "دفتر" },
-    { id: 2, name: "خدمة طباعة", productType: "PRINT_SERVICE" },
+    { id: 2, name: "خدمة طباعة", productType: "PRINT_SERVICE", isService: true },
     { id: 3, name: "صنفٌ بلا سعر قائمة" },
   ]);
   await d.insert(s.productVariants).values([
