@@ -34,6 +34,8 @@ import { verifyPassword } from "../auth/password";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { cancelSale, correctSale, processPayment } from "../services/saleService";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
+import { registerCounterCollectionTx } from "../services/delivery/counterCollection";
+import { randomUUID } from "node:crypto";
 import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -580,8 +582,23 @@ export const saleRouter = router({
           // النقطة — الباب الثاني لنفس الفاتورة — تقبل تسديداً كاونترياً لفاتورةٍ كامل متبقّيها
           // عهدةُ COD بيد مندوب ⇒ عهدة شبح لا مخرج لها إلا شطبٌ يزوّر خسارة. داخل preInsertCheck
           // (بعد قفل الفاتورة FOR UPDATE) لنفس علّة TOCTOU الموثّقة في delivery/guards.ts.
+          // ٢٢/٨ — وبعد نجاح الحارس: القبض على فاتورة إرساليةٍ **مُسلَّمة** يُدوَّن عليها في نفس
+          // المعاملة (يخفض المتوقَّع من الجهة — سقف المبلغ تحقّق قبل هذا الخطّاف، وأيّ فشلٍ
+          // لاحق يعكس الاثنين معاً). refKey = مفتاح idempotency الدفعة نفسه إن وُجد.
           const res = await processPayment(
-            { ...input, enforceBranchId, preInsertCheck: (tx) => assertNoInTransitConsignment(tx, input.invoiceId) },
+            {
+              ...input,
+              enforceBranchId,
+              preInsertCheck: async (tx) => {
+                await assertNoInTransitConsignment(tx, input.invoiceId);
+                await registerCounterCollectionTx(tx, {
+                  invoiceId: input.invoiceId,
+                  amount: input.amount,
+                  actorUserId: ctx.user.id,
+                  refKey: input.clientRequestId ?? randomUUID(),
+                });
+              },
+            },
             { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role },
           );
           await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });

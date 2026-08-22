@@ -1681,6 +1681,13 @@
       "when": 1788052305000,
       "tag": "0254_storefront_reviews_and_wishlist_shares_2",
       "breakpoints": true
+    },
+    {
+      "idx": 255,
+      "version": "5",
+      "when": 1788052306000,
+      "tag": "0255_delivery_counter_settled",
+      "breakpoints": true
     }
   ]
 }

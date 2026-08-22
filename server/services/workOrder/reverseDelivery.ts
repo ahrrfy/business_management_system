@@ -195,6 +195,9 @@ export async function reverseWorkOrderDelivery(
     const roleCredits: Record<string, ReturnType<typeof money>> = { AR: salePrice };
     const lines = [debitLine("SALES_FLEX", salePrice), creditLine("AR", salePrice)];
     if (materialsCost.gt(0)) {
+      // البيعُ سقط ⇒ كلفةُ الموادّ تعود من COGS إلى WIP (نقيضُ قيد التسليم حرفياً).
+      // **لكنّ هذا نصفُ القصّة**: مصيرُ رصيد WIP المُعادِ فتحه يقرّره `reopen` أدناه —
+      // إمّا تنفيذٌ حيٌّ يُقفله تسليمٌ ثانٍ، وإمّا هدرٌ يُقيَّد خسارةً معلنة.
       lines.push(debitLine("WORK_IN_PROGRESS", materialsCost), creditLine("COGS", materialsCost));
       roleDebits.WORK_IN_PROGRESS = materialsCost;
       roleCredits.COGS = materialsCost;
@@ -221,6 +224,30 @@ export async function reverseWorkOrderDelivery(
       postingIntent: createPostingIntent("RETURN_SALE_FLEX_WORKORDER", "RETURN", lines, components),
       postingSourceComponents: components,
     });
+
+    // ── مصيرُ WIP المُعادِ فتحه ─────────────────────────────────────────────────────
+    // الخامةُ استُهلكت **فيزيائياً** ولا تعود للرفّ (لذلك لا حركةَ مخزونٍ في هذا الملفّ كلّه):
+    //  · `reopen=true`  ⇒ الأمرُ يعود READY والخامةُ فيه قيدَ تنفيذٍ فعلاً — رصيدُ WIP حيٌّ
+    //    يُقفله التسليمُ الثاني (قيد SALE جديد) أو الإلغاءُ بمساره (`WO-WIP-WASTE`).
+    //  · `reopen=false` ⇒ الأمرُ يُقفَل CANCELLED والخامةُ هدرٌ نهائيّ. كان العكسُ أعلاه
+    //    يقف هنا فتتبخّر الكلفةُ من P&L ويبقى WIP حاملاً رصيداً ميتاً بلا مالكٍ إلى الأبد —
+    //    خرقُ «لا دينار يضيع بصمت» (§٥). فتُقيَّد خسارةً معلنةً بنفس شكل قيد الإلغاء
+    //    ([cancel.ts](./cancel.ts): LOSSES مقابل WIP، **قيدٌ فقط بلا حركة مخزون**)،
+    //    والثابتُ المحروس: Σ(قيود WIP للأمر) = CONSUME − SALE + RETURN − WASTE = 0 عند إقفاله.
+    if (input.reopen !== true && materialsCost.gt(0)) {
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        // مفتاحٌ من عائلة `WO-REVERSE:` — مستقلٌّ عن `WO-WIP-WASTE:` الذي يملكه مسارُ
+        // الإلغاء، فلا تصادمَ بين المسارين مهما تعاقبا على الأمر نفسه.
+        dedupeKey: `WO-REVERSE-WASTE:${workOrderId}`,
+        branchId: Number(wo.branchId),
+        cost: materialsCost,
+        amount: materialsCost,
+        notes: `هدر خامة أمر الشغل المسترجَع ${wo.orderNumber} — ${reason}`,
+        postingIntent: createPostingIntent("ADJUST_WIP_WASTE", "ADJUST", [debitLine("LOSSES", materialsCost), creditLine("WORK_IN_PROGRESS", materialsCost)], { roleDebits: { LOSSES: materialsCost }, roleCredits: { WORK_IN_PROGRESS: materialsCost } }),
+        postingSourceComponents: { roleDebits: { LOSSES: materialsCost }, roleCredits: { WORK_IN_PROGRESS: materialsCost } },
+      });
+    }
 
     // الذمّة: يسقط ما لم يُسدَّد فقط. المسدَّدُ يُعالَج بالردّ أدناه — لا يُخصم مرّتين.
     if (wo.customerId && unpaid.gt(0)) {
@@ -383,6 +410,8 @@ export async function reverseWorkOrderDelivery(
     }).where(eq(invoices.id, Number(inv.id)));
 
     await tx.update(workOrders).set({
+      // الإقفالُ CANCELLED نظيفٌ مالياً: قيدُ الهدر أعلاه أفرغ WIP قبل أن يُغلَق الأمر —
+      // لا رصيدَ ميتاً يبقى خلف حالةٍ نهائية.
       status: input.reopen === true ? "READY" : "CANCELLED",
       cancelReason: reason,
       cancelledAt: new Date(),

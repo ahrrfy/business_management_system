@@ -18,7 +18,12 @@ import { StatCard } from "@/components/StatCard";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import {
+  CONSIGNMENT_VIEW_AR,
+  CONSIGNMENT_VIEW_CLS,
+  deriveConsignmentView,
+} from "@shared/consignmentView";
 
 type MyDeliveries = RouterOutputs["courier"]["myDeliveries"];
 type DeliveryRow = MyDeliveries["toDeliver"][number];
@@ -169,7 +174,89 @@ export default function MyDeliveries() {
 
           {/* قيد التوصيل */}
           <section className="space-y-2.5">
-            <h2 className="text-sm font-bold text-muted-foreground">قيد التوصيل ({data!.toDeliver.length})</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-bold text-muted-foreground">قيد التوصيل ({data!.toDeliver.length})</h2>
+              {/*
+                ٢٢/٨ — أزرار جماعية للمندوب: كان لكل طرد تدرّج (٣ نقرات لكلٍّ قبل زر «تم التسليم»).
+                شركةٌ بعشرة طرود يومياً = ٣٠ نقرة قبل التسليم — لن تُتبنّى البوّابة عملياً.
+                Promise.allSettled: كل طرد مستقل، لا نوقف الجميع عند فشل واحد.
+              */}
+              {!readOnly && (() => {
+                const assignedIds = data!.toDeliver.filter((r) => r.kind === "consignment" && r.status === "ASSIGNED").map((r) => r.id);
+                const readyOutIds = data!.toDeliver.filter((r) => r.kind === "consignment" && (r.status === "ACCEPTED" || r.status === "PICKED_UP")).map((r) => r.id);
+                const busy = transitionM.isPending;
+                return (
+                  <div className="ms-auto flex gap-2">
+                    {assignedIds.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={async () => {
+                          const results = await Promise.allSettled(
+                            assignedIds.map((id) => transitionM.mutateAsync({
+                              consignmentId: id,
+                              toStatus: "ACCEPTED",
+                              reason: null,
+                              clientRequestId: crypto.randomUUID(),
+                            })),
+                          );
+                          const ok = results.filter((r) => r.status === "fulfilled").length;
+                          const err = results.length - ok;
+                          if (err === 0) notify.ok(`قُبلت ${ok} طرداً`);
+                          else notify.err(`نجح ${ok} وفشل ${err} — راجع الطرود الفاشلة يدوياً`);
+                          void utils.courier.myDeliveries.invalidate();
+                        }}
+                      >
+                        قبول الكل ({assignedIds.length})
+                      </Button>
+                    )}
+                    {readyOutIds.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={async () => {
+                          /**
+                           * ٢٢/٨ (Codex P2 #3): آلة الحالة الخادميّة تفرض ACCEPTED → PICKED_UP →
+                           * OUT_FOR_DELIVERY (خطوتان لا قفزة). كان الزرّ يقفز مباشرةً فيفشل كل
+                           * الـACCEPTED. الآن كل صفٍّ ACCEPTED يمرّ بخطوتين متتاليتين قبل الخروج.
+                           */
+                          const rowByIdMap = new Map<number, DeliveryRow>();
+                          for (const row of data!.toDeliver) rowByIdMap.set(row.id, row);
+                          const stepFor = (id: number): Array<"PICKED_UP" | "OUT_FOR_DELIVERY"> => {
+                            const st = rowByIdMap.get(id)?.status;
+                            if (st === "ACCEPTED") return ["PICKED_UP", "OUT_FOR_DELIVERY"];
+                            if (st === "PICKED_UP") return ["OUT_FOR_DELIVERY"];
+                            return [];
+                          };
+                          const results = await Promise.allSettled(
+                            readyOutIds.map(async (id) => {
+                              const steps = stepFor(id);
+                              for (const to of steps) {
+                                await transitionM.mutateAsync({
+                                  consignmentId: id,
+                                  toStatus: to,
+                                  reason: null,
+                                  clientRequestId: crypto.randomUUID(),
+                                });
+                              }
+                            }),
+                          );
+                          const ok = results.filter((r) => r.status === "fulfilled").length;
+                          const err = results.length - ok;
+                          if (err === 0) notify.ok(`خرج ${ok} طرداً للتوصيل`);
+                          else notify.err(`نجح ${ok} وفشل ${err} — راجع الطرود الفاشلة يدوياً`);
+                          void utils.courier.myDeliveries.invalidate();
+                        }}
+                      >
+                        خرج الكل الآن ({readyOutIds.length})
+                      </Button>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
             {data!.toDeliver.length === 0 ? (
               <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">لا طلبات قيد التوصيل حالياً.</div>
             ) : (
@@ -248,14 +335,21 @@ function SourceTag({ kind }: { kind: DeliveryRow["kind"] }) {
   );
 }
 
-const PARCEL_LABEL: Record<string, string> = {
-  ASSIGNED: "مسند",
-  ACCEPTED: "مقبول",
-  PICKED_UP: "مستلم من الفرع",
-  OUT_FOR_DELIVERY: "خرج للتوصيل",
-  FAILED: "متعذر",
-  DELIVERED: "تم التسليم",
-};
+/**
+ * ٢٢/٨ — قاموس الحالة المحلّي حُذف واستُبدل بـ`@shared/consignmentView` (`deriveConsignmentView`
+ * + `CONSIGNMENT_VIEW_AR` + `CONSIGNMENT_VIEW_CLS`) — لا شاشة تُعيد تعريف قاموس حالة بعد اليوم.
+ * المندوب على البوّابة دائماً ⇒ نمرّر `partyHasPortal: 1`.
+ */
+function courierParcelBadge(parcelStatus: string | null | undefined) {
+  const key = deriveConsignmentView({
+    parcelStatus: parcelStatus ?? null,
+    status: "DISPATCHED",
+    moneyStatus: null,
+    returnDeclaredAt: null,
+    partyHasPortal: 1,
+  });
+  return { label: CONSIGNMENT_VIEW_AR[key], cls: CONSIGNMENT_VIEW_CLS[key] };
+}
 
 function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onFail: () => void; onTransition: (status: "ASSIGNED" | "ACCEPTED" | "PICKED_UP" | "OUT_FOR_DELIVERY") => void; readOnly: boolean }) {
   const phone = row.customerPhone;
@@ -267,7 +361,10 @@ function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: 
           <div className="flex items-center gap-2">
             <span className="font-bold tracking-wider" dir="ltr">{row.orderNumber}</span>
             <SourceTag kind={row.kind} />
-            {row.kind === "consignment" && <Badge variant={row.status === "FAILED" ? "danger" : "info"}>{PARCEL_LABEL[row.status] ?? row.status}</Badge>}
+            {row.kind === "consignment" && (() => {
+              const b = courierParcelBadge(row.status);
+              return <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold", b.cls)}>{b.label}</span>;
+            })()}
           </div>
           <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "عميل"}</div>
         </div>
