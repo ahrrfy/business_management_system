@@ -3,7 +3,7 @@
 // تسرد الوحدات التي تحمل باركوداً بديلاً، ويقرّر المدير لكلّ باركود: «دفعة — يبقى» (لا شيء)،
 // أو «بديل حقيقي — يُفصل» (يُخرجه متغيّراً مستقلاً). بعد الفصل يذكّر بجردٍ يدويّ لفصل الرصيد.
 import { useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
@@ -17,14 +17,32 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Split, ChevronDown } from "lucide-react";
+import { Split, ChevronDown, ClipboardCheck } from "lucide-react";
 
 type Target = { productUnitId: number; aliasBarcode: string; productName: string };
 
 export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
   const utils = trpc.useUtils();
+  const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
   const candidates = trpc.stocktakes.splitCandidates.useQuery(undefined, { enabled: open });
+  // نطاق جرد التحقّق لفصل رصيد البدائل المنشأة (الأصل + البدائل لكل منتج له بديل).
+  const reconScope = trpc.stocktakes.alternativeReconciliationScope.useQuery(undefined, { enabled: open });
+
+  /** يُنشئ جرد تحقّق يدويّاً يغطّي كل متغيّرات المنتجات ذات البدائل — يُمرَّر عبر sessionStorage (قد يكبر). */
+  function createReconciliationStocktake() {
+    const ids = reconScope.data?.variantIds ?? [];
+    if (!ids.length) return;
+    const key = `stkReconPrefill:${ids.length}:${ids[0]}:${ids[ids.length - 1]}`;
+    try {
+      sessionStorage.setItem(key, JSON.stringify(ids));
+    } catch {
+      notify.err(new Error("تعذّر تحضير النطاق — أعد المحاولة."));
+      return;
+    }
+    const name = "جرد تحقّق — فصل رصيد البدائل المدمج";
+    navigate(`/stocktakes/new?prefillKey=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`);
+  }
   const [target, setTarget] = useState<Target | null>(null);
   const [name, setName] = useState("");
   const [cost, setCost] = useState("");
@@ -71,6 +89,33 @@ export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
             الباركود البديل قد يُخفي منتجاً حقيقياً مختلفاً تحت اسمٍ واحد. إن كان «دفعة بترميز آخر»
             فاتركه؛ وإن كان «ماركة/منشأ مختلف» فافصله بديلاً مستقلاً له مخزونه وتكلفته وباركوده.
           </p>
+
+          {/* جرد تحقّق يجمع كل المنتجات ذات البدائل (الأصل + البدائل) لتوزيع الرصيد المدمج ميدانياً. */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3">
+            <div className="min-w-0">
+              <p className="text-sm font-bold">فصل الرصيد المدمج للبدائل المنشأة</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {reconScope.isLoading
+                  ? "جارٍ الحساب…"
+                  : (reconScope.data?.alternativeCount ?? 0) > 0
+                    ? `${reconScope.data!.alternativeCount} بديلاً منشأً في ${reconScope.data!.productCount} منتجاً — أنشئ جرد تحقّقٍ يعدّ الأصل وبدائله معاً فيوزّع الرصيد الماديّ عليها.`
+                    : "لا بدائل منشأة بعد — افصل بديلاً أولاً، ثم أنشئ جرد التحقّق."}
+              </p>
+            </div>
+            {canManage && (
+              <Button
+                type="button"
+                size="sm"
+                className="shrink-0 gap-1.5"
+                disabled={reconScope.isLoading || (reconScope.data?.variantCount ?? 0) === 0}
+                onClick={createReconciliationStocktake}
+              >
+                <ClipboardCheck aria-hidden className="size-4" /> أنشئ جرد تحقّق
+                {(reconScope.data?.variantCount ?? 0) > 0 ? ` (${reconScope.data!.variantCount} صنف)` : ""}
+              </Button>
+            )}
+          </div>
+
           {lastSplit && (
             <div className="rounded-lg border p-3 text-sm badge-status-done">
               أُنشئ البديل. لفصل الرصيد المدمج فعلياً:{" "}

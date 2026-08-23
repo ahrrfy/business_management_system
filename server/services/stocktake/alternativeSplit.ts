@@ -93,6 +93,61 @@ export async function listSplitCandidates(): Promise<SplitCandidate[]> {
   return Array.from(byUnit.values());
 }
 
+export interface AlternativeReconciliationScope {
+  /** كل متغيّرات المنتجات التي لها بديلٌ حقيقيّ (الأصل + البدائل) — نطاق جرد التحقّق لفصل الرصيد. */
+  variantIds: number[];
+  productCount: number;
+  variantCount: number;
+  alternativeCount: number;
+}
+
+/**
+ * نطاق «جرد تحقّق فصل الرصيد»: بعد فصل بديلٍ يبدأ رصيدُه صفراً بينما يبقى الرصيد الماديّ المدمج على
+ * الأصل. لتوزيعه ميدانياً يجب عدُّ **كل متغيّرات المنتج** (الأصل + بدائله) معاً في جلسةٍ واحدة. تُرجع
+ * هذه الدالّة معرّفات تلك المتغيّرات لكل منتجٍ نشطٍ له بديلٌ حقيقيّ منشور (غير الخدمات والبكجات).
+ */
+export async function listAlternativeReconciliationScope(): Promise<AlternativeReconciliationScope> {
+  const db = requireDb();
+  const empty: AlternativeReconciliationScope = {
+    variantIds: [],
+    productCount: 0,
+    variantCount: 0,
+    alternativeCount: 0,
+  };
+
+  // منتجاتٌ نشطة (سلعية) لها متغيّرُ ALTERNATIVE نشطٌ واحد على الأقل.
+  const altProductRows = await db
+    .selectDistinct({ productId: productVariants.productId })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(
+      and(
+        eq(productVariants.variantKind, "ALTERNATIVE"),
+        eq(productVariants.isActive, true),
+        eq(products.isActive, true),
+        eq(products.isService, false),
+        eq(products.isBundle, false),
+      ),
+    );
+  const productIds = altProductRows.map((r) => Number(r.productId));
+  if (!productIds.length) return empty;
+
+  // كل متغيّرات تلك المنتجات النشطة (الأصل VARIANT + البدائل ALTERNATIVE) — نطاق العدّ.
+  const variants = await db
+    .select({ id: productVariants.id, kind: productVariants.variantKind })
+    .from(productVariants)
+    .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)));
+
+  const variantIds = variants.map((v) => Number(v.id));
+  const alternativeCount = variants.filter((v) => v.kind === "ALTERNATIVE").length;
+  return {
+    variantIds,
+    productCount: productIds.length,
+    variantCount: variantIds.length,
+    alternativeCount,
+  };
+}
+
 export interface SplitResult {
   newVariantId: number;
   newUnitId: number;

@@ -3,7 +3,11 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { listSplitCandidates, splitAliasToAlternative } from "../stocktakeService";
+import {
+  listAlternativeReconciliationScope,
+  listSplitCandidates,
+  splitAliasToAlternative,
+} from "../stocktakeService";
 
 const TABLES = [
   "productPrices",
@@ -193,5 +197,34 @@ describe("splitAliasToAlternative (م٤)", () => {
       .from(s.productVariants)
       .where(and(eq(s.productVariants.productId, 1), eq(s.productVariants.variantKind, "ALTERNATIVE")));
     expect(alts).toHaveLength(3); // القديم + جديدان
+  });
+});
+
+describe("listAlternativeReconciliationScope — نطاق جرد التحقّق", () => {
+  it("يجمع كل متغيّرات المنتج ذي البديل (الأصل + البدائل) ويستبعد البكج", async () => {
+    // البذرة: المنتج 1 له بديلٌ أصليّ (variant 2)؛ المنتج 9 بكج ⇒ مستبعَد.
+    const scope = await listAlternativeReconciliationScope();
+    expect(scope.productCount).toBe(1);
+    expect(scope.alternativeCount).toBe(1);
+    expect(scope.variantIds.sort((a, b) => a - b)).toEqual([1, 2]); // الأصل + البديل
+    expect(scope.variantIds).not.toContain(9); // بكج مستبعَد
+  });
+
+  it("يتّسع بعد فصل بديلٍ جديد (يشمل المتغيّر المنشأ)", async () => {
+    const res = await splitAliasToAlternative({
+      productUnitId: 11,
+      aliasBarcode: "ALIAS-A",
+      name: "ماركة النسر",
+    });
+    const scope = await listAlternativeReconciliationScope();
+    expect(scope.alternativeCount).toBe(2); // القديم + الجديد
+    expect(scope.variantIds).toContain(res.newVariantId);
+    expect(scope.variantIds).toContain(1); // الأصل يبقى في النطاق لتوزيع الرصيد
+  });
+
+  it("لا بدائل نشطة ⇒ نطاقٌ فارغ (لا يُنشأ جردٌ عبثاً)", async () => {
+    await db().update(s.productVariants).set({ isActive: false }).where(eq(s.productVariants.id, 2));
+    const scope = await listAlternativeReconciliationScope();
+    expect(scope).toEqual({ variantIds: [], productCount: 0, variantCount: 0, alternativeCount: 0 });
   });
 });
