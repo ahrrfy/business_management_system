@@ -2428,7 +2428,7 @@ export default function Storefront() {
                 </div>
                 <div className="sticky bottom-0 mt-2 border-t border-slate-100 bg-white/95 pt-2 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/95">
                 <button
-                  onClick={() => {
+                  onClick={(event) => {
                     if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants(event.currentTarget);
                     else {
                       addSelectedUnit(event.currentTarget);
