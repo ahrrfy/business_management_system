@@ -37,6 +37,10 @@ export interface PaymentPanelProps {
   payInput: string; setPayInput: (v: string) => void;
   deferred: boolean; setDeferred: (value: boolean) => void;
   deferredAvailable: boolean; deferredCustomerName: string | null;
+  /** ٢٣/٨ (بلاغ المالك «الكاشير لا يفهم لماذا الزرّ معطَّل»): نصٌّ مُحسَبٌ من الأب يشرح السبب
+   *  الفعليّ حين `deferredAvailable=false` — رسالة «اربط عميلاً» كانت مضلِّلة حين يكون العميل
+   *  مربوطاً لكن حدّ ائتمانه صفر، أو السلّة مسوّدة، أو تخصيصاً فقط. `null` يعني «الزرّ مفعَّل». */
+  deferredDisabledReason: string | null;
   method: PayMethod; setMethod: (m: PayMethod) => void;
   paymentReference: string; setPaymentReference: (v: string) => void;
   needPaymentRef: boolean;
@@ -75,7 +79,7 @@ export interface PaymentPanelProps {
 export function PaymentPanel({
   payInput, setPayInput,
   deferred, setDeferred,
-  deferredAvailable, deferredCustomerName,
+  deferredAvailable, deferredCustomerName, deferredDisabledReason,
   method, setMethod,
   paymentReference, setPaymentReference,
   needPaymentRef,
@@ -314,7 +318,10 @@ export function PaymentPanel({
             type="button"
             aria-pressed={deferred}
             disabled={!deferredAvailable}
-            title={deferredAvailable ? "تسجيل كامل المبلغ ذمّة على العميل" : "اربط عميلاً بهاتف عراقي أولاً"}
+            // ٢٣/٨ (بلاغ المالك): `title` يشرح السبب الفعليّ حين معطَّل — كان يقول «اربط عميلاً»
+            // حتى حين يكون العميل مرتبطاً لكن حدّ ائتمانه صفر، أو الطلبُ مسوّدةٌ محفوظة، أو
+            // السلّةُ تخصيصاً خالصاً (لا حاجة لعربونٍ أصلاً — يكفي «إتمام الطلب» مباشرةً).
+            title={deferredAvailable ? "تسجيل كامل المبلغ ذمّة على العميل" : (deferredDisabledReason ?? "غير متاح الآن")}
             onClick={() => {
               setPayInput("");
               setDeferred(true);
@@ -513,6 +520,15 @@ export function PaymentPanel({
           </div>
         )}
         </>}
+
+        {/* ٢٣/٨ (بلاغ المالك): سلّةُ التخصيص الخالصة (لا بضاعة جاهزة ولا طباعة) لا تحتاج عربوناً —
+            الزبون يدفع عند الاستلام. الكاشير كان يظنّ زرّ «بدون عربون» المعطَّل يمنعه أصلاً، بينما
+            زرّ «إتمام الطلب» الرئيس يعمل مباشرةً. إفصاحٌ صريحٌ يقطع الحيرة. */}
+        {!deferred && !cartEmpty && sumDirect === 0 && sumCustom > 0 && paid === 0 && (
+          <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+            <Check aria-hidden className="size-3" /> طلبٌ مخصّصٌ — لا حاجة لعربون · اضغط «إتمام الطلب» مباشرةً
+          </span>
+        )}
 
         {/* زرّا الإتمام — يتّجهان لأقصى الشريط، جنباً إلى جنب، ثابتان دائماً (البار لا يُقصّ). */}
         <div className="ms-auto flex items-center gap-2">
