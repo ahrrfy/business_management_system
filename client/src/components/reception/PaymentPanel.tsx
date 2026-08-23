@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowLeftRight,
   Banknote,
@@ -20,6 +20,7 @@ import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
+import { normalizeNumberInput } from "@shared/numberNormalize";
 import { PAY_METHOD_LABEL, type PayMethod } from "./cartMath";
 
 /**
@@ -93,6 +94,22 @@ export function PaymentPanel({
   submitting, cartEmpty, hasShift,
   onSubmit,
 }: PaymentPanelProps) {
+  // ٢٣/٨ (Codex P1 v2): حقلُ المبلغ يفصل «العرض» عن «القيمة الملتزمة». هذا يحلّ ثلاث حالات:
+  // (١) الكاشير يكتب `1,` كخطوةٍ في الطريق إلى `1,5` أو `1,234` — نُبقي الحرفَ ظاهراً في الحقل
+  //     لكن لا نلتزم قيمةً غير قابلةٍ للحلّ.
+  // (٢) الفاصلةُ العربية `،` تُعامَل بعقد `normalizeNumberInput` نفسه: `1،5` ⇒ `1.5` (عشريّ)،
+  //     `1،234` ⇒ `1234` (ألوف). نمنعُ الانحدارَين السابقَين (تحطيم الآلاف ↔ خنق العشريّ).
+  // (٣) الأزرارُ السريعة/`payAll` تكتب على `payInput` مباشرةً؛ نُزامن العرضَ إن اختلف تطبيعُه.
+  const [displayPay, setDisplayPay] = useState(payInput);
+  useEffect(() => {
+    // نُزامن العرضَ من `payInput` إن تغيّرت الأخيرة من خارج الحقل (زرّ سريع، تفريغ سلّة…) —
+    // ونحرص ألّا نطمس ما يكتبه الكاشير: التطبيعُ الحيّ لعرضه يطابق القيمة الملتزمة أصلاً.
+    try {
+      const norm = normalizeNumberInput(displayPay).normalized;
+      if (norm !== payInput) setDisplayPay(payInput);
+    } catch { setDisplayPay(payInput); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payInput]);
   // قد تكون الصفحة مفتوحة قبل النشر أو تحمل حالة قديمة؛ لا نترك طريقةً خارجية خفية.
   useEffect(() => {
     if (!isPosPaymentMethodEnabled(method)) {
@@ -317,22 +334,27 @@ export function PaymentPanel({
 
         {!deferred && <>
         {/* المبلغ المدفوع — حقلٌ نصّي حقيقي (لوحة المفاتيح تكتب مباشرة، بلا حاسبة إضافية).
-            ٢٣/٨ — بلاغ Codex P1: نسختي السابقة نُطبَّع `،`/`,` إلى `.` كانت تُفسِد `15,000`
-            إلى `15.000` = ١٥ دينار (×١٠٠٠ خطأ ماليّ). التصحيح:
-            - `٫` (فاصلة عشريّة عربيّة U+066B) ⇒ `.`
-            - `,` و `،` (فاصلة ألوف شائعة في IQD مثل «15,000» و«١٥،٠٠٠») ⇒ تُحذف.
-            نقبل حالات التحرير الوسطى (`1.`، `.5`) ونرفض ما لا يمثّل رقماً منتهياً. */}
+            ٢٣/٨ — بلاغ Codex P1 v2: عقد التطبيع المشترك (`shared/numberNormalize`) هو المرجع
+            الوحيد: `1,5` ⇒ `1.5` (عشريّ)، `1,234` ⇒ `1234` (ألوف)، `1،5` كذلك. الحقل يعرض
+            ما يكتبه الكاشير حرفياً (`displayPay`) لكن لا يلتزم قيمةً إلا إن كانت غير ملتبسة.
+            الحالات الوسطى (`1,`، `1.`، `.5`) تُعرض ولا تُلتزم كي لا تتحطّم `D()`. */}
         <div className="flex h-10 items-center gap-2 rounded-lg border-[1.5px] bg-muted/40 px-3 focus-within:border-primary">
           <span className="shrink-0 text-xs text-muted-foreground">المدفوع</span>
           <input
-            value={payInput}
+            value={displayPay}
             onChange={(e) => {
               const src = e.target.value;
+              setDisplayPay(src);
               if (src === "") { setPayInput(""); return; }
-              const raw = src.replace(/٫/g, ".").replace(/[,،]/g, "");
-              if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(raw)) return;
-              if (!Number.isFinite(Number(raw))) return;
-              setPayInput(raw);
+              // حدُّ محارف: أرقام + فواصل شائعة فقط. غير ذلك يُترك دون التزام.
+              if (!/^[\d.,،٫\-]*$/.test(src)) return;
+              const result = normalizeNumberInput(src);
+              if (result.ambiguous) return;
+              const n = result.normalized;
+              if (!n) return;
+              if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(n)) return;
+              if (!Number.isFinite(Number(n))) return;
+              setPayInput(n);
             }}
             onFocus={(e) => e.currentTarget.select()}
             inputMode="decimal"

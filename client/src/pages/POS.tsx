@@ -45,6 +45,7 @@ import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
+import { normalizeNumberInput } from "@shared/numberNormalize";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -2624,6 +2625,18 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
   // أخيرة لا تُبلَغ في مدى التشغيل الفعليّ.
   const dense = useMediaQuery("(max-height: 820px)");
   const ultra = useMediaQuery("(max-height: 660px)");
+  // ٢٣/٨ (Codex P1 v2): حقلُ المبلغ يفصل «العرض» (raw ما يكتبه الكاشير) عن «القيمة الملتزمة»
+  // (`payInput` المطبَّعة). عقد التطبيع من `shared/numberNormalize` هو المرجع — `1,5` ⇒ `1.5`،
+  // `1,234` ⇒ `1234`، `1،5` كذلك. الحالات الوسطى الملتبسة تبقى في العرض ولا تُلتزم كي لا تتحطّم
+  // `D()` عليها. الأزرارُ السريعة/`+/-` تكتب على `payInput` مباشرةً؛ نُزامن العرضَ حينها.
+  const [displayPay, setDisplayPay] = useState(payInput);
+  useEffect(() => {
+    try {
+      const norm = normalizeNumberInput(displayPay).normalized;
+      if (norm !== payInput) setDisplayPay(payInput);
+    } catch { setDisplayPay(payInput); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payInput]);
   const [couponOpen, setCouponOpen] = useState(false);
   // الكوبون يظهر دائماً وهو مُطبَّق (لا يُخفى خصمٌ سارٍ)، أو عند طلبه صراحةً.
   const showCoupon = !dense || !!couponCode || couponOpen;
@@ -2871,20 +2884,24 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
               <input
                 type="text"
                 inputMode="decimal"
-                value={payInput}
+                value={displayPay}
                 onChange={(e) => {
-                  // ٢٣/٨ — Codex P1: النسخة السابقة `replace(/[،,]/g, ".")` كانت تحوّل
-                  // `15,000` إلى `15.000` = ١٥ دينار (×١٠٠٠ خطأ ماليّ). التصحيح:
-                  // - `٫` (فاصلة عشريّة عربيّة U+066B) ⇒ `.`
-                  // - `,` و `،` (فاصلة ألوف شائعة في IQD مثل «15,000») ⇒ تُحذف
-                  // - `D(".")` و`D("-")` و`D("-.")` تظلّ مرفوضة (regex + isFinite).
+                  // ٢٣/٨ — Codex P1 v2: العقدُ المشترك `normalizeNumberInput` هو الحكم.
+                  // العرض يعكس ما يكتبه الكاشير حرفياً (`displayPay`)، والقيمةُ الملتزمة
+                  // (`payInput`) لا تُحدَّث إلّا إن كان التطبيع غير ملتبس. الحالات الوسطى
+                  // (`1,`، `1.`، `.5`) تظهر في الحقل لكن لا تصل إلى `D()` كي لا تتحطّم.
                   const src = e.target.value;
+                  setDisplayPay(src);
                   if (src === "") { setPayInput(""); return; }
-                  const raw = src.replace(/٫/g, ".").replace(/[,،]/g, "");
-                  // نقبل بادئة السالب (تصحيحٌ ما) لكن نمنع "-" وحده أو "." وحدها.
-                  if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(raw)) return;
-                  if (!Number.isFinite(Number(raw))) return;
-                  setPayInput(raw);
+                  // حدُّ محارف: أرقام + فواصل شائعة (بادئة سالب للتصحيح). غير ذلك يُترك دون التزام.
+                  if (!/^[\d.,،٫\-]*$/.test(src)) return;
+                  const result = normalizeNumberInput(src);
+                  if (result.ambiguous) return;
+                  const n = result.normalized;
+                  if (!n) return;
+                  if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(n)) return;
+                  if (!Number.isFinite(Number(n))) return;
+                  setPayInput(n);
                 }}
                 onFocus={(e) => e.currentTarget.select()}
                 placeholder="0"
