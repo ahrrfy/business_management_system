@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expected = Object.freeze({
   applicationId: "online.alarabiya.store",
-  versionCode: 7,
+  versionCode: 8,
   versionName: "1.0.0",
   productionBaseUrl: "https://srv1548487.hstgr.cloud",
 });
@@ -531,6 +531,10 @@ function verifySourceContract() {
     `val productionApplicationId = "${expected.applicationId}"`,
     `val productionVersionCode = ${expected.versionCode}`,
     `val productionVersionName = "${expected.versionName}"`,
+    // بوّابة إصدار الإنتاج (verifyProductionReleaseInputs) تؤكّد الرقمَ حرفياً؛ ربطُها بالمتوقَّع هنا
+    // يمنع فخّاً أمسكه Codex على #722: رفعُ الرقم دون تحديث هذا التأكيد يُسقط bundleProdRelease وحده
+    // (لا يظهر في بناء dev المحليّ)، وكان check:mobile-release أعمى عنه.
+    `if (productionVersionCode != ${expected.versionCode} || productionVersionName != "${expected.versionName}") {`,
     `val expectedProductionEndpoint = "${expected.productionBaseUrl}"`,
     "applicationId = productionApplicationId",
     'applicationIdSuffix = ".debug"',
