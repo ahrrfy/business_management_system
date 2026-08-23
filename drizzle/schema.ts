@@ -4557,6 +4557,33 @@ export const storeConversionDailyMetrics = mysqlTable(
 export type StoreConversionDailyMetric =
   typeof storeConversionDailyMetrics.$inferSelect;
 
+/** نقرات «قد يعجبك أيضاً» اليومية؛ عداد مجهّل للمنتج المقترح دون معرّف زائر أو جلسة. */
+export const storeRecommendationDailyMetrics = mysqlTable(
+  "storeRecommendationDailyMetrics",
+  {
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    metricDate: date("metricDate", { mode: "string" }).notNull(),
+    sourceProductId: bigint("sourceProductId", { mode: "number" })
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    recommendedProductId: bigint("recommendedProductId", { mode: "number" })
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    clicks: int("clicks").default(0).notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({
+      columns: [t.branchId, t.metricDate, t.sourceProductId, t.recommendedProductId],
+      name: "pk_store_recommendation_daily",
+    }),
+    dateIdx: index("idx_store_recommendation_metric_date").on(t.metricDate),
+    recommendedIdx: index("idx_store_recommendation_product").on(t.recommendedProductId, t.metricDate),
+  }),
+);
+export type StoreRecommendationDailyMetric = typeof storeRecommendationDailyMetrics.$inferSelect;
+
 /** إعدادات المتجر (صفّ مفرد، نمط taxSettings): فتح/إغلاق المتجر، شريط إعلان، رقم واتساب. */
 export const storeSettings = mysqlTable(
   "storeSettings",

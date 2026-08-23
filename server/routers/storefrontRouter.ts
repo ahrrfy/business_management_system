@@ -23,7 +23,7 @@ import { createOnlineOrder, findOwnedOnlineOrderReplay, quoteOnlineOrder, readOn
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
-import { recordStoreConversionMetric } from "../services/storeAdmin/storeConversionMetricsService";
+import { recordStoreConversionMetric, recordStoreRecommendationClick } from "../services/storeAdmin/storeConversionMetricsService";
 import { verifyStorefrontTurnstile } from "../services/storefrontTurnstile";
 import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
@@ -76,6 +76,14 @@ export const storefrontRouter = router({
   trackConversion: publicProcedure
     .input(z.object({ event: z.enum(["PRODUCT_VIEW", "ADD_TO_CART", "BEGIN_CHECKOUT"]) }))
     .mutation(({ input }) => recordStoreConversionMetric(input)),
+
+  /** نقرة توصية مجهّلة: تُستدعى من الواجهة بعد موافقة التحليلات، ولا تحفظ جلسة أو IP أو زبوناً. */
+  trackRecommendationClick: storefrontPublicWriteProcedure
+    .input(z.object({
+      sourceProductId: z.number().int().positive(),
+      recommendedProductId: z.number().int().positive(),
+    }))
+    .mutation(({ input }) => recordStoreRecommendationClick(input)),
 
   /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
   settings: publicProcedure.query(() => getPublicStoreSettings()),

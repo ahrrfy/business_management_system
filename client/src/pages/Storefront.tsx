@@ -968,7 +968,17 @@ type RelatedProduct = {
   salePrice?: string | null;
 };
 
-function RelatedProductStrip({ products, onSelect }: { products: RelatedProduct[]; onSelect: (id: number) => void }) {
+function RelatedProductStrip({
+  products,
+  onSelect,
+  onRecommendationClick,
+}: {
+  products: RelatedProduct[];
+  onSelect: (id: number) => void;
+  onRecommendationClick: (recommendedProductId: number) => void;
+}) {
+  const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
+  const filteredProducts = products.filter((product) => matchesPriceFilter(Number(product.salePrice ?? product.price ?? 0), priceFilter));
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
   const move = (direction: -1 | 1) => {
@@ -1000,11 +1010,26 @@ function RelatedProductStrip({ products, onSelect }: { products: RelatedProduct[
 
   return (
     <div className="mt-5 min-w-0">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
-        <div className="flex items-center gap-1" aria-label="تنقل المنتجات المقترحة">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
+          <span className="text-[10px] font-bold text-slate-400">{filteredProducts.length} اقتراح</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <label className="relative shrink-0">
+            <span className="sr-only">تصفية التوصيات حسب السعر</span>
+            <select value={priceFilter} onChange={(event) => setPriceFilter(event.target.value as PriceFilter)} className="appearance-none rounded-full border border-slate-200 bg-white py-1.5 pr-2.5 pl-6 text-[10px] font-bold text-slate-600 outline-none focus:border-emerald-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+              <option value="ALL">كل الأسعار</option>
+              <option value="UNDER_5000">أقل من 5,000 د.ع</option>
+              <option value="FROM_5000_TO_15000">5,000–15,000 د.ع</option>
+              <option value="OVER_15000">أكثر من 15,000 د.ع</option>
+            </select>
+            <ChevronDown aria-hidden className="pointer-events-none absolute left-1.5 top-1/2 size-3 -translate-y-1/2 text-slate-400" />
+          </label>
+          <div className="flex items-center gap-1" aria-label="تنقل المنتجات المقترحة">
           <button type="button" onClick={() => move(1)} className="flex size-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700 active:scale-95" aria-label="مرر المنتجات المقترحة إلى اليسار"><ArrowRight aria-hidden className="size-3.5 rotate-180" /></button>
           <button type="button" onClick={() => move(-1)} className="flex size-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700 active:scale-95" aria-label="مرر المنتجات المقترحة إلى اليمين"><ArrowRight aria-hidden className="size-3.5" /></button>
+          </div>
         </div>
       </div>
       <div
@@ -1018,15 +1043,15 @@ function RelatedProductStrip({ products, onSelect }: { products: RelatedProduct[
         onClickCapture={(event) => { if (dragRef.current.moved) { event.preventDefault(); event.stopPropagation(); } }}
         aria-label="منتجات مقترحة — اسحب لاكتشاف المزيد"
       >
-        {products.map((rp) => (
+        {filteredProducts.length === 0 ? <p className="w-full py-4 text-center text-xs font-bold text-slate-400">لا توجد اقتراحات ضمن هذا النطاق السعري.</p> : filteredProducts.map((rp) => (
           <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 snap-start flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
-            <button type="button" onClick={() => onSelect(rp.productId)} className="text-right">
+            <button type="button" onClick={() => { onRecommendationClick(rp.productId); onSelect(rp.productId); }} className="text-right">
               <ProductImage url={rp.imageUrl} alt={rp.productName} className="store-product-media aspect-square w-full" />
             </button>
             <div className="flex flex-1 flex-col gap-1 p-2">
               <span className="line-clamp-2 min-h-[2.2em] text-[11px] font-bold leading-tight">{rp.productName}</span>
               <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
-              <button type="button" onClick={() => onSelect(rp.productId)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95"><Plus aria-hidden className="size-3" /> اختر</button>
+              <button type="button" onClick={() => { onRecommendationClick(rp.productId); onSelect(rp.productId); }} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95"><Plus aria-hidden className="size-3" /> اختر</button>
             </div>
           </div>
         ))}
@@ -1152,6 +1177,17 @@ function matchesPriceFilter(price: number, filter: PriceFilter): boolean {
     case "FROM_5000_TO_15000": return price >= 5_000 && price <= 15_000;
     case "OVER_15000": return price > 15_000;
     default: return true;
+  }
+}
+
+function hasStorefrontAnalyticsConsent(): boolean {
+  try {
+    const raw = window.localStorage.getItem("arabia_store_consent_v1");
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as { analytics?: unknown };
+    return parsed.analytics === true;
+  } catch {
+    return false;
   }
 }
 
@@ -1295,6 +1331,7 @@ export default function Storefront() {
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const labelQ = trpc.storefront.labelSummary.useQuery(labelParams ?? { orderNumber: "-", token: "-" }, { enabled: labelParams != null, retry: false });
   const relatedQ = trpc.storefront.related.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
+  const recommendationClickM = trpc.storefront.trackRecommendationClick.useMutation();
   const cartRecommendationsQ = trpc.storefront.cartRecommendations.useQuery(
     { productIds: cartRecommendationProductIds },
     {
@@ -1303,6 +1340,10 @@ export default function Storefront() {
       refetchOnWindowFocus: false,
     },
   );
+  const trackRecommendationClick = (recommendedProductId: number) => {
+    if (selectedId == null || !hasStorefrontAnalyticsConsent()) return;
+    recommendationClickM.mutate({ sourceProductId: selectedId, recommendedProductId });
+  };
   const storefrontQuoteInput = useMemo(() => ({
     couponCode: appliedCouponCode || undefined,
     governorate: form.governorate,
@@ -2376,7 +2417,11 @@ export default function Storefront() {
 
                 {/* قد يعجبك أيضاً (cross-sell) */}
                 {(relatedQ.data?.length ?? 0) > 0 && (
-                  <RelatedProductStrip products={relatedQ.data!} onSelect={setSelectedId} />
+                  <RelatedProductStrip
+                    products={relatedQ.data!}
+                    onSelect={setSelectedId}
+                    onRecommendationClick={trackRecommendationClick}
+                  />
                 )}
               </div>
             ) : (

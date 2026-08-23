@@ -15,7 +15,7 @@ import { and, desc, eq, gte, lt, ne, sql } from "drizzle-orm";
 import { onlineOrderItems, onlineOrders, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
-import { getStoreConversionFunnel, type StoreConversionFunnel } from "./storeConversionMetricsService";
+import { getStoreConversionFunnel, getStoreRecommendationClickSummary, type StoreConversionFunnel, type RecommendationClickSummary } from "./storeConversionMetricsService";
 
 /** يُطبّع قيمة تاريخ (Date أو نصّ) إلى YYYY-MM-DD بمكوّنات UTC (DATE بلا زمن ⇒ لا انزلاق). */
 function toYmd(v: unknown): string {
@@ -69,6 +69,7 @@ export interface StoreAnalytics {
   topProducts: { productId: number; name: string; qty: number; revenue: string }[];
   byGovernorate: { governorate: string; orders: number; revenue: string }[];
   conversionFunnel: StoreConversionFunnel;
+  recommendationClicks: RecommendationClickSummary[];
 }
 
 const EMPTY_KPIS: StoreAnalyticsKpis = {
@@ -85,7 +86,7 @@ export async function getStoreAnalytics(input: {
   const from = input.fromYmd;
   const to = input.toYmd;
   if (!db) {
-    return { from, to, kpis: EMPTY_KPIS, trend: [], statusBreakdown: {}, topProducts: [], byGovernorate: [], conversionFunnel: await getStoreConversionFunnel(input) };
+    return { from, to, kpis: EMPTY_KPIS, trend: [], statusBreakdown: {}, topProducts: [], byGovernorate: [], conversionFunnel: await getStoreConversionFunnel(input), recommendationClicks: await getStoreRecommendationClickSummary(input) };
   }
   const { fromUtc, toUtc } = rangeUtc(from, to);
   const base = [gte(onlineOrders.orderDate, fromUtc), lt(onlineOrders.orderDate, toUtc)];
@@ -184,6 +185,7 @@ export async function getStoreAnalytics(input: {
   }));
 
   const conversionFunnel = await getStoreConversionFunnel(input);
+  const recommendationClicks = await getStoreRecommendationClickSummary(input);
   return {
     from,
     to,
@@ -198,5 +200,6 @@ export async function getStoreAnalytics(input: {
     topProducts,
     byGovernorate,
     conversionFunnel,
+    recommendationClicks,
   };
 }
