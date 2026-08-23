@@ -126,7 +126,7 @@ export default function SimpleProductForm() {
   );
   const finalName = name.trim() || composedName;
   const aiProductFacts = useMemo(() => ({
-    inputName: name.trim() || composedName || null,
+    finalProductName: name.trim() || composedName || null,
     inputDescription: description.trim() || null,
     category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
     productType: productType.trim() || null,

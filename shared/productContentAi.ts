@@ -5,7 +5,7 @@ const inputDescription = z.string().trim().max(2_000);
 
 export const productFactsSchema = z
   .object({
-    inputName: factValue.nullable().default(null),
+    finalProductName: factValue.nullable().default(null),
     inputDescription: inputDescription.nullable().default(null),
     category: factValue.nullable().default(null),
     productType: factValue.nullable().default(null),
