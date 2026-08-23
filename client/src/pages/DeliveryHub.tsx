@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Link } from "wouter";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearch } from "wouter";
 import {
   AlertTriangle,
   Check,
@@ -96,13 +96,24 @@ const tabBtn = (active: boolean) =>
     active ? "bg-primary text-primary-foreground" : "border bg-card hover:bg-muted/60",
   );
 
+function readTabFromSearch(search: string): "dispatch" | "transit" | "settle" {
+  const t = new URLSearchParams(search).get("tab");
+  return t === "transit" ? "transit" : t === "settle" ? "settle" : "dispatch";
+}
+
 export default function DeliveryHub() {
-  const initialTab = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "transit"
-    ? "transit" as const
-    : new URLSearchParams(typeof window !== "undefined" ? window.location.search : "").get("tab") === "settle"
-      ? "settle" as const
-      : "dispatch" as const;
-  const [tab, setTab] = useState<"dispatch" | "transit" | "settle">(initialTab);
+  /**
+   * ٢٣/٨ (Codex P1): `wouter/Link` يُنقّل داخل التطبيق فلا يُعاد mount للمكوّن — كان `tab`
+   * يُقرأ من الـURL مرّةً على الـmount فقط، فيبقى «transit» حين ينقر الكاشير «سجّل التحصيل»
+   * ولا تُركَّب `SettleTab` أبداً. `useSearch` من wouter يُحدَّث تفاعلياً على كل تنقّل ⇒
+   * نُزامن `tab` معه في effect: النقر على الرابط يُظهر الشاشة الصحيحة فوراً، وإدخال التبويب
+   * يدوياً يبقى يعمل (setTab يتقدّم على الـeffect للتحديث المحلّيّ الفوريّ).
+   */
+  const search = useSearch();
+  const [tab, setTab] = useState<"dispatch" | "transit" | "settle">(() => readTabFromSearch(search));
+  useEffect(() => {
+    setTab(readTabFromSearch(search));
+  }, [search]);
   const transitCount = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 30_000 }).data?.length ?? 0;
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
@@ -322,6 +333,19 @@ function InTransitTab() {
       "store",
       "FULL",
       ["manager", "cashier", "sales_rep"],
+    );
+  /**
+   * ٢٣/٨ (Codex P2 #3): `deliveryCashierProcedure` = `moduleProcedure(["cashier","manager"],"store","FULL")`
+   * — لا يشمل `sales_rep`. `canFulfil` أعلاه أوسع (يشمله). إظهارُ زرّ «تم التسليم» عليه
+   * كان يُنتج `FORBIDDEN` من الخادم على كل نقرة. مرآةُ بوّابة الخادم حرفياً هنا.
+   */
+  const canStaffConfirm = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["manager", "cashier"],
     );
   const isManager = me.data?.role === "admin" || me.data?.role === "manager";
 
@@ -631,7 +655,7 @@ function InTransitTab() {
                           ٢٣/٨ — «تم التسليم» بيد الكاشير: للحالة اليوميّة الشائعة (اتصال المندوب/رسالة)
                           — لا يحتاج انتظار كشف الشركة ولا موافقة المدير. سلطةٌ متوسّطة توثَّق باسمك.
                         */}
-                        {canFulfil && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT") && (
+                        {canStaffConfirm && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT") && (
                           <Button size="sm" variant="default" title="أخبرَني المندوب أنه سلّمه للزبون" disabled={staffConfirm.isPending} onClick={() => setStaffConfirmTarget(r)}>
                             <CheckCircle2 aria-hidden className="size-3" /> تم التسليم
                           </Button>
@@ -791,6 +815,15 @@ function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTran
   const [amount, setAmount] = useState(String(remaining));
   const [note, setNote] = useState("");
   const QUICK_NOTES = ["اتصال المندوب", "رسالة واتساب من المندوب", "تأكيد من العميل"];
+  /**
+   * ٢٣/٨ (Codex P2 #4): `MoneyInput` يُصدر سلسلةً فارغةً عند مسح الحقل — `Number("")=0`
+   * فيمرّ الزرُّ صامتاً كتحصيلٍ صفريّ، وتُختَم فاتورةٌ كأنّ المندوب أفاد بلا قبض. نُلزم
+   * إدخالاً صريحاً لعددٍ منتهٍ (`Number.isFinite` يرفض `""` و`NaN` معاً)، والقيمةُ الصفريّة
+   * الصريحة تبقى مقبولةً (طردٌ مدفوعٌ سلفاً — codAmount=0).
+   */
+  const amountTrimmed = amount.trim();
+  const amountNum = Number(amountTrimmed);
+  const isAmountValid = amountTrimmed !== "" && Number.isFinite(amountNum) && amountNum >= 0;
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" onClick={onCancel} dir="rtl">
       <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -821,7 +854,7 @@ function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTran
         <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثلاً: اتصال ٦:٤٥م من المندوب…" className="mb-4" />
         <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onCancel} disabled={pending}>تراجع</Button>
-          <Button size="sm" disabled={pending || note.trim().length < 3 || Number(amount) < 0} onClick={() => onConfirm(String(Number(amount).toFixed(2)), note.trim())}>
+          <Button size="sm" disabled={pending || note.trim().length < 3 || !isAmountValid} onClick={() => onConfirm(amountNum.toFixed(2), note.trim())}>
             {pending ? "جارٍ…" : "تأكيد التسليم"}
           </Button>
         </div>
@@ -978,13 +1011,11 @@ function SettleTab() {
       ["manager", "cashier", "sales_rep"],
     );
   /**
-   * ٢٣/٨ — قبول `?party=…` من رابط «سجّل التحصيل» في تبويب «قيد التوصيل»:
-   * كاشير يضغط زرّاً واحداً على صفٍّ سُلِّم فيصل هنا بالجهة مختارةً جاهزاً لإدخال الكشف.
+   * ٢٣/٨ — قبول `?party=…` من رابط «سجّل التحصيل» في تبويب «قيد التوصيل».
+   * ٢٣/٨ (Codex P1): `useSearch` تفاعليّ ⇒ يُطبَّق حتى بلا remount حين ينقر الكاشير الرابط.
    */
-  const initialParty = typeof window !== "undefined"
-    ? (new URLSearchParams(window.location.search).get("party") ?? "")
-    : "";
-  const [partyId, setPartyId] = useState<string>(initialParty);
+  const settleSearch = useSearch();
+  const [partyId, setPartyId] = useState<string>(() => new URLSearchParams(settleSearch).get("party") ?? "");
   const obligations = trpc.delivery.obligations.useQuery(undefined, { refetchInterval: 30_000 });
   const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });
   const remittances = trpc.delivery.remittances.useQuery({ partyId: Number(partyId), limit: 20 }, { enabled: !!partyId });
@@ -992,6 +1023,16 @@ function SettleTab() {
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
   const [countedCash, setCountedCash] = useState(0);
   const [remitReqId, setRemitReqId] = useState(() => crypto.randomUUID());
+  // effect مؤجَّل بعد state declarations — يتفاعل مع تغيّر الـURL من رابط «سجّل التحصيل».
+  useEffect(() => {
+    const p = new URLSearchParams(settleSearch).get("party");
+    if (p && p !== partyId) {
+      setPartyId(p);
+      setRows({});
+      setRemitReqId(crypto.randomUUID());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settleSearch]);
   const [drawerId, setDrawerId] = useState<number | null>(null);
   const [statementNumber, setStatementNumber] = useState("");
   const [statementDate, setStatementDate] = useState("");

@@ -549,14 +549,30 @@ export async function listPartyObligations(branchId: number | null) {
       /** إرساليات الإغلاق المفتوح (DISPATCHED/PARTIAL) — عدّاد المطاردة الرئيس. */
       openCount: sql<number>`(SELECT COUNT(*) ${openScope})`,
       /**
-       * ٢٣/٨ — **سُلِّم — بيد الجهة بانتظار التوريد**: صفوفٌ ثبت تسليمُها (parcelStatus=DELIVERED)
-       * لكن نقدها ما زال بيدها (consignmentStatus حيّ). عدّاد الجسر بين «تم التسليم» و«التسوية»:
-       * الكاشير يرى «X طرود سُلِّمت — احصّل نقدها» على صفّ الجهة، فيدخل بها مباشرةً.
+       * ٢٣/٨ — **سُلِّم — نقدٌ بيد الجهة بانتظار التوريد** (تصويب Codex P1 #2):
+       * عدّاد الجسر بين «تم التسليم» و«التسوية». المصدر الحاكم **دفترُ التوصيل**، لا حالةُ
+       * الطرد: تسليمٌ بلا تحصيل (staffConfirm بدلياً=0، أو تسليمٌ جزئيّ مورَّد كاملاً)
+       * يُبقي parcelStatus=DELIVERED بلا أيّ عهدةٍ بيد الجهة — عدّه «بيد الجهة» كذبٌ يُوجِّه
+       * التسويةَ نحو تحصيلٍ غير موجود.
+       *
+       * الصيغة: للإرسالية عهدةٌ حيّةٌ إن كان `SUM(COD_COLLECTED) − SUM(COD_REMITTED + COD_WRITTEN_OFF + COD_RELEASED) > 0`.
+       * — العدُّ بعدد إرساليات الجهة ذات العهدة الحيّة (بلا نطاق الفرع — الدفترُ يحمل branchId
+       * على القيد نفسه، والفلترةُ عليه تخفي صنفاً موزَّعاً على فروع مختلفة، وشاشةُ التسوية
+       * للجهة نفسها عابرةٌ للفروع كالتوريد).
        */
-      deliveredAwaitingRemitCount: sql<number>`(SELECT COUNT(*) FROM deliveryConsignments dc
-        WHERE dc.partyId = ${deliveryParties.id}
-          AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')
-          AND dc.parcelStatus = 'DELIVERED'${cnBranch})`,
+      deliveredAwaitingRemitCount: sql<number>`(SELECT COUNT(*) FROM (
+        SELECT dle.consignmentId,
+          COALESCE(SUM(CASE
+            WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount
+            WHEN dle.entryType IN ('COD_REMITTED','COD_WRITTEN_OFF','COD_RELEASED') THEN -dle.amount
+            ELSE 0 END), 0) AS custody
+        FROM deliveryLedgerEntries dle
+        WHERE dle.partyId = ${deliveryParties.id}
+          AND dle.consignmentId IS NOT NULL
+          AND dle.entryType IN ('COD_COLLECTED','COD_REMITTED','COD_WRITTEN_OFF','COD_RELEASED')
+        GROUP BY dle.consignmentId
+        HAVING custody > 0
+      ) live)`,
       /**
        * Σ المتبقّي الحيّ (codAmount − collectedAmount − counterSettledAmount مقصوصاً عند
        * صفر)، مستثنىً منه المُعلَنُ رجوعُه — نفس صيغة codDue في «قيد التوصيل» صفّاً صفّاً،
