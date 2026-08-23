@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expected = Object.freeze({
   applicationId: "online.alarabiya.store",
-  versionCode: 7,
+  versionCode: 8,
   versionName: "1.0.0",
   productionBaseUrl: "https://srv1548487.hstgr.cloud",
 });

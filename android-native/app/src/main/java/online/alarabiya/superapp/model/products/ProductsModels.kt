@@ -106,6 +106,8 @@ data class ProductRow(
     val isConsignment: Boolean,
     val variantId: Long?,
     val variantName: String?,
+    // VARIANT = لون/قياس لنفس الصنف؛ ALTERNATIVE = منتجٌ مختلف (ماركة/منشأ) تحت اسمٍ واحد — يُوسَم بشارة.
+    val variantKind: String? = null,
     val color: String?,
     val size: String?,
     val sku: String?,
@@ -123,6 +125,8 @@ data class ProductRow(
     val stockBase: Int,
 ) {
     val label get() = listOfNotNull(productName, variantName, unitName).joinToString(" • ")
+    /** بديلٌ حقيقيّ (ماركة/منشأ مختلف) يُباع تحت اسمٍ واحد — تُعرَض له شارة تمييز في القائمة. */
+    val isAlternative get() = variantKind == "ALTERNATIVE"
     fun price(tier: ProductTier) = when (tier) {
         ProductTier.RETAIL -> retailPrice
         ProductTier.WHOLESALE -> wholesalePrice

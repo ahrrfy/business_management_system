@@ -23,7 +23,7 @@ fun quoted(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"
 // identity in one place prevents a staging/package override from producing an artifact that cannot
 // update the installed application.
 val productionApplicationId = "online.alarabiya.store"
-val productionVersionCode = 7
+val productionVersionCode = 8
 val productionVersionName = "1.0.0"
 val expectedProductionEndpoint = "https://srv1548487.hstgr.cloud"
 
