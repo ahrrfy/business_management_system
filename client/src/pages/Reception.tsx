@@ -659,6 +659,22 @@ export default function Reception() {
     && !activeDraft
     && !orderDelivery
     && sumDirect > 0;
+  // ٢٣/٨ (بلاغ المالك): رسالةٌ محدَّدة تشرح السبب الفعليّ لتعطيل زرّ «بدون عربون» — بدل «اربط عميلاً»
+  // المضلِّلة. الترتيب من الأقلّ صعوبةً في الحلّ إلى الأكثر: طلبٌ مخصّصٌ ⇒ يكفي «إتمام»، مسوّدةٌ ⇒
+  // ثبّت مباشرةً، توصيلٌ ⇒ التحصيل عند الاستلام، لا عميل ⇒ اربطه، حدّ الائتمان صفر ⇒ راجع المدير.
+  const deferredDisabledReason: string | null = deferredAvailable
+    ? null
+    : sumDirect === 0 && sumCustom > 0
+      ? "لا حاجة لعربون — طلبٌ مخصّص، اضغط «إتمام الطلب» مباشرةً"
+      : activeDraft
+        ? "الآجل غير متاح لطلبٍ محفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"
+        : orderDelivery
+          ? "طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"
+          : customer.customerId == null || phoneResolution !== "RESOLVED"
+            ? "اربط عميلاً بهاتفٍ عراقيٍّ أوّلاً"
+            : !customerDeferredEligible
+              ? "حدُّ الائتمان للعميل صفر (نقديّ فقط) — راجع المدير لرفعه"
+              : "غير متاح الآن";
   useEffect(() => {
     if (deferred && !deferredAvailable) setDeferred(false);
   }, [deferred, deferredAvailable]);
@@ -1395,7 +1411,19 @@ export default function Reception() {
       return;
     }
     if (!orderDelivery && !deferred && appliedPaidD.plus(heldD).lt(directFloorD)) {
-      notify.err(`المبلغ المقبوض (مع العربون السابق) يجب أن يغطي المنتجات الجاهزة أولاً (${fmt(directFloorD.toFixed(2))} د.ع). وما زاد يُوزّع عربوناً على أعمال الطباعة.`);
+      // ٢٣/٨ (بلاغ المالك): رسالة الخطأ صارت تقترح مساراتٍ عمليّة بدل مجرّد الحظر.
+      // الكاشير كان يحدّق في الرسالة دون معرفة كيف يخرج من الحال.
+      const shortfall = round2(directFloorD.minus(appliedPaidD).minus(heldD));
+      notify.errBig(
+        `البضاعة الجاهزة تحتاج ${fmt(directFloorD.toFixed(2))} د.ع (ناقصٌ ${fmt(shortfall.toFixed(2))})`,
+        deferredAvailable
+          ? "اختر «بدون عربون» لتسجيله ذمّةً على العميل، أو أَضِف مبلغاً يغطّي البضاعة الجاهزة."
+          : customer.customerId == null
+            ? "اربط عميلاً بحدّ ائتمانٍ لبيعٍ آجل، أو أَضِف توصيلاً (التحصيل عند الاستلام)، أو أَكمل المبلغ الآن."
+            : !customerDeferredEligible
+              ? "حدّ ائتمان العميل صفر — أَكمل المبلغ نقداً، أو راجع المدير لرفع الحدّ، أو أَضِف توصيلاً."
+              : "أَكمل المبلغ الآن، أو أَضِف توصيلاً للتحصيل عند الاستلام."
+      );
       return;
     }
 
@@ -2832,6 +2860,7 @@ export default function Reception() {
         deferred={deferred}
         setDeferred={setDeferred}
         deferredAvailable={deferredAvailable}
+        deferredDisabledReason={deferredDisabledReason}
         deferredCustomerName={customer.customerId != null ? customer.name : null}
         method={method}
         setMethod={setMethod}

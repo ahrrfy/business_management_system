@@ -25,6 +25,10 @@ function finiteNumber(value: unknown): number {
 /**
  * يحوّل لقطة المخزون الخادمية إلى دلالة عرض واحدة لكل مسارات إضافة سطر الفاتورة.
  * `stockBase` فعلي، و`availableBase` وحده يحدّد البيع؛ والخدمة لا تُوسَم نافذةً أبداً.
+ *
+ * ⚠ العقد المحفوظ: لقطةُ نسخٍ قديمة (`availableBase` غائب و`stockBase` قديم) تُعامَل مجهولةً
+ * حتى يصل التحديث الحيّ من `posList`/الاحتياط — يُخفي الرصيدَ الخطأ من المستخدم في يوم النسخ
+ * (اختبار stockAvailability.test.ts:61). فحصُ ذلك لا يتحمّل رخاءً هنا.
  */
 export function getLineStockState(line: InvoiceLine, demandBase: number): LineStockState {
   const isService = line.isService === true;

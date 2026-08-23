@@ -118,8 +118,8 @@ export function TotalsPanel({
             <Button
               type="button"
               variant="outline"
-              size="icon"
-              className="h-7 w-7 text-xs font-bold text-primary"
+              size="sm"
+              className="h-7 min-w-11 px-1.5 text-xs font-bold text-primary"
               onClick={() =>
                 dispatch({
                   type: "SET_FIELD",
@@ -127,9 +127,15 @@ export function TotalsPanel({
                   value: state.globalDiscountType === "percent" ? "amount" : "percent",
                 })
               }
-              aria-label="تبديل نوع الخصم"
+              // ٢٣/٨ (بلاغ Codex P1 على PR #733): كان «د.ع» ثابتاً على شاشات الشراء التي قد تكون
+              // بالدولار ⇒ الموظّف يظنّ الخصم بالدينار فيُدخل قيمةً ديناريّة تفسد ذمّة المورّد
+              // وتكلفة المخزون. العملة الآن مشتقّةٌ من `state.currency` — عين ما يسري على الوعاء.
+              title={`اضغط لتبديل بين نسبة مئوية (%) ومبلغ ثابت (${currSym})`}
+              aria-label={state.globalDiscountType === "percent"
+                ? "الخصم نسبةٌ مئويّة — اضغط للتحويل إلى مبلغ"
+                : `الخصم مبلغٌ بالـ${currSym} — اضغط للتحويل إلى نسبة`}
             >
-              {state.globalDiscountType === "percent" ? "%" : "#"}
+              {state.globalDiscountType === "percent" ? "%" : currSym}
             </Button>
           </div>
           {Number(overrideDiscountAmount ?? t.globalDiscAmt) > 0 && (

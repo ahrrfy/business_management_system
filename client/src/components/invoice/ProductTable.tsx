@@ -325,7 +325,17 @@ export function ProductTable({
                 <td colSpan={colCount} className="py-12 text-center text-muted-foreground">
                   <div className="opacity-50 flex justify-center"><Package aria-hidden size={40} /></div>
                   <div className="mt-2 text-sm font-semibold">لا توجد منتجات في السلة</div>
-                  <div className="mx-auto mt-1 max-w-xs text-xs">ابحث بالاسم أو رمز SKU أو امسح الباركود لإضافة منتجات</div>
+                  {/* ٢٣/٨ (بلاغ فحص UX): كان النصّ عاماً يكرّر شريط البحث فوقه. صار دعوةَ فعلٍ محدَّدةً
+                      بأيقونتَي لوحة المفاتيح والحزمة كي يعرف الموظّف طريقين واضحَين. */}
+                  <div className="mx-auto mt-2 flex max-w-md items-center justify-center gap-3 text-xs">
+                    <span className="inline-flex items-center gap-1">
+                      اضغط <kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-bold">F2</kbd> للبحث السريع
+                    </span>
+                    <span className="text-muted-foreground/50">·</span>
+                    <span className="inline-flex items-center gap-1">
+                      أو <span className="font-bold text-primary">إضافة متعدّدة</span> لاختيار مجموعة
+                    </span>
+                  </div>
                 </td>
               </tr>
             )}
