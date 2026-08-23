@@ -974,10 +974,10 @@ function RelatedProductStrip({ products, onSelect }: { products: RelatedProduct[
   const move = (direction: -1 | 1) => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    scroller.scrollBy({ left: direction * Math.max(180, Math.floor(scroller.clientWidth * 0.72)), behavior: "smooth" });
+    scroller.scrollBy({ left: direction * Math.max(240, Math.floor(scroller.clientWidth * 0.86)), behavior: "smooth" });
   };
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest("button")) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
     const scroller = scrollerRef.current;
     if (!scroller) return;
     dragRef.current = { active: true, startX: event.clientX, startScroll: scroller.scrollLeft, moved: false };
@@ -988,6 +988,7 @@ function RelatedProductStrip({ products, onSelect }: { products: RelatedProduct[
     if (!scroller || !dragRef.current.active) return;
     const delta = event.clientX - dragRef.current.startX;
     if (Math.abs(delta) > 6) dragRef.current.moved = true;
+    if (dragRef.current.moved) event.preventDefault();
     scroller.scrollLeft = dragRef.current.startScroll - delta;
   };
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1009,7 +1010,7 @@ function RelatedProductStrip({ products, onSelect }: { products: RelatedProduct[
       <div
         ref={scrollerRef}
         dir="rtl"
-        className="flex min-w-0 cursor-grab touch-pan-y scroll-smooth gap-3 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
+        className="flex min-w-0 cursor-grab touch-pan-x select-none snap-x snap-mandatory scroll-smooth gap-3 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -1018,7 +1019,7 @@ function RelatedProductStrip({ products, onSelect }: { products: RelatedProduct[
         aria-label="منتجات مقترحة — اسحب لاكتشاف المزيد"
       >
         {products.map((rp) => (
-          <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+          <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 snap-start flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
             <button type="button" onClick={() => onSelect(rp.productId)} className="text-right">
               <ProductImage url={rp.imageUrl} alt={rp.productName} className="store-product-media aspect-square w-full" />
             </button>
