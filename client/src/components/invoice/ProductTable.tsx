@@ -9,7 +9,7 @@
  * فقط باسم «حصة الضريبة» بجانب «الإجمالي»؛ خلاف ذلك يُخفى العمود تماماً.
  */
 import type { Dispatch } from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Gift, Package, ShoppingCart, X } from "lucide-react";
 import { priceDecimalsFor } from "@shared/moneyPrecision";
 import { Button } from "@/components/ui/button";
@@ -230,22 +230,22 @@ export function ProductTable({
 
   // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك على شاشات الكاشيرات — طُبِّق على فاتورة
   // البيع المتقدّمة والشراء وعرض السعر ومرتجع الشراء: كلّها تستهلك ProductTable). لا مفهومَ
-  // «مختار» هنا (كلّ سطرٍ قابلٌ للتحرير المباشر) ⇒ نتّبع **الطول** ونحرّك آخر صفٍّ في مجال الرؤية
-  // بعد كلّ إضافة. تكرارُ نفس المنتج لا يغيّر الطول (يزيد الكمّية على السطر الأصل) ⇒ لا تمرير
-  // بلا داع، وهو ما يريده الكاشير: يرى المنتج «الجديد» لا كلّ تعديل كمّية. `block: nearest` يُبقي
-  // القفزة ناعمةً وقابلةً للاحتواء (لا يقطع الكاشير عن تحرير سطرٍ يستعرضه أعلى الجدول).
+  // «مختار» هنا (كلّ سطرٍ قابلٌ للتحرير المباشر) ⇒ نحرّك آخر صفٍّ في مجال الرؤية عند فعل الإضافة.
+  //
+  // ٢٣/٨ (Codex P2): الاعتماد على `items.length` كان يشغّل التمرير عند تحميل مستندٍ قائم
+  // (PurchaseEdit / تصحيح فاتورة يرسلان REPLACE_STATE بأسطرٍ كثيرة) فيقفز الجدولُ للأسفل
+  // ويُخفي الأوائل. الحلّ: عدّاد `addTick` داخليّ يزيد **فقط** عند ADD_ITEM من ProductSearchBar
+  // الداخليّ (بحثٌ فعليٌّ من الكاشير). REPLACE_STATE والحذف وتعديل الكمّية لا يحرّكونه.
+  // BulkPicker يظلّ خارج التمرير التلقائي (يقفلها الكاشير بيديه ويرى النتيجة فوراً).
   const lastRowRef = useRef<HTMLTableRowElement | null>(null);
-  const prevItemsLen = useRef(items.length);
+  const [addTick, setAddTick] = useState(0);
   useEffect(() => {
-    if (items.length > prevItemsLen.current) {
-      const raf = requestAnimationFrame(() => {
-        lastRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-      });
-      prevItemsLen.current = items.length;
-      return () => cancelAnimationFrame(raf);
-    }
-    prevItemsLen.current = items.length;
-  }, [items.length]);
+    if (addTick === 0) return;
+    const raf = requestAnimationFrame(() => {
+      lastRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [addTick]);
 
   return (
     <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-xl border bg-card print:overflow-visible">
@@ -255,7 +255,7 @@ export function ProductTable({
             invoiceType={invoiceType}
             branchId={branchId}
             tier={tier}
-            onAddProduct={(line) => dispatch({ type: "ADD_ITEM", item: line })}
+            onAddProduct={(line) => { dispatch({ type: "ADD_ITEM", item: line }); setAddTick((t) => t + 1); }}
             onNotify={onNotify}
           />
         </div>

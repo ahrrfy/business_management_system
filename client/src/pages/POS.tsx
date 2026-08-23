@@ -451,6 +451,10 @@ export default function POS() {
   // ── Multi-tab State ──────────────────────────────────────────────────────
   const [tabs,     setTabs]     = useState<POSTab[]>([createTab(1, "طلب 1")]);
   const [activeId, setActiveId] = useState(1);
+  // ٢٣/٨ (Codex P2) — عدّاد إضافة صريح: يزيد فقط عند `addRow` (شامل رفع الكمية على السطر الأصل).
+  // لا يزيد عند حذف/تعديل كمية/تبديل تبويب ⇒ لا يقفز الجدول من دون فعل الكاشير، وإعادة مسح
+  // السطر المحدَّد نفسه تشغّل التمرير أيضاً (بلاغ Codex «rescan لا يحرّك التأثير»).
+  const [addTick, setAddTick] = useState(0);
 
   // مرجع حيّ للتبويب النشط: تستهدفه كل تعديلات السلّة/الطلب بدل activeId المُغلَق عليه، كي
   // تصيب التبويب الصحيح حتى حين تُستدعى من إغلاق قديم (مسح الباركود/HID). مُحدَّث في كل رسم.
@@ -776,6 +780,8 @@ export default function POS() {
       return [...prev, { row: currentRow, qty: 1 }];
     });
     setSelId(currentRow.productUnitId);
+    // ٢٣/٨ (Codex P2): اِرفع عدّاد الإضافة — يُشغّل التمرير حتى لو أُعيد مسح السطر المحدَّد نفسه.
+    setAddTick((t) => t + 1);
     setSearch(""); setShowDrop(false);
     searchRef.current?.focus();
   }
@@ -1840,6 +1846,7 @@ export default function POS() {
           branchName={activeBranchName}
           openingActive={openingActive}
           openingEndsYmd={openingModeQ.data?.endsAtYmd ?? null}
+          addTick={addTick}
           cart={cart} total={total}
           selId={activeTab.selId} setSelId={setSelId}
           changeQty={changeQty} removeRow={removeRow}
@@ -2211,16 +2218,23 @@ interface CartPanelProps {
   /** «وضع الافتتاح» فعّال الآن (لافتة + وسم «غير مجرود» بدل «نافذ» المخيف). */
   openingActive: boolean;
   openingEndsYmd: string | null;
+  /** ٢٣/٨ (Codex P2) — عدّاد إضافةٍ صريحٌ من الأب: يشغّل التمريرَ إلى السطر المُدرَج/المزاد
+   *  فقط عند فعل الإضافة (لا عند حذف/تعديل كمّية/تبديل تبويب). */
+  addTick: number;
 }
 
-function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd }: CartPanelProps) {
+function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd, addTick }: CartPanelProps) {
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
 
   // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك «لا يظهر المنتج المضاف حتى أنزل يدوياً»):
   // `addRow` يضبط selId على المنتج المُدرَج/المزاد كمّياً؛ نحرك السلّة كي يظهر ذلك السطر في مجال
   // الرؤية. المسح المتوالي أو النقر لا يجبر الكاشير على التمرير. `block: nearest` يمنع القفزات
   // العدوانيّة (إن كان السطر ظاهراً أصلاً لا يتحرّك). `behavior: smooth` يجعل الحركة ناعمةً
-  // فيتتبّعها الكاشير بصرياً. عند فراغ selId (سلّةٌ فارغة/تفريغ) لا نفعل شيئاً.
+  // فيتتبّعها الكاشير بصرياً.
+  //
+  // ٢٣/٨ (Codex P2): الاعتماد على `selId + cart.length` يشغّل التمرير عند حذف صفٍّ آخر (يعيدنا
+  // إلى السطر المحدَّد ولو كان بعيداً)، ولا يشغّله عند إعادة مسح السطر المحدَّد نفسه (لا selId
+  // يتغيّر ولا الطول). العدّادُ الصريحُ `addTick` يعالج الحالتين: يزيد **فقط** عند فعل الإضافة.
   const selectedRowRef = useRef<HTMLTableRowElement | null>(null);
   useEffect(() => {
     if (selId == null) return;
@@ -2229,7 +2243,8 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
       selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
     });
     return () => cancelAnimationFrame(raf);
-  }, [selId, cart.length]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTick]);
   const TH: React.CSSProperties = { padding: "9px 10px", fontWeight: 700, fontSize: 12.5, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
   const TD: React.CSSProperties = { padding: "10px 8px", textAlign: "center", fontSize: 14 };
 
