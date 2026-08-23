@@ -74,6 +74,18 @@ describe("productContentAi", () => {
     ).toBe(true);
   });
 
+  it("does not treat free-form context as evidence for a partial claim", () => {
+    const draft = aiProductDraftSchema.parse({
+      ...validDraft,
+      claims: [{ text: "دفتر مصنوع من الذهب", evidenceKeys: ["productType"] }],
+    });
+    const result = validateAiProductDraft(draft, facts);
+    expect(result.ok).toBe(false);
+    expect(
+      result.blockers.some((item) => item.includes("لا يتطابق نصياً")),
+    ).toBe(true);
+  });
+
   it("blocks numeric tokens that are not in verified facts", () => {
     const draft = aiProductDraftSchema.parse({
       ...validDraft,

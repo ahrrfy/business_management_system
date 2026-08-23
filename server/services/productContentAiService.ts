@@ -1,7 +1,11 @@
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { getAiStudioRuntime } from "./imageStudioSettingsService";
-import { runGuardedImageStudioCall } from "./imageStudioUsageGuard";
+import {
+  ImageStudioGuardError,
+  imageStudioGuardErrorMessageAr,
+  runGuardedImageStudioCall,
+} from "./imageStudioUsageGuard";
 import {
   aiProductDraftSchema,
   canonicalJson,
@@ -16,7 +20,7 @@ const GEMINI_API_BASE = (
   "https://generativelanguage.googleapis.com/v1beta"
 ).replace(/\/+$/, "");
 const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
-const PROMPT_VERSION = "product-content-ar-v1";
+const PROMPT_VERSION = "product-content-ar-v2";
 const MAX_RESPONSE_BYTES = 512 * 1024;
 const TIMEOUT_MS = 25_000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -313,10 +317,17 @@ export async function generateProductContentDraft(
           });
         }
         const code =
-          response.status === 429 ? "TOO_MANY_REQUESTS" : "BAD_REQUEST";
+          response.status === 429
+            ? "TOO_MANY_REQUESTS"
+            : response.status >= 500
+              ? "INTERNAL_SERVER_ERROR"
+              : "BAD_REQUEST";
         throw new TRPCError({
           code,
-          message: detail || "فشل توليد مسودة محتوى المنتج.",
+          message:
+            code === "INTERNAL_SERVER_ERROR"
+              ? "تعذر الوصول إلى مزود الذكاء الاصطناعي مؤقتاً."
+              : detail || "فشل توليد مسودة محتوى المنتج.",
         });
       }
 
@@ -368,6 +379,17 @@ export async function generateProductContentDraft(
     draftCache.set(cacheKey, { result, expiresAt: Date.now() + CACHE_TTL_MS });
     pruneDraftCache();
     return result;
+  } catch (error) {
+    if (error instanceof ImageStudioGuardError) {
+      throw new TRPCError({
+        code:
+          error.kind === "DAILY_BUDGET_EXHAUSTED"
+            ? "PRECONDITION_FAILED"
+            : "TOO_MANY_REQUESTS",
+        message: imageStudioGuardErrorMessageAr(error.kind),
+      });
+    }
+    throw error;
   } finally {
     inFlightDrafts.delete(cacheKey);
   }

@@ -18,6 +18,15 @@ export function describeAiError(error: unknown): AiErrorPresentation {
 
   switch (code) {
     case "PRECONDITION_FAILED":
+      if (candidate.message?.includes("سقف الاستخدام اليومي")) {
+        return {
+          title: "بلغ سقف الاستخدام اليومي",
+          message:
+            "توقف التوليد لحماية الميزانية. راجع المدير أو انتظر دورة الاستخدام التالية.",
+          action: "لم يتم تغيير المنتج.",
+          retryable: false,
+        };
+      }
       return {
         title: "مساعد الذكاء الاصطناعي غير مفعّل",
         message:
