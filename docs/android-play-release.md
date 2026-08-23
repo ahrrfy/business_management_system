@@ -22,7 +22,8 @@
 
 `versionName` (مثل `1.0.0`) يبقى كما هو ما لم تُرِد إصداراً معلَناً جديداً. تحقّق محلياً: `pnpm check:mobile-release`.
 
-> الإصدار الحاليّ على `main`: **versionCode 8 · versionName 1.0.0**.
+> نقطةٌ زمنية (لا تُعمَّم): آخر إصدارٍ مبنيّ حتى ٢٣/٨/٢٠٢٦ = **versionCode 8 · versionName 1.0.0** (#722).
+> الرقم التالي = الأعلى المرفوع إلى Play + 1. في بقيّة الدليل `N` = رقم إصدارك الحاليّ.
 
 ---
 
@@ -32,21 +33,28 @@
 تشغيلٌ يدويّ `workflow_dispatch`). يشترط أوّلاً أن تكون فحوص `main` كلّها خضراء (CI + Security Audit +
 Native Android CI) على نفس الـSHA الجاري إصداره.
 
-**التشغيل — أحد طريقين:**
+**التشغيل والمتابعة — التقط رقم الـrun ولا تعتمد على «أحدث run»:**
 
-- **الطرفية:**
-  ```bash
-  gh workflow run android-release.yml --ref main
-  ```
-- **الويب:** GitHub → **Actions** → «Native Android release artifacts» → **Run workflow** → الفرع `main` → Run.
-
-المتابعة:
 ```bash
-gh run watch "$(gh run list --workflow=android-release.yml --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
+git fetch origin main
+SHA=$(git rev-parse origin/main)
+gh workflow run android-release.yml --ref main
+# انتظر ظهور الـrun ثم التقط رقمه بمطابقة SHA الحاليّ لـmain (أحدث run لهذا الـSHA بحدث dispatch):
+sleep 8
+RUN_ID=$(gh run list --workflow=android-release.yml --event=workflow_dispatch \
+  --json databaseId,headSha,createdAt \
+  --jq "map(select(.headSha==\"$SHA\")) | sort_by(.createdAt) | last | .databaseId")
+echo "RUN_ID=$RUN_ID  SHA=$SHA"
+gh run watch "$RUN_ID" --exit-status
 ```
 
+- **بديلٌ عبر الويب:** GitHub → **Actions** → «Native Android release artifacts» → **Run workflow** → الفرع `main` → Run، ثم افتح الـrun المُنشأ وسجّل رقمه.
+- ⚠️ **لا تستعمل `gh run list --limit 1` وحده** لتحديد الـrun: قد يلتقط بناءً سابقاً إن تأخّر ظهور الجديد أو أُطلق إصدارٌ آخر — طابِق `headSha` كما أعلاه.
+
 الـworkflow يبني ويوقّع ويتحقّق (الحزمة + `versionCode` + نقطة النهاية `https://srv1548487.hstgr.cloud`
-+ بصمة مفتاح الرفع `ANDROID_UPLOAD_SIGNING_SHA256`)، ثم يمسح بيانات التوقيع.
++ بصمة مفتاح الرفع `ANDROID_UPLOAD_SIGNING_SHA256`)، ثم يمسح بيانات التوقيع. **`release-gate` يشترط أن
+يكون SHA الجاري إصداره أخضرَ بالكامل؛ إن دُمج PR آخر أثناء ذلك تحرّك `main` وقد يفشل البابُ ⇒ أعِد
+الالتقاط والتشغيل على الـSHA الجديد.**
 
 ---
 
@@ -57,13 +65,18 @@ gh run watch "$(gh run list --workflow=android-release.yml --limit 1 --json data
 | الملف | الاستعمال |
 |---|---|
 | `app-prod-release.aab` | **هذا ما يُرفَع إلى Play** |
-| `app-prod-release.apk` | تجربةٌ مباشرة على جهاز (اختياريّ) |
+| `app-prod-release.apk` | تجربةٌ مباشرة على **تثبيتٍ نظيف فقط** (اختياريّ) — انظر التحذير أدناه |
 | `mapping.txt` | خرائط R8 لفكّ ترميز تقارير الأعطال — ارفعها لكلّ إصدار |
 | `native-android-SHA256SUMS.txt` | بصمات للتحقّق من السلامة |
 
-**التنزيل:**
+> ⚠️ **الـAPK المُنتَج موقَّعٌ بمفتاح الرفع**، بينما Play يُعيد توقيع البناء الموزَّع بمفتاح توقيع
+> التطبيق (Play App Signing). لذلك **لا يُثبَّت هذا الـAPK فوق بناء Play المثبَّت** (اختلاف الشهادة لنفس
+> applicationId يرفضه أندرويد) — صالحٌ للتثبيت النظيف فقط (أو بعد إزالة بناء Play وفقدِ بياناته).
+> **اختبار التحديث الطبيعيّ يكون ببناء Play المُوصَّل، لا بهذا الـAPK.**
+
+**التنزيل** (بنفس `RUN_ID` و`SHA` المُلتقطَين في §٢ — لا تعتمد على «أحدث run»):
 ```bash
-gh run download "$(gh run list --workflow=android-release.yml --limit 1 --json databaseId --jq '.[0].databaseId')" -n "super-alarabiya-native-<sha>" -D ./release-artifacts
+gh run download "$RUN_ID" -n "super-alarabiya-native-$SHA" -D ./release-artifacts
 ```
 (أو من صفحة الـrun في Actions → قسم Artifacts.)
 
@@ -76,7 +89,7 @@ gh run download "$(gh run list --workflow=android-release.yml --limit 1 --json d
 3. **Create new release** (أو «Edit release» إن كان مسودّة قائمة).
 4. في **App bundles**: **Upload** ثم اختر `app-prod-release.aab`. انتظر معالجة Google.
    - إن ظهر طلبُ تأكيد **Play App Signing** لأوّل مرّة: اقبل الخيار الافتراضي (Google يدير مفتاح التوزيع، وأنت ترفع بمفتاح الرفع). يحدث مرّةً واحدة.
-5. **Release name**: يملؤه Play تلقائياً بـ`8 (1.0.0)` — اتركه أو سمِّه بوضوح.
+5. **Release name**: يملؤه Play تلقائياً بـ`N (1.0.0)` (رقم إصدارك) — اتركه أو سمِّه بوضوح.
 6. **Release notes** (بين وسمَي اللغة): لخّص التغيير للمختبِرين، مثال:
    ```
    <ar-IQ>
@@ -101,7 +114,7 @@ gh run download "$(gh run list --workflow=android-release.yml --limit 1 --json d
 
 ## ٦. تحقّقٌ بعد الرفع
 
-- **Play Console → Internal testing**: الإصدار بحالة **Available to testers** وبـ`versionCode 8`.
+- **Play Console → Internal testing**: الإصدار بحالة **Available to testers** وبـ`versionCode` الجديد (`N`).
 - على جهاز مختبِر: بعد التحديث، افتح **المنتجات** وابحث عن منتجٍ له بديلٌ حقيقيّ ⇒ تظهر شارة **«ماركة مختلفة»** تحت اسم الصنف.
 
 ---
@@ -110,7 +123,7 @@ gh run download "$(gh run list --workflow=android-release.yml --limit 1 --json d
 
 | العطل | السبب / العلاج |
 |---|---|
-| «Version code 8 has already been used» | ارفع `versionCode` (§١) وأعد البناء. |
+| «Version code N has already been used» | ارفع `versionCode` (§١) وأعد البناء. |
 | فشل `release-gate` في الـworkflow | فحوص `main` ليست خضراء بعد على نفس الـSHA — انتظر اكتمالها ثم أعد التشغيل. |
 | `Unexpected production version contract` أثناء البناء | تأكيد §١-٢ لا يطابق الرقم الجديد — طابقهما ثم `pnpm check:mobile-release`. |
 | الأثر غير موجود للتنزيل | مرّت ١٤ يوماً (انتهت مدّة الاحتفاظ) — أعد تشغيل الـworkflow. |
