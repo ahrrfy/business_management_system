@@ -1009,7 +1009,7 @@ function RelatedProductStrip({
   };
 
   return (
-    <div className="mt-5 min-w-0">
+    <div className="animate__animated animate__fadeIn mt-5 min-w-0">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
@@ -2223,7 +2223,7 @@ export default function Storefront() {
       {/* تفاصيل المنتج (ورقة سفلية) */}
       {selectedId != null && (
         <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/50 backdrop-blur-sm sm:items-center sm:p-4" onClick={() => setSelectedId(null)}>
-          <div className="flex max-h-[min(780px,calc(100dvh-2rem))] w-[calc(100%-1rem)] max-w-xl flex-col overflow-hidden overscroll-contain rounded-2xl bg-white p-3 shadow-2xl dark:bg-slate-900 sm:w-full sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="animate__animated animate__fadeInUp animate__faster flex max-h-[min(780px,calc(100dvh-2rem))] w-[calc(100%-1rem)] max-w-xl flex-col overflow-hidden overscroll-contain rounded-2xl bg-white p-3 shadow-2xl dark:bg-slate-900 sm:w-full sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-extrabold text-slate-500 dark:text-slate-400">تفاصيل المنتج</h2>
               <div className="flex items-center gap-1.5">
