@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "26335207875",
+    "project_id": "store-alarabiya",
+    "storage_bucket": "store-alarabiya.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:26335207875:android:cfc9cbdd8bc049dce8dd76",
+        "android_client_info": {
+          "package_name": "online.alarabiya.customerstore"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB9OcMyTW1t6ja7P_LIMIC2BgSeLoIUOwY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,443 @@
+import { useEffect, useState } from "react";
+
+import type { Product } from "@/shared/storefront";
+
+const API_BASE = "https://alarabiya.online/api/trpc";
+const ASSET_BASE = "https://alarabiya.online";
+const REQUEST_TIMEOUT_MS = 10_000;
+const PUBLIC_QUERY_RETRIES = 1;
+const responseCache = new Map<string, { expiresAt: number; value: unknown }>();
+
+type QueryOptions = {
+  signal?: AbortSignal;
+  retries?: number;
+  cacheTtlMs?: number;
+};
+
+export type StorefrontCategory = { id: number; name: string; productCount: number; availableCount: number };
+export type StorefrontOffer = {
+  id: number;
+  name: string;
+  type: "PERCENT" | "AMOUNT";
+  discountPercent: string;
+  discountAmount: string;
+  scope: "ALL" | "CATEGORIES" | "PRODUCTS";
+};
+export type StorefrontBanner = {
+  id: number;
+  title: string;
+  subtitle: string | null;
+  imageUrl: string | null;
+  mobileImageUrl: string | null;
+  renderMode: "SMART_CROP" | "PRESERVE_FULL" | "LAYERED";
+  focusX: number;
+  focusY: number;
+  ctaLabel: string | null;
+  ctaUrl: string | null;
+  placement: "HERO" | "SIDE" | "INLINE";
+};
+export type StorefrontSettings = {
+  isOpen: boolean;
+  fulfillmentBranchName: string | null;
+  configurationReady: boolean;
+  announcement: string | null;
+  whatsappNumber: string | null;
+  freeShippingThreshold: string | null;
+  orderingEnabled: boolean;
+};
+export type OnlineOrderTracking = {
+  orderNumber: string;
+  status: string;
+  subtotal: string;
+  deliveryFee: string;
+  total: string;
+  governorate: string | null;
+  createdAt: string;
+  items: Array<{ productName: string; unitName: string; quantity: string; unitPrice: string; total: string }>;
+};
+export type StorefrontOrderLine = { productUnitId: number; quantity: number; expectedUnitPrice?: string };
+export type StorefrontOrderQuote = {
+  lines: Array<{ productUnitId: number; quantity: number; retailUnitPrice: string; discountPerUnit: string; unitPrice: string; lineTotal: string }>;
+  subtotal: string;
+  deliveryFee: string;
+  total: string;
+};
+export type StorefrontOrderResult = { orderId: number; orderNumber: string; reservationExpiresAt: string; branchId: number; subtotal: string; deliveryFee: string; total: string; itemCount: number; idempotentReplay?: boolean };
+export type StorefrontPushDeviceInput = {
+  expoPushToken: string;
+  marketingOptIn: boolean;
+  transactionalOptIn: boolean;
+  platform: "IOS" | "ANDROID";
+  appVersion: string;
+};
+export type StorefrontCustomerSession = {
+  token: string;
+  expiresInSeconds: number;
+  customer: { id: number; name: string; phone: string };
+};
+export type StorefrontCustomerBenefits = {
+  customer: { id: number; name: string; phone: string };
+  loyalty: null | {
+    programName: string;
+    pointsBalance: string;
+    pointsPerIqd: string;
+    iqdDiscountPerPoint: string;
+    minRedeemPoints: number;
+    maxRedeemPercent: number;
+    ledger: Array<{ entryType: string; pointsDelta: string; balanceAfter: string; note: string | null; createdAt: string }>;
+  };
+  coupons: Array<{ id: number; code: string; name: string; validTo: string | null }>;
+};
+export type StorefrontProductReviews = {
+  summary: { count: number; average: number };
+  items: Array<{ id: number; rating: number; comment: string; createdAt: string }>;
+};
+export type StorefrontWishlistShare = {
+  token: string;
+  expiresAt: string;
+  productCount: number;
+};
+export type StorefrontSharedWishlist = {
+  expiresAt: string;
+  items: ApiProduct[];
+};
+export type CreateStorefrontOrderInput = {
+  customerName: string;
+  customerPhone: string;
+  governorate: string;
+  addressText: string;
+  notes?: string;
+  lines: StorefrontOrderLine[];
+  expectedGrandTotal: string;
+  clientRequestId: string;
+  turnstileToken: string;
+};
+
+type ApiProduct = {
+  productId: number;
+  productUnitId: number;
+  productName: string;
+  category: string | null;
+  categoryId: number | null;
+  unitName: string;
+  price: string | null;
+  salePrice: string | null;
+  inStock: boolean;
+  imageUrl: string | null;
+  brand?: string | null;
+  promotionName?: string | null;
+  soldCount?: number;
+  stockLeft?: number | null;
+  isBundle?: boolean;
+};
+
+type CatalogResponse = { items: ApiProduct[]; hasMore: boolean; nextCursor: number | null };
+
+function iconForCategory(category: string | null): Product["icon"] {
+  const text = (category ?? "").toLowerCase();
+  if (text.includes("قرطاسية")) return "edit-note";
+  if (text.includes("ملازم") || text.includes("كتب")) return "auto-stories";
+  if (text.includes("هدايا")) return "card-giftcard";
+  return "menu-book";
+}
+
+function accentForCategory(category: string | null): string {
+  const text = (category ?? "").toLowerCase();
+  if (text.includes("قرطاسية")) return "#E5EEF1";
+  if (text.includes("هدايا")) return "#EEE3F2";
+  if (text.includes("ملازم") || text.includes("كتب")) return "#E8F0D8";
+  return "#F6E8CE";
+}
+
+function imageUrl(value: string | null) {
+  if (!value) return null;
+  return value.startsWith("/") ? `${ASSET_BASE}${value}` : value;
+}
+
+function toProduct(item: ApiProduct): Product {
+  return {
+    id: String(item.productId),
+    productId: item.productId,
+    productUnitId: item.productUnitId,
+    title: item.productName,
+    subtitle: `${item.category ?? "منتجات المكتبة"} • ${item.unitName}`,
+    categoryId: String(item.categoryId ?? "other"),
+    description: "تفاصيل المنتج والسعر الحاليان واردان مباشرةً من كتالوج مكتبة العربية.",
+    icon: iconForCategory(item.category),
+    accent: accentForCategory(item.category),
+    availability: item.inStock ? "متوفر" : "متوفر قريباً",
+    price: item.price,
+    salePrice: item.salePrice,
+    imageUrl: imageUrl(item.imageUrl),
+    brand: item.brand ?? null,
+    promotionName: item.promotionName ?? null,
+    soldCount: Number(item.soldCount ?? 0),
+    stockLeft: item.stockLeft ?? null,
+    isBundle: item.isBundle ?? false,
+  };
+}
+
+export type CatalogDisplayState = "LOADING" | "ERROR" | "READY" | "EMPTY";
+
+/** لا تعلن الواجهة فراغ الكتالوج قبل اكتمال طلبه بنجاح. */
+export function catalogDisplayState(products: readonly Product[], loading: boolean, error: string | null): CatalogDisplayState {
+  if (loading) return "LOADING";
+  if (error) return "ERROR";
+  return products.length > 0 ? "READY" : "EMPTY";
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetry(error: unknown) {
+  return error instanceof Error && error.name !== "AbortError";
+}
+
+async function storefrontQuery<T>(procedure: string, input: unknown, options: QueryOptions = {}): Promise<T> {
+  const cacheKey = `${procedure}:${JSON.stringify(input)}`;
+  const cached = responseCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+
+  const retries = options.retries ?? PUBLIC_QUERY_RETRIES;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const abortExternal = () => controller.abort();
+    options.signal?.addEventListener("abort", abortExternal, { once: true });
+    try {
+      const encoded = encodeURIComponent(JSON.stringify({ json: input }));
+      const response = await fetch(`${API_BASE}/${procedure}?input=${encoded}`, { headers: { Accept: "application/json" }, signal: controller.signal });
+      if (!response.ok) {
+        const error = new Error(`فشل الاتصال بالمتجر (${response.status})`);
+        if (response.status !== 408 && response.status !== 429 && response.status < 500) throw error;
+        lastError = error;
+      } else {
+        const payload = await response.json() as { result?: { data?: { json?: T } } };
+        const value = payload.result?.data?.json;
+        if (value === undefined) throw new Error("استجابة كتالوج غير صالحة");
+        if (options.cacheTtlMs && options.cacheTtlMs > 0) responseCache.set(cacheKey, { value, expiresAt: Date.now() + options.cacheTtlMs });
+        return value;
+      }
+    } catch (error) {
+      lastError = error;
+      if (!shouldRetry(error)) throw error;
+    } finally {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", abortExternal);
+    }
+    if (attempt < retries) await delay(280 * (attempt + 1));
+  }
+  throw lastError instanceof Error ? lastError : new Error("تعذر الاتصال بالمتجر");
+}
+
+async function storefrontMutation<T>(procedure: string, input: unknown): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${API_BASE}/${procedure}`, {
+      method: "POST",
+      headers: storefrontMutationHeaders(),
+      body: JSON.stringify({ json: input }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`تعذر إرسال الطلب (${response.status})`);
+    const payload = await response.json() as { result?: { data?: { json?: T } } };
+    const value = payload.result?.data?.json;
+    if (value === undefined) throw new Error("استجابة الطلب غير صالحة");
+    return value;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** برهان تعريف ضيق للتطبيق الأصلي؛ يعبر حارس CSRF من دون إضعاف طلبات الويب العامة. */
+export function storefrontMutationHeaders(platform: string = "android"): Record<string, string> {
+  return {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    ...(platform === "web" ? { "x-erp-csrf": "1" } : { "x-alrueya-client": "android-native" }),
+  };
+}
+
+export function useStorefrontCatalog(categoryId?: number, search?: string, options: { enabled?: boolean; limit?: number } = {}) {
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshIndex, setRefreshIndex] = useState(0);
+  const enabled = options.enabled ?? true;
+  const limit = options.limit ?? 16;
+  useEffect(() => {
+    if (!enabled) {
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    let active = true;
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    storefrontQuery<CatalogResponse>("storefront.catalog", { limit, availability: "IN_STOCK", categoryId: categoryId ?? undefined, search: search?.trim() || undefined }, { signal: controller.signal, cacheTtlMs: 30_000 })
+      .then((data) => { if (active) setProducts(data.items.map(toProduct)); })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "تعذر تحميل المنتجات"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; controller.abort(); };
+  }, [categoryId, enabled, limit, refreshIndex, search]);
+  return { products, loading, error, refresh: () => setRefreshIndex((current) => current + 1) };
+}
+
+export function useStorefrontProduct(productId?: number) {
+  const [product, setProduct] = useState<Product | null>(null);
+  const [loading, setLoading] = useState(Boolean(productId));
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!productId) {
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    const controller = new AbortController();
+    setLoading(true);
+    storefrontQuery<ApiProduct | null>("storefront.product", { productId }, { signal: controller.signal, cacheTtlMs: 60_000 })
+      .then((data) => { if (active) setProduct(data ? toProduct(data) : null); })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "تعذر تحميل المنتج"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; controller.abort(); };
+  }, [productId]);
+  return { product, loading, error };
+}
+
+export function useStorefrontCategories() {
+  const [categories, setCategories] = useState<StorefrontCategory[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    setError(null);
+    storefrontQuery<StorefrontCategory[]>("storefront.categories", null, { signal: controller.signal, cacheTtlMs: 300_000 })
+      .then((data) => { if (active) setCategories(data); })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "تعذر تحميل التصنيفات"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; controller.abort(); };
+  }, []);
+  return { categories, loading, error };
+}
+
+export function useStorefrontMarketing(enabled = true) {
+  const [banners, setBanners] = useState<StorefrontBanner[]>([]);
+  const [offers, setOffers] = useState<StorefrontOffer[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    const controller = new AbortController();
+    Promise.all([
+      storefrontQuery<StorefrontBanner[]>("storefront.banners", null, { signal: controller.signal, cacheTtlMs: 60_000 }),
+      storefrontQuery<StorefrontOffer[]>("storefront.offers", null, { signal: controller.signal, cacheTtlMs: 30_000 }),
+    ]).then(([nextBanners, nextOffers]) => {
+      if (!active) return;
+      setBanners(nextBanners);
+      setOffers(nextOffers);
+    }).catch(() => undefined).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; controller.abort(); };
+  }, [enabled]);
+  return { banners, offers, loading };
+}
+
+export function useStorefrontSettings() {
+  const [settings, setSettings] = useState<StorefrontSettings | null>(null);
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    storefrontQuery<StorefrontSettings>("storefront.settings", null, { signal: controller.signal, cacheTtlMs: 30_000 })
+      .then((value) => { if (active) setSettings(value); })
+      .catch(() => undefined);
+    return () => { active = false; controller.abort(); };
+  }, []);
+  return settings;
+}
+
+export function trackStorefrontOrder(orderNumber: string, phone: string) {
+  return storefrontQuery<OnlineOrderTracking | null>("storefront.trackOrder", { orderNumber, phone }, { retries: 0 });
+}
+
+export function quoteStorefrontOrder(governorate: string, lines: Array<{ productUnitId: number; quantity: number }>) {
+  return storefrontQuery<StorefrontOrderQuote>("storefront.quoteOrder", { governorate, lines }, { retries: 0 });
+}
+
+export function createStorefrontOrder(input: CreateStorefrontOrderInput) {
+  // الكتابة لا يعاد إرسالها تلقائياً؛ معرف المحاولة يضمن الاسترداد الآمن إن انقطعت الاستجابة.
+  return storefrontMutation<StorefrontOrderResult>("storefront.createOrder", input);
+}
+
+/** يسجّل رمز Expo Push فقط بعد موافقة العميل؛ لا يحمل هذا النداء رقم هاتف أو معلومات طلب. */
+export function registerStorefrontPushDevice(input: StorefrontPushDeviceInput) {
+  return storefrontMutation<{ ok: true; deviceId: number }>("storefront.registerPushDevice", input);
+}
+
+export function trackStorefrontPushInteraction(deliveryId: number, event: "OPEN" | "CLICK") {
+  return storefrontMutation<{ ok: true }>("storefront.trackPushInteraction", { deliveryId, event });
+}
+
+export function claimStorefrontFirebaseCustomer(input: { firebaseIdToken: string; displayName: string }) {
+  return storefrontMutation<StorefrontCustomerSession>("storefront.claimFirebaseCustomer", input);
+}
+
+export function getStorefrontCustomerBenefits(customerSessionToken: string) {
+  return storefrontQuery<StorefrontCustomerBenefits>("storefront.customerBenefits", { customerSessionToken }, { retries: 0, cacheTtlMs: 10_000 });
+}
+
+export function getStorefrontProductReviews(productId: number) {
+  return storefrontQuery<StorefrontProductReviews>("storefront.productReviews", { productId }, { retries: 1, cacheTtlMs: 30_000 });
+}
+
+export function submitStorefrontProductReview(input: { customerSessionToken: string; productId: number; rating: number; comment: string }) {
+  return storefrontMutation<{ ok: true; status: "PENDING" }>("storefront.submitProductReview", input);
+}
+
+/** ينشئ مرجعاً عاماً عابراً للمنتجات فقط، من دون هوية صاحب القائمة أو أسعاره المتغيرة. */
+export function createStorefrontWishlistShare(productIds: number[]) {
+  return storefrontMutation<StorefrontWishlistShare>("storefront.createWishlistShare", { productIds });
+}
+
+/** يجلب عناصر القائمة المشتركة من الكتالوج الحي؛ السعر والتوفر لا يخرجان من نسخة مخزنة في الرابط. */
+export async function getStorefrontWishlistShare(token: string) {
+  const result = await storefrontQuery<StorefrontSharedWishlist>("storefront.getWishlistShare", { token }, { retries: 1, cacheTtlMs: 10_000 });
+  return { ...result, products: result.items.map(toProduct) };
+}
+
+/** رابط HTTPS عام: يفتح التطبيق عبر Android App Link أو صفحة الويب الاحتياطية عند غيابه. */
+export function storefrontWishlistShareUrl(token: string) {
+  return `https://alarabiya.online/s/w/${encodeURIComponent(token)}`;
+}
+
+export function formatIqd(value: string | number | null | undefined) {
+  if (!value) return "اسأل عن السعر";
+  const number = Number(value);
+  return Number.isFinite(number) ? `${new Intl.NumberFormat("en-US").format(number)} د.ع` : "اسأل عن السعر";
+}
+
+export function formatLatinNumber(value: number | string) {
+  const number = Number(value);
+  return Number.isFinite(number) ? new Intl.NumberFormat("en-US").format(number) : String(value);
+}
+
+export function productDiscountPercent(product: Product) {
+  const original = Number(product.price);
+  const rawSalePrice = product.salePrice;
+  if (typeof rawSalePrice !== "string" || !rawSalePrice.trim()) return null;
+  const current = Number(rawSalePrice);
+  if (!Number.isFinite(original) || !Number.isFinite(current) || original <= 0 || current <= 0 || current >= original) return null;
+  const percent = Math.round(((original - current) / original) * 100);
+  return percent > 0 && percent < 100 ? percent : null;
+}
+
+/** لا يعرض سعر العرض إلا عندما يمرّ حارس الخصم الحقيقي. */
+export function storefrontDisplayPrice(product: Product) {
+  return productDiscountPercent(product) != null ? product.salePrice : product.price;
+}
