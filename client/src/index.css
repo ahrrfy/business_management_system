@@ -411,6 +411,36 @@ option:disabled {
     box-shadow: none;
   }
 
+  /* Short spatial feedback after a successful add: the product thumbnail travels
+     toward the persistent cart control without covering the checkout surface. */
+  @keyframes storefront-cart-flight {
+    0% { opacity: 0; transform: translate3d(0, 0, 0) scale(.62) rotate(0deg); }
+    14% { opacity: 1; }
+    58% { opacity: 1; transform: translate3d(calc(var(--store-cart-flight-x) * .72), calc(var(--store-cart-flight-y) * .42 - 42px), 0) scale(.78) rotate(-7deg); }
+    100% { opacity: 0; transform: translate3d(var(--store-cart-flight-x), var(--store-cart-flight-y), 0) scale(.24) rotate(10deg); }
+  }
+
+  .storefront .store-cart-flight {
+    position: fixed;
+    z-index: 60;
+    width: 44px;
+    height: 44px;
+    pointer-events: none;
+    border: 2px solid rgb(255 255 255 / 92%);
+    border-radius: .75rem;
+    background: #fff;
+    box-shadow: 0 10px 24px rgb(24 61 54 / 24%);
+    object-fit: contain;
+    animation: storefront-cart-flight 620ms cubic-bezier(.2,.72,.24,1) both;
+  }
+
+  .storefront .store-cart-flight-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--store-brand);
+  }
+
   /* Thumb-friendly CTAs: purchase controls stay comfortably tappable without
      expanding desktop cards unnecessarily. */
   @media (max-width: 639px) {
@@ -432,6 +462,11 @@ option:disabled {
     .storefront .store-product-image {
       transition: none;
       transform: none;
+    }
+
+    .storefront .store-cart-flight {
+      display: none;
+      animation: none;
     }
   }
 

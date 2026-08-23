@@ -822,7 +822,7 @@ type RowProduct = {
   /** للمنتج بدائلُ حقيقية (ماركات مختلفة تحت اسمٍ واحد) — تُوسَم البطاقة لتدعو لفتح التفاصيل. */
   hasAlternatives?: boolean;
 };
-function ProductRowCard({ p, onSelect, onAdd, recentlyAdded = false }: { p: RowProduct; onSelect: () => void; onAdd: () => void; recentlyAdded?: boolean }) {
+function ProductRowCard({ p, onSelect, onAdd, recentlyAdded = false }: { p: RowProduct; onSelect: () => void; onAdd: (event: React.MouseEvent<HTMLButtonElement>) => void; recentlyAdded?: boolean }) {
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
   const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
   return (
@@ -874,7 +874,7 @@ function ProductRow({
   icon: React.ReactNode;
   products: RowProduct[];
   onSelect: (id: number) => void;
-  onAdd: (p: RowProduct) => void;
+  onAdd: (p: RowProduct, event: React.MouseEvent<HTMLButtonElement>) => void;
   recentlyAddedId?: number | null;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -953,7 +953,7 @@ function ProductRow({
         aria-label={`${title} — اسحب لاكتشاف المزيد`}
       >
         {products.map((p) => (
-          <ProductRowCard key={p.productId} p={p} onSelect={() => onSelect(p.productId)} onAdd={() => onAdd(p)} recentlyAdded={recentlyAddedId === p.productId} />
+          <ProductRowCard key={p.productId} p={p} onSelect={() => onSelect(p.productId)} onAdd={(event) => onAdd(p, event)} recentlyAdded={recentlyAddedId === p.productId} />
         ))}
       </div>
     </section>
@@ -1202,6 +1202,13 @@ export default function Storefront() {
   const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [recentlyAddedProductId, setRecentlyAddedProductId] = useState<number | null>(null);
+  const [heartPulseTarget, setHeartPulseTarget] = useState<string | null>(null);
+  const [heartPulseNonce, setHeartPulseNonce] = useState(0);
+  const [sharePulseTarget, setSharePulseTarget] = useState<string | null>(null);
+  const [sharePulseNonce, setSharePulseNonce] = useState(0);
+  const [cartFlight, setCartFlight] = useState<{ id: number; imageUrl: string | null; left: number; top: number; deltaX: number; deltaY: number } | null>(null);
+  const cartButtonRef = useRef<HTMLButtonElement | null>(null);
+  const cartFlightIdRef = useRef(0);
   const [selectedStoreUnitId, setSelectedStoreUnitId] = useState<number | null>(null);
   const [selectedVariantId, setSelectedVariantId] = useState<number | null>(null);
   // اختيار متعدد للمتغيرات في ورقة المنتج. المفتاح هو وحدة البيع، لا معرّف المتغير،
@@ -1703,7 +1710,32 @@ export default function Storefront() {
     setCategoryId(null);
     clearRefinements();
   }
-  function toggleWishlist(productId: number) {
+  function pulseHeart(target: string) {
+    setHeartPulseTarget(target);
+    setHeartPulseNonce((value) => value + 1);
+    window.setTimeout(() => setHeartPulseTarget((current) => current === target ? null : current), 620);
+  }
+  function pulseShare(target: string) {
+    setSharePulseTarget(target);
+    setSharePulseNonce((value) => value + 1);
+    window.setTimeout(() => setSharePulseTarget((current) => current === target ? null : current), 620);
+  }
+  function triggerCartFlight(sourceElement: HTMLElement | null | undefined, imageUrl: string | null) {
+    if (typeof window === "undefined" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const source = sourceElement?.getBoundingClientRect();
+    const target = cartButtonRef.current?.getBoundingClientRect();
+    if (!source || !target || source.width === 0 || target.width === 0) return;
+    const startX = source.left + source.width / 2 - 22;
+    const startY = source.top + Math.min(source.height / 2, 28) - 22;
+    const targetX = target.left + target.width / 2 - 22;
+    const targetY = target.top + target.height / 2 - 22;
+    const id = cartFlightIdRef.current + 1;
+    cartFlightIdRef.current = id;
+    setCartFlight({ id, imageUrl, left: startX, top: startY, deltaX: targetX - startX, deltaY: targetY - startY });
+    window.setTimeout(() => setCartFlight((current) => current?.id === id ? null : current), 700);
+  }
+  function toggleWishlist(productId: number, target = `product-${productId}`) {
+    pulseHeart(target);
     setWishlistIds((current) => {
       const next = new Set(current);
       if (next.has(productId)) next.delete(productId);
@@ -1729,6 +1761,7 @@ export default function Storefront() {
     window.setTimeout(() => setShareFeedback(null), 3600);
   }
   function shareProduct(productId: number, productName: string) {
+    pulseShare(`product-${productId}`);
     void shareStorefrontContent({
       title: productName,
       text: `شاهد هذا المنتج من ${STORE_NAME}`,
@@ -1737,6 +1770,7 @@ export default function Storefront() {
   }
   function shareCart() {
     if (cartLines.length === 0) return;
+    pulseShare("cart");
     void shareStorefrontContent({
       title: `سلة من ${STORE_NAME}`,
       text: `هذه سلة منتجات من ${STORE_NAME} — راجع الأسعار قبل تثبيت الطلب`,
@@ -1826,16 +1860,17 @@ export default function Storefront() {
   function addToCart(p: {
     productUnitId: number; productId: number; productName: string; price: string | null;
     salePrice?: string | null; imageUrl: string | null; unitName: string; variantLabel?: string; inStock?: boolean; customization?: StorefrontCustomization;
-  }) {
+  }, sourceElement?: HTMLElement | null) {
     const eff = p.salePrice ?? p.price;
     if (eff == null || p.inStock === false) return;
     trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((prev) => addStorefrontCartLine(prev, p, eff));
+    triggerCartFlight(sourceElement, p.imageUrl);
   }
-  function addFeaturedToCart(p: RowProduct) {
+  function addFeaturedToCart(p: RowProduct, event: React.MouseEvent<HTMLButtonElement>) {
     if (p.inStock === false || (p.salePrice == null && p.price == null)) return;
-    addToCart(p);
+    addToCart(p, event.currentTarget);
     setRecentlyAddedProductId(p.productId);
     window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
   }
@@ -1848,7 +1883,7 @@ export default function Storefront() {
       return next;
     });
   }
-  function addSelectedVariants() {
+  function addSelectedVariants(sourceElement?: HTMLElement | null) {
     if (!detailQ.data || customizationValidation) return;
     const selections: StorefrontCartSelection[] = [];
     const customization = selectedCustomization();
@@ -1875,9 +1910,10 @@ export default function Storefront() {
     trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((previous) => addStorefrontCartLines(previous, selections));
+    triggerCartFlight(sourceElement, detailQ.data.imageUrl);
     setSelectedId(null);
   }
-  function addSelectedUnit() {
+  function addSelectedUnit(sourceElement?: HTMLElement | null) {
     if (!detailQ.data || !detailUnit || !detailUnit.inStock || customizationValidation) return;
     const effectivePrice = detailUnit.salePrice ?? detailUnit.price;
     if (!effectivePrice) return;
@@ -1896,6 +1932,7 @@ export default function Storefront() {
     trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((previous) => addStorefrontCartLines(previous, [selection]));
+    triggerCartFlight(sourceElement, detailQ.data.imageUrl);
     setSelectedId(null);
   }
   function setQty(cartKey: string, qty: number) {
@@ -2056,11 +2093,11 @@ export default function Storefront() {
               </button>
             )}
           </div>
-          <button onClick={() => setShowWishlist((current) => !current)} aria-label="قائمة أعجبتني" aria-pressed={showWishlist} className={`relative flex size-11 shrink-0 items-center justify-center rounded-lg border bg-white transition hover:border-[#e65f4a] dark:bg-slate-800 ${showWishlist ? "border-[#e65f4a] text-[#e65f4a]" : "border-[#d7d2ca] text-[#1e4a63] dark:border-slate-700 dark:text-slate-100"}`}>
-            <Heart aria-hidden className={`size-5 ${showWishlist ? "fill-current" : ""}`} />
+          <button onClick={() => { pulseHeart("wishlist-header"); setShowWishlist((current) => !current); }} aria-label="قائمة أعجبتني" aria-pressed={showWishlist} className={`relative flex size-11 shrink-0 items-center justify-center rounded-lg border bg-white transition hover:border-[#e65f4a] dark:bg-slate-800 ${showWishlist ? "border-[#e65f4a] text-[#e65f4a]" : "border-[#d7d2ca] text-[#1e4a63] dark:border-slate-700 dark:text-slate-100"}`}>
+            <Heart key={`wishlist-header-${heartPulseNonce}`} aria-hidden className={`size-5 ${showWishlist ? "fill-current" : ""} ${heartPulseTarget === "wishlist-header" ? "animate__animated animate__heartBeat animate__faster" : ""}`} />
             {wishlistIds.size > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-[#e65f4a] px-1 text-[10px] font-black text-white">{wishlistIds.size}</span>}
           </button>
-          <button onClick={() => setPanel("cart")} aria-label="السلة" className="relative flex size-11 shrink-0 items-center justify-center rounded-lg border border-[#d7d2ca] bg-white text-[#1e4a63] transition hover:border-[#1e4a63] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+          <button ref={cartButtonRef} onClick={() => setPanel("cart")} aria-label="السلة" className="relative flex size-11 shrink-0 items-center justify-center rounded-lg border border-[#d7d2ca] bg-white text-[#1e4a63] transition hover:border-[#1e4a63] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
             <ShoppingCart aria-hidden className="size-5" />
             {cartCount > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-[#e65f4a] px-1 text-[10px] font-black text-white">{cartCount}</span>}
           </button>
@@ -2075,6 +2112,17 @@ export default function Storefront() {
         )}
       </header>
 
+      {cartFlight && (
+        <div
+          key={cartFlight.id}
+          aria-hidden="true"
+          className="store-cart-flight"
+          style={{ left: cartFlight.left, top: cartFlight.top, "--store-cart-flight-x": `${cartFlight.deltaX}px`, "--store-cart-flight-y": `${cartFlight.deltaY}px` } as React.CSSProperties}
+        >
+          {cartFlight.imageUrl ? <img src={cartFlight.imageUrl} alt="" className="size-full rounded-[.65rem] object-contain" /> : <span className="store-cart-flight-fallback size-full"><Package aria-hidden className="size-5" /></span>}
+        </div>
+      )}
+
       <main className="mx-auto w-full max-w-[1500px] overflow-x-clip px-4 py-6 pb-28 lg:px-8">
         {supportingFailures.length > 0 && (
           <section role="alert" aria-live="polite" className="mb-5 flex items-start gap-3 border-r-4 border-[#b87835] bg-[#fbf3e5] p-4 text-[#754f2c]">
@@ -2084,7 +2132,7 @@ export default function Storefront() {
           </section>
         )}
         {announcement && <div className="mb-5 flex items-center gap-2 border border-[#ead8c8] bg-[#fff8f2] px-4 py-3 text-sm font-bold text-[#754f2c]"><BadgePercent aria-hidden className="size-4 shrink-0" /><span>{announcement}</span></div>}
-        {shareFeedback && <div role="status" className="mb-5 border border-emerald-200 bg-emerald-50 px-4 py-3 text-center text-xs font-bold text-emerald-800">{shareFeedback}</div>}
+        {shareFeedback && <div role="status" className="animate__animated animate__fadeIn mb-5 border border-emerald-200 bg-emerald-50 px-4 py-3 text-center text-xs font-bold text-emerald-800">{shareFeedback}</div>}
         {settingsQ.isSuccess && !storeOpen && <div className="mb-5 border border-rose-200 bg-rose-50 px-4 py-3 text-center text-sm font-bold text-rose-700">المتجر مغلق مؤقتاً — يمكنك تصفح المنتجات والعودة لاحقاً لإتمام الطلب.</div>}
 
         {!search && categoryId == null && !showWishlist && (
@@ -2137,7 +2185,7 @@ export default function Storefront() {
           <div className="mb-6 flex flex-col gap-3 border border-[#d9d3ca] bg-white p-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"><button type="button" onClick={() => { setAvailability((value) => value === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }} aria-pressed={availability === "IN_STOCK"} className={`shrink-0 border px-3 py-2 text-xs font-black ${availability === "IN_STOCK" ? "border-[#1e4a63] bg-[#1e4a63] text-white" : "border-[#d7d2ca] text-[#59636a]"}`}>{availability === "IN_STOCK" ? "متوفر الآن" : "كل المنتجات"}</button><label className="relative shrink-0"><span className="sr-only">نطاق السعر</span><select value={priceFilter} onChange={(e) => { setPriceFilter(e.target.value as PriceFilter); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="ALL">كل الأسعار</option><option value="UNDER_5000">أقل من 5,000 د.ع</option><option value="FROM_5000_TO_15000">5,000 – 15,000 د.ع</option><option value="OVER_15000">أكثر من 15,000 د.ع</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{brands.length > 0 && <label className="relative shrink-0"><span className="sr-only">الماركة</span><select value={brand} onChange={(e) => { setBrand(e.target.value); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="">كل الماركات</option>{brands.map((name) => <option key={name} value={name}>{name}</option>)}</select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>}</div><div className="flex items-center justify-between gap-3"><label className="relative shrink-0"><span className="sr-only">ترتيب النتائج</span><select value={sort} onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="RECOMMENDED">الترتيب المقترح</option><option value="BEST_SELLERS">الأكثر مبيعاً</option><option value="PRICE_ASC">السعر: الأقل أولاً</option><option value="PRICE_DESC">السعر: الأعلى أولاً</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{(hasRefinements || categoryId != null || search) && <button type="button" onClick={clearCatalogFilters} className="text-xs font-black text-[#a4513f] hover:underline">مسح الفلاتر</button>}</div>
           </div>
-          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} role="button" tabIndex={0} aria-label={`فتح تفاصيل ${p.productName}`} onClick={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; setSelectedId(p.productId); }} onKeyDown={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(p.productId); } }} className={`store-product-card group relative flex h-full cursor-pointer flex-col overflow-hidden border border-[#ddd8d1] bg-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1e4a63] focus-visible:ring-offset-2 ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button onClick={() => setSelectedId(p.productId)} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="absolute left-3 top-12 z-10 flex gap-1.5"><button type="button" onClick={() => toggleWishlist(p.productId)} aria-label={wishlistIds.has(p.productId) ? `إزالة ${p.productName} من أعجبتني` : `إضافة ${p.productName} إلى أعجبتني`} aria-pressed={wishlistIds.has(p.productId)} className={`flex size-9 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${wishlistIds.has(p.productId) ? "text-[#e65f4a]" : "text-[#5c6870]"}`}><Heart aria-hidden className={`size-4 ${wishlistIds.has(p.productId) ? "fill-current" : ""}`} /></button><button type="button" onClick={() => shareProduct(p.productId, p.productName)} aria-label={`مشاركة ${p.productName}`} className="flex size-9 items-center justify-center rounded-full bg-white/95 text-[#1e4a63] shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a]"><Share2 aria-hidden className="size-4" /></button></div><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => setSelectedId(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}{onSale && <span className="basis-full text-[10px] font-bold text-[#a4513f]">وفّر {money(Number(p.price) - Number(p.salePrice))} د.ع</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={() => setSelectedId(p.productId)} disabled={!p.inStock} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]"><Plus aria-hidden className="size-4" />{p.inStock ? "أضف إلى السلة" : "غير متوفر"}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
+          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} role="button" tabIndex={0} aria-label={`فتح تفاصيل ${p.productName}`} onClick={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; setSelectedId(p.productId); }} onKeyDown={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(p.productId); } }} className={`store-product-card group relative flex h-full cursor-pointer flex-col overflow-hidden border border-[#ddd8d1] bg-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1e4a63] focus-visible:ring-offset-2 ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button onClick={() => setSelectedId(p.productId)} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="absolute left-3 top-12 z-10 flex gap-1.5"><button type="button" onClick={() => toggleWishlist(p.productId)} aria-label={wishlistIds.has(p.productId) ? `إزالة ${p.productName} من أعجبتني` : `إضافة ${p.productName} إلى أعجبتني`} aria-pressed={wishlistIds.has(p.productId)} className={`flex size-9 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${wishlistIds.has(p.productId) ? "text-[#e65f4a]" : "text-[#5c6870]"}`}><Heart key={`wishlist-${p.productId}-${heartPulseNonce}`} aria-hidden className={`size-4 ${wishlistIds.has(p.productId) ? "fill-current" : ""} ${heartPulseTarget === `product-${p.productId}` ? "animate__animated animate__heartBeat animate__faster" : ""}`} /></button><button type="button" onClick={() => shareProduct(p.productId, p.productName)} aria-label={`مشاركة ${p.productName}`} className="flex size-9 items-center justify-center rounded-full bg-white/95 text-[#1e4a63] shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a]"><Share2 key={`share-${p.productId}-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === `product-${p.productId}` ? "animate__animated animate__pulse animate__faster" : ""}`} /></button></div><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => setSelectedId(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}{onSale && <span className="basis-full text-[10px] font-bold text-[#a4513f]">وفّر {money(Number(p.price) - Number(p.salePrice))} د.ع</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={() => setSelectedId(p.productId)} disabled={!p.inStock} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]"><Plus aria-hidden className="size-4" />{p.inStock ? "أضف إلى السلة" : "غير متوفر"}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
           {catalogQ.hasNextPage && <div ref={catalogLoadMoreRef} className="mt-8 flex min-h-12 items-center justify-center" aria-live="polite">{catalogQ.isFetchingNextPage ? <span className="flex items-center gap-2 text-xs font-bold text-[#1e4a63]"><Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ تحميل منتجات إضافية…</span> : <span className="text-[11px] font-bold text-[#8b9395]">نحمّل المزيد تلقائياً عند الاقتراب</span>}</div>}
           {catalogQ.isError && <div className="mt-3 flex flex-col items-center gap-2 text-center" role="alert"><p className="text-xs font-bold text-rose-700">تعذّر تحميل المنتجات الإضافية تلقائياً.</p><button type="button" onClick={() => void catalogQ.fetchNextPage()} disabled={catalogQ.isFetchingNextPage} className="text-xs font-black text-[#1e4a63] underline disabled:opacity-50">إعادة المحاولة</button></div>}
         </section>
@@ -2227,8 +2275,8 @@ export default function Storefront() {
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-extrabold text-slate-500 dark:text-slate-400">تفاصيل المنتج</h2>
               <div className="flex items-center gap-1.5">
-                {detailQ.data && <button type="button" onClick={() => toggleWishlist(detailQ.data!.productId)} aria-label={wishlistIds.has(detailQ.data.productId) ? "إزالة المنتج من أعجبتني" : "إضافة المنتج إلى أعجبتني"} aria-pressed={wishlistIds.has(detailQ.data.productId)} className={`flex size-8 items-center justify-center rounded-full transition hover:bg-rose-50 ${wishlistIds.has(detailQ.data.productId) ? "text-[#e65f4a]" : "text-slate-500"}`}><Heart aria-hidden className={`size-4 ${wishlistIds.has(detailQ.data.productId) ? "fill-current" : ""}`} /></button>}
-                {detailQ.data && <button type="button" onClick={() => shareProduct(detailQ.data!.productId, detailQ.data!.productName)} aria-label="مشاركة المنتج" className="flex size-8 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-[#1e4a63]"><Share2 aria-hidden className="size-4" /></button>}
+                {detailQ.data && <button type="button" onClick={() => toggleWishlist(detailQ.data!.productId)} aria-label={wishlistIds.has(detailQ.data.productId) ? "إزالة المنتج من أعجبتني" : "إضافة المنتج إلى أعجبتني"} aria-pressed={wishlistIds.has(detailQ.data.productId)} className={`flex size-8 items-center justify-center rounded-full transition hover:bg-rose-50 ${wishlistIds.has(detailQ.data.productId) ? "text-[#e65f4a]" : "text-slate-500"}`}><Heart key={`wishlist-detail-${detailQ.data.productId}-${heartPulseNonce}`} aria-hidden className={`size-4 ${wishlistIds.has(detailQ.data.productId) ? "fill-current" : ""} ${heartPulseTarget === `product-${detailQ.data.productId}` ? "animate__animated animate__heartBeat animate__faster" : ""}`} /></button>}
+                {detailQ.data && <button type="button" onClick={() => shareProduct(detailQ.data!.productId, detailQ.data!.productName)} aria-label="مشاركة المنتج" className="flex size-8 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-[#1e4a63]"><Share2 key={`share-detail-${detailQ.data.productId}-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === `product-${detailQ.data.productId}` ? "animate__animated animate__pulse animate__faster" : ""}`} /></button>}
                 <button onClick={() => setSelectedId(null)} aria-label="إغلاق" className="flex size-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-400">
                   <X aria-hidden className="size-4" />
                 </button>
@@ -2381,9 +2429,9 @@ export default function Storefront() {
                 <div className="sticky bottom-0 mt-2 border-t border-slate-100 bg-white/95 pt-2 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/95">
                 <button
                   onClick={() => {
-                    if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants();
+                    if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants(event.currentTarget);
                     else {
-                      addSelectedUnit();
+                      addSelectedUnit(event.currentTarget);
                     }
                   }}
                   disabled={!!customizationValidation || ((detailQ.data?.variants?.length ?? 0) > 1
@@ -2499,7 +2547,7 @@ export default function Storefront() {
                 ))}
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <button type="button" onClick={() => { setPanel(null); setShowWishlist(false); scrollToResults(); }} className="flex items-center justify-center gap-1.5 rounded-xl border border-[#1e4a63]/30 bg-[#f5f8fa] py-3 text-xs font-black text-[#1e4a63] transition hover:bg-[#eaf1f4]"><Plus aria-hidden className="size-4" /> أضف المزيد</button>
-                <button type="button" onClick={shareCart} className="flex items-center justify-center gap-1.5 rounded-xl border border-[#e65f4a]/30 bg-[#fff6f2] py-3 text-xs font-black text-[#a4513f] transition hover:bg-[#ffede7]"><Share2 aria-hidden className="size-4" /> مشاركة السلة</button>
+                <button type="button" onClick={shareCart} className="flex items-center justify-center gap-1.5 rounded-xl border border-[#e65f4a]/30 bg-[#fff6f2] py-3 text-xs font-black text-[#a4513f] transition hover:bg-[#ffede7]"><Share2 key={`share-cart-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === "cart" ? "animate__animated animate__pulse animate__faster" : ""}`} /> مشاركة السلة</button>
               </div>
               <button
                 onClick={openCheckout}
