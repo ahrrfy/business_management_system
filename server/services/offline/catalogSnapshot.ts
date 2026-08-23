@@ -10,7 +10,7 @@
 // النسخة = بصمة محتوى: count + SUM(CRC32) على الحقول المُصدَّرة بالضبط لكل جدول — تتغيّر
 // إذا-وفقط-إذا تغيّر ما يصل العميل (تفصيل المبدأ فوق catalogVersionParts أدناه).
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   branchStock,
   customers,
@@ -19,8 +19,8 @@ import {
   productUnitBarcodes,
   productUnits,
   productVariants,
-  reservationStock,
 } from "../../../drizzle/schema";
+import { loadVariantAvailability } from "../catalog/variantAvailability";
 import type {
   OfflineCatalogRow,
   OfflineCatalogSnapshot,
@@ -218,31 +218,39 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
 
 export async function buildStockSnapshot(branchId: number): Promise<OfflineStockRow[]> {
   const db = requireDbOrThrow();
-  // ٢٤/٨ (بلاغ المالك «المخزون لا يظهر عند إضافة المنتج» + Codex P1): كانت اللقطة تحمل الرصيدَ
-  // الفعليّ وحده فيصير عرضُه «متاحاً للبيع» كذبةً على الحجوزات (صنفٌ رصيدُه ١٠ وحجوزاتٌ ١٠ يظهر
-  // «متاح ١٠»). الآن نضيف `reservedBase` من `reservationStock` بربطٍ خارجيّ اختياريّ (الأصناف
-  // بلا حجزٍ لا صفَّ لها في `reservationStock` ⇒ يبقى `reservedBase = 0`). العميل يشتقّ
-  // `availableBase = max(0, qty - reservedBase)` — نفسُ مسار `posList` تماماً.
-  const rows = await db
-    .select({
-      variantId: branchStock.variantId,
-      qty: branchStock.quantity,
-      reservedBase: reservationStock.reservedBase,
-    })
-    .from(branchStock)
-    .leftJoin(
-      reservationStock,
-      and(
-        eq(reservationStock.variantId, branchStock.variantId),
-        eq(reservationStock.branchId, branchStock.branchId),
-      ),
-    )
-    .where(eq(branchStock.branchId, branchId));
-  return rows.map((r) => ({
-    variantId: Number(r.variantId),
-    qty: Number(r.qty),
-    reservedBase: r.reservedBase != null ? Number(r.reservedBase) : 0,
-  }));
+  // ٢٤/٨ (Codex P1×٤ على PR #737): الحلّ الساذج (branchStock + reservationStock) فقط كان يفوت:
+  //   ⑴ تخصيصاتُ الطلبات الإلكترونيّة النشطة — تُطبَّق عبر `loadOnlineAllocatedBase` لا صفوف
+  //      `reservationStock`، فتظهر وحداتٌ محجوزةٌ لطلبٍ Confirmed كأنّها متاحة للبيع في الأوفلاين.
+  //   ⑵ طاقةُ البكج — بلا `branchStock` لأنّها مشتقّةٌ من أضعف مكوّن؛ الحلّ الساذج يعطيها ٠ فيبدو
+  //      البكجُ نافداً بينما مكوّناتُه ممتلئة.
+  //   ⑶/⑷ لقطاتٌ قديمة/فرعٌ مختلف — يعالجهما العميل بحرّاسٍ (نسخة عقد + META_STOCK_BRANCH).
+  // الحلّ الجذريّ: نستعمل `loadVariantAvailability` — نفسُ المُحمِّل الحاكم الذي يستعمله
+  // `posList` أونلاين — فيعطينا `availableBase` نهائياً بكلّ مصادر الحجز (رسميّ + إلكترونيّ +
+  // بكج). نلتقط جميعَ variants الكتالوج الفعّالة كي تظهر البكجاتُ أيضاً.
+  const allVariantRows = await db
+    .select({ variantId: productVariants.id })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(and(eq(products.isActive, true), eq(productVariants.isActive, true)));
+  const variantIds = allVariantRows.map((r) => Number(r.variantId));
+  if (variantIds.length === 0) return [];
+
+  const availability = await loadVariantAvailability(db, branchId, variantIds);
+  const rows: OfflineStockRow[] = [];
+  for (const variantId of variantIds) {
+    const a = availability.get(variantId);
+    if (!a) continue;
+    // الخدمة: لا رصيدَ لها ولا معنى للحجز — نتخطّاها (POS يعاملها لا-محدودة).
+    if (a.isService) continue;
+    rows.push({
+      variantId,
+      qty: a.onHandBase,
+      reservedBase: a.reservedBase,
+      availableBase: a.availableBase,
+      isBundle: a.isBundle,
+    });
+  }
+  return rows;
 }
 
 export async function buildCustomersSnapshot(): Promise<OfflineCustomersSnapshot> {

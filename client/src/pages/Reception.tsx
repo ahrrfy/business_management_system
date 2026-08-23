@@ -698,7 +698,7 @@ export default function Reception() {
       return;
     }
     let cancelled = false;
-    void offlineSearchCatalog(debounced, effectiveTier, { limit: 15, includePrintServices: true }).then((rows) => {
+    void offlineSearchCatalog(debounced, effectiveTier, branchId, { limit: 15, includePrintServices: true }).then((rows) => {
       if (!cancelled) setOfflineResults(rows as PosRow[]);
     });
     return () => {
@@ -851,7 +851,7 @@ export default function Reception() {
       try {
         // أوفلاين: المطابقة من النموذج المحلي (الباركود الأساسي + البدائل)، نمط POS.tsx.
         const row = offline
-          ? await offlineFindByBarcode(code, effectiveTier)
+          ? await offlineFindByBarcode(code, effectiveTier, branchId)
           : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
         if (!row) notify.err(`باركود غير معروف: ${code}`);
         else addRow(row as PosRow);
