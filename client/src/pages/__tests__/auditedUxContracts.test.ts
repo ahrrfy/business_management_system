@@ -16,6 +16,19 @@ describe("audited public UX contracts", () => {
     expect(source).not.toContain('role="dialog"');
   });
 
+  it("keeps delivery settlement navigation reactive on the same route", () => {
+    const source = readPage("DeliveryHub.tsx");
+    const hub = source.slice(
+      source.indexOf("export default function DeliveryHub()"),
+      source.indexOf("// ───────────────────────── تبويب: جاهز للإرسال"),
+    );
+
+    expect(hub).toContain("const search = useSearch();");
+    expect(hub).toContain("setTab(readTabFromSearch(search));");
+    expect(hub).toContain("}, [search]);");
+    expect(source).toContain('href={`/delivery?tab=settle&party=${r.partyId}`}');
+  });
+
   it("distinguishes an empty catalog from an empty filtered result", () => {
     const source = readPage("Storefront.tsx");
 

@@ -46,6 +46,7 @@ export {
   // ٢٢/٨ — إثبات تسليم بلا نقد (لا سند توريد) + إثبات يدوي استثنائي بموافقة مدير:
   recordDeliveryProof,
   recordManualDeliveryProof,
+  recordStaffDeliveryConfirmation,
 } from "./delivery/companyStatement";
 export type {
   CompanyStatementInput,

@@ -25,6 +25,7 @@ import {
   listPartyRemittances,
   listReadyForDispatch,
   payPartyDeliveryFees,
+  recordStaffDeliveryConfirmation,
   recordDeliveryRemittance,
   recoverDeliveryWriteOff,
   removeDeliveryPartyMember,
@@ -538,6 +539,30 @@ export const deliveryRouter = router({
    * جسم `confirmConsignmentDelivery` الماليّ بسلطة `MANUAL_PROOF` مدوَّنة في حدث التسليم.
    * `storeManagerProcedure` (`store=FULL` لمدير فقط) لا دورٌ خام.
    */
+  /**
+   * **«تم التسليم» بيد الكاشير** (٢٣/٨) — للحالة اليوميّة الشائعة: يتّصل المندوب/الشركة فيقول
+   * «سلّمتُ الطرد وقبضتُ المبلغ». الكاشير يضغط زرّاً واحداً بملاحظةٍ موجزة (اسم متّصل / رقم
+   * رسالة)، والمسار الماليّ نفسه نفس `confirmConsignmentDelivery`. سلطته `STAFF_CONFIRMED`
+   * مدوَّنة في حدث التسليم. يُغني عن انتظار كشف الشركة أو استدعاء المدير للحالة العادية.
+   */
+  staffConfirm: deliveryCashierProcedure
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      collectedAmount: moneyStr,
+      evidence: z.string().trim().min(3).max(255),
+      clientRequestId: z.string().trim().min(8).max(64),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await retryOnDeadlock(() => recordStaffDeliveryConfirmation(input, actorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.staffConfirm",
+        entityType: "deliveryConsignment",
+        entityId: input.consignmentId,
+        newValue: { collectedAmount: input.collectedAmount, evidence: input.evidence },
+      });
+      return res;
+    }),
+
   manualProof: storeManagerProcedure
     .input(z.object({
       consignmentId: z.number().int().positive(),
