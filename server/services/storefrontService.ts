@@ -1024,39 +1024,46 @@ export async function storefrontRelated(
   if (!db) return [];
   const branchId = await resolveStorefrontBranchId(branchIdInput);
   const cat = (await db.select({ categoryId: products.categoryId }).from(products).where(eq(products.id, productId)).limit(1))[0];
-  if (!cat || cat.categoryId == null) return [];
   const cap = Math.min(Math.max(limit, 1), 20);
-  const conds = [
-    storefrontPublishableCondition(),
-    eq(products.categoryId, Number(cat.categoryId)),
-    ne(products.id, productId),
-  ];
-  const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
-  const selectedIds = chooseCandidateProductIds(
-    await attachAvailability(db, branchId, candidateRows),
-    cap,
-    "IN_STOCK",
-  );
-  if (!selectedIds.length) return [];
-  const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
-  const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, selectedIds)));
-  const rows = (await attachAvailability(db, branchId, rawRows))
-    .filter((row) => row.availableQty >= Number(row.conversionFactor))
-    .sort((a, b) =>
-      (selectedOrder.get(Number(a.productId)) ?? cap) - (selectedOrder.get(Number(b.productId)) ?? cap)
-      || Number(b.availableQty >= Number(b.conversionFactor)) - Number(a.availableQty >= Number(a.conversionFactor))
-      || Number(a.conversionFactor) - Number(b.conversionFactor)
-      || Number(a.variantId) - Number(b.variantId)
-      || Number(a.productUnitId) - Number(b.productUnitId));
-  const seen = new Set<number>();
+  const seen = new Set<number>([productId]);
   const items: StorefrontProduct[] = [];
-  for (const r of rows) {
-    const pid = Number(r.productId);
-    if (seen.has(pid)) continue;
-    seen.add(pid);
-    items.push(toStorefront(r));
-    if (items.length >= cap) break;
-  }
+  const baseConds = [storefrontPublishableCondition(), ne(products.id, productId)];
+
+  const appendCandidates = async (conds: typeof baseConds, queryCap: number) => {
+    if (items.length >= cap) return;
+    const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
+    const selectedIds = chooseCandidateProductIds(
+      await attachAvailability(db, branchId, candidateRows),
+      Math.min(Math.max(queryCap, 1), 20),
+      "IN_STOCK",
+    );
+    if (!selectedIds.length) return;
+    const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
+    const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, selectedIds)));
+    const rows = (await attachAvailability(db, branchId, rawRows))
+      .filter((row) => row.availableQty >= Number(row.conversionFactor))
+      .sort((a, b) =>
+        (selectedOrder.get(Number(a.productId)) ?? queryCap) - (selectedOrder.get(Number(b.productId)) ?? queryCap)
+        || Number(b.availableQty >= Number(b.conversionFactor)) - Number(a.availableQty >= Number(a.conversionFactor))
+        || Number(a.conversionFactor) - Number(b.conversionFactor)
+        || Number(a.variantId) - Number(b.variantId)
+        || Number(a.productUnitId) - Number(b.productUnitId));
+    for (const row of rows) {
+      const pid = Number(row.productId);
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      items.push(toStorefront(row));
+      if (items.length >= cap) break;
+    }
+  };
+
+  // الأولوية للمنتجات من نفس الفئة، ثم إكمال الشريط من أي منتجات متاحة عند عدم كفاية الفئة.
+  const categoryConds = cat?.categoryId == null
+    ? baseConds
+    : [...baseConds, eq(products.categoryId, Number(cat.categoryId))];
+  await appendCandidates(categoryConds, cap);
+  if (items.length < cap) await appendCandidates(baseConds, cap + seen.size);
+
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
   await attachVariantColors(db, items, branchId);

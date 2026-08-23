@@ -27,6 +27,7 @@ import "@fontsource/cairo/600.css";
 import "@fontsource/cairo/700.css";
 import "@fontsource/cairo/800.css";
 import "./index.css";
+import "animate.css/animate.min.css";
 import "./lib/theme/tokens.css";
 import "./lib/theme/comfort.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)

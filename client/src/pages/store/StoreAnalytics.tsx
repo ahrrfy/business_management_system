@@ -4,7 +4,7 @@
  * قُمع الحالات + أعلى المنتجات + التوزيع الجغرافيّ. إيرادٌ فقط — بلا تكلفة/ربح (خطّ §٦).
  */
 import { useMemo, useState } from "react";
-import { BarChart3, Eye, Loader2, MapPin, PackageCheck, ShoppingBag, ShoppingCart, TrendingUp, Trophy, XCircle } from "lucide-react";
+import { BarChart3, Eye, Loader2, MapPin, MousePointerClick, PackageCheck, ShoppingBag, ShoppingCart, TrendingUp, Trophy, XCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { fmt, fmtInt } from "@/lib/money";
 
@@ -62,7 +62,7 @@ export default function StoreAnalytics() {
 
       {q.isLoading ? (
         <div className="flex justify-center py-20 text-muted-foreground"><Loader2 aria-hidden className="size-6 animate-spin" /></div>
-      ) : !d || (d.kpis.totalOrders === 0 && d.conversionFunnel.productViews === 0 && d.conversionFunnel.cartAdds === 0 && d.conversionFunnel.checkoutStarts === 0) ? (
+      ) : !d || (d.kpis.totalOrders === 0 && d.conversionFunnel.productViews === 0 && d.conversionFunnel.cartAdds === 0 && d.conversionFunnel.checkoutStarts === 0 && d.recommendationClicks.length === 0) ? (
         <div className="rounded-2xl border border-dashed border-border py-20 text-center text-sm text-muted-foreground">
           <BarChart3 aria-hidden className="mx-auto mb-2 size-8 opacity-40" />
           لا طلبات في هذه الفترة — ستظهر التحليلات مع أوّل طلب.
@@ -122,6 +122,24 @@ export default function StoreAnalytics() {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* الأكثر نقراً في التوصيات */}
+          <div className="rounded-2xl border border-border bg-card p-4">
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-bold text-muted-foreground"><MousePointerClick aria-hidden className="size-4" /> الأكثر نقراً في «قد يعجبك أيضاً»</h3>
+            {d.recommendationClicks.length === 0 ? (
+              <p className="py-6 text-center text-xs text-muted-foreground">لا توجد نقرات مسجلة في هذه الفترة أو لم تُمنح موافقة التحليلات.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {d.recommendationClicks.map((item, i) => (
+                  <div key={item.recommendedProductId} className="flex items-center gap-2 text-sm">
+                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">{i + 1}</span>
+                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                    <span className="shrink-0 text-xs font-bold tabular-nums">{fmtInt(item.clicks)} نقرة</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* التوزيع الجغرافيّ */}

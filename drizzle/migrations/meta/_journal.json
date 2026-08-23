@@ -1716,6 +1716,13 @@
 			"when": 1788052310000,
 			"tag": "0259_online_order_coupons",
 			"breakpoints": true
+		},
+		{
+			"idx": 260,
+			"version": "5",
+			"when": 1788052311000,
+			"tag": "0260_store_recommendation_clicks",
+			"breakpoints": true
 		}
 	]
 }

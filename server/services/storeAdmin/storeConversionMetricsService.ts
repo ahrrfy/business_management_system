@@ -1,9 +1,15 @@
-import { and, eq, gte, lte, sql } from "drizzle-orm";
-import { storeConversionDailyMetrics } from "../../../drizzle/schema";
+import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { storeConversionDailyMetrics, storeRecommendationDailyMetrics, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { resolveStorefrontBranchId } from "../storefrontService";
 
 export type StoreConversionEvent = "PRODUCT_VIEW" | "ADD_TO_CART" | "BEGIN_CHECKOUT" | "ORDER_COMPLETED";
+
+export interface RecommendationClickSummary {
+  recommendedProductId: number;
+  name: string;
+  clicks: number;
+}
 
 function todayYmdBaghdad(): string {
   return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -41,6 +47,62 @@ export async function recordStoreConversionMetric(input: {
     // القياس أفضل-جهد فقط؛ لا يكسر عملية الطلب عند خلل قاعدة البيانات/التحليلات.
   }
   return { ok: true };
+}
+
+/** يسجل نقرة توصية كعداد يومي حسب المنتج المصدر والمقترح، دون IP أو جلسة أو هوية زائر. */
+export async function recordStoreRecommendationClick(input: {
+  sourceProductId: number;
+  recommendedProductId: number;
+  branchId?: number;
+}): Promise<{ ok: true }> {
+  try {
+    if (input.sourceProductId === input.recommendedProductId) return { ok: true };
+    const db = getDb();
+    if (!db) return { ok: true };
+    const branchId = await resolveStorefrontBranchId(input.branchId);
+    const metricDate = todayYmdBaghdad();
+    await db.execute(sql`
+      INSERT INTO storeRecommendationDailyMetrics
+        (branchId, metricDate, sourceProductId, recommendedProductId, clicks)
+      VALUES (${branchId}, ${metricDate}, ${input.sourceProductId}, ${input.recommendedProductId}, 1)
+      ON DUPLICATE KEY UPDATE clicks = clicks + 1
+    `);
+  } catch {
+    // التتبع أفضل-جهد فقط، ولا يجوز أن يعطل فتح المنتج أو الشراء.
+  }
+  return { ok: true };
+}
+
+export async function getStoreRecommendationClickSummary(input: {
+  scopedBranchId: number | null;
+  fromYmd: string;
+  toYmd: string;
+  limit?: number;
+}): Promise<RecommendationClickSummary[]> {
+  const db = getDb();
+  if (!db) return [];
+  const conditions = [
+    gte(storeRecommendationDailyMetrics.metricDate, input.fromYmd),
+    lte(storeRecommendationDailyMetrics.metricDate, input.toYmd),
+  ];
+  if (input.scopedBranchId != null) conditions.push(eq(storeRecommendationDailyMetrics.branchId, input.scopedBranchId));
+  const rows = await db
+    .select({
+      recommendedProductId: storeRecommendationDailyMetrics.recommendedProductId,
+      name: products.name,
+      clicks: sql<number>`COALESCE(SUM(${storeRecommendationDailyMetrics.clicks}), 0)`,
+    })
+    .from(storeRecommendationDailyMetrics)
+    .innerJoin(products, eq(products.id, storeRecommendationDailyMetrics.recommendedProductId))
+    .where(and(...conditions))
+    .groupBy(storeRecommendationDailyMetrics.recommendedProductId, products.name)
+    .orderBy(desc(sql`SUM(${storeRecommendationDailyMetrics.clicks})`), asc(products.name))
+    .limit(Math.min(Math.max(input.limit ?? 10, 1), 50));
+  return rows.map((row) => ({
+    recommendedProductId: Number(row.recommendedProductId),
+    name: row.name,
+    clicks: Number(row.clicks),
+  }));
 }
 
 export interface StoreConversionFunnel {
