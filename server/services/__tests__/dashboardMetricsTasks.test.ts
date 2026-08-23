@@ -6,6 +6,8 @@ import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import type { TrpcContext } from "../../context";
+import { appRouter } from "../../routers";
 import { getDashboardMetrics, getMyOpenTasksCount } from "../reports/dashboard";
 
 function db() {
@@ -59,6 +61,23 @@ describe("getDashboardMetrics — morningBrief.myOpenTasks (T2.3)", () => {
     expect(withUser.morningBrief.myOpenTasks).toBe(2);
     const withoutUser = await getDashboardMetrics({ branchId: 1 });
     expect(withoutUser.morningBrief.myOpenTasks).toBe(0);
+  });
+
+  it("يمرّر الراوتر هوية المستخدم المصادَق كي يبقى العدّ دقيقاً بلا قائمة محدودة", async () => {
+    const d = db();
+    await d.insert(s.tasks).values([
+      { taskNumber: "TSK-R-1", branchId: 1, taskKind: "INQUIRY", taskStatus: "NEW", priority: "NORMAL", title: "مفتوحة", assignedTo: 1 },
+      { taskNumber: "TSK-R-2", branchId: 1, taskKind: "INQUIRY", taskStatus: "RESOLVED", priority: "NORMAL", title: "منتهية", assignedTo: 1 },
+      { taskNumber: "TSK-R-3", branchId: 2, taskKind: "INQUIRY", taskStatus: "NEW", priority: "NORMAL", title: "لمستخدم آخر", assignedTo: 2 },
+    ]);
+    const ctx = {
+      req: { headers: {} } as unknown as TrpcContext["req"],
+      res: {} as unknown as TrpcContext["res"],
+      user: { id: 1, role: "cashier", branchId: 1, name: "كاشير أ", email: "a@test", isActive: true } as unknown as TrpcContext["user"],
+    } as TrpcContext;
+
+    const result = await appRouter.createCaller(ctx).reports.dashboardMetrics({ branchId: 2 });
+    expect(result.morningBrief.myOpenTasks).toBe(1);
   });
 });
 

@@ -123,6 +123,7 @@ function actionPermitted(action: ExecutiveAction, capabilities: ExecutiveCapabil
 
 const emptyMetrics = (): DashboardMetricsResult => ({
   lowStockCount: 0,
+  todaySales: { total: "0.00", invoiceCount: 0 },
   overdueAR: { count: 0, total: "0.00" },
   salesPulse: { yesterday: "0.00", avg7d: "0.00", direction: "flat", changePct: 0 },
   morningBrief: { arRemindersDue: 0, promisedToday: 0, overdueWorkOrders: 0, myOpenTasks: 0, overdueTasks: 0 },

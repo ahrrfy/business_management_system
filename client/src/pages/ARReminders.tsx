@@ -114,10 +114,14 @@ export default function ARReminders() {
   const isAdmin = me.data?.role === "admin";
   const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
   const accountBranchId = dashboardActionBranchId(me.data?.branchId);
+  const requestedBranchId = useMemo(
+    () => dashboardActionBranchId(typeof window === "undefined" ? undefined : new URLSearchParams(window.location.search).get("branch")),
+    [],
+  );
   // نطاق العرض: فرع محدَّد (رقم) | مدينو الرصيد الافتتاحي ("opening") | undefined (فرع المستخدم لغير الأدمن).
   const [scope, setScope] = useState<number | "opening" | undefined>(undefined);
   const effectiveScope: number | "opening" | undefined =
-    scope ?? (isAdmin ? accountBranchId ?? branches.data?.[0]?.id : undefined);
+    scope ?? (isAdmin ? requestedBranchId ?? accountBranchId ?? branches.data?.[0]?.id : undefined);
   const queueInput =
     effectiveScope === "opening"
       ? { openingScope: true }

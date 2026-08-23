@@ -57,16 +57,35 @@ describe("audited public UX contracts", () => {
   it("keeps today's actionable reminder count in the same branch scope as its queue", () => {
     const dashboard = readPage("Dashboard.tsx");
     const morningBrief = dashboard.slice(
-      dashboard.indexOf("function MorningBrief()"),
+      dashboard.indexOf("function MorningBrief({"),
       dashboard.indexOf("const PromiseIco"),
     );
     const reminders = readPage("ARReminders.tsx");
 
-    expect(morningBrief).toContain("dashboardActionBranchId(me.data?.branchId)");
-    expect(morningBrief).not.toContain("elevated ? undefined");
+    expect(dashboard).toContain('aria-label="نطاق فرع الشاشة الرئيسية"');
+    expect(morningBrief).toContain("enabled: elevated && branchScope !== undefined");
+    expect(morningBrief).not.toContain("branches.data?.[0]?.id");
+    expect(morningBrief).toContain('href={`/reports/ar-reminders?branch=${branchScope}`}');
     expect(morningBrief).toContain('href={`/work-orders?branch=${branchScope}`}');
-    expect(reminders).toContain("dashboardActionBranchId(me.data?.branchId)");
-    expect(reminders).toContain("accountBranchId ?? branches.data?.[0]?.id");
+    expect(reminders).toContain("requestedBranchId ?? accountBranchId ?? branches.data?.[0]?.id");
+  });
+
+  it("uses unbounded server aggregates for dashboard sales and personal tasks", () => {
+    const dashboard = readPage("Dashboard.tsx");
+    const metricsBar = dashboard.slice(
+      dashboard.indexOf("function MetricsBar("),
+      dashboard.indexOf("/* ═══════════ ACTION BUTTON"),
+    );
+    const tasksBrief = dashboard.slice(
+      dashboard.indexOf("function TasksBrief("),
+      dashboard.indexOf("/* ═══════════ مساحة عمل الكاشير"),
+    );
+
+    expect(metricsBar).toContain("metrics.data?.todaySales");
+    expect(metricsBar).toContain("includeTodaySales: true");
+    expect(metricsBar).not.toContain("trpc.sales.list.useQuery");
+    expect(tasksBrief).toContain("metrics.data?.morningBrief.myOpenTasks");
+    expect(tasksBrief).not.toContain("trpc.tasks.list.useQuery");
   });
 
   it("starts both receivable and payable action queues in the account branch", () => {
