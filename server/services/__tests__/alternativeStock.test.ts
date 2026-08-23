@@ -109,4 +109,30 @@ describe("listAlternativeStockBreakdown", () => {
     expect(all[0].totalBase).toBe(0);
     expect(all[0].variants.every((v) => v.sharePct === 0)).toBe(true);
   });
+
+  it("الرصيد السالب: الحصص من الموجب فقط (السالب حصّته 0، بلا حصصٍ خارج [0,100])", async () => {
+    // v1 = ‎−5 (عجز)، v2 = 10، v3 = 0 ⇒ الموجب = 10 ⇒ v2 = 100٪، v1 = 0٪، v3 = 0٪. الإجماليّ الصافي = 5.
+    const d = db();
+    await d.delete(s.branchStock);
+    await d.insert(s.branchStock).values([
+      { variantId: 1, branchId: 1, quantity: -5 },
+      { variantId: 2, branchId: 1, quantity: 10 },
+      { variantId: 3, branchId: 1, quantity: 0 },
+    ]);
+    const p = (await listAlternativeStockBreakdown({ branchId: 1 }))[0];
+    expect(p.totalBase).toBe(5); // الصافي المُوقَّع يبقى ظاهراً
+    const byId = new Map(p.variants.map((v) => [v.variantId, v]));
+    expect(byId.get(1)!.quantityBase).toBe(-5); // القيمة السالبة تبقى ظاهرة
+    expect(byId.get(1)!.sharePct).toBe(0);
+    expect(byId.get(2)!.sharePct).toBe(100);
+    expect(byId.get(3)!.sharePct).toBe(0);
+    // لا حصّة خارج [0,100].
+    expect(p.variants.every((v) => v.sharePct >= 0 && v.sharePct <= 100)).toBe(true);
+  });
+
+  it("مرشّح productIds يحصر بالصفحة المرئية؛ والقائمة الفارغة تعيد فراغاً بلا استعلام كامل", async () => {
+    expect((await listAlternativeStockBreakdown({ productIds: [1] })).map((p) => p.productId)).toEqual([1]);
+    expect(await listAlternativeStockBreakdown({ productIds: [2] })).toEqual([]); // 2 بلا بدائل
+    expect(await listAlternativeStockBreakdown({ productIds: [] })).toEqual([]); // صفحةٌ فارغة
+  });
 });

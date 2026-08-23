@@ -31,13 +31,17 @@ export interface AlternativeStockBreakdown {
 /**
  * توزيع مخزون كل منتجٍ له بديلٌ حقيقيّ منشور (الأصل + بدائله) مع الإجماليّ وحصص الترميزات.
  * @param opts.productId حصر النتيجة بمنتجٍ واحد (لبطاقة المنتج)؛ الحذف = كل المنتجات ذات البدائل (التقرير).
+ * @param opts.productIds حصرٌ بمجموعة معرّفات (لتقييد استعلام شاشة المنتجات بصفحتها المرئية لا الكتالوج كلّه).
  * @param opts.branchId مخزون فرعٍ بعينه؛ الحذف = مجموع كل الفروع.
  */
 export async function listAlternativeStockBreakdown(
-  opts: { productId?: number | null; branchId?: number | null } = {},
+  opts: { productId?: number | null; productIds?: number[] | null; branchId?: number | null } = {},
 ): Promise<AlternativeStockBreakdown[]> {
   const db = requireDb();
   const branchId = opts.branchId ?? null;
+
+  // قائمةٌ فارغة صراحةً (صفحةٌ بلا منتجات) ⇒ لا شيء، بلا استعلام كتالوج كامل (Codex P2).
+  if (opts.productIds && opts.productIds.length === 0) return [];
 
   // (١) المنتجات النشطة (السلعية) التي لها متغيّرُ ALTERNATIVE نشطٌ واحد على الأقل.
   const altProductConds = [
@@ -48,6 +52,7 @@ export async function listAlternativeStockBreakdown(
     eq(products.isBundle, false),
   ];
   if (opts.productId != null) altProductConds.push(eq(products.id, opts.productId));
+  if (opts.productIds && opts.productIds.length) altProductConds.push(inArray(products.id, opts.productIds));
   const altProductRows = await db
     .selectDistinct({ productId: productVariants.productId })
     .from(productVariants)
@@ -121,9 +126,15 @@ export async function listAlternativeStockBreakdown(
   const out: AlternativeStockBreakdown[] = [];
   for (const group of Array.from(byProduct.values())) {
     const totalBase = group.variants.reduce((s, v) => s + v.quantityBase, 0);
+    // الحصص تُحسَب من الرصيد **الموجب** فقط: branchStock قد يكون سالباً (وضع الافتتاح/الأوفلاين)،
+    // والقسمة على المجموع المُوقَّع تُنتج حصصاً خارج [0,100] (‎−100٪/200٪) أو صفراً مُضلِّلاً (Codex P2).
+    // الكمية السالبة عجزٌ لا حصّة ⇒ حصّتها 0، والمقام مجموع الكميات الموجبة. القيمة السالبة تبقى ظاهرةً.
+    const positiveTotal = group.variants.reduce((s, v) => s + Math.max(0, v.quantityBase), 0);
     for (const v of group.variants) {
       v.sharePct =
-        totalBase > 0 ? Math.round((v.quantityBase / totalBase) * 1000) / 10 : 0;
+        positiveTotal > 0 && v.quantityBase > 0
+          ? Math.round((v.quantityBase / positiveTotal) * 1000) / 10
+          : 0;
     }
     // الأصل أولاً ثمّ البدائل، وكلٌّ بترتيب المعرّف — عرضٌ ثابت.
     group.variants.sort(

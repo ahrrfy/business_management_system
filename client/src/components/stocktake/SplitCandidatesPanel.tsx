@@ -63,6 +63,8 @@ export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
         // بعد الفصل يتغيّر نطاق التحقّق (بديلٌ جديد) — حدِّثه وإلّا بقي زرّ «أنشئ جرد تحقّق» على IDs قديمة
         // أو معطَّلاً إن كان هذا أوّل بديل (مراجعة Codex P2).
         utils.stocktakes.alternativeReconciliationScope.invalidate(),
+        // وتقرير توزيع المخزون يعرض بديلاً جديداً ⇒ حدِّثه كي لا يبقى ناقصاً بعد الفصل (Codex P2).
+        utils.stocktakes.alternativeStockBreakdown.invalidate(),
       ]);
     },
     onError: (e) => notify.err(e),

@@ -240,12 +240,21 @@ export const stocktakeRouter = router({
 
   /** توزيع مخزون البدائل: الإجماليّ + حصّة كل ترميز لكل منتجٍ له بديل (تقرير، أو منتجٌ واحد). */
   alternativeStockBreakdown: inventoryReadProcedure
-    .input(z.object({ productId: idNum.optional(), branchId: idNum.optional() }).optional())
+    .input(
+      z
+        .object({
+          productId: idNum.optional(),
+          productIds: z.array(idNum).max(200).optional(),
+          branchId: idNum.optional(),
+        })
+        .optional(),
+    )
     .query(async ({ input, ctx }) => {
       // عزل الفرع: مديرُ الفرع يرى مخزون فرعه فقط؛ الأدمن يختار فرعاً أو يجمع الكل.
       const restricted = restrictedBranchOf(ctx);
       return listAlternativeStockBreakdown({
         productId: input?.productId ?? null,
+        productIds: input?.productIds ?? null,
         branchId: restricted ?? input?.branchId ?? null,
       });
     }),

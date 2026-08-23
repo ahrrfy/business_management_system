@@ -121,16 +121,8 @@ export default function Products() {
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveTo, setMoveTo] = useState<number | null>(null);
   const [deleteFor, setDeleteFor] = useState<{ productId: number; name: string } | null>(null);
-  // توزيع مخزون البدائل: خريطة productId ⇒ التفصيل، لعرض إجراء «توزيع البدائل» على منتجاتها فقط.
+  // توزيع مخزون البدائل: التفصيل المفتوح في الحوار (يُملأ من إجراء الصفّ).
   const [breakdownProduct, setBreakdownProduct] = useState<AltBreakdown | null>(null);
-  const altBreakdownQ = trpc.stocktakes.alternativeStockBreakdown.useQuery(
-    { branchId: branchId ?? undefined },
-    { enabled: branchId != null },
-  );
-  const altByProduct = useMemo(
-    () => new Map((altBreakdownQ.data ?? []).map((p) => [Number(p.productId), p])),
-    [altBreakdownQ.data],
-  );
   const importMut = trpc.imports.products.useMutation();
   const categoriesQ = trpc.catalog.categories.useQuery();
   const dq = useDebouncedValue(q, 200);
@@ -158,6 +150,20 @@ export default function Products() {
   const total = list.data?.total ?? 0;
   const effectiveBranchId = list.data?.branchId ?? branchId;
   const pages = Math.max(1, Math.ceil(total / limit));
+
+  // توزيع البدائل: نستعلم فقط لمنتجات **الصفحة المرئية** (لا الكتالوج كلّه) لتزيين إجراء الصفّ — Codex P2.
+  const visibleProductIds = useMemo(
+    () => Array.from(new Set(rows.map((r) => Number(r.productId)))),
+    [rows],
+  );
+  const altBreakdownQ = trpc.stocktakes.alternativeStockBreakdown.useQuery(
+    { productIds: visibleProductIds, branchId: branchId ?? undefined },
+    { enabled: branchId != null && visibleProductIds.length > 0 },
+  );
+  const altByProduct = useMemo(
+    () => new Map((altBreakdownQ.data ?? []).map((p) => [Number(p.productId), p])),
+    [altBreakdownQ.data],
+  );
 
   const setActive = trpc.catalog.setProductActive.useMutation({
     onSuccess: (res) => {

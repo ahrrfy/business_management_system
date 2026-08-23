@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChevronDown, Boxes } from "lucide-react";
 
@@ -99,7 +100,18 @@ export function AlternativeStockReportPanel() {
           {q.isLoading && (
             <p className="py-4 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
           )}
-          {!q.isLoading && products.length === 0 && (
+          {/* فشلُ الطلب (شبكة/صلاحية) لا يُعرَض كـ«لا بدائل» — نميّزه ونتيح إعادة المحاولة (Codex P2). */}
+          {q.isError && (
+            <div className="flex flex-wrap items-center justify-between gap-2 py-3">
+              <p className="text-sm text-money-negative">
+                تعذّر تحميل توزيع المخزون — تحقّق من الصلاحية أو الاتصال.
+              </p>
+              <Button size="sm" variant="outline" onClick={() => void q.refetch()}>
+                إعادة المحاولة
+              </Button>
+            </div>
+          )}
+          {!q.isLoading && !q.isError && products.length === 0 && (
             <p className="py-4 text-center text-sm text-muted-foreground">
               لا منتجات لها بدائل بعد — افصل بديلاً أولاً ليظهر توزيع مخزونه.
             </p>
