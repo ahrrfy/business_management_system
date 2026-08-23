@@ -2215,6 +2215,21 @@ interface CartPanelProps {
 
 function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd }: CartPanelProps) {
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
+
+  // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك «لا يظهر المنتج المضاف حتى أنزل يدوياً»):
+  // `addRow` يضبط selId على المنتج المُدرَج/المزاد كمّياً؛ نحرك السلّة كي يظهر ذلك السطر في مجال
+  // الرؤية. المسح المتوالي أو النقر لا يجبر الكاشير على التمرير. `block: nearest` يمنع القفزات
+  // العدوانيّة (إن كان السطر ظاهراً أصلاً لا يتحرّك). `behavior: smooth` يجعل الحركة ناعمةً
+  // فيتتبّعها الكاشير بصرياً. عند فراغ selId (سلّةٌ فارغة/تفريغ) لا نفعل شيئاً.
+  const selectedRowRef = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (selId == null) return;
+    // rAF: التمرير بعد الرسم كي نضمن أنّ الصفَّ في DOM وارتفاعه محسوب.
+    const raf = requestAnimationFrame(() => {
+      selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [selId, cart.length]);
   const TH: React.CSSProperties = { padding: "9px 10px", fontWeight: 700, fontSize: 12.5, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
   const TD: React.CSSProperties = { padding: "10px 8px", textAlign: "center", fontSize: 14 };
 
@@ -2396,6 +2411,7 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
               const accent = openingSellable ? C.amber : isOut ? C.danger : isShort ? C.amber : "transparent";
               return (
                 <tr key={lineId}
+                  ref={selected ? selectedRowRef : undefined}
                   onClick={() => { setSelId(lineId); setNumMode("QTY"); }}
                   style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: rowBg, transition: "background .08s" }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = selected ? C.primarySoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : C.muted; }}

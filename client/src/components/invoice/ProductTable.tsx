@@ -9,6 +9,7 @@
  * فقط باسم «حصة الضريبة» بجانب «الإجمالي»؛ خلاف ذلك يُخفى العمود تماماً.
  */
 import type { Dispatch } from "react";
+import { useEffect, useRef } from "react";
 import { AlertTriangle, Gift, Package, ShoppingCart, X } from "lucide-react";
 import { priceDecimalsFor } from "@shared/moneyPrecision";
 import { Button } from "@/components/ui/button";
@@ -227,6 +228,25 @@ export function ProductTable({
   const th = "sticky top-0 z-[2] whitespace-nowrap border-b-2 bg-muted px-2 py-2 text-center text-xs font-bold text-muted-foreground";
   const td = "px-2 py-1.5 text-center text-sm align-middle";
 
+  // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك على شاشات الكاشيرات — طُبِّق على فاتورة
+  // البيع المتقدّمة والشراء وعرض السعر ومرتجع الشراء: كلّها تستهلك ProductTable). لا مفهومَ
+  // «مختار» هنا (كلّ سطرٍ قابلٌ للتحرير المباشر) ⇒ نتّبع **الطول** ونحرّك آخر صفٍّ في مجال الرؤية
+  // بعد كلّ إضافة. تكرارُ نفس المنتج لا يغيّر الطول (يزيد الكمّية على السطر الأصل) ⇒ لا تمرير
+  // بلا داع، وهو ما يريده الكاشير: يرى المنتج «الجديد» لا كلّ تعديل كمّية. `block: nearest` يُبقي
+  // القفزة ناعمةً وقابلةً للاحتواء (لا يقطع الكاشير عن تحرير سطرٍ يستعرضه أعلى الجدول).
+  const lastRowRef = useRef<HTMLTableRowElement | null>(null);
+  const prevItemsLen = useRef(items.length);
+  useEffect(() => {
+    if (items.length > prevItemsLen.current) {
+      const raf = requestAnimationFrame(() => {
+        lastRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      });
+      prevItemsLen.current = items.length;
+      return () => cancelAnimationFrame(raf);
+    }
+    prevItemsLen.current = items.length;
+  }, [items.length]);
+
   return (
     <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-xl border bg-card print:overflow-visible">
       {!sourceLocked && (
@@ -328,6 +348,7 @@ export function ProductTable({
               return (
                 <tr
                   key={`${item.productUnitId}-${idx}`}
+                  ref={idx === items.length - 1 ? lastRowRef : undefined}
                   className={cn(
                     "border-b transition hover:bg-muted/50",
                     stock.isKnown && stock.isOut && "border-s-[3px] border-s-destructive bg-destructive/5",

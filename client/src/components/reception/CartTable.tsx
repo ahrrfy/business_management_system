@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   FileText,
   Image as ImageIcon,
@@ -55,6 +55,17 @@ export function CartTable({
   onEditCustomization,
   grandTotal, cartCount,
 }: CartTableProps) {
+  // ٢٣/٨ — تمريرٌ تلقائيّ للسطر المُدرَج/المزاد كمّياً (بلاغ المالك «لا يظهر آخر منتجٍ مضاف»):
+  // كاشير الاستقبال يضبط `selKey` على السطر الفعّال في `addRow`/المسح؛ يكفي أن يتّبع الجدولُ
+  // ذلك المرجع لتُلغى الحاجة للتمرير اليدويّ. `block: nearest` يمنع القفزة إن كان الصفّ ظاهراً.
+  const selectedRowRef = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (!selKey) return;
+    const raf = requestAnimationFrame(() => {
+      selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [selKey, cart.length]);
   const variantIds = Array.from(new Set(cart.filter((line) => !line.custom && !line.row.isService).map((line) => line.row.variantId)));
   const allocationsQ = trpc.reservations.activeAllocations.useQuery(
     { branchId, variantIds },
@@ -103,6 +114,7 @@ export function CartTable({
                 return (
                   <tr
                     key={l.key}
+                    ref={selected ? selectedRowRef : undefined}
                     onClick={() => onSelect(l.key)}
                     className={cn(
                       "cursor-pointer border-b align-top",
