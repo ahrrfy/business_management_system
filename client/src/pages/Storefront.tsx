@@ -24,6 +24,7 @@ import {
   LogIn,
   MessageCircle,
   Minus,
+  Layers,
   LayoutGrid,
   Package,
   Store,
@@ -725,6 +726,8 @@ type RowProduct = {
   bundleImageUrls?: string[];
   unitName: string;
   inStock?: boolean;
+  /** للمنتج بدائلُ حقيقية (ماركات مختلفة تحت اسمٍ واحد) — تُوسَم البطاقة لتدعو لفتح التفاصيل. */
+  hasAlternatives?: boolean;
 };
 function ProductRowCard({ p, onSelect, onAdd, recentlyAdded = false }: { p: RowProduct; onSelect: () => void; onAdd: () => void; recentlyAdded?: boolean }) {
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
@@ -743,6 +746,11 @@ function ProductRowCard({ p, onSelect, onAdd, recentlyAdded = false }: { p: RowP
       <div className="flex flex-1 flex-col gap-1 p-2">
         <button onClick={onSelect} className="text-right">
           <span className="line-clamp-2 min-h-[2.4em] text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">{p.productName}</span>
+          {p.hasAlternatives && (
+            <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+              <Layers aria-hidden className="size-3" /> ماركات متعددة
+            </span>
+          )}
         </button>
         <div className="flex items-baseline gap-1.5">
           <span className="text-sm font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(p.salePrice ?? p.price)}</span>
@@ -1945,8 +1953,8 @@ export default function Storefront() {
                     <p className="mt-0.5 text-xs text-slate-500">الوحدة: {detailUnit?.unitName ?? detailQ.data.unitName}</p>
                     {(detailQ.data.variants?.length ?? 0) > 1 && (
                       <div className="mt-3" aria-label="اختر الألوان والمقاسات والكميات المطلوبة">
-                        <p className="mb-1 text-xs font-extrabold text-slate-700 dark:text-slate-200">اختر اللون أو القياس والكمية</p>
-                        <p className="mb-2 text-[11px] text-slate-500">يمكنك اختيار أكثر من لون أو قياس، ولكل اختيار كمية مستقلة.</p>
+                        <p className="mb-1 text-xs font-extrabold text-slate-700 dark:text-slate-200">{detailQ.data.hasAlternatives ? "اختر الماركة أو النوع والكمية" : "اختر اللون أو القياس والكمية"}</p>
+                        <p className="mb-2 text-[11px] text-slate-500">{detailQ.data.hasAlternatives ? "تُباع تحت اسمٍ واحد ماركاتٌ/أنواعٌ مختلفة، لكلٍّ مخزونه وسعره — اختر ما يناسبك." : "يمكنك اختيار أكثر من لون أو قياس، ولكل اختيار كمية مستقلة."}</p>
                         <div className="space-y-2">
                           <div className="grid gap-1.5 sm:grid-cols-2">
                           {detailQ.data.variants!.map((variant) => (
@@ -1955,6 +1963,7 @@ export default function Storefront() {
                                 <div className="flex min-w-0 items-center gap-1.5">
                                   {variant.colorHex && <span className="size-4 shrink-0 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
                                   <span className="truncate">{variant.color || variant.label}</span>
+                                  {variant.variantKind === "ALTERNATIVE" && <span className="shrink-0 rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:bg-slate-600 dark:text-slate-100">ماركة مختلفة</span>}
                                   {variant.size && <span className="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-slate-700 dark:text-slate-300">المقاس {variant.size}</span>}
                                 </div>
                                 <span className="shrink-0 text-[10px] text-slate-400">{variant.inStock ? `${variant.units.filter((unit) => unit.inStock).length} خيارات` : "نفد"}</span>
@@ -1986,7 +1995,12 @@ export default function Storefront() {
                     )}
                     {(detailQ.data.variants?.length ?? 0) <= 1 && (detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 0 && (
                       <div className="mt-3" aria-label="اختر القياس أو وحدة البيع والكمية">
-                        {(detailVariant?.color || detailVariant?.size) && <p className="mb-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">الاختيار: {[detailVariant.color, detailVariant.size].filter(Boolean).join(" · ")}</p>}
+                        {(detailVariant?.variantName || detailVariant?.color || detailVariant?.size) && (
+                          <p className="mb-1.5 flex flex-wrap items-center gap-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">
+                            <span>الاختيار: {[detailVariant.variantName, detailVariant.color, detailVariant.size].filter(Boolean).join(" · ")}</span>
+                            {detailVariant.variantKind === "ALTERNATIVE" && <span className="rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 dark:bg-slate-600 dark:text-slate-100">ماركة مختلفة</span>}
+                          </p>
+                        )}
                         <div className="space-y-1.5">
                           {(detailVariant?.units ?? detailQ.data.storeUnits ?? []).map((unit) => {
                             const selected = (detailUnit?.productUnitId ?? detailQ.data!.productUnitId) === unit.productUnitId;

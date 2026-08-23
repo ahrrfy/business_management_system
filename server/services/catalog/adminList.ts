@@ -44,6 +44,8 @@ export interface AdminProductRow {
   productUpdatedAt: Date;
   variantId: number | null;
   variantName: string | null;
+  /** VARIANT = لون/قياس؛ ALTERNATIVE = منتجٌ مختلف تحت اسمٍ واحد — يتيح للتطبيق وسمه بشارة مميّزة. */
+  variantKind: "VARIANT" | "ALTERNATIVE" | null;
   color: string | null;
   colorHex: string | null;
   size: string | null;
@@ -164,6 +166,7 @@ export async function listProductsAdmin(
       productUpdatedAt: products.updatedAt,
       variantId: productVariants.id,
       variantName: productVariants.variantName,
+      variantKind: productVariants.variantKind,
       color: productVariants.color,
       colorHex: productVariants.colorHex,
       size: productVariants.size,
@@ -286,6 +289,7 @@ export async function listProductsAdmin(
       productUpdatedAt: r.productUpdatedAt,
       variantId: r.variantId != null ? Number(r.variantId) : null,
       variantName: r.variantName ?? null,
+      variantKind: r.variantKind ?? null,
       color: r.color ?? null,
       colorHex: r.colorHex ?? null,
       size: r.size ?? null,
