@@ -316,15 +316,24 @@ export function PaymentPanel({
         </div>
 
         {!deferred && <>
-        {/* المبلغ المدفوع — حقلٌ نصّي حقيقي (لوحة المفاتيح تكتب مباشرة، بلا حاسبة إضافية). */}
+        {/* المبلغ المدفوع — حقلٌ نصّي حقيقي (لوحة المفاتيح تكتب مباشرة، بلا حاسبة إضافية).
+            ٢٣/٨ — بلاغ فحص UX: كان `replace(/[^\d.]/g, "")` يبتلع الفاصلة العربية `،`
+            صامتاً ⇒ الكاشير يكتب «١٠٫٥» بلوحة عربية فتصير «105» (×١٠ خطأ ماليّ صامت).
+            الحلّ (مرآة POS.tsx): نطبّع `،/,` إلى `.` ثمّ نرفض ما لا يمثّل رقماً منتهياً — بلا
+            تحوّلٍ صامت. `.` وحدَه أو سلسلة فارغة أوّليّة يُقبلان (حالة تحرير). */}
         <div className="flex h-10 items-center gap-2 rounded-lg border-[1.5px] bg-muted/40 px-3 focus-within:border-primary">
           <span className="shrink-0 text-xs text-muted-foreground">المدفوع</span>
           <input
             value={payInput}
             onChange={(e) => {
-              const v = e.target.value.replace(/[^\d.]/g, "");
-              if ((v.match(/\./g) ?? []).length <= 1) setPayInput(v);
+              const raw = e.target.value.replace(/[،,]/g, ".");
+              if (raw === "") { setPayInput(""); return; }
+              // نطلب رقماً واحداً على الأقلّ (يمنع `.` منفرداً الذي يُفشل D() لاحقاً).
+              if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(raw)) return;
+              if (!Number.isFinite(Number(raw))) return;
+              setPayInput(raw);
             }}
+            onFocus={(e) => e.currentTarget.select()}
             inputMode="decimal"
             dir="ltr"
             placeholder="0"
@@ -484,12 +493,21 @@ export function PaymentPanel({
 
         {/* زرّا الإتمام — يتّجهان لأقصى الشريط، جنباً إلى جنب، ثابتان دائماً (البار لا يُقصّ). */}
         <div className="ms-auto flex items-center gap-2">
-          <span className="hidden text-[10px] text-muted-foreground lg:inline">F4 دفع · F2 بحث</span>
+          {/* ٢٣/٨: تلميحٌ ظاهرٌ على كلّ الأحجام (كان مخفياً على &lt;lg — وهي شاشات الكاشير اللوحيّة).
+              الاختصار سرٌّ قبيليٌّ لا معنى له إن لم يره الكاشير. */}
+          <span className="text-[9px] text-muted-foreground sm:text-[10px]">F4 دفع · F2 بحث</span>
           {!deferred && (
             <button
               type="button"
               disabled={cartEmpty || submitting || !hasShift}
               onClick={() => onSubmit({ quickFullPay: true })}
+              title={
+                // ٢٣/٨ (بلاغ فحص UX): زرٌّ معطَّلٌ بلا شرحٍ يترك الكاشير محتاراً — `title` يعلن السبب.
+                submitting ? "جارٍ الإرسال…" :
+                cartEmpty ? "أضف منتجاً أوّلاً" :
+                !hasShift ? "افتح وردية استقبال أوّلاً" :
+                "تحصيل المطلوب الآن وطباعة (F4)"
+              }
               className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-4 text-sm font-black text-white shadow-md transition-colors hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
               <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
@@ -499,6 +517,14 @@ export function PaymentPanel({
             type="button"
             disabled={cartEmpty || submitting || !hasShift || (deferred && !deferredAvailable)}
             onClick={() => onSubmit({ quickFullPay: false })}
+            title={
+              submitting ? "جارٍ الإرسال…" :
+              cartEmpty ? "أضف منتجاً أوّلاً" :
+              !hasShift ? "افتح وردية استقبال أوّلاً" :
+              (deferred && !deferredAvailable) ? "الآجل يحتاج عميلاً مرتبطاً بهاتفٍ عراقيّ" :
+              deferred ? "إتمام بدون عربون (يُسجَّل ذمّةً على العميل)" :
+              "إتمام الطلب وطباعة"
+            }
             className="inline-flex h-11 min-w-48 items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
           >
             {submitting ? (
