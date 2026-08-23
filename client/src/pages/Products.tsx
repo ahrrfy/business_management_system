@@ -32,11 +32,13 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtAr } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { AlternativeStockCard } from "@/components/stocktake/AlternativeStockBreakdown";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { CategoryOptionList } from "@/lib/categoryTree";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
+type AltBreakdown = RouterOutputs["stocktakes"]["alternativeStockBreakdown"][number];
 
 /**
  * البكج بلا رصيدٍ خاصّ — رقمه مشتقٌّ من أضعف مكوّن. الصفر بلا تفسير كان يُقرأ «النظام معطوب»،
@@ -119,6 +121,8 @@ export default function Products() {
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveTo, setMoveTo] = useState<number | null>(null);
   const [deleteFor, setDeleteFor] = useState<{ productId: number; name: string } | null>(null);
+  // توزيع مخزون البدائل: التفصيل المفتوح في الحوار (يُملأ من إجراء الصفّ).
+  const [breakdownProduct, setBreakdownProduct] = useState<AltBreakdown | null>(null);
   const importMut = trpc.imports.products.useMutation();
   const categoriesQ = trpc.catalog.categories.useQuery();
   const dq = useDebouncedValue(q, 200);
@@ -146,6 +150,20 @@ export default function Products() {
   const total = list.data?.total ?? 0;
   const effectiveBranchId = list.data?.branchId ?? branchId;
   const pages = Math.max(1, Math.ceil(total / limit));
+
+  // توزيع البدائل: نستعلم فقط لمنتجات **الصفحة المرئية** (لا الكتالوج كلّه) لتزيين إجراء الصفّ — Codex P2.
+  const visibleProductIds = useMemo(
+    () => Array.from(new Set(rows.map((r) => Number(r.productId)))),
+    [rows],
+  );
+  const altBreakdownQ = trpc.stocktakes.alternativeStockBreakdown.useQuery(
+    { productIds: visibleProductIds, branchId: branchId ?? undefined },
+    { enabled: branchId != null && visibleProductIds.length > 0 },
+  );
+  const altByProduct = useMemo(
+    () => new Map((altBreakdownQ.data ?? []).map((p) => [Number(p.productId), p])),
+    [altBreakdownQ.data],
+  );
 
   const setActive = trpc.catalog.setProductActive.useMutation({
     onSuccess: (res) => {
@@ -563,6 +581,15 @@ export default function Products() {
                             gate: { module: "inventory", level: "READ" },
                           },
                           {
+                            key: "altBreakdown",
+                            kind: "view",
+                            label: "توزيع البدائل",
+                            // يظهر فقط للمنتجات التي لها بدائل حقيقية (من خريطة التوزيع).
+                            hidden: !altByProduct.has(r.productId),
+                            onSelect: () => setBreakdownProduct(altByProduct.get(r.productId) ?? null),
+                            gate: { module: "inventory", level: "READ" },
+                          },
+                          {
                             key: "toggle",
                             kind: "approve",
                             label: r.productIsActive ? "تعطيل" : "تفعيل",
@@ -594,6 +621,19 @@ export default function Products() {
           </ScrollTableShell>
         </CardContent>
       </Card>
+
+      {/* توزيع مخزون البدائل لمنتجٍ واحد (من إجراء الصفّ). */}
+      <Dialog open={breakdownProduct != null} onOpenChange={(o) => !o && setBreakdownProduct(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-right">توزيع مخزون البدائل</DialogTitle>
+            <DialogDescription className="text-right">
+              الإجماليّ = مجموع مخزون الترميزات (الأصل + البدائل)، ولكلّ ترميزٍ حصّته من الإجماليّ.
+            </DialogDescription>
+          </DialogHeader>
+          {breakdownProduct && <AlternativeStockCard product={breakdownProduct} />}
+        </DialogContent>
+      </Dialog>
 
       <SelectionBar
         count={sel.count}

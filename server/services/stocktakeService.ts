@@ -36,3 +36,4 @@ export * from "./stocktake/valuationIntegrity";
 export * from "./stocktake/unknownScans";
 export * from "./stocktake/barcodeCoverage";
 export * from "./stocktake/alternativeSplit";
+export * from "./stocktake/alternativeStock";
