@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 const factValue = z.string().trim().min(1).max(160);
-const inputDescription = z.string().trim().max(2_000);
+const inputDescription = z.string().trim().max(5_000);
 
 export const productFactsSchema = z
   .object({
@@ -168,21 +168,54 @@ function normalizeClaimText(value: string): string {
     .trim();
 }
 
+const SAFE_CLAIM_TOKENS = new Set([
+  "و",
+  "في",
+  "من",
+  "على",
+  "مع",
+  "الى",
+  "إلى",
+  "عن",
+  "هذا",
+  "هذه",
+  "ذلك",
+  "تلك",
+  "يحتوي",
+  "تحتوي",
+  "مناسب",
+  "مناسبة",
+  "للاستخدام",
+  "للاستخدامات",
+  "الاستخدام",
+  "لـ",
+  "ذو",
+  "ذات",
+  "بحجم",
+  "بلون",
+  "ب",
+]);
+
+function claimTokens(value: string): string[] {
+  return normalizeClaimText(value)
+    .split(/\s+/)
+    .map((token) => token.replace(/^ال(?=.{3,})/, ""))
+    .filter((token) => token.length >= 3 && !SAFE_CLAIM_TOKENS.has(token));
+}
+
 function claimIsGrounded(claimText: string, evidenceValues: string[]): boolean {
   const claim = normalizeClaimText(claimText);
-  const claimTokens = new Set(
-    claim.split(/\s+/).filter((token) => token.length >= 3),
+  const claimTokenSet = new Set(claimTokens(claimText));
+  const claimNumbers = extractNumericTokens(claim);
+  const evidenceTokenSets = evidenceValues.map((value) => new Set(claimTokens(value)));
+  const evidenceNumbers = evidenceValues.flatMap(extractNumericTokens);
+
+  if (claimNumbers.some((token) => !evidenceNumbers.includes(token))) return false;
+  if (claimTokenSet.size === 0) return claimNumbers.length > 0 && evidenceNumbers.length > 0;
+
+  return evidenceTokenSets.some((tokens) =>
+    Array.from(claimTokenSet).every((token) => tokens.has(token)),
   );
-  for (const value of evidenceValues) {
-    const numeric = extractNumericTokens(value);
-    if (numeric.length > 0 && numeric.every((token) => claim.includes(token)))
-      return true;
-    const evidenceTokens = normalizeClaimText(value)
-      .split(/\s+/)
-      .filter((token) => token.length >= 3);
-    if (evidenceTokens.some((token) => claimTokens.has(token))) return true;
-  }
-  return false;
 }
 
 export function validateAiProductDraft(

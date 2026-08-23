@@ -103,7 +103,7 @@ export function AiProductContentAssistant({
       setCacheHit(result.cacheHit);
       setSavedDraftId(null);
       setEdited({});
-      if (productId) {
+      if (productId && result.validation.ok) {
         saveDraft.mutate({
           productId,
           sourceFacts: facts,

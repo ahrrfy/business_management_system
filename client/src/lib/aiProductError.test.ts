@@ -13,6 +13,18 @@ describe("describeAiError", () => {
     expect(result.retryable).toBe(false);
   });
 
+  it("explains a daily usage cap without presenting it as missing configuration", () => {
+    const result = describeAiError({
+      data: { code: "PRECONDITION_FAILED" },
+      message: "بلغ الاستوديو سقف الاستخدام اليومي المضبوط لحماية الميزانية. راجع المدير.",
+    });
+
+    expect(result.title).toContain("سقف الاستخدام اليومي");
+    expect(result.message).toContain("الميزانية");
+    expect(result.message).not.toContain("المفتاح");
+    expect(result.retryable).toBe(false);
+  });
+
   it("offers retry for transient provider failures", () => {
     expect(describeAiError({ data: { code: "TIMEOUT" } }).retryable).toBe(true);
     expect(
