@@ -21,6 +21,7 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { D, round2, toBase, fmt } from "@/lib/money";
@@ -862,7 +863,23 @@ export default function SalesInvoiceNew() {
   );
 
   return (
-    <div ref={containerRef} dir="rtl" className="flex h-full flex-col gap-3">
+    <div
+      ref={containerRef}
+      dir="rtl"
+      // ٢٣/٨ (بلاغ فحص UX): وضع التصحيح كان يبدو كإنشاءٍ عاديّ عدا العنوان — في يومٍ مزدحم
+      // قد يُحفَظ تصحيحٌ ظنّاً أنّه فاتورة جديدة (يُلغي الأصل!). حلقةٌ عنبريّة حول الجذر
+      // تجعل الوضع لا يُخطئ للحظة.
+      className={cn(
+        "flex h-full flex-col gap-3",
+        isCorrection && "rounded-lg ring-2 ring-[var(--sem-warn)]/40",
+      )}
+    >
+      {isCorrection && (
+        <div className="flex items-center gap-2 rounded-md border-2 border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-extrabold text-[var(--sem-warn)]">
+          <AlertTriangle aria-hidden className="size-4 shrink-0" />
+          <span>وضع تصحيح — سيُلغى الأصل ({original.data?.invoiceNumber ?? "…"}) ويُصدَر بديل بمرجعه.</span>
+        </div>
+      )}
       {/* شريط العنوان */}
       <PageHeader
         title={

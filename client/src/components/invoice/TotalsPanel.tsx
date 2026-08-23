@@ -118,8 +118,8 @@ export function TotalsPanel({
             <Button
               type="button"
               variant="outline"
-              size="icon"
-              className="h-7 w-7 text-xs font-bold text-primary"
+              size="sm"
+              className="h-7 min-w-11 px-1.5 text-xs font-bold text-primary"
               onClick={() =>
                 dispatch({
                   type: "SET_FIELD",
@@ -127,9 +127,11 @@ export function TotalsPanel({
                   value: state.globalDiscountType === "percent" ? "amount" : "percent",
                 })
               }
-              aria-label="تبديل نوع الخصم"
+              // ٢٣/٨ (بلاغ فحص UX): كان `#` وحدَه مبهماً بالعربية. صار «د.ع» صريحاً + `title` يشرح.
+              title="اضغط لتبديل بين نسبة مئوية (%) ومبلغ ثابت (د.ع)"
+              aria-label={state.globalDiscountType === "percent" ? "الخصم نسبةٌ مئويّة — اضغط للتحويل إلى مبلغ" : "الخصم مبلغٌ بالدينار — اضغط للتحويل إلى نسبة"}
             >
-              {state.globalDiscountType === "percent" ? "%" : "#"}
+              {state.globalDiscountType === "percent" ? "%" : "د.ع"}
             </Button>
           </div>
           {Number(overrideDiscountAmount ?? t.globalDiscAmt) > 0 && (

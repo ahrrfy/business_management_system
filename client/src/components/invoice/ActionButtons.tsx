@@ -89,6 +89,12 @@ export function ActionButtons({
           type="button"
           disabled={!hasItems || saving}
           onClick={() => onAction("save")}
+          title={
+            // ٢٣/٨ (بلاغ فحص UX): زرٌّ خابٍ صامتاً ⇒ الموظّف يظنّ عطلاً. `title` يشرح السبب.
+            saving ? "جارٍ الحفظ…" :
+            !hasItems ? "أضف منتجاً واحداً على الأقل" :
+            `${primaryLabel ?? "حفظ واعتماد"} (F4)`
+          }
           className={cn(
             "h-11 w-full text-sm font-bold text-white",
             hasItems && typeInfo.colorBg,
@@ -99,6 +105,7 @@ export function ActionButtons({
           ) : (
             <span className="inline-flex items-center gap-1.5">
               <Check aria-hidden className="size-4" /> {primaryLabel ?? "حفظ واعتماد"}
+              <kbd className="ms-auto rounded bg-white/25 px-1.5 py-0.5 font-mono text-[10px] font-bold">F4</kbd>
             </span>
           )}
         </Button>
@@ -111,6 +118,7 @@ export function ActionButtons({
               type="button"
               variant="outline"
               onClick={() => onAction("draft")}
+              title="حفظ كمسوّدة — بلا اعتماد، قابلة للاستكمال لاحقاً"
               className="h-11 border-amber-300/40 bg-amber-50 text-amber-700 hover:bg-amber-100"
             >
               <FilePen aria-hidden className="size-4" /> مسوّدة
@@ -122,9 +130,11 @@ export function ActionButtons({
               variant="outline"
               disabled={!hasItems}
               onClick={() => onAction("print")}
+              title={!hasItems ? "أضف منتجاً واحداً على الأقل" : `${printLabel ?? "حفظ وطباعة"} (F9)`}
               className="h-11"
             >
               <Printer aria-hidden className="size-4" /> {printLabel ?? "حفظ وطباعة"}
+              <kbd className="ms-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-bold">F9</kbd>
             </Button>
           )}
         </div>

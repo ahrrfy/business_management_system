@@ -2281,7 +2281,11 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
     if (c.row.isService) {
       return { isKnown: true, isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
     }
-    const isKnown = c.row.branchId === branchId && c.row.availableBase != null;
+    // ٢٣/٨ (بلاغ المالك «المخزون لا يظهر عند إضافة المنتج»): كان الفحص يطلب `availableBase != null`
+    // حصراً، بينما الكتالوج الأوفلايني (`OfflineCatalogRow`) يخزّن `stockBase` فقط ⇒ الصنف الممسوح
+    // أوفلاين كان يظهر «جارٍ التحقّق» أبد الدهر ويعرض «…» بدل الرقم. الآن نقبل إمّا أحدهما — القيمة
+    // الفعليّة تُحسَب بالتفضيل نفسه (`availableBase ?? stockBase`).
+    const isKnown = c.row.branchId === branchId && (c.row.availableBase != null || c.row.stockBase != null);
     if (!isKnown) return { isKnown: false, isOut: false, isShort: false, availInUnit: 0 };
     const availBase   = c.row.availableBase ?? c.row.stockBase ?? 0;
     const reqBase     = demandByVariant.get(c.row.variantId) ?? c.qty * convFactor; // إجمالي طلب الصنف
