@@ -19,6 +19,7 @@ import { UnitPriceHistory } from "@/components/product/UnitPriceHistory";
 import { trpc } from "@/lib/trpc";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
 import { Badge } from "@/components/ui/badge";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
@@ -183,6 +184,24 @@ export default function SimpleProductEditForm({
     [productType, brand, modelName]
   );
   const finalName = name.trim() || composedName;
+  const aiProductFacts = useMemo(() => ({
+    finalProductName: finalName || null,
+    inputDescription: description.trim() || null,
+    category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
+    productType: productType.trim() || null,
+    brand: brand.trim() || null,
+    modelName: modelName.trim() || null,
+    attributes: {},
+    variants: [],
+    saleUnits: units
+      .filter((u) => u.name.trim())
+      .map((u) => ({
+        name: u.name.trim(),
+        conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
+      })),
+    verifiedClaims: [],
+    audience: null,
+  }), [finalName, description, categoryId, categoriesQ.data, productType, brand, modelName, units]);
 
   // توقيع خفيف للصور (لا نُدرِج data URLs الضخمة): المعرّف + الرئيسية + طول البايتات (يكشف الاستبدال).
   const imagesSig = useMemo(
@@ -415,6 +434,15 @@ export default function SimpleProductEditForm({
           <Field label="التوصيات الآلية" hint="يكمل العلاقات اليدوية بمنتجات متاحة من نفس التصنيف."><div className="flex items-center gap-2 h-9"><Switch checked={allowAutoCartRecommendations} onCheckedChange={setAllowAutoCartRecommendations} /><span className="text-xs text-muted-foreground">{allowAutoCartRecommendations ? "مسموح" : "متوقف"}</span></div></Field>
         </CardContent>
       </Card>
+
+      <AiProductContentAssistant
+        facts={aiProductFacts}
+        productId={productId}
+        onApply={(draft) => {
+          setName(draft.seoTitle || draft.shortTitle);
+          setDescription(draft.description);
+        }}
+      />
 
       {/* ── الوحدات والباركود ── */}
       <Card>
