@@ -540,6 +540,25 @@ export async function listPartyObligations(branchId: number | null) {
   const openScope = sql`FROM deliveryConsignments dc
     WHERE dc.partyId = ${deliveryParties.id}
       AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')${cnBranch}`;
+  /**
+   * ⚠️ فخّ Drizzle حاسم (اكتُشف ٢٣/٨): `${deliveryParties.id}` **داخل قالبٍ خامّ يُبنى
+   * مباشرةً في `.select({...})`** يُترجَم إلى `` `id` `` بلا تأهيلٍ بالجدول. في subquery
+   * له عمودٌ اسمه `id` (كل جدولٍ عندنا)، يربطه MySQL بالجدول الداخليّ فيصير المعنى
+   * «id الصفّ يساوي id الصفّ» ⇒ صفر مطابقاتٍ دائماً. الحلّ **الوحيد المُثبَت**: بناء
+   * القالب كـ`sql\`\`` مستقلّ (كـ`openScope`) ثمّ إسنادُه بـ`${scope}` في التعبير الأمّ —
+   * عندئذٍ يُترجَم المرجع إلى `` `deliveryParties`.`id` `` (مؤهَّلاً). أُثبت الفرق بمخرج
+   * SQL في نفس الجلسة: openScope مؤهَّل، وقالبٌ مباشرٌ بنفس المرجع غير مؤهَّل.
+   */
+  const awaitingCustodyScope = sql`FROM deliveryConsignments dc
+    WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
+      AND (SELECT COALESCE(SUM(CASE
+          WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount
+          WHEN dle.entryType IN ('COD_REMITTED','COD_WRITTEN_OFF','COD_RELEASED') THEN -dle.amount
+          ELSE 0 END), 0)
+        FROM deliveryLedgerEntries dle
+        WHERE dle.consignmentId = dc.id
+          AND dle.entryType IN ('COD_COLLECTED','COD_REMITTED','COD_WRITTEN_OFF','COD_RELEASED')
+      ) > 0`;
   const rows = await db
     .select({
       partyId: deliveryParties.id,
@@ -552,27 +571,15 @@ export async function listPartyObligations(branchId: number | null) {
        * ٢٣/٨ — **سُلِّم — نقدٌ بيد الجهة بانتظار التوريد** (تصويب Codex P1 #2):
        * عدّاد الجسر بين «تم التسليم» و«التسوية». المصدر الحاكم **دفترُ التوصيل**، لا حالةُ
        * الطرد: تسليمٌ بلا تحصيل (staffConfirm بدلياً=0، أو تسليمٌ جزئيّ مورَّد كاملاً)
-       * يُبقي parcelStatus=DELIVERED بلا أيّ عهدةٍ بيد الجهة — عدّه «بيد الجهة» كذبٌ يُوجِّه
-       * التسويةَ نحو تحصيلٍ غير موجود.
+       * يُبقي `parcelStatus=DELIVERED` بلا أيّ عهدةٍ بيد الجهة — عدّه «بيد الجهة» كذبٌ
+       * يُوجِّه التسويةَ نحو تحصيلٍ غير موجود.
        *
-       * الصيغة: للإرسالية عهدةٌ حيّةٌ إن كان `SUM(COD_COLLECTED) − SUM(COD_REMITTED + COD_WRITTEN_OFF + COD_RELEASED) > 0`.
-       * — العدُّ بعدد إرساليات الجهة ذات العهدة الحيّة (بلا نطاق الفرع — الدفترُ يحمل branchId
-       * على القيد نفسه، والفلترةُ عليه تخفي صنفاً موزَّعاً على فروع مختلفة، وشاشةُ التسوية
-       * للجهة نفسها عابرةٌ للفروع كالتوريد).
+       * الصيغة: للإرسالية عهدةٌ حيّةٌ إن كان
+       *   `SUM(COD_COLLECTED) − SUM(COD_REMITTED + COD_WRITTEN_OFF + COD_RELEASED) > 0`.
+       * لتفصيل فخّ Drizzle الذي يحتّم إسناد الـscope عبر `${awaitingCustodyScope}` بدل بنائه
+       * مباشرةً هنا: راجع التعليق فوق `awaitingCustodyScope` أعلاه.
        */
-      deliveredAwaitingRemitCount: sql<number>`(SELECT COUNT(*) FROM (
-        SELECT dle.consignmentId,
-          COALESCE(SUM(CASE
-            WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount
-            WHEN dle.entryType IN ('COD_REMITTED','COD_WRITTEN_OFF','COD_RELEASED') THEN -dle.amount
-            ELSE 0 END), 0) AS custody
-        FROM deliveryLedgerEntries dle
-        WHERE dle.partyId = ${deliveryParties.id}
-          AND dle.consignmentId IS NOT NULL
-          AND dle.entryType IN ('COD_COLLECTED','COD_REMITTED','COD_WRITTEN_OFF','COD_RELEASED')
-        GROUP BY dle.consignmentId
-        HAVING custody > 0
-      ) live)`,
+      deliveredAwaitingRemitCount: sql<number>`(SELECT COUNT(*) ${awaitingCustodyScope})`,
       /**
        * Σ المتبقّي الحيّ (codAmount − collectedAmount − counterSettledAmount مقصوصاً عند
        * صفر)، مستثنىً منه المُعلَنُ رجوعُه — نفس صيغة codDue في «قيد التوصيل» صفّاً صفّاً،
