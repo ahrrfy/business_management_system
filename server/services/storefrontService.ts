@@ -130,6 +130,11 @@ export interface StorefrontProduct {
   storeUnits?: StorefrontUnitOption[];
   /** متغيّرات المنتج الفعلية. صفحة المتجر تختار واحداً منها قبل إضافة الصنف للسلة. */
   variants?: StorefrontVariantOption[];
+  /**
+   * للمنتج بدائلُ حقيقية (متغيّرات ALTERNATIVE منشورة) = منتجاتٌ مختلفة (ماركة/منشأ) تُباع تحت اسمٍ
+   * واحد، لكلٍّ مخزونه وسعره وباركوده. شارةٌ في شبكة المتجر تدعو الزبون لفتح التفاصيل واختيار الماركة.
+   */
+  hasAlternatives: boolean;
 }
 
 export interface StorefrontUnitOption {
@@ -146,6 +151,10 @@ export interface StorefrontUnitOption {
 export interface StorefrontVariantOption {
   variantId: number;
   label: string;
+  /** اسم البديل (الماركة/المنشأ) — لتمييز متغيّرات ALTERNATIVE في العرض. */
+  variantName: string | null;
+  /** VARIANT = لون/قياس لنفس الصنف؛ ALTERNATIVE = منتجٌ مختلف تحت اسمٍ واحد (يُوسَم بشارة). */
+  variantKind: "VARIANT" | "ALTERNATIVE";
   color: string | null;
   colorHex: string | null;
   size: string | null;
@@ -241,6 +250,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       productUnitId: productUnits.id,
       variantId: productVariants.id,
       variantName: productVariants.variantName,
+      variantKind: productVariants.variantKind,
       color: productVariants.color,
       colorHex: productVariants.colorHex,
       size: productVariants.size,
@@ -408,6 +418,7 @@ function toStorefront(r: {
     isBundle: !!r.isBundle,
     stockLeft: availableUnits > 0 && availableUnits <= LOW_STOCK_THRESHOLD ? availableUnits : null,
     soldCount: 0,
+    hasAlternatives: false, // يُضبط بعد التجميع على مستوى المنتج (يعرف كل متغيّراته).
   };
 }
 
@@ -685,13 +696,20 @@ export async function storefrontCatalog(opts: {
       || Number(a.variantId) - Number(b.variantId)
       || Number(a.productUnitId) - Number(b.productUnitId));
 
+  // منتجاتٌ لها بديلٌ حقيقيّ منشور (متغيّر ALTERNATIVE) — لوسم بطاقة الشبكة بـ«ماركات متعددة».
+  const productsWithAlternatives = new Set<number>();
+  for (const r of rows) {
+    if (r.variantKind === "ALTERNATIVE") productsWithAlternatives.add(Number(r.productId));
+  }
   const seen = new Set<number>();
   const items: StorefrontProduct[] = [];
   for (const r of rows) {
     const pid = Number(r.productId);
     if (seen.has(pid)) continue;
     seen.add(pid);
-    items.push(toStorefront(r));
+    const card = toStorefront(r);
+    card.hasAlternatives = productsWithAlternatives.has(pid);
+    items.push(card);
     if (items.length >= cap) break;
   }
   await applyStorefrontPromotions(items, branchId);
@@ -802,6 +820,8 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
       variant = {
         variantId,
         label: Array.from(new Set(parts)).join(" — ") || "الخيار الافتراضي",
+        variantName: source.variantName?.trim() || null,
+        variantKind: source.variantKind === "ALTERNATIVE" ? "ALTERNATIVE" : "VARIANT",
         color: source.color?.trim() || null,
         colorHex: normalizeHex(source.colorHex) ?? resolveColorHex(source.color ?? "") ?? null,
         size: source.size?.trim() || null,
@@ -826,6 +846,7 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   const primaryVariant = byVariant.get(item.variantId)!;
   item.storeUnits = primaryVariant.units;
   item.variants = Array.from(byVariant.values());
+  item.hasAlternatives = item.variants.some((v) => v.variantKind === "ALTERNATIVE");
   if (item.isCustomizable) {
     item.customizationTemplate = await loadStorefrontCustomizationTemplate(db, item.productId);
   }
