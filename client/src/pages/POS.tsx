@@ -45,6 +45,7 @@ import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
+import { normalizeNumberInput } from "@shared/numberNormalize";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -2624,6 +2625,18 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
   // أخيرة لا تُبلَغ في مدى التشغيل الفعليّ.
   const dense = useMediaQuery("(max-height: 820px)");
   const ultra = useMediaQuery("(max-height: 660px)");
+  // ٢٣/٨ (Codex P1 v2): حقلُ المبلغ يفصل «العرض» (raw ما يكتبه الكاشير) عن «القيمة الملتزمة»
+  // (`payInput` المطبَّعة). عقد التطبيع من `shared/numberNormalize` هو المرجع — `1,5` ⇒ `1.5`،
+  // `1,234` ⇒ `1234`، `1،5` كذلك. الحالات الوسطى الملتبسة تبقى في العرض ولا تُلتزم كي لا تتحطّم
+  // `D()` عليها. الأزرارُ السريعة/`+/-` تكتب على `payInput` مباشرةً؛ نُزامن العرضَ حينها.
+  const [displayPay, setDisplayPay] = useState(payInput);
+  useEffect(() => {
+    try {
+      const norm = normalizeNumberInput(displayPay).normalized;
+      if (norm !== payInput) setDisplayPay(payInput);
+    } catch { setDisplayPay(payInput); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payInput]);
   const [couponOpen, setCouponOpen] = useState(false);
   // الكوبون يظهر دائماً وهو مُطبَّق (لا يُخفى خصمٌ سارٍ)، أو عند طلبه صراحةً.
   const showCoupon = !dense || !!couponCode || couponOpen;
@@ -2871,17 +2884,24 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
               <input
                 type="text"
                 inputMode="decimal"
-                value={payInput}
+                value={displayPay}
                 onChange={(e) => {
-                  // ٢٣/٨ — Codex P1: `D(".")` و `D("-")` و `D("-.")` كلّها ترمي RangeError من
-                  // decimal.js. الحلّ: نطلب رقماً واحداً على الأقل، ونتحقّق أنّ Number يعطي عدداً
-                  // منتهياً (Number("+") و Number(".") و Number("-") كلّها NaN فتُرفَض هنا).
-                  const raw = e.target.value.replace(/[،,]/g, ".");
-                  if (raw === "") { setPayInput(""); return; }
-                  // نقبل بادئة السالب (الكاشير قد يكتب مبلغاً سالباً لتصحيحٍ ما) لكن نمنع "-" وحده.
-                  if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(raw)) return;
-                  if (!Number.isFinite(Number(raw))) return;
-                  setPayInput(raw);
+                  // ٢٣/٨ — Codex P1 v2: العقدُ المشترك `normalizeNumberInput` هو الحكم.
+                  // العرض يعكس ما يكتبه الكاشير حرفياً (`displayPay`)، والقيمةُ الملتزمة
+                  // (`payInput`) لا تُحدَّث إلّا إن كان التطبيع غير ملتبس. الحالات الوسطى
+                  // (`1,`، `1.`، `.5`) تظهر في الحقل لكن لا تصل إلى `D()` كي لا تتحطّم.
+                  const src = e.target.value;
+                  setDisplayPay(src);
+                  if (src === "") { setPayInput(""); return; }
+                  // حدُّ محارف: أرقام + فواصل شائعة (بادئة سالب للتصحيح). غير ذلك يُترك دون التزام.
+                  if (!/^[\d.,،٫\-]*$/.test(src)) return;
+                  const result = normalizeNumberInput(src);
+                  if (result.ambiguous) return;
+                  const n = result.normalized;
+                  if (!n) return;
+                  if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(n)) return;
+                  if (!Number.isFinite(Number(n))) return;
+                  setPayInput(n);
                 }}
                 onFocus={(e) => e.currentTarget.select()}
                 placeholder="0"
@@ -3124,10 +3144,13 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             disabled={!canPay || isPending}
             onClick={() => onQuickPay()}
             title={
-              // ٢٣/٨ (بلاغ فحص UX): زرٌّ رماديٌّ بلا سبب ⇒ الكاشير يحدّق دون فهم. `title` يعلن السبب.
+              // ٢٣/٨ (بلاغ Codex P2): كان يذكر «مرجع البطاقة» على دفعةٍ نقديّةٍ جزئيّةٍ بلا عميل —
+              // لا حقلَ كذلك أصلاً. صار يميّز الحالات الثلاثة.
               isPending ? "جارٍ الحفظ…" :
               !cartLen ? "أضف منتجاً أوّلاً" :
-              !canPay ? "أكمل بيانات الدفع (مرجع البطاقة/التأكيد)" :
+              isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
+              method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
+              !canPay ? "أكمل بيانات الدفع" :
               `دفع سريع وطباعة — ${paymentMethodLabel(method)}`
             }
             style={{
@@ -3151,7 +3174,9 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
           title={
             isPending ? "جارٍ الحفظ…" :
             !cartLen ? "أضف منتجاً أوّلاً" :
-            !canPay ? "أكمل بيانات الدفع (مرجع البطاقة/التأكيد)" :
+            isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
+            method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
+            !canPay ? "أكمل بيانات الدفع" :
             `إتمام الدفع — ${fmt(total)} د.ع`
           }
           style={{
