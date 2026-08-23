@@ -19,6 +19,7 @@ import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar, RowActions } from "@/components/list";
 import { SplitCandidatesPanel } from "@/components/stocktake/SplitCandidatesPanel";
+import { AlternativeStockReportPanel } from "@/components/stocktake/AlternativeStockBreakdown";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt } from "@/lib/money";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -270,6 +271,7 @@ export default function Stocktakes() {
 
       {/* فصل البدائل المدمجة (م٤) — للمدير */}
       {isManagerPlus && <SplitCandidatesPanel canManage={isManagerPlus} />}
+      {isManagerPlus && <AlternativeStockReportPanel />}
 
       {/* جدول الجلسات */}
       <Card>
