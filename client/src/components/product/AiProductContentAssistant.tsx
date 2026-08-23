@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { describeAiError } from "@/lib/aiProductError";
 import { trpc } from "@/lib/trpc";
 import {
   canonicalJson,
@@ -55,7 +56,11 @@ const FIELD_ORDER: DraftField[] = [
   "description",
 ];
 
-export function AiProductContentAssistant({ facts, onApply, productId }: Props) {
+export function AiProductContentAssistant({
+  facts,
+  onApply,
+  productId,
+}: Props) {
   const [draft, setDraft] = useState<AiProductDraft | null>(null);
   const [validation, setValidation] = useState<DraftValidation | null>(null);
   const [needsValidation, setNeedsValidation] = useState(false);
@@ -156,6 +161,14 @@ export function AiProductContentAssistant({ facts, onApply, productId }: Props) 
   }
 
   const draftIsStale = Boolean(draft && sourceFingerprint !== factsFingerprint);
+  const generateError = generate.error ? describeAiError(generate.error) : null;
+  const validateError = validate.error ? describeAiError(validate.error) : null;
+  const saveDraftError = saveDraft.error
+    ? describeAiError(saveDraft.error)
+    : null;
+  const decideDraftError = decideDraft.error
+    ? describeAiError(decideDraft.error)
+    : null;
 
   function applyDraft() {
     if (!visibleDraft || draftIsStale) return;
@@ -198,13 +211,32 @@ export function AiProductContentAssistant({ facts, onApply, productId }: Props) 
         </Button>
       </CardHeader>
       <CardContent className="space-y-3">
-        {generate.error && (
+        {generateError && (
           <div
             role="alert"
+            aria-live="assertive"
             className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
           >
             <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-            <span>{generate.error.message}</span>
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="font-semibold">{generateError.title}</p>
+              <p>{generateError.message}</p>
+              {generateError.action && (
+                <p className="text-[11px] opacity-90">{generateError.action}</p>
+              )}
+              {generateError.retryable && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="mt-1"
+                  onClick={() => generateDraft(Boolean(draft))}
+                  disabled={generate.isPending}
+                >
+                  إعادة المحاولة
+                </Button>
+              )}
+            </div>
           </div>
         )}
 
@@ -217,7 +249,9 @@ export function AiProductContentAssistant({ facts, onApply, productId }: Props) 
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge variant="outline">مسودة غير منشورة</Badge>
               {cacheHit && <Badge variant="secondary">من Cache</Badge>}
-              {savedDraftId && <Badge variant="secondary">مسودة محفوظة #{savedDraftId}</Badge>}
+              {savedDraftId && (
+                <Badge variant="secondary">مسودة محفوظة #{savedDraftId}</Badge>
+              )}
               <span>المحتوى يحتاج مراجعة قبل التطبيق.</span>
             </div>
 
@@ -286,16 +320,58 @@ export function AiProductContentAssistant({ facts, onApply, productId }: Props) 
                 <p className="mb-2 text-sm font-semibold">تاريخ المسودات</p>
                 <div className="space-y-2">
                   {draftsQuery.data?.map((saved) => (
-                    <div key={saved.id} className="flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-2 text-xs">
+                    <div
+                      key={saved.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-2 text-xs"
+                    >
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant={saved.status === "APPROVED" ? "default" : "outline"}>{saved.status}</Badge>
+                        <Badge
+                          variant={
+                            saved.status === "APPROVED" ? "default" : "outline"
+                          }
+                        >
+                          {saved.status}
+                        </Badge>
                         <span>#{saved.id}</span>
-                        <span className="text-muted-foreground">{saved.validation.ok ? "اجتازت التحقق" : "تحتاج مراجعة"}</span>
+                        <span className="text-muted-foreground">
+                          {saved.validation.ok
+                            ? "اجتازت التحقق"
+                            : "تحتاج مراجعة"}
+                        </span>
                       </div>
                       {saved.status === "DRAFT" && (
                         <div className="flex gap-1">
-                          <Button type="button" size="sm" variant="outline" disabled={decideDraft.isPending} onClick={() => decideDraft.mutate({ draftId: Number(saved.id), decision: "REJECTED", note: "رُفضت من شاشة مراجعة المنتج." })}>رفض</Button>
-                          <Button type="button" size="sm" disabled={decideDraft.isPending || !saved.validation.ok} onClick={() => decideDraft.mutate({ draftId: Number(saved.id), decision: "APPROVED", note: "اعتماد مسودة من شاشة مراجعة المنتج." })}>اعتماد</Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={decideDraft.isPending}
+                            onClick={() =>
+                              decideDraft.mutate({
+                                draftId: Number(saved.id),
+                                decision: "REJECTED",
+                                note: "رُفضت من شاشة مراجعة المنتج.",
+                              })
+                            }
+                          >
+                            رفض
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={
+                              decideDraft.isPending || !saved.validation.ok
+                            }
+                            onClick={() =>
+                              decideDraft.mutate({
+                                draftId: Number(saved.id),
+                                decision: "APPROVED",
+                                note: "اعتماد مسودة من شاشة مراجعة المنتج.",
+                              })
+                            }
+                          >
+                            اعتماد
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -347,12 +423,43 @@ export function AiProductContentAssistant({ facts, onApply, productId }: Props) 
               </div>
             )}
 
-            {validate.error && (
+            {validateError && (
               <div
                 role="alert"
+                aria-live="assertive"
                 className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
               >
-                {validate.error.message}
+                <p className="font-semibold">{validateError.title}</p>
+                <p>{validateError.message}</p>
+                {validateError.action && (
+                  <p className="mt-1 text-[11px] opacity-90">
+                    {validateError.action}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {saveDraftError && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="rounded-md border border-amber-300/70 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300"
+              >
+                <p className="font-semibold">
+                  تم توليد المسودة لكن تعذر حفظ سجلها
+                </p>
+                <p>{saveDraftError.message}</p>
+              </div>
+            )}
+
+            {decideDraftError && (
+              <div
+                role="alert"
+                aria-live="assertive"
+                className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+              >
+                <p className="font-semibold">تعذر تحديث قرار المسودة</p>
+                <p>{decideDraftError.message}</p>
               </div>
             )}
 
