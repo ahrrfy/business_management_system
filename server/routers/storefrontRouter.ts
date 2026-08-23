@@ -161,6 +161,7 @@ export const storefrontRouter = router({
   /** إعادة تسعير السلة بكمياتها الفعلية؛ نفس محرك createOrder، بلا أي كتابة. */
   quoteOrder: storefrontPublicReadProcedure
     .input(z.object({
+      couponCode: z.string().trim().max(64).nullish(),
       governorate: z.string().trim().min(1).max(40),
       lines: z.array(z.object({
         productUnitId: z.number().int().positive(),
@@ -194,6 +195,7 @@ export const storefrontRouter = router({
   createOrder: publicProcedure
     .input(
       z.object({
+        couponCode: z.string().trim().max(64).nullish(),
         customerName: z.string().trim().min(1).max(255),
         customerPhone: z.string().trim().min(5).max(20),
         governorate: z.string().trim().min(1).max(40),

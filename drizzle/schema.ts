@@ -4354,6 +4354,9 @@ export const onlineOrders = mysqlTable(
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
     longitude: decimal("longitude", { precision: 10, scale: 7 }),
     clientRequestId: varchar("clientRequestId", { length: 80 }),
+    // كوبون المتجر المحقق خادمياً؛ يُستهلك عند إصدار الفاتورة الحقيقية.
+    couponCode: varchar("couponCode", { length: 64 }),
+    couponDiscount: decimal("couponDiscount", { precision: 15, scale: 2 }).default("0").notNull(),
     // جهة التوصيل المُسنَد إليها الطلب عند الإرسال (مندوب داخلي/شركة) — تغذّي شاشة المندوب (ش٥). هجرة 0067.
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
     // سبب الإلغاء — يملؤه المندوب عند «تعذّر التسليم» (رفض الزبون/عنوان خاطئ...) ليراه الموظّف. هجرة 0069.

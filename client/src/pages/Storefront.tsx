@@ -439,7 +439,7 @@ export function saveCheckoutAttempt(
   }
 }
 
-export function storefrontCheckoutFingerprint(cart: Map<string, CartLine>, form: CheckoutForm): string {
+export function storefrontCheckoutFingerprint(cart: Map<string, CartLine>, form: CheckoutForm, couponCode: string | null = null): string {
   const lines = Array.from(cart.values())
     .sort((a, b) => a.cartKey.localeCompare(b.cartKey))
     .map((line) => [line.cartKey, line.productUnitId, line.qty, Number(line.price).toFixed(2), serializeCustomization(line.customization)]);
@@ -450,6 +450,7 @@ export function storefrontCheckoutFingerprint(cart: Map<string, CartLine>, form:
     governorate: form.governorate,
     address: form.address.trim(),
     notes: form.notes.trim(),
+    couponCode: couponCode?.trim().toUpperCase() || null,
   });
 }
 
@@ -1174,6 +1175,9 @@ export default function Storefront() {
   const [wishlistIds, setWishlistIds] = useState<Set<number>>(loadStorefrontWishlist);
   const [showWishlist, setShowWishlist] = useState(false);
   const [shareFeedback, setShareFeedback] = useState<string | null>(null);
+  const [couponDraft, setCouponDraft] = useState("");
+  const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
+  const [couponFeedback, setCouponFeedback] = useState<string | null>(null);
   const [cart, setCart] = useState<Map<string, CartLine>>(loadCart);
   const cartRecommendationProductIds = useMemo(
     () => Array.from(cart.values()).map((line) => line.productId).slice(0, 24),
@@ -1298,6 +1302,16 @@ export default function Storefront() {
       refetchOnWindowFocus: false,
     },
   );
+  const storefrontQuoteInput = useMemo(() => ({
+    couponCode: appliedCouponCode || undefined,
+    governorate: form.governorate,
+    lines: Array.from(cart.values()).map((line) => ({ productUnitId: line.productUnitId, quantity: line.qty })),
+  }), [appliedCouponCode, cart, form.governorate]);
+  const quoteQ = trpc.storefront.quoteOrder.useQuery(storefrontQuoteInput, {
+    enabled: panel === "checkout" && cart.size > 0,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
   const trackConversion = trpc.storefront.trackConversion.useMutation();
 
   useEffect(() => {
@@ -1371,6 +1385,9 @@ export default function Storefront() {
         reservationExpiresAt: res.reservationExpiresAt,
       });
       setCart(new Map());
+      setCouponDraft("");
+      setAppliedCouponCode(null);
+      setCouponFeedback(null);
       // امسح بيانات التوصيل (اسم/هاتف/عنوان) من الحالة و localStorage بعد نجاح الطلب (مراجعة عدائية
       // ١٢/٧): المتجر علنيّ بلا جلسة ⇒ إبقاؤها يسرّبها للزبون التالي على جهازٍ مشترك/كشك. الاستعادة
       // عبر التحديث تخصّ طلباً قيد الإنشاء فقط، لا بعد إتمامه.
@@ -1398,6 +1415,7 @@ export default function Storefront() {
         ]);
         try {
           const quoted = await utils.storefront.quoteOrder.fetch({
+            couponCode: appliedCouponCode || undefined,
             governorate: formRef.current.governorate,
             lines: Array.from(cartRef.current.values()).map((line) => ({
               productUnitId: line.productUnitId,
@@ -1411,7 +1429,7 @@ export default function Storefront() {
             cartRef.current = refreshedQuote.cart;
             setCart(refreshedQuote.cart);
             acceptedQuoteRef.current = {
-              fingerprint: storefrontCheckoutFingerprint(refreshedQuote.cart, formRef.current),
+              fingerprint: storefrontCheckoutFingerprint(refreshedQuote.cart, formRef.current, appliedCouponCode),
               total: quoted.total,
             };
             setCheckoutSafetyError(
@@ -1738,6 +1756,30 @@ export default function Storefront() {
   const effectiveDeliveryFee = qualifiesFree ? 0 : deliveryFee;
   const remainingForFree = freeThreshold > 0 ? Math.max(freeThreshold - cartSubtotal, 0) : 0;
   const cartTotal = cartSubtotal + effectiveDeliveryFee;
+  const quotedSubtotal = quoteQ.data?.subtotal ?? cartSubtotal.toFixed(2);
+  const quotedDeliveryFee = quoteQ.data?.deliveryFee ?? effectiveDeliveryFee.toFixed(2);
+  const quotedTotal = quoteQ.data?.total ?? cartTotal.toFixed(2);
+  const quotedCouponDiscount = quoteQ.data?.couponDiscount ?? "0.00";
+  const quoteReady = !!quoteQ.data && !quoteQ.isFetching && !quoteQ.isError;
+
+  function applyCoupon() {
+    const normalized = couponDraft.trim().toUpperCase().replace(/\s+/g, "");
+    if (!normalized) {
+      setCouponFeedback("اكتب رمز الكوبون أولاً");
+      return;
+    }
+    setAppliedCouponCode(normalized);
+    setCouponFeedback("جارٍ التحقق من الكوبون…");
+    acceptedQuoteRef.current = null;
+    setCheckoutSafetyError(null);
+  }
+  function removeCoupon() {
+    setAppliedCouponCode(null);
+    setCouponDraft("");
+    setCouponFeedback(null);
+    acceptedQuoteRef.current = null;
+    setCheckoutSafetyError(null);
+  }
 
   function addToCart(p: {
     productUnitId: number; productId: number; productName: string; price: string | null;
@@ -1839,13 +1881,14 @@ export default function Storefront() {
     if (
       !name || phone.replace(/\D/g, "").length < 8 || address.length < 3 ||
       cartLines.length === 0 ||
+      !quoteReady ||
       !storefrontTurnstileSubmissionReady(
         orderingEnabled,
         settingsQ.data?.turnstileSiteKey,
         turnstileToken,
       )
     ) return;
-    const fingerprint = storefrontCheckoutFingerprint(cart, form);
+    const fingerprint = storefrontCheckoutFingerprint(cart, form, appliedCouponCode);
     const previous = checkoutAttemptRef.current;
     const acceptedQuote = acceptedQuoteRef.current?.fingerprint === fingerprint
       ? acceptedQuoteRef.current
@@ -1857,7 +1900,7 @@ export default function Storefront() {
             ? `sf-${crypto.randomUUID()}`
             : `sf-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
           fingerprint,
-          expectedGrandTotal: acceptedQuote?.total ?? cartTotal.toFixed(2),
+          expectedGrandTotal: acceptedQuote?.total ?? (quoteQ.data?.total ?? cartTotal.toFixed(2)),
           createdAt: Date.now(),
         };
     // fail-closed قبل الشبكة: الرد الضائع آمن فقط إذا بقي نفس المفتاح بعد reload/PWA.
@@ -1874,6 +1917,7 @@ export default function Storefront() {
       .join("\n");
     const orderNotes = [form.notes.trim(), customizationNotes].filter(Boolean).join("\n");
     createOrder.mutate({
+      couponCode: appliedCouponCode || undefined,
       customerName: name,
       customerPhone: phone,
       governorate: form.governorate,
@@ -1882,7 +1926,7 @@ export default function Storefront() {
       lines: cartLines.map((l) => ({
         productUnitId: l.productUnitId,
         quantity: l.qty,
-        expectedUnitPrice: Number(l.price).toFixed(2),
+        expectedUnitPrice: quoteQ.data?.lines.find((quoted) => quoted.productUnitId === l.productUnitId)?.unitPrice ?? Number(l.price).toFixed(2),
       })),
       expectedGrandTotal: attempt.expectedGrandTotal,
       clientRequestId: attempt.clientRequestId,
@@ -1894,6 +1938,7 @@ export default function Storefront() {
     form.phone.replace(/\D/g, "").length >= 8 &&
     form.address.trim().length >= 3 &&
     cartLines.length > 0 &&
+    quoteReady &&
     storefrontTurnstileSubmissionReady(
       orderingEnabled,
       settingsQ.data?.turnstileSiteKey,
@@ -2497,22 +2542,41 @@ export default function Storefront() {
               <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="مثال: الاتصال قبل التوصيل" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </div>
 
+            <div className="rounded-2xl border border-[#c9dced] bg-[#f7fbff] p-3 ring-1 ring-[#e7f0f7] dark:bg-slate-900 dark:ring-slate-700">
+              <label className="mb-1 block text-xs font-bold text-slate-500">لديك كوبون؟</label>
+              <div className="flex gap-2" dir="ltr">
+                <input value={couponDraft} onChange={(e) => setCouponDraft(e.target.value.toUpperCase())} onKeyDown={(e) => { if (e.key === "Enter") applyCoupon(); }} placeholder="مثال: WELCOME10" className="min-w-0 flex-1 rounded-lg border-0 bg-white px-3 py-2 text-sm font-bold tracking-wide outline-none placeholder:font-normal placeholder:tracking-normal dark:bg-slate-800" aria-label="رمز الكوبون" />
+                <button type="button" onClick={appliedCouponCode ? removeCoupon : applyCoupon} disabled={!appliedCouponCode && !couponDraft.trim()} className="shrink-0 rounded-lg bg-[#1e4a63] px-3 py-2 text-xs font-black text-white transition hover:bg-[#17394c] disabled:cursor-not-allowed disabled:opacity-50">
+                  {appliedCouponCode ? "إزالة" : "تطبيق"}
+                </button>
+              </div>
+              <p className="mt-2 text-xs font-bold text-slate-500" role="status">
+                {quoteQ.isFetching && appliedCouponCode ? "جارٍ التحقق من الكوبون…" : quoteQ.isError && appliedCouponCode ? (quoteQ.error?.message ?? "تعذّر التحقق من الكوبون") : appliedCouponCode && quoteQ.data ? `تم تطبيق ${quoteQ.data.couponProgramName ?? "الكوبون"} — التوفير ${money(quotedCouponDiscount)} د.ع` : couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب"}
+              </p>
+            </div>
+
             <div className="rounded-2xl border border-[#ead8c8] bg-[#fffdf9] p-3.5 text-sm ring-1 ring-[#f3e5da] dark:bg-slate-900 dark:ring-slate-800">
               <div className="flex justify-between text-slate-500">
                 <span>المجموع الفرعي</span>
-                <span className="tabular-nums text-slate-800 dark:text-slate-100">{money(cartSubtotal)} د.ع</span>
+                <span className="tabular-nums text-slate-800 dark:text-slate-100">{money(quotedSubtotal)} د.ع</span>
               </div>
               <div className="mt-1.5 flex items-center justify-between text-slate-500">
                 <span className="flex items-center gap-1"><Truck aria-hidden className="size-3.5" /> أجرة التوصيل (تقديري)</span>
                 {qualifiesFree ? (
                   <span className="font-bold text-emerald-600 dark:text-emerald-400">مجاني</span>
                 ) : (
-                  <span className="tabular-nums text-slate-800 dark:text-slate-100">{money(deliveryFee)} د.ع</span>
+                  <span className="tabular-nums text-slate-800 dark:text-slate-100">{money(quotedDeliveryFee)} د.ع</span>
                 )}
               </div>
+              {Number(quotedCouponDiscount) > 0 && (
+                <div className="mt-1.5 flex justify-between text-emerald-700 dark:text-emerald-400">
+                  <span>خصم الكوبون</span>
+                  <span className="tabular-nums">− {money(quotedCouponDiscount)} د.ع</span>
+                </div>
+              )}
               <div className="mt-2 flex justify-between border-t border-slate-100 pt-2 text-base font-extrabold dark:border-slate-800">
                 <span>الإجمالي</span>
-                <span className="tabular-nums text-emerald-600 dark:text-emerald-400">{money(cartTotal)} د.ع</span>
+                <span className="tabular-nums text-emerald-600 dark:text-emerald-400">{money(quotedTotal)} د.ع</span>
               </div>
             </div>
 
