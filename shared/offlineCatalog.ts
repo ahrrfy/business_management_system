@@ -39,6 +39,10 @@ export interface OfflineStockRow {
   variantId: number;
   /** الرصيد بالوحدة الأساس لفرع الجهاز — استرشادي أثناء الانقطاع (قد يتقادم). */
   qty: number;
+  /** ٢٤/٨ — المحجوز النشط لهذا الصنف (Reservations R-م٤): يُطرح من الرصيد لاشتقاق «المتاح للبيع»
+   *  في الأوفلاين. غيابُه (لقطاتٌ قديمة قبل التوسيع) يُعامَل صفراً — سلوكٌ متوافق مع القاعدة
+   *  المخزّنة سابقاً. الخادم يبنيها من `reservationStock.reservedBase`. */
+  reservedBase?: number;
 }
 
 export interface OfflineCustomerRow {

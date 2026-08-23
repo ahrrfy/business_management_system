@@ -141,6 +141,12 @@ export interface OfflinePosRow {
   isBaseUnit: boolean;
   price: string | null;
   stockBase: number;
+  /** ٢٤/٨ — المحجوز النشط للصنف على فرع الجهاز، نقلاً من `OfflineStockRow.reservedBase`. */
+  reservedBase: number;
+  /** ٢٤/٨ — «المتاح للبيع» = max(0, stockBase - reservedBase) — يُشتقّ من الحقلَين ويطابق
+   *  عقد `posList` الأونلاين (`server/services/catalog/pos.ts:147`). وجودُه يمكّن `isKnown`
+   *  في POS.tsx من التشغيل أوفلاين بلا كذبٍ عن الحجوزات (Codex P1 على PR #733). */
+  availableBase: number;
   isService: boolean;
   isCustomizable: boolean;
   isPrintService: boolean;
@@ -160,6 +166,11 @@ function tierPrice(row: OfflineCatalogRow, tier: OfflinePriceTier): string | nul
 
 async function toPosRow(row: OfflineCatalogRow, tier: OfflinePriceTier): Promise<OfflinePosRow> {
   const stock = await offlineDb.stock.get(row.variantId);
+  // ٢٤/٨ — نفس صيغة الأونلاين (`server/services/catalog/pos.ts:147`): «متاحٌ للبيع» = الرصيد
+  // ناقص المحجوز، لا ينزل عن الصفر. لقطاتٌ قديمة بلا `reservedBase` تعني ٠ افتراضياً.
+  const qty = stock?.qty ?? 0;
+  const reservedBase = stock?.reservedBase ?? 0;
+  const availableBase = Math.max(0, qty - reservedBase);
   return {
     productId: row.productId,
     productName: row.productName,
@@ -174,7 +185,9 @@ async function toPosRow(row: OfflineCatalogRow, tier: OfflinePriceTier): Promise
     barcode: row.barcode,
     isBaseUnit: row.isBaseUnit,
     price: tierPrice(row, tier),
-    stockBase: stock?.qty ?? 0,
+    stockBase: qty,
+    reservedBase,
+    availableBase,
     isService: row.isService,
     isCustomizable: row.isCustomizable,
     isPrintService: row.isPrintService,

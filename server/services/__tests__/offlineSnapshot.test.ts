@@ -153,11 +153,13 @@ describe("النسخ — بصمة محتوى تتغيّر إذا-وفقط-إذا
 });
 
 describe("buildStockSnapshot — عزل الفرع", () => {
-  it("تُرجع أرصدة الفرع المطلوب فقط", async () => {
+  it("تُرجع أرصدة الفرع المطلوب فقط، مع reservedBase من reservationStock", async () => {
     const b1 = await buildStockSnapshot(1);
     const b2 = await buildStockSnapshot(2);
-    expect(b1).toEqual([{ variantId: 1, qty: 36 }]);
-    expect(b2).toEqual([{ variantId: 1, qty: 7 }]);
+    // ٢٤/٨: حقل `reservedBase` أُضيف إلى العقد لاشتقاق «المتاح للبيع» أوفلاين — أصنافٌ بلا صفٍّ
+    // في `reservationStock` ترجع بـ٠ (LEFT JOIN + تحويلٌ صريحٌ للـnull).
+    expect(b1).toEqual([{ variantId: 1, qty: 36, reservedBase: 0 }]);
+    expect(b2).toEqual([{ variantId: 1, qty: 7, reservedBase: 0 }]);
   });
 });
 

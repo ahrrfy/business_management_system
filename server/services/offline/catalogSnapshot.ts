@@ -19,6 +19,7 @@ import {
   productUnitBarcodes,
   productUnits,
   productVariants,
+  reservationStock,
 } from "../../../drizzle/schema";
 import type {
   OfflineCatalogRow,
@@ -217,11 +218,31 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
 
 export async function buildStockSnapshot(branchId: number): Promise<OfflineStockRow[]> {
   const db = requireDbOrThrow();
+  // ٢٤/٨ (بلاغ المالك «المخزون لا يظهر عند إضافة المنتج» + Codex P1): كانت اللقطة تحمل الرصيدَ
+  // الفعليّ وحده فيصير عرضُه «متاحاً للبيع» كذبةً على الحجوزات (صنفٌ رصيدُه ١٠ وحجوزاتٌ ١٠ يظهر
+  // «متاح ١٠»). الآن نضيف `reservedBase` من `reservationStock` بربطٍ خارجيّ اختياريّ (الأصناف
+  // بلا حجزٍ لا صفَّ لها في `reservationStock` ⇒ يبقى `reservedBase = 0`). العميل يشتقّ
+  // `availableBase = max(0, qty - reservedBase)` — نفسُ مسار `posList` تماماً.
   const rows = await db
-    .select({ variantId: branchStock.variantId, qty: branchStock.quantity })
+    .select({
+      variantId: branchStock.variantId,
+      qty: branchStock.quantity,
+      reservedBase: reservationStock.reservedBase,
+    })
     .from(branchStock)
+    .leftJoin(
+      reservationStock,
+      and(
+        eq(reservationStock.variantId, branchStock.variantId),
+        eq(reservationStock.branchId, branchStock.branchId),
+      ),
+    )
     .where(eq(branchStock.branchId, branchId));
-  return rows.map((r) => ({ variantId: Number(r.variantId), qty: Number(r.qty) }));
+  return rows.map((r) => ({
+    variantId: Number(r.variantId),
+    qty: Number(r.qty),
+    reservedBase: r.reservedBase != null ? Number(r.reservedBase) : 0,
+  }));
 }
 
 export async function buildCustomersSnapshot(): Promise<OfflineCustomersSnapshot> {
