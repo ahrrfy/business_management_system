@@ -2873,12 +2873,15 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
                 inputMode="decimal"
                 value={payInput}
                 onChange={(e) => {
-                  // ٢٣/٨ — Codex P1: `D(".")` و `D("-")` و `D("-.")` كلّها ترمي RangeError من
-                  // decimal.js. الحلّ: نطلب رقماً واحداً على الأقل، ونتحقّق أنّ Number يعطي عدداً
-                  // منتهياً (Number("+") و Number(".") و Number("-") كلّها NaN فتُرفَض هنا).
-                  const raw = e.target.value.replace(/[،,]/g, ".");
-                  if (raw === "") { setPayInput(""); return; }
-                  // نقبل بادئة السالب (الكاشير قد يكتب مبلغاً سالباً لتصحيحٍ ما) لكن نمنع "-" وحده.
+                  // ٢٣/٨ — Codex P1: النسخة السابقة `replace(/[،,]/g, ".")` كانت تحوّل
+                  // `15,000` إلى `15.000` = ١٥ دينار (×١٠٠٠ خطأ ماليّ). التصحيح:
+                  // - `٫` (فاصلة عشريّة عربيّة U+066B) ⇒ `.`
+                  // - `,` و `،` (فاصلة ألوف شائعة في IQD مثل «15,000») ⇒ تُحذف
+                  // - `D(".")` و`D("-")` و`D("-.")` تظلّ مرفوضة (regex + isFinite).
+                  const src = e.target.value;
+                  if (src === "") { setPayInput(""); return; }
+                  const raw = src.replace(/٫/g, ".").replace(/[,،]/g, "");
+                  // نقبل بادئة السالب (تصحيحٌ ما) لكن نمنع "-" وحده أو "." وحدها.
                   if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(raw)) return;
                   if (!Number.isFinite(Number(raw))) return;
                   setPayInput(raw);
@@ -3124,10 +3127,13 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             disabled={!canPay || isPending}
             onClick={() => onQuickPay()}
             title={
-              // ٢٣/٨ (بلاغ فحص UX): زرٌّ رماديٌّ بلا سبب ⇒ الكاشير يحدّق دون فهم. `title` يعلن السبب.
+              // ٢٣/٨ (بلاغ Codex P2): كان يذكر «مرجع البطاقة» على دفعةٍ نقديّةٍ جزئيّةٍ بلا عميل —
+              // لا حقلَ كذلك أصلاً. صار يميّز الحالات الثلاثة.
               isPending ? "جارٍ الحفظ…" :
               !cartLen ? "أضف منتجاً أوّلاً" :
-              !canPay ? "أكمل بيانات الدفع (مرجع البطاقة/التأكيد)" :
+              isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
+              method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
+              !canPay ? "أكمل بيانات الدفع" :
               `دفع سريع وطباعة — ${paymentMethodLabel(method)}`
             }
             style={{
@@ -3151,7 +3157,9 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
           title={
             isPending ? "جارٍ الحفظ…" :
             !cartLen ? "أضف منتجاً أوّلاً" :
-            !canPay ? "أكمل بيانات الدفع (مرجع البطاقة/التأكيد)" :
+            isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
+            method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
+            !canPay ? "أكمل بيانات الدفع" :
             `إتمام الدفع — ${fmt(total)} د.ع`
           }
           style={{

@@ -317,18 +317,19 @@ export function PaymentPanel({
 
         {!deferred && <>
         {/* المبلغ المدفوع — حقلٌ نصّي حقيقي (لوحة المفاتيح تكتب مباشرة، بلا حاسبة إضافية).
-            ٢٣/٨ — بلاغ فحص UX: كان `replace(/[^\d.]/g, "")` يبتلع الفاصلة العربية `،`
-            صامتاً ⇒ الكاشير يكتب «١٠٫٥» بلوحة عربية فتصير «105» (×١٠ خطأ ماليّ صامت).
-            الحلّ (مرآة POS.tsx): نطبّع `،/,` إلى `.` ثمّ نرفض ما لا يمثّل رقماً منتهياً — بلا
-            تحوّلٍ صامت. `.` وحدَه أو سلسلة فارغة أوّليّة يُقبلان (حالة تحرير). */}
+            ٢٣/٨ — بلاغ Codex P1: نسختي السابقة نُطبَّع `،`/`,` إلى `.` كانت تُفسِد `15,000`
+            إلى `15.000` = ١٥ دينار (×١٠٠٠ خطأ ماليّ). التصحيح:
+            - `٫` (فاصلة عشريّة عربيّة U+066B) ⇒ `.`
+            - `,` و `،` (فاصلة ألوف شائعة في IQD مثل «15,000» و«١٥،٠٠٠») ⇒ تُحذف.
+            نقبل حالات التحرير الوسطى (`1.`، `.5`) ونرفض ما لا يمثّل رقماً منتهياً. */}
         <div className="flex h-10 items-center gap-2 rounded-lg border-[1.5px] bg-muted/40 px-3 focus-within:border-primary">
           <span className="shrink-0 text-xs text-muted-foreground">المدفوع</span>
           <input
             value={payInput}
             onChange={(e) => {
-              const raw = e.target.value.replace(/[،,]/g, ".");
-              if (raw === "") { setPayInput(""); return; }
-              // نطلب رقماً واحداً على الأقلّ (يمنع `.` منفرداً الذي يُفشل D() لاحقاً).
+              const src = e.target.value;
+              if (src === "") { setPayInput(""); return; }
+              const raw = src.replace(/٫/g, ".").replace(/[,،]/g, "");
               if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(raw)) return;
               if (!Number.isFinite(Number(raw))) return;
               setPayInput(raw);
