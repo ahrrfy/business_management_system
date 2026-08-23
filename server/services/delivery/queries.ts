@@ -549,6 +549,15 @@ export async function listPartyObligations(branchId: number | null) {
       /** إرساليات الإغلاق المفتوح (DISPATCHED/PARTIAL) — عدّاد المطاردة الرئيس. */
       openCount: sql<number>`(SELECT COUNT(*) ${openScope})`,
       /**
+       * ٢٣/٨ — **سُلِّم — بيد الجهة بانتظار التوريد**: صفوفٌ ثبت تسليمُها (parcelStatus=DELIVERED)
+       * لكن نقدها ما زال بيدها (consignmentStatus حيّ). عدّاد الجسر بين «تم التسليم» و«التسوية»:
+       * الكاشير يرى «X طرود سُلِّمت — احصّل نقدها» على صفّ الجهة، فيدخل بها مباشرةً.
+       */
+      deliveredAwaitingRemitCount: sql<number>`(SELECT COUNT(*) FROM deliveryConsignments dc
+        WHERE dc.partyId = ${deliveryParties.id}
+          AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')
+          AND dc.parcelStatus = 'DELIVERED'${cnBranch})`,
+      /**
        * Σ المتبقّي الحيّ (codAmount − collectedAmount − counterSettledAmount مقصوصاً عند
        * صفر)، مستثنىً منه المُعلَنُ رجوعُه — نفس صيغة codDue في «قيد التوصيل» صفّاً صفّاً،
        * كي لا تتناقض اللوحتان على نفس الطرد.
@@ -617,6 +626,7 @@ export async function listPartyObligations(branchId: number | null) {
       partyType: r.partyType,
       currentBalance: String(r.currentBalance ?? "0.00"),
       openCount: Number(r.openCount ?? 0),
+      deliveredAwaitingRemitCount: Number(r.deliveredAwaitingRemitCount ?? 0),
       codDueTotal: String(r.codDueTotal ?? "0.00"),
       oldestOpenAgeHours: r.oldestOpenAgeHours == null ? null : Number(r.oldestOpenAgeHours),
       feeDueTotal: String(r.feeDueTotal ?? "0.00"),

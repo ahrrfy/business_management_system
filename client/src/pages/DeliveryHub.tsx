@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import {
   AlertTriangle,
   Check,
+  CheckCircle2,
   FileCheck2,
   FileText,
   History,
@@ -311,6 +312,7 @@ function InTransitTab() {
   const [drawerId, setDrawerId] = useState<number | null>(null);
   const [failTarget, setFailTarget] = useState<{ ids: number[] } | null>(null);
   const [manualProofTarget, setManualProofTarget] = useState<InTransitRow | null>(null);
+  const [staffConfirmTarget, setStaffConfirmTarget] = useState<InTransitRow | null>(null);
   const [declareTarget, setDeclareTarget] = useState<InTransitRow | null>(null);
 
   const canFulfil = !!me.data
@@ -358,6 +360,10 @@ function InTransitTab() {
   });
   const manualProof = trpc.delivery.manualProof.useMutation({
     onSuccess: () => { notify.ok("سُجّل إثبات التسليم اليدويّ", "أُثبت التسليم بالسلطة الاستثنائية — مُوثَّق في سجلّ التدقيق."); invalidateAll(); setManualProofTarget(null); },
+    onError: (e) => notify.err(e),
+  });
+  const staffConfirm = trpc.delivery.staffConfirm.useMutation({
+    onSuccess: () => { notify.ok("تم التسليم", "سُجّل تأكيدُك بالمُسلَّم من المندوب — والنقد صار بذمّته حتى تسويته."); invalidateAll(); setStaffConfirmTarget(null); },
     onError: (e) => notify.err(e),
   });
 
@@ -617,34 +623,54 @@ function InTransitTab() {
                       <div className="flex flex-wrap items-center gap-1">
                         {/* الإجراء التالي حسب الحالة */}
                         {canFulfil && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT") && (
-                          <Button size="sm" variant="outline" title="خرجت للتوصيل مع المندوب" disabled={staffHandover.isPending} onClick={() => void singleHandover(rowId)}>
-                            <Send aria-hidden className="size-3" /> خرج
+                          <Button size="sm" variant="outline" title="سلّمتُه للمندوب — يبدأ رحلة التوصيل" disabled={staffHandover.isPending} onClick={() => void singleHandover(rowId)}>
+                            <Send aria-hidden className="size-3" /> أعطيتُه للمندوب
+                          </Button>
+                        )}
+                        {/*
+                          ٢٣/٨ — «تم التسليم» بيد الكاشير: للحالة اليوميّة الشائعة (اتصال المندوب/رسالة)
+                          — لا يحتاج انتظار كشف الشركة ولا موافقة المدير. سلطةٌ متوسّطة توثَّق باسمك.
+                        */}
+                        {canFulfil && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT") && (
+                          <Button size="sm" variant="default" title="أخبرَني المندوب أنه سلّمه للزبون" disabled={staffConfirm.isPending} onClick={() => setStaffConfirmTarget(r)}>
+                            <CheckCircle2 aria-hidden className="size-3" /> تم التسليم
                           </Button>
                         )}
                         {canFulfil && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT") && (
-                          <Button size="sm" variant="outline" title="أبلغتنا الجهة أن الطرد متعذّر" disabled={staffMarkFailed.isPending} onClick={() => setFailTarget({ ids: [rowId] })}>
-                            <XCircle aria-hidden className="size-3" /> متعذّر
+                          <Button size="sm" variant="outline" title="لم يستلمه الزبون — نحتاج إعادة محاولة أو إرجاع" disabled={staffMarkFailed.isPending} onClick={() => setFailTarget({ ids: [rowId] })}>
+                            <XCircle aria-hidden className="size-3" /> لم يُسلَّم
+                          </Button>
+                        )}
+                        {/*
+                          ٢٣/٨ — الجسر المفقود: الطرد سُلِّم لكن نقده لم يُورَّد بعد ⇒ زرٌّ واحد
+                          ينقل الكاشير إلى «تسوية المناديب» بالجهة مختارةً سلفاً كي يُدخل الكشف.
+                        */}
+                        {canFulfil && r.viewKey === "DELIVERED_AWAITING_REMIT" && (
+                          <Button size="sm" variant="default" asChild title="اذهب لتسجيل النقد المُحصَّل من هذه الجهة">
+                            <Link href={`/delivery?tab=settle&party=${r.partyId}`}>
+                              <Wallet aria-hidden className="size-3" /> سجّل التحصيل
+                            </Link>
                           </Button>
                         )}
                         {canFulfil && r.viewKey === "FAILED" && r.returnDeclaredAt == null && (
-                          <Button size="sm" variant="outline" title="الشركة أعلنت رجوعه ولم يصل بعد" disabled={declareReturn.isPending} onClick={() => void askDeclareReturn(r)}>
-                            <Undo2 aria-hidden className="size-3" /> إعلان رجوع
+                          <Button size="sm" variant="outline" title="الشركة أخبرتنا أنّ الطرد راجعٌ إلينا" disabled={declareReturn.isPending} onClick={() => void askDeclareReturn(r)}>
+                            <Undo2 aria-hidden className="size-3" /> الشركة تُرجعه
                           </Button>
                         )}
                         {canFulfil && (r.viewKey === "FAILED" || r.viewKey === "RETURN_DECLARED") && (
-                          <Button size="sm" variant="outline" title={r.returnDeclaredAt != null ? "وصل الطرد وفُحص — أكمل العكس" : "رجع الطرد للمكتبة"} disabled={returnCn.isPending} onClick={() => void askReceiveReturn(r)}>
-                            <RotateCcw aria-hidden className="size-3" /> {r.returnDeclaredAt != null ? "استلمتُه" : "استرجاع"}
+                          <Button size="sm" variant="outline" title={r.returnDeclaredAt != null ? "وصلت البضاعة للمكتبة وفُحصت — أُعيدها للمخزون" : "وصلت البضاعة للمكتبة — أُعيدها للمخزون"} disabled={returnCn.isPending} onClick={() => void askReceiveReturn(r)}>
+                            <RotateCcw aria-hidden className="size-3" /> استلمتُ الرجعة
                           </Button>
                         )}
                         {/*
                           ٢٢/٨ (Codex P2 #1): إثبات يدويّ يمرّ عبر `confirmConsignmentDelivery`
-                          الذي يرتدّ `alreadyDelivered` فوراً على أيّ طردٍ سبق ختمُه — فعرضُ
-                          الزرّ على `DELIVERED_AWAITING_REMIT` كان يُنتج «نجاحاً» بلا كتابة أيّ
-                          حدث MANUAL_PROOF. المسار الصحيح: طرودٌ لم يُختَم تسليمها بعد.
+                          الذي يرتدّ `alreadyDelivered` فوراً على أيّ طردٍ سبق ختمُه.
+                          ٢٣/٨: تصنيف السلطة صار: كاشير («تم التسليم») → مدير («تأكيد بموافقة مدير»).
+                          يظهر زرّ المدير كسلطةٍ أعلى لحالاتٍ تحتاج دليلاً مكتوباً موسَّعاً.
                         */}
                         {isManager && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT") && (
-                          <Button size="sm" variant="outline" title="سلطةٌ استثنائية للمدير — يُوثَّق في التدقيق" disabled={manualProof.isPending} onClick={() => setManualProofTarget(r)}>
-                            <ShieldCheck aria-hidden className="size-3" /> إثبات يدويّ
+                          <Button size="sm" variant="outline" title="سلطةٌ استثنائية للمدير — بدليلٍ مكتوبٍ في التدقيق" disabled={manualProof.isPending} onClick={() => setManualProofTarget(r)}>
+                            <ShieldCheck aria-hidden className="size-3" /> تأكيد المدير
                           </Button>
                         )}
                         {phone && (
@@ -719,6 +745,23 @@ function InTransitTab() {
         />
       )}
 
+      {/* ─── حوار «تم التسليم» (كاشير) ─── */}
+      {staffConfirmTarget && (
+        <StaffConfirmDialog
+          row={staffConfirmTarget}
+          pending={staffConfirm.isPending}
+          onCancel={() => setStaffConfirmTarget(null)}
+          onConfirm={(collectedAmount, evidence) => {
+            staffConfirm.mutate({
+              consignmentId: staffConfirmTarget.id,
+              collectedAmount,
+              evidence,
+              clientRequestId: crypto.randomUUID(),
+            });
+          }}
+        />
+      )}
+
       {/* ─── حوار الإثبات اليدوي (مدير فقط) ─── */}
       {manualProofTarget && (
         <ManualProofDialog
@@ -735,6 +778,54 @@ function InTransitTab() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * حوار «تم التسليم» بيد الكاشير (٢٣/٨) — الحالة اليوميّة الشائعة (اتصال المندوب/رسالة).
+ * ملاحظةٌ موجزةٌ إلزاميّة (اسم متّصل/رقم رسالة) — تُوثَّق في سجلّ التدقيق باسمك تلقائياً.
+ */
+function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTransitRow; pending: boolean; onCancel: () => void; onConfirm: (collectedAmount: string, evidence: string) => void }) {
+  const remaining = Math.max(0, Number(row.codAmount) - Number(row.collectedAmount ?? 0) - Number(row.counterSettledAmount ?? 0));
+  const [amount, setAmount] = useState(String(remaining));
+  const [note, setNote] = useState("");
+  const QUICK_NOTES = ["اتصال المندوب", "رسالة واتساب من المندوب", "تأكيد من العميل"];
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" onClick={onCancel} dir="rtl">
+      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-ok)]">
+          <CheckCircle2 aria-hidden className="size-5" />
+          تم التسليم — {row.consignmentNumber}
+        </div>
+        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+          سُلِّم الطردُ للزبون. المبلغُ يصير عهدةً على {row.partyName ?? "المندوب"} حتى تُوَرَّده لاحقاً في «تسوية المناديب». يُسجَّل التأكيدُ باسمك في سجلّ التدقيق.
+        </p>
+        <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg border bg-muted/30 p-2 text-xs">
+          <span className="text-muted-foreground">المطلوب تحصيله من الزبون</span>
+          <span className="text-end font-black tabular-nums" dir="ltr">{fmt(String(remaining))} د.ع</span>
+        </div>
+        <Label htmlFor="staff-amount" className="text-xs">المبلغ الذي قبضه المندوب فعلاً</Label>
+        <div className="mb-3">
+          <MoneyInput id="staff-amount" value={amount} onChange={(v) => setAmount(v)} ariaLabel="المبلغ المُحصَّل" />
+        </div>
+        <Label className="text-xs">مصدر التأكيد (اختصار سريع أو نصّ حرّ)</Label>
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {QUICK_NOTES.map((n) => (
+            <button key={n} type="button" onClick={() => setNote(n)} className={cn(
+              "rounded-full px-2.5 py-1 text-xs font-medium transition",
+              note === n ? "bg-[var(--sem-ok)] text-white" : "bg-muted text-muted-foreground hover:bg-accent",
+            )}>{n}</button>
+          ))}
+        </div>
+        <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثلاً: اتصال ٦:٤٥م من المندوب…" className="mb-4" />
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={pending}>تراجع</Button>
+          <Button size="sm" disabled={pending || note.trim().length < 3 || Number(amount) < 0} onClick={() => onConfirm(String(Number(amount).toFixed(2)), note.trim())}>
+            {pending ? "جارٍ…" : "تأكيد التسليم"}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -886,7 +977,14 @@ function SettleTab() {
       "FULL",
       ["manager", "cashier", "sales_rep"],
     );
-  const [partyId, setPartyId] = useState<string>("");
+  /**
+   * ٢٣/٨ — قبول `?party=…` من رابط «سجّل التحصيل» في تبويب «قيد التوصيل»:
+   * كاشير يضغط زرّاً واحداً على صفٍّ سُلِّم فيصل هنا بالجهة مختارةً جاهزاً لإدخال الكشف.
+   */
+  const initialParty = typeof window !== "undefined"
+    ? (new URLSearchParams(window.location.search).get("party") ?? "")
+    : "";
+  const [partyId, setPartyId] = useState<string>(initialParty);
   const obligations = trpc.delivery.obligations.useQuery(undefined, { refetchInterval: 30_000 });
   const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });
   const remittances = trpc.delivery.remittances.useQuery({ partyId: Number(partyId), limit: 20 }, { enabled: !!partyId });
@@ -1097,7 +1195,18 @@ function SettleTab() {
                         </div>
                       </td>
                       <td className="p-2 text-end font-bold tabular-nums" dir="ltr">{fmt(p.currentBalance)}</td>
-                      <td className="p-2 text-end tabular-nums">{p.openCount}</td>
+                      <td className="p-2 text-end">
+                        <span className="tabular-nums">{p.openCount}</span>
+                        {/* ٢٣/٨: جسر التسليم–التحصيل. طرودٌ سُلِّمت ونقدها بيد الجهة ⇒ شارةٌ صريحة. */}
+                        {p.deliveredAwaitingRemitCount > 0 && (
+                          <span
+                            className="ms-1.5 rounded-md bg-[var(--sem-ok-bg)] px-1.5 py-0.5 text-[10px] font-black text-[var(--sem-ok)]"
+                            title={`${p.deliveredAwaitingRemitCount} طرود سُلِّمت — النقد بذمّة الجهة`}
+                          >
+                            سُلِّم {p.deliveredAwaitingRemitCount}
+                          </span>
+                        )}
+                      </td>
                       <td className="p-2 text-end font-black tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(p.codDueTotal)}</td>
                       <td className="p-2 text-end">
                         {p.oldestOpenAgeHours != null ? (

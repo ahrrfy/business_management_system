@@ -463,6 +463,61 @@ export interface ManualDeliveryProofInput {
  * فالفارق كلُّه في مصدر السلطة المدوَّن في حدث التسليم، لا في دينارٍ واحد.
  * بوّابةُ موافقة المدير تُفرَض في الراوتر (شأنُ طبقة التفويض لا الخدمة).
  */
+/**
+ * **تأكيد التسليم بيد الكاشير — «تم التسليم»** (٢٣/٨): البديل الأدنى سلطةً لـ`recordManualDeliveryProof`.
+ *
+ * السيناريو اليوميّ الشائع: يتّصل المندوب/الشركة ويقول «سلّمتُ CN-…، قبضتُ X» — الكاشير
+ * يحتاج زرّاً واحداً يُثبِتُها بلا انتظار وصول الكشف الورقيّ ولا انتظار المدير. نفس المسار
+ * الماليّ (`confirmConsignmentDelivery`) بمصدر سلطة `STAFF_CONFIRMED` مدوَّن — والفارقُ عن
+ * الإثبات المديريّ في مستوى التوثيق: هنا ملاحظةٌ قصيرة (اسم متّصل/رقم رسالة/إشارة موجزة)،
+ * هناك دليلٌ مكتوبٌ أطول (رابط صورة/شاهد).
+ *
+ * ⚠️ الحد الأدنى ٣ حروف (ملاحظة موجزة تسمّي المصدر) — أقصر من `MANUAL_PROOF` (٤ حروف بدليل).
+ * الاسم يظهر في `deliveryEvents.actorUserId` وسجلّ التدقيق، فلا مجهوليّة رغم البساطة.
+ */
+export async function recordStaffDeliveryConfirmation(
+  input: ManualDeliveryProofInput,
+  actor: DeliveryTxActor,
+): Promise<ConfirmConsignmentResult> {
+  const evidence = input.evidence.trim();
+  if (evidence.length < 3) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "أدخل ملاحظةً موجزة عن مصدر التأكيد (اتصال المندوب/رسالة واتساب/اسم مستلم)",
+    });
+  }
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const cn = (
+    await db
+      .select({ id: deliveryConsignments.id, partyId: deliveryConsignments.partyId, branchId: deliveryConsignments.branchId })
+      .from(deliveryConsignments)
+      .where(eq(deliveryConsignments.id, Number(input.consignmentId)))
+      .limit(1)
+  )[0];
+  if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+  // عزل الفرع (نفس نمط `recordManualDeliveryProof`).
+  const actorBranchId = actor.branchId != null ? Number(actor.branchId) : null;
+  const isAdmin = actor.role === "admin";
+  if (!isAdmin && actorBranchId != null && Number(cn.branchId) !== actorBranchId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخصّ فرعاً آخر" });
+  }
+  const statementNumber = `STAFF:${evidence}`.slice(0, STATEMENT_NUMBER_MAX);
+  return confirmConsignmentDelivery(
+    {
+      consignmentId: Number(cn.id),
+      clientRequestId: input.clientRequestId,
+      statementWitness: {
+        partyId: Number(cn.partyId),
+        statementNumber,
+        collectedAmount: round2(money(input.collectedAmount)).toFixed(2),
+        kind: "STAFF_CONFIRMED",
+      },
+    },
+    { userId: actor.userId },
+  );
+}
+
 export async function recordManualDeliveryProof(
   input: ManualDeliveryProofInput,
   actor: DeliveryTxActor,
