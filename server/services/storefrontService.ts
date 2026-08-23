@@ -84,6 +84,7 @@ export interface StorefrontProduct {
   productUnitId: number;
   variantId: number;
   productName: string;
+  description?: string | null;
   brand: string | null;
   category: string | null;
   categoryId: number | null;
@@ -97,6 +98,8 @@ export interface StorefrontProduct {
   /** متوفّر: رصيد الفرع بالأساس يغطي معامل وحدة البيع — نعم/لا فقط، لا نكشف الرصيد الكامل. */
   inStock: boolean;
   imageUrl: string | null;
+  /** صور المنتج المعتمدة، مرتبة من الأساسية؛ تُعاد في التفاصيل فقط. */
+  imageUrls?: string[];
   /** المنتج معلّم صراحةً من النظام كقابل للتخصيص؛ لا يُستنتج من الاسم أو الفئة. */
   isCustomizable: boolean;
   /** نوع التخصيص الذي حدده الخادم؛ null للمنتجات العادية. */
@@ -255,6 +258,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       colorHex: productVariants.colorHex,
       size: productVariants.size,
       productName: products.name,
+      description: products.description,
       storeTitle: products.storeTitle,
       brand: products.brand,
       category: categories.name,
@@ -390,7 +394,7 @@ function toPublicProductImage(imageId: number | null | undefined, value: string 
 }
 
 function toStorefront(r: {
-  productId: number; productUnitId: number; variantId: number; productName: string; storeTitle: string | null; brand: string | null;
+  productId: number; productUnitId: number; variantId: number; productName: string; description: string | null; storeTitle: string | null; brand: string | null;
   variantName: string | null; color: string | null; colorHex: string | null; size: string | null;
   category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; price: string | null;
   imageId?: number | null; imageUrl: string | null; productType: string | null; isCustomizable: boolean | null; isBundle: boolean | null;
@@ -403,6 +407,7 @@ function toStorefront(r: {
     productUnitId: Number(r.productUnitId),
     variantId: Number(r.variantId),
     productName: titleForChannel({ name: r.productName, storeTitle: r.storeTitle }, "store"),
+    description: r.description ?? null,
     brand: r.brand ?? null,
     category: r.category ?? null,
     categoryId: r.categoryId != null ? Number(r.categoryId) : null,
@@ -850,6 +855,20 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   if (item.isCustomizable) {
     item.customizationTemplate = await loadStorefrontCustomizationTemplate(db, item.productId);
   }
+  const galleryRows = await db
+    .select({ id: productImages.id, url: productImages.url })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, item.productId),
+      isNull(productImages.variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
+    .limit(12);
+  const galleryUrls = galleryRows
+    .map((row) => toPublicProductImage(row.id, row.url))
+    .filter((url): url is string => Boolean(url));
+  if (galleryUrls.length > 0) item.imageUrls = Array.from(new Set(galleryUrls));
   await attachSoldCounts(db, [item]);
   await attachVariantColors(db, [item], branchId);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
