@@ -26,20 +26,18 @@ function finiteNumber(value: unknown): number {
  * يحوّل لقطة المخزون الخادمية إلى دلالة عرض واحدة لكل مسارات إضافة سطر الفاتورة.
  * `stockBase` فعلي، و`availableBase` وحده يحدّد البيع؛ والخدمة لا تُوسَم نافذةً أبداً.
  *
- * ٢٣/٨ (بلاغ المالك «المخزون لا يظهر عند إضافة المنتج»): كان `isKnown` يشترط `availableBase != null`
- * حصراً، فأصنافٌ محمَّلة من كتالوجٍ أوفلاينيّ أو من مسوّدةٍ قديمة (تحمل `stockBase` بلا حجزٍ محسوب)
- * تُعرَض «غير معروف الرصيد» بلا نهاية. الآن نقبل إمّا `availableBase` وإمّا `stockBase` — العرض
- * يعتمد على أوّل المتوفّرَين والحقلُ الغائب يُحسَب صفراً بأمان (السلوك الأصلي لـ`nonNegative`).
+ * ⚠ العقد المحفوظ: لقطةُ نسخٍ قديمة (`availableBase` غائب و`stockBase` قديم) تُعامَل مجهولةً
+ * حتى يصل التحديث الحيّ من `posList`/الاحتياط — يُخفي الرصيدَ الخطأ من المستخدم في يوم النسخ
+ * (اختبار stockAvailability.test.ts:61). فحصُ ذلك لا يتحمّل رخاءً هنا.
  */
 export function getLineStockState(line: InvoiceLine, demandBase: number): LineStockState {
   const isService = line.isService === true;
-  const isKnown = isService || line.availableBase != null || line.stockBase != null;
+  const isKnown = isService || line.availableBase != null;
   // الرصيد الفعلي يبقى موقّعاً كي لا نخفي عجزاً حقيقياً في البيانات؛ الذي لا يجوز أن يكون
-  // سالباً في العرض التشغيلي هو «المتاح للبيع» فقط. حين يغيب `availableBase` نستعمل الفعليّ
-  // (`stockBase`) كتقديرٍ عمليّ (بلا حجزٍ معروف = بلا خصم منه).
+  // سالباً في العرض التشغيلي هو «المتاح للبيع» فقط.
   const onHandBase = finiteNumber(line.stockBase);
   const reservedBase = nonNegative(line.reservedBase);
-  const availableBase = line.availableBase != null ? nonNegative(line.availableBase) : Math.max(0, onHandBase - reservedBase);
+  const availableBase = nonNegative(line.availableBase);
   const factorValue = Number(line.conversionFactor);
   const factor = Number.isFinite(factorValue) && factorValue > 0 ? factorValue : 1;
   const availableInUnit = Math.floor(availableBase / factor);
