@@ -148,6 +148,8 @@ export default function ProductNew() {
   );
   const baseRetail = units.find((u) => u.isBase)?.retail.trim() ?? "";
   const aiProductFacts = useMemo(() => ({
+    inputName: productName.trim() || composedName || null,
+    inputDescription: description.trim() || null,
     category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
     productType: productType.trim() || null,
     brand: brand.trim() || null,

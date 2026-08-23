@@ -6,6 +6,8 @@ import {
 } from "./productContentAi";
 
 const facts = productFactsSchema.parse({
+  inputName: "دفتر ملاحظات سلك A5 من روتا",
+  inputDescription: "دفتر للكتابة اليومية",
   category: "قرطاسية",
   productType: "دفتر ملاحظات",
   brand: "روتا",
@@ -35,6 +37,11 @@ const validDraft = aiProductDraftSchema.parse({
 });
 
 describe("productContentAi", () => {
+  it("preserves entered name and description as non-evidence context", () => {
+    expect(facts.inputName).toBe("دفتر ملاحظات سلك A5 من روتا");
+    expect(facts.inputDescription).toBe("دفتر للكتابة اليومية");
+  });
+
   it("accepts a draft whose claims cite existing facts", () => {
     const result = validateAiProductDraft(validDraft, facts);
     expect(result.ok).toBe(true);

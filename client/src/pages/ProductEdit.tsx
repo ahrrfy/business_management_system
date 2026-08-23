@@ -544,6 +544,8 @@ export default function ProductEdit() {
 
   const activeCount = variants.filter((v) => v.isActive).length;
   const aiProductFacts = {
+    inputName: originalName.trim() || composedName || null,
+    inputDescription: description.trim() || null,
     category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
     productType: productType.trim() || null,
     brand: brand.trim() || null,
