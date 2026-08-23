@@ -411,6 +411,35 @@ option:disabled {
     box-shadow: none;
   }
 
+  /* Important storefront actions get a short, role-specific feedback ring. */
+  .storefront .store-action-button {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+  }
+
+  .storefront .store-action-button::after {
+    position: absolute;
+    inset: 18%;
+    z-index: -1;
+    border: 2px solid currentColor;
+    border-radius: 9999px;
+    content: "";
+    opacity: 0;
+    pointer-events: none;
+    transform: scale(.55);
+  }
+
+  @keyframes storefront-action-ring {
+    0% { opacity: 0; transform: scale(.55); }
+    28% { opacity: .28; }
+    100% { opacity: 0; transform: scale(1.5); }
+  }
+
+  .storefront .store-action-button--active::after {
+    animation: storefront-action-ring 620ms cubic-bezier(.2,.72,.24,1) both;
+  }
+
   /* Short spatial feedback after a successful add: the product thumbnail travels
      toward the persistent cart control without covering the checkout surface. */
   @keyframes storefront-cart-flight {
@@ -464,7 +493,8 @@ option:disabled {
       transform: none;
     }
 
-    .storefront .store-cart-flight {
+    .storefront .store-cart-flight,
+    .storefront .store-action-button::after {
       display: none;
       animation: none;
     }
