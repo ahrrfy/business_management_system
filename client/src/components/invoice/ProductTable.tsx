@@ -9,6 +9,7 @@
  * فقط باسم «حصة الضريبة» بجانب «الإجمالي»؛ خلاف ذلك يُخفى العمود تماماً.
  */
 import type { Dispatch } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Gift, Package, ShoppingCart, X } from "lucide-react";
 import { priceDecimalsFor } from "@shared/moneyPrecision";
 import { Button } from "@/components/ui/button";
@@ -227,6 +228,25 @@ export function ProductTable({
   const th = "sticky top-0 z-[2] whitespace-nowrap border-b-2 bg-muted px-2 py-2 text-center text-xs font-bold text-muted-foreground";
   const td = "px-2 py-1.5 text-center text-sm align-middle";
 
+  // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك على شاشات الكاشيرات — طُبِّق على فاتورة
+  // البيع المتقدّمة والشراء وعرض السعر ومرتجع الشراء: كلّها تستهلك ProductTable). لا مفهومَ
+  // «مختار» هنا (كلّ سطرٍ قابلٌ للتحرير المباشر) ⇒ نحرّك آخر صفٍّ في مجال الرؤية عند فعل الإضافة.
+  //
+  // ٢٣/٨ (Codex P2): الاعتماد على `items.length` كان يشغّل التمرير عند تحميل مستندٍ قائم
+  // (PurchaseEdit / تصحيح فاتورة يرسلان REPLACE_STATE بأسطرٍ كثيرة) فيقفز الجدولُ للأسفل
+  // ويُخفي الأوائل. الحلّ: عدّاد `addTick` داخليّ يزيد **فقط** عند ADD_ITEM من ProductSearchBar
+  // الداخليّ (بحثٌ فعليٌّ من الكاشير). REPLACE_STATE والحذف وتعديل الكمّية لا يحرّكونه.
+  // BulkPicker يظلّ خارج التمرير التلقائي (يقفلها الكاشير بيديه ويرى النتيجة فوراً).
+  const lastRowRef = useRef<HTMLTableRowElement | null>(null);
+  const [addTick, setAddTick] = useState(0);
+  useEffect(() => {
+    if (addTick === 0) return;
+    const raf = requestAnimationFrame(() => {
+      lastRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [addTick]);
+
   return (
     <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-xl border bg-card print:overflow-visible">
       {!sourceLocked && (
@@ -235,7 +255,7 @@ export function ProductTable({
             invoiceType={invoiceType}
             branchId={branchId}
             tier={tier}
-            onAddProduct={(line) => dispatch({ type: "ADD_ITEM", item: line })}
+            onAddProduct={(line) => { dispatch({ type: "ADD_ITEM", item: line }); setAddTick((t) => t + 1); }}
             onNotify={onNotify}
           />
         </div>
@@ -328,6 +348,7 @@ export function ProductTable({
               return (
                 <tr
                   key={`${item.productUnitId}-${idx}`}
+                  ref={idx === items.length - 1 ? lastRowRef : undefined}
                   className={cn(
                     "border-b transition hover:bg-muted/50",
                     stock.isKnown && stock.isOut && "border-s-[3px] border-s-destructive bg-destructive/5",
