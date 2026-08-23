@@ -40,7 +40,7 @@ export interface ReceptionCheckoutInput {
   priceTier?: PriceTier | null;
   /** كوبون CRM — ينطبق على البيع المباشر فقط (createPrintSaleInTx لا يدعم كوبونات). */
   couponCode?: string | null;
-  regularSale?: { lines: SaleLineInput[]; amount: string } | null;
+  regularSale?: { lines: SaleLineInput[]; amount: string; invoiceDiscount?: string | null } | null;
   printSale?: { lines: PrintSaleLineInput[]; amount: string } | null;
   workOrders?: Array<Omit<CreateWorkOrderInput, "branchId" | "customerId" | "clientRequestId">>;
   priceOverrideApproved?: boolean;
@@ -368,6 +368,10 @@ export async function checkoutReceptionInTx(
           priceTier: input.priceTier ?? null,
           couponCode: input.couponCode?.trim() || null,
           lines: input.regularSale.lines,
+          // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (مرآة POS.tsx buildSaleLine): يمرَّر مبلغاً
+          // مطلقاً فيدخل computeInvoiceTotals ويحرسه invoiceDiscountExceedsThreshold على الإجماليّ.
+          // صفر/غياب ⇒ فرعُ NULL في sale/create.ts (بلا خصمٍ رأس، صفر تغيير سلوكيّ).
+          invoiceDiscount: input.regularSale.invoiceDiscount ?? undefined,
           cashRoundIQD: roundDirectCash,
           cashRoundingBasketOthers: overrideTarget === "SALE" ? basketOthers : null,
           // ش٤: حصة البيع المباشر من المقبوض سلفاً — تدخل paidAmount بلا إيصالٍ ثانٍ (I5)،

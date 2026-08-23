@@ -354,6 +354,9 @@ export default function Reception() {
   const [couponInput, setCouponInput] = useState("");
   // الكوبون مطويّ افتراضياً في الدرجات الضيّقة؛ هذه الراية تفتحه بطلب الموظّف.
   const [couponOpen, setCouponOpen] = useState(false);
+  // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر: يقبل الكاشير ٠–١٥٪ (سلطته الافتراضية بقرار المالك،
+  // مرآةً لـPOS)، وفوقه اعتمادُ مدير خادميّ عبر invoiceDiscountExceedsThreshold. سلسلةٌ فارغة = لا خصم.
+  const [invoiceDiscountPct, setInvoiceDiscountPct] = useState("");
   const [couponCode, setCouponCode] = useState<string | null>(null);
   const [couponLabel, setCouponLabel] = useState<string | null>(null);
   // النوعُ من القاموس المشترك لا اتّحاداً مكتوباً بيد: كان يُسقِط `OTHER` فتُصبّ عليه
@@ -517,8 +520,65 @@ export default function Reception() {
   // ───── حسابات هجينة ───────────────────────────────────────────────────────
   const cartCount = cart.reduce((s, c) => s + c.qty, 0);
   const sumDirectD = cart.filter((c) => !isCustomKind(c)).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
+  // ٢٣/٨ — البيع الخالص (لا طباعة ولا تخصيص) هو وحده وعاء خصم رأس الفاتورة: عقد الخادم
+  // (workOrderRouter.receptionCheckout.regularSale.invoiceDiscount) يمرّره لـcreateSaleInTx
+  // الذي يحسبه على فاتورة البيع فقط. `printSale` فاتورةٌ مستقلّة و«التخصيص» أمرُ شغلٍ (workOrder).
+  const regularSumRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
   const sumCustomD = cart.filter((c) => isCustomKind(c)).reduce((s, c) => s.plus(D(customLineGrand(c))), D(0));
-  const grandTotalD = sumDirectD.plus(sumCustomD);
+  // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪ كما في POS): يُطبَّق **قبل** حساب grandTotal
+  // ⇒ التقريب النقديّ والعربون المحتجَز والمقبوض النقديّ كلّها تُقاس على الصافي بعد الخصم بلا مسّ
+  // أيّ حاسوبٍ خلفيّ. `regularSale.invoiceDiscount` يُبعث للخادم مبلغاً مطلقاً لينفّذ الحماية نفسها
+  // على invoice.discountAmount (invoiceDiscountExceedsThreshold على الإجماليّ).
+  //
+  // **السقف الفعّال المتبقّي** (مرآة POS.tsx حرفياً): بوّابة الخادم تقيس (refGross − invoiceNet)/refGross
+  // مقابل ١٥٪، وترى انحراف السطر (عرض/كوبون/خصم يدويّ) والرأس معاً. لولا هذا: سلّةٌ عليها عرضٌ ١٠٪
+  // + خصمُ رأسٍ ١٠٪ = انحراف ١٩٪ ⇒ رفضٌ خادميّ يُفاجأ به الكاشير (بلاغ Codex P1).
+  // بيع الاستقبال بلا مسار «كرت رقميّ» — عقد الخادم يرفضها بنيوياً — فلا استثناءٌ يخصمها.
+  const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
+  const regularReferenceGrossD = cart
+    .filter((c) => !isCustomKind(c) && !c.row.isPrintService)
+    .reduce((s, c) => {
+      // بلا خصمٍ يدويّ = سعرُ القائمة (السعرُ الأصل قبل الخصم) × الكمية. `origPrice` يُضبَط من
+      // Popover خصم السطر ⇒ نستعمله مرجعاً كي يحسب الانحراف السطريّ المسبق.
+      const refUnit = D(c.origPrice ?? c.row.price ?? 0);
+      return s.plus(refUnit.times(c.qty));
+    }, D(0));
+  const priorLineDeviationRatioD = regularReferenceGrossD.gt(0)
+    ? regularReferenceGrossD.minus(regularSumRawD).div(regularReferenceGrossD)
+    : D(0);
+  const remainingHeaderAuthorityFractionD = D(0.15).minus(priorLineDeviationRatioD);
+  const remainingHeaderPctOnSubtotalD = (regularSumRawD.gt(0) && regularReferenceGrossD.gt(0))
+    ? remainingHeaderAuthorityFractionD.times(regularReferenceGrossD).div(regularSumRawD).times(100)
+    : D(CASHIER_INVOICE_DISCOUNT_MAX_PCT);
+  const effectiveHeaderCapPctD = (remainingHeaderPctOnSubtotalD.lt(0)
+    ? D(0)
+    : remainingHeaderPctOnSubtotalD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      : remainingHeaderPctOnSubtotalD).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
+  const effectiveHeaderCapPct = effectiveHeaderCapPctD.toNumber();
+  // فخّ decimal.js (Codex P1): `D(".") throws`. لا نمرّر إلى `D()` إلّا سلسلةً قابلةً للتحليل.
+  // الشاشة تحرس الإدخال أيضاً، لكنّ هذا الفحص هنا الحدّ الأخير قبل عمليات الرياضيات.
+  const rawInvoiceDiscountPctD = (() => {
+    if (!invoiceDiscountPct) return D(0);
+    const num = Number(invoiceDiscountPct);
+    if (!Number.isFinite(num) || num < 0) return D(0);
+    try { return D(invoiceDiscountPct); } catch { return D(0); }
+  })();
+  const clampedInvoiceDiscountPctD = rawInvoiceDiscountPctD.gt(effectiveHeaderCapPctD)
+    ? effectiveHeaderCapPctD
+    : rawInvoiceDiscountPctD;
+  // ٢٣/٨ — Codex P1: خصمُ رأس الفاتورة لا يعبر المسوّدة حالياً — `buildDraftPayload` ليس لديه
+  // حقلٌ يحمله، وعقدُ `commitDraft` يعيد بناء الإجمالي من الأسطر الخام فيرفض التثبيت لأنّ الصافي
+  // لا يطابق. إخفاءُ الحقل عند وجود مسوّدة يمنع تسرّبَه لعقدٍ لا يفهمه — الشريحة الأوسع (توسيع
+  // عقد المسوّدة) شغلٌ منفصل بمهاجرةٍ وحقولٍ خادميّة إضافيّة.
+  const invoiceDiscountAllowed = regularSumRawD.gt(0) && !activeDraft;
+  const invoiceDiscountAmountD = invoiceDiscountAllowed
+    ? round2(regularSumRawD.times(clampedInvoiceDiscountPctD).div(100))
+    : D(0);
+  const invoiceDiscountAmount = invoiceDiscountAmountD.toNumber();
+  const regularSumNetD = regularSumRawD.minus(invoiceDiscountAmountD);
+  const sumDirectNetD = sumDirectD.minus(invoiceDiscountAmountD);
+  const grandTotalD = sumDirectNetD.plus(sumCustomD);
   const grandTotal = round2(grandTotalD).toNumber();
   const sumDirect = round2(sumDirectD).toNumber();
   const sumCustom = round2(sumCustomD).toNumber();
@@ -759,6 +819,8 @@ export default function Reception() {
     setSelKey(null);
     setPayInput("");
     setDeferred(false);
+    // ٢٣/٨ — تفريغ خصم رأس الفاتورة مع تفريغ السلّة كي لا يُطبَّق سهواً على سلّةٍ جديدةٍ لعميلٍ آخر.
+    setInvoiceDiscountPct("");
   }
 
   // ───── الباركود ───────────────────────────────────────────────────────────
@@ -841,9 +903,11 @@ export default function Reception() {
     }
   }
   /** عربون ▾ (§٨.٣): تعبئة سريعة = الجاهز كاملاً + نسبة من المخصّص (الخوارزمية الجشعة الخادمية
-   *  تُغطّي البيع المباشر أولاً ثم توزّع الفائض عرابين — هذه الأزرار تملأ المبلغ وفقها بلا حساب يدويّ). */
+   *  تُغطّي البيع المباشر أولاً ثم توزّع الفائض عرابين — هذه الأزرار تملأ المبلغ وفقها بلا حساب يدويّ).
+   *  ٢٣/٨ — Codex P1: «الجاهز» = `sumDirectNetD` (بعد خصم رأس الفاتورة) لا الخام، وإلّا عبَّأت
+   *  اقتراحاً يفوق المستحقّ بمقدار الخصم فيصير الفارقُ عربوناً خفياً على المخصّص بغير علم الكاشير. */
   function fillDeposit(pctOfCustom: number) {
-    const v = round2(sumDirectD.plus(sumCustomD.times(pctOfCustom)));
+    const v = round2(sumDirectNetD.plus(sumCustomD.times(pctOfCustom)));
     setPayInput(v.toFixed(0));
     setDepositMenuOpen(false);
   }
@@ -883,7 +947,8 @@ export default function Reception() {
     ...(hasCustom
       ? ([["٢٥٪", 0.25], ["٥٠٪", 0.5], ["المخصّص كاملاً", 1]] as const).map(([label, pct]) => ({
           label,
-          amountLabel: fmt(round2(sumDirectD.plus(sumCustomD.times(pct))).toNumber()),
+          // ٢٣/٨ — Codex P1: العرض على `sumDirectNetD` (بعد الخصم) كي يطابق ما تعبّئه fillDeposit.
+          amountLabel: fmt(round2(sumDirectNetD.plus(sumCustomD.times(pct))).toNumber()),
           onPick: () => fillDeposit(pct),
         }))
       : []),
@@ -1297,9 +1362,12 @@ export default function Reception() {
     const mixedRoundApplied = mixedRoundEligible
       && round2(appliedPaidD.plus(heldD)).eq(round2(effectiveGrandD));
     const mixedDeltaAppliedD = mixedRoundApplied ? mixedDeltaD : D(0);
+    // ٢٣/٨ — أرضيّة النقد الجزئيّ (Codex P1): تُقاس على `sumDirectNetD` (بعد خصم رأس الفاتورة)
+    // لا على `sumDirectD` الخام. لولا التصحيح: خصمٌ ١٠٪ على سلّةٍ نقديّةٍ غير مقرَّبة أو بطاقةٍ/تحويلٍ
+    // كان يعرض «الصافي» ٩٠٠٠ لكنّه يطالب بـ١٠٠٠٠ نقداً على الأرضيّة ⇒ تفشل عملية Quick Pay بلا سبب.
     const directFloorD = cashRoundActive
       ? effectiveGrandD
-      : round2(sumDirectD.plus(mixedDeltaAppliedD));
+      : round2(sumDirectNetD.plus(mixedDeltaAppliedD));
     // مراجعة PR #495 — مرآة حارس الخادم حرفياً (`!input.delivery && applied.lt(directTotal)`):
     // طلبٌ يُسنَد لمندوبٍ **الدفعُ فيه عند الاستلام**، فاشتراط تغطية البضاعة نقداً الآن كان
     // يستحيل معه بيعُ COD أصلاً (وإدخالُ المبلغ لإسكات الحارس يسجّله نقداً في الدرج ⇒ عهدةُ
@@ -1379,10 +1447,13 @@ export default function Reception() {
       // التقريب بنفس الدالة فيتطابقان، ويقيّد الفرق ADJUST. السلة الخالصة ⇒ مجموع الأسطر = الإجمالي.
       // ش٦: عند التقريب المختلط يُبيَّت فرق السلّة كلّها في مبلغ الفاتورة الحاملة، ويُسمّى
       // للخادم بـcashRoundingOverride فيقيّد الفرق ADJUST عليها.
+      // ٢٣/٨: مبلغُ البيع = صافي أسطر البيع بعد خصم رأس الفاتورة (regularSumRawD − invoiceDiscountAmountD)
+      // + فرق التقريب إن وُجد. الخادم يستقبل الخصمَ مطلقاً في `regularSale.invoiceDiscount` ويعيد
+      // computeInvoiceTotals، فينتج نفس الرقم بالضبط ⇒ توزيعُ المدفوع لا يُخطئ التخصيص.
       const saleAmount = cashRoundActive
         ? round2(effectiveGrandD).toFixed(2)
         : round2(
-            regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))
+            regularSumRawD.minus(invoiceDiscountAmountD)
               .plus(mixedRoundApplied && mixedCarrier === "SALE" ? mixedDeltaAppliedD : D(0)),
           ).toFixed(2);
       const printAmount = round2(
@@ -1539,6 +1610,10 @@ export default function Reception() {
         couponCode: couponCode ?? undefined,
         regularSale: regularLines.length > 0 ? {
           amount: saleAmount,
+          // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪): يمرَّر مطلقاً لـcreateSaleInTx على البيع
+          // المباشر فقط (لا يمسّ printSale ولا workOrders). فوقَ الحدّ يرفضه الخادم بـmanualGate إلّا
+          // باعتمادِ مديرٍ (POS.tsx يفعل نفس الشيء). صفر ⇒ حذفٌ من الحمولة.
+          ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
           lines: regularLines.map((c) => {
             // كوبون/عرض: سعر قائمة صحيح الدينار + خصمٌ صريح (نمط POS.tsx buildSaleLine) — الخادم
             // يتحقّق منه مقابل العرض الفعلي بلا رفضٍ لو تغيّر بين المعاينة والحفظ.
@@ -1654,11 +1729,18 @@ export default function Reception() {
           }
         : null;
       if (result.regularSale) {
+        // ٢٣/٨ — Codex P1: خصمُ رأس الفاتورة يُطبع صراحةً على الإيصال. لولا هذا يظهر subtotal
+        // = total (الصافي) بينما الأسطر تُظهر أسعارها الخام ⇒ الإيصال لا يُطابق حسابياً والزبون يسأل
+        // عن الفارق. `subtotal` صار الخام (`regularSumRawD`)، `discount` يعلن الخصم، والصافي `total`.
+        const regularGrossD = regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
         receiptsToPrint.push({
           ...receiptHead,
           receiptNumber: result.regularSale.invoiceNumber,
           items: regularLines.map(receiptLine),
-          subtotal: saleAmount, total: saleAmount, paid: saleAmount,
+          subtotal: round2(regularGrossD).toFixed(2),
+          discount: invoiceDiscountAmountD.gt(0) ? invoiceDiscountAmountD.toFixed(2) : null,
+          total: saleAmount,
+          paid: saleAmount,
           // الفكّة تُطبع مرّةً واحدةً على أول إيصال (هي فكّة الطلب كله لا فكّة فاتورةٍ بعينها).
           change: printedChange,
           credit: printedCredit,
@@ -1775,6 +1857,8 @@ export default function Reception() {
       setPayInput("");
       setPaymentReference("");
       setDeferred(false);
+      // ٢٣/٨ — تفريغ خصم رأس الفاتورة بعد البيع الناجح كي لا يمرَّ سهواً إلى العميل التالي.
+      setInvoiceDiscountPct("");
       setCustomer({ customerId: null, name: "", phone: null, isNew: false });
       setReceptionPhone("");
       setChannel("WALK_IN");
@@ -1930,7 +2014,10 @@ export default function Reception() {
           quantity: String(c.qty),
           unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
         })),
-        amount: round2(regularLines.reduce((sum, c) => sum.plus(D(lineTotal(c))), D(0))).toFixed(2),
+        // ٢٣/٨ — الصافي = الأسطر الخام − خصمُ رأس الفاتورة الملتقَط. الخادم يعيد الحساب بنفس المدخلات
+        // عند الترحيل (replayOfflineReception → checkoutReception → createSaleInTx) فينتج نفس الرقم.
+        amount: round2(regularLines.reduce((sum, c) => sum.plus(D(lineTotal(c))), D(0)).minus(invoiceDiscountAmountD)).toFixed(2),
+        ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
       } : null,
       printSale: printLines.length > 0 ? {
         lines: printLines.map((c) => ({
@@ -1971,7 +2058,10 @@ export default function Reception() {
         price: round2(D(effectivePrice(c))).toFixed(2),
         total: round2(D(lineTotal(c))).toFixed(2),
       })),
-      subtotal: round2(grandTotalD).toFixed(2),
+      // ٢٣/٨ — Codex P1: subtotal يعرض الخام (`sumDirect + sumCustom`) وdiscount يعلن الخصم
+      // صراحةً على الإيصال المؤقّت — لولا هذا يظهر إجماليٌّ أقلّ من مجموع الأسطر بلا سبب.
+      subtotal: round2(sumDirectD.plus(sumCustomD)).toFixed(2),
+      discount: invoiceDiscountAmountD.gt(0) ? invoiceDiscountAmountD.toFixed(2) : null,
       total: round2(grandTotalD).toFixed(2),
       paid: round2(paidNowD).toFixed(2),
       change: paidNowD.gt(grandTotalD) ? round2(paidNowD.minus(grandTotalD)).toFixed(2) : null,
@@ -1986,6 +2076,8 @@ export default function Reception() {
     setSelKey(null);
     setPayInput("");
     setPaymentReference("");
+    // ٢٣/٨ — Codex P1: تفريغ الخصم بعد الالتقاط الأوفلايني كي لا يتسرّب لعميل التالي.
+    setInvoiceDiscountPct("");
     setCustomer({ customerId: null, name: "", phone: null, isNew: false });
     setReceptionPhone("");
     setChannel("WALK_IN");
@@ -2747,6 +2839,11 @@ export default function Reception() {
         orderDelivery={deliveryDisclosure}
         heldDeposit={round2(heldD).toNumber()}
         paid={paid}
+        invoiceDiscountPct={invoiceDiscountPct}
+        setInvoiceDiscountPct={setInvoiceDiscountPct}
+        invoiceDiscountAmount={invoiceDiscountAmount}
+        invoiceDiscountAllowed={invoiceDiscountAllowed}
+        invoiceDiscountMaxPct={CASHIER_INVOICE_DISCOUNT_MAX_PCT}
         change={change}
         remaining={remaining}
         isChange={isChange}

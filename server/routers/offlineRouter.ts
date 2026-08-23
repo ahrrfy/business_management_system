@@ -375,6 +375,8 @@ export const offlineRouter = router({
               )
               .min(1),
             amount: positiveMoneyString,
+            // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (مرآةُ العقد المتصل في workOrderRouter).
+            invoiceDiscount: nonNegMoneyString.optional(),
           })
           .nullish(),
         printSale: z

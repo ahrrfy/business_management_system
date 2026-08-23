@@ -74,7 +74,7 @@ export interface OfflineReceptionPayload {
   priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
   paymentMethod: "CASH";
   paidAmount: string;
-  regularSale?: { lines: OfflineSaleLine[]; amount: string } | null;
+  regularSale?: { lines: OfflineSaleLine[]; amount: string; invoiceDiscount?: string } | null;
   printSale?: { lines: Array<{ variantId: number; productUnitId: number; quantity: string; unitPriceOverride: string }>; amount: string } | null;
   clientRequestId: string;
 }
