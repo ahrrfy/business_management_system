@@ -34,6 +34,35 @@ class ProductsMappersTest {
     }
 
     @Test
+    fun `catalog maps variantKind so alternatives are badgeable`() {
+        val page = ProductsMappers.page(
+            mapOf(
+                "rows" to listOf(
+                    mapOf(
+                        "productId" to 1, "productName" to "دفتر", "productIsActive" to true,
+                        "variantId" to 2, "variantName" to "ماركة النسر", "variantKind" to "ALTERNATIVE",
+                        "sku" to "NB-ALT2", "productUnitId" to 3, "unitName" to "قطعة", "stockBase" to 3,
+                    ),
+                    mapOf(
+                        "productId" to 1, "productName" to "دفتر", "productIsActive" to true,
+                        "variantId" to 4, "variantKind" to "VARIANT",
+                        "sku" to "NB", "productUnitId" to 5, "unitName" to "قطعة", "stockBase" to 5,
+                    ),
+                ),
+                "total" to 2,
+            ),
+        )
+
+        val alt = page.rows.first { it.variantId == 2L }
+        assertEquals("ALTERNATIVE", alt.variantKind)
+        assertTrue(alt.isAlternative)
+        assertEquals("ماركة النسر", alt.variantName)
+
+        val base = page.rows.first { it.variantId == 4L }
+        assertFalse(base.isAlternative)
+    }
+
+    @Test
     fun `price preview preserves below-cost decision from server`() {
         val preview = ProductsMappers.wavePreview(
             mapOf(

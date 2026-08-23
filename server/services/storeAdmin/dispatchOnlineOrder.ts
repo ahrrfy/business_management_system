@@ -23,6 +23,7 @@ import {
   lockProductUnitsForOnlineAllocation,
 } from "../catalog/variantAvailability";
 import { money } from "../money";
+import { consumeCoupon, lockCouponForSale } from "../couponService";
 
 export interface DispatchOnlineOrderInput {
   onlineOrderId: number;
@@ -163,6 +164,14 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
           message: "تغيّر معامل وحدة بعد تثبيت الطلب — ألغِ الطلب أو أعد إنشاءه بالسلة الحالية",
         });
       }
+      const lockedCoupon = cur.couponCode
+        ? await lockCouponForSale(tx, {
+            code: cur.couponCode,
+            branchId,
+            customerId: Number(cur.customerId),
+            todayYmd: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10),
+          })
+        : null;
       const saleInput = {
         branchId,
         customerId: Number(cur.customerId),
@@ -181,6 +190,15 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         onlineOrderAllocationId: Number(cur.id),
       };
       const sale = await createSaleInTx(tx, saleInput, actor);
+      if (lockedCoupon) {
+        await consumeCoupon(tx, lockedCoupon, {
+          invoiceId: sale.invoiceId,
+          customerId: Number(cur.customerId),
+          branchId,
+          discountAmount: String(cur.couponDiscount ?? "0"),
+          userId: actor.userId,
+        });
+      }
       invoiceId = sale.invoiceId;
       invoiceNumber = sale.invoiceNumber;
       total = sale.total;

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   FileText,
   Image as ImageIcon,
@@ -43,6 +43,9 @@ export interface CartTableProps {
   removeRow: (key: string) => void;
   onEditCustomization: (row: PosRow, editingKey: string) => void;
   grandTotal: number; cartCount: number;
+  /** ٢٣/٨ (Codex P2) — عدّادُ إضافةٍ صريحٌ من الأب يزيد فقط عند `addRow` (لا عند حذف/تعديل كمّية
+   *  ولا عند تحميل مسوّدة). يشغّل التمريرَ إلى السطر المُدرَج/المزاد، بلا اعتماد على تغيّر الطول. */
+  addTick: number;
 }
 
 export function CartTable({
@@ -54,7 +57,25 @@ export function CartTable({
   changeQty, setQty, removeRow,
   onEditCustomization,
   grandTotal, cartCount,
+  addTick,
 }: CartTableProps) {
+  // ٢٣/٨ — تمريرٌ تلقائيّ للسطر المُدرَج/المزاد كمّياً (بلاغ المالك «لا يظهر آخر منتجٍ مضاف»):
+  // كاشير الاستقبال يضبط `selKey` على السطر الفعّال في `addRow`/المسح؛ يكفي أن يتّبع الجدولُ
+  // ذلك المرجع لتُلغى الحاجة للتمرير اليدويّ. `block: nearest` يمنع القفزة إن كان الصفّ ظاهراً.
+  //
+  // ٢٣/٨ (Codex P2): الاعتماد على `cart.length` كان يعيد تشغيلَ التأثير عند حذف صفٍّ آخر
+  // ⇒ يقفز الجدولُ إلى السطر المُحدَّد الآن (ولو كان بعيداً) بغير قصد الكاشير. وإعادةُ مسح
+  // نفس السطر المحدَّد لا تُغيّر selKey ولا الطول ⇒ لا تمرير رغم أنّه الحدث الذي يطلبه الكاشير.
+  // الحلّ: عدّاد `addTick` صريحٌ من الأب يزيد **فقط** عند فعل الإضافة — يشمل رفع الكمية على السطر
+  // ذاته. الحذف/تعديل الكمية/تحميل المسوّدة كلّها لا تحرّكه.
+  const selectedRowRef = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (!selKey) return;
+    const raf = requestAnimationFrame(() => {
+      selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [addTick]);
   const variantIds = Array.from(new Set(cart.filter((line) => !line.custom && !line.row.isService).map((line) => line.row.variantId)));
   const allocationsQ = trpc.reservations.activeAllocations.useQuery(
     { branchId, variantIds },
@@ -103,6 +124,7 @@ export function CartTable({
                 return (
                   <tr
                     key={l.key}
+                    ref={selected ? selectedRowRef : undefined}
                     onClick={() => onSelect(l.key)}
                     className={cn(
                       "cursor-pointer border-b align-top",

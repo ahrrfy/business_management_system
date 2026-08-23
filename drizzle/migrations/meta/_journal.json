@@ -1709,6 +1709,13 @@
 			"when": 1788052309000,
 			"tag": "0258_invoice_item_name_snapshot",
 			"breakpoints": true
+		},
+		{
+			"idx": 259,
+			"version": "5",
+			"when": 1788052310000,
+			"tag": "0259_online_order_coupons",
+			"breakpoints": true
 		}
 	]
 }

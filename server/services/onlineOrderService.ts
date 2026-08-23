@@ -34,6 +34,8 @@ import { money, round2, sumMoney, toDbMoney, toDbQty } from "./money";
 import { resolvePromotionForLine } from "./salesPromotionService";
 import { requireStorefrontContext } from "./storefrontContextService";
 import { withTx } from "./tx";
+import { lockCouponForSale, normalizeCouponCode, type LockedCoupon } from "./couponService";
+import { resolveCouponPromotionForLine } from "./salesPromotionService";
 import { verifyOnlineOrderLabelToken } from "./barcodeService";
 import {
   loadVariantAvailability,
@@ -138,6 +140,7 @@ export function normalizeOnlineOrderLines(
 }
 
 export interface CreateOnlineOrderInput {
+  couponCode?: string | null;
   branchId?: number | null;
   customerName: string;
   customerPhone: string;
@@ -204,6 +207,7 @@ async function loadOwnedReplay(
       subtotal: onlineOrders.subtotal,
       shippingCost: onlineOrders.shippingCost,
       total: onlineOrders.total,
+      couponCode: onlineOrders.couponCode,
       governorate: onlineOrders.governorate,
       shippingAddress: onlineOrders.shippingAddress,
       reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))) * 1000)`,
@@ -262,9 +266,12 @@ async function loadOwnedReplay(
     Array.from(requestedLineQuantities.entries()).every(
       ([unitId, quantity]) => storedLineQuantities.get(unitId) === quantity,
     );
+  const requestedCouponCode = input.couponCode ? normalizeCouponCode(input.couponCode) : null;
+  const existingCouponCode = existing.couponCode ? normalizeCouponCode(existing.couponCode) : null;
   if (
     existing.governorate !== input.governorate ||
     existing.shippingAddress !== requestedShippingAddress ||
+    existingCouponCode !== requestedCouponCode ||
     !sameLines
   ) {
     throw new TRPCError({
@@ -336,14 +343,19 @@ interface PricedOnlineOrderLine {
   discountPerUnit: string;
   unitPrice: string;
   lineTotal: string;
+  couponDiscountPerUnit?: string;
 }
 
 export interface OnlineOrderQuoteInput {
+  couponCode?: string | null;
   governorate: string;
   lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>;
 }
 
 export interface OnlineOrderQuoteResult {
+  couponCode: string | null;
+  couponProgramName: string | null;
+  couponDiscount: string;
   lines: Array<{
     productUnitId: number;
     quantity: number;
@@ -362,7 +374,7 @@ async function priceOnlineOrderLines(
   tx: Tx,
   branchId: number,
   lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>,
-  options: { lock: boolean },
+  options: { lock: boolean; coupon?: LockedCoupon | null },
 ): Promise<PricedOnlineOrderLine[]> {
   const unitIds = Array.from(new Set(lines.map((line) => Number(line.productUnitId)))).sort((a, b) => a - b);
   const query = tx
@@ -432,7 +444,27 @@ async function priceOnlineOrderLines(
       includeStoreManaged: true,
       lockForUpdate: options.lock,
     });
-    const discount = promo ? money(promo.discountForUnit) : money(0);
+    const automaticDiscount = promo ? money(promo.discountForUnit) : money(0);
+    const priceAfterAutomatic = round2(retail.minus(automaticDiscount).lt(0) ? money(0) : retail.minus(automaticDiscount));
+    const couponPromo = options.coupon
+      ? await resolveCouponPromotionForLine(tx, options.coupon.promotionId, {
+          branchId,
+          customerTier: RETAIL,
+          productId,
+          variantId,
+          categoryId,
+          unitPrice: priceAfterAutomatic.toFixed(2),
+          lineAmount: priceAfterAutomatic.times(quantity).toFixed(2),
+          hasContractPrice: false,
+          todayYmd,
+          includeStoreManaged: true,
+          lockForUpdate: options.lock,
+        })
+      : null;
+    const couponDiscount = couponPromo ? money(couponPromo.discountForUnit) : money(0);
+    const discount = automaticDiscount.plus(couponDiscount).gt(retail)
+      ? retail
+      : automaticDiscount.plus(couponDiscount);
     const unitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
     priced.push({
       productId,
@@ -445,6 +477,7 @@ async function priceOnlineOrderLines(
       baseQuantity: base.toNumber(),
       retailUnitPrice: retail.toFixed(2),
       discountPerUnit: round2(discount).toFixed(2),
+      couponDiscountPerUnit: round2(couponDiscount).toFixed(2),
       unitPrice: unitPrice.toFixed(2),
       lineTotal: round2(unitPrice.times(quantity)).toFixed(2),
     });
@@ -475,14 +508,23 @@ export async function quoteOnlineOrder(input: OnlineOrderQuoteInput): Promise<On
     const context = await requireStorefrontContext(tx, { requireOpen: true });
     const settings = (await tx.select({ freeShippingThreshold: storeSettingsTable.freeShippingThreshold })
       .from(storeSettingsTable).where(eq(storeSettingsTable.id, 1)).limit(1))[0];
-    const items = await priceOnlineOrderLines(tx, context.branchId, normalizedLines, { lock: false });
+    const lockedCoupon = input.couponCode
+      ? await lockCouponForSale(tx, { code: input.couponCode, branchId: context.branchId, customerId: null, todayYmd: todayYmdBaghdad() })
+      : null;
+    const items = await priceOnlineOrderLines(tx, context.branchId, normalizedLines, { lock: false, coupon: lockedCoupon });
+    const couponDiscountTotal = round2(items.reduce((sum, item) => sum.plus(money(item.couponDiscountPerUnit ?? "0").times(item.quantity)), money(0)));
+    if (lockedCoupon && couponDiscountTotal.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف السلة" });
     const totals = totalOnlineOrderQuote(items, input.governorate, settings?.freeShippingThreshold);
     return {
+      couponCode: lockedCoupon?.code ?? null,
+      couponProgramName: lockedCoupon?.programName ?? null,
+      couponDiscount: couponDiscountTotal.toFixed(2),
       lines: items.map((item) => ({
         productUnitId: item.productUnitId,
         quantity: item.quantity,
         retailUnitPrice: item.retailUnitPrice,
         discountPerUnit: item.discountPerUnit,
+        couponDiscountPerUnit: item.couponDiscountPerUnit ?? "0.00",
         unitPrice: item.unitPrice,
         lineTotal: item.lineTotal,
       })),
@@ -582,6 +624,9 @@ async function createOnlineOrderAttempt(
       branchLock: "share",
     });
     const branchId = storefrontContext.branchId;
+    const lockedCoupon = input.couponCode
+      ? await lockCouponForSale(tx, { code: input.couponCode, branchId, customerId: null, todayYmd: todayYmdBaghdad() })
+      : null;
     const storeSettings = (
       await tx
         .select({
@@ -594,7 +639,7 @@ async function createOnlineOrderAttempt(
 
     // ② لقطة تسعير أولية لبناء متطلبات الأقفال. التثبيت المالي الوحيد أدناه يعيد
     // تشغيل المحرك نفسه بقراءة current مقفلة بعد قفل العميل والوحدات.
-    const items = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: false });
+    const items = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: false, coupon: lockedCoupon });
     const requestedBaseByVariant = new Map<number, number>();
 
     // أول قفل أعمال مشترك بعد تسعير السلة: العميل، اتساقاً مع POS/createSale.
@@ -606,7 +651,7 @@ async function createOnlineOrderAttempt(
     const unitIds = Array.from(new Set(items.map((item) => item.productUnitId))).sort((a, b) => a - b);
     const currentUnits = await lockProductUnitsForOnlineAllocation(tx, unitIds);
     const currentFactorByUnit = new Map(currentUnits.map((unit) => [unit.id, unit.conversionFactor]));
-    const currentItems = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: true });
+    const currentItems = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: true, coupon: lockedCoupon });
     requestedBaseByVariant.clear();
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
@@ -631,6 +676,8 @@ async function createOnlineOrderAttempt(
       item.baseQuantity = current.baseQuantity;
       item.unitPrice = current.unitPrice;
       item.lineTotal = current.lineTotal;
+      item.discountPerUnit = current.discountPerUnit;
+      item.couponDiscountPerUnit = current.couponDiscountPerUnit;
       const requestedBase = (requestedBaseByVariant.get(current.variantId) ?? 0) + current.baseQuantity;
       requestedBaseByVariant.set(current.variantId, requestedBase);
     }
@@ -712,6 +759,8 @@ async function createOnlineOrderAttempt(
         );
       }
     }
+    const couponDiscount = round2(items.reduce((sum, item) => sum.plus(money(item.couponDiscountPerUnit ?? "0").times(item.quantity)), money(0)));
+    if (lockedCoupon && couponDiscount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف السلة" });
     const quoteTotals = totalOnlineOrderQuote(items, input.governorate, storeSettings?.freeShippingThreshold);
     const subtotal = money(quoteTotals.subtotal);
     const deliveryFee = money(quoteTotals.deliveryFee);
@@ -775,6 +824,8 @@ async function createOnlineOrderAttempt(
       latitude: input.latitude != null ? String(input.latitude) : null,
       longitude: input.longitude != null ? String(input.longitude) : null,
       clientRequestId: input.clientRequestId ?? null,
+      couponCode: lockedCoupon?.code ?? null,
+      couponDiscount: toDbMoney(couponDiscount),
     });
     const orderId = extractInsertId(insOrder);
     const orderNumber = `ORD-${100000 + orderId}`;

@@ -45,6 +45,7 @@ import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
+import { normalizeNumberInput } from "@shared/numberNormalize";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -451,6 +452,10 @@ export default function POS() {
   // ── Multi-tab State ──────────────────────────────────────────────────────
   const [tabs,     setTabs]     = useState<POSTab[]>([createTab(1, "طلب 1")]);
   const [activeId, setActiveId] = useState(1);
+  // ٢٣/٨ (Codex P2) — عدّاد إضافة صريح: يزيد فقط عند `addRow` (شامل رفع الكمية على السطر الأصل).
+  // لا يزيد عند حذف/تعديل كمية/تبديل تبويب ⇒ لا يقفز الجدول من دون فعل الكاشير، وإعادة مسح
+  // السطر المحدَّد نفسه تشغّل التمرير أيضاً (بلاغ Codex «rescan لا يحرّك التأثير»).
+  const [addTick, setAddTick] = useState(0);
 
   // مرجع حيّ للتبويب النشط: تستهدفه كل تعديلات السلّة/الطلب بدل activeId المُغلَق عليه، كي
   // تصيب التبويب الصحيح حتى حين تُستدعى من إغلاق قديم (مسح الباركود/HID). مُحدَّث في كل رسم.
@@ -776,6 +781,8 @@ export default function POS() {
       return [...prev, { row: currentRow, qty: 1 }];
     });
     setSelId(currentRow.productUnitId);
+    // ٢٣/٨ (Codex P2): اِرفع عدّاد الإضافة — يُشغّل التمرير حتى لو أُعيد مسح السطر المحدَّد نفسه.
+    setAddTick((t) => t + 1);
     setSearch(""); setShowDrop(false);
     searchRef.current?.focus();
   }
@@ -1519,7 +1526,7 @@ export default function POS() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (creditPrompt) { if (e.key === "Escape") setCreditPrompt(null); return; }
-      if (receipt)      { if (e.key === "Escape" || e.key === "Enter") setReceipt(null); return; }
+      if (receipt)      { if (e.key === "Escape" || e.key === "Enter") { setReceipt(null); setTimeout(() => searchRef.current?.focus(), 0); } return; }
       if (shifting)     { if (e.key === "Escape") setShifting(false); return; }
       if (cashDropping) { if (e.key === "Escape") setCashDropping(false); return; }
       // نافذة البطاقات مفتوحة: Escape تُغلقها وتتكفّل هي بمفاتيحها (لا تصل الاختصارات العامة).
@@ -1840,6 +1847,7 @@ export default function POS() {
           branchName={activeBranchName}
           openingActive={openingActive}
           openingEndsYmd={openingModeQ.data?.endsAtYmd ?? null}
+          addTick={addTick}
           cart={cart} total={total}
           selId={activeTab.selId} setSelId={setSelId}
           changeQty={changeQty} removeRow={removeRow}
@@ -1868,7 +1876,13 @@ export default function POS() {
       {receipt && (
         <ReceiptOverlay
           C={C} receipt={receipt}
-          onDismiss={() => setReceipt(null)}
+          onDismiss={() => {
+            setReceipt(null);
+            // ٢٣/٨ (بلاغ فحص UX): `useModalFocus` يعيد التركيز إلى «الزرّ الذي فتح الحوار» =
+            // زرّ الدفع. سكانر الباركود التالي يكتب حروفه في الزرّ فيبتلعها بلا أثر (يوم كاملٌ
+            // بمخزونٍ مضطرب دون تنبيه). نعيد التركيز صراحةً إلى حقل البحث كي يستقبل المسحة التالية.
+            setTimeout(() => searchRef.current?.focus(), 0);
+          }}
           onPrint={() => printReceipt(buildBrandedReceipt(receipt!))}
         />
       )}
@@ -2211,10 +2225,33 @@ interface CartPanelProps {
   /** «وضع الافتتاح» فعّال الآن (لافتة + وسم «غير مجرود» بدل «نافذ» المخيف). */
   openingActive: boolean;
   openingEndsYmd: string | null;
+  /** ٢٣/٨ (Codex P2) — عدّاد إضافةٍ صريحٌ من الأب: يشغّل التمريرَ إلى السطر المُدرَج/المزاد
+   *  فقط عند فعل الإضافة (لا عند حذف/تعديل كمّية/تبديل تبويب). */
+  addTick: number;
 }
 
-function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd }: CartPanelProps) {
+function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd, addTick }: CartPanelProps) {
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
+
+  // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك «لا يظهر المنتج المضاف حتى أنزل يدوياً»):
+  // `addRow` يضبط selId على المنتج المُدرَج/المزاد كمّياً؛ نحرك السلّة كي يظهر ذلك السطر في مجال
+  // الرؤية. المسح المتوالي أو النقر لا يجبر الكاشير على التمرير. `block: nearest` يمنع القفزات
+  // العدوانيّة (إن كان السطر ظاهراً أصلاً لا يتحرّك). `behavior: smooth` يجعل الحركة ناعمةً
+  // فيتتبّعها الكاشير بصرياً.
+  //
+  // ٢٣/٨ (Codex P2): الاعتماد على `selId + cart.length` يشغّل التمرير عند حذف صفٍّ آخر (يعيدنا
+  // إلى السطر المحدَّد ولو كان بعيداً)، ولا يشغّله عند إعادة مسح السطر المحدَّد نفسه (لا selId
+  // يتغيّر ولا الطول). العدّادُ الصريحُ `addTick` يعالج الحالتين: يزيد **فقط** عند فعل الإضافة.
+  const selectedRowRef = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (selId == null) return;
+    // rAF: التمرير بعد الرسم كي نضمن أنّ الصفَّ في DOM وارتفاعه محسوب.
+    const raf = requestAnimationFrame(() => {
+      selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTick]);
   const TH: React.CSSProperties = { padding: "9px 10px", fontWeight: 700, fontSize: 12.5, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
   const TD: React.CSSProperties = { padding: "10px 8px", textAlign: "center", fontSize: 14 };
 
@@ -2396,6 +2433,7 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
               const accent = openingSellable ? C.amber : isOut ? C.danger : isShort ? C.amber : "transparent";
               return (
                 <tr key={lineId}
+                  ref={selected ? selectedRowRef : undefined}
                   onClick={() => { setSelId(lineId); setNumMode("QTY"); }}
                   style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: rowBg, transition: "background .08s" }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = selected ? C.primarySoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : C.muted; }}
@@ -2587,6 +2625,18 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
   // أخيرة لا تُبلَغ في مدى التشغيل الفعليّ.
   const dense = useMediaQuery("(max-height: 820px)");
   const ultra = useMediaQuery("(max-height: 660px)");
+  // ٢٣/٨ (Codex P1 v2): حقلُ المبلغ يفصل «العرض» (raw ما يكتبه الكاشير) عن «القيمة الملتزمة»
+  // (`payInput` المطبَّعة). عقد التطبيع من `shared/numberNormalize` هو المرجع — `1,5` ⇒ `1.5`،
+  // `1,234` ⇒ `1234`، `1،5` كذلك. الحالات الوسطى الملتبسة تبقى في العرض ولا تُلتزم كي لا تتحطّم
+  // `D()` عليها. الأزرارُ السريعة/`+/-` تكتب على `payInput` مباشرةً؛ نُزامن العرضَ حينها.
+  const [displayPay, setDisplayPay] = useState(payInput);
+  useEffect(() => {
+    try {
+      const norm = normalizeNumberInput(displayPay).normalized;
+      if (norm !== payInput) setDisplayPay(payInput);
+    } catch { setDisplayPay(payInput); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payInput]);
   const [couponOpen, setCouponOpen] = useState(false);
   // الكوبون يظهر دائماً وهو مُطبَّق (لا يُخفى خصمٌ سارٍ)، أو عند طلبه صراحةً.
   const showCoupon = !dense || !!couponCode || couponOpen;
@@ -2834,19 +2884,27 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
               <input
                 type="text"
                 inputMode="decimal"
-                value={payInput}
+                value={displayPay}
                 onChange={(e) => {
-                  // ٢٣/٨ — Codex P1: `D(".")` و `D("-")` و `D("-.")` كلّها ترمي RangeError من
-                  // decimal.js. الحلّ: نطلب رقماً واحداً على الأقل، ونتحقّق أنّ Number يعطي عدداً
-                  // منتهياً (Number("+") و Number(".") و Number("-") كلّها NaN فتُرفَض هنا).
-                  const raw = e.target.value.replace(/[،,]/g, ".");
-                  if (raw === "") { setPayInput(""); return; }
-                  // نقبل بادئة السالب (الكاشير قد يكتب مبلغاً سالباً لتصحيحٍ ما) لكن نمنع "-" وحده.
-                  if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(raw)) return;
-                  if (!Number.isFinite(Number(raw))) return;
-                  setPayInput(raw);
+                  // ٢٣/٨ — Codex P1 v2: العقدُ المشترك `normalizeNumberInput` هو الحكم.
+                  // العرض يعكس ما يكتبه الكاشير حرفياً (`displayPay`)، والقيمةُ الملتزمة
+                  // (`payInput`) لا تُحدَّث إلّا إن كان التطبيع غير ملتبس. الحالات الوسطى
+                  // (`1,`، `1.`، `.5`) تظهر في الحقل لكن لا تصل إلى `D()` كي لا تتحطّم.
+                  const src = e.target.value;
+                  setDisplayPay(src);
+                  if (src === "") { setPayInput(""); return; }
+                  // حدُّ محارف: أرقام + فواصل شائعة (بادئة سالب للتصحيح). غير ذلك يُترك دون التزام.
+                  if (!/^[\d.,،٫\-]*$/.test(src)) return;
+                  const result = normalizeNumberInput(src);
+                  if (result.ambiguous) return;
+                  const n = result.normalized;
+                  if (!n) return;
+                  if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(n)) return;
+                  if (!Number.isFinite(Number(n))) return;
+                  setPayInput(n);
                 }}
-                placeholder="—"
+                onFocus={(e) => e.currentTarget.select()}
+                placeholder="0"
                 aria-label="المبلغ المستلم من الزبون"
                 style={{
                   flex: 1, minWidth: 0, maxWidth: 200,
@@ -3085,6 +3143,16 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
           <button
             disabled={!canPay || isPending}
             onClick={() => onQuickPay()}
+            title={
+              // ٢٣/٨ (بلاغ Codex P2): كان يذكر «مرجع البطاقة» على دفعةٍ نقديّةٍ جزئيّةٍ بلا عميل —
+              // لا حقلَ كذلك أصلاً. صار يميّز الحالات الثلاثة.
+              isPending ? "جارٍ الحفظ…" :
+              !cartLen ? "أضف منتجاً أوّلاً" :
+              isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
+              method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
+              !canPay ? "أكمل بيانات الدفع" :
+              `دفع سريع وطباعة — ${paymentMethodLabel(method)}`
+            }
             style={{
               ...(dense ? { width: 128, flexShrink: 0 } : { width: "100%", marginBottom: 7 }),
               height: fluid(50, 6.6, 58),
@@ -3103,6 +3171,14 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
         <button
           disabled={!canPay || isPending}
           onClick={() => onPay()}
+          title={
+            isPending ? "جارٍ الحفظ…" :
+            !cartLen ? "أضف منتجاً أوّلاً" :
+            isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
+            method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
+            !canPay ? "أكمل بيانات الدفع" :
+            `إتمام الدفع — ${fmt(total)} د.ع`
+          }
           style={{
             ...(dense && showQuickPay ? { flex: 1, minWidth: 0 } : { width: "100%" }),
             height: fluid(50, 6.6, 58),
@@ -3122,7 +3198,10 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
         </button>
       </div>
 
-      {!dense && <div style={{ textAlign: "center", padding: "0 11px 8px", fontSize: 10.5, color: C.mutedFg, flexShrink: 0 }}>F4 للدفع · F2 للبحث · F9 طباعة</div>}
+      {/* ٢٣/٨ (بلاغ فحص UX): تلميحُ الاختصارات كان يُخفى على الشاشات القصيرة (dense) — وهي تحديداً
+          شاشات الكاشير اللوحيّة ١٣٦٦×٧٦٨ حيث يعطي الاختصار أعظم قيمة (لا ماوس، لوحة مفاتيح فقط).
+          نُبقيه ظاهراً مع خطٍّ أصغر على dense كي لا يزاحم أزرار الدفع. */}
+      <div style={{ textAlign: "center", padding: dense ? "0 11px 4px" : "0 11px 8px", fontSize: dense ? 9.5 : 10.5, color: C.mutedFg, flexShrink: 0 }}>F4 للدفع · F2 للبحث · F9 طباعة · F12 تفريغ</div>
 
       </div>{/* ← نهاية منطقة الفعل */}
     </div>

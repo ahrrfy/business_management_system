@@ -43,6 +43,7 @@ import {
   resolveUnknownScan,
   computeBarcodeCoverage,
   listSplitCandidates,
+  listAlternativeReconciliationScope,
   splitAliasToAlternative,
 } from "../services/stocktakeService";
 import {
@@ -230,6 +231,11 @@ export const stocktakeRouter = router({
 
   /** مرشّحو فصل البدائل المدمجة (م٤): وحداتٌ تحمل باركوداً بديلاً — كتالوج عامّ. */
   splitCandidates: inventoryReadProcedure.query(async () => listSplitCandidates()),
+
+  /** نطاق جرد التحقّق لفصل رصيد البدائل المدمج (الأصل + البدائل لكل منتجٍ له بديل). */
+  alternativeReconciliationScope: inventoryReadProcedure.query(async () =>
+    listAlternativeReconciliationScope(),
+  ),
 
   /** فصل باركودٍ بديل إلى متغيّرٍ مستقلّ (م٤) — بصلاحية إدارة المخزون. */
   splitAlternative: inventoryManagerProcedure

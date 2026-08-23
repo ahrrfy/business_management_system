@@ -278,6 +278,10 @@ export default function Reception() {
 
   // ───── الحالة ─────────────────────────────────────────────────────────────
   const [cart, setCart] = useState<CartLine[]>([]);
+  // ٢٣/٨ (Codex P2) — عدّاد إضافةٍ صريح: يزيد فقط عند فعل الإضافة (`addDirectLine`) ولو أدّى
+  // إلى رفع كمّية سطرٍ قائم — إعادة مسح نفس السطر تُشغّل التمرير أيضاً. لا يزيد عند حذف/تعديل
+  // كمّية/تحميل مسوّدة ⇒ لا يقفز الجدول من دون فعل الكاشير.
+  const [addTick, setAddTick] = useState(0);
   const [selKey, setSelKey] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [showDrop, setShowDrop] = useState(false);
@@ -721,6 +725,8 @@ export default function Reception() {
       setSelKey(key);
       return [...prev, { key, row, qty: 1 }];
     });
+    // ٢٣/٨ (Codex P2): أشِر إلى الجدول أنّ إضافةً حدثت — يشمل رفع الكمّية على السطر الأصل.
+    setAddTick((t) => t + 1);
   }, []);
 
   const addRow = useCallback((row: PosRow) => {
@@ -2555,6 +2561,8 @@ export default function Reception() {
           <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-3 my-auto size-4 text-muted-foreground" />
           <input
             ref={searchRef}
+            autoFocus
+            id="reception-search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onFocus={() => setShowDrop(true)}
@@ -2810,6 +2818,7 @@ export default function Reception() {
               onEditCustomization={(row, editingKey) => setShowCustomization({ row, editingKey })}
               grandTotal={grandTotal}
               cartCount={cartCount}
+              addTick={addTick}
             />
         </div>
       </div>

@@ -51,6 +51,8 @@ export interface OnlineOrderRow {
   customerPhone: string | null;
   governorate: string | null;
   total: string;
+  couponCode: string | null;
+  couponDiscount: string;
   deliveryFee: string;
   deliveryPartyId: number | null;
   cancelReason: string | null;
@@ -101,6 +103,8 @@ export async function listOnlineOrders(opts: {
       customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       governorate: onlineOrders.governorate,
       total: onlineOrders.total,
+      couponCode: onlineOrders.couponCode,
+      couponDiscount: onlineOrders.couponDiscount,
       deliveryFee: onlineOrders.shippingCost,
       deliveryPartyId: onlineOrders.deliveryPartyId,
       cancelReason: onlineOrders.cancelReason,
@@ -120,6 +124,8 @@ export async function listOnlineOrders(opts: {
     customerPhone: r.customerPhone ?? null,
     governorate: r.governorate ?? null,
     total: String(r.total),
+    couponCode: r.couponCode ?? null,
+    couponDiscount: String(r.couponDiscount ?? "0"),
     deliveryFee: String(r.deliveryFee),
     deliveryPartyId: r.deliveryPartyId != null ? Number(r.deliveryPartyId) : null,
     cancelReason: r.cancelReason ?? null,
@@ -182,6 +188,8 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         deliveryPartyName: deliveryParties.name,
         cancelReason: onlineOrders.cancelReason,
         total: onlineOrders.total,
+        couponCode: onlineOrders.couponCode,
+        couponDiscount: onlineOrders.couponDiscount,
         createdAt: onlineOrders.createdAt,
       })
       .from(onlineOrders)
@@ -229,6 +237,8 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     labelToken: onlineOrderLabelToken(order.orderNumber),
     cancelReason: order.cancelReason ?? null,
     total: String(order.total),
+    couponCode: order.couponCode ?? null,
+    couponDiscount: String(order.couponDiscount ?? "0"),
     itemCount: items.length,
     createdAt: order.createdAt,
     items: items.map((i) => ({
