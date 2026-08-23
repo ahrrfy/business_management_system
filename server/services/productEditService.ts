@@ -82,6 +82,13 @@ export interface ProductForVariantEdit {
   brand: string | null;
   modelName: string | null;
   description: string | null;
+  internalName: string | null;
+  storeTitle: string | null;
+  seoTitle: string | null;
+  shortTitle: string | null;
+  posLabel: string | null;
+  invoiceLabel: string | null;
+  marketingCopy: string | null;
   categoryId: number | null;
   isCustomizable: boolean;
   allowAutoCartRecommendations: boolean;
@@ -158,6 +165,13 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       brand: p.brand,
       modelName: p.modelName,
       description: p.description,
+      internalName: p.internalName ?? null,
+      storeTitle: p.storeTitle ?? null,
+      seoTitle: p.seoTitle ?? null,
+      shortTitle: p.shortTitle ?? null,
+      posLabel: p.posLabel ?? null,
+      invoiceLabel: p.invoiceLabel ?? null,
+      marketingCopy: p.marketingCopy ?? null,
       categoryId: p.categoryId != null ? Number(p.categoryId) : null,
       isCustomizable: !!p.isCustomizable,
       allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
@@ -233,6 +247,13 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     brand: p.brand,
     modelName: p.modelName,
     description: p.description,
+    internalName: p.internalName ?? null,
+    storeTitle: p.storeTitle ?? null,
+    seoTitle: p.seoTitle ?? null,
+    shortTitle: p.shortTitle ?? null,
+    posLabel: p.posLabel ?? null,
+    invoiceLabel: p.invoiceLabel ?? null,
+    marketingCopy: p.marketingCopy ?? null,
     categoryId: p.categoryId != null ? Number(p.categoryId) : null,
     isCustomizable: !!p.isCustomizable,
     allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
@@ -296,6 +317,13 @@ export interface UpdateProductVariantsInput {
   brand?: string | null;
   modelName?: string | null;
   description?: string | null;
+  internalName?: string | null;
+  storeTitle?: string | null;
+  seoTitle?: string | null;
+  shortTitle?: string | null;
+  posLabel?: string | null;
+  invoiceLabel?: string | null;
+  marketingCopy?: string | null;
   categoryId?: number | null;
   isCustomizable?: boolean;
   allowAutoCartRecommendations?: boolean;
@@ -558,6 +586,13 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         brand: input.brand?.trim() || null,
         modelName: input.modelName?.trim() || null,
         description: input.description?.trim() || null,
+        ...(input.internalName !== undefined ? { internalName: input.internalName?.trim() || null } : {}),
+        ...(input.storeTitle !== undefined ? { storeTitle: input.storeTitle?.trim() || null } : {}),
+        ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle?.trim() || null } : {}),
+        ...(input.shortTitle !== undefined ? { shortTitle: input.shortTitle?.trim() || null } : {}),
+        ...(input.posLabel !== undefined ? { posLabel: input.posLabel?.trim() || null } : {}),
+        ...(input.invoiceLabel !== undefined ? { invoiceLabel: input.invoiceLabel?.trim() || null } : {}),
+        ...(input.marketingCopy !== undefined ? { marketingCopy: input.marketingCopy?.trim() || null } : {}),
         categoryId: input.categoryId ?? null,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
         allowAutoCartRecommendations: input.allowAutoCartRecommendations ?? p.allowAutoCartRecommendations !== false,

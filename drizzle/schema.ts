@@ -605,6 +605,14 @@ export const products = mysqlTable(
     brand: varchar("brand", { length: 80 }),
     modelName: varchar("modelName", { length: 80 }),
     description: text("description"),
+    // product-content-governance (0250): محتوى دائم منفصل لكل قناة. تبقى الحقول القديمة للتوافق.
+    internalName: varchar("internalName", { length: 255 }),
+    storeTitle: varchar("storeTitle", { length: 255 }),
+    seoTitle: varchar("seoTitle", { length: 255 }),
+    shortTitle: varchar("shortTitle", { length: 160 }),
+    posLabel: varchar("posLabel", { length: 120 }),
+    invoiceLabel: varchar("invoiceLabel", { length: 255 }),
+    marketingCopy: text("marketingCopy"),
     categoryId: bigint("categoryId", { mode: "number" }).references(
       () => categories.id,
     ),
@@ -634,7 +642,9 @@ export const products = mysqlTable(
     isFeatured: boolean("isFeatured").default(false).notNull(),
     showInStore: boolean("showInStore").default(true).notNull(),
     // توصيات السلة الهجينة: العلاقات اليدوية تبقى مستقلة، وهذا المفتاح يسمح بملء الفراغ من نفس التصنيف.
-    allowAutoCartRecommendations: boolean("allowAutoCartRecommendations").default(true).notNull(),
+    allowAutoCartRecommendations: boolean("allowAutoCartRecommendations")
+      .default(true)
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     // D2 (٣٠/٦): عمود مولَّد STORED بتطبيع عربي. يُنشَأ عبر هَجرة 0035 (GENERATED ALWAYS AS).
@@ -645,6 +655,8 @@ export const products = mysqlTable(
   },
   (table) => ({
     nameIdx: index("idx_product_name").on(table.name),
+    internalNameIdx: index("idx_product_internal_name").on(table.internalName),
+    storeTitleIdx: index("idx_product_store_title").on(table.storeTitle),
     categoryIdx: index("idx_product_category").on(table.categoryId),
     parentIdx: index("idx_product_parent").on(table.parentProductId),
     // bundles: كشف سريع للمنتجات المركّبة (لوحة إدارة البكج، فلترة POS).
@@ -656,6 +668,119 @@ export const products = mysqlTable(
 
 export type Product = typeof products.$inferSelect;
 export type InsertProduct = typeof products.$inferInsert;
+
+export type ProductChannelContent = {
+  internalName?: string | null;
+  storeTitle?: string | null;
+  seoTitle?: string | null;
+  shortTitle?: string | null;
+  posLabel?: string | null;
+  invoiceLabel?: string | null;
+  marketingCopy?: string | null;
+  description?: string | null;
+};
+
+export type ProductContentValidationSnapshot = {
+  ok: boolean;
+  blockers: string[];
+  warnings: string[];
+};
+
+/** مسودة AI غير منشورة؛ مصدرها حقائق مجمّدة وبصمة تمنع اعتماد اقتراح قديم. */
+export const productContentDrafts = mysqlTable(
+  "productContentDrafts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    productId: bigint("productId", { mode: "number" }).references(
+      () => products.id,
+      { onDelete: "set null" },
+    ),
+    sourceFacts: json("sourceFacts").$type<Record<string, unknown>>().notNull(),
+    sourceFactsHash: varchar("sourceFactsHash", { length: 64 }).notNull(),
+    content: json("content").$type<ProductChannelContent>().notNull(),
+    validation: json("validation")
+      .$type<ProductContentValidationSnapshot>()
+      .notNull(),
+    status: mysqlEnum("status", [
+      "DRAFT",
+      "APPROVED",
+      "REJECTED",
+      "APPLIED",
+      "SUPERSEDED",
+    ])
+      .default("DRAFT")
+      .notNull(),
+    promptVersion: varchar("promptVersion", { length: 40 }).notNull(),
+    model: varchar("model", { length: 120 }).notNull(),
+    createdBy: int("createdBy").references(() => users.id),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    appliedAt: timestamp("appliedAt"),
+    decisionNote: text("decisionNote"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    productStatusIdx: index("idx_pcd_product_status").on(
+      table.productId,
+      table.status,
+      table.createdAt,
+    ),
+    factsHashIdx: index("idx_pcd_facts_hash").on(table.sourceFactsHash),
+    createdByIdx: index("idx_pcd_created_by").on(
+      table.createdBy,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type ProductContentDraft = typeof productContentDrafts.$inferSelect;
+export type InsertProductContentDraft =
+  typeof productContentDrafts.$inferInsert;
+
+/** سجل append-only لقرارات اعتماد محتوى المنتج، بالإضافة إلى auditLogs العام. */
+export const productContentApprovalEvents = mysqlTable(
+  "productContentApprovalEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    draftId: bigint("draftId", { mode: "number" }).references(
+      () => productContentDrafts.id,
+      { onDelete: "set null" },
+    ),
+    productId: bigint("productId", { mode: "number" }).references(
+      () => products.id,
+      { onDelete: "set null" },
+    ),
+    action: mysqlEnum("action", [
+      "SUBMITTED",
+      "APPROVED",
+      "REJECTED",
+      "APPLIED",
+      "SUPERSEDED",
+    ]).notNull(),
+    actorUserId: int("actorUserId").references(() => users.id),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+      { onDelete: "set null" },
+    ),
+    sourceFactsHash: varchar("sourceFactsHash", { length: 64 }),
+    beforeContent: json("beforeContent").$type<ProductChannelContent | null>(),
+    afterContent: json("afterContent").$type<ProductChannelContent | null>(),
+    note: text("note"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    draftIdx: index("idx_pcae_draft").on(table.draftId, table.createdAt),
+    productIdx: index("idx_pcae_product").on(table.productId, table.createdAt),
+    actorIdx: index("idx_pcae_actor").on(table.actorUserId, table.createdAt),
+    branchIdx: index("idx_pcae_branch").on(table.branchId, table.createdAt),
+  }),
+);
+
+export type ProductContentApprovalEvent =
+  typeof productContentApprovalEvents.$inferSelect;
+export type InsertProductContentApprovalEvent =
+  typeof productContentApprovalEvents.$inferInsert;
 
 export type ProductCustomizationOption = {
   value: string;
@@ -675,7 +800,9 @@ export const productCustomizationTemplates = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     productId: bigint("productId", { mode: "number" }).notNull(),
-    kind: mysqlEnum("kind", ["PRINT", "GIFT", "GENERAL"]).default("GENERAL").notNull(),
+    kind: mysqlEnum("kind", ["PRINT", "GIFT", "GENERAL"])
+      .default("GENERAL")
+      .notNull(),
     title: varchar("title", { length: 160 }).notNull(),
     description: text("description"),
     isActive: boolean("isActive").default(true).notNull(),
@@ -693,8 +820,10 @@ export const productCustomizationTemplates = mysqlTable(
   }),
 );
 
-export type ProductCustomizationTemplate = typeof productCustomizationTemplates.$inferSelect;
-export type InsertProductCustomizationTemplate = typeof productCustomizationTemplates.$inferInsert;
+export type ProductCustomizationTemplate =
+  typeof productCustomizationTemplates.$inferSelect;
+export type InsertProductCustomizationTemplate =
+  typeof productCustomizationTemplates.$inferInsert;
 
 /** حقول قالب التخصيص — الخيارات والتبعيات تُخزّن كـJSON صغير مُتحقق منه خادمياً. */
 export const productCustomizationFields = mysqlTable(
@@ -704,20 +833,37 @@ export const productCustomizationFields = mysqlTable(
     templateId: bigint("templateId", { mode: "number" }).notNull(),
     fieldKey: varchar("fieldKey", { length: 80 }).notNull(),
     label: varchar("label", { length: 160 }).notNull(),
-    fieldType: mysqlEnum("fieldType", ["TEXT", "TEXTAREA", "SELECT", "FILE", "NUMBER", "SWATCH"]).notNull(),
+    fieldType: mysqlEnum("fieldType", [
+      "TEXT",
+      "TEXTAREA",
+      "SELECT",
+      "FILE",
+      "NUMBER",
+      "SWATCH",
+    ]).notNull(),
     isRequired: boolean("isRequired").default(false).notNull(),
     sortOrder: int("sortOrder").default(0).notNull(),
     maxLength: int("maxLength"),
     optionsJson: json("optionsJson").$type<ProductCustomizationOption[]>(),
-    dependencyJson: json("dependencyJson").$type<ProductCustomizationDependency | null>(),
-    priceDelta: decimal("priceDelta", { precision: 15, scale: 2 }).default("0").notNull(),
+    dependencyJson: json(
+      "dependencyJson",
+    ).$type<ProductCustomizationDependency | null>(),
+    priceDelta: decimal("priceDelta", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     isActive: boolean("isActive").default(true).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
-    templateIdx: index("idx_custom_field_template_sort").on(table.templateId, table.sortOrder),
-    keyUnique: unique("uq_custom_field_template_key").on(table.templateId, table.fieldKey),
+    templateIdx: index("idx_custom_field_template_sort").on(
+      table.templateId,
+      table.sortOrder,
+    ),
+    keyUnique: unique("uq_custom_field_template_key").on(
+      table.templateId,
+      table.fieldKey,
+    ),
     templateFk: foreignKey({
       columns: [table.templateId],
       foreignColumns: [productCustomizationTemplates.id],
@@ -726,8 +872,10 @@ export const productCustomizationFields = mysqlTable(
   }),
 );
 
-export type ProductCustomizationField = typeof productCustomizationFields.$inferSelect;
-export type InsertProductCustomizationField = typeof productCustomizationFields.$inferInsert;
+export type ProductCustomizationField =
+  typeof productCustomizationFields.$inferSelect;
+export type InsertProductCustomizationField =
+  typeof productCustomizationFields.$inferInsert;
 
 /** متغيّر المنتج (لون/قياس). المخزون يُحسب على مستواه بالوحدة الأساس. */
 export const productVariants = mysqlTable(
@@ -927,7 +1075,12 @@ export const productRelatedProducts = mysqlTable(
     relatedProductId: bigint("relatedProductId", { mode: "number" })
       .notNull()
       .references(() => products.id, { onDelete: "cascade" }),
-    relationType: mysqlEnum("relationType", ["COMPLETE_KIT", "COMPATIBLE", "SAME_THEME", "UPSELL"])
+    relationType: mysqlEnum("relationType", [
+      "COMPLETE_KIT",
+      "COMPATIBLE",
+      "SAME_THEME",
+      "UPSELL",
+    ])
       .default("COMPLETE_KIT")
       .notNull(),
     sortOrder: int("sortOrder").default(0).notNull(),
@@ -936,15 +1089,26 @@ export const productRelatedProducts = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
-    sourceIdx: index("idx_prod_related_source").on(table.sourceProductId, table.isActive, table.sortOrder),
+    sourceIdx: index("idx_prod_related_source").on(
+      table.sourceProductId,
+      table.isActive,
+      table.sortOrder,
+    ),
     relatedIdx: index("idx_prod_related_target").on(table.relatedProductId),
-    pairUq: unique("uq_prod_related_pair").on(table.sourceProductId, table.relatedProductId),
-    selfCheck: check("chk_prod_related_not_self", sql`${table.sourceProductId} <> ${table.relatedProductId}`),
+    pairUq: unique("uq_prod_related_pair").on(
+      table.sourceProductId,
+      table.relatedProductId,
+    ),
+    selfCheck: check(
+      "chk_prod_related_not_self",
+      sql`${table.sourceProductId} <> ${table.relatedProductId}`,
+    ),
   }),
 );
 
 export type ProductRelatedProduct = typeof productRelatedProducts.$inferSelect;
-export type InsertProductRelatedProduct = typeof productRelatedProducts.$inferInsert;
+export type InsertProductRelatedProduct =
+  typeof productRelatedProducts.$inferInsert;
 
 /**
  * invoiceItemBundleComponents (٧/٧/٢٦، gstack B6): لقطة مكوّنات البكج لحظة إنشاء `invoiceItem`.
@@ -1733,6 +1897,8 @@ export const invoiceItems = mysqlTable(
     // تدخل `invoices.costTotal`/قيد SALE ⇒ الثابت «SALE.cost = invoices.costTotal = تكلفة البنود
     // المدفوعة» يبقى سارياً، والهدية خارج وعاء العمولة تلقائياً (الوعاء يفلتر SALE/RETURN).
     isGift: boolean("isGift").default(false).notNull(),
+    // product-content-governance (0251): الاسم الذي طُبع/اعتمد لحظة البيع، لا يتغير مع تحديث الكتالوج.
+    itemNameSnapshot: varchar("itemNameSnapshot", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -1746,6 +1912,7 @@ export const invoiceItems = mysqlTable(
     ),
     // promotions v2: تقرير أثر العرض بحسب معرّف العرض.
     promotionIdx: index("idx_item_promotion").on(table.promotionId),
+    nameSnapshotIdx: index("idx_item_name_snapshot").on(table.itemNameSnapshot),
   }),
 );
 
@@ -2064,19 +2231,32 @@ export const loyaltyPrograms = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     name: varchar("name", { length: 120 }).notNull(),
-    status: mysqlEnum("status", ["DRAFT", "ACTIVE", "PAUSED"]).default("DRAFT").notNull(),
+    status: mysqlEnum("status", ["DRAFT", "ACTIVE", "PAUSED"])
+      .default("DRAFT")
+      .notNull(),
     /** نقاط لكل دينار عراقي؛ Decimal يمنع تراكم خطأ floating point في القيمة التسويقية. */
-    pointsPerIqd: decimal("pointsPerIqd", { precision: 16, scale: 6 }).default("0").notNull(),
+    pointsPerIqd: decimal("pointsPerIqd", { precision: 16, scale: 6 })
+      .default("0")
+      .notNull(),
     /** قيمة الخصم بالدينار لكل نقطة عند الاستبدال. */
-    iqdDiscountPerPoint: decimal("iqdDiscountPerPoint", { precision: 15, scale: 2 }).default("0").notNull(),
+    iqdDiscountPerPoint: decimal("iqdDiscountPerPoint", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     minRedeemPoints: int("minRedeemPoints").default(0).notNull(),
     maxRedeemPercent: tinyint("maxRedeemPercent").default(0).notNull(),
     expiresAfterDays: int("expiresAfterDays"),
-    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+    createdBy: int("createdBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  (table) => ({ statusIdx: index("idx_loyalty_program_status").on(table.status) }),
+  (table) => ({
+    statusIdx: index("idx_loyalty_program_status").on(table.status),
+  }),
 );
 
 /** حساب العميل لا يحمل أي بيانات عرض؛ الرصيد والسجل يحكمان من الخادم حصراً. */
@@ -2084,13 +2264,25 @@ export const loyaltyAccounts = mysqlTable(
   "loyaltyAccounts",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    programId: bigint("programId", { mode: "number" }).notNull().references(() => loyaltyPrograms.id),
-    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
-    pointsBalance: decimal("pointsBalance", { precision: 18, scale: 2 }).default("0").notNull(),
+    programId: bigint("programId", { mode: "number" })
+      .notNull()
+      .references(() => loyaltyPrograms.id),
+    customerId: bigint("customerId", { mode: "number" })
+      .notNull()
+      .references(() => customers.id),
+    pointsBalance: decimal("pointsBalance", { precision: 18, scale: 2 })
+      .default("0")
+      .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  (table) => ({ programCustomerUq: unique("uq_loyalty_program_customer").on(table.programId, table.customerId), customerIdx: index("idx_loyalty_account_customer").on(table.customerId) }),
+  (table) => ({
+    programCustomerUq: unique("uq_loyalty_program_customer").on(
+      table.programId,
+      table.customerId,
+    ),
+    customerIdx: index("idx_loyalty_account_customer").on(table.customerId),
+  }),
 );
 
 /** دفتر نقاط غير قابل للتعديل؛ كل منح أو صرف أو عكس يترك أثراً تدقيقياً قابلاً للمراجعة. */
@@ -2098,17 +2290,41 @@ export const loyaltyLedgerEntries = mysqlTable(
   "loyaltyLedgerEntries",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    accountId: bigint("accountId", { mode: "number" }).notNull().references(() => loyaltyAccounts.id),
-    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
+    accountId: bigint("accountId", { mode: "number" })
+      .notNull()
+      .references(() => loyaltyAccounts.id),
+    customerId: bigint("customerId", { mode: "number" })
+      .notNull()
+      .references(() => customers.id),
     onlineOrderId: bigint("onlineOrderId", { mode: "number" }),
-    entryType: mysqlEnum("entryType", ["ORDER_EARN", "ORDER_REVERSE", "REDEEM", "ADJUSTMENT", "EXPIRE"]).notNull(),
+    entryType: mysqlEnum("entryType", [
+      "ORDER_EARN",
+      "ORDER_REVERSE",
+      "REDEEM",
+      "ADJUSTMENT",
+      "EXPIRE",
+    ]).notNull(),
     pointsDelta: decimal("pointsDelta", { precision: 18, scale: 2 }).notNull(),
-    balanceAfter: decimal("balanceAfter", { precision: 18, scale: 2 }).notNull(),
+    balanceAfter: decimal("balanceAfter", {
+      precision: 18,
+      scale: 2,
+    }).notNull(),
     note: varchar("note", { length: 255 }),
-    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+    createdBy: int("createdBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
-  (table) => ({ accountCreatedIdx: index("idx_loyalty_ledger_account_created").on(table.accountId, table.createdAt), orderEarnUq: unique("uq_loyalty_order_earn").on(table.onlineOrderId, table.entryType) }),
+  (table) => ({
+    accountCreatedIdx: index("idx_loyalty_ledger_account_created").on(
+      table.accountId,
+      table.createdAt,
+    ),
+    orderEarnUq: unique("uq_loyalty_order_earn").on(
+      table.onlineOrderId,
+      table.entryType,
+    ),
+  }),
 );
 
 export type LoyaltyProgram = typeof loyaltyPrograms.$inferSelect;
@@ -2372,28 +2588,46 @@ export const shiftFundingSourceLinks = mysqlTable(
     sourceReceiptId: bigint("sourceReceiptId", { mode: "number" })
       .notNull()
       .references(() => receipts.id),
-    activeSourceReceiptId: bigint("activeSourceReceiptId", { mode: "number" })
-      .references(() => receipts.id),
+    activeSourceReceiptId: bigint("activeSourceReceiptId", {
+      mode: "number",
+    }).references(() => receipts.id),
     targetShiftId: bigint("targetShiftId", { mode: "number" })
       .notNull()
       .references(() => shifts.id),
-    activeTargetShiftId: bigint("activeTargetShiftId", { mode: "number" })
-      .references(() => shifts.id),
+    activeTargetShiftId: bigint("activeTargetShiftId", {
+      mode: "number",
+    }).references(() => shifts.id),
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
-    state: mysqlEnum("shiftFundingLinkState", ["PENDING", "CONSUMED", "RELEASED"])
+    state: mysqlEnum("shiftFundingLinkState", [
+      "PENDING",
+      "CONSUMED",
+      "RELEASED",
+    ])
       .default("PENDING")
       .notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
-    requestUnique: unique("uq_shift_funding_link_request").on(table.requestReceiptId),
-    activeSourceUnique: unique("uq_shift_funding_link_active_source").on(table.activeSourceReceiptId),
-    activeTargetUnique: unique("uq_shift_funding_link_active_target").on(table.activeTargetShiftId),
-    targetStateIdx: index("idx_shift_funding_link_target_state").on(table.targetShiftId, table.state),
-    branchStateIdx: index("idx_shift_funding_link_branch_state").on(table.branchId, table.state),
+    requestUnique: unique("uq_shift_funding_link_request").on(
+      table.requestReceiptId,
+    ),
+    activeSourceUnique: unique("uq_shift_funding_link_active_source").on(
+      table.activeSourceReceiptId,
+    ),
+    activeTargetUnique: unique("uq_shift_funding_link_active_target").on(
+      table.activeTargetShiftId,
+    ),
+    targetStateIdx: index("idx_shift_funding_link_target_state").on(
+      table.targetShiftId,
+      table.state,
+    ),
+    branchStateIdx: index("idx_shift_funding_link_branch_state").on(
+      table.branchId,
+      table.state,
+    ),
     activeStateCheck: check(
       "chk_shift_funding_link_active_state",
       sql`(
@@ -2847,7 +3081,9 @@ export const expenses = mysqlTable(
     branchIdx: index("idx_expense_branch").on(table.branchId),
     dateIdx: index("idx_expense_date").on(table.expenseDate),
     categoryIdx: index("idx_expense_category").on(table.category),
-    managedCategoryIdx: index("idx_expense_managed_category").on(table.expenseCategoryId),
+    managedCategoryIdx: index("idx_expense_managed_category").on(
+      table.expenseCategoryId,
+    ),
     statusIdx: index("idx_expense_status").on(table.status),
     accrualMethodCheck: check(
       "chk_expense_accrual_method",
@@ -2897,7 +3133,10 @@ export const expenseCategories = mysqlTable(
   },
   (table) => ({
     activeIdx: index("idx_expcat_active").on(table.isActive),
-    bucketIdx: index("idx_expcat_bucket").on(table.bucket, table.isBucketDefault),
+    bucketIdx: index("idx_expcat_bucket").on(
+      table.bucket,
+      table.isBucketDefault,
+    ),
   }),
 );
 
@@ -3440,7 +3679,10 @@ export const workOrderImages = mysqlTable(
   },
   (table) => ({
     woIdx: index("idx_woimg_wo").on(table.workOrderId),
-    woRevIdx: index("idx_woimg_wo_revision").on(table.workOrderId, table.revision),
+    woRevIdx: index("idx_woimg_wo_revision").on(
+      table.workOrderId,
+      table.revision,
+    ),
   }),
 );
 
@@ -3523,7 +3765,9 @@ export const productStudioCampaigns = mysqlTable(
     startsAt: timestamp("startsAt"),
     dueAt: timestamp("dueAt"),
     /** نطاق الحملة: كل المنتجات الناقصة · فئةٌ بعينها · مجموعةٌ مختارة صراحةً. */
-    scopeKind: mysqlEnum("scopeKind", ["ALL", "CATEGORY", "PRODUCTS"]).default("ALL").notNull(),
+    scopeKind: mysqlEnum("scopeKind", ["ALL", "CATEGORY", "PRODUCTS"])
+      .default("ALL")
+      .notNull(),
     /** الفئة حين يكون النطاق CATEGORY — تشمل فئاتها الفرعية (مستويان). */
     scopeCategoryId: bigint("scopeCategoryId", { mode: "number" }),
     /** التوجيه الإداريّ: كم صورةً مطلوبة لكل منتج في هذه الحملة. */
@@ -3535,8 +3779,14 @@ export const productStudioCampaigns = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
-    branchStatusIdx: index("idx_pscampaign_branch_status").on(table.branchId, table.status),
-    branchDueIdx: index("idx_pscampaign_branch_due").on(table.branchId, table.dueAt),
+    branchStatusIdx: index("idx_pscampaign_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    branchDueIdx: index("idx_pscampaign_branch_due").on(
+      table.branchId,
+      table.dueAt,
+    ),
   }),
 );
 
@@ -3553,11 +3803,22 @@ export const productStudioCampaignProducts = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
-    uq: unique("uq_pscp_campaign_product").on(table.campaignId, table.productId),
+    uq: unique("uq_pscp_campaign_product").on(
+      table.campaignId,
+      table.productId,
+    ),
     // بأسماء صريحة قصيرة: التسمية التلقائية هنا تتجاوز ٦٤ محرفاً فتُفشل `db:push`
     // على MySQL 8.4 (راجع docs/local-test-db.md). والأسماء تطابق هجرة 0225 حرفاً بحرف.
-    campaignFk: foreignKey({ columns: [table.campaignId], foreignColumns: [productStudioCampaigns.id], name: "fk_pscp_campaign" }).onDelete("cascade"),
-    productFk: foreignKey({ columns: [table.productId], foreignColumns: [products.id], name: "fk_pscp_product" }).onDelete("cascade"),
+    campaignFk: foreignKey({
+      columns: [table.campaignId],
+      foreignColumns: [productStudioCampaigns.id],
+      name: "fk_pscp_campaign",
+    }).onDelete("cascade"),
+    productFk: foreignKey({
+      columns: [table.productId],
+      foreignColumns: [products.id],
+      name: "fk_pscp_product",
+    }).onDelete("cascade"),
   }),
 );
 
@@ -3576,13 +3837,22 @@ export const productStudioCampaignAssignees = mysqlTable(
   },
   (table) => ({
     uq: unique("uq_psca_campaign_user").on(table.campaignId, table.userId),
-    campaignFk: foreignKey({ columns: [table.campaignId], foreignColumns: [productStudioCampaigns.id], name: "fk_psca_campaign" }).onDelete("cascade"),
-    userFk: foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "fk_psca_user" }),
+    campaignFk: foreignKey({
+      columns: [table.campaignId],
+      foreignColumns: [productStudioCampaigns.id],
+      name: "fk_psca_campaign",
+    }).onDelete("cascade"),
+    userFk: foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "fk_psca_user",
+    }),
   }),
 );
 
 export type ProductStudioCampaign = typeof productStudioCampaigns.$inferSelect;
-export type InsertProductStudioCampaign = typeof productStudioCampaigns.$inferInsert;
+export type InsertProductStudioCampaign =
+  typeof productStudioCampaigns.$inferInsert;
 
 /**
  * image-studio (0096): طابور/سجلّ عمليات الاستوديو. **يحتجز المرشّح المعالَج (`processedUrl`) حتى
@@ -3608,7 +3878,9 @@ export const productImageJobs = mysqlTable(
     ),
     sourceContentHash: varchar("sourceContentHash", { length: 64 }),
     /** لقطة الفرع عند الإسناد؛ المدير محصور بفرعه، والمالك/الأدمن فقط يعبران. */
-    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
     /** بصمة الاسم والوصف وقت بدء المهمة لمنع طمس تعديلٍ أحدث عند الاعتماد. */
     sourceProductHash: varchar("sourceProductHash", { length: 64 }),
     /** صورة المصدر القائمة، إن بدأت المهمة من صورة محفوظة. لا يُعرَض رابطها للعامل مباشرةً. */
@@ -3663,12 +3935,18 @@ export const productImageJobs = mysqlTable(
     uploadLeaseToken: varchar("uploadLeaseToken", { length: 64 }),
     uploadLeaseExpiresAt: timestamp("uploadLeaseExpiresAt"),
     /** إثبات خادمي قصير العمر بأن مزوداً مدفوعاً/ذكياً نُفّذ لهذه المهمة. */
-    processingProofTokenHash: varchar("processingProofTokenHash", { length: 64 }),
+    processingProofTokenHash: varchar("processingProofTokenHash", {
+      length: 64,
+    }),
     processingProofMode: mysqlEnum("processingProofMode", ["PRO", "AI"]),
-    processingProofCandidateHash: varchar("processingProofCandidateHash", { length: 64 }),
+    processingProofCandidateHash: varchar("processingProofCandidateHash", {
+      length: 64,
+    }),
     processingProofExpiresAt: timestamp("processingProofExpiresAt"),
     /** حجز ذري مستقل يمنع استهلاك مزودين متوازيين للمهمة نفسها قبل إصدار الإثبات. */
-    processingLeaseTokenHash: varchar("processingLeaseTokenHash", { length: 64 }),
+    processingLeaseTokenHash: varchar("processingLeaseTokenHash", {
+      length: 64,
+    }),
     processingLeaseExpiresAt: timestamp("processingLeaseExpiresAt"),
     proposedName: varchar("proposedName", { length: 255 }),
     proposedDescription: text("proposedDescription"),
@@ -3688,21 +3966,38 @@ export const productImageJobs = mysqlTable(
   },
   (table) => ({
     prodIdx: index("idx_pijob_product").on(table.productId),
-    campaignStatusIdx: index("idx_pijob_campaign_status").on(table.campaignId, table.status),
+    campaignStatusIdx: index("idx_pijob_campaign_status").on(
+      table.campaignId,
+      table.status,
+    ),
     statusIdx: index("idx_pijob_status").on(table.status),
-    assigneeStatusIdx: index("idx_pijob_assignee_status").on(table.assignedTo, table.status),
-    branchStatusIdx: index("idx_pijob_branch_status").on(table.branchId, table.status),
+    assigneeStatusIdx: index("idx_pijob_assignee_status").on(
+      table.assignedTo,
+      table.status,
+    ),
+    branchStatusIdx: index("idx_pijob_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
     branchPriorityDueIdx: index("idx_pijob_branch_priority_due").on(
       table.branchId,
       table.priority,
       table.dueAt,
     ),
-    submitterStatusIdx: index("idx_pijob_submitter_status").on(table.submittedBy, table.status),
-    oneActivePerProduct: unique("uq_pijob_product_active").on(table.productId, table.activeSlot),
+    submitterStatusIdx: index("idx_pijob_submitter_status").on(
+      table.submittedBy,
+      table.status,
+    ),
+    oneActivePerProduct: unique("uq_pijob_product_active").on(
+      table.productId,
+      table.activeSlot,
+    ),
     // كنس المخزن يسأل «هل ما زال لهذا المفتاح مرجع؟» لكل مرشّح تحت قفل؛ بلا فهرسٍ
     // كان كلّ سؤالٍ مسحاً كاملاً للجدول.
     originalKeyIdx: index("idx_pijob_original_key").on(table.originalObjectKey),
-    processedKeyIdx: index("idx_pijob_processed_key").on(table.processedObjectKey),
+    processedKeyIdx: index("idx_pijob_processed_key").on(
+      table.processedObjectKey,
+    ),
   }),
 );
 
@@ -3726,9 +4021,13 @@ export const productStudioSubmitQuota = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     /** يوم UTC — نفس حدّ اليوم المعتمد في هذه الوحدة (businessDay). */
     usageDate: date("usageDate", { mode: "string" }).notNull(),
-    userId: int("userId").notNull().references(() => users.id),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id),
     submitCount: int("submitCount").default(0).notNull(),
-    bytesWritten: bigint("bytesWritten", { mode: "number" }).default(0).notNull(),
+    bytesWritten: bigint("bytesWritten", { mode: "number" })
+      .default(0)
+      .notNull(),
     lastSubmittedAt: timestamp("lastSubmittedAt").defaultNow().notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -3741,11 +4040,18 @@ export const productImageObjectStaging = mysqlTable(
   "productImageObjectStaging",
   {
     objectKey: varchar("objectKey", { length: 255 }).primaryKey(),
-    state: mysqlEnum("state", ["PENDING", "REFERENCED"]).default("PENDING").notNull(),
+    state: mysqlEnum("state", ["PENDING", "REFERENCED"])
+      .default("PENDING")
+      .notNull(),
     touchedAt: timestamp("touchedAt").defaultNow().onUpdateNow().notNull(),
     referencedAt: timestamp("referencedAt"),
   },
-  (table) => ({ stateTouchedIdx: index("idx_piostage_state_touched").on(table.state, table.touchedAt) }),
+  (table) => ({
+    stateTouchedIdx: index("idx_piostage_state_touched").on(
+      table.state,
+      table.touchedAt,
+    ),
+  }),
 );
 
 /* ============================ المشتريات ============================ */
@@ -3812,7 +4118,10 @@ export const purchaseOrders = mysqlTable(
     invoiceDiscount: decimal("invoiceDiscount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
-    usdInvoiceDiscount: decimal("usdInvoiceDiscount", { precision: 15, scale: 2 }),
+    usdInvoiceDiscount: decimal("usdInvoiceDiscount", {
+      precision: 15,
+      scale: 2,
+    }),
     paidUsd: decimal("paidUsd", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -3896,7 +4205,9 @@ export const purchaseReturns = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     returnNumber: varchar("returnNumber", { length: 50 }).notNull().unique(),
-    clientRequestId: varchar("clientRequestId", { length: 80 }).notNull().unique(),
+    clientRequestId: varchar("clientRequestId", { length: 80 })
+      .notNull()
+      .unique(),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" })
       .notNull()
       .references(() => purchaseOrders.id),
@@ -3906,10 +4217,9 @@ export const purchaseReturns = mysqlTable(
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
-    accountingEntryId: bigint("accountingEntryId", { mode: "number" }).unique().references(
-      () => accountingEntries.id,
-      { onDelete: "set null" },
-    ),
+    accountingEntryId: bigint("accountingEntryId", { mode: "number" })
+      .unique()
+      .references(() => accountingEntries.id, { onDelete: "set null" }),
     settlement: mysqlEnum("settlement", ["CREDIT", "CASH"])
       .default("CREDIT")
       .notNull(),
@@ -3919,21 +4229,42 @@ export const purchaseReturns = mysqlTable(
       "CHECK",
       "TRANSFER",
       "WALLET",
-    ]).default("CASH").notNull(),
+    ])
+      .default("CASH")
+      .notNull(),
     netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
-    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
-    cashRefundAmount: decimal("cashRefundAmount", { precision: 15, scale: 2 }).default("0").notNull(),
-    creditOffsetAmount: decimal("creditOffsetAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    cashRefundAmount: decimal("cashRefundAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    creditOffsetAmount: decimal("creditOffsetAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     reason: varchar("reason", { length: 500 }),
-    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
-    createdByNameSnapshot: varchar("createdByNameSnapshot", { length: 255 }).notNull(),
+    createdBy: int("createdBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdByNameSnapshot: varchar("createdByNameSnapshot", {
+      length: 255,
+    }).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     poIdx: index("idx_purchase_returns_po").on(table.purchaseOrderId),
-    supplierDateIdx: index("idx_purchase_returns_supplier_date").on(table.supplierId, table.createdAt),
-    branchDateIdx: index("idx_purchase_returns_branch_date").on(table.branchId, table.createdAt),
+    supplierDateIdx: index("idx_purchase_returns_supplier_date").on(
+      table.supplierId,
+      table.createdAt,
+    ),
+    branchDateIdx: index("idx_purchase_returns_branch_date").on(
+      table.branchId,
+      table.createdAt,
+    ),
   }),
 );
 
@@ -3950,18 +4281,26 @@ export const purchaseReturnItems = mysqlTable(
     variantId: bigint("variantId", { mode: "number" })
       .notNull()
       .references(() => productVariants.id),
-    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(
+      () => productUnits.id,
+    ),
     quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
     baseQuantity: int("baseQuantity").notNull(),
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
     lineTotal: decimal("lineTotal", { precision: 15, scale: 2 }).notNull(),
-    productNameSnapshot: varchar("productNameSnapshot", { length: 255 }).notNull(),
+    productNameSnapshot: varchar("productNameSnapshot", {
+      length: 255,
+    }).notNull(),
     variantNameSnapshot: varchar("variantNameSnapshot", { length: 120 }),
     unitNameSnapshot: varchar("unitNameSnapshot", { length: 80 }),
   },
   (table) => ({
-    returnIdx: index("idx_purchase_return_items_return").on(table.purchaseReturnId),
-    poItemIdx: index("idx_purchase_return_items_po_item").on(table.purchaseOrderItemId),
+    returnIdx: index("idx_purchase_return_items_return").on(
+      table.purchaseReturnId,
+    ),
+    poItemIdx: index("idx_purchase_return_items_po_item").on(
+      table.purchaseOrderItemId,
+    ),
   }),
 );
 
@@ -4511,21 +4850,48 @@ export const documentPrintEvents = mysqlTable(
     requestId: varchar("requestId", { length: 80 }).notNull(),
     documentType: varchar("documentType", { length: 40 }).notNull(),
     documentId: bigint("documentId", { mode: "number" }),
-    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
-    actorUserId: int("actorUserId").notNull().references(() => users.id),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    actorUserId: int("actorUserId")
+      .notNull()
+      .references(() => users.id),
     actorNameSnapshot: varchar("actorNameSnapshot", { length: 255 }).notNull(),
-    channel: mysqlEnum("channel", ["BROWSER", "PDF", "THERMAL", "SERVER_BRIDGE"]).notNull(),
-    outcome: mysqlEnum("outcome", ["REQUESTED", "DIALOG_OPENED", "DISPATCHED", "FAILED"]).notNull(),
+    channel: mysqlEnum("channel", [
+      "BROWSER",
+      "PDF",
+      "THERMAL",
+      "SERVER_BRIDGE",
+    ]).notNull(),
+    outcome: mysqlEnum("outcome", [
+      "REQUESTED",
+      "DIALOG_OPENED",
+      "DISPATCHED",
+      "FAILED",
+    ]).notNull(),
     copies: int("copies").default(1).notNull(),
     failureCode: varchar("failureCode", { length: 80 }),
     reprintOfRequestId: varchar("reprintOfRequestId", { length: 80 }),
     eventAt: timestamp("eventAt").defaultNow().notNull(),
   },
   (table) => ({
-    requestOutcomeUq: unique("uq_print_event_request_outcome").on(table.requestId, table.outcome),
-    documentIdx: index("idx_print_event_document").on(table.documentType, table.documentId, table.eventAt),
-    actorDateIdx: index("idx_print_event_actor_date").on(table.actorUserId, table.eventAt),
-    branchDateIdx: index("idx_print_event_branch_date").on(table.branchId, table.eventAt),
+    requestOutcomeUq: unique("uq_print_event_request_outcome").on(
+      table.requestId,
+      table.outcome,
+    ),
+    documentIdx: index("idx_print_event_document").on(
+      table.documentType,
+      table.documentId,
+      table.eventAt,
+    ),
+    actorDateIdx: index("idx_print_event_actor_date").on(
+      table.actorUserId,
+      table.eventAt,
+    ),
+    branchDateIdx: index("idx_print_event_branch_date").on(
+      table.branchId,
+      table.eventAt,
+    ),
   }),
 );
 
@@ -5683,11 +6049,7 @@ export const accrualCorrectionRequests = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     obligationId: bigint("obligationId", { mode: "number" }).notNull(),
-    status: mysqlEnum("status", [
-      "PENDING",
-      "APPROVED",
-      "REJECTED",
-    ])
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED"])
       .default("PENDING")
       .notNull(),
     previousObligationStatus: mysqlEnum("previousObligationStatus", [
@@ -5712,10 +6074,7 @@ export const accrualCorrectionRequests = mysqlTable(
       "TRANSFER",
       "WALLET",
     ]),
-    refundCashBucket: mysqlEnum("refundCashBucket", [
-      "DRAWER",
-      "TREASURY",
-    ]),
+    refundCashBucket: mysqlEnum("refundCashBucket", ["DRAWER", "TREASURY"]),
     refundReferenceNumber: varchar("refundReferenceNumber", { length: 100 }),
     refundCardLastFour: char("refundCardLastFour", { length: 4 }),
     refundRequestReceiptId: bigint("refundRequestReceiptId", {
@@ -7094,8 +7453,9 @@ export const employeeTerminations = mysqlTable(
       .default("0")
       .notNull(),
     otherSettlementLabel: varchar("otherSettlementLabel", { length: 120 }),
-    settlementEvidenceNote: varchar("settlementEvidenceNote", { length: 500 })
-      .notNull(),
+    settlementEvidenceNote: varchar("settlementEvidenceNote", {
+      length: 500,
+    }).notNull(),
     zeroAmountsAttested: boolean("zeroAmountsAttested")
       .default(false)
       .notNull(),
@@ -7344,10 +7704,7 @@ export const yearEndSnapshots = mysqlTable(
       columns: [t.supersedesSnapshotId],
       foreignColumns: [t.id],
     }),
-    revisionCheck: check(
-      "chk_year_snapshot_revision",
-      sql`${t.revision} > 0`,
-    ),
+    revisionCheck: check("chk_year_snapshot_revision", sql`${t.revision} > 0`),
   }),
 );
 export type YearEndSnapshot = typeof yearEndSnapshots.$inferSelect;
@@ -8691,11 +9048,15 @@ export const imageStudioUsageDaily = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
-    dailyServiceUq: unique("uq_image_studio_usage_daily_service").on(table.usageDate, table.service),
+    dailyServiceUq: unique("uq_image_studio_usage_daily_service").on(
+      table.usageDate,
+      table.service,
+    ),
   }),
 );
 export type ImageStudioUsageDaily = typeof imageStudioUsageDaily.$inferSelect;
-export type InsertImageStudioUsageDaily = typeof imageStudioUsageDaily.$inferInsert;
+export type InsertImageStudioUsageDaily =
+  typeof imageStudioUsageDaily.$inferInsert;
 
 /**
  * سقفٌ يوميّ **اختياريّ** لكل (فرع × خدمة). غياب الصفّ = بلا حدٍّ فرعيّ، فالسقف الشركيّ
@@ -8714,10 +9075,15 @@ export const imageStudioBranchBudgets = mysqlTable(
   },
   (table) => ({
     pk: primaryKey({ columns: [table.branchId, table.service] }),
-    branchFk: foreignKey({ columns: [table.branchId], foreignColumns: [branches.id], name: "fk_isbb_branch" }).onDelete("cascade"),
+    branchFk: foreignKey({
+      columns: [table.branchId],
+      foreignColumns: [branches.id],
+      name: "fk_isbb_branch",
+    }).onDelete("cascade"),
   }),
 );
-export type ImageStudioBranchBudget = typeof imageStudioBranchBudgets.$inferSelect;
+export type ImageStudioBranchBudget =
+  typeof imageStudioBranchBudgets.$inferSelect;
 
 /** عدّاد الاستهلاك اليوميّ لكل (يوم × خدمة × فرع) — نظير `imageStudioUsageDaily` مُنطَّقاً بالفرع. */
 export const imageStudioBranchUsageDaily = mysqlTable(
@@ -8730,21 +9096,32 @@ export const imageStudioBranchUsageDaily = mysqlTable(
     lastRequestedAt: timestamp("lastRequestedAt").defaultNow().notNull(),
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.usageDate, table.service, table.branchId] }),
-    branchFk: foreignKey({ columns: [table.branchId], foreignColumns: [branches.id], name: "fk_isbud_branch" }).onDelete("cascade"),
+    pk: primaryKey({
+      columns: [table.usageDate, table.service, table.branchId],
+    }),
+    branchFk: foreignKey({
+      columns: [table.branchId],
+      foreignColumns: [branches.id],
+      name: "fk_isbud_branch",
+    }).onDelete("cascade"),
   }),
 );
-export type ImageStudioBranchUsageDaily = typeof imageStudioBranchUsageDaily.$inferSelect;
+export type ImageStudioBranchUsageDaily =
+  typeof imageStudioBranchUsageDaily.$inferSelect;
 
 /** صف ثابت لكل مستخدم لمعدل مزودي الصور؛ لا يتراكم مع الطلبات ويُقفل عبر جميع عمال PM2. */
 export const imageStudioUserRateState = mysqlTable("imageStudioUserRateState", {
-  userId: int("userId").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  userId: int("userId")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
   windowStartedAt: timestamp("windowStartedAt").notNull(),
   requestCount: int("requestCount").default(0).notNull(),
   lastRequestedAt: timestamp("lastRequestedAt").notNull(),
 });
-export type ImageStudioUserRateState = typeof imageStudioUserRateState.$inferSelect;
-export type InsertImageStudioUserRateState = typeof imageStudioUserRateState.$inferInsert;
+export type ImageStudioUserRateState =
+  typeof imageStudioUserRateState.$inferSelect;
+export type InsertImageStudioUserRateState =
+  typeof imageStudioUserRateState.$inferInsert;
 
 /** شريحة تصاعدية لضريبة الدخل: `upTo` حدّ أعلى للشريحة (سلسلة مالية) أو null للشريحة المفتوحة
  *  العليا («فما فوق»)، `rate` نسبة مئوية (سلسلة). الاحتساب حدّيّ تصاعديّ (كل جزء بنسبة شريحته). */
@@ -8983,7 +9360,10 @@ export const storefrontPushDevices = mysqlTable(
   "storefrontPushDevices",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id, { onDelete: "set null" }),
+    customerId: bigint("customerId", { mode: "number" }).references(
+      () => customers.id,
+      { onDelete: "set null" },
+    ),
     tokenHash: char("tokenHash", { length: 64 }).notNull().unique(),
     tokenCiphertext: text("tokenCiphertext").notNull(),
     platform: mysqlEnum("platform", ["IOS", "ANDROID"]).notNull(),
@@ -8995,8 +9375,14 @@ export const storefrontPushDevices = mysqlTable(
     revokedAt: timestamp("revokedAt"),
   },
   (table) => ({
-    activeMarketingIdx: index("idx_storefront_push_active_marketing").on(table.marketingOptIn, table.revokedAt),
-    customerActiveIdx: index("idx_storefront_push_customer").on(table.customerId, table.revokedAt),
+    activeMarketingIdx: index("idx_storefront_push_active_marketing").on(
+      table.marketingOptIn,
+      table.revokedAt,
+    ),
+    customerActiveIdx: index("idx_storefront_push_customer").on(
+      table.customerId,
+      table.revokedAt,
+    ),
   }),
 );
 export type StorefrontPushDevice = typeof storefrontPushDevices.$inferSelect;
@@ -9007,15 +9393,30 @@ export const storefrontPushCampaigns = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     name: varchar("name", { length: 160 }).notNull(),
-    kind: mysqlEnum("kind", ["MARKETING", "TRANSACTIONAL"]).notNull().default("MARKETING"),
-    status: mysqlEnum("status", ["DRAFT", "APPROVED", "SCHEDULED", "RUNNING", "COMPLETED", "CANCELLED"]).notNull().default("DRAFT"),
+    kind: mysqlEnum("kind", ["MARKETING", "TRANSACTIONAL"])
+      .notNull()
+      .default("MARKETING"),
+    status: mysqlEnum("status", [
+      "DRAFT",
+      "APPROVED",
+      "SCHEDULED",
+      "RUNNING",
+      "COMPLETED",
+      "CANCELLED",
+    ])
+      .notNull()
+      .default("DRAFT"),
     title: varchar("title", { length: 80 }).notNull(),
     body: varchar("body", { length: 180 }).notNull(),
     destination: varchar("destination", { length: 180 }).notNull(),
     throttlePerMinute: int("throttlePerMinute").notNull().default(120),
     scheduledAt: timestamp("scheduledAt"),
-    approvedBy: int("approvedBy").references(() => users.id, { onDelete: "set null" }),
-    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+    approvedBy: int("approvedBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdBy: int("createdBy").references(() => users.id, {
+      onDelete: "set null",
+    }),
     launchedAt: timestamp("launchedAt"),
     completedAt: timestamp("completedAt"),
     recipientCount: int("recipientCount").notNull().default(0),
@@ -9025,9 +9426,15 @@ export const storefrontPushCampaigns = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  (table) => ({ dueIdx: index("idx_storefront_push_campaign_due").on(table.status, table.scheduledAt) }),
+  (table) => ({
+    dueIdx: index("idx_storefront_push_campaign_due").on(
+      table.status,
+      table.scheduledAt,
+    ),
+  }),
 );
-export type StorefrontPushCampaign = typeof storefrontPushCampaigns.$inferSelect;
+export type StorefrontPushCampaign =
+  typeof storefrontPushCampaigns.$inferSelect;
 
 /** صندوق تسليم منفصل لكل جهاز، يعيد المحاولة بتراجع محدود ويحفظ الفتح والنقر من دون تخزين محتوى حساس. */
 export const storefrontPushDeliveries = mysqlTable(
@@ -9036,7 +9443,16 @@ export const storefrontPushDeliveries = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     campaignId: bigint("campaignId", { mode: "number" }).notNull(),
     deviceId: bigint("deviceId", { mode: "number" }).notNull(),
-    status: mysqlEnum("status", ["PENDING", "PROCESSING", "RETRY", "SENT", "GONE", "FAILED"]).notNull().default("PENDING"),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "PROCESSING",
+      "RETRY",
+      "SENT",
+      "GONE",
+      "FAILED",
+    ])
+      .notNull()
+      .default("PENDING"),
     attemptCount: tinyint("attemptCount").notNull().default(0),
     availableAt: timestamp("availableAt").defaultNow().notNull(),
     lockedAt: timestamp("lockedAt"),
@@ -9048,8 +9464,14 @@ export const storefrontPushDeliveries = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
-    campaignDeviceUnique: unique("uq_storefront_push_delivery").on(table.campaignId, table.deviceId),
-    dueIdx: index("idx_storefront_push_delivery_due").on(table.status, table.availableAt),
+    campaignDeviceUnique: unique("uq_storefront_push_delivery").on(
+      table.campaignId,
+      table.deviceId,
+    ),
+    dueIdx: index("idx_storefront_push_delivery_due").on(
+      table.status,
+      table.availableAt,
+    ),
     campaignFk: foreignKey({
       columns: [table.campaignId],
       foreignColumns: [storefrontPushCampaigns.id],
@@ -9062,7 +9484,8 @@ export const storefrontPushDeliveries = mysqlTable(
     }).onDelete("cascade"),
   }),
 );
-export type StorefrontPushDelivery = typeof storefrontPushDeliveries.$inferSelect;
+export type StorefrontPushDelivery =
+  typeof storefrontPushDeliveries.$inferSelect;
 
 /** سجل إرسال FCM بلا محتوى الرسالة الحسّاس. */
 export const nativePushDeliveryLog = mysqlTable(
@@ -9404,14 +9827,27 @@ export const employeeAdvanceRepaymentRequests = mysqlTable(
   "employeeAdvanceRepaymentRequests",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    requestKind: mysqlEnum("advanceRepaymentRequestKind", ["REPAYMENT", "RETURN"]).notNull(),
-    status: mysqlEnum("advanceRepaymentRequestStatus", ["PENDING", "APPROVED", "REJECTED"])
-      .default("PENDING").notNull(),
+    requestKind: mysqlEnum("advanceRepaymentRequestKind", [
+      "REPAYMENT",
+      "RETURN",
+    ]).notNull(),
+    status: mysqlEnum("advanceRepaymentRequestStatus", [
+      "PENDING",
+      "APPROVED",
+      "REJECTED",
+    ])
+      .default("PENDING")
+      .notNull(),
     employeeId: bigint("employeeId", { mode: "number" }).notNull(),
     branchId: bigint("branchId", { mode: "number" }).notNull(),
     originalRequestId: bigint("originalRequestId", { mode: "number" }),
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
-    paymentMethod: mysqlEnum("advanceRepaymentPaymentMethod", ["CASH", "CARD", "TRANSFER", "WALLET"]).notNull(),
+    paymentMethod: mysqlEnum("advanceRepaymentPaymentMethod", [
+      "CASH",
+      "CARD",
+      "TRANSFER",
+      "WALLET",
+    ]).notNull(),
     cashBucket: mysqlEnum("advanceRepaymentCashBucket", ["DRAWER", "TREASURY"]),
     shiftId: bigint("shiftId", { mode: "number" }),
     referenceNumber: varchar("referenceNumber", { length: 100 }),
@@ -9433,39 +9869,92 @@ export const employeeAdvanceRepaymentRequests = mysqlTable(
   },
   (t) => ({
     sourceUq: unique("uq_advrep_req_source").on(t.sourceKey),
-    externalRefUq: unique("uq_advrep_req_external_ref").on(t.branchId, t.requestKind, t.paymentMethod, t.referenceNumber),
+    externalRefUq: unique("uq_advrep_req_external_ref").on(
+      t.branchId,
+      t.requestKind,
+      t.paymentMethod,
+      t.referenceNumber,
+    ),
     receiptUq: unique("uq_advrep_req_receipt").on(t.receiptId),
     entryUq: unique("uq_advrep_req_entry").on(t.accountingEntryId),
-    employeeStatusIdx: index("idx_advrep_req_employee_status").on(t.employeeId, t.status),
-    branchStatusIdx: index("idx_advrep_req_branch_status").on(t.branchId, t.status),
+    employeeStatusIdx: index("idx_advrep_req_employee_status").on(
+      t.employeeId,
+      t.status,
+    ),
+    branchStatusIdx: index("idx_advrep_req_branch_status").on(
+      t.branchId,
+      t.status,
+    ),
     originalIdx: index("idx_advrep_req_original").on(t.originalRequestId),
-    employeeFk: foreignKey({ columns: [t.employeeId], foreignColumns: [employees.id], name: "fk_advrep_req_employee" }).onDelete("no action"),
-    branchFk: foreignKey({ columns: [t.branchId], foreignColumns: [branches.id], name: "fk_advrep_req_branch" }).onDelete("no action"),
-    originalFk: foreignKey({ columns: [t.originalRequestId], foreignColumns: [t.id], name: "fk_advrep_req_original" }).onDelete("no action"),
-    shiftFk: foreignKey({ columns: [t.shiftId], foreignColumns: [shifts.id], name: "fk_advrep_req_shift" }).onDelete("no action"),
-    receiptFk: foreignKey({ columns: [t.receiptId], foreignColumns: [receipts.id], name: "fk_advrep_req_receipt" }).onDelete("no action"),
-    entryFk: foreignKey({ columns: [t.accountingEntryId], foreignColumns: [accountingEntries.id], name: "fk_advrep_req_entry" }).onDelete("no action"),
-    makerFk: foreignKey({ columns: [t.createdBy], foreignColumns: [users.id], name: "fk_advrep_req_maker" }).onDelete("no action"),
-    reviewerFk: foreignKey({ columns: [t.reviewedBy], foreignColumns: [users.id], name: "fk_advrep_req_reviewer" }).onDelete("no action"),
+    employeeFk: foreignKey({
+      columns: [t.employeeId],
+      foreignColumns: [employees.id],
+      name: "fk_advrep_req_employee",
+    }).onDelete("no action"),
+    branchFk: foreignKey({
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+      name: "fk_advrep_req_branch",
+    }).onDelete("no action"),
+    originalFk: foreignKey({
+      columns: [t.originalRequestId],
+      foreignColumns: [t.id],
+      name: "fk_advrep_req_original",
+    }).onDelete("no action"),
+    shiftFk: foreignKey({
+      columns: [t.shiftId],
+      foreignColumns: [shifts.id],
+      name: "fk_advrep_req_shift",
+    }).onDelete("no action"),
+    receiptFk: foreignKey({
+      columns: [t.receiptId],
+      foreignColumns: [receipts.id],
+      name: "fk_advrep_req_receipt",
+    }).onDelete("no action"),
+    entryFk: foreignKey({
+      columns: [t.accountingEntryId],
+      foreignColumns: [accountingEntries.id],
+      name: "fk_advrep_req_entry",
+    }).onDelete("no action"),
+    makerFk: foreignKey({
+      columns: [t.createdBy],
+      foreignColumns: [users.id],
+      name: "fk_advrep_req_maker",
+    }).onDelete("no action"),
+    reviewerFk: foreignKey({
+      columns: [t.reviewedBy],
+      foreignColumns: [users.id],
+      name: "fk_advrep_req_reviewer",
+    }).onDelete("no action"),
     positiveAmount: check("chk_advrep_req_positive", sql`${t.amount} > 0`),
-    originalShape: check("chk_advrep_req_original_shape", sql`(${t.requestKind} = 'REPAYMENT' AND ${t.originalRequestId} IS NULL) OR (${t.requestKind} = 'RETURN' AND ${t.originalRequestId} IS NOT NULL)`),
-    evidenceShape: check("chk_advrep_req_evidence", sql`(
+    originalShape: check(
+      "chk_advrep_req_original_shape",
+      sql`(${t.requestKind} = 'REPAYMENT' AND ${t.originalRequestId} IS NULL) OR (${t.requestKind} = 'RETURN' AND ${t.originalRequestId} IS NOT NULL)`,
+    ),
+    evidenceShape: check(
+      "chk_advrep_req_evidence",
+      sql`(
       ${t.paymentMethod} = 'CASH' AND ${t.cashBucket} = 'DRAWER' AND ${t.shiftId} IS NOT NULL AND ${t.referenceNumber} IS NULL AND ${t.cardLastFour} IS NULL
     ) OR (
       ${t.paymentMethod} = 'CARD' AND ${t.cashBucket} IS NULL AND ${t.shiftId} IS NULL AND CHAR_LENGTH(TRIM(${t.referenceNumber})) > 0 AND ${t.cardLastFour} REGEXP '^[0-9]{4}$'
     ) OR (
       ${t.paymentMethod} IN ('TRANSFER','WALLET') AND ${t.cashBucket} IS NULL AND ${t.shiftId} IS NULL AND CHAR_LENGTH(TRIM(${t.referenceNumber})) > 0 AND ${t.cardLastFour} IS NULL
-    )`),
-    lifecycleShape: check("chk_advrep_req_lifecycle", sql`(
+    )`,
+    ),
+    lifecycleShape: check(
+      "chk_advrep_req_lifecycle",
+      sql`(
       ${t.status} = 'PENDING' AND ${t.reviewedBy} IS NULL AND ${t.reviewedAt} IS NULL AND ${t.receiptId} IS NULL AND ${t.accountingEntryId} IS NULL AND ${t.rejectionReason} IS NULL
     ) OR (
       ${t.status} = 'APPROVED' AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.receiptId} IS NOT NULL AND ${t.accountingEntryId} IS NOT NULL AND ${t.rejectionReason} IS NULL
     ) OR (
       ${t.status} = 'REJECTED' AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.receiptId} IS NULL AND ${t.accountingEntryId} IS NULL AND CHAR_LENGTH(TRIM(${t.rejectionReason})) >= 5
-    )`),
+    )`,
+    ),
   }),
 );
-export type EmployeeAdvanceRepaymentRequest = typeof employeeAdvanceRepaymentRequests.$inferSelect;
+export type EmployeeAdvanceRepaymentRequest =
+  typeof employeeAdvanceRepaymentRequests.$inferSelect;
 
 /** Append-only subledger; a correction is a REVERSE row, never an edit/delete. */
 export const employeeAdvanceRepaymentAllocations = mysqlTable(
@@ -9474,11 +9963,16 @@ export const employeeAdvanceRepaymentAllocations = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     requestId: bigint("requestId", { mode: "number" }).notNull(),
     advanceId: bigint("advanceId", { mode: "number" }).notNull(),
-    direction: mysqlEnum("advanceRepaymentAllocationDirection", ["APPLY", "REVERSE"]).notNull(),
+    direction: mysqlEnum("advanceRepaymentAllocationDirection", [
+      "APPLY",
+      "REVERSE",
+    ]).notNull(),
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     reversalOfId: bigint("reversalOfId", { mode: "number" }),
     receiptId: bigint("receiptId", { mode: "number" }).notNull(),
-    accountingEntryId: bigint("accountingEntryId", { mode: "number" }).notNull(),
+    accountingEntryId: bigint("accountingEntryId", {
+      mode: "number",
+    }).notNull(),
     sourceKey: varchar("sourceKey", { length: 191 }).notNull(),
     occurredAt: timestamp("occurredAt").notNull(),
     createdBy: int("createdBy").notNull(),
@@ -9489,17 +9983,45 @@ export const employeeAdvanceRepaymentAllocations = mysqlTable(
     reversalUq: unique("uq_advrep_alloc_reversal").on(t.reversalOfId),
     requestIdx: index("idx_advrep_alloc_request").on(t.requestId),
     advanceIdx: index("idx_advrep_alloc_advance").on(t.advanceId),
-    requestFk: foreignKey({ columns: [t.requestId], foreignColumns: [employeeAdvanceRepaymentRequests.id], name: "fk_advrep_alloc_request" }).onDelete("no action"),
-    advanceFk: foreignKey({ columns: [t.advanceId], foreignColumns: [employeeAdvances.id], name: "fk_advrep_alloc_advance" }).onDelete("no action"),
-    reversalFk: foreignKey({ columns: [t.reversalOfId], foreignColumns: [t.id], name: "fk_advrep_alloc_reversal" }).onDelete("no action"),
-    receiptFk: foreignKey({ columns: [t.receiptId], foreignColumns: [receipts.id], name: "fk_advrep_alloc_receipt" }).onDelete("no action"),
-    entryFk: foreignKey({ columns: [t.accountingEntryId], foreignColumns: [accountingEntries.id], name: "fk_advrep_alloc_entry" }).onDelete("no action"),
-    actorFk: foreignKey({ columns: [t.createdBy], foreignColumns: [users.id], name: "fk_advrep_alloc_actor" }).onDelete("no action"),
+    requestFk: foreignKey({
+      columns: [t.requestId],
+      foreignColumns: [employeeAdvanceRepaymentRequests.id],
+      name: "fk_advrep_alloc_request",
+    }).onDelete("no action"),
+    advanceFk: foreignKey({
+      columns: [t.advanceId],
+      foreignColumns: [employeeAdvances.id],
+      name: "fk_advrep_alloc_advance",
+    }).onDelete("no action"),
+    reversalFk: foreignKey({
+      columns: [t.reversalOfId],
+      foreignColumns: [t.id],
+      name: "fk_advrep_alloc_reversal",
+    }).onDelete("no action"),
+    receiptFk: foreignKey({
+      columns: [t.receiptId],
+      foreignColumns: [receipts.id],
+      name: "fk_advrep_alloc_receipt",
+    }).onDelete("no action"),
+    entryFk: foreignKey({
+      columns: [t.accountingEntryId],
+      foreignColumns: [accountingEntries.id],
+      name: "fk_advrep_alloc_entry",
+    }).onDelete("no action"),
+    actorFk: foreignKey({
+      columns: [t.createdBy],
+      foreignColumns: [users.id],
+      name: "fk_advrep_alloc_actor",
+    }).onDelete("no action"),
     positiveAmount: check("chk_advrep_alloc_positive", sql`${t.amount} > 0`),
-    reversalShape: check("chk_advrep_alloc_reversal_shape", sql`(${t.direction} = 'APPLY' AND ${t.reversalOfId} IS NULL) OR (${t.direction} = 'REVERSE' AND ${t.reversalOfId} IS NOT NULL)`),
+    reversalShape: check(
+      "chk_advrep_alloc_reversal_shape",
+      sql`(${t.direction} = 'APPLY' AND ${t.reversalOfId} IS NULL) OR (${t.direction} = 'REVERSE' AND ${t.reversalOfId} IS NOT NULL)`,
+    ),
   }),
 );
-export type EmployeeAdvanceRepaymentAllocation = typeof employeeAdvanceRepaymentAllocations.$inferSelect;
+export type EmployeeAdvanceRepaymentAllocation =
+  typeof employeeAdvanceRepaymentAllocations.$inferSelect;
 
 export const terminationAdvanceAllocations = mysqlTable(
   "terminationAdvanceAllocations",
@@ -11195,11 +11717,7 @@ export const monthCloseRequests = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     month: varchar("month", { length: 7 }).notNull(),
-    status: mysqlEnum("status", [
-      "PENDING_APPROVAL",
-      "APPROVED",
-      "REJECTED",
-    ])
+    status: mysqlEnum("status", ["PENDING_APPROVAL", "APPROVED", "REJECTED"])
       .default("PENDING_APPROVAL")
       .notNull(),
     /** لقطة الجاهزية وقت الطلب (JSON) — **للتدقيق فقط**؛ الاعتماد يُعيد الفحص حيّاً. */
@@ -11639,8 +12157,7 @@ export const yearEndReopenRequests = mysqlTable(
     ),
   }),
 );
-export type YearEndReopenRequest =
-  typeof yearEndReopenRequests.$inferSelect;
+export type YearEndReopenRequest = typeof yearEndReopenRequests.$inferSelect;
 export type InsertYearEndReopenRequest =
   typeof yearEndReopenRequests.$inferInsert;
 
@@ -11743,16 +12260,26 @@ export const offlineRecoveryItems = mysqlTable(
      * أمّا PRINT/RECEPTION فتُلتقَط **للرصد ومنع الضياع** وتُسوَّى يدوياً — إخفاؤها أسوأ من
      * عرضها بلا زرّ ترحيل.
      */
-    channel: mysqlEnum("recoveryChannel", ["RETAIL", "PRINT", "RECEPTION"]).default("RETAIL").notNull(),
+    channel: mysqlEnum("recoveryChannel", ["RETAIL", "PRINT", "RECEPTION"])
+      .default("RETAIL")
+      .notNull(),
     /** مفتاح idempotency الأصليّ — فريدٌ كي لا يتضاعف العنصر بإعادة محاولة الجهاز. */
     clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
-    offlineReceiptNumber: varchar("offlineReceiptNumber", { length: 40 }).notNull(),
+    offlineReceiptNumber: varchar("offlineReceiptNumber", {
+      length: 40,
+    }).notNull(),
     capturedAt: timestamp("capturedAt").notNull(),
     /** الحمولة كما أُرسلت (JSON نصّاً) — مصدر الترحيل لاحقاً بلا إعادة إدخال يدويّ. */
     payload: mediumtext("payload").notNull(),
     rejectCode: varchar("rejectCode", { length: 40 }).notNull(),
     rejectReason: text("rejectReason"),
-    recoveryStatus: mysqlEnum("recoveryStatus", ["PENDING", "POSTED", "DISCARDED"]).default("PENDING").notNull(),
+    recoveryStatus: mysqlEnum("recoveryStatus", [
+      "PENDING",
+      "POSTED",
+      "DISCARDED",
+    ])
+      .default("PENDING")
+      .notNull(),
     /** الفاتورة الناتجة عند الترحيل — الرابط بين الاحتجاز والدفتر. */
     invoiceId: bigint("invoiceId", { mode: "number" }),
     reviewedBy: int("reviewedBy"),
@@ -11762,7 +12289,10 @@ export const offlineRecoveryItems = mysqlTable(
   },
   (table) => ({
     uqRequest: unique("uq_offline_recovery_request").on(table.clientRequestId),
-    statusIdx: index("idx_offline_recovery_status").on(table.recoveryStatus, table.branchId),
+    statusIdx: index("idx_offline_recovery_status").on(
+      table.recoveryStatus,
+      table.branchId,
+    ),
   }),
 );
 export type OfflineRecoveryItem = typeof offlineRecoveryItems.$inferSelect;
@@ -11778,7 +12308,9 @@ export type OfflineRecoveryItem = typeof offlineRecoveryItems.$inferSelect;
  */
 export const documentCounters = mysqlTable("documentCounters", {
   counterKey: varchar("counterKey", { length: 64 }).primaryKey(),
-  lastValue: bigint("lastValue", { mode: "number", unsigned: true }).notNull().default(0),
+  lastValue: bigint("lastValue", { mode: "number", unsigned: true })
+    .notNull()
+    .default(0),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type DocumentCounter = typeof documentCounters.$inferSelect;
@@ -11798,19 +12330,32 @@ export const returnRequests = mysqlTable(
   "returnRequests",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    invoiceId: bigint("invoiceId", { mode: "number" }).notNull().references(() => invoices.id),
-    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    invoiceId: bigint("invoiceId", { mode: "number" })
+      .notNull()
+      .references(() => invoices.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
     /** [{ invoiceItemId, baseQuantity }] — تُنفَّذ حرفياً عند الاعتماد. */
     linesJson: json("linesJson").notNull(),
     reason: varchar("reason", { length: 500 }).notNull(),
     /** لقطة `invoices.returnedTotal` لحظة الطلب — حارسٌ تفاؤليّ عند الاعتماد. */
-    invoiceReturnedSnapshot: decimal("invoiceReturnedSnapshot", { precision: 15, scale: 2 })
+    invoiceReturnedSnapshot: decimal("invoiceReturnedSnapshot", {
+      precision: 15,
+      scale: 2,
+    })
       .default("0")
       .notNull(),
-    status: mysqlEnum("returnRequestStatus", ["PENDING_APPROVAL", "APPROVED", "REJECTED"])
+    status: mysqlEnum("returnRequestStatus", [
+      "PENDING_APPROVAL",
+      "APPROVED",
+      "REJECTED",
+    ])
       .default("PENDING_APPROVAL")
       .notNull(),
-    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
     approvedBy: int("approvedBy").references(() => users.id),
     approvedAt: timestamp("approvedAt"),
     resultReturnInvoiceId: bigint("resultReturnInvoiceId", { mode: "number" }),
@@ -11818,7 +12363,10 @@ export const returnRequests = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
-    statusBranchIdx: index("idx_retreq_status_branch").on(table.status, table.branchId),
+    statusBranchIdx: index("idx_retreq_status_branch").on(
+      table.status,
+      table.branchId,
+    ),
     invoiceIdx: index("idx_retreq_invoice").on(table.invoiceId),
     creatorIdx: index("idx_retreq_creator").on(table.createdBy),
   }),

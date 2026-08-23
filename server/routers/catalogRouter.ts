@@ -59,8 +59,14 @@ import {
 } from "../../shared/priceSanity";
 import { generateProductContentDraft } from "../services/productContentAiService";
 import {
+  decideProductContentDraft,
+  listProductContentDrafts,
+  saveProductContentDraft,
+} from "../services/productContentGovernanceService";
+import {
   aiProductDraftSchema,
   productFactsSchema,
+  productChannelContentSchema,
   validateAiProductDraft,
 } from "../../shared/productContentAi";
 import {
@@ -579,6 +585,40 @@ export const catalogRouter = router({
     .input(z.object({ facts: productFactsSchema, draft: aiProductDraftSchema }))
     .mutation(({ input }) => validateAiProductDraft(input.draft, input.facts)),
 
+  saveContentDraft: productsManagerProcedure
+    .input(z.object({
+      productId: z.number().int().positive(),
+      sourceFacts: z.record(z.string(), z.unknown()),
+      sourceFactsHash: z.string().regex(/^[a-f0-9]{64}$/i),
+      content: productChannelContentSchema,
+      validation: z.object({
+        ok: z.boolean(),
+        blockers: z.array(z.string().max(500)).max(100),
+        warnings: z.array(z.string().max(500)).max(100),
+      }).strict(),
+      promptVersion: z.string().trim().min(1).max(40),
+      model: z.string().trim().min(1).max(120),
+    }).strict())
+    .mutation(({ input, ctx }) => saveProductContentDraft(input, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? null,
+    })),
+
+  listContentDrafts: productsManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), limit: z.number().int().positive().max(100).optional() }).strict())
+    .query(({ input }) => listProductContentDrafts(input.productId, input.limit)),
+
+  decideContentDraft: productsManagerProcedure
+    .input(z.object({
+      draftId: z.number().int().positive(),
+      decision: z.enum(["APPROVED", "REJECTED"]),
+      note: z.string().trim().max(1000).nullable().optional(),
+    }).strict())
+    .mutation(({ input, ctx }) => decideProductContentDraft(input.draftId, input.decision, input.note ?? null, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? null,
+    })),
+
   // name-assistant: مشابهات اسم حيّة أثناء إضافة/تعديل منتج — تمنع ازدواج الكتالوج عند المصدر
   // (٩٤٠٠+ صنف مستورد بأسماء غير منضبطة). نفس بوّابة الشاشة (مدير فأعلى)، لا تكشف تكلفة.
   similarNames: productsManagerProcedure
@@ -624,6 +664,13 @@ export const catalogRouter = router({
         brand: z.string().max(80).nullish(),
         modelName: z.string().max(80).nullish(),
         description: z.string().nullish(),
+        internalName: z.string().max(255).nullish(),
+        storeTitle: z.string().max(255).nullish(),
+        seoTitle: z.string().max(255).nullish(),
+        shortTitle: z.string().max(160).nullish(),
+        posLabel: z.string().max(120).nullish(),
+        invoiceLabel: z.string().max(255).nullish(),
+        marketingCopy: z.string().max(10_000).nullish(),
         categoryId: z.number().int().positive().optional(),
         isCustomizable: z.boolean().optional(),
         // print-catalog: بَند خِدمي (لا مخزون) + توجيهه لنقطة بيع الطباعة + وصفة موادّه الخام.
@@ -726,6 +773,13 @@ export const catalogRouter = router({
       z.object({
         productId: z.number().int().positive(),
         name: z.string().min(1),
+        internalName: z.string().max(255).nullish(),
+        storeTitle: z.string().max(255).nullish(),
+        seoTitle: z.string().max(255).nullish(),
+        shortTitle: z.string().max(160).nullish(),
+        posLabel: z.string().max(120).nullish(),
+        invoiceLabel: z.string().max(255).nullish(),
+        marketingCopy: z.string().max(10_000).nullish(),
         categoryId: z.number().int().positive().nullish(),
         isCustomizable: z.boolean().optional(),
         isActive: z.boolean().optional(),
@@ -915,6 +969,13 @@ export const catalogRouter = router({
         brand: z.string().max(80).nullish(),
         modelName: z.string().max(80).nullish(),
         description: z.string().nullish(),
+        internalName: z.string().max(255).nullish(),
+        storeTitle: z.string().max(255).nullish(),
+        seoTitle: z.string().max(255).nullish(),
+        shortTitle: z.string().max(160).nullish(),
+        posLabel: z.string().max(120).nullish(),
+        invoiceLabel: z.string().max(255).nullish(),
+        marketingCopy: z.string().max(10_000).nullish(),
         categoryId: z.number().int().positive().nullish(),
         isCustomizable: z.boolean().optional(),
         allowAutoCartRecommendations: z.boolean().optional(),

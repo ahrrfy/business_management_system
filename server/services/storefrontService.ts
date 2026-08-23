@@ -37,6 +37,7 @@ import {
   storefrontPublishableCondition,
 } from "./storefrontEligibilityService";
 import { loadVariantAvailability } from "./catalog/variantAvailability";
+import { titleForChannel } from "@shared/productChannelTitles";
 
 const RETAIL = "RETAIL" as const;
 
@@ -244,6 +245,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       colorHex: productVariants.colorHex,
       size: productVariants.size,
       productName: products.name,
+      storeTitle: products.storeTitle,
       brand: products.brand,
       category: categories.name,
       categoryId: products.categoryId,
@@ -277,6 +279,7 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
       conversionFactor: productUnits.conversionFactor,
       isFeatured: products.isFeatured,
       productName: products.name,
+      storeTitle: products.storeTitle,
       imageId: productImages.id,
     })
     .from(productUnits)
@@ -377,7 +380,7 @@ function toPublicProductImage(imageId: number | null | undefined, value: string 
 }
 
 function toStorefront(r: {
-  productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
+  productId: number; productUnitId: number; variantId: number; productName: string; storeTitle: string | null; brand: string | null;
   variantName: string | null; color: string | null; colorHex: string | null; size: string | null;
   category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; price: string | null;
   imageId?: number | null; imageUrl: string | null; productType: string | null; isCustomizable: boolean | null; isBundle: boolean | null;
@@ -389,7 +392,7 @@ function toStorefront(r: {
     productId: Number(r.productId),
     productUnitId: Number(r.productUnitId),
     variantId: Number(r.variantId),
-    productName: r.productName,
+    productName: titleForChannel({ name: r.productName, storeTitle: r.storeTitle }, "store"),
     brand: r.brand ?? null,
     category: r.category ?? null,
     categoryId: r.categoryId != null ? Number(r.categoryId) : null,
