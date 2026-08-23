@@ -127,11 +127,15 @@ export function TotalsPanel({
                   value: state.globalDiscountType === "percent" ? "amount" : "percent",
                 })
               }
-              // ٢٣/٨ (بلاغ فحص UX): كان `#` وحدَه مبهماً بالعربية. صار «د.ع» صريحاً + `title` يشرح.
-              title="اضغط لتبديل بين نسبة مئوية (%) ومبلغ ثابت (د.ع)"
-              aria-label={state.globalDiscountType === "percent" ? "الخصم نسبةٌ مئويّة — اضغط للتحويل إلى مبلغ" : "الخصم مبلغٌ بالدينار — اضغط للتحويل إلى نسبة"}
+              // ٢٣/٨ (بلاغ Codex P1 على PR #733): كان «د.ع» ثابتاً على شاشات الشراء التي قد تكون
+              // بالدولار ⇒ الموظّف يظنّ الخصم بالدينار فيُدخل قيمةً ديناريّة تفسد ذمّة المورّد
+              // وتكلفة المخزون. العملة الآن مشتقّةٌ من `state.currency` — عين ما يسري على الوعاء.
+              title={`اضغط لتبديل بين نسبة مئوية (%) ومبلغ ثابت (${currSym})`}
+              aria-label={state.globalDiscountType === "percent"
+                ? "الخصم نسبةٌ مئويّة — اضغط للتحويل إلى مبلغ"
+                : `الخصم مبلغٌ بالـ${currSym} — اضغط للتحويل إلى نسبة`}
             >
-              {state.globalDiscountType === "percent" ? "%" : "د.ع"}
+              {state.globalDiscountType === "percent" ? "%" : currSym}
             </Button>
           </div>
           {Number(overrideDiscountAmount ?? t.globalDiscAmt) > 0 && (

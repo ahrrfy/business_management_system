@@ -2281,11 +2281,11 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
     if (c.row.isService) {
       return { isKnown: true, isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
     }
-    // ٢٣/٨ (بلاغ المالك «المخزون لا يظهر عند إضافة المنتج»): كان الفحص يطلب `availableBase != null`
-    // حصراً، بينما الكتالوج الأوفلايني (`OfflineCatalogRow`) يخزّن `stockBase` فقط ⇒ الصنف الممسوح
-    // أوفلاين كان يظهر «جارٍ التحقّق» أبد الدهر ويعرض «…» بدل الرقم. الآن نقبل إمّا أحدهما — القيمة
-    // الفعليّة تُحسَب بالتفضيل نفسه (`availableBase ?? stockBase`).
-    const isKnown = c.row.branchId === branchId && (c.row.availableBase != null || c.row.stockBase != null);
+    // ⚠ عقدٌ محفوظ (Codex P1 على PR #733): عرضُ `stockBase` أوفلاين كـ«متاحٍ للبيع» **يكذب**
+    // بشأن الحجوزات — لقطةُ الأوفلاين تحمل الرصيد الفعليّ بلا reservationStock. صنفٌ رصيدُه ١٠
+    // وحجوزاتٌ نشطة ١٠ يظهر «متاح ١٠» ⇒ الكاشير يقبض ثمّ يفشل الترحيل عند العودة. `isKnown` لا
+    // يوسَّع؛ إصلاحُ حقيقيّ لبلاغ الأوفلاين يستلزم إثراءَ لقطة `buildStockSnapshot` بالحجز.
+    const isKnown = c.row.branchId === branchId && c.row.availableBase != null;
     if (!isKnown) return { isKnown: false, isOut: false, isShort: false, availInUnit: 0 };
     const availBase   = c.row.availableBase ?? c.row.stockBase ?? 0;
     const reqBase     = demandByVariant.get(c.row.variantId) ?? c.qty * convFactor; // إجمالي طلب الصنف
