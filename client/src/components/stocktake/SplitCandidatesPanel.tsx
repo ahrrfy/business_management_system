@@ -58,7 +58,12 @@ export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
         "أُنشئ البديل المستقلّ",
         `SKU ${res.sku} — افصل الرصيد المدمج بجردٍ يدويّ على الصنفين (زرّ أدناه).`,
       );
-      await utils.stocktakes.splitCandidates.invalidate();
+      await Promise.all([
+        utils.stocktakes.splitCandidates.invalidate(),
+        // بعد الفصل يتغيّر نطاق التحقّق (بديلٌ جديد) — حدِّثه وإلّا بقي زرّ «أنشئ جرد تحقّق» على IDs قديمة
+        // أو معطَّلاً إن كان هذا أوّل بديل (مراجعة Codex P2).
+        utils.stocktakes.alternativeReconciliationScope.invalidate(),
+      ]);
     },
     onError: (e) => notify.err(e),
   });
@@ -98,7 +103,7 @@ export function SplitCandidatesPanel({ canManage }: { canManage: boolean }) {
                 {reconScope.isLoading
                   ? "جارٍ الحساب…"
                   : (reconScope.data?.alternativeCount ?? 0) > 0
-                    ? `${reconScope.data!.alternativeCount} بديلاً منشأً في ${reconScope.data!.productCount} منتجاً — أنشئ جرد تحقّقٍ يعدّ الأصل وبدائله معاً فيوزّع الرصيد الماديّ عليها.`
+                    ? `${reconScope.data!.alternativeCount} بديلاً منشأً في ${reconScope.data!.productCount} منتجاً — أنشئ جرد تحقّقٍ يعدّ الأصل وبدائله معاً فيوزّع الرصيد الماديّ عليها.${reconScope.data!.truncated ? ` (النطاق كبير: يُنشأ لأوّل ${reconScope.data!.variantCount} صنف؛ كرّر للباقي.)` : ""}`
                     : "لا بدائل منشأة بعد — افصل بديلاً أولاً، ثم أنشئ جرد التحقّق."}
               </p>
             </div>

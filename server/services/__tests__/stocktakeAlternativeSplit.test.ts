@@ -225,6 +225,6 @@ describe("listAlternativeReconciliationScope — نطاق جرد التحقّق"
   it("لا بدائل نشطة ⇒ نطاقٌ فارغ (لا يُنشأ جردٌ عبثاً)", async () => {
     await db().update(s.productVariants).set({ isActive: false }).where(eq(s.productVariants.id, 2));
     const scope = await listAlternativeReconciliationScope();
-    expect(scope).toEqual({ variantIds: [], productCount: 0, variantCount: 0, alternativeCount: 0 });
+    expect(scope).toEqual({ variantIds: [], productCount: 0, variantCount: 0, alternativeCount: 0, truncated: false });
   });
 });

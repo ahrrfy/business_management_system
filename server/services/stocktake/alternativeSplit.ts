@@ -93,12 +93,22 @@ export async function listSplitCandidates(): Promise<SplitCandidate[]> {
   return Array.from(byUnit.values());
 }
 
+/**
+ * سقفُ نطاق التحقّق = حدّ `stocktakes.barcodeCoverage` (`z.array().max(10_000)`) الذي يستدعيه محرّر
+ * الجرد بالنطاق المُعبّأ؛ تجاوزُه يرفضه الراوتر فيَعمى فحصُ جاهزية الباركود (مراجعة Codex P2). نقتطع
+ * هنا **معلنين** الاقتطاع لا صامتين.
+ */
+const RECON_SCOPE_LIMIT = 10_000;
+
 export interface AlternativeReconciliationScope {
-  /** كل متغيّرات المنتجات التي لها بديلٌ حقيقيّ (الأصل + البدائل) — نطاق جرد التحقّق لفصل الرصيد. */
+  /** متغيّرات المنتجات التي لها بديلٌ حقيقيّ (الأصل + البدائل)، مقتطعةٌ عند الحدّ — نطاق جرد التحقّق. */
   variantIds: number[];
   productCount: number;
+  /** عدد المتغيّرات المُعادة (= طول variantIds بعد الاقتطاع). */
   variantCount: number;
   alternativeCount: number;
+  /** true إذا تجاوز النطاق الكامل الحدّ فاقتُطع (يُنشأ الجرد لأوّل RECON_SCOPE_LIMIT؛ كرّر للباقي). */
+  truncated: boolean;
 }
 
 /**
@@ -113,6 +123,7 @@ export async function listAlternativeReconciliationScope(): Promise<AlternativeR
     productCount: 0,
     variantCount: 0,
     alternativeCount: 0,
+    truncated: false,
   };
 
   // منتجاتٌ نشطة (سلعية) لها متغيّرُ ALTERNATIVE نشطٌ واحد على الأقل.
@@ -138,13 +149,15 @@ export async function listAlternativeReconciliationScope(): Promise<AlternativeR
     .from(productVariants)
     .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)));
 
-  const variantIds = variants.map((v) => Number(v.id));
+  const allVariantIds = variants.map((v) => Number(v.id));
   const alternativeCount = variants.filter((v) => v.kind === "ALTERNATIVE").length;
+  const variantIds = allVariantIds.slice(0, RECON_SCOPE_LIMIT);
   return {
     variantIds,
     productCount: productIds.length,
     variantCount: variantIds.length,
     alternativeCount,
+    truncated: allVariantIds.length > RECON_SCOPE_LIMIT,
   };
 }
 
