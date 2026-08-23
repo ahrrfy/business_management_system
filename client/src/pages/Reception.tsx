@@ -2561,6 +2561,8 @@ export default function Reception() {
           <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-3 my-auto size-4 text-muted-foreground" />
           <input
             ref={searchRef}
+            autoFocus
+            id="reception-search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onFocus={() => setShowDrop(true)}

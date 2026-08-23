@@ -1525,7 +1525,7 @@ export default function POS() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (creditPrompt) { if (e.key === "Escape") setCreditPrompt(null); return; }
-      if (receipt)      { if (e.key === "Escape" || e.key === "Enter") setReceipt(null); return; }
+      if (receipt)      { if (e.key === "Escape" || e.key === "Enter") { setReceipt(null); setTimeout(() => searchRef.current?.focus(), 0); } return; }
       if (shifting)     { if (e.key === "Escape") setShifting(false); return; }
       if (cashDropping) { if (e.key === "Escape") setCashDropping(false); return; }
       // نافذة البطاقات مفتوحة: Escape تُغلقها وتتكفّل هي بمفاتيحها (لا تصل الاختصارات العامة).
@@ -1875,7 +1875,13 @@ export default function POS() {
       {receipt && (
         <ReceiptOverlay
           C={C} receipt={receipt}
-          onDismiss={() => setReceipt(null)}
+          onDismiss={() => {
+            setReceipt(null);
+            // ٢٣/٨ (بلاغ فحص UX): `useModalFocus` يعيد التركيز إلى «الزرّ الذي فتح الحوار» =
+            // زرّ الدفع. سكانر الباركود التالي يكتب حروفه في الزرّ فيبتلعها بلا أثر (يوم كاملٌ
+            // بمخزونٍ مضطرب دون تنبيه). نعيد التركيز صراحةً إلى حقل البحث كي يستقبل المسحة التالية.
+            setTimeout(() => searchRef.current?.focus(), 0);
+          }}
           onPrint={() => printReceipt(buildBrandedReceipt(receipt!))}
         />
       )}
@@ -2877,7 +2883,8 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
                   if (!Number.isFinite(Number(raw))) return;
                   setPayInput(raw);
                 }}
-                placeholder="—"
+                onFocus={(e) => e.currentTarget.select()}
+                placeholder="0"
                 aria-label="المبلغ المستلم من الزبون"
                 style={{
                   flex: 1, minWidth: 0, maxWidth: 200,
@@ -3116,6 +3123,13 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
           <button
             disabled={!canPay || isPending}
             onClick={() => onQuickPay()}
+            title={
+              // ٢٣/٨ (بلاغ فحص UX): زرٌّ رماديٌّ بلا سبب ⇒ الكاشير يحدّق دون فهم. `title` يعلن السبب.
+              isPending ? "جارٍ الحفظ…" :
+              !cartLen ? "أضف منتجاً أوّلاً" :
+              !canPay ? "أكمل بيانات الدفع (مرجع البطاقة/التأكيد)" :
+              `دفع سريع وطباعة — ${paymentMethodLabel(method)}`
+            }
             style={{
               ...(dense ? { width: 128, flexShrink: 0 } : { width: "100%", marginBottom: 7 }),
               height: fluid(50, 6.6, 58),
@@ -3134,6 +3148,12 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
         <button
           disabled={!canPay || isPending}
           onClick={() => onPay()}
+          title={
+            isPending ? "جارٍ الحفظ…" :
+            !cartLen ? "أضف منتجاً أوّلاً" :
+            !canPay ? "أكمل بيانات الدفع (مرجع البطاقة/التأكيد)" :
+            `إتمام الدفع — ${fmt(total)} د.ع`
+          }
           style={{
             ...(dense && showQuickPay ? { flex: 1, minWidth: 0 } : { width: "100%" }),
             height: fluid(50, 6.6, 58),
@@ -3153,7 +3173,10 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
         </button>
       </div>
 
-      {!dense && <div style={{ textAlign: "center", padding: "0 11px 8px", fontSize: 10.5, color: C.mutedFg, flexShrink: 0 }}>F4 للدفع · F2 للبحث · F9 طباعة</div>}
+      {/* ٢٣/٨ (بلاغ فحص UX): تلميحُ الاختصارات كان يُخفى على الشاشات القصيرة (dense) — وهي تحديداً
+          شاشات الكاشير اللوحيّة ١٣٦٦×٧٦٨ حيث يعطي الاختصار أعظم قيمة (لا ماوس، لوحة مفاتيح فقط).
+          نُبقيه ظاهراً مع خطٍّ أصغر على dense كي لا يزاحم أزرار الدفع. */}
+      <div style={{ textAlign: "center", padding: dense ? "0 11px 4px" : "0 11px 8px", fontSize: dense ? 9.5 : 10.5, color: C.mutedFg, flexShrink: 0 }}>F4 للدفع · F2 للبحث · F9 طباعة · F12 تفريغ</div>
 
       </div>{/* ← نهاية منطقة الفعل */}
     </div>
