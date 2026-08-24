@@ -93,6 +93,13 @@ export interface ListProductsAdminInput {
   includeInactive?: boolean;
   /** فلترة بالفئة: رقم موجب = فئة محدّدة، 0 = «بلا فئة» (NULL)، غياب = كل الفئات. */
   categoryId?: number;
+  /**
+   * ٢٤/٨ — إكمال شريحة PR #755/#757/#767: فلترة بالرؤية في كاشير الطباعة.
+   *   true  ⇒ يعرض المنتجات التي تظهر في شبكة `printPos.services`
+   *   false ⇒ يعرض المخفيّة عنها (تدقيق: منتج مصنّف طباعة لكن مخفيّ لسببٍ ما)
+   *   غياب ⇒ الكلّ (السلوك القائم بلا تراجع)
+   */
+  showInPrintPos?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -132,6 +139,10 @@ export async function listProductsAdmin(
       const ids = [input.categoryId, ...children.map((c) => Number(c.id))];
       conds.push(ids.length > 1 ? inArray(products.categoryId, ids) : eq(products.categoryId, input.categoryId));
     }
+  }
+  // فلتر رؤية شبكة كاشير الطباعة (اختياريّ): يعرّف المدير بسرعة ما يظهر/يُخفَى فيها.
+  if (input.showInPrintPos != null) {
+    conds.push(eq(products.showInPrintPos, input.showInPrintPos));
   }
   const where = conds.length ? and(...conds) : undefined;
 
