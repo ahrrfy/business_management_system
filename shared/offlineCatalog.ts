@@ -39,6 +39,16 @@ export interface OfflineStockRow {
   variantId: number;
   /** الرصيد بالوحدة الأساس لفرع الجهاز — استرشادي أثناء الانقطاع (قد يتقادم). */
   qty: number;
+  /** ٢٤/٨ — المحجوز النشط لهذا الصنف: يشمل الحجز الرسميّ (`reservationStock`) + تخصيصات
+   *  الطلبات الإلكترونيّة النشطة (loadOnlineAllocatedBase). لقطةٌ قديمة (قبل التوسيع) لا تحمله
+   *  ⇒ العميل يعتبرها «مجهولة» ولا يعرض ATP. */
+  reservedBase?: number;
+  /** ٢٤/٨ — «المتاح للبيع» النهائيّ (`max(0, qty - reservedBase)` للأصناف العاديّة، وطاقة
+   *  المكوّنات للبكج). حاسمٌ للعميل: وجودُه يعني «معروف»، غيابُه يعني «مجهول — انتظر تحديثاً». */
+  availableBase?: number;
+  /** ٢٤/٨ — البكج لا يملك `branchStock`، طاقتُه من `loadVariantAvailability`. العلمُ يُميّزه
+   *  للعميل كي يعرف أنّ الصفر هنا ليس عطبَ بياناتٍ بل حساباً حاكماً. */
+  isBundle?: boolean;
 }
 
 export interface OfflineCustomerRow {

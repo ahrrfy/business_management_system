@@ -750,7 +750,7 @@ export default function POS() {
     }
     let cancelled = false;
     setOfflineSearching(true);
-    void offlineSearchCatalog(debouncedSearch, effectiveTier, { limit: 20 }).then((rows) => {
+    void offlineSearchCatalog(debouncedSearch, effectiveTier, branchId, { limit: 20 }).then((rows) => {
       if (cancelled) return;
       setOfflineResults(rows as PosRow[]);
       setOfflineSearching(false);
@@ -974,7 +974,7 @@ export default function POS() {
     try {
       // ش٢ أوفلاين: أثناء الانقطاع تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
       const row = offline
-        ? await offlineFindByBarcode(code, effectiveTier)
+        ? await offlineFindByBarcode(code, effectiveTier, branchId)
         : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
       if (!row) notify.err(`باركود غير معروف: ${code}`);
       else addRow(row as PosRow);

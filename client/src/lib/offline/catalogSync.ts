@@ -141,6 +141,12 @@ export interface OfflinePosRow {
   isBaseUnit: boolean;
   price: string | null;
   stockBase: number;
+  /** ٢٤/٨ — المحجوز النشط للصنف على فرع الجهاز (رسميّ + طلبات إلكترونيّة). */
+  reservedBase: number;
+  /** ٢٤/٨ — «المتاح للبيع» الحاكم من `loadVariantAvailability` الخادميّ (كلّ مصادر الحجز
+   *  + طاقة البكج المشتقّة). `null` = مجهول (لقطةٌ قديمة قبل التوسيع أو فرعٌ لا يطابق
+   *  META_STOCK_BRANCH ⇒ POS.tsx يعرض «جارٍ التحقّق» بأمان). Codex P1×٤ على PR #737. */
+  availableBase: number | null;
   isService: boolean;
   isCustomizable: boolean;
   isPrintService: boolean;
@@ -158,8 +164,25 @@ function tierPrice(row: OfflineCatalogRow, tier: OfflinePriceTier): string | nul
   return row.priceRetail;
 }
 
-async function toPosRow(row: OfflineCatalogRow, tier: OfflinePriceTier): Promise<OfflinePosRow> {
+async function toPosRow(
+  row: OfflineCatalogRow,
+  tier: OfflinePriceTier,
+  currentBranchId: number,
+  cachedBranchId: number | null,
+): Promise<OfflinePosRow> {
   const stock = await offlineDb.stock.get(row.variantId);
+  const qty = stock?.qty ?? 0;
+  const reservedBase = stock?.reservedBase ?? 0;
+  // ٢٤/٨ (Codex P1×٤ على PR #737): `availableBase` يبقى **مجهولاً** (null) في ثلاث حالات
+  // كي لا يُعلن ATP كاذباً:
+  //   ⑴ لقطةٌ قديمة قبل توسيع العقد — تعرف بغياب `availableBase` من الخادم (لا وجود له في
+  //      اللقطات المخزَّنة سابقاً في IndexedDB قبل ترقية العقد).
+  //   ⑵ فرعُ اللقطة المحفوظة لا يطابق الفرعَ الحاليّ (تبديلٌ لم يُوفَّق باللقطة بعد).
+  //   ⑶ الصفّ ذاته مفقود (لم يصل الترحيلُ الأوّل، صنفٌ جديد لم يُلتقَط بعد).
+  // POS.tsx يعرض «جارٍ التحقّق» في هذه الحالات بأمان — قرارٌ سلوكيٌّ قائم في `stockState`.
+  const branchMatches = cachedBranchId != null && cachedBranchId === currentBranchId;
+  const hasFreshAtp = stock?.availableBase != null;
+  const availableBase = branchMatches && hasFreshAtp ? stock.availableBase! : null;
   return {
     productId: row.productId,
     productName: row.productName,
@@ -174,7 +197,9 @@ async function toPosRow(row: OfflineCatalogRow, tier: OfflinePriceTier): Promise
     barcode: row.barcode,
     isBaseUnit: row.isBaseUnit,
     price: tierPrice(row, tier),
-    stockBase: stock?.qty ?? 0,
+    stockBase: qty,
+    reservedBase,
+    availableBase,
     isService: row.isService,
     isCustomizable: row.isCustomizable,
     isPrintService: row.isPrintService,
@@ -188,10 +213,20 @@ async function toPosRow(row: OfflineCatalogRow, tier: OfflinePriceTier): Promise
   };
 }
 
+/** ٢٤/٨ (Codex #٤ على PR #737): يقرأ الفرعَ المُخزَّن مع اللقطة، فيمرّرُه `toPosRow` كي يحرس
+ *  ATP من عرض رصيدِ فرعٍ آخر بعد تبديلٍ لم يُوفَّق. `null` = لم تُخزَّن اللقطة بعد أصلاً. */
+async function getCachedStockBranchId(): Promise<number | null> {
+  const raw = await getMeta(META_STOCK_BRANCH);
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 /** بحث الكتالوج محلياً: كل كلمات الاستعلام (مُطبَّعةً) يجب أن ترد في searchText. */
 export async function offlineSearchCatalog(
   query: string,
   tier: OfflinePriceTier,
+  branchId: number,
   opts?: { includePrintServices?: boolean; limit?: number },
 ): Promise<OfflinePosRow[]> {
   const normalized = normalizeSearchText(query);
@@ -219,19 +254,22 @@ export async function offlineSearchCatalog(
     return b.productId - a.productId;
   });
 
-  return Promise.all(matches.slice(0, limit).map((row) => toPosRow(row, tier)));
+  const cachedBranch = await getCachedStockBranchId();
+  return Promise.all(matches.slice(0, limit).map((row) => toPosRow(row, tier, branchId, cachedBranch)));
 }
 
 /** مطابقة باركود (الأساسي أو أي بديل) بضربة فهرس multiEntry واحدة. */
 export async function offlineFindByBarcode(
   code: string,
   tier: OfflinePriceTier,
+  branchId: number,
 ): Promise<OfflinePosRow | null> {
   const trimmed = code.trim();
   if (!trimmed) return null;
   const row = await offlineDb.catalog.where("allBarcodes").equals(trimmed).first();
   if (!row) return null;
-  return toPosRow(row, tier);
+  const cachedBranch = await getCachedStockBranchId();
+  return toPosRow(row, tier, branchId, cachedBranch);
 }
 
 /** آخر مزامنة ناجحة (ISO) — لصمّام «عمر الكاش» في الشريحة ٣ ولشاشة الحالة. */

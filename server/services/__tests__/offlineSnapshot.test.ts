@@ -152,12 +152,15 @@ describe("النسخ — بصمة محتوى تتغيّر إذا-وفقط-إذا
   });
 });
 
-describe("buildStockSnapshot — عزل الفرع", () => {
-  it("تُرجع أرصدة الفرع المطلوب فقط", async () => {
+describe("buildStockSnapshot — عزل الفرع + ATP الحاكم", () => {
+  it("تُرجع ATP النهائيّ من loadVariantAvailability للفرع المطلوب فقط", async () => {
     const b1 = await buildStockSnapshot(1);
     const b2 = await buildStockSnapshot(2);
-    expect(b1).toEqual([{ variantId: 1, qty: 36 }]);
-    expect(b2).toEqual([{ variantId: 1, qty: 7 }]);
+    // ٢٤/٨ (بعد Codex P1×٤): اللقطة تستعمل `loadVariantAvailability` الحاكم — يعطي `availableBase`
+    // نهائياً بكل مصادر الحجز (رسميّ + طلبات إلكترونيّة + بكج). أصنافٌ بلا حجز `reservedBase=0`
+    // ⇒ `availableBase = qty`. البذرةُ هنا صنفٌ عاديٌّ (isBundle=false) بلا حجزٍ نشط.
+    expect(b1).toEqual([{ variantId: 1, qty: 36, reservedBase: 0, availableBase: 36, isBundle: false }]);
+    expect(b2).toEqual([{ variantId: 1, qty: 7, reservedBase: 0, availableBase: 7, isBundle: false }]);
   });
 });
 
