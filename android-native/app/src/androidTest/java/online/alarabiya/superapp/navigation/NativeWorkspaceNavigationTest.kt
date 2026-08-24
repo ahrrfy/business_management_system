@@ -38,6 +38,7 @@ import online.alarabiya.superapp.data.LegalDataSource
 import online.alarabiya.superapp.data.LegalDocument
 import online.alarabiya.superapp.data.LegalSection
 import online.alarabiya.superapp.data.PurchasingDataSource
+import online.alarabiya.superapp.data.NotificationFilter
 import online.alarabiya.superapp.data.SelfServiceDataSource
 import online.alarabiya.superapp.data.StoreAdminDataSource
 import online.alarabiya.superapp.data.TwoFactorAccountStatus
@@ -814,7 +815,7 @@ private object FakeSelfServiceSource : SelfServiceDataSource {
         leaveBalances = LeaveBalances("0", "0"),
     )
 
-    override suspend fun loadNotifications(limit: Int): NotificationCenter =
+    override suspend fun loadNotifications(limit: Int, filter: NotificationFilter): NotificationCenter =
         NotificationCenter(emptyList(), 0)
 
     override suspend fun loadNotificationPreferences(): NotificationPreferences = preferences
