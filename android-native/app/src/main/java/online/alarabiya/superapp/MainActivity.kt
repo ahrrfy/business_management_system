@@ -97,7 +97,10 @@ class MainActivity : FragmentActivity() {
         }
         super.onCreate(savedInstanceState)
         window.setBackgroundDrawableResource(R.color.brand_launch_background)
-        NativeNotificationNavigationInbox.accept(intent)
+        // Codex P1 (٢٥/٨) — نمرّر referrer + packageName ليتحقّق NavigationInbox أنّ الـIntent
+        // من داخل تطبيقنا فعلاً. حذفنا intent-filter لـalrueya:// من المانيفست، لكن MainActivity
+        // مُصدَّرة (LAUNCHER) فتبقى قابلةً للاستدعاء الصريح من تطبيقٍ آخر — هذا الفحص يردعه.
+        NativeNotificationNavigationInbox.accept(intent, referrer, packageName)
         // Release screens can expose payroll, financial and personal data. Debug alone permits
         // emulator screenshots so the visual QA gate can compare real native pixels.
         if (!BuildConfig.DEBUG) {
@@ -400,7 +403,7 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        NativeNotificationNavigationInbox.accept(intent)
+        NativeNotificationNavigationInbox.accept(intent, referrer, packageName)
     }
 
     override fun onRequestPermissionsResult(

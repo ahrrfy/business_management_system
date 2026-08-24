@@ -81,6 +81,24 @@ class NotificationPermissionLifecycleGuardTest {
     }
 
     @Test
+    fun consumingResumeBypassAfterExpiryRejectsIt() {
+        // Codex P1 (٢٥/٨) — لولا هذا الفحص، مستخدمٌ ضغط زرّ الإشعارات ثم ذهب لساعاتٍ وعاد
+        // كان يجد الجلسة مفتوحةً بلا بصمة: onStop لم يقع ثانيةً (لا فرصة لـ EXPIRED فرع onStop)،
+        // فبقي resumeBypassPending=true من التصريح الأصليّ ولم يفحص consumeResumeBypass عمره.
+        var clock = 0L
+        val guard = NotificationPermissionLifecycleGuard(
+            maxRequestAgeNanos = TimeUnit.SECONDS.toNanos(30),
+            nowNanos = { clock },
+        )
+
+        guard.requestStarting()
+        assertTrue(guard.onActivityStopping())
+
+        clock += TimeUnit.SECONDS.toNanos(120)
+        assertFalse("stale bypass beyond max age must NOT be consumed", guard.consumeResumeBypass())
+    }
+
+    @Test
     fun expiredRequestClearsStaleBypassOnNextStop() {
         // User taps the permission action, the OEM shows the dialog, then the user leaves for
         // hours. Once the request has expired, the next stop must NOT re-arm the bypass so a

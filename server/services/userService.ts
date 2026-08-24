@@ -42,6 +42,7 @@ import { getUserUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 import { logAuditTx } from "./auditService";
 import { assertCanAdministerUser } from "./userAdminPolicy";
 import { notifyAdminsOfSessionEvent } from "./sessionEventNotifier";
+import { revokeAllNativePushDevicesForUser } from "./nativePushService";
 
 export type Role = typeof ALL_ROLES[number];
 
@@ -565,6 +566,15 @@ export async function revokeUserSessions(userId: number, _actor: Actor) {
     await tx.update(userSessions).set({ revokedAt }).where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
     return { userId, revokedAt, subject: u };
   });
+  // Codex P1 (٢٥/٨) — الإبطالُ يجب أن يُقفل قناةَ push الأصيلة أيضاً، وإلّا استمرّ الجهاز
+  // المطرود يتلقّى إشعارات حسّاسة. `nativePush.revokeDevice` من العميل عاجزٌ الآن (401)،
+  // فالخادم مسؤولٌ عن ذلك بنفسه. خارج المعاملة لأنّ nativePushService يستعمل pool مباشرةً؛
+  // fail-open كي لا يُلغى الإبطالُ الرئيسيّ لعطلٍ في قناةٍ ثانوية.
+  try {
+    await revokeAllNativePushDevicesForUser(outcome.userId);
+  } catch {
+    /* ignore — تسجيلُ الأثر يتكفّل به مسار المخارج */
+  }
   // ن-٢-د (٢٤/٨) — إشعارٌ إداريّ: مديرٌ أنهى جلسة موظّف ⇒ يُخطَر بقيّة الإداريّين. يقع بعد
   // نجاح المعاملة كي لا يُنشأ إشعارٌ لعملٍ لم يحدث. fail-open داخل الخدمة.
   void notifyAdminsOfSessionEvent({

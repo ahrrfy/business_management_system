@@ -424,6 +424,7 @@ export const authRouter = router({
           kind: "LOGIN",
           ipAddress: ip,
           deviceLabel: nativeDevice ? `تطبيق أصيل (${nativeDevice.keyThumbprint.slice(0, 8)})` : ctx.req.headers["user-agent"] ?? null,
+          sessionId,
           occurredAt: new Date(),
         });
 
@@ -581,6 +582,7 @@ export const authRouter = router({
           kind: "LOGIN",
           ipAddress: ip,
           deviceLabel: nativeDevice ? `تطبيق أصيل (${nativeDevice.keyThumbprint.slice(0, 8)})` : ctx.req.headers["user-agent"] ?? null,
+          sessionId,
           occurredAt: new Date(),
         });
 

@@ -26,6 +26,10 @@ export type AppNotificationKind =
   | "LEAVE_STATUS"
   | "APPROVAL_REQUIRED"
   | "ANNOUNCEMENT"
+  // ن-٢-د (٢٥/٨) — إشعارُ إدارةٍ لدخول/خروج/إبطالِ جلسةٍ لموظّف. مُنفصلٌ عن SYSTEM حتى
+  // يحصل على push فعليّ عبر pushKindFor + nativeDestinationFor (كان SYSTEM لا يُنتج إلا
+  // إدراجاً في الصندوق، فيبقى المدير جاهلاً حتى يفتحه يدويّاً — Codex P1).
+  | "SESSION_EVENT"
   | "SYSTEM";
 
 export interface NotificationPreferencesInput {
@@ -96,11 +100,13 @@ function pushKindFor(
   | "PAYROLL_READY"
   | "LEAVE_STATUS"
   | "APPROVAL_REQUIRED"
+  | "SESSION_EVENT"
   | null {
   if (kind === "TASK_ASSIGNED") return "TASK_ASSIGNED";
   if (kind === "PAYROLL_READY") return "PAYROLL_READY";
   if (kind === "LEAVE_STATUS") return "LEAVE_STATUS";
   if (kind === "APPROVAL_REQUIRED") return "APPROVAL_REQUIRED";
+  if (kind === "SESSION_EVENT") return "SESSION_EVENT";
   return null;
 }
 
@@ -124,17 +130,16 @@ function webPushPayloadFor(
       : null;
   }
   const kind = pushKindFor(input.kind);
-  return kind
-    ? {
-        kind,
-        title: input.title.trim().slice(0, 90),
-        body:
-          input.kind === "PAYROLL_READY"
-            ? "تم تحديث كشفك الشخصي."
-            : "لديك تحديث جديد في مساحة العمل.",
-        url: route,
-      }
-    : null;
+  if (!kind) return null;
+  const body =
+    input.kind === "PAYROLL_READY"
+      ? "تم تحديث كشفك الشخصي."
+      : input.kind === "SESSION_EVENT"
+        ? // نصٌّ عامّ آمن — التفاصيل تظهر في التطبيق فقط (الجسم النصّيّ الفعليّ يحمل IP
+          // مقنَّعاً واسم جهاز، وقد تُعرض على شاشة القفل عبر Web Push فوجب تعميمه هنا).
+          "دخول/خروجٌ لموظّف — افتح الصندوق للتفاصيل."
+        : "لديك تحديث جديد في مساحة العمل.";
+  return { kind, title: input.title.trim().slice(0, 90), body, url: route };
 }
 
 function preferenceAllows(
@@ -220,6 +225,11 @@ function nativeDestinationFor(
   if (input.kind === "ANNOUNCEMENT") {
     // إعلانٌ بعينه ⇒ تغذية «إعلاناتي» على تفصيله (القصر العميل يوجّهه للتغذية قبل بوّابة الصلاحية).
     return entity ? `alrueya://app/module/announcements/view/${entity}` : null;
+  }
+  if (input.kind === "SESSION_EVENT") {
+    // مسارٌ حصريٌّ للأحداث الأمنيّة الإداريّة (ن-٢-د). يحمل معرّف الموظّف كسياق افتتاحيّ
+    // لشاشة التنبيهات — الفتحُ الفعليّ للتفاصيل يبقى على الإدارة داخل التطبيق.
+    return entity ? `alrueya://app/alerts/session/${entity}` : "alrueya://app/alerts";
   }
   return null;
 }

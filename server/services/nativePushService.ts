@@ -386,6 +386,24 @@ export async function revokeNativePushDevice(
   );
 }
 
+/**
+ * ن + Codex P1 (٢٥/٨) — يُبطل كلَّ ربطاتِ الدفعِ الأصيلة لمستخدمٍ دفعةً واحدة، ويُرجع
+ * عددَ الصفوف المُتأثِّرة (للسجلّ). يُستدعى من `revokeUserSessions` بعد رفع
+ * `sessionsValidFrom`: بلا هذا كان الجهاز المطرود يستمرّ في تلقّي إشعارات حسّاسة رغم أن
+ * جلسته أُبطلت، لأنّ العميل يعود 401 قبل أن يبلغ `nativePush.revokeDevice`.
+ */
+export async function revokeAllNativePushDevicesForUser(
+  userId: number,
+): Promise<number> {
+  const [result] = await requirePool().execute<ResultSetHeader>(
+    `UPDATE nativePushDevices
+        SET revokedAt = CURRENT_TIMESTAMP
+      WHERE userId = ? AND revokedAt IS NULL`,
+    [userId],
+  );
+  return Number(result?.affectedRows ?? 0);
+}
+
 export async function countActiveNativePushDevices(
   userId: number,
 ): Promise<number> {

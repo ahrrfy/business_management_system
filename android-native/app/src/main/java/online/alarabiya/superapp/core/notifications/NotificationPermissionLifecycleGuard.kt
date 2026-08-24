@@ -52,6 +52,10 @@ internal class NotificationPermissionLifecycleGuard(
     }
 
     fun consumeResumeBypass(): Boolean {
+        // Codex P1 (٢٥/٨) — الفحصُ الأوّلُ للعمر: إن انقضى العمر الأقصى (٣٠ث)، evaluateRequestState
+        // يمسح resumeBypassPending بنفسه، فالسطر التالي يُرجع false تلقائياً. بلا هذا، مستخدمٌ
+        // فتح Home ثم عاد بعد ساعاتٍ يجد الجلسة مفتوحةً بلا بصمة رغم انتهاء نافذة العمر.
+        evaluateRequestState()
         if (!resumeBypassPending) return false
         resumeBypassPending = false
         // Deliberately do NOT clear requestInFlight here: some OEMs fire multiple stop/resume

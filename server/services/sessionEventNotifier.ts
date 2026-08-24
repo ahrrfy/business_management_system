@@ -38,6 +38,12 @@ export interface SessionEventInput {
    */
   actorUserId?: number | null;
   /**
+   * معرّفٌ فريدٌ للجلسة المتعلَّقة بالحدث (Codex P2-٢٥/٨): يُدخَل في eventKey ليمنع
+   * الاندماج الخاطئ لدخولين متزامنَين خلال نفس الثانية (فيصير كلٌّ منهما مسمّى بمعرّف
+   * جلسته). إن لم يتوفّر (نادر: مسارُ خطأٍ)، نعود إلى مفتاحٍ بالثانية.
+   */
+  sessionId?: number | string | null;
+  /**
    * وقتُ الحدث الفعليّ. مطلوبٌ لدلالة idempotency: طلبانِ متطابقان بنفس lifetime يُدمَجان
    * على نفس المفتاح، فلا يتكرّر إشعارٌ عند إعادة محاولة نقلٍ خادميّة.
    */
@@ -56,19 +62,28 @@ function humanKind(kind: SessionEventKind): string {
 }
 
 /**
- * IP مُقنَّع: أوّل ثلاث خانات من IPv4 مثلاً 10.0.5.* — يكفي لتصنيفٍ عامّ (شبكة الفرع مقابل
- * شبكةٍ غريبة) بلا تسريب مطلق. IPv6 يُختصر لأوّل ٤ مقاطع.
+ * IP مُقنَّع (Codex P2-٢٥/٨): أوّل ثلاث خانات من IPv4 مثلاً 10.0.5.* — يكفي لتصنيفٍ عامّ.
+ * ✓ IPv4-mapped IPv6 (`::ffff:203.0.113.42` من nginx على IPv4-only) يُطبَّع أوّلاً قبل
+ *   الإخفاء وإلّا كان الإصدار السابق يُبقي الرقم كاملاً ⇒ خرقُ ادّعاء الإخفاء.
+ * ✓ IPv6 كامل يُختصر إلى أوّل مقطعَين (٣٢ بت) — يكفي لتصنيف ISP بلا كشف الجهاز.
+ * ✓ صيغةٌ لا نفهمها ⇒ نُعيد «غير معلوم» بدل إبراز نصٍّ خامّ قد يحوي معلومات.
  */
 function maskIp(ip: string | null | undefined): string {
   if (!ip) return "غير معلوم";
   const trimmed = ip.trim();
   if (trimmed.length === 0) return "غير معلوم";
-  if (trimmed.includes(":")) {
-    return trimmed.split(":").slice(0, 4).join(":") + "::*";
+  // اسحب IPv4 من IPv4-mapped IPv6 قبل أيّ فرع IPv6.
+  const mappedMatch = trimmed.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  const canonical = mappedMatch ? mappedMatch[1] : trimmed;
+  const ipv4Parts = canonical.split(".");
+  if (ipv4Parts.length === 4 && ipv4Parts.every((p) => /^\d{1,3}$/.test(p))) {
+    return `${ipv4Parts[0]}.${ipv4Parts[1]}.${ipv4Parts[2]}.*`;
   }
-  const parts = trimmed.split(".");
-  if (parts.length === 4) return `${parts[0]}.${parts[1]}.${parts[2]}.*`;
-  return trimmed;
+  if (canonical.includes(":")) {
+    const groups = canonical.split(":").filter(Boolean).slice(0, 2);
+    return groups.length > 0 ? `${groups.join(":")}::*` : "غير معلوم";
+  }
+  return "غير معلوم";
 }
 
 function safeDeviceLabel(label: string | null | undefined): string {
@@ -94,12 +109,15 @@ function buildBody(input: SessionEventInput): string {
 }
 
 /**
- * مفتاحٌ ثابتٌ للحدث الواحد: (kind + userId + occurredAt-ثانية) يُنتج مفتاحاً موحَّداً بين
- * الإدراجات المتوازية لعدّة مستقبلين، وقصير الطول لعمود eventKey (VARCHAR 190).
+ * مفتاحٌ ثابتٌ للحدث الواحد: نُميّز الجلسة بمعرّفها (Codex P2 ٢٥/٨) لكيلا يندمج دخولان
+ * متزامنان لنفس الموظّف على جهازَين خلال نفس الثانية في مفتاحٍ واحد ⇒ فيتلقّى المستقبِلون
+ * إشعاراً واحداً بدل اثنين. إن غاب sessionId (استثناءٌ نادر لمسار خطأ)، نعود إلى نافذة
+ * الثانية بحُكم أن الحدث بلا هويّةٍ مستقلّة.
  */
 function computeEventKey(input: SessionEventInput, recipientId: number): string {
   const bucket = Math.floor(input.occurredAt.getTime() / 1000);
-  const raw = `session:${input.kind}:${input.userId}:${bucket}:${recipientId}`;
+  const session = input.sessionId != null ? String(input.sessionId) : `t${bucket}`;
+  const raw = `session:${input.kind}:${input.userId}:${session}:${recipientId}`;
   return crypto.createHash("sha256").update(raw).digest("hex").slice(0, 40);
 }
 
@@ -150,7 +168,9 @@ export async function notifyAdminsOfSessionEvent(input: SessionEventInput): Prom
       recipients.map((recipientId) =>
         createAppNotification({
           userId: recipientId,
-          kind: "SYSTEM",
+          // ن-٢-د (٢٥/٨) — SESSION_EVENT بدل SYSTEM كي يُنتج push فعليّاً عبر nativePushOutbox
+          // (Codex P1: SYSTEM كان يقف عند إدراج الصندوق ⇒ المدير يجهل حتى يفتح يدويّاً).
+          kind: "SESSION_EVENT",
           title,
           body,
           route,

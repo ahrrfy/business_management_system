@@ -63,7 +63,10 @@ export interface OperationalPushPayload {
     | "TASK_ASSIGNED"
     | "PAYROLL_READY"
     | "LEAVE_STATUS"
-    | "APPROVAL_REQUIRED";
+    | "APPROVAL_REQUIRED"
+    // ن-٢-د (٢٥/٨) — تنبيهُ إدارةٍ عن دخول/خروج/إبطالٍ لجلسةِ موظّف. عناوينُ فقط، آمنة
+    // لشاشة القفل. المستقبلون هم admin/isOwner/manager للفرع (يفلترهم sessionEventNotifier).
+    | "SESSION_EVENT";
   title: string;
   body: string;
   url: string;

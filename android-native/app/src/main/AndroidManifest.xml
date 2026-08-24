@@ -34,18 +34,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <!--
-                 قناةُ الإشعارات الأصيلة: intent مُنشَأ داخلياً من AlrueyaFirebaseMessagingService
-                 عبر PendingIntent صريح. حذفنا فئة BROWSABLE (H2) لأنّها كانت تسمح لأيّ متصفّح
-                 أو تطبيقٍ خارجيّ بفتح alrueya://app/... واستدراج المستخدم المصادَق إلى شاشات
-                 حسّاسة (اعتماد صرف، تحرير مصروف). الإشعارات الداخليّة لا تحتاج BROWSABLE.
+                 Codex P1 (٢٥/٨) — حُذف intent-filter لـalrueya:// كلياً بعد أن أظهر Codex أنّ
+                 حذف BROWSABLE وحده لا يمنع تطبيقاً آخر من صنع Intent(ACTION_VIEW) صريحاً
+                 (setComponent على MainActivity المُصدَّرة) وإرساله. NativeNotificationRenderer
+                 يستعمل intent بمكوّنٍ صريح `Intent(context, MainActivity::class.java)` +
+                 PendingIntent.FLAG_IMMUTABLE ⇒ لا يحتاج intent-filter مطلقاً؛ الحذف يُسقط
+                 مسارَ الاستدعاء الضمنيّ نهائياً. الحرس الثاني في NativeNotificationNavigationInbox
+                 يفحص referrer.host مقابل packageName ليردَع الاستدعاء الصريح المتبقّي أيضاً.
             -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data
-                    android:host="app"
-                    android:scheme="${notificationDeepLinkScheme}" />
-            </intent-filter>
         </activity>
 
         <service

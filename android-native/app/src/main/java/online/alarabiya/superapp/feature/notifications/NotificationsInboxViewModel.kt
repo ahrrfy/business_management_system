@@ -6,6 +6,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import online.alarabiya.superapp.data.NotificationFilter
 import online.alarabiya.superapp.data.SelfServiceDataSource
@@ -19,17 +21,26 @@ class NotificationsInboxViewModel(private val source: SelfServiceDataSource) : V
     var state by mutableStateOf(NotificationsInboxUiState())
         private set
 
+    /**
+     * Codex P2 (٢٥/٨) — نتتبّع Job قراءة الصندوق ونُلغيه قبل بدء آخر جديد. لولا هذا، ضغطاتٌ
+     * متلاحقة على مرشّحاتٍ مختلفة تُطلق عدّة تحميلاتٍ متوازية تُخزّن نتائجها بلا فحصٍ للمرشّح
+     * الحاليّ ⇒ نتيجةٌ قديمة قد تكتب فوق نتيجةٍ جديدة بينما chip المرشّح ظاهرٌ للأخيرة.
+     */
+    private var loadJob: Job? = null
+
     fun refresh(initial: Boolean = false) {
-        if (state.loading || state.refreshing) return
+        if (state.refreshing) return
         state = if (initial) NotificationsInboxReducer.startInitialLoad(state)
         else NotificationsInboxReducer.startRefresh(state)
-        viewModelScope.launch { load(state.filter) }
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch { load(state.filter) }
     }
 
     fun setFilter(filter: NotificationFilter) {
         if (filter == state.filter) return
         state = NotificationsInboxReducer.applyFilter(state, filter)
-        viewModelScope.launch { load(filter) }
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch { load(filter) }
     }
 
     /**
@@ -76,13 +87,19 @@ class NotificationsInboxViewModel(private val source: SelfServiceDataSource) : V
     }
 
     private suspend fun load(filter: NotificationFilter) {
-        runCatching { source.loadNotifications(filter = filter) }
-            .onSuccess { center: NotificationCenter ->
-                state = NotificationsInboxReducer.loaded(state, center.rows, center.unreadCount)
-            }
-            .onFailure { error ->
-                state = NotificationsInboxReducer.failed(state, humanMessage(error))
-            }
+        try {
+            val center: NotificationCenter = source.loadNotifications(filter = filter)
+            // فحصٌ مضاعف: قد يكون Job نجا من cancel + ردٌّ متأخّرٌ عن مرشّح سابق. نُقارن مع
+            // state.filter الحاليّ فلا نكتب فوق نتيجةٍ لمرشّحٍ أحدث. (يحدث نظرياً إن جاء الردّ
+            // بين cancel و launch التاليَين — نتفادى السباق نهائياً.)
+            if (state.filter != filter) return
+            state = NotificationsInboxReducer.loaded(state, center.rows, center.unreadCount)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (error: Throwable) {
+            if (state.filter != filter) return
+            state = NotificationsInboxReducer.failed(state, humanMessage(error))
+        }
     }
 
     private fun humanMessage(error: Throwable): String =
