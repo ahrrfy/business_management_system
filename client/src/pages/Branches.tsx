@@ -29,6 +29,10 @@ type BranchRow = RouterOutputs["branches"]["adminList"][number];
 type BranchType = "MAIN" | "SALES";
 
 const TYPE_LABEL: Record<string, string> = { MAIN: "رئيسي (كل الخدمات)", SALES: "مبيعات" };
+const TYPE_TITLE: Record<string, string> = {
+  MAIN: "الفرع الرئيسي — يستقبل كل الخدمات (طباعة/استقبال/تجزئة/تحويلات/شراء)",
+  SALES: "فرع مبيعات — قناة بيع تجزئة رئيسية، بلا خدمات طباعة/استقبال",
+};
 
 export default function Branches() {
   const utils = trpc.useUtils();
@@ -143,7 +147,7 @@ export default function Branches() {
             title="قائمة الفروع"
             count={visibleRows.length}
             loading={list.isLoading}
-            search={{ value: query, onChange: setQuery, placeholder: "اسم الفرع، الرمز، العنوان أو الهاتف…" }}
+            search={{ value: query, onChange: setQuery, placeholder: "اسم الفرع، الرمز، العنوان أو الهاتف…", autoFocus: true }}
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
@@ -180,11 +184,14 @@ export default function Branches() {
                   <tr key={b.id} className={`border-t ${b.isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{b.name}</td>
                     <td className="p-2 font-mono text-xs" dir="ltr">{b.code}</td>
-                    <td className="p-2">{TYPE_LABEL[b.type] ?? b.type}</td>
+                    <td className="p-2" title={TYPE_TITLE[b.type] ?? undefined}>{TYPE_LABEL[b.type] ?? b.type}</td>
                     <td className="p-2 text-muted-foreground">{b.address || "—"}</td>
                     <td className="p-2 text-xs" dir="ltr">{b.phone || "—"}</td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${b.isActive ? "badge-status-active" : "badge-stock-out"}`}>
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${b.isActive ? "badge-status-active" : "badge-stock-out"}`}
+                        title={b.isActive ? "الفرع نشط — يظهر في منتقيات العمليات الجديدة" : "الفرع معطّل — مستثنى من المنتقيات؛ العمليات التاريخية المرتبطة به تبقى بلا مسّ"}
+                      >
                         {b.isActive ? "مفعّل" : "معطّل"}
                       </span>
                     </td>
@@ -217,7 +224,21 @@ export default function Branches() {
                   <tr><td colSpan={7}><LoadingState /></td></tr>
                 )}
                 {!list.isLoading && visibleRows.length === 0 && (
-                  <TableEmptyRow colSpan={7} message="لا فروع بعد — أضِف أوّل فرع." />
+                  <TableEmptyRow
+                    colSpan={7}
+                    message={
+                      query ? (
+                        <div className="space-y-2">
+                          <div>لا فروع مطابقة للبحث «{query}».</div>
+                          <Button variant="outline" size="sm" onClick={() => setQuery("")}>
+                            مسح البحث
+                          </Button>
+                        </div>
+                      ) : (
+                        "لا فروع بعد — أضِف أوّل فرع بزرّ «فرع جديد» أعلاه."
+                      )
+                    }
+                  />
                 )}
               </tbody>
             </table>
