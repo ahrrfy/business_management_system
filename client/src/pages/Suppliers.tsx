@@ -17,7 +17,8 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 /** نوع صفّ المورّد صريحاً — يتجنّب فشل استدلال T بسبب اتحاد تقنيع التكلفة (maskSupplierSensitive). */
@@ -44,6 +45,11 @@ export default function Suppliers() {
   // الحذف النهائيّ: suppliers.delete = managerProcedure (أدمن/مدير) — عمليةٌ لا رجعة فيها لتنظيف
   // أخطاء الإدخال الأوّليّ، والحارس الخادميّ يرفض أيّ مورّدٍ له حركة (يوجّه للتعطيل).
   const canDelete = me.data?.role === "admin" || me.data?.role === "manager";
+  // رابطُ اسم المورّد ⇒ كشف الحساب. تبويب `statement` في SuppliersHub مُحصَّنٌ صراحةً بـ
+  // `managerOnly: true` ولا يحترم `permissionsOverride` (نمط ٢٤/٨ في Purchases). البوّابةُ
+  // الصحيحة الوحيدة هي الدور الصريح لا `moduleAccessAllowed("reports","READ")` — التمرير
+  // بالـoverride يُظهر رابطاً يُدفَع خارج التبويب صامتاً.
+  const canOpenStatement = isElevated;
   // فلاتر في querystring — تعيش مع فتح تفاصيل المورّد والرجوع، ويمكن مشاركتها رابطاً.
   const [filters, setFilters, resetFilters] = useUrlFilters({ q: "", inactive: "", kind: "", page: "0" });
   // تصحيح قيم URL (Codex P2): querystring يمكن أن يحمل قيماً باطلة (مشاركة/تعديل يدوي) ⇒
@@ -95,6 +101,15 @@ export default function Suppliers() {
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];
   const pages = Math.max(1, Math.ceil(total / limit));
+  // Codex P2 (٢٤/٨، PR #751): رابطٌ مُشارَك بـ`page=9` مع نتائج تقلّصت إلى صفحةٍ واحدة كان يُنتج
+  // «251–100 من 100» ويُخفي جدولاً بينما `total > 0`. نُصحّح URL إلى آخر صفحةٍ صالحة (لا 0) —
+  // 0 يفقد سياق «كان مُشاركاً في نهاية القائمة»، والأخيرةُ الصالحة أقرب لنيّة الرابط. الشرطُ
+  // مُقيَّدٌ بـ`list.data`: أثناء التحميل الأوّل نتركُ الحال بلا مسّ (`total=0` كذبة عابرة).
+  useEffect(() => {
+    if (list.data && page >= pages) setPage(Math.max(0, pages - 1));
+  }, [list.data, page, pages]);
+  // للعرضِ في هذا التمرير قبل ما يستقرّ الـURL: نستعمل نسخةً محبوسة داخل [0, pages-1].
+  const displayPage = Math.min(page, Math.max(0, pages - 1));
   // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ).
   const hasLegacy = rows.some((r) => legacyCodeOf(r) !== null);
 
@@ -164,8 +179,9 @@ export default function Suppliers() {
             loading={list.isLoading}
             search={{
               value: q,
-              onChange: (v) => { setQ(v); setPage(0); },
+              onChange: setQ,
               placeholder: "بحث (اسم/هاتف/مدينة/رقم قديم)",
+              autoFocus: true,
             }}
             activeFilterCount={[kind, includeInactive ? "1" : ""].filter(Boolean).length}
             onResetFilters={resetFilters}
@@ -184,7 +200,7 @@ export default function Suppliers() {
                         type="button"
                         role="radio"
                         aria-checked={kind === t.v}
-                        onClick={() => { setKind(t.v); setPage(0); }}
+                        onClick={() => setKind(t.v)}
                         className={`h-8 rounded-md border px-2.5 text-xs transition-colors ${
                           kind === t.v
                             ? t.v === "CONSIGNOR" ? "border-amber-400 bg-amber-50 text-amber-900" : "border-primary bg-primary/10 text-foreground"
@@ -201,7 +217,7 @@ export default function Suppliers() {
                     type="checkbox"
                     className="size-4"
                     checked={includeInactive}
-                    onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
+                    onChange={(e) => setIncludeInactive(e.target.checked)}
                   />
                   <span className="text-muted-foreground">عرض المعطّلين</span>
                 </label>
@@ -258,9 +274,22 @@ export default function Suppliers() {
                 return (
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">
-                      {s.name}
+                      {canOpenStatement ? (
+                        <Link
+                          href={`/suppliers-statement?id=${id}`}
+                          className="text-primary hover:underline"
+                          title="فتح كشف الحساب"
+                        >
+                          {s.name}
+                        </Link>
+                      ) : (
+                        s.name
+                      )}
                       {(s as { supplierKind?: string }).supplierKind === "CONSIGNOR" && (
-                        <span className="mr-1.5 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 align-middle text-[10px] font-bold text-amber-800">
+                        <span
+                          className="mr-1.5 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 align-middle text-[10px] font-bold text-amber-800"
+                          title="مودِعُ أمانة — بضاعتُه ملكُه، حصّتُه في تكلفة السطر"
+                        >
                           أمانة
                         </span>
                       )}
@@ -280,7 +309,10 @@ export default function Suppliers() {
                       {Number(s.currentBalanceUsd ?? 0) !== 0 ? `$${fmt(s.currentBalanceUsd)}` : "—"}
                     </td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}
+                        title={isActive ? "نشط — يظهر في قوائم الشراء" : "معطّل — مستثنى من قوائم الشراء (أوامر الشراء المسوّاة تبقى)"}
+                      >
                         {isActive ? "مفعّل" : "معطّل"}
                       </span>
                     </td>
@@ -362,7 +394,21 @@ export default function Suppliers() {
                 </tr>
               )}
               {!list.isLoading && !list.isError && rows.length === 0 && (
-                <TableEmptyRow colSpan={hasLegacy ? 8 : 7} message="لا موردين مطابقين. أضف مورّداً جديداً أو غيّر البحث." />
+                <TableEmptyRow
+                  colSpan={hasLegacy ? 8 : 7}
+                  message={
+                    q || kind || includeInactive ? (
+                      <div className="space-y-2">
+                        <div>لا موردين مطابقين للفلاتر الحالية.</div>
+                        <Button variant="outline" size="sm" onClick={resetFilters}>
+                          مسح الفلاتر
+                        </Button>
+                      </div>
+                    ) : (
+                      "لا موردين بعد. أضف أوّل مورّد بزرّ «مورّد جديد» أعلاه."
+                    )
+                  }
+                />
               )}
             </tbody>
           </table>
@@ -370,11 +416,25 @@ export default function Suppliers() {
         </CardContent>
       </Card>
 
-      {pages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-          <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
-          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
+      {total > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <div className="text-muted-foreground">
+            {pages > 1 ? (
+              <>يعرض {(displayPage * limit + 1).toLocaleString("ar-IQ-u-nu-latn")}–
+                {Math.min((displayPage + 1) * limit, total).toLocaleString("ar-IQ-u-nu-latn")} من
+                {" "}
+                {total.toLocaleString("ar-IQ-u-nu-latn")} مورّد</>
+            ) : (
+              <>الإجمالي: {total.toLocaleString("ar-IQ-u-nu-latn")} مورّد</>
+            )}
+          </div>
+          {pages > 1 && (
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" disabled={displayPage <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
+              <div className="text-muted-foreground">صفحة {displayPage + 1} من {pages}</div>
+              <Button variant="outline" size="sm" disabled={displayPage >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -423,7 +483,7 @@ export default function Suppliers() {
               detail: summary.data?.highestPayable?.supplierName ?? "لا توجد أرصدة مستحقة",
               tone: "warning",
               onClick: summary.data?.highestPayable
-                ? () => { setQ(summary.data!.highestPayable!.supplierName); setPage(0); }
+                ? () => setQ(summary.data!.highestPayable!.supplierName)
                 : undefined,
             },
           ]}
