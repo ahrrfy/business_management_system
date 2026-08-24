@@ -253,6 +253,20 @@ class SuperAppRepository(
 
     fun clearLocalSession() = api.clearSession()
 
+    /**
+     * ن + M6 (٢٤/٨) — يُستدعى من مسارات 401 الإداريّ (terminateSessions من مديرٍ آخر أو انتهاء
+     * TTL). نستدعي beforeLogout بمهلةٍ صغيرة كي يُبطل NativePushCoordinator ربطَ FCM على الخادم
+     * قبل مسح الكوكي محلياً — وإلّا بقيت بصمة nativePushDevices على الخادم `revokedAt IS NULL`
+     * فتُبَثّ لها إشعارات لجهازٍ فقدت جلستُه. fail-open: أيّ خطأ يُلتقَط ويُمسح المحليّ حتماً.
+     */
+    suspend fun revokeAndClearLocalSession() {
+        try {
+            withTimeoutOrNull(2_000) { beforeLogout() }
+        } finally {
+            api.clearSession()
+        }
+    }
+
     private fun cacheUser(user: UserIdentity) {
         sessionStore.saveUserSnapshot(encodeUserIdentity(user).toString())
     }

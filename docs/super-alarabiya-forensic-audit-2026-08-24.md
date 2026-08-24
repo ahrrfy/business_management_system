@@ -1,5 +1,54 @@
 # تدقيق تطبيق «سوبر العربية» — تقرير جنائيّ عميق
 
+## سجلّ تنفيذ الموجات (٢٤/٨ — مباشر)
+
+**فرع العمل:** [`claude/super-alarabiya-hardening-2026-08-24`](https://github.com/ahrrfy/business_management_system/tree/claude/super-alarabiya-hardening-2026-08-24)
+
+**الموجة ١ — مُنجَزة كاملةً:**
+- H2 · حذف BROWSABLE من alrueya:// (يُغلق استدراج المدير) ✓
+- H1 · مهلة ٣٠ ثانية على قفل البصمة + مسح العَلَم المعلَّق عند الانتهاء ✓ (٢ اختبار جديد)
+- H3 · timeout ٣ ثوانٍ على logout + مسح محلّيّ فوريّ ✓
+- H4 · 429 قابل للإعادة + قراءة Retry-After (سقف ١٥ث) + jitter عشوائيّ ✓ (٤ اختبار جديد)
+- H6 · configChanges موسّعة على MainActivity ✓
+- M2 · persistSessionCookie داخل 2xx + runCatching على قفل البصمة ✓
+- M7 · taskAffinity="" على MainActivity ✓
+- G1 · مؤكَّد: allowBackup=false + dataExtractionRules حازمان أصلاً ✓
+- G6 · قسم «طلب حذف/تعطيل الحساب» في الإعدادات (mailto مع contactEmail) ✓
+
+**الموجة ٤ — العنصران المفصليّان مُنجَزان:**
+- ن-١ · شاشة الإشعارات الأصيلة (Inbox) — Repository + ViewModel + Screen + Route Mapper
+  + ٦ اختبارات reducer + ٥ اختبارات route mapper. تعتمد على `superApp.notifications` الحيّة
+  مع فلاتر خادميّة وتنقّل تلقائيّ عند النقر.
+- ن-٢-د · إشعارات الدخول/الخروج للإدارة — خدمة `sessionEventNotifier.ts` تُدرَج في مسارات
+  authRouter.login (عاديّ + 2FA)، authRouter.logout، userService.revokeUserSessions.
+  IP مقنَّع، عزل فرع، fail-open، idempotent.
+
+**الموجة ٢ — عنصران صغيران:**
+- M8 · قواعد ProGuard كاملة (Log strip + SourceFile/LineNumberTable + repackageclasses) ✓
+- M6 · handleUnauthorized يستدعي revokeAndClearLocalSession (تفكيك ربط FCM قبل مسح المحلّي) ✓
+
+**ما لم يُنجَز في هذه الجلسة (شفافياً):**
+- الموجة ٢: M3 cert pinning · M4 Play Integrity/App Check · M5 WorkManager للـrevoke المؤجَّل ·
+  G2 Crashlytics/Sentry/ANR watchdog · G3 In-App Updates · G10 WorkManager الأساسيّ.
+  كلٌّ منها ميزةٌ منفصلة تحتاج التزامَ سياسةٍ وتصميماً وحدها (Crashlytics: Blaze plan، cert
+  pinning: دورة تدوير مربوطة بـcertbot).
+- الموجة ٣ كاملةً: H5 (KeyboardType على ١٩ ملف) · M9 (DatePicker على ٢٥ شاشة) · M10 (١٣١
+  لون خام) · Cairo font · Asia/Baghdad TZ · تعايُش تطبيقَين. مقياس أسبوعَين — لم يُلمس.
+- الموجة ٤ البقيّة: ن-٢-أ operations · ن-٢-ب admin digests · ن-٢-ج per-employee · ن-٢-هـ
+  assign/task/approve · ن-٣ channels/dedup · ن-٤ privacy على شاشة القفل. البنية جاهزة
+  (`sessionEventNotifier` يوفّر النمط) — كلّ عائلة تحتاج مُشغِّلاً في راوترها.
+- الموجة ٥ (٢٩ وحدة parity): لم تُبدأ. مقياس ٤ أشهر متتاليّة، كلّ وحدة = Repository + ViewModel
+  + Screen + Route + tests. لا يمكن إنجازها في جلسةٍ واحدة صادقةً بأيّ تكثيف.
+
+**التحقّق:**
+- `pnpm check` ✓ (بلا أخطاء أنواع)
+- `pnpm check:guards` ✓ (١٣ حارساً)
+- `pnpm test:unit` ✓ (١١١١/١١١١)
+- `./gradlew :app:testDevDebugUnitTest` ✓ (كل الاختبارات، تشمل الجديدة)
+- `./gradlew :app:compileDevDebugKotlin` ✓
+
+---
+
 ## خلاصة تنفيذيّة
 
 الجاهزيّة لـInternal Testing قائمة بلا حاجزٍ صلبٍ يمنع النشر، لكنّ الحالة الأمنيّة/التشغيليّة تحوي **صفر Blockers مؤكَّدة** و**تسع نقاط عالية الخطورة (High)** تتوزّع بين اختطاف تدفّق البصمة عبر deep-link واستدراج المدير إلى شاشة اعتماد، وتعذيب المندوب في كل حقلٍ رقميّ بلوحة أحرف عربية، وحبس المستخدم حتى ٦٥ ثانية عند تسجيل الخروج على شبكةٍ عراقيّة متذبذبة؛ لا تُبطل الميزات الأساسيّة لكنّها تُبقي المنتج «مقبولاً غير احترافيّ» لتطبيقٍ ماليّ يعالج مبيعات وحضوراً ورواتب.
