@@ -165,14 +165,17 @@ export default function Vouchers() {
   // فلتر الفرع فعّال للأدمن/مدير بلا فرع مُسنَد فقط — الخادم يفرض فرع البقية أياً كان المُرسَل.
   const canFilterBranch =
     me.data != null && (me.data.role === "admin" || me.data.branchId == null);
-  // ٢٤/٨ (تدقيق): بوّابة `sales:READ` لرابط الفاتورة — بلا الوصول رقمُ الفاتورة يبقى نصاً بدل
-  // رابطٍ يُوهم بوظيفةٍ ثم يفشل صامتاً.
+  // ٢٤/٨ (Codex P2 على PR #749): بوّابةٌ ضيّقة (`sales:READ`) لا `INVOICE_LIST_GATE` الواسعة.
+  // مستخدمو `workorders:FULL` أو `pos:FULL` لهم نطاقُ فواتيرِ محطّتهم فقط عبر
+  // `invoiceViewScopeForUser`. لقطةُ السند لا تحمل قناة الفاتورة (`sourceType`/`shiftType`)،
+  // فلا نستطيع التمييزَ سطراً سطراً بين فاتورةٍ مسموحةٍ لهم وأخرى محجوبة. نُقصر الرابطَ على من
+  // له sales:READ فيرى كلّ الفواتير — البقيّة يظلّ رقم الفاتورة نصاً (يجدها من محطّته).
   const canOpenInvoices = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "sales",
     "READ",
-    ["admin", "manager", "cashier", "accountant", "auditor"],
+    ["admin", "manager", "accountant", "auditor"],
   );
 
   const filterInput = useMemo(
@@ -1065,11 +1068,13 @@ export default function Vouchers() {
                               : "غير موثق")}
                         </div>
                         {r.invoiceNumber && (
-                          // ٢٤/٨ (تدقيق): كانت أيقونةُ Link2 توهم برابطٍ بلا فعلٍ — الآن رابطٌ حقيقيّ
-                          // إلى قائمة الفواتير مفلترةً برقمها، خلف بوّابة `sales:READ`.
-                          canOpenInvoices ? (
+                          // ٢٤/٨ (تدقيق + Codex P2 على PR #746): رابطٌ مباشرٌ بـ`invoiceId` لا فلترٍ
+                          // بالرقم — «INV-1» و«INV-10» و«INV-11» يتشابهان في `q=INV-1` فتُرجع
+                          // القائمةُ نتائجَ كثيرة، والمستخدم عليه تمييز الصحيحة يدوياً. الآن قفزةٌ
+                          // مباشرة إلى الفاتورة المذكورة.
+                          canOpenInvoices && r.invoiceId != null ? (
                             <Link
-                              href={`/invoices?q=${encodeURIComponent(r.invoiceNumber)}`}
+                              href={`/invoices/${r.invoiceId}`}
                               className="text-[10px] text-primary hover:underline inline-flex items-center gap-1"
                               title="فتح الفاتورة"
                             >
