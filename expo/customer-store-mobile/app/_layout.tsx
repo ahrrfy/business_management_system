@@ -9,14 +9,6 @@ import { useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { I18nManager, Platform } from "react-native";
-
-// Force RTL layout for the Arabic customer base. Idempotent: allowRTL enables
-// runtime direction swaps, forceRTL locks it to RTL regardless of device locale.
-// Effect takes hold on the next full app launch; a first-run LTR flash is acceptable.
-if (!I18nManager.isRTL) {
-  I18nManager.allowRTL(true);
-  I18nManager.forceRTL(true);
-}
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
@@ -32,6 +24,16 @@ import { WishlistProvider } from "@/lib/wishlist-context";
 import { CustomerNotificationObserver } from "@/components/customer-notification-observer";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { initFirebaseAppCheck } from "@/lib/firebase-app-check";
+
+// Force RTL layout for the Arabic customer base. Idempotent: allowRTL enables
+// runtime direction swaps, forceRTL locks it to RTL regardless of device locale.
+// Effect takes hold on the next full app launch; a first-run LTR flash is acceptable.
+// يجب أن يبقى بعد كلّ imports (قاعدة import/first)، وقبل SplashScreen.preventAutoHide
+// ليأخذ الاتجاه أثره قبل أوّل رسمة splash.
+if (!I18nManager.isRTL) {
+  I18nManager.allowRTL(true);
+  I18nManager.forceRTL(true);
+}
 
 void SplashScreen.preventAutoHideAsync();
 

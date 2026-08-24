@@ -10,7 +10,7 @@ import { openLegalPage, type LegalPage } from "@/lib/legal-urls";
 import { deleteMyStorefrontAccount, useStorefrontSettings } from "@/lib/storefront-api";
 import { useWishlist } from "@/lib/wishlist-context";
 
-const LEGAL_LINKS: Array<{ id: LegalPage; label: string; icon: keyof typeof MaterialIcons.glyphMap }> = [
+const LEGAL_LINKS: { id: LegalPage; label: string; icon: keyof typeof MaterialIcons.glyphMap }[] = [
   { id: "privacy", label: "سياسة الخصوصيّة", icon: "privacy-tip" },
   { id: "terms", label: "شروط الاستخدام", icon: "gavel" },
   { id: "returns", label: "سياسة الاسترجاع", icon: "assignment-return" },
