@@ -374,14 +374,10 @@ option:disabled {
     transform: translateY(-1px);
   }
 
+  /* صور المنتجات والبكجات على سطح أبيض موحّد؛ لا نلوّن الحاوية حسب ترتيب البطاقة. */
   .storefront .store-product-media {
-    background: #f1ece4;
+    background: #fff;
   }
-
-  .storefront .store-product-card:nth-child(4n + 1) .store-product-media { background: #fff8df; }
-  .storefront .store-product-card:nth-child(4n + 2) .store-product-media { background: #e9f7f2; }
-  .storefront .store-product-card:nth-child(4n + 3) .store-product-media { background: #f3ebf8; }
-  .storefront .store-product-card:nth-child(4n) .store-product-media { background: #ffe9dd; }
 
   .storefront .store-product-image {
     transition: transform 180ms ease;
@@ -529,7 +525,7 @@ option:disabled {
   }
 
   .dark .storefront .store-product-media {
-    background: #2d2a27;
+    background: #fff;
   }
 
   .dark .storefront .store-product-image-placeholder {
