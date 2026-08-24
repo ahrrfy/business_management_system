@@ -95,7 +95,9 @@ const config: ExpoConfig = {
     "expo-router",
     "expo-secure-store",
     "@react-native-firebase/app",
+    "@react-native-firebase/app-check",
     "@react-native-firebase/auth",
+    "@react-native-firebase/crashlytics",
     [
       "expo-splash-screen",
       {

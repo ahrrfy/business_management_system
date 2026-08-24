@@ -30,6 +30,8 @@ import type { EdgeInsets, Rect } from "react-native-safe-area-context";
 import { CartProvider } from "@/lib/cart-context";
 import { WishlistProvider } from "@/lib/wishlist-context";
 import { CustomerNotificationObserver } from "@/components/customer-notification-observer";
+import { ErrorBoundary } from "@/components/error-boundary";
+import { initFirebaseAppCheck } from "@/lib/firebase-app-check";
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -59,6 +61,11 @@ export default function RootLayout() {
     }
   }, [fontError, fontsLoaded]);
 
+  // تهيئة App Check قبل أوّل نداء Firebase Auth/FCM. أيّ فشلٍ صامت (Expo Go/web) لا يوقف التطبيق.
+  useEffect(() => {
+    void initFirebaseAppCheck();
+  }, []);
+
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -86,26 +93,28 @@ export default function RootLayout() {
 
   const content = (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <QueryClientProvider client={queryClient}>
-        <WishlistProvider>
-          <CartProvider>
-            <CustomerNotificationObserver />
-            <Stack screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="search" />
-              <Stack.Screen name="product/[id]" />
-              <Stack.Screen name="checkout" />
-              <Stack.Screen name="notification-preferences" />
-              <Stack.Screen name="verify-phone" />
-              <Stack.Screen name="loyalty" />
-              <Stack.Screen name="wishlist" />
-              <Stack.Screen name="shared-wishlist/[token]" />
-              <Stack.Screen name="s/w/[token]" />
-            </Stack>
-            <StatusBar style="auto" />
-          </CartProvider>
-        </WishlistProvider>
-      </QueryClientProvider>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <WishlistProvider>
+            <CartProvider>
+              <CustomerNotificationObserver />
+              <Stack screenOptions={{ headerShown: false }}>
+                <Stack.Screen name="(tabs)" />
+                <Stack.Screen name="search" />
+                <Stack.Screen name="product/[id]" />
+                <Stack.Screen name="checkout" />
+                <Stack.Screen name="notification-preferences" />
+                <Stack.Screen name="verify-phone" />
+                <Stack.Screen name="loyalty" />
+                <Stack.Screen name="wishlist" />
+                <Stack.Screen name="shared-wishlist/[token]" />
+                <Stack.Screen name="s/w/[token]" />
+              </Stack>
+              <StatusBar style="auto" />
+            </CartProvider>
+          </WishlistProvider>
+        </QueryClientProvider>
+      </ErrorBoundary>
     </GestureHandlerRootView>
   );
 
