@@ -13,7 +13,7 @@ import { trpc } from "@/lib/trpc";
 // أصول/إيراد = موجب، مصروف = سالب، التزام = تحذير، حقوق ملكية = معلومة.
 const TYPE_TONE: Record<string, string> = {
   ASSET: "text-money-positive",
-  LIABILITY: "text-[var(--sem-warning)]",
+  LIABILITY: "text-[var(--sem-warn)]",
   EQUITY: "text-[var(--sem-info)]",
   REVENUE: "text-money-positive",
   EXPENSE: "text-money-negative",

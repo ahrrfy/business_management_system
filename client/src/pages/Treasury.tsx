@@ -768,7 +768,7 @@ export default function Treasury() {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold tabular-nums" dir="ltr">{row.referenceNumber}</span>
                     {row.ageDays >= 2 && (
-                      <span className="rounded bg-[var(--sem-warning)]/15 px-1.5 py-0.5 text-xs text-[var(--sem-warning)]">
+                      <span className="rounded bg-[var(--sem-warn)]/15 px-1.5 py-0.5 text-xs text-[var(--sem-warn)]">
                         معلَّقة منذ {row.ageDays} يوماً
                       </span>
                     )}
@@ -811,9 +811,9 @@ export default function Treasury() {
       )}
 
       {(pendingHandovers.data?.length ?? 0) > 0 && (
-        <section className="rounded-md border border-[var(--sem-warning)]/40 bg-[var(--sem-warning)]/5 p-4">
+        <section className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn)]/5 p-4">
           <div className="mb-3 flex items-center gap-2">
-            <Clock3 className="h-4 w-4 text-[var(--sem-warning)]" />
+            <Clock3 className="h-4 w-4 text-[var(--sem-warn)]" />
             <div>
               <h2 className="text-sm font-bold">عهد نقد بانتظار استلامك</h2>
               <p className="text-xs text-muted-foreground">

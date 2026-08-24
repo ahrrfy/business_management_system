@@ -2889,7 +2889,7 @@ function StorefrontContent() {
             </div>
             <h3 className="mt-4 text-lg font-extrabold text-slate-900 dark:text-white">شكراً لك — تمّ استلام طلبك</h3>
             <p className="mt-1 text-sm text-slate-500">سنتواصل معك لتأكيد التوصيل.</p>
-            <p className="mt-3 rounded-xl bg-[var(--sem-warning)]/5 px-3 py-2 text-xs font-bold text-[var(--sem-warning)] ring-1 ring-[var(--sem-warning)]/40">
+            <p className="mt-3 rounded-xl bg-[var(--sem-warn)]/5 px-3 py-2 text-xs font-bold text-[var(--sem-warn)] ring-1 ring-[var(--sem-warn)]/40">
               الكمية محجوزة حتى {formatStorefrontReservationDeadline(confirmation.reservationExpiresAt)}؛ بعد ذلك يلزم إعادة الطلب حسب التوفر.
             </p>
             <div className="mt-5 w-full rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">

@@ -96,7 +96,7 @@ export default function SalesByDimension() {
           id: "discounts",
           header: "الخصومات",
           accessorFn: (r) => Number(r.discounts),
-          cell: ({ row }) => <span dir="ltr" className="tabular-nums text-[var(--sem-warning)]">{fmtAr(row.original.discounts)}</span>,
+          cell: ({ row }) => <span dir="ltr" className="tabular-nums text-[var(--sem-warn)]">{fmtAr(row.original.discounts)}</span>,
         },
         {
           id: "returns",
