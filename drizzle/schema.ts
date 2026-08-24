@@ -4584,16 +4584,13 @@ export type StoreConversionDailyMetric =
 export const storeRecommendationDailyMetrics = mysqlTable(
   "storeRecommendationDailyMetrics",
   {
-    branchId: bigint("branchId", { mode: "number" })
-      .notNull()
-      .references(() => branches.id, { onDelete: "cascade" }),
+    // ٢٤/٨: أزلنا `.references()` inline — أسماء FK التلقائيّة كانت تُتوَّج بـ
+    // `storeRecommendationDailyMetrics_recommendedProductId_products_id_fk` (٦٥ حرفاً)،
+    // فيرفضها MySQL 8.4 بحدّ الـ٦٤. نستعمل `foreignKey({ name })` أدناه بأسماءٍ صريحة قصيرة.
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
     metricDate: date("metricDate", { mode: "string" }).notNull(),
-    sourceProductId: bigint("sourceProductId", { mode: "number" })
-      .notNull()
-      .references(() => products.id, { onDelete: "cascade" }),
-    recommendedProductId: bigint("recommendedProductId", { mode: "number" })
-      .notNull()
-      .references(() => products.id, { onDelete: "cascade" }),
+    sourceProductId: bigint("sourceProductId", { mode: "number" }).notNull(),
+    recommendedProductId: bigint("recommendedProductId", { mode: "number" }).notNull(),
     clicks: int("clicks").default(0).notNull(),
   },
   (t) => ({
@@ -4603,6 +4600,22 @@ export const storeRecommendationDailyMetrics = mysqlTable(
     }),
     dateIdx: index("idx_store_recommendation_metric_date").on(t.metricDate),
     recommendedIdx: index("idx_store_recommendation_product").on(t.recommendedProductId, t.metricDate),
+    // أسماءٌ صريحة ≤٦٤ حرفاً — تُلبّي حدّ MySQL 8.4 على أسماء المُعرِّفات.
+    branchFk: foreignKey({
+      columns: [t.branchId],
+      foreignColumns: [branches.id],
+      name: "fk_srdm_branch",
+    }).onDelete("cascade"),
+    sourceFk: foreignKey({
+      columns: [t.sourceProductId],
+      foreignColumns: [products.id],
+      name: "fk_srdm_source_product",
+    }).onDelete("cascade"),
+    recommendedFk: foreignKey({
+      columns: [t.recommendedProductId],
+      foreignColumns: [products.id],
+      name: "fk_srdm_recommended_product",
+    }).onDelete("cascade"),
   }),
 );
 export type StoreRecommendationDailyMetric = typeof storeRecommendationDailyMetrics.$inferSelect;
