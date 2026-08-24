@@ -1070,15 +1070,20 @@ type StorefrontProductForCartAction = {
   storeUnits?: StorefrontUnitForCartAction[];
   variants?: Array<{ label: string; units: StorefrontUnitForCartAction[] }>;
   bundleImageUrls?: string[];
+  hasAlternatives?: boolean;
 };
 
 type RelatedProduct = StorefrontProductForCartAction;
 
-export function recommendationActionLabel(product: RelatedProduct): string {
-  const needsSelection = Boolean(product.isCustomizable)
+export function recommendationNeedsSelection(product: RelatedProduct): boolean {
+  return Boolean(product.isCustomizable)
+    || Boolean(product.hasAlternatives)
     || (product.variants?.length ?? 0) > 1
     || (product.storeUnits?.length ?? 0) > 1;
-  return needsSelection ? "اختر الخيارات" : product.inStock === false ? "غير متوفر" : "أضف إلى السلة";
+}
+
+export function recommendationActionLabel(product: RelatedProduct): string {
+  return recommendationNeedsSelection(product) ? "اختر الخيارات" : product.inStock === false ? "غير متوفر" : "أضف إلى السلة";
 }
 
 function RelatedProductStrip({
@@ -2004,23 +2009,40 @@ function StorefrontContent() {
       ...(p.storeUnits ?? []),
       ...(p.variants ?? []).flatMap((variant) => variant.units),
     ].filter((unit) => unit.inStock);
-    const needsDetails = p.isCustomizable || (p.variants?.length ?? 0) > 1 || (p.storeUnits?.length ?? 0) > 1;
-    if (needsDetails || availableUnits.length !== 1) {
+    const needsDetails = recommendationNeedsSelection(p);
+    if (needsDetails || (availableUnits.length !== 1 && availableUnits.length !== 0)) {
       setSelectedId(p.productId);
       return;
     }
     const unit = availableUnits[0];
-    addToCart({
-      productUnitId: unit.productUnitId,
-      productId: p.productId,
-      productName: p.productName,
-      price: unit.price,
-      salePrice: unit.salePrice,
-      imageUrl: p.imageUrl,
-      unitName: unit.unitName,
-      variantLabel: p.variants?.find((variant) => variant.units.some((candidate) => candidate.productUnitId === unit.productUnitId))?.label,
-      inStock: unit.inStock,
-    }, event.currentTarget);
+    if (unit) {
+      addToCart({
+        productUnitId: unit.productUnitId,
+        productId: p.productId,
+        productName: p.productName,
+        price: unit.price,
+        salePrice: unit.salePrice,
+        imageUrl: p.imageUrl,
+        unitName: unit.unitName,
+        variantLabel: p.variants?.find((variant) => variant.units.some((candidate) => candidate.productUnitId === unit.productUnitId))?.label,
+        inStock: unit.inStock,
+      }, event.currentTarget);
+      return;
+    }
+    if (p.productUnitId > 0 && p.price != null && p.inStock !== false) {
+      addToCart({
+        productUnitId: p.productUnitId,
+        productId: p.productId,
+        productName: p.productName,
+        price: p.price,
+        salePrice: p.salePrice,
+        imageUrl: p.imageUrl,
+        unitName: p.unitName,
+        inStock: p.inStock,
+      }, event.currentTarget);
+      return;
+    }
+    setSelectedId(p.productId);
   }
 
   function setVariantQuantity(productUnitId: number, quantity: number) {
