@@ -50,6 +50,8 @@ export type ListToolbarProps<T> = {
     ariaLabel?: string;
     /** الحقل يقبل قارئ HID: يفعّل تصحيح التخطيط العربي والتمييز البصري. */
     barcode?: boolean;
+    /** ٢٤/٨ — تركيزٌ تلقائيّ عند تركيب الشاشة. مفيدٌ للشاشات المفتوحة يومياً للكتابة الفوريّة. */
+    autoFocus?: boolean;
   };
   filters?: React.ReactNode;
   /** عدد الفلاتر المفعّلة حالياً، من دون حقل البحث. */
@@ -244,6 +246,7 @@ export function ListToolbar<T>({
                 />
                 <Input
                   type="search"
+                  autoFocus={search.autoFocus}
                   value={search.value}
                   onChange={(e) => search.onChange(
                     search.barcode ? normalizeKnownSystemBarcode(e.target.value) : e.target.value,
