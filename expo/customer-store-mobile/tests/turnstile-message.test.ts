@@ -9,8 +9,8 @@ import { extractTurnstileToken } from "../lib/turnstile-message";
  */
 describe("extractTurnstileToken", () => {
   it("يستخرج رمزاً صحيحاً من الحمولة القياسيّة", () => {
-    const message = JSON.stringify({ type: "ALARABIYA_TURNSTILE_TOKEN", token: "cf-token-abc-123" });
-    expect(extractTurnstileToken(message)).toBe("cf-token-abc-123");
+    const message = JSON.stringify({ type: "ALARABIYA_TURNSTILE_TOKEN", token: "FAKE_TEST_TURNSTILE_VALUE" });
+    expect(extractTurnstileToken(message)).toBe("FAKE_TEST_TURNSTILE_VALUE");
   });
 
   it("يرفض حمولةً بنوعٍ مختلف حتى لو حملت token", () => {
