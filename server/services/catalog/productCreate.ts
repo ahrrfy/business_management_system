@@ -246,6 +246,10 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       isCustomizable: input.isCustomizable ?? false,
       isService,
       showInReception: !!input.showInReception,
+      // 0262 (٢٤/٨): الرؤية في شبكة الطباعة صارت قراراً مستقلاً — يظلّ `printService` يوسم
+      // `productType='PRINT_SERVICE'` (لبقاء التوافق مع مسارات البيع/التصنيف الأخرى)، وفي
+      // الوقتِ نفسه يُشعل `showInPrintPos=TRUE` كي تظهر الخدمةُ فوراً في الشبكة.
+      showInPrintPos: !!input.printService,
       isBundle,
       isConsignment: !!input.isConsignment,
       consignorId: input.isConsignment ? (input.consignorId ?? null) : null,

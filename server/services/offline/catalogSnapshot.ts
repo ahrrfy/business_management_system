@@ -32,7 +32,6 @@ import type {
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../../db";
-import { PRINT_SERVICE_TYPE } from "../printSaleService";
 
 function requireDbOrThrow() {
   const db = getDb();
@@ -134,6 +133,7 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
         isCustomizable: products.isCustomizable,
         isBundle: products.isBundle,
         productType: products.productType,
+        showInPrintPos: products.showInPrintPos,
       })
       .from(productUnits)
       .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -199,7 +199,9 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
       isService: !!r.isService,
       isBundle: !!r.isBundle,
       isCustomizable: !!r.isCustomizable,
-      isPrintService: r.productType === PRINT_SERVICE_TYPE,
+      // 0262 (٢٤/٨): الرؤية في شبكة الطباعة قرارٌ مستقلّ (`showInPrintPos`) لا نتيجةُ productType.
+      // الحقل يبقى بالاسم القائم `isPrintService` (يستهلكه العميل offline) — تعريفه تغيّر فقط.
+      isPrintService: !!r.showInPrintPos,
       priceRetail: prices.RETAIL ?? null,
       priceWholesale: prices.WHOLESALE ?? null,
       priceGovernment: prices.GOVERNMENT ?? null,

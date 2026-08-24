@@ -3,7 +3,6 @@ import { and, asc, eq } from "drizzle-orm";
 import { categories, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import type { PriceTier } from "../pricing";
-import { PRINT_SERVICE_TYPE } from "../printSaleService";
 import { titleForChannel } from "@shared/productChannelTitles";
 
 /** خدمة طباعة قابلة للبيع: (متغيّر الخدمة × وحدة الأساس) بسعر الفئة + فئتها. لا تحمل كلفة/مواد
@@ -20,7 +19,14 @@ export interface PrintServiceRow {
   price: string | null;
 }
 
-/** قائمة خدمات قسم الطباعة (productType=PRINT_SERVICE) مع سعر الفئة + اسم الفئة — تغذّي شبكة بلاطات الشاشة. */
+/** قائمة خدمات قسم الطباعة مع سعر الفئة + اسم الفئة — تغذّي شبكة بلاطات الشاشة.
+ *
+ * الفلترة (٢٤/٨، هجرة 0262): `showInPrintPos=TRUE` — قرارٌ مستقلٌّ يضبطه المدير للمنتج،
+ * لا يُلبس المفهوم بحقلٍ آخر (`productType`) استُعمل لتصنيفاتٍ أخرى (DIGITAL_CARD…) فحُشِرت
+ * الرؤية معه صامتاً. قبل الهجرة كان الفلتر `productType='PRINT_SERVICE'` STRICT ⇒ خدماتٌ
+ * قديمةٌ (بلا productType) أو مُستوردة تختفي من الشبكة رغم كونها `isService=true`.
+ * التعبئة الخلفيّة في الهجرة تُبقي كلّ خدمةٍ مؤهَّلة ظاهرة.
+ */
 export async function listPrintServices(tier: PriceTier): Promise<PrintServiceRow[]> {
   const db = getDb();
   if (!db) return [];
@@ -49,7 +55,7 @@ export async function listPrintServices(tier: PriceTier): Promise<PrintServiceRo
         eq(productVariants.isActive, true),
         eq(productUnits.isActive, true),
         eq(productUnits.isBaseUnit, true),
-        eq(products.productType, PRINT_SERVICE_TYPE)
+        eq(products.showInPrintPos, true)
       )
     )
     .orderBy(asc(products.categoryId), asc(products.id));
