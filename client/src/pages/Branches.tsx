@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ListToolbar, RowActions } from "@/components/list";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
@@ -29,6 +30,13 @@ type BranchRow = RouterOutputs["branches"]["adminList"][number];
 type BranchType = "MAIN" | "SALES";
 
 const TYPE_LABEL: Record<string, string> = { MAIN: "رئيسي (كل الخدمات)", SALES: "مبيعات" };
+// Codex P2 (٢٤/٨ على PR #760): النوعُ **تصنيفٌ إداريّ للتنظيم** لا حرّاسٌ خادميّ — بوّابات
+// كاشيرَي الطباعة/الاستقبال تعتمد على الدور وصلاحيّة الوحدة والفرع المُسنَد فقط، لا تقرأ
+// `branches.type`. نصفُ الاستعمالَ الشائع لا الحرمانَ التقنيّ.
+const TYPE_TITLE: Record<string, string> = {
+  MAIN: "الفرع الرئيسي — تصنيفٌ إداريّ للفرع الذي تُدار منه كل الخدمات (طباعة/استقبال/تجزئة/تحويلات/شراء)",
+  SALES: "فرع مبيعات — تصنيفٌ إداريّ لفرع بيع تجزئة رئيسي (الوصول للخدمات محكومٌ بأدوار المستخدمين لا بنوع الفرع)",
+};
 
 export default function Branches() {
   const utils = trpc.useUtils();
@@ -143,6 +151,9 @@ export default function Branches() {
             title="قائمة الفروع"
             count={visibleRows.length}
             loading={list.isLoading}
+            // Codex P2 (٢٤/٨): لا `autoFocus` هنا — الصفحةُ تبويبٌ داخل AdminHub. `autoFocus` يسرق
+            // التركيزَ من زرّ التبويب فور التركيب فيكسر ملاحةَ الأسهم بين التبويبات لمستعمِلي
+            // لوحة المفاتيح. الشاشات المستقلّة (Suppliers/Employees/…) تحتفظ به.
             search={{ value: query, onChange: setQuery, placeholder: "اسم الفرع، الرمز، العنوان أو الهاتف…" }}
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
@@ -180,13 +191,44 @@ export default function Branches() {
                   <tr key={b.id} className={`border-t ${b.isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{b.name}</td>
                     <td className="p-2 font-mono text-xs" dir="ltr">{b.code}</td>
-                    <td className="p-2">{TYPE_LABEL[b.type] ?? b.type}</td>
+                    <td className="p-2">
+                      {/* استباقاً لـCodex #764: `Popover` بدل `Tooltip` — يفتح بالنقر/التاب/Enter/Space
+                          فيصلُ لمستعمِلي اللمس أيضاً (Radix Tooltip يفشل على اللمس لأنّ pointer-down
+                          يُخفي focus-open). زرٌّ دلاليّاً بدل span، بـ`aria-label` لقارئ الشاشة. */}
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={`ما معنى «${TYPE_LABEL[b.type] ?? b.type}»؟`}
+                            className="cursor-help underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm text-start"
+                          >
+                            {TYPE_LABEL[b.type] ?? b.type}
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent side="top" className="max-w-xs text-xs">
+                          {TYPE_TITLE[b.type] ?? TYPE_LABEL[b.type] ?? b.type}
+                        </PopoverContent>
+                      </Popover>
+                    </td>
                     <td className="p-2 text-muted-foreground">{b.address || "—"}</td>
                     <td className="p-2 text-xs" dir="ltr">{b.phone || "—"}</td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${b.isActive ? "badge-status-active" : "badge-stock-out"}`}>
-                        {b.isActive ? "مفعّل" : "معطّل"}
-                      </span>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={b.isActive ? "شرح: الفرع مفعّل" : "شرح: الفرع معطّل"}
+                            className={`inline-block cursor-help rounded-full px-2 py-0.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80 ${b.isActive ? "badge-status-active" : "badge-stock-out"}`}
+                          >
+                            {b.isActive ? "مفعّل" : "معطّل"}
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent side="top" className="max-w-xs text-xs">
+                          {b.isActive
+                            ? "الفرع نشط — يظهر في منتقيات العمليات الجديدة."
+                            : "الفرع معطّل — مستثنى من المنتقيات؛ العمليات التاريخية المرتبطة به تبقى بلا مسّ."}
+                        </PopoverContent>
+                      </Popover>
                     </td>
                     <td className="p-2 text-center">
                       <RowActions
@@ -217,7 +259,21 @@ export default function Branches() {
                   <tr><td colSpan={7}><LoadingState /></td></tr>
                 )}
                 {!list.isLoading && visibleRows.length === 0 && (
-                  <TableEmptyRow colSpan={7} message="لا فروع بعد — أضِف أوّل فرع." />
+                  <TableEmptyRow
+                    colSpan={7}
+                    message={
+                      query ? (
+                        <div className="space-y-2">
+                          <div>لا فروع مطابقة للبحث «{query}».</div>
+                          <Button variant="outline" size="sm" onClick={() => setQuery("")}>
+                            مسح البحث
+                          </Button>
+                        </div>
+                      ) : (
+                        "لا فروع بعد — أضِف أوّل فرع بزرّ «فرع جديد» أعلاه."
+                      )
+                    }
+                  />
                 )}
               </tbody>
             </table>
