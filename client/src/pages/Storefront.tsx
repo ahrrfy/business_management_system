@@ -580,7 +580,57 @@ function ProductImage({
   return <img src={url} alt={alt} loading="lazy" decoding="async" className={`store-product-image object-contain ${className ?? ""}`} />;
 }
 
-/** معرض صور المنتج — صور معتمدة من الخادم، أسهم للجوال وتقليب تلقائي عند مرور الماوس. */
+/** يجمع صور العرض الحقيقية ويمنع تكرارها مع سقف يحافظ على خفة البطاقة. */
+export function storefrontMediaUrls(urls: string[] | undefined, fallbackUrl: string | null, limit = 8): string[] {
+  return Array.from(new Set([...(urls ?? []), fallbackUrl].filter((url): url is string => Boolean(url)))).slice(0, limit);
+}
+
+/** تقليب صور البطاقة عند المؤشر/اللمس — يتوقف خارج البطاقة ويحترم reduced-motion. */
+function CardMediaCarousel({
+  urls,
+  fallbackUrl,
+  alt,
+  className,
+  showFallbackLabel = false,
+}: {
+  urls?: string[];
+  fallbackUrl: string | null;
+  alt: string;
+  className?: string;
+  showFallbackLabel?: boolean;
+}) {
+  const sources = useMemo(() => storefrontMediaUrls(urls, fallbackUrl), [urls, fallbackUrl]);
+  const [index, setIndex] = useState(0);
+  const [active, setActive] = useState(false);
+  useEffect(() => setIndex((current) => Math.min(current, Math.max(0, sources.length - 1))), [sources.join("|")]);
+  useEffect(() => {
+    if (sources.length < 2 || !active) return;
+    const timer = window.setInterval(() => setIndex((current) => (current + 1) % sources.length), 1500);
+    return () => window.clearInterval(timer);
+  }, [active, sources.length]);
+  const activate = () => {
+    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) setActive(true);
+  };
+  const current = sources[index] ?? null;
+  return (
+    <div
+      className={`group relative ${className ?? ""}`}
+      role="img"
+      onPointerEnter={(event) => { if (event.pointerType === "mouse") activate(); }}
+      onPointerLeave={() => setActive(false)}
+      onFocus={activate}
+      onBlur={() => setActive(false)}
+      onTouchStart={activate}
+      onTouchEnd={() => setActive(false)}
+      aria-label={sources.length > 1 ? `معاينة ${index + 1} من ${sources.length}` : undefined}
+    >
+      <ProductImage key={`${current ?? "empty"}-${index}`} url={current} alt={alt} className="size-full animate__animated animate__fadeIn animate__faster" showFallbackLabel={showFallbackLabel} />
+      {sources.length > 1 && <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-[#183d36]/75 px-2 py-0.5 text-[9px] font-black text-white opacity-0 transition-opacity group-hover:opacity-100">{index + 1} / {sources.length}</span>}
+    </div>
+  );
+}
+
+/** معرض تفاصيل المنتج مع تقليب تلقائي، عدسة تكبير تتبع المؤشر، وفتح كامل على الهاتف. */
 function ProductGallery({
   urls,
   fallbackUrl,
@@ -590,9 +640,11 @@ function ProductGallery({
   fallbackUrl: string | null;
   alt: string;
 }) {
-  const sources = Array.from(new Set([...(urls ?? []), fallbackUrl].filter((url): url is string => Boolean(url)))).slice(0, 12);
+  const sources = useMemo(() => storefrontMediaUrls(urls, fallbackUrl, 12), [urls, fallbackUrl]);
   const [index, setIndex] = useState(0);
   const [hovered, setHovered] = useState(false);
+  const [zoomPoint, setZoomPoint] = useState<{ x: number; y: number } | null>(null);
+  const [fullScreen, setFullScreen] = useState(false);
   useEffect(() => setIndex((current) => Math.min(current, Math.max(0, sources.length - 1))), [sources.join("|")]);
   useEffect(() => {
     if (sources.length < 2 || !hovered || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -600,15 +652,40 @@ function ProductGallery({
     return () => window.clearInterval(timer);
   }, [hovered, sources.length]);
   const move = (delta: -1 | 1) => setIndex((current) => (current + delta + sources.length) % sources.length);
+  const currentUrl = sources[index] ?? null;
+  const handleZoomMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!currentUrl || window.matchMedia("(pointer: coarse)").matches) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    setZoomPoint({
+      x: Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100)),
+      y: Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100)),
+    });
+  };
   return (
-    <div className="space-y-2" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
-      <div className="relative aspect-square overflow-hidden rounded-2xl bg-[#f3eadf] ring-1 ring-[#ead8c8]">
-        <ProductImage url={sources[index] ?? null} alt={alt} className="size-full" showFallbackLabel />
+    <div className="space-y-2" onMouseEnter={() => setHovered(true)} onMouseLeave={() => { setHovered(false); setZoomPoint(null); }}>
+      <div
+        className="group relative aspect-square overflow-hidden rounded-2xl bg-[#f3eadf] ring-1 ring-[#ead8c8]"
+        role="button"
+        tabIndex={currentUrl ? 0 : -1}
+        aria-label={currentUrl ? "تكبير صورة المنتج" : undefined}
+        onMouseMove={handleZoomMove}
+        onClick={() => currentUrl && setFullScreen(true)}
+        onKeyDown={(event) => { if (currentUrl && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setFullScreen(true); } }}
+      >
+        <ProductImage url={currentUrl} alt={alt} className="size-full" showFallbackLabel />
+        {zoomPoint && currentUrl && (
+          <div
+            className="pointer-events-none absolute inset-y-2 left-2 hidden w-[42%] rounded-xl border-2 border-white/80 bg-white/95 bg-no-repeat shadow-xl lg:block"
+            style={{ backgroundImage: `url(${JSON.stringify(currentUrl)})`, backgroundSize: "240% 240%", backgroundPosition: `${zoomPoint.x}% ${zoomPoint.y}%` }}
+            aria-hidden="true"
+          />
+        )}
+        {currentUrl && <span className="pointer-events-none absolute bottom-3 right-3 rounded-full bg-white/90 px-2.5 py-1 text-[10px] font-black text-[#1e4a63] opacity-0 shadow-sm transition-opacity group-hover:opacity-100">مرّر للتكبير</span>}
         {sources.length > 1 && (
           <>
-            <button type="button" onClick={() => move(1)} aria-label="الصورة السابقة" className="absolute right-3 top-1/2 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-[#1e4a63] shadow-md transition hover:bg-white active:scale-95"><ArrowRight aria-hidden className="size-4" /></button>
-            <button type="button" onClick={() => move(-1)} aria-label="الصورة التالية" className="absolute left-3 top-1/2 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-[#1e4a63] shadow-md transition hover:bg-white active:scale-95"><ArrowRight aria-hidden className="size-4 rotate-180" /></button>
-            <span className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-[#183d36]/85 px-2.5 py-1 text-[10px] font-black text-white">{index + 1} / {sources.length}</span>
+            <button type="button" onClick={(event) => { event.stopPropagation(); move(1); }} aria-label="الصورة السابقة" className="absolute right-3 top-1/2 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-[#1e4a63] shadow-md transition hover:bg-white active:scale-95"><ArrowRight aria-hidden className="size-4" /></button>
+            <button type="button" onClick={(event) => { event.stopPropagation(); move(-1); }} aria-label="الصورة التالية" className="absolute left-3 top-1/2 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-[#1e4a63] shadow-md transition hover:bg-white active:scale-95"><ArrowRight aria-hidden className="size-4 rotate-180" /></button>
+            <span className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-[#183d36]/85 px-2.5 py-1 text-[10px] font-black text-white">{index + 1} / {sources.length}</span>
           </>
         )}
       </div>
@@ -619,6 +696,12 @@ function ProductGallery({
               <img src={source} alt="" loading="lazy" className="size-full object-contain" />
             </button>
           ))}
+        </div>
+      )}
+      {fullScreen && currentUrl && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/90 p-4" role="dialog" aria-modal="true" aria-label={`صورة ${alt}`} onClick={() => setFullScreen(false)}>
+          <img src={currentUrl} alt={alt} className="max-h-[90dvh] max-w-[96vw] object-contain" onClick={(event) => event.stopPropagation()} />
+          <button type="button" onClick={() => setFullScreen(false)} aria-label="إغلاق التكبير" className="absolute right-4 top-4 flex size-10 items-center justify-center rounded-full bg-white/95 text-slate-700 shadow-lg"><X aria-hidden className="size-5" /></button>
         </div>
       )}
     </div>
@@ -643,35 +726,15 @@ export function BundleMedia({
   className?: string;
   showFallbackLabel?: boolean;
 }) {
-  const componentImages = (urls ?? []).filter(Boolean).slice(0, 4);
-  if (componentImages.length <= 1) {
-    return (
-      <ProductImage
-        url={fallbackUrl ?? componentImages[0] ?? null}
-        alt={alt}
-        className={className}
-        showFallbackLabel={showFallbackLabel}
-      />
-    );
-  }
-
+  const sources = storefrontMediaUrls(urls, fallbackUrl, 4);
   return (
-    <div
-      className={`store-product-media grid grid-cols-2 grid-rows-2 overflow-hidden bg-slate-100 dark:bg-slate-800 ${className ?? ""}`}
-      role="img"
-      aria-label={`صور مكوّنات البكج: ${alt}`}
-    >
-      {componentImages.map((url, index) => (
-        <img
-          key={`${url}-${index}`}
-          src={url}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          className="size-full min-h-0 min-w-0 object-cover"
-        />
-      ))}
-    </div>
+    <CardMediaCarousel
+      urls={sources}
+      fallbackUrl={null}
+      alt={alt}
+      className={`store-product-media overflow-hidden bg-slate-100 dark:bg-slate-800 ${className ?? ""}`}
+      showFallbackLabel={showFallbackLabel}
+    />
   );
 }
 
@@ -2205,7 +2268,7 @@ function StorefrontContent() {
           <div className="mb-6 flex flex-col gap-3 border border-[#d9d3ca] bg-white p-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"><button type="button" onClick={() => { setAvailability((value) => value === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }} aria-pressed={availability === "IN_STOCK"} className={`shrink-0 border px-3 py-2 text-xs font-black ${availability === "IN_STOCK" ? "border-[#1e4a63] bg-[#1e4a63] text-white" : "border-[#d7d2ca] text-[#59636a]"}`}>{availability === "IN_STOCK" ? "متوفر الآن" : "كل المنتجات"}</button><label className="relative shrink-0"><span className="sr-only">نطاق السعر</span><select value={priceFilter} onChange={(e) => { setPriceFilter(e.target.value as PriceFilter); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="ALL">كل الأسعار</option><option value="UNDER_5000">أقل من 5,000 د.ع</option><option value="FROM_5000_TO_15000">5,000 – 15,000 د.ع</option><option value="OVER_15000">أكثر من 15,000 د.ع</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{brands.length > 0 && <label className="relative shrink-0"><span className="sr-only">الماركة</span><select value={brand} onChange={(e) => { setBrand(e.target.value); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="">كل الماركات</option>{brands.map((name) => <option key={name} value={name}>{name}</option>)}</select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>}</div><div className="flex items-center justify-between gap-3"><label className="relative shrink-0"><span className="sr-only">ترتيب النتائج</span><select value={sort} onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="RECOMMENDED">الترتيب المقترح</option><option value="BEST_SELLERS">الأكثر مبيعاً</option><option value="PRICE_ASC">السعر: الأقل أولاً</option><option value="PRICE_DESC">السعر: الأعلى أولاً</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{(hasRefinements || categoryId != null || search) && <button type="button" onClick={clearCatalogFilters} className="text-xs font-black text-[#a4513f] hover:underline">مسح الفلاتر</button>}</div>
           </div>
-          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} role="button" tabIndex={0} aria-label={`فتح تفاصيل ${p.productName}`} onClick={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; setSelectedId(p.productId); }} onKeyDown={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(p.productId); } }} className={`store-product-card group relative flex h-full cursor-pointer flex-col overflow-hidden border border-[#ddd8d1] bg-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1e4a63] focus-visible:ring-offset-2 ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button onClick={() => setSelectedId(p.productId)} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="absolute left-3 top-12 z-10 flex gap-1.5"><button type="button" onClick={() => toggleWishlist(p.productId)} aria-label={wishlistIds.has(p.productId) ? `إزالة ${p.productName} من أعجبتني` : `إضافة ${p.productName} إلى أعجبتني`} aria-pressed={wishlistIds.has(p.productId)} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${wishlistIds.has(p.productId) ? "text-[#e65f4a]" : "text-[#5c6870]"} ${heartPulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Heart key={`wishlist-${p.productId}-${heartPulseNonce}`} aria-hidden className={`size-4 ${wishlistIds.has(p.productId) ? "fill-current" : ""} ${heartPulseTarget === `product-${p.productId}` ? "animate__animated animate__heartBeat animate__faster" : ""}`} /></button><button type="button" onClick={() => shareProduct(p.productId, p.productName)} aria-label={`مشاركة ${p.productName}`} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 text-[#1e4a63] shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${sharePulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Share2 key={`share-${p.productId}-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === `product-${p.productId}` ? "animate__animated animate__pulse animate__faster" : ""}`} /></button></div><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => setSelectedId(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}{onSale && <span className="basis-full text-[10px] font-bold text-[#a4513f]">وفّر {money(Number(p.price) - Number(p.salePrice))} د.ع</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={(event) => addCatalogProduct(p, event)} disabled={!p.inStock} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]"><Plus aria-hidden className="size-4" />{p.inStock ? "أضف إلى السلة" : "غير متوفر"}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
+          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} role="button" tabIndex={0} aria-label={`فتح تفاصيل ${p.productName}`} onClick={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; setSelectedId(p.productId); }} onKeyDown={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(p.productId); } }} className={`store-product-card group relative flex h-full cursor-pointer flex-col overflow-hidden border border-[#ddd8d1] bg-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1e4a63] focus-visible:ring-offset-2 ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button onClick={() => setSelectedId(p.productId)} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls ?? p.imageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="absolute left-3 top-12 z-10 flex gap-1.5"><button type="button" onClick={() => toggleWishlist(p.productId)} aria-label={wishlistIds.has(p.productId) ? `إزالة ${p.productName} من أعجبتني` : `إضافة ${p.productName} إلى أعجبتني`} aria-pressed={wishlistIds.has(p.productId)} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${wishlistIds.has(p.productId) ? "text-[#e65f4a]" : "text-[#5c6870]"} ${heartPulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Heart key={`wishlist-${p.productId}-${heartPulseNonce}`} aria-hidden className={`size-4 ${wishlistIds.has(p.productId) ? "fill-current" : ""} ${heartPulseTarget === `product-${p.productId}` ? "animate__animated animate__heartBeat animate__faster" : ""}`} /></button><button type="button" onClick={() => shareProduct(p.productId, p.productName)} aria-label={`مشاركة ${p.productName}`} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 text-[#1e4a63] shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${sharePulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Share2 key={`share-${p.productId}-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === `product-${p.productId}` ? "animate__animated animate__pulse animate__faster" : ""}`} /></button></div><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => setSelectedId(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}{onSale && <span className="basis-full text-[10px] font-bold text-[#a4513f]">وفّر {money(Number(p.price) - Number(p.salePrice))} د.ع</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={(event) => addCatalogProduct(p, event)} disabled={!p.inStock} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]"><Plus aria-hidden className="size-4" />{p.inStock ? "أضف إلى السلة" : "غير متوفر"}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
           {catalogQ.hasNextPage && <div ref={catalogLoadMoreRef} className="mt-8 flex min-h-12 items-center justify-center" aria-live="polite">{catalogQ.isFetchingNextPage ? <span className="flex items-center gap-2 text-xs font-bold text-[#1e4a63]"><Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ تحميل منتجات إضافية…</span> : <span className="text-[11px] font-bold text-[#8b9395]">نحمّل المزيد تلقائياً عند الاقتراب</span>}</div>}
           {catalogQ.isError && <div className="mt-3 flex flex-col items-center gap-2 text-center" role="alert"><p className="text-xs font-bold text-rose-700">تعذّر تحميل المنتجات الإضافية تلقائياً.</p><button type="button" onClick={() => void catalogQ.fetchNextPage()} disabled={catalogQ.isFetchingNextPage} className="text-xs font-black text-[#1e4a63] underline disabled:opacity-50">إعادة المحاولة</button></div>}
         </section>

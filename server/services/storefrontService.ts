@@ -511,6 +511,47 @@ async function attachBundleComponentImages(
   }
 }
 
+/** يرفق صور المعرض المعتمدة ببطاقات الكتالوج باستعلام واحد؛ صورة المتغير تتقدم على العامة. */
+async function attachProductGalleryImages(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  items: StorefrontProduct[],
+): Promise<void> {
+  if (!items.length) return;
+  const productIds = Array.from(new Set(items.map((item) => item.productId)));
+  const rows = await db
+    .select({
+      id: productImages.id,
+      productId: productImages.productId,
+      variantId: productImages.variantId,
+      url: productImages.url,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+    })
+    .from(productImages)
+    .where(and(inArray(productImages.productId, productIds), eq(productImages.reviewStatus, "APPROVED")))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
+
+  const byVariant = new Map<number, string[]>();
+  const byProduct = new Map<number, string[]>();
+  const add = (target: Map<number, string[]>, key: number, value: string) => {
+    const urls = target.get(key) ?? [];
+    if (urls.length < 8 && !urls.includes(value)) urls.push(value);
+    target.set(key, urls);
+  };
+  for (const row of rows) {
+    const publicUrl = toPublicProductImage(row.id, row.url);
+    if (!publicUrl) continue;
+    if (row.variantId != null) add(byVariant, Number(row.variantId), publicUrl);
+    else add(byProduct, Number(row.productId), publicUrl);
+  }
+  for (const item of items) {
+    const urls = [...(byVariant.get(item.variantId) ?? []), ...(byProduct.get(item.productId) ?? [])]
+      .filter((url, index, all) => all.indexOf(url) === index)
+      .slice(0, 8);
+    if (urls.length > 0) item.imageUrls = urls;
+  }
+}
+
 /** الدليل الاجتماعي: يُرفق عدد مرّات بيع كل منتج (COUNT فواتير مميّزة) — استعلام مجمَّع واحد. */
 async function attachSoldCounts(
   db: NonNullable<ReturnType<typeof getDb>>,
@@ -721,6 +762,7 @@ export async function storefrontCatalog(opts: {
   await attachSoldCounts(db, items);
   await attachVariantColors(db, items, branchId);
   await attachBundleComponentImages(db, items);
+  await attachProductGalleryImages(db, items);
   const last = items[items.length - 1];
   return {
     items,
