@@ -14,7 +14,7 @@ import {
   TableEmptyRow,
 } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -424,19 +424,23 @@ export default function ExpenseCategories() {
                     <td className="p-2 font-medium">
                       {r.name}
                       {r.isBucketDefault && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span
-                              tabIndex={0}
-                              className="ms-1 inline-block cursor-help rounded-full bg-[var(--sem-info-bg)] px-2 py-0.5 text-[10px] text-[var(--sem-info)] outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        // Codex P2 (٢٤/٨): `Popover` بدل `Tooltip` — يفتح باللمس (Tap) على الأجهزة
+                        // اللمسية، وبالنقر والمفتاح (Enter/Space) على الحاسوب. Radix Tooltip يفشل
+                        // على اللمس لأنّ pointer-down يُخفي التركيز فيتعذّر ظهوره بتاباً واحد.
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label="ما معنى «احتياطية الدلو»؟"
+                              className="ms-1 inline-block cursor-help rounded-full bg-[var(--sem-info-bg)] px-2 py-0.5 text-[10px] text-[var(--sem-info)] outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80"
                             >
                               احتياطية الدلو
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent side="top" className="max-w-xs text-xs">
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent side="top" className="max-w-xs text-xs">
                             الفئة الاحتياطية لهذا الدلو — يُصنَّف بها أيّ مصروفٍ لم يُختَر له فئةٌ صراحةً. لا يُنقل دلوها ولا تُعطَّل يدوياً (يُعالجها زرّ «استعادة الافتراضية» إن اختلّت).
-                          </TooltipContent>
-                        </Tooltip>
+                          </PopoverContent>
+                        </Popover>
                       )}
                     </td>
                     <td className="p-2 text-xs">
@@ -452,21 +456,22 @@ export default function ExpenseCategories() {
                       {r.sortOrder}
                     </td>
                     <td className="p-2 text-center text-xs">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span
-                            tabIndex={0}
-                            className={`inline-block cursor-help rounded-full px-2 py-0.5 outline-none focus-visible:ring-1 focus-visible:ring-ring ${r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={r.isActive ? "شرح: الفئة نشطة" : "شرح: الفئة معطّلة"}
+                            className={`inline-block cursor-help rounded-full px-2 py-0.5 outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80 ${r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}
                           >
                             {r.isActive ? "نشطة" : "معطّلة"}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="max-w-xs text-xs">
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent side="top" className="max-w-xs text-xs">
                           {r.isActive
                             ? "الفئة تظهر في منتقي المصروف الجديد."
                             : "الفئة مخفيّة عن منتقي المصروف الجديد — المصروفات القديمة المُصنَّفة بها تحتفظ بتصنيفها بلا مسّ."}
-                        </TooltipContent>
-                      </Tooltip>
+                        </PopoverContent>
+                      </Popover>
                     </td>
                     {canManage && (
                       <td className="p-2 text-center">
