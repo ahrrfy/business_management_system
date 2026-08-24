@@ -225,6 +225,21 @@ export default function InvoiceDetail() {
   // نُخفي لوحة «تسديد دفعة» عمّن يرفضه الخادم (محاسب/مدقّق/مندوب: sales=READ) بدل عرض نموذج يفشل
   // بـ403 — بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const me = trpc.auth.me.useQuery();
+  // ٢٤/٨ (Codex P2 على PR #744): بوّابتان للروابط المُضافة حديثاً — كلاهما لأدوارٍ فعلاً تستطيع فتح الوجهة.
+  const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "reports",
+    "READ",
+    ["admin", "manager", "accountant", "auditor"],
+  );
+  const canOpenVouchers = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "treasury",
+    "READ",
+    ["admin", "manager", "accountant"],
+  );
   const canCorrectInvoice =
     !!me.data?.role &&
     (me.data.role === "admin" || me.data.role === "manager") &&
@@ -775,9 +790,9 @@ export default function InvoiceDetail() {
                 </span>
               </Field>
               <Field label="العميل">
-                {/* ٢٤/٨ (تدقيق): اسمُ العميل رابطٌ لكشف الحساب حين يكون له customerId — يوفّر
-                    الخطوة اليوميّة (فتح الفاتورة ثمّ الانتقال لكشف حسابه). «عميل نقدي» يبقى نصاً. */}
-                {data.customerId ? (
+                {/* ٢٤/٨ (تدقيق + Codex P2): اسمُ العميل رابطٌ لكشف الحساب — لأدوارٍ لها `reports:READ`
+                    فقط (Cashier/print/reception يذهبون إلى تبويبٍ محذوف). «عميل نقدي» يبقى نصاً. */}
+                {data.customerId && canOpenStatement ? (
                   <Link
                     href={`/customers-statement?id=${data.customerId}`}
                     className="text-primary hover:underline"
@@ -1104,15 +1119,20 @@ export default function InvoiceDetail() {
                     </td>
                     <td className="px-3 py-2 text-xs">
                       {p.voucherNumber && (
-                        // ٢٤/٨ (تدقيق): رقمُ السند صار رابطاً لصفحة السندات مع فلترٍ على رقمه —
-                        // المحاسب يطابق قبضاً بسنده يومياً بلا نسخٍ يدويّ وتنقّلٍ.
-                        <Link
-                          href={`/vouchers?number=${encodeURIComponent(p.voucherNumber)}`}
-                          className="text-primary hover:underline"
-                          title="فتح السند"
-                        >
-                          {p.voucherNumber}
-                        </Link>
+                        // ٢٤/٨ (تدقيق + Codex P2): رقمُ السند رابطٌ لصفحة السندات — لأدوار الخزينة
+                        // فقط (Cashier يذهب إلى /treasury بلا تبويب vouchers). الفلترُ عبر `q` — العقد
+                        // الفعليّ في Vouchers.tsx (لا يتعرّف على `number`).
+                        canOpenVouchers ? (
+                          <Link
+                            href={`/vouchers?q=${encodeURIComponent(p.voucherNumber)}`}
+                            className="text-primary hover:underline"
+                            title="فتح السند"
+                          >
+                            {p.voucherNumber}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">{p.voucherNumber}</span>
+                        )
                       )}
                       {p.attachmentUrl && (
                         <a

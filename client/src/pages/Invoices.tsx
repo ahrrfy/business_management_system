@@ -248,6 +248,15 @@ export default function Invoices() {
     "FULL",
     ["admin", "manager", "cashier"],
   );
+  // ٢٤/٨ (Codex P2 على PR #744): `/customers-statement` تحت `reports=READ` — لغيرِهم يُعيد
+  // التوجيه إلى تبويبٍ محذوف يختار PageTabs غيرَه صامتاً. نُخفي رابط الاسم عن الأدوار بلا الوصول.
+  const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
+    "reports",
+    "READ",
+    ["admin", "manager", "accountant", "auditor"],
+  );
 
   // مدخلات الفلترة المشتركة (بلا limit/offset) — للقائمة وللمجاميع وللتصدير الشامل ⇒ الثلاثة
   // ترى نفس المجموعة حتماً (لا تصدير يخالف ما على الشاشة).
@@ -505,11 +514,12 @@ export default function Invoices() {
       accessorKey: "customerName",
       header: "العميل",
       // ٢٤/٨ (تدقيق): اسم العميل صار رابطاً لكشف حسابه — يوفّر خطوة يوميّة (فتح الفاتورة ثمّ
-      // فتح كشف الحساب من خلالها). «عميل نقدي» يظلّ نصاً (بلا customerId).
+      // فتح كشف الحساب من خلالها). «عميل نقدي» يظلّ نصاً (بلا customerId). للأدوار بلا `reports:READ`
+      // يظلّ نصاً كذلك — كشف الحساب مقصور على المرتفعين (Codex P2 على PR #744).
       cell: ({ row }) => {
         const n = row.original.customerName;
         const id = row.original.customerId;
-        if (!n || !id) return custName(n);
+        if (!n || !id || !canOpenStatement) return custName(n);
         return (
           <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
             {n}
@@ -726,7 +736,7 @@ export default function Invoices() {
         );
       },
     },
-  ], [printingReceiptId, showBranchCol, branchNames]);
+  ], [printingReceiptId, showBranchCol, branchNames, canOpenStatement]);
 
   // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
   // الفِكرة: TSV لِلَّصق في Excel، ومُلَخَّص نَصّي مُكَثَّف لِواتساب الإدارة.

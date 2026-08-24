@@ -82,6 +82,14 @@ export default function Customers() {
     "FULL",
     ["cashier", "manager", "sales_rep", "print_operator"],
   );
+  // ٢٤/٨ (Codex P2 على PR #744): كشف الحساب تحت `reports=READ` — البقيّة يُعاد توجيهها بلا نتيجة.
+  const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "reports",
+    "READ",
+    ["admin", "manager", "accountant", "auditor"],
+  );
   // فلاتر الشاشة محفوظة في الرابط (useUrlFilters) — تعيش مع فتح التفاصيل والرجوع، وقابلة للمشاركة.
   // كل القيم نصوص (اتفاقية useUrlFilters)؛ نشتقّ الأنواع الفعلية أدناه ونُعرّف مُغلِّفات setters
   // بتوقيع مطابق لِـuseState القديم كي تبقى كل مواقع الاستدعاء أدناه بلا تغيير.
@@ -663,10 +671,15 @@ export default function Customers() {
                       />
                     </td>
                     <td className="p-2 font-medium">
-                      {/* ٢٤/٨ (تدقيق): اسمُ العميل رابطٌ لكشف حسابه — يوفّر خطوةً يومية (فتح ⋯ → «كشف حساب»). */}
-                      <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
-                        {c.name}
-                      </Link>
+                      {/* ٢٤/٨ (تدقيق): اسمُ العميل رابطٌ لكشف حسابه — يوفّر خطوةً يومية. للأدوار بلا
+                          `reports:READ` نعرضه نصاً — كشف الحساب مقصور خادميّاً على المرتفعين. */}
+                      {canOpenStatement ? (
+                        <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
+                          {c.name}
+                        </Link>
+                      ) : (
+                        c.name
+                      )}
                     </td>
                     {hasLegacy && (
                       <td className="p-2 text-xs tabular-nums text-muted-foreground" dir="ltr">
@@ -815,17 +828,30 @@ export default function Customers() {
         </CardContent>
       </Card>
 
-      {pages > 1 && (
+      {/* ٢٤/٨ (Codex P2): إجماليّ العملاء ظاهرٌ **دائماً** خارج شرط `pages > 1` — الشركات
+          الصغيرة (≤٥٠ عميل) كانت لا ترى أيّ عدّاد لأنّ الترقيم يختفي في الصفحة الواحدة. */}
+      {rows.length > 0 && (
         <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pages <= 1 || page <= 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            style={{ visibility: pages > 1 ? "visible" : "hidden" }}
+          >
             ← السابق
           </Button>
-          {/* ٢٤/٨ (تدقيق): إجماليّ العملاء ظاهرٌ في الترقيم — الكاشير/المندوب لا يرى `OperationsSummary`
-              المحجوز للمرتفعين، فلا يعرف كم عميلاً في نتائجه. */}
           <div className="text-muted-foreground">
-            صفحة {page + 1} من {pages} · <span className="tabular-nums">{total.toLocaleString("en-US")}</span> عميل
+            {pages > 1 && <>صفحة {page + 1} من {pages} · </>}
+            <span className="tabular-nums">{total.toLocaleString("en-US")}</span> عميل
           </div>
-          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pages <= 1 || page >= pages - 1}
+            onClick={() => setPage((p) => p + 1)}
+            style={{ visibility: pages > 1 ? "visible" : "hidden" }}
+          >
             التالي →
           </Button>
         </div>
