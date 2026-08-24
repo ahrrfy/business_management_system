@@ -210,6 +210,10 @@ export default function PrintPOS() {
   // ── حالة ──
   const [tabs, setTabs] = useState<Tab[]>([newTab(1, "طلب 1")]);
   const [activeId, setActiveId] = useState(1);
+  // ٢٤/٨ (تدقيق ذاتيّ، مرآة POS/Reception): عدّاد إضافةٍ صريح — يزيد فقط عند فعل الإضافة (شامل
+  // رفعَ الكمية على السطر الأصل). لا يزيد عند حذفٍ/تعديل كمية/تبديل تبويب ⇒ الجدول يتّبع السطر
+  // المُضاف/المزاد فوراً بلا قفزاتٍ من حذفٍ آخر (Codex P2 على PR #721).
+  const [addTick, setAddTick] = useState(0);
   const tab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const cart = tab.cart;
   const total = cart.reduce((s, c) => s + c.price * c.qty, 0);
@@ -328,12 +332,20 @@ export default function PrintPOS() {
     const custom = isCustomPriceSku(svc.sku);
     setCart((prev) => {
       const i = prev.findIndex((c) => c.svc.productUnitId === svc.productUnitId);
-      if (i >= 0 && !custom) { const n = [...prev]; n[i] = { ...n[i], qty: n[i].qty + 1 }; return n; }
+      if (i >= 0 && !custom) {
+        const n = [...prev];
+        n[i] = { ...n[i], qty: n[i].qty + 1 };
+        // ٢٤/٨: نُبرز السطرَ المزادَ كمّية أيضاً — الكاشير يرى ما تأثّر بنقرته الآن.
+        patch({ selUid: n[i].uid });
+        return n;
+      }
       const uid = UID++;
       if (custom) setTimeout(() => setEditPriceUid(uid), 30);
       patch({ selUid: uid });
       return [...prev, { uid, svc, qty: 1, price: Number(svc.price ?? 0) }];
     });
+    // ٢٤/٨: أشِر إلى الجدول أنّ إضافةً حدثت — يشمل حالة رفع الكمية على السطر الأصل.
+    setAddTick((t) => t + 1);
   }
   function changeQty(uid: number, q: number) {
     if (q <= 0) { setCart((p) => p.filter((c) => c.uid !== uid)); if (tab.selUid === uid) patch({ selUid: null }); }
@@ -629,7 +641,7 @@ export default function PrintPOS() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (creditPrompt) { if (e.key === "Escape") setCreditPrompt(null); return; }
-      if (receipt) { if (e.key === "Escape" || e.key === "Enter") setReceipt(null); return; }
+      if (receipt) { if (e.key === "Escape" || e.key === "Enter") { setReceipt(null); setTimeout(() => searchRef.current?.focus(), 0); } return; }
       if (shifting) { if (e.key === "Escape") setShifting(false); return; }
       if (e.key === "F2") { e.preventDefault(); searchRef.current?.focus(); }
       else if (e.key === "F4") { e.preventDefault(); submit(false); }
@@ -777,6 +789,7 @@ export default function PrintPOS() {
           externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
           onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
           numPress={numPress} onPay={() => submit(false)} onQuickPay={() => submit(true)} isPending={sale.isPending}
+          addTick={addTick}
         />
         <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} />
       </div>
@@ -784,7 +797,12 @@ export default function PrintPOS() {
       {/* شارة المزامنة — تعرض حالة الاتصال وطابور الالتقاط، وتُفرّغ كلّ الأنواع. */}
       <OfflineSyncChip userRole={me.data?.role} />
 
-      {receipt && <ReceiptOverlay C={C} r={receipt} onDismiss={() => setReceipt(null)} onPrint={() => printReceipt(brandedReceipt(receipt))} />}
+      {receipt && <ReceiptOverlay C={C} r={receipt} onDismiss={() => {
+        // ٢٤/٨ (تدقيق ذاتيّ، مرآة POS.tsx): useModalFocus يعيد التركيز إلى «الزرّ الذي فتح الحوار»
+        // = زرّ الدفع. سكانرُ/كيبورد الكاشير التالي يبتلعه الزرّ بلا أثر ⇒ إعادةٌ صريحة للبحث.
+        setReceipt(null);
+        setTimeout(() => searchRef.current?.focus(), 0);
+      }} onPrint={() => printReceipt(brandedReceipt(receipt))} />}
       {shifting && <ShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
       {creditPrompt && (
         <CreditApprovalDialog C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
@@ -819,7 +837,9 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
         <span style={{ position: "absolute", right: 13, color: C.mutedFg, pointerEvents: "none", display: "flex", alignItems: "center" }} aria-hidden>
           <Search size={16} />
         </span>
-        <input ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن خدمة بالاسم… (F2)"
+        {/* ٢٤/٨ (تدقيق ذاتيّ): `autoFocus` مفقود — POS و Reception يُركّزان الحقل، لكن PrintPOS
+            كان يُلزم الكاشير بالنقر قبل أوّل مسحٍ/كتابة. توحيدُ السلوك عبر الشاشات الثلاث. */}
+        <input ref={searchRef} autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن خدمة بالاسم… (F2)"
           style={{ width: "100%", height: 46, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14, outline: "none", paddingRight: 42, paddingLeft: search ? 36 : 14 }}
           onFocus={(e) => (e.target.style.borderColor = C.primary)} onBlur={(e) => (e.target.style.borderColor = C.border)} />
         {search && <button onClick={() => setSearch("")} aria-label="مسح البحث" style={{ position: "absolute", left: 8, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, padding: 4, display: "inline-flex" }}><X aria-hidden size={15} /></button>}
@@ -1055,6 +1075,8 @@ interface CheckoutProps {
   externalPaymentConfirmed: boolean; externalFullPaymentConfirmed: boolean;
   externalPaymentPending: boolean; onConfirmExternalPayment: () => void;
   numPress: (k: string) => void; onPay: () => void; onQuickPay: () => void; isPending: boolean;
+  /** ٢٤/٨ — عدّاد إضافةٍ صريح: يشغّل التمريرَ إلى السطر الفعّال في `CartList`. */
+  addTick: number;
 }
 
 // الاحتواء الديناميكي: زوم المتصفح لا يُكبّر الشاشة بل يُقلّص المساحة بوحدات CSS.
@@ -1077,8 +1099,18 @@ function CheckoutColumn(props: CheckoutProps) {
   );
 }
 
-function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, setPrice, editPriceUid, setEditPriceUid, customerId, setCustomerId }: CheckoutProps) {
+function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, setPrice, editPriceUid, setEditPriceUid, customerId, setCustomerId, addTick }: CheckoutProps) {
   const items = cart.reduce((s, c) => s + c.qty, 0);
+  // ٢٤/٨ — تمرير تلقائيّ إلى السطر المُضاف/المزاد بعد كلّ نقرةٍ على بلاطة خدمة (مرآة POS/Reception).
+  const selectedRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (selUid == null) return;
+    const raf = requestAnimationFrame(() => {
+      selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTick]);
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 11px", height: 48, background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0, gap: 8 }}>
@@ -1097,7 +1129,10 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
           <div style={{ padding: "50px 0", textAlign: "center", color: C.mutedFg }}>
             <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}><ReceiptIcon aria-hidden size={40} strokeWidth={1.5} /></div>
             <div style={{ fontSize: 14, fontWeight: 700 }}>الفاتورة فارغة</div>
-            <div style={{ fontSize: 12.5, marginTop: 6 }}>اضغط على خدمة من اليسار</div>
+            {/* ٢٤/٨ (تدقيق ذاتيّ): إرشادُ فعلٍ صريحٌ بدل «اضغط على خدمة من اليسار» — الاختصار يفتحه فوراً. */}
+            <div style={{ fontSize: 12, marginTop: 6, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap" }}>
+              اضغط <kbd style={{ background: C.muted, borderRadius: 4, padding: "1px 6px", fontFamily: "monospace", fontSize: 10.5, fontWeight: 700, color: C.fg }}>F2</kbd> للبحث السريع، أو اختر خدمة من الشبكة
+            </div>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
@@ -1105,7 +1140,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
               const sel = selUid === c.uid;
               const editing = editPriceUid === c.uid;
               return (
-                <div key={c.uid} onClick={() => setSelUid(c.uid)}
+                <div key={c.uid} ref={sel ? selectedRowRef : undefined} onClick={() => setSelUid(c.uid)}
                   style={{ borderRadius: 11, border: `1.5px solid ${sel ? C.primary : C.border}`, background: sel ? C.primarySoft : C.card, padding: "9px 11px", cursor: "pointer" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
                     <div style={{ fontSize: 19, fontWeight: 800, color: C.fg, lineHeight: 1.3, display: "flex", alignItems: "center", gap: 6 }}>
@@ -1318,8 +1353,12 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
               ? "جارٍ…"
               : !cartLen
                 ? "الفاتورة فارغة"
-                : <><Check aria-hidden size={18} strokeWidth={3} /> إتمام الدفع</>}
+                : <><Check aria-hidden size={18} strokeWidth={3} /> إتمام الدفع <kbd style={{ background: "rgba(255,255,255,.22)", color: "#fff", borderRadius: 4, padding: "1px 6px", fontFamily: "monospace", fontSize: 10, fontWeight: 700 }}>F4</kbd></>}
           </button>
+        </div>
+        {/* ٢٤/٨ (تدقيق ذاتيّ): تلميحُ الاختصارات ظاهرٌ على كلّ الأحجام — الكاشير يحتاجها يومياً. */}
+        <div style={{ textAlign: "center", marginTop: 4, fontSize: 10, color: C.mutedFg, opacity: 0.85 }}>
+          F4 للدفع · F2 للبحث · F12 للتفريغ · Esc للإغلاق
         </div>
       </div>
     </div>
