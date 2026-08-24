@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { addProductToCart, sanitizeCartLines } from "../lib/cart-context";
 import { canonicalIraqiLocalPhone, normalizeIraqiPhone } from "../lib/iraqi-phone";
-import { catalogDisplayState, formatIqd, productDiscountPercent, storefrontDisplayPrice, storefrontMutationHeaders } from "../lib/storefront-api";
+import { catalogDisplayState, classifyNetworkError, formatIqd, productDiscountPercent, storefrontDisplayPrice, storefrontMutationHeaders } from "../lib/storefront-api";
 import type { Product } from "../shared/storefront";
 
 const testProduct: Product = {
@@ -57,5 +57,28 @@ describe("واجهة كتالوج مكتبة العربية", () => {
     expect(canonicalIraqiLocalPhone("+964 7838376787")).toBe("7838376787");
     expect(normalizeIraqiPhone("7838376787")).toBe("+9647838376787");
     expect(normalizeIraqiPhone("783837678")).toBeNull();
+  });
+
+  it("يقبل حقل الهاتف الأرقام العربية-الهندية والفارسية معاً وينسّق بلصق E.164 الطويل", () => {
+    // U+0660..0669 (عربيّ-هنديّ) و U+06F0..06F9 (فارسيّ) — كلاهما يظهر على لوحات مفاتيح عراقيّة/إيرانيّة.
+    expect(canonicalIraqiLocalPhone("۰۷۷۳۸۳۷۶۷۸۷")).toBe("7738376787");
+    // لصق بصيغة E.164 كاملاً مع مسافات = ٢٠ محرفاً — يجب ألا يُقصّ إلى ١١.
+    expect(canonicalIraqiLocalPhone("+964 771 234 5678")).toBe("7712345678");
+    expect(normalizeIraqiPhone("+964 771 234 5678")).toBe("+9647712345678");
+  });
+
+  it("يصنّف أخطاء الشبكة إلى رسائل عربيّة مفهومة للعميل", () => {
+    const offline = new TypeError("Network request failed");
+    expect(classifyNetworkError(offline)).toMatchObject({ kind: "OFFLINE" });
+    expect(classifyNetworkError(offline).message).toContain("لا يوجد اتصال");
+
+    const timeout = new Error("aborted"); (timeout as Error).name = "AbortError";
+    expect(classifyNetworkError(timeout)).toMatchObject({ kind: "TIMEOUT" });
+
+    expect(classifyNetworkError(new Error("فشل الاتصال بالمتجر (502)"))).toMatchObject({ kind: "SERVER" });
+    expect(classifyNetworkError(new Error("فشل الاتصال بالمتجر (429)"))).toMatchObject({ kind: "SERVER" });
+    expect(classifyNetworkError(new Error("فشل الاتصال بالمتجر (401)"))).toMatchObject({ kind: "CLIENT" });
+    expect(classifyNetworkError(new Error("سبب اعتيادي (400)"))).toMatchObject({ kind: "CLIENT" });
+    expect(classifyNetworkError("string not error")).toMatchObject({ kind: "UNKNOWN" });
   });
 });

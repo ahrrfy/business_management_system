@@ -190,6 +190,29 @@ function delay(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
+// نميّز مصدر الفشل حتى تعرض الواجهة رسالةً قابلة للفهم بدل نصٍّ تقنيٍّ مبهم.
+// TypeError("Network request failed") = انقطاع اتصال · AbortError = مهلة/إلغاء يدويّ · HTTP status = رفض خادميّ.
+export function classifyNetworkError(error: unknown): { kind: "OFFLINE" | "TIMEOUT" | "SERVER" | "CLIENT" | "UNKNOWN"; message: string } {
+  if (error instanceof Error) {
+    if (error.name === "AbortError") return { kind: "TIMEOUT", message: "استغرقت العملية وقتاً أطول من المتوقّع. تحقّق من الاتصال ثم حاول مرة أخرى." };
+    // React Native fetch يرمي TypeError("Network request failed") عند غياب الاتصال بالكامل.
+    if (error.name === "TypeError" && /network request failed|failed to fetch/i.test(error.message)) {
+      return { kind: "OFFLINE", message: "لا يوجد اتصال بالإنترنت. تأكّد من الشبكة ثم حاول مرة أخرى." };
+    }
+    // الرسائل التي أنشأها storefrontQuery نفسها تحمل رمز الحالة بين قوسَين.
+    const httpMatch = /\((\d{3})\)/.exec(error.message);
+    if (httpMatch) {
+      const status = Number(httpMatch[1]);
+      if (status >= 500) return { kind: "SERVER", message: "المتجر يواجه ضغطاً حالياً. حاول بعد دقيقة." };
+      if (status === 429) return { kind: "SERVER", message: "طلباتٌ كثيرة في وقتٍ قصير. انتظر قليلاً ثم أعِد المحاولة." };
+      if (status === 401 || status === 403) return { kind: "CLIENT", message: "الجلسة انتهت. أعِد التحقّق من هاتفك ثم حاول مرة أخرى." };
+      if (status === 400 || status === 422) return { kind: "CLIENT", message: error.message };
+    }
+    return { kind: "UNKNOWN", message: error.message };
+  }
+  return { kind: "UNKNOWN", message: "حدث خطأٌ غير متوقّع." };
+}
+
 function shouldRetry(error: unknown) {
   return error instanceof Error && error.name !== "AbortError";
 }
