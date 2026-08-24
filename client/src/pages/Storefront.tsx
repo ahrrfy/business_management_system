@@ -589,7 +589,7 @@ export function clampStorefrontZoomPoint(
   point: { x: number; y: number },
   width: number,
   height: number,
-  lensSize = 192,
+  lensSize = 256,
 ): { x: number; y: number } {
   const edgeX = Math.min(50, (lensSize / Math.max(1, width)) * 50);
   const edgeY = Math.min(50, (lensSize / Math.max(1, height)) * 50);
@@ -714,8 +714,8 @@ function ProductGallery({
         <ProductImage url={currentUrl} alt={alt} className="size-full bg-white" showFallbackLabel />
         {zoomPoint && currentUrl && (
           <div
-            className="pointer-events-none absolute hidden size-52 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-white bg-no-repeat shadow-[0_10px_30px_rgba(24,61,54,0.28)] lg:block"
-            style={{ left: `${zoomPoint.x}%`, top: `${zoomPoint.y}%`, backgroundImage: `url(${JSON.stringify(currentUrl)})`, backgroundSize: "240% 240%", backgroundPosition: `${zoomPoint.x}% ${zoomPoint.y}%` }}
+            className="pointer-events-none absolute hidden size-64 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-white bg-no-repeat shadow-[0_10px_30px_rgba(24,61,54,0.28)] lg:block"
+            style={{ left: `${zoomPoint.x}%`, top: `${zoomPoint.y}%`, backgroundImage: `url(${JSON.stringify(currentUrl)})`, backgroundSize: "300% 300%", backgroundPosition: `${zoomPoint.x}% ${zoomPoint.y}%` }}
             aria-hidden="true"
           />
         )}
