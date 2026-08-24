@@ -614,7 +614,7 @@ function CardMediaCarousel({
   const current = sources[index] ?? null;
   return (
     <div
-      className={`group relative ${className ?? ""}`}
+      className={`group relative overflow-hidden bg-white ${className ?? ""}`}
       role="img"
       onPointerEnter={(event) => { if (event.pointerType === "mouse") activate(); }}
       onPointerLeave={() => setActive(false)}
@@ -664,7 +664,7 @@ function ProductGallery({
   return (
     <div className="space-y-2" onMouseEnter={() => setHovered(true)} onMouseLeave={() => { setHovered(false); setZoomPoint(null); }}>
       <div
-        className="group relative aspect-square overflow-hidden rounded-2xl bg-[#f3eadf] ring-1 ring-[#ead8c8]"
+        className="group relative aspect-square overflow-hidden rounded-2xl bg-white ring-1 ring-[#ead8c8]"
         role="button"
         tabIndex={currentUrl ? 0 : -1}
         aria-label={currentUrl ? "تكبير صورة المنتج" : undefined}
@@ -675,8 +675,8 @@ function ProductGallery({
         <ProductImage url={currentUrl} alt={alt} className="size-full" showFallbackLabel />
         {zoomPoint && currentUrl && (
           <div
-            className="pointer-events-none absolute inset-y-2 left-2 hidden w-[42%] rounded-xl border-2 border-white/80 bg-white/95 bg-no-repeat shadow-xl lg:block"
-            style={{ backgroundImage: `url(${JSON.stringify(currentUrl)})`, backgroundSize: "240% 240%", backgroundPosition: `${zoomPoint.x}% ${zoomPoint.y}%` }}
+            className="pointer-events-none absolute hidden size-52 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-white bg-no-repeat shadow-[0_10px_30px_rgba(24,61,54,0.28)] lg:block"
+            style={{ left: `${zoomPoint.x}%`, top: `${zoomPoint.y}%`, backgroundImage: `url(${JSON.stringify(currentUrl)})`, backgroundSize: "240% 240%", backgroundPosition: `${zoomPoint.x}% ${zoomPoint.y}%` }}
             aria-hidden="true"
           />
         )}
@@ -732,7 +732,7 @@ export function BundleMedia({
       urls={sources}
       fallbackUrl={null}
       alt={alt}
-      className={`store-product-media overflow-hidden bg-slate-100 dark:bg-slate-800 ${className ?? ""}`}
+      className={`store-product-media overflow-hidden bg-white ${className ?? ""}`}
       showFallbackLabel={showFallbackLabel}
     />
   );
