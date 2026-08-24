@@ -7,9 +7,17 @@
 --
 -- الحل: عمود `showInPrintPos` صريحٌ ومستقلٌّ عن `productType` — مرآةً لـ`showInReception`
 -- (نمط تصميم قائم). التعبئة الخلفيّة تُبقي كلّ خدمةٍ مؤهَّلة ظاهرة:
---   showInPrintPos = TRUE  حيث  productType='PRINT_SERVICE'  (المسلك القائم — بلا تراجع)
---                       OR  (isService=TRUE AND productType IS NULL)  (خدمات قديمة)
+--   showInPrintPos = TRUE  حيث  productType='PRINT_SERVICE'  فقط.
 -- بضاعة رقميّة (DIGITAL_CARD) وسلعٌ ملموسة (isService=false) تبقى FALSE.
+--
+-- ⚠️ Codex P1 (٢٤/٨ على PR #757): كانت التعبئةُ تُغطّي أيضاً `isService=TRUE AND productType IS NULL`،
+-- بادّعاء «خدمات قديمة». لكنّ ServiceForm.createProduct يخزّن هذه الحالةَ **بالضبط** حين يعطّل
+-- المدير تبديل «نقطة الطباعة» عمداً عند الإنشاء (`printService: false` ⇒ `productType: null`)،
+-- فالتعبئةُ كانت تعكس اختيارَه صامتاً — يظهر البند فجأةً في شبكة الطباعة بعد نشر الهجرة. ضيّقنا
+-- الفلترَ إلى `productType='PRINT_SERVICE'` فقط: هويّةٌ تشغيليّة صريحة لا يُلبس بها اختيارُ رؤية.
+-- الأثر على prod الذي طبّق النسخة الأوسع بالفعل: لا شيء (drizzle يتخطّى بحسب `when`)؛ لكن أيّ
+-- بيئةٍ جديدة/دورةِ اختبار CI تُطبّقها بالنسخة الضيّقة الصحيحة. المدير يستطيع تحرير الرؤية يدوياً
+-- بعد الآن عبر تبديلَي ProductEdit (شريحة PR #757).
 --
 -- Idempotency: احرس بـinformation_schema (نمط 0180+ في هذا المستودع) — الهجرة قد تُعاد
 -- تشغيلاً عبر ci-apply-extra-migrations أو migration-dry-run.
@@ -35,24 +43,9 @@ DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 
 -- التعبئة الخلفيّة: تُنفَّذ دائماً حتى على قواعدَ سبق تطبيق الـALTER فيها بلا تعبئة (idempotent).
--- الشرط `= FALSE` يحمي من طمس تحرير المدير اليدويّ اللاحق حين تُعاد الهجرة.
+-- الشرط `= FALSE` يحمي من طمس تحرير المدير اليدويّ اللاحق حين تُعاد الهجرة. النطاقُ ضيّق: فقط
+-- ما يحمل `productType='PRINT_SERVICE'` صراحةً — لا اجتهادَ في تفسير `productType IS NULL`.
 UPDATE `products`
 SET `showInPrintPos` = TRUE
 WHERE `showInPrintPos` = FALSE
-  AND (
-    `productType` = 'PRINT_SERVICE'
-    OR (`isService` = TRUE AND `productType` IS NULL)
-  );
---> statement-breakpoint
-
--- Codex P1 (٢٤/٨): سلامةُ البيع تلزمها موافقة `productType` — `createPrintSale` يرفض أيّ سطرٍ
--- بـ`productType !== 'PRINT_SERVICE'` بـ«هذه الشاشة تبيع خدمات الطباعة فقط»
--- ([`printSaleService.ts:290`](server/services/printSaleService.ts#L290)). بلا هذا الشطر تكون
--- الخدماتُ التي كشفَتها التعبئةُ الأولى **مرئيّةً في الشبكة لكنها تُرفض عند الدفع** — عكس النيّة.
--- نُضبِط `productType='PRINT_SERVICE'` للخدمات النشطة التي لا نوعَ لها (المسار الطبيعيّ لخدمة قديمة
--- تُنشأ اليوم عبر ServiceForm يجعلها كذلك)، فيتّسق المسلكان.
-UPDATE `products`
-SET `productType` = 'PRINT_SERVICE'
-WHERE `showInPrintPos` = TRUE
-  AND `isService` = TRUE
-  AND `productType` IS NULL;
+  AND `productType` = 'PRINT_SERVICE';

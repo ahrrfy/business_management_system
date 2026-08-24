@@ -590,11 +590,21 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       .map((unit) => unit.id);
     await assertNoActiveOnlineOrderUnitChanges(tx, protectedUnitIds);
 
+    // Codex P1 (٢٤/٨ على PR #757): تفعيلُ `showInPrintPos` بلا مزامنة `productType` كان يجعل البند
+    // يظهر في شبكة كاشير الطباعة عبر `listPrintServices` لكنّ `createPrintSale` يرفضه بـ«هذه
+    // الشاشة تبيع خدمات الطباعة فقط» ([`printSaleService.ts:290`](server/services/printSaleService.ts#L290))
+    // — تجربةٌ منكسرة يعِد فيها التبديلُ بمخرَجٍ عاجزٍ عنه. نُزامِن ذرّياً في نفس UPDATE:
+    // عند تفعيل التبديل، نضمن `productType='PRINT_SERVICE'` (لا نغيّر عند التعطيل — قد يبقى نوعاً
+    // مشروعاً وقد يعنيه المدير لاحقاً).
+    const effectiveShowInPrintPos = input.showInPrintPos ?? !!p.showInPrintPos;
+    const requestedProductType = input.productType?.trim() || null;
+    const effectiveProductType = effectiveShowInPrintPos ? "PRINT_SERVICE" : requestedProductType;
+
     await tx
       .update(products)
       .set({
         name,
-        productType: input.productType?.trim() || null,
+        productType: effectiveProductType,
         brand: input.brand?.trim() || null,
         modelName: input.modelName?.trim() || null,
         description: input.description?.trim() || null,

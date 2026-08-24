@@ -304,6 +304,11 @@ export default function ProductEdit() {
         utils.catalog.posList.invalidate(),
         utils.catalog.adminList.invalidate(),
         utils.catalog.forPurchase.invalidate(),
+        // Codex P2 (٢٤/٨ على PR #757): تحرير `showInPrintPos` يغيّر بنودَ شبكة كاشير الطباعة،
+        // فإبطالُ كاشِها إلزاميّ. بدونه، staleTime العالميّ (٦٠ث) يُبقي القائمة القديمة معروضةً
+        // بعد رجوع المدير للـPrintPOS ⇒ يعتقد أنّ التغيير لم يُطبَّق. `printPos.services` نفسها
+        // تُغذّي `printServicesCache` المحلّي أيضاً، فالإبطال يُنعش الاثنَين.
+        utils.printPos.services.invalidate(),
       ]);
       setHydrated(false); // أعد التحميل ليعكس المعرّفات الجديدة
     },
