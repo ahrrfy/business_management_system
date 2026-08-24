@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ListToolbar, RowActions } from "@/components/list";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
@@ -192,40 +192,43 @@ export default function Branches() {
                     <td className="p-2 font-medium">{b.name}</td>
                     <td className="p-2 font-mono text-xs" dir="ltr">{b.code}</td>
                     <td className="p-2">
-                      {/* Codex P2 (٢٤/٨): Tooltip قابلٌ للتركيز/اللمس بدل `title` الذي يعمل عند الحوم فقط.
-                          `tabIndex={0}` يجعل الخليّة نفسها هدفَ ملاحة لوحة المفاتيح لكشف الشرح. */}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span
-                            tabIndex={0}
-                            className="cursor-help underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+                      {/* استباقاً لـCodex #764: `Popover` بدل `Tooltip` — يفتح بالنقر/التاب/Enter/Space
+                          فيصلُ لمستعمِلي اللمس أيضاً (Radix Tooltip يفشل على اللمس لأنّ pointer-down
+                          يُخفي focus-open). زرٌّ دلاليّاً بدل span، بـ`aria-label` لقارئ الشاشة. */}
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={`ما معنى «${TYPE_LABEL[b.type] ?? b.type}»؟`}
+                            className="cursor-help underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm text-start"
                           >
                             {TYPE_LABEL[b.type] ?? b.type}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="max-w-xs text-xs">
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent side="top" className="max-w-xs text-xs">
                           {TYPE_TITLE[b.type] ?? TYPE_LABEL[b.type] ?? b.type}
-                        </TooltipContent>
-                      </Tooltip>
+                        </PopoverContent>
+                      </Popover>
                     </td>
                     <td className="p-2 text-muted-foreground">{b.address || "—"}</td>
                     <td className="p-2 text-xs" dir="ltr">{b.phone || "—"}</td>
                     <td className="p-2 text-center">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span
-                            tabIndex={0}
-                            className={`inline-block cursor-help rounded-full px-2 py-0.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring ${b.isActive ? "badge-status-active" : "badge-stock-out"}`}
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={b.isActive ? "شرح: الفرع مفعّل" : "شرح: الفرع معطّل"}
+                            className={`inline-block cursor-help rounded-full px-2 py-0.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80 ${b.isActive ? "badge-status-active" : "badge-stock-out"}`}
                           >
                             {b.isActive ? "مفعّل" : "معطّل"}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="max-w-xs text-xs">
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent side="top" className="max-w-xs text-xs">
                           {b.isActive
                             ? "الفرع نشط — يظهر في منتقيات العمليات الجديدة."
                             : "الفرع معطّل — مستثنى من المنتقيات؛ العمليات التاريخية المرتبطة به تبقى بلا مسّ."}
-                        </TooltipContent>
-                      </Tooltip>
+                        </PopoverContent>
+                      </Popover>
                     </td>
                     <td className="p-2 text-center">
                       <RowActions
