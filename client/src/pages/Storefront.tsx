@@ -675,6 +675,9 @@ function ProductGallery({
   const zoomPendingRef = useRef<{ x: number; y: number } | null>(null);
   const zoomFrameRef = useRef<number | null>(null);
   const [fullScreen, setFullScreen] = useState(false);
+  useEffect(() => () => {
+    if (zoomFrameRef.current != null) window.cancelAnimationFrame(zoomFrameRef.current);
+  }, []);
   useEffect(() => setIndex((current) => Math.min(current, Math.max(0, sources.length - 1))), [sources.join("|")]);
   useEffect(() => {
     if (sources.length < 2 || !hovered || reducedMotion) return;
