@@ -2276,12 +2276,13 @@ function StorefrontContent() {
         </div>
       )}
 
+      {/* شارة «الخصوصية» ثابتة أسفل اليسار؛ نرفع واتساب 4rem حتى لا يتراكبا على الهاتف. */}
       {panel == null && cartCount === 0 && settingsQ.data?.whatsappNumber && (
         <a
           href={`https://wa.me/${settingsQ.data.whatsappNumber.replace(/[^\d]/g, "")}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="fixed bottom-4 left-4 z-20 flex items-center gap-2 rounded-full bg-[#1f9d6a] px-4 py-3 text-xs font-black text-white shadow-lg shadow-emerald-900/20 transition hover:-translate-y-0.5 hover:bg-[#168457]"
+          className="fixed bottom-16 left-4 z-20 flex items-center gap-2 rounded-full bg-[#1f9d6a] px-4 py-3 text-xs font-black text-white shadow-lg shadow-emerald-900/20 transition hover:-translate-y-0.5 hover:bg-[#168457]"
           aria-label="تواصل مع فريق المتجر عبر واتساب"
         >
           <MessageCircle aria-hidden className="size-4" /> اسألنا عبر واتساب
