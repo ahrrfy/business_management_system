@@ -423,6 +423,30 @@ export function submitStorefrontProductReview(input: { customerSessionToken: str
   return storefrontMutation<{ ok: true; status: "PENDING" }>("storefront.submitProductReview", input);
 }
 
+/**
+ * حذف حساب العميل نهائيّاً بعد تأكيد OTP جديد. مطلوبٌ لسياسة Google Play (٢٠٢٤+).
+ * يستدعي `storefront.deleteMe` على ERP الذي:
+ *   - يفكّ Firebase ID token الجديد (يضمن التحقّق الحيّ لا اعتماد جلسةٍ قديمة)
+ *   - يبمّم بيانات العميل (phone → hash، name → «عميلٌ محذوف»، address → NULL)
+ *   - يزيد session_version لإبطال كلّ الجلسات القائمة
+ *   - يحفظ الطلبات نفسها لأغراض المحاسبة (٥ سنوات) لكن يفكّ ربطها بالهويّة
+ *
+ * ⚠️ الطرف الخادميّ غير مبنيّ بعدُ — يُنجَز في جلسة `pnpm session:new erp-mobile-followups`
+ * (راجع docs/erp-followups.md). حتى يُنجَز، هذا الاستدعاء سيُرجع 404 والواجهة تعرض
+ * الرسالة الوسيطة أدناه بلا crash.
+ */
+export async function deleteMyStorefrontAccount(input: { firebaseIdToken: string }) {
+  try {
+    return await storefrontMutation<{ ok: true; deletedAt: string }>("storefront.deleteMe", input);
+  } catch (error) {
+    const classified = classifyNetworkError(error);
+    if (classified.message.includes("(404)") || classified.message.includes("(501)")) {
+      throw new Error("مسار حذف الحساب قيد التجهيز. تواصل مع دعم المكتبة لطلب الحذف بريدياً حتى يُتاح الزرّ خلال أيّامٍ قليلة.");
+    }
+    throw error;
+  }
+}
+
 /** ينشئ مرجعاً عاماً عابراً للمنتجات فقط، من دون هوية صاحب القائمة أو أسعاره المتغيرة. */
 export function createStorefrontWishlistShare(productIds: number[]) {
   return storefrontMutation<StorefrontWishlistShare>("storefront.createWishlistShare", { productIds });
