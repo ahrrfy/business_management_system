@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
 
 function actor(ctx: {
   user: {
@@ -63,6 +63,11 @@ export const productStudioRouter = router({
     )
     .query(({ ctx, input }) => listStudioTasks(actor(ctx), input)),
   campaigns: productStudioReadProcedure.query(({ ctx }) => listStudioCampaigns(actor(ctx))),
+  /**
+   * حملاتُ المستخدم الحاليّ (نشطةٌ وهو عضوٌ فيها) — نافذته الوحيدة على «ماذا يخصّني».
+   * قراءةٌ ضيّقة تُعوّض غياب `campaigns` عن الأدوار غير الإدارية بلا تسريب حملاتٍ لا تعنيه.
+   */
+  myCampaigns: productStudioReadProcedure.query(({ ctx }) => listMyStudioCampaigns(actor(ctx))),
   createCampaign: productStudioManagerProcedure
     .input(
       z.object({
@@ -95,6 +100,13 @@ export const productStudioRouter = router({
   createTemporaryPhotographer: productStudioManagerProcedure
     .input(z.object({ campaignId, name: z.string().trim().min(3).max(80) }))
     .mutation(({ ctx, input }) => createTemporaryCampaignPhotographer(actor(ctx), input)),
+  /**
+   * توفيقُ مصوّري الحملة بعد الإنشاء — إضافةٌ وإزالةٌ في نداءٍ واحد.
+   * يستقبل القائمة النهائيّة (لا الفرق) فتغيّرات الشاشة تنعكس ذرّياً بلا سباق.
+   */
+  updateCampaignAssignees: productStudioManagerProcedure
+    .input(z.object({ campaignId, assigneeIds: z.array(z.number().int().positive()).max(50) }))
+    .mutation(({ ctx, input }) => updateCampaignAssignees(actor(ctx), input)),
   revokeTemporaryPhotographers: productStudioManagerProcedure
     .input(z.object({ campaignId }))
     .mutation(({ ctx, input }) => revokeTemporaryCampaignPhotographers(actor(ctx), input.campaignId)),

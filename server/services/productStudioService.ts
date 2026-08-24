@@ -612,6 +612,10 @@ async function studioImageProgress(tx: StudioTx, productId: number, campaignId: 
 /**
  * إنشاءُ مهمةٍ لحظةَ المسح داخل حملةٍ نشطة يكون الماسحُ أحد مصوّريها.
  * يُعيد استعمال القيد الفريد `(productId, activeSlot)` حارساً ضدّ ماسحَين متزامنين.
+ *
+ * الرسائل التشخيصية تُميّز بين أسباب الرفض الأربعة (ليس في حملة · حملات في فرعٍ آخر ·
+ * المنتج خارج نطاق الحملة · اكتملت صور المنتج) — كانت رسالةً واحدة ملبّسة الأسباب،
+ * فيقف المصوّر أمام «المنتج ليس ضمن حملة» بلا معرفة أيّها العلّة ولا كيف يعالجها.
  */
 async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, resolved: { productId: number; productName: string }) {
   const productId = Number(resolved.productId);
@@ -631,17 +635,39 @@ async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, r
     // أولويّةٌ معلَنة عند تداخل حملتين على المنتج نفسه: الأقرب موعداً ثمّ الأقدم إنشاءً.
     // بلا ترتيبٍ كان الاختيار يتبع ما تُرجعه MySQL أوّلاً — فيُنسَب العمل لحملةٍ عشوائية.
     .orderBy(asc(productStudioCampaigns.dueAt), asc(productStudioCampaigns.id));
+  if (campaigns.length === 0) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "لست ضمن مصوّري أيّ حملةٍ نشطة — راجع المدير لإضافتك" });
+  }
+  let branchMismatchCount = 0;
+  let outOfScopeCount = 0;
+  let completedCount = 0;
   for (const campaign of campaigns) {
     // الفرع يُعاد فحصه من **الحملة** لا من صفّ العضوية: الموظف قد يكون نُقل بعد إضافته،
     // فتبقى عضويّته قائمةً بينما فرعه تغيّر — وإنشاءُ مهمةٍ في فرعٍ آخر يُنتج عملاً
     // لا يستطيع صاحبه فتحه لاحقاً (الحرّاس مُفرَّعة).
-    if (!canCrossBranches(actor) && (actor.branchId == null || Number(campaign.branchId) !== Number(actor.branchId))) continue;
-    const [inScope] = await tx
+    if (!canCrossBranches(actor) && (actor.branchId == null || Number(campaign.branchId) !== Number(actor.branchId))) {
+      branchMismatchCount++;
+      continue;
+    }
+    // «المنتج مكتمل الصور» = صفٌّ **موجود** خارج شرط الناقص، لكن ضمن نطاق الحملة.
+    // نُميّزه عن «خارج النطاق» بفحصٍ صريح: نطاقٌ مطابق أوّلاً ثمّ اكتمالٌ ثانياً.
+    const [inScopeAndMissing] = await tx
       .select({ id: products.id, name: products.name, description: products.description })
       .from(products)
       .where(and(eq(products.id, productId), missingStudioProductConditions(Number(campaign.requiredImages ?? 1)), campaignScopeCondition(campaign)))
       .limit(1);
-    if (!inScope) continue;
+    if (!inScopeAndMissing) {
+      // فرّق بين خارج النطاق واكتمال الصور — اكتمالٌ حين يقع المنتج داخل النطاق فقط.
+      const [inScopeIgnoringMissing] = await tx
+        .select({ id: products.id })
+        .from(products)
+        .where(and(eq(products.id, productId), eq(products.isActive, true), campaignScopeCondition(campaign)))
+        .limit(1);
+      if (inScopeIgnoringMissing) completedCount++;
+      else outOfScopeCount++;
+      continue;
+    }
+    const inScope = inScopeAndMissing;
     const [created] = await tx
       .insert(productImageJobs)
       .values({
@@ -674,7 +700,19 @@ async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, r
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.claimByBarcode.created", taskId, { productId, campaignId: Number(campaign.id) }));
     return { taskId, productName: resolved.productName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id))) };
   }
-  throw new TRPCError({ code: "NOT_FOUND", message: `«${resolved.productName}» ليس ضمن حملة تصوير نشطة مُسنَدة إليك، أو اكتملت صوره` });
+  // ترتيبُ التشخيص من الأخصّ إلى الأعمّ: «اكتملت» يسبق «خارج النطاق» يسبق «فرعٌ آخر»،
+  // فالمصوّر يقرأ سبباً واحداً محدَّداً بدل عدّة سببٍ عامّ محتمل.
+  if (completedCount > 0) {
+    throw new TRPCError({ code: "NOT_FOUND", message: `«${resolved.productName}» اكتملت صوره المعتمَدة في حملتك` });
+  }
+  if (outOfScopeCount > 0) {
+    throw new TRPCError({ code: "NOT_FOUND", message: `«${resolved.productName}» خارج نطاق حملاتك النشطة — تحقّق من فئة المنتج مع المدير` });
+  }
+  if (branchMismatchCount > 0) {
+    throw new TRPCError({ code: "FORBIDDEN", message: `«${resolved.productName}»: حملاتك في فرعٍ آخر — راجع المدير` });
+  }
+  // احتياط: لا حملات مطابقة لأيّ سبب — يحدث حين تتغيّر الحملات بين استعلامَين.
+  throw new TRPCError({ code: "NOT_FOUND", message: `«${resolved.productName}» ليس ضمن حملة تصوير نشطة مُسنَدة إليك` });
 }
 
 /**
@@ -1043,6 +1081,112 @@ export async function listStudioCampaigns(actor: ProductStudioActor) {
     .orderBy(desc(productStudioCampaigns.createdAt), desc(productStudioCampaigns.id));
 }
 
+/**
+ * حملاتُ المصوّر التي هو عضوٌ فيها — نافذته الوحيدة على «ماذا يخصّني».
+ *
+ * قبل هذه الدالة كان `campaigns` محصوراً بالمدير، فالمصوّر لا يرى اسم حملتِه ولا موعدها
+ * ولا كم منتجاً بقي منها، ويعمل «أعمى» يمسح باركوداً ثمّ آخر بلا صورةِ تقدّم. فتحُ
+ * `campaigns` كاملةً كان سيسرّب حملاتٍ ليس فيها ولا يعنيه أمرها؛ لذا `myCampaigns`
+ * قراءةٌ ضيّقة: **الحملات النشطة التي هو عضوٌ فيها فقط**، مع رقمَين تشغيليَّين:
+ * ما أنجزه هو، وما تبقّى في الحملة كلّها.
+ *
+ * `assignedActive` = مهمّةٌ بيده الآن (نطاق `MINE`). `personalDone` = مهمّةٌ اعتُمدت
+ * وكان هو مُنفّذها الأخير. `campaignRemaining` بوحدة **المنتجات** لا المهام —
+ * توافقاً مع لوحة المدير في `getStudioCampaignBoard`. مؤشّراتٌ ثلاثة تكفي لعينَي المصوّر.
+ */
+export async function listMyStudioCampaigns(actor: ProductStudioActor) {
+  const userId = Number(actor.userId);
+  if (!Number.isSafeInteger(userId) || userId < 1) return [];
+  const db = requireDb();
+  const branchFilter = canCrossBranches(actor)
+    ? undefined
+    : actor.branchId == null
+      ? sql`1 = 0`
+      : eq(productStudioCampaigns.branchId, Number(actor.branchId));
+  const rows = await db
+    .select({
+      id: productStudioCampaigns.id,
+      name: productStudioCampaigns.name,
+      branchId: productStudioCampaigns.branchId,
+      status: productStudioCampaigns.status,
+      startsAt: productStudioCampaigns.startsAt,
+      dueAt: productStudioCampaigns.dueAt,
+      scopeKind: productStudioCampaigns.scopeKind,
+      scopeCategoryId: productStudioCampaigns.scopeCategoryId,
+      requiredImages: productStudioCampaigns.requiredImages,
+      personalActive: sql<number>`(
+        select count(*) from ${productImageJobs}
+        where ${productImageJobs.campaignId} = ${productStudioCampaigns.id}
+        and ${productImageJobs.assignedTo} = ${userId}
+        and ${productImageJobs.status} in ('ASSIGNED','IN_PROGRESS','REJECTED')
+      )`,
+      personalPending: sql<number>`(
+        select count(*) from ${productImageJobs}
+        where ${productImageJobs.campaignId} = ${productStudioCampaigns.id}
+        and ${productImageJobs.assignedTo} = ${userId}
+        and ${productImageJobs.status} = 'PENDING_REVIEW'
+      )`,
+      personalDone: sql<number>`(
+        select count(*) from ${productImageJobs}
+        where ${productImageJobs.campaignId} = ${productStudioCampaigns.id}
+        and ${productImageJobs.assignedTo} = ${userId}
+        and ${productImageJobs.status} = 'APPROVED'
+      )`,
+    })
+    .from(productStudioCampaigns)
+    .innerJoin(
+      productStudioCampaignAssignees,
+      and(
+        eq(productStudioCampaignAssignees.campaignId, productStudioCampaigns.id),
+        eq(productStudioCampaignAssignees.userId, userId),
+      ),
+    )
+    .where(and(eq(productStudioCampaigns.status, "ACTIVE"), branchFilter))
+    .orderBy(asc(productStudioCampaigns.dueAt), asc(productStudioCampaigns.id));
+
+  // إجماليّ الحملة (منتجات نُفّذت / متبقّية) يُشتقّ خارج الاستعلام بنفس صيغة لوحة
+  // المدير: تسلسليّاً على عددٍ صغير من الحملات لا يبرّر تعقيداً إضافياً في SQL.
+  return Promise.all(
+    rows.map(async (row) => {
+      const required = Math.max(1, Number(row.requiredImages ?? 1));
+      const scope: CampaignScope = {
+        id: Number(row.id),
+        scopeKind: row.scopeKind as "ALL" | "CATEGORY" | "PRODUCTS",
+        scopeCategoryId: row.scopeCategoryId as number | null,
+        requiredImages: required,
+      };
+      const [totals] = await db
+        .select({
+          total: sql<number>`count(*)`,
+          complete: sql<number>`sum(case when (select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') >= ${required} then 1 else 0 end)`,
+        })
+        .from(products)
+        .where(and(eq(products.isActive, true), campaignScopeCondition(scope)));
+      const totalProducts = Number(totals?.total ?? 0);
+      const campaignDone = Number(totals?.complete ?? 0);
+      return {
+        campaignId: Number(row.id),
+        name: row.name,
+        branchId: row.branchId == null ? null : Number(row.branchId),
+        status: row.status as "DRAFT" | "ACTIVE" | "COMPLETED" | "CANCELLED",
+        startsAt: row.startsAt,
+        dueAt: row.dueAt,
+        requiredImages: required,
+        personal: {
+          active: Number(row.personalActive ?? 0),
+          pendingReview: Number(row.personalPending ?? 0),
+          done: Number(row.personalDone ?? 0),
+        },
+        campaign: {
+          done: campaignDone,
+          remaining: Math.max(0, totalProducts - campaignDone),
+          totalProducts,
+        },
+      };
+    }),
+  );
+}
+
 async function loadCampaign(actor: ProductStudioActor, campaignId: number): Promise<StudioCampaignRow> {
   if (!isManager(actor) && actor.role !== "auditor") throw new TRPCError({ code: "FORBIDDEN" });
   const campaign = (await requireDb().select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, campaignId)).limit(1))[0];
@@ -1153,24 +1297,42 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
     if (missing.length === 0) return { createdCount: 0, remaining: 0 };
     const ids = missing.map((product) => Number(product.id));
     await tx.select({ id: products.id }).from(products).where(inArray(products.id, ids)).for("update");
-    await tx.insert(productImageJobs).values(
-      missing.map((product) => ({
-        productId: Number(product.id),
-        campaignId,
-        branchId: Number(campaign.branchId),
-        sourceProductHash: productContentHash(product),
-        mode: "FLATTEN" as const,
-        status: "ASSIGNED" as const,
-        priority: "NORMAL" as const,
-        dueAt: campaign.dueAt,
-        revision: 1,
-        assignedTo: null,
-        assignedBy: null,
-        createdBy: actor.userId,
-        activeSlot: 1,
-        templateVersion: 1,
-      })),
+    // حرسُ سباق: حملتان نشطتان بنطاقٍ متقاطع تحسبان الناقص قبل أيّ إدراج، ثمّ تتسابقان
+    // على القيد الفريد `(productId, activeSlot)`. `onDuplicateKeyUpdate` بضبطٍ ذاتيّ
+    // يُحوّل الاصطدام إلى **تخطٍّ صامتٍ ذرّيّ** (`affectedRows=0`) بدل إسقاط الدفعة
+    // كاملةً بـER_DUP_ENTRY. `createdCount` يُشتقّ من `affectedRows` لا من طول القائمة،
+    // فلا يُبالِغ عند وجود تكراراتٍ. جذر الثغرة: تدقيق ٢٤/٨ (بنك الوكلاء الخامس).
+    const insertResult = await tx
+      .insert(productImageJobs)
+      .values(
+        missing.map((product) => ({
+          productId: Number(product.id),
+          campaignId,
+          branchId: Number(campaign.branchId),
+          sourceProductHash: productContentHash(product),
+          mode: "FLATTEN" as const,
+          status: "ASSIGNED" as const,
+          priority: "NORMAL" as const,
+          dueAt: campaign.dueAt,
+          revision: 1,
+          assignedTo: null,
+          assignedBy: null,
+          createdBy: actor.userId,
+          activeSlot: 1,
+          templateVersion: 1,
+        })),
+      )
+      .onDuplicateKeyUpdate({ set: { productId: sql`productId` } });
+    const affected = Number(
+      (insertResult as unknown as [{ affectedRows?: number }])[0]?.affectedRows ??
+        (insertResult as unknown as { affectedRows?: number }).affectedRows ??
+        missing.length,
     );
+    // MySQL يعيد ١ لكل صفٍّ مُدرَج و٠ للتصادم الذاتيّ (لا تغيّرَ حقيقي).
+    const createdCount = Math.max(0, Math.min(missing.length, affected));
+    // «تجاوَزَتنا حملةٌ أخرى» — يُسجَّل في التدقيق ولا يُبثّ في الجسم لأنّ الشاشة القائمة
+    // تعتمد الشكل `{createdCount, remaining}` فحسب؛ توسّعُ العقد يتبع الحاجة.
+    const skippedDuplicates = missing.length - createdCount;
     const remaining = await countMissingStudioProducts(tx, campaign);
     await tx.insert(auditLogs).values({
       userId: actor.userId,
@@ -1178,9 +1340,9 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
       action: "productStudio.campaign.createBacklog",
       entityType: "productStudioCampaign",
       entityId: String(campaignId),
-      newValue: { createdCount: missing.length, remaining },
+      newValue: { createdCount, skippedDuplicates, attempted: missing.length, remaining },
     });
-    return { createdCount: missing.length, remaining };
+    return { createdCount, remaining };
   });
 }
 
@@ -1190,6 +1352,68 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
  * «المتبقّي» ليس رقماً واحداً بل ثلاثة أرقامٍ مختلفة المعنى — لم تُصوَّر بعد، وقيد
  * التصوير، وتنتظر اعتمادك. جمعُها في رقمٍ واحد يُخفي أين يقف العمل فعلاً.
  */
+/**
+ * تعديلُ عضويّة الحملة بعد إنشائها — إضافة/إزالة مصوّرين على حملةٍ قائمة.
+ *
+ * قبل هذه الدالة كان الوحيد لإضافة موظفٍ حقيقيّ هو إعادة إنشاء الحملة كاملةً
+ * (لأنّ `assigneeIds` تُقرأ عند الإنشاء فقط) — أو استعمالُ حساب مصوّرٍ مؤقّتٍ لموظفٍ
+ * موجودٍ أصلاً، وهذا خلطٌ لهويّات لا داعي له. الآن الإضافة نمطٌ إداريّ عاديّ: يستقبل
+ * قائمة المصوّرين النهائية ويوفّق الجدول عليها (upsert للجدد، حذفٌ لمن أُخرج).
+ *
+ * القيود: (١) الفرعُ فرعُ الحملة كما في `createStudioCampaign` — لا عبور، (٢) العضو
+ * يجب أن يملك `productStudio: FULL` (منح تلقائيّ عبر شاشة الاستوديو)، (٣) لا يُمسّ حسابٌ
+ * مؤقّت (`openId` بادئتها `studio-temp:`) — إبطاله يمرّ عبر `revokeTemporaryPhotographers`.
+ */
+export async function updateCampaignAssignees(actor: ProductStudioActor, input: { campaignId: number; assigneeIds: number[] }) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const uniqueIds = Array.from(new Set(input.assigneeIds.map((id) => Number(id))));
+  if (uniqueIds.some((id) => !Number.isSafeInteger(id) || id < 1)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "معرّف مصوّرٍ غير صالح" });
+  }
+  return withStudioTx(async (tx) => {
+    const [campaign] = await tx.select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, input.campaignId)).limit(1).for("update");
+    if (!campaign) throw new TRPCError({ code: "NOT_FOUND", message: "حملة الاستوديو غير موجودة" });
+    assertCampaignAccess(actor, campaign);
+    if (campaign.status === "CANCELLED" || campaign.status === "COMPLETED") {
+      throw new TRPCError({ code: "CONFLICT", message: "لا يمكن تعديل مصوّري حملةٍ مُغلقة" });
+    }
+    if (uniqueIds.length > 0) await assertCampaignAssignees(tx, actor, Number(campaign.branchId), uniqueIds);
+    const existing = await tx
+      .select({ id: productStudioCampaignAssignees.id, userId: productStudioCampaignAssignees.userId, openId: users.openId })
+      .from(productStudioCampaignAssignees)
+      .innerJoin(users, eq(users.id, productStudioCampaignAssignees.userId))
+      .where(eq(productStudioCampaignAssignees.campaignId, input.campaignId));
+    // الحسابات المؤقّتة (`studio-temp:*`) خارج التوفيق — لها مسارٌ إبطالٍ مستقل.
+    const permanentExisting = existing.filter((row) => !(row.openId ?? "").startsWith("studio-temp:"));
+    const existingIds = new Set(permanentExisting.map((row) => Number(row.userId)));
+    const nextIds = new Set(uniqueIds);
+    const toAdd = uniqueIds.filter((id) => !existingIds.has(id));
+    const toRemove = permanentExisting.filter((row) => !nextIds.has(Number(row.userId))).map((row) => Number(row.userId));
+    if (toAdd.length > 0) {
+      await tx
+        .insert(productStudioCampaignAssignees)
+        .values(toAdd.map((userId) => ({ campaignId: input.campaignId, userId, createdBy: actor.userId })))
+        // القيد الفريد `uq_psca_campaign_user` يقلب سباقاً على نفس الإضافة إلى تكرارٍ آمن.
+        .onDuplicateKeyUpdate({ set: { campaignId: sql`campaignId` } });
+    }
+    if (toRemove.length > 0) {
+      await tx
+        .delete(productStudioCampaignAssignees)
+        .where(and(eq(productStudioCampaignAssignees.campaignId, input.campaignId), inArray(productStudioCampaignAssignees.userId, toRemove)));
+    }
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId: Number(campaign.branchId),
+      action: "productStudio.campaign.updateAssignees",
+      entityType: "productStudioCampaign",
+      entityId: String(input.campaignId),
+      oldValue: { assigneeIds: Array.from(existingIds) },
+      newValue: { assigneeIds: uniqueIds, added: toAdd, removed: toRemove },
+    });
+    return { campaignId: input.campaignId, added: toAdd.length, removed: toRemove.length, total: uniqueIds.length };
+  });
+}
+
 /** سقفٌ افتراضيّ لعمر الحساب المؤقّت حين تكون الحملة بلا موعد — لا حسابَ بلا نهاية. */
 const TEMP_ACCOUNT_FALLBACK_DAYS = 30;
 
@@ -2183,6 +2407,14 @@ function studioRejectedEventKey(taskId: number, revision: number): string {
   return `product-studio:${taskId}:rejected:r${revision}`;
 }
 
+/**
+ * مفتاحُ اعتمادِ الاستوديو — دورةٌ مغلقةٌ للمصوّر: أُسنِد، رُفض/اعتُمد.
+ * قبل هذا كان المصوّر يعرف الاعتماد بتحديث `HISTORY` يدوياً؛ الآن يصله إشعارٌ كأخوَيه.
+ */
+function studioApprovedEventKey(taskId: number, revision: number): string {
+  return `product-studio:${taskId}:approved:r${revision}`;
+}
+
 async function notifyStudioAssignment(taskId: number, assigneeId: number, assigneeRole: string, revision: number): Promise<void> {
   if (!isRoutineStudioRecipient(assigneeRole)) return;
   try {
@@ -2218,6 +2450,25 @@ async function notifyStudioRejection(taskId: number, assigneeId: number, revisio
     });
   } catch (error) {
     logger.warn({ err: error, taskId, assigneeId }, "تعذّر إنشاء إشعار رفض الاستوديو");
+  }
+}
+
+async function notifyStudioApproval(taskId: number, assigneeId: number, revision: number, assigneeRole: string | null, productName: string | null): Promise<void> {
+  if (!isRoutineStudioRecipient(assigneeRole)) return;
+  try {
+    await createAppNotification({
+      userId: assigneeId,
+      kind: "TASK_ASSIGNED",
+      title: "اعتُمدت مهمّة استوديو المنتجات",
+      body: productName ? `اعتُمدت الصورة والمحتوى: «${productName}».` : `اعتُمدت مهمّة الاستوديو رقم ${taskId}.`,
+      route: `/catalog/image-studio?task=${taskId}`,
+      eventKey: studioApprovedEventKey(taskId, revision),
+      entityType: "productImageJob",
+      entityId: taskId,
+      requiresAction: false,
+    });
+  } catch (error) {
+    logger.warn({ err: error, taskId, assigneeId }, "تعذّر إنشاء إشعار اعتماد الاستوديو");
   }
 }
 
@@ -2540,19 +2791,28 @@ export async function bulkAssignStudioTasks(
       }
       const unassignedIds = Array.from(unassignedByProduct.values());
       if (unassignedIds.length > 0) {
-        await tx
-          .update(productImageJobs)
-          .set({
-            assignedTo: input.assigneeId,
-            assignedBy: actor.userId,
-            assignedAt: new Date(),
-            // أولوية المهمة القائمة تُصان ما لم يُصرّح المدير بغيرها؛ الحشو بـNORMAL
-            // كان يخفض حزمة مهامٍ URGENT صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
-            ...(input.priority === undefined ? {} : { priority: input.priority }),
-            ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }),
-            revision: sql`${productImageJobs.revision} + 1`,
-          })
-          .where(inArray(productImageJobs.id, unassignedIds));
+        // إعادةُ الإسناد لطابورٍ قائم: `sourceProductHash` يُحدَّث ليطابق محتوى المنتج
+        // اللحظة، وإلّا رُفض الاعتماد لاحقاً بـ«عُدّل محتوى المنتج بعد بدء المهمة» بينما
+        // المصوّر عمل على المحتوى الراهن منذ لحظة الإسناد. مُسنَدٌ بمعنيَين: بيدٍ جديدة
+        // ومقابل محتوى راهن. الجذر أمسكه تدقيق ٢٤/٨ (بنك الوكلاء الخامس).
+        for (const [productId, jobId] of Array.from(unassignedByProduct.entries())) {
+          const product = productById.get(productId);
+          if (!product) continue;
+          await tx
+            .update(productImageJobs)
+            .set({
+              assignedTo: input.assigneeId,
+              assignedBy: actor.userId,
+              assignedAt: new Date(),
+              sourceProductHash: productContentHash(product),
+              // أولوية المهمة القائمة تُصان ما لم يُصرّح المدير بغيرها؛ الحشو بـNORMAL
+              // كان يخفض حزمة مهامٍ URGENT صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
+              ...(input.priority === undefined ? {} : { priority: input.priority }),
+              ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }),
+              revision: sql`${productImageJobs.revision} + 1`,
+            })
+            .where(eq(productImageJobs.id, jobId));
+        }
       }
     } catch (error) {
       if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
@@ -3210,7 +3470,23 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       }),
     );
     await recordAdminOverride(tx, actor, taskId, "approve", overrideReason, task.assignedTo);
-    return expectedRevision === undefined ? { imageId } : { imageId, revision: nextRevision(task) };
+    // إشعار الاعتماد للمصوّر — دورةٌ مغلقةٌ لسلسلة الإشعارات (أُسنِد/رُفض/اعتُمد).
+    // قبله كان المصوّر يعرف الاعتماد بتحديث «السجلّ» يدوياً — احتكاكٌ مجانيّ لصمت الخادم.
+    const assigneeRole = task.assignedTo == null
+      ? null
+      : (await tx.select({ role: users.role }).from(users).where(eq(users.id, task.assignedTo)).limit(1))[0]?.role ?? null;
+    return {
+      response: expectedRevision === undefined ? { imageId } : { imageId, revision: nextRevision(task) },
+      assignedTo: task.assignedTo,
+      revision: nextRevision(task),
+      assigneeRole,
+      productName: product.name ?? null,
+    };
+  }).then(async (out) => {
+    if (out.assignedTo != null) {
+      await notifyStudioApproval(taskId, Number(out.assignedTo), out.revision, out.assigneeRole, out.productName);
+    }
+    return out.response;
   });
 }
 
