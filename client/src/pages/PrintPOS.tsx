@@ -766,8 +766,11 @@ export default function PrintPOS() {
         {tabs.length < 6 && <button aria-label="طلب طباعة جديد" onClick={addTab} style={{ width: 44, height: 44, borderRadius: 9, background: C.card, border: `1.5px dashed ${C.border}`, cursor: "pointer", fontSize: 22, color: C.mutedFg, flexShrink: 0 }}>+</button>}
       </div>
 
+      {/* ٢٤/٨ (Codex P2 على PR #741): الأرضيّة كانت `oklch(0.95 ...)` مثبَّتة فاتحة، والفَون
+          `--sem-pos/--sem-warn/--destructive` صار فاتحاً في Dark ⇒ فاتحٌ على فاتح غير مقروء.
+          الآن `--sem-pos-bg/--sem-warn-bg/--sem-neg-bg` (المُقرَّرة في `tokens.css` لكلا الوضعَين). */}
       {message && (
-        <div style={{ padding: "4px 16px", background: message.kind === "ok" ? "oklch(0.95 0.05 155)" : message.kind === "warn" ? "oklch(0.95 0.05 80)" : "oklch(0.95 0.05 27)", color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <div style={{ padding: "4px 16px", background: message.kind === "ok" ? "var(--sem-pos-bg)" : message.kind === "warn" ? "var(--sem-warn-bg)" : "var(--sem-neg-bg)", color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <span>{message.text}</span>
           {message.kind !== "err" && receipt && <Link href={`/invoices/${receipt.invoiceId}`} style={{ color: C.primary, textDecoration: "underline", fontSize: 12 }}>فتح الفاتورة</Link>}
           <button onClick={() => setMessage(null)} aria-label="إغلاق التنبيه" style={{ marginRight: "auto", background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex" }}><X aria-hidden size={14} /></button>
@@ -949,6 +952,9 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
               const custom = isCustomPriceSku(s.sku);
               return (
                 <button key={s.productUnitId} onClick={() => onAdd(s)}
+                  // ٢٤/٨ (Codex P2 على PR #741): `title` يعرض الاسم الكامل عند التمرير — أسماء
+                  // الخدمات المتقاربة أطولُ من ١٤٤px تُخفي المُميِّز بلا هذا التلميح.
+                  title={`${s.productName} — ${s.unitName}${s.price == null ? "" : ` — ${fmt(Number(s.price))} د.ع`}`}
                   style={{ height: 104, display: "flex", flexDirection: "column", alignItems: "flex-start", justifyContent: "space-between", padding: "10px 11px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", textAlign: "right", background: C.card, border: `1.5px solid ${C.border}`, transition: "transform .07s, border-color .1s, box-shadow .1s" }}
                   onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.primary; e.currentTarget.style.boxShadow = `0 4px 14px ${C.primarySoft}`; }}
                   onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.boxShadow = "none"; }}
@@ -959,7 +965,9 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
                     {custom && <span style={{ fontSize: 9.5, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "1px 6px", borderRadius: 20 }}>يدوي</span>}
                   </div>
                   <div style={{ width: "100%" }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: C.fg, lineHeight: 1.25, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.productName}</div>
+                    {/* ٢٤/٨: سطران بدل قصٍّ صامت — الاسم قد يحمل مُميِّزاً بعد أوّل ١٤٤px. لو زاد
+                        نبقى على قصٍّ للسطر الثاني كي لا يفيض التصميم. */}
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: C.fg, lineHeight: 1.2, marginBottom: 2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-word" }}>{s.productName}</div>
                     <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
                       <span style={{ fontSize: 10, color: C.mutedFg }}>/ {s.unitName}</span>
                       <span style={{ fontSize: 15, fontWeight: 900, color: C.primary, direction: "ltr" }}>{s.price == null ? "—" : fmt(Number(s.price))}<span style={{ fontSize: 9, color: C.mutedFg, fontWeight: 600 }}> د.ع</span></span>
@@ -1200,6 +1208,18 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
     setNumpadOpen(open);
     try { window.localStorage.setItem("printpos.numpadOpen", open ? "1" : "0"); } catch { /* ignore */ }
   };
+  // ٢٤/٨ (Codex P1 v2 على PR #741): حقلُ المبلغ يفصل «العرض» عن «القيمة الملتزمة» — نفس نمط
+  // POS/Reception. أثناء الكتابة الوسيطة (`1,` قبل `1,5`) الحرفُ يبقى في الحقل والقيمةُ الملتزمة
+  // (`payInput` المُرسَلة إلى الحساب) لا تتغيّر إلّا حين تكون غير ملتبسة. لولا هذا: `1` ثمّ `,` ثمّ
+  // `5` كان يُلتزم `15` بدل `1.5` (React يعيد رسمَ الحقل بـpayInput=`1` فيبتلع `,`).
+  const [displayPay, setDisplayPay] = useState(payInput);
+  useEffect(() => {
+    try {
+      const norm = normalizeNumberInput(displayPay).normalized;
+      if (norm !== payInput) setDisplayPay(payInput);
+    } catch { setDisplayPay(payInput); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payInput]);
   const cartLen = cart.length;
   const paid = Number(payInput || 0);
   const cashTotal = method === "CASH" ? riqd(total) : total;
@@ -1227,10 +1247,13 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
     </button>
   );
 
-  // ٢٤/٨ (نمط Odoo): تقليل سقف PaymentBlock من ٧٨-٨٤٪ إلى ٥٥-٦٠٪ — تُعطى السلّة نصفَ العمود
-  // الأدنى لا الرَبْع. وطيّ لوحة الأرقام يُعيد ~١٥٠px إضافيّة للسلّة.
+  // ٢٤/٨ (نمط Odoo + Codex P2): تقليل سقف PaymentBlock إلى نصف العمود، لكن مع `minHeight` يضمن
+  // ظهور الإجمالي + طرق الدفع + أزرار الإتمام على الشاشات القصيرة/زوم المتصفح. الأرقام هنا:
+  //   الإجمالي ~44px + حقل المبلغ ~40px + طرق الدفع ~44px + منطقة الفعل ~90px = ~218px حدٌّ أدنى.
+  //   السقف النسبيّ يبقى مقيَّداً على الشاشات الطويلة كي تحصل السلّة على مساحتها. `min` بين النسبيّ
+  //   والحدّ الأدنى يمنع القصّ الذي كان يخفي الأزرار عند الزوم العالي.
   return (
-    <div style={{ flexShrink: 0, minHeight: 0, maxHeight: numpadOpen ? (dense ? "62%" : "58%") : (dense ? "50%" : "44%"), display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+    <div style={{ flexShrink: 0, minHeight: 260, maxHeight: numpadOpen ? (dense ? "62%" : "58%") : (dense ? "50%" : "44%"), display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
       <div style={{ padding: "7px 16px", background: C.primary, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
         <span style={{ fontSize: 13.5, color: C.primaryFg, fontWeight: 700, opacity: 0.92 }}>الإجمالي</span>
         <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
@@ -1249,9 +1272,13 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
             <input
               type="text"
               inputMode="decimal"
-              value={payInput}
+              value={displayPay}
               onChange={(e) => {
+                // ٢٤/٨ (Codex P1 v2): العرض يعكس ما يكتبه الكاشير حرفياً (حالات وسطى `1,` تظهر
+                // ولا تُلتزم كي لا يبتلعها React عند إعادة الرسم بـpayInput السابق). القيمة تُلتزم
+                // فقط حين `normalizeNumberInput` تُرجع نتيجةً غير ملتبسة.
                 const src = e.target.value;
+                setDisplayPay(src);
                 if (src === "") { setPayInput(""); return; }
                 if (!/^[\d.,،٫]*$/.test(src)) return;
                 const result = normalizeNumberInput(src);
