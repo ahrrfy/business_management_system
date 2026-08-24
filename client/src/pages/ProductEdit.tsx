@@ -139,6 +139,11 @@ export default function ProductEdit() {
   const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isService, setIsService] = useState(false);
   const [isActive, setIsActive] = useState(true);
+  // ٢٤/٨ — متابعةُ PR #755 (هجرة 0262): توجيه العرض قابل للتحرير بعد الإنشاء.
+  // كان يُضبط مرّةً واحدةً عند الإنشاء عبر ServiceForm ثم يتعذّر تعديله ⇒ لا وسيلةَ لإخفاء
+  // خدمةٍ عن كاشير طباعة/استقبال دون تعطيلها كليّاً. الآن تبديلان مماثلان لتبديلَي ServiceForm.
+  const [showInReception, setShowInReception] = useState(false);
+  const [showInPrintPos, setShowInPrintPos] = useState(false);
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
 
   const [units, setUnits] = useState<ClientUnit[]>([]);
@@ -178,7 +183,7 @@ export default function ProductEdit() {
   }, [
     hydrated, costPrice, units, variants, images, colors, sizes, categoryId,
     originalName, productType, brand, modelName, description,
-    isCustomizable, allowAutoCartRecommendations, isService, isActive, consignment, baseSku,
+    isCustomizable, allowAutoCartRecommendations, isService, isActive, showInReception, showInPrintPos, consignment, baseSku,
   ]);
   useUnsavedGuard(touched);
 
@@ -196,6 +201,8 @@ export default function ProductEdit() {
     setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsService(d.isService);
     setIsActive(d.isActive);
+    setShowInReception(d.showInReception);
+    setShowInPrintPos(d.showInPrintPos);
     setConsignment({ isConsignment: d.isConsignment, consignorId: d.consignorId, consignorName: d.consignorName });
 
     // قالب الوحدات بمعرّفات محلّية.
@@ -297,6 +304,11 @@ export default function ProductEdit() {
         utils.catalog.posList.invalidate(),
         utils.catalog.adminList.invalidate(),
         utils.catalog.forPurchase.invalidate(),
+        // Codex P2 (٢٤/٨ على PR #757): تحرير `showInPrintPos` يغيّر بنودَ شبكة كاشير الطباعة،
+        // فإبطالُ كاشِها إلزاميّ. بدونه، staleTime العالميّ (٦٠ث) يُبقي القائمة القديمة معروضةً
+        // بعد رجوع المدير للـPrintPOS ⇒ يعتقد أنّ التغيير لم يُطبَّق. `printPos.services` نفسها
+        // تُغذّي `printServicesCache` المحلّي أيضاً، فالإبطال يُنعش الاثنَين.
+        utils.printPos.services.invalidate(),
       ]);
       setHydrated(false); // أعد التحميل ليعكس المعرّفات الجديدة
     },
@@ -462,6 +474,8 @@ export default function ProductEdit() {
       allowAutoCartRecommendations,
       isService,
       isActive,
+      showInReception,
+      showInPrintPos,
       isConsignment: consignment.isConsignment,
       consignorId: consignment.consignorId,
       unitTemplate,
@@ -678,6 +692,12 @@ export default function ProductEdit() {
           <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
           <Field label="التوصيات الآلية" hint="يكمل العلاقات اليدوية بمنتجات متاحة من نفس التصنيف."><div className="flex items-center gap-2 h-9"><Switch checked={allowAutoCartRecommendations} onCheckedChange={setAllowAutoCartRecommendations} /><span className="text-xs text-muted-foreground">{allowAutoCartRecommendations ? "مسموح" : "متوقف"}</span></div></Field>
           <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span></div></Field>
+          <Field label="نقطة الطباعة والاستنساخ" hint={showInPrintPos ? "يَظهر في شبكة «خدمات طباعة» ويُباع عبر كاشير الطباعة." : "لن يَظهر في شبكة خدمات الطباعة."}>
+            <div className="flex items-center gap-2 h-9"><Switch checked={showInPrintPos} onCheckedChange={setShowInPrintPos} /><span className="text-xs text-muted-foreground">{showInPrintPos ? "يظهر" : "مخفيّ"}</span></div>
+          </Field>
+          <Field label="نقطة خدمة العملاء (الاستقبال)" hint={showInReception ? "يَظهر في بحث كاشير الاستقبال ويُباع عبر مسار الاستقبال." : "لن يَظهر في كاشير الاستقبال."}>
+            <div className="flex items-center gap-2 h-9"><Switch checked={showInReception} onCheckedChange={setShowInReception} /><span className="text-xs text-muted-foreground">{showInReception ? "يظهر" : "مخفيّ"}</span></div>
+          </Field>
         </CardContent>
       </Card>
 

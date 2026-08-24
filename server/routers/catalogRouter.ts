@@ -980,6 +980,10 @@ export const catalogRouter = router({
         isCustomizable: z.boolean().optional(),
         allowAutoCartRecommendations: z.boolean().optional(),
         isActive: z.boolean().optional(),
+        // ٢٤/٨ — متابعةُ PR #755 (هجرة 0262): تحرير التوجيه بعد الإنشاء.
+        // اختياريّان بلا افتراض ⇒ غيابُهما يُبقي القيمة الحالية بلا مسّ (نمط PATCH).
+        showInReception: z.boolean().optional(),
+        showInPrintPos: z.boolean().optional(),
         isConsignment: z.boolean().optional(),
         consignorId: z.number().int().positive().nullish(),
         unitTemplate: z.array(updateUnitTemplateSchema).min(1),
