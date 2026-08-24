@@ -140,7 +140,8 @@ export default function EmployeeAdvances() {
             }
             count={filtered.length}
             loading={listQ.isLoading}
-            search={{ value: q, onChange: setQ, placeholder: "بحث باسم الموظف أو رقم السند…", autoFocus: true }}
+            // ٢٤/٨ (Codex P2 على PR #760): لا `autoFocus` — الصفحةُ تبويبٌ داخل HrHub.
+            search={{ value: q, onChange: setQ, placeholder: "بحث باسم الموظف أو رقم السند…" }}
             activeFilterCount={(status ? 1 : 0) + (empFilter ? 1 : 0) + (branchFilter ? 1 : 0)}
             onResetFilters={() => { setQ(""); setStatus(""); setEmpFilter(""); setBranchFilter(""); }}
             onRefresh={() => void refresh()}
