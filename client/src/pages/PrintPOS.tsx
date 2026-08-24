@@ -99,23 +99,24 @@ function useDarkMode() {
   return dark;
 }
 
-// ─── رموز الألوان (مطابقة لـ POS.tsx) ─────────────────────────────────────────
+// ─── رموز الألوان — موحَّدة مع ثيم النظام (بلاغ المالك «الثيم مختلفٌ عن بقيّة النظام») ─────
+//
+// ٢٤/٨: كانت `LIGHT/DARK` قيماً `oklch` مثبَّتة بحُوَيْة زرقاء (٢٤٧-٢٦٤) بينما بقيّة النظام
+// دافئة (٧٨-٨٢). النتيجة: هذه الشاشة تبدو باردةً غريبةً بجوار الفواتير والتقارير. الحلّ:
+// إشارات مباشرة إلى CSS variables (`var(--background)` إلخ) — نفس المتغيّرات المستعملة في
+// Tailwind (`bg-card`, `text-foreground`…). التبديل الحيّ Light↔Dark محكومٌ بـ`data-theme` /
+// `.dark` على `<html>` كما كان.
 const LIGHT = {
-  bg: "oklch(0.985 0.002 247.858)", card: "#fff", border: "oklch(0.922 0.004 247.858)",
-  muted: "oklch(0.962 0.004 247.858)", mutedFg: "oklch(0.552 0.016 285.938)", fg: "oklch(0.235 0.015 65)",
-  primary: "oklch(0.488 0.243 264.376)", primaryFg: "#fff", primarySoft: "oklch(0.94 0.04 264.376)",
-  success: "oklch(0.50 0.13 155)", amber: "oklch(0.65 0.15 75)", danger: "oklch(0.577 0.245 27.325)",
-  numKey: "oklch(0.962 0.004 247.858)", delKey: "oklch(0.92 0.05 20)", delFg: "oklch(0.50 0.22 25)",
-  overlay: "oklch(0.15 0.01 265 / .88)",
+  bg: "var(--background)", card: "var(--card)", border: "var(--border)",
+  muted: "var(--muted)", mutedFg: "var(--muted-foreground)", fg: "var(--foreground)",
+  primary: "var(--primary)", primaryFg: "var(--primary-foreground)", primarySoft: "color-mix(in oklch, var(--primary) 14%, transparent)",
+  success: "var(--sem-pos)", amber: "var(--sem-warn)", danger: "var(--destructive)",
+  numKey: "var(--muted)", delKey: "color-mix(in oklch, var(--destructive) 12%, var(--card))", delFg: "var(--destructive)",
+  overlay: "color-mix(in oklch, var(--foreground) 78%, transparent)",
 };
-const DARK = {
-  bg: "oklch(0.14 0.010 65)", card: "oklch(0.20 0.012 65)", border: "oklch(1 0 0 / 0.12)",
-  muted: "oklch(0.22 0.012 65)", mutedFg: "oklch(0.72 0.010 247)", fg: "oklch(1 0 0)",
-  primary: "oklch(0.55 0.22 264)", primaryFg: "#fff", primarySoft: "oklch(0.28 0.06 264)",
-  success: "oklch(0.55 0.14 155)", amber: "oklch(0.72 0.15 75)", danger: "oklch(0.65 0.22 27)",
-  numKey: "oklch(0.24 0.010 65)", delKey: "oklch(0.26 0.05 20)", delFg: "oklch(0.75 0.22 25)",
-  overlay: "oklch(0.08 0.01 265 / .92)",
-};
+// نفس التوكنات — DARK يعمل تلقائياً حين يحمل `<html>` صنف `.dark` أو `data-theme="dark"` (توكنات
+// index.css تعيد تعريف نفسها). نُبقي DARK رمزياً للـtype لكن قيمته هي LIGHT نفسه.
+const DARK = LIGHT;
 type C = typeof LIGHT;
 
 const SHOP = "الرؤية العربية";
