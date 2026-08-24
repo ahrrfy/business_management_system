@@ -10,6 +10,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { assetCategoryLabel } from "@shared/assets";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { AlertTriangle, ArrowLeft, Banknote, CalendarClock, Coins, Package, ThumbsUp, TrendingDown, Users, Wrench } from "lucide-react";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -27,6 +28,17 @@ function previousMonthYm(): string {
 export default function Assets() {
   const [, navigate] = useLocation();
   const dash = trpc.assets.dashboard.useQuery();
+  // مرآة الخادم: `assets.create` و`assets.postDepreciation` = `assetWrite` (assets:FULL) —
+  // server/routers/assetsRouter.ts:133/192. الصفحة نفسها assets:READ ⇒ نُخفي إجراءات الكتابة
+  // على من لا يستطيعها بدل زرٍّ يفتح ثمّ يُرفض (لا سيما ترحيل الإهلاك الذي يكتب في الدفتر).
+  const me = trpc.auth.me.useQuery();
+  const canWrite = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "assets",
+    "FULL",
+    ["manager"],
+  );
   // #FI-02 (تدقيق التثبيت): postDepreciation endpoint كان يتيماً — الإهلاك الشهري لا يُرحَّل قطّ
   // ⇒ accumulatedDepreciation يبقى 0 والميزانية تعرض الأصول بقيمة الشراء والP&L يخلو من مصروف الإهلاك،
   // والربح مبالَغ كل فترة (حتى يقع التصرّف فيَنسف كامل المتراكم في شهر واحد عبر DEPR:id:DISP catch-up).
@@ -69,7 +81,9 @@ export default function Assets() {
         actions={
           <div className="flex items-center gap-2">
             <Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>
-            <Button size="sm" onClick={() => navigate("/assets/new")}>+ أصل جديد</Button>
+            {canWrite && (
+              <Button size="sm" onClick={() => navigate("/assets/new")}>+ أصل جديد</Button>
+            )}
           </div>
         }
       />
@@ -117,38 +131,41 @@ export default function Assets() {
         </Card>
       </div>
 
-      {/* ترحيل الإهلاك الشهري — إكمال الشريحة الرأسية لـpostDepreciation (لا مُشغِّل قبل هذه الشاشة). */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-1.5">
-            <CalendarClock aria-hidden className="size-4" />
-            ترحيل الإهلاك الشهري
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col md:flex-row gap-3 md:items-end">
-            <div className="space-y-1">
-              <Label htmlFor="dep-period">الشهر</Label>
-              <Input
-                id="dep-period"
-                type="month"
-                dir="ltr"
-                value={depPeriod}
-                min="2000-01"
-                max="2200-12"
-                onChange={(e) => setDepPeriod(e.target.value)}
-                className="w-40"
-              />
+      {/* ترحيل الإهلاك الشهري — إكمال الشريحة الرأسية لـpostDepreciation (لا مُشغِّل قبل هذه الشاشة).
+          البطاقة تُخفى عن مستعمِلي assets:READ (يستطيعون رؤية اللوحة لا الكتابة في الدفتر). */}
+      {canWrite && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-1.5">
+              <CalendarClock aria-hidden className="size-4" />
+              ترحيل الإهلاك الشهري
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col md:flex-row gap-3 md:items-end">
+              <div className="space-y-1">
+                <Label htmlFor="dep-period">الشهر</Label>
+                <Input
+                  id="dep-period"
+                  type="month"
+                  dir="ltr"
+                  value={depPeriod}
+                  min="2000-01"
+                  max="2200-12"
+                  onChange={(e) => setDepPeriod(e.target.value)}
+                  className="w-40"
+                />
+              </div>
+              <Button onClick={runDepreciation} disabled={postDep.isPending}>
+                {postDep.isPending ? "جارٍ الترحيل…" : "ترحيل إهلاك الشهر"}
+              </Button>
+              <p className="text-xs text-muted-foreground md:me-auto max-w-lg">
+                يُرحَّل مصروف الإهلاك لكل الأصول النشطة (القسط الثابت/المتناقص) على أساس التاريخ المطلوب. آمن للتكرار — لن يُنشئ قيداً مضاعفاً لشهر مُرحَّل.
+              </p>
             </div>
-            <Button onClick={runDepreciation} disabled={postDep.isPending}>
-              {postDep.isPending ? "جارٍ الترحيل…" : "ترحيل إهلاك الشهر"}
-            </Button>
-            <p className="text-xs text-muted-foreground md:me-auto max-w-lg">
-              يُرحَّل مصروف الإهلاك لكل الأصول النشطة (القسط الثابت/المتناقص) على أساس التاريخ المطلوب. آمن للتكرار — لن يُنشئ قيداً مضاعفاً لشهر مُرحَّل.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* أحدث الصيانة */}
@@ -166,8 +183,18 @@ export default function Assets() {
               </thead>
               <tbody>
                 {d.recentMaintenance.map((m) => (
-                  <tr key={m.id} className="border-t">
-                    <td className="p-2">{m.assetName ?? "—"} <span className="text-xs text-muted-foreground" dir="ltr">{m.assetCode ?? ""}</span></td>
+                  <tr
+                    key={m.id}
+                    className="border-t hover:bg-accent/50 cursor-pointer transition"
+                    onClick={() => navigate(`/assets/${m.assetId}`)}
+                  >
+                    <td className="p-2">
+                      <Link href={`/assets/${m.assetId}`} className="text-primary hover:underline" onClick={(ev) => ev.stopPropagation()}>
+                        {m.assetName ?? "—"}
+                      </Link>
+                      {" "}
+                      <span className="text-xs text-muted-foreground" dir="ltr">{m.assetCode ?? ""}</span>
+                    </td>
                     <td className="p-2 text-xs">{m.type}</td>
                     <td className="p-2 text-xs" dir="ltr">{m.maintDate}</td>
                     <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(m.cost)}</td>
