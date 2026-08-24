@@ -101,7 +101,7 @@ export default function Employees() {
               value: f.q,
               onChange: (v) => { setF({ q: v }); setPage(0); },
               placeholder: "بحث (اسم/هاتف/هوية/مسمى)",
-              autoFocus: true,
+              // ٢٤/٨ (Codex P2 على PR #760): لا `autoFocus` — الصفحةُ تبويبٌ داخل HrHub.
             }}
             activeFilterCount={activeFilterCount}
             onResetFilters={resetF}

@@ -181,7 +181,8 @@ export default function Suppliers() {
               value: q,
               onChange: setQ,
               placeholder: "بحث (اسم/هاتف/مدينة/رقم قديم)",
-              autoFocus: true,
+              // ٢٤/٨ (Codex P2 على PR #760): لا `autoFocus` — الصفحةُ تبويبٌ داخل SuppliersHub،
+              // فالتركيزُ التلقائيّ يسرق التركيزَ من زرّ التبويب فينكسر ملاحةُ الأسهم بين التبويبات.
             }}
             activeFilterCount={[kind, includeInactive ? "1" : ""].filter(Boolean).length}
             onResetFilters={resetFilters}

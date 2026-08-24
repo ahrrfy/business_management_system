@@ -202,7 +202,7 @@ export default function Categories() {
               onChange={(e) => setQuery(e.target.value)}
               placeholder="بحث بالاسم أو الوصف…"
               className="h-8 w-56 pr-8"
-              autoFocus
+              // ٢٤/٨ (Codex P2 على PR #760): لا `autoFocus` — الصفحةُ تبويبٌ داخل InventoryHub.
               aria-label="بحث في الفئات"
             />
           </div>
