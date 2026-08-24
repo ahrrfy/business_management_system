@@ -25,7 +25,7 @@ import { round2 } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -501,7 +501,22 @@ export default function Invoices() {
       },
     },
     { accessorKey: "invoiceDate", header: "التاريخ", cell: (c) => fmtDate(c.getValue() as string) },
-    { accessorKey: "customerName", header: "العميل", cell: (c) => custName(c.getValue() as string | null) },
+    {
+      accessorKey: "customerName",
+      header: "العميل",
+      // ٢٤/٨ (تدقيق): اسم العميل صار رابطاً لكشف حسابه — يوفّر خطوة يوميّة (فتح الفاتورة ثمّ
+      // فتح كشف الحساب من خلالها). «عميل نقدي» يظلّ نصاً (بلا customerId).
+      cell: ({ row }) => {
+        const n = row.original.customerName;
+        const id = row.original.customerId;
+        if (!n || !id) return custName(n);
+        return (
+          <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
+            {n}
+          </Link>
+        );
+      },
+    },
     // عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (سطر واحد لكل فرع لا معنى لتمييزه).
     ...(showBranchCol
       ? [{
@@ -879,6 +894,8 @@ export default function Invoices() {
         data={data}
         // ١٨/٨: البحث صار يشمل رقم أمر الشغل — وهو الرقم الذي بيد الزبون وعلى باركود التذكرة.
         searchPlaceholder="بحث برقم الفاتورة أو أمر الشغل أو اسم العميل…"
+        // ٢٤/٨ (تدقيق): المحاسبون يفتحون الشاشة ويكتبون فوراً — بلا `autoFocus` يضيع الحرف الأوّل.
+        autoFocusSearch
         barcodeSearch
         loading={rows.isLoading}
         // صدق الخطأ: الرفض ٤٠٣/انقطاع الشبكة كان يُعرَض «لا فواتير مطابقة» فيُقرأ «لا فواتير لي».

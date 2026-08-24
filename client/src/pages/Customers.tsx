@@ -466,6 +466,9 @@ export default function Customers() {
               value: q,
               onChange: (v) => { setQ(v); setPage(0); },
               placeholder: "بحث (اسم/هاتف/رقم قديم)",
+              // ٢٤/٨ (تدقيق): البحث الفوريّ عن عميل هو غالب الاستعمال — تركيزٌ تلقائيّ يمنع
+              // ضياع الحرف الأوّل عند فتح الشاشة.
+              autoFocus: true,
             }}
             filters={
               <>
@@ -659,7 +662,12 @@ export default function Customers() {
                         onChange={() => sel.toggle(id)}
                       />
                     </td>
-                    <td className="p-2 font-medium">{c.name}</td>
+                    <td className="p-2 font-medium">
+                      {/* ٢٤/٨ (تدقيق): اسمُ العميل رابطٌ لكشف حسابه — يوفّر خطوةً يومية (فتح ⋯ → «كشف حساب»). */}
+                      <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
+                        {c.name}
+                      </Link>
+                    </td>
                     {hasLegacy && (
                       <td className="p-2 text-xs tabular-nums text-muted-foreground" dir="ltr">
                         {legacyCodeOf(c) ?? "—"}
@@ -784,7 +792,22 @@ export default function Customers() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <TableEmptyRow colSpan={(hasLegacy ? 11 : 10) + (isElevated ? 1 : 0)} message="لا عملاء مطابقين. أضف عميلاً جديداً أو غيّر الفلاتر." />
+                <tr>
+                  {/* ٢٤/٨ (تدقيق): بدل نصٍّ جامد، إن كانت هناك فلاتر مفعَّلة نعرض زرّ «مسح كل الفلاتر»
+                      داخل الرسالة نفسها — لا حاجةَ لتتبّع الفلاتر أعلى الصفحة عند خطأ فلترة. */}
+                  <td colSpan={(hasLegacy ? 11 : 10) + (isElevated ? 1 : 0)} className="p-6 text-center text-sm text-muted-foreground">
+                    <div className="flex flex-col items-center gap-2">
+                      <span>لا عملاء مطابقين.</span>
+                      {hasAnyFilter ? (
+                        <Button type="button" variant="outline" size="sm" onClick={() => { resetAllFilters(); setPage(0); }}>
+                          مسح كل الفلاتر
+                        </Button>
+                      ) : (
+                        <span className="text-xs">أضِف عميلاً جديداً أو غيّر البحث.</span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -797,7 +820,11 @@ export default function Customers() {
           <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
             ← السابق
           </Button>
-          <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
+          {/* ٢٤/٨ (تدقيق): إجماليّ العملاء ظاهرٌ في الترقيم — الكاشير/المندوب لا يرى `OperationsSummary`
+              المحجوز للمرتفعين، فلا يعرف كم عميلاً في نتائجه. */}
+          <div className="text-muted-foreground">
+            صفحة {page + 1} من {pages} · <span className="tabular-nums">{total.toLocaleString("en-US")}</span> عميل
+          </div>
           <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>
             التالي →
           </Button>

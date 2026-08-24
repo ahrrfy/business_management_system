@@ -550,7 +550,12 @@ export default function InvoiceDetail() {
         <AutoPrintOnce onPrint={() => void printApprovedA4()} />
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">تفاصيل الفاتورة</h1>
+        {/* ٢٤/٨ (تدقيق): رقم الفاتورة في العنوان — عند فتح تبويباتٍ متعدّدة لفواتير مختلفة كلٌّ منها
+            كان يعرض «تفاصيل الفاتورة» ذاتها. الرقم يميّز التبويبات بصرياً وفي `document.title` عبر
+            نمطٍ لاحق. */}
+        <h1 className="text-2xl font-bold">
+          تفاصيل الفاتورة <span dir="ltr" className="font-mono text-primary">#{data.invoiceNumber}</span>
+        </h1>
         <div className="flex flex-wrap items-center gap-2">
           <DocumentWhatsAppDialog
             kind="INVOICE"
@@ -769,7 +774,21 @@ export default function InvoiceDetail() {
                   <span className="text-xs text-muted-foreground">{sourceTypeLabel(data.sourceType)}</span>
                 </span>
               </Field>
-              <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
+              <Field label="العميل">
+                {/* ٢٤/٨ (تدقيق): اسمُ العميل رابطٌ لكشف الحساب حين يكون له customerId — يوفّر
+                    الخطوة اليوميّة (فتح الفاتورة ثمّ الانتقال لكشف حسابه). «عميل نقدي» يبقى نصاً. */}
+                {data.customerId ? (
+                  <Link
+                    href={`/customers-statement?id=${data.customerId}`}
+                    className="text-primary hover:underline"
+                    title="فتح كشف حساب العميل"
+                  >
+                    {data.customerName ?? `#${data.customerId}`}
+                  </Link>
+                ) : (
+                  data.customerName ?? "عميل نقدي"
+                )}
+              </Field>
               <Field label="موظف المبيعات">{data.salespersonName ?? "—"}</Field>
               <Field label="الوردية">
                 {data.shiftId
@@ -1085,9 +1104,15 @@ export default function InvoiceDetail() {
                     </td>
                     <td className="px-3 py-2 text-xs">
                       {p.voucherNumber && (
-                        <span className="text-muted-foreground">
+                        // ٢٤/٨ (تدقيق): رقمُ السند صار رابطاً لصفحة السندات مع فلترٍ على رقمه —
+                        // المحاسب يطابق قبضاً بسنده يومياً بلا نسخٍ يدويّ وتنقّلٍ.
+                        <Link
+                          href={`/vouchers?number=${encodeURIComponent(p.voucherNumber)}`}
+                          className="text-primary hover:underline"
+                          title="فتح السند"
+                        >
                           {p.voucherNumber}
-                        </span>
+                        </Link>
                       )}
                       {p.attachmentUrl && (
                         <a
