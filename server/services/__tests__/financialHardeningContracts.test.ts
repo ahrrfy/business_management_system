@@ -52,6 +52,14 @@ describe("financial hardening source contracts", () => {
     expect(payrollRouter).toContain("attachmentUrl: z.string().max(3_000_000).nullish()");
   });
 
+  it("keeps dependency security overrides active under pnpm 11", () => {
+    const workspace = read("pnpm-workspace.yaml");
+    const packageJson = read("package.json");
+    expect(workspace).toContain('"uuid@<11.1.1": ">=11.1.1"');
+    expect(workspace).toContain('"@opentelemetry/core@<2.8.0": ">=2.8.0"');
+    expect(packageJson).not.toContain('"pnpm"');
+  });
+
   it("does not acknowledge external webhooks when persistence fails", () => {
     const source = read("server/routes/channelWebhooks.ts");
     expect(source).toContain('return res.status(503).send("temporary failure")');
