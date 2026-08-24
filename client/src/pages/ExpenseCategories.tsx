@@ -14,6 +14,7 @@ import {
   TableEmptyRow,
 } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -423,9 +424,23 @@ export default function ExpenseCategories() {
                     <td className="p-2 font-medium">
                       {r.name}
                       {r.isBucketDefault && (
-                        <span className="ms-1 rounded-full bg-[var(--sem-info-bg)] px-2 py-0.5 text-[10px] text-[var(--sem-info)]">
-                          احتياطية الدلو
-                        </span>
+                        // Codex P2 (٢٤/٨): `Popover` بدل `Tooltip` — يفتح باللمس (Tap) على الأجهزة
+                        // اللمسية، وبالنقر والمفتاح (Enter/Space) على الحاسوب. Radix Tooltip يفشل
+                        // على اللمس لأنّ pointer-down يُخفي التركيز فيتعذّر ظهوره بتاباً واحد.
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label="ما معنى «احتياطية الدلو»؟"
+                              className="ms-1 inline-block cursor-help rounded-full bg-[var(--sem-info-bg)] px-2 py-0.5 text-[10px] text-[var(--sem-info)] outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80"
+                            >
+                              احتياطية الدلو
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent side="top" className="max-w-xs text-xs">
+                            الفئة الاحتياطية لهذا الدلو — يُصنَّف بها أيّ مصروفٍ لم يُختَر له فئةٌ صراحةً. لا يُنقل دلوها ولا تُعطَّل يدوياً (يُعالجها زرّ «استعادة الافتراضية» إن اختلّت).
+                          </PopoverContent>
+                        </Popover>
                       )}
                     </td>
                     <td className="p-2 text-xs">
@@ -441,7 +456,22 @@ export default function ExpenseCategories() {
                       {r.sortOrder}
                     </td>
                     <td className="p-2 text-center text-xs">
-                      {r.isActive ? "نعم" : "لا"}
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={r.isActive ? "شرح: الفئة نشطة" : "شرح: الفئة معطّلة"}
+                            className={`inline-block cursor-help rounded-full px-2 py-0.5 outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80 ${r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}
+                          >
+                            {r.isActive ? "نشطة" : "معطّلة"}
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent side="top" className="max-w-xs text-xs">
+                          {r.isActive
+                            ? "الفئة تظهر في منتقي المصروف الجديد."
+                            : "الفئة مخفيّة عن منتقي المصروف الجديد — المصروفات القديمة المُصنَّفة بها تحتفظ بتصنيفها بلا مسّ."}
+                        </PopoverContent>
+                      </Popover>
                     </td>
                     {canManage && (
                       <td className="p-2 text-center">
@@ -480,7 +510,23 @@ export default function ExpenseCategories() {
                   </tr>
                 ))}
                 {!list.isLoading && visibleRows.length === 0 && (
-                  <TableEmptyRow colSpan={8} message="لا فئات حتى الآن." />
+                  <TableEmptyRow
+                    colSpan={8}
+                    message={
+                      query ? (
+                        <div className="space-y-2">
+                          <div>لا فئات مطابقة للبحث «{query}».</div>
+                          <Button variant="outline" size="sm" onClick={() => setQuery("")}>
+                            مسح البحث
+                          </Button>
+                        </div>
+                      ) : canManage ? (
+                        "لا فئات بعد — استعد الافتراضية أو أضِف أوّل فئة أعلاه."
+                      ) : (
+                        "لا فئات حتى الآن."
+                      )
+                    }
+                  />
                 )}
               </tbody>
             </table>
