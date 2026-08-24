@@ -1,3 +1,5 @@
+import { Link } from "wouter";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { allocateLineTax } from "@/components/invoice";
 import { PurchaseIntegrityPanel } from "@/components/purchases/PurchaseIntegrityPanel";
@@ -33,9 +35,26 @@ const PO_STATUS: Record<string, string> = {
   CANCELLED: "ملغى",
 };
 
+// ٢٤/٨ (تدقيق): شارات ألوان بدل نصٍّ خام — الفحص البصريّ للطابور صار ممكناً بلمحة.
+// pending: مسوّدة/مُرسَل — لم يُعتمَد بعد.
+// active: مؤكّد/مُستلَم — سارٍ.
+// cancelled: ملغى.
+const PO_STATUS_CLASS: Record<string, string> = {
+  DRAFT: "badge-status-pending",
+  SENT: "badge-status-pending",
+  CONFIRMED: "badge-status-active",
+  RECEIVED: "badge-status-active",
+  CANCELLED: "badge-status-cancelled",
+};
+
 const SETTLEMENT_TYPE: Record<string, string> = {
   CASH: "نقدي",
   CREDIT: "آجل",
+};
+
+const SETTLEMENT_CLASS: Record<string, string> = {
+  CASH: "badge-status-active",
+  CREDIT: "badge-status-pending",
 };
 
 const selectCls =
@@ -80,6 +99,14 @@ export default function Purchases() {
   // فلتر الفرع وعموده — للمرتفعين العابرين للفروع فقط (الخادم يتجاهل branchId لغيرهم أصلاً:
   // scopedBranchId الحاكم في buildPurchasesListConds، فالإخفاء هنا عرضيّ لا أمنيّ — نمط Invoices.tsx).
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  // ٢٤/٨ (تدقيق): كشفُ حساب المورّد للمرتفعين والمحاسبين — لغيرهم اسم المورّد نصٌّ.
+  const canOpenSupplierStatement = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "suppliers",
+    "READ",
+    ["admin", "manager", "accountant", "auditor"],
+  );
   const canViewIntegrity =
     me.data?.role === "admin" ||
     me.data?.role === "manager" ||
@@ -269,6 +296,8 @@ export default function Purchases() {
               value: f.q,
               onChange: (v) => setF({ q: v }),
               placeholder: "بحث (رقم الأمر/المورد/ملاحظات)",
+              // ٢٤/٨ (تدقيق): مسؤول المشتريات يفتح ويكتب فوراً — تركيزٌ تلقائيّ يمنع ضياع الحرف الأوّل.
+              autoFocus: true,
             }}
             activeFilterCount={activeFilterCount}
             onResetFilters={resetF}
@@ -435,7 +464,16 @@ export default function Purchases() {
                       <td className="p-2">
                         <CopyInline value={p.poNumber} />
                       </td>
-                      <td className="p-2">{p.supplierName ?? "—"}</td>
+                      <td className="p-2">
+                        {/* ٢٤/٨ (تدقيق): اسم المورّد رابطٌ لكشف حسابه — بلا حاجةٍ لفتح ⋯. */}
+                        {p.supplierName && p.supplierId && canOpenSupplierStatement ? (
+                          <Link href={`/suppliers-statement?id=${p.supplierId}`} className="text-primary hover:underline" title="فتح كشف حساب المورّد">
+                            {p.supplierName}
+                          </Link>
+                        ) : (
+                          p.supplierName ?? "—"
+                        )}
+                      </td>
                       {showBranchCol && (
                         <td className="p-2">
                           {branchNames.get(p.branchId ?? -1) ?? "—"}
@@ -458,9 +496,11 @@ export default function Purchases() {
                       <td className="p-2 text-right tabular-nums" dir="ltr">
                         {p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—"}
                       </td>
+                      {/* ٢٤/٨ (تدقيق): `title` يشرح صيغة الرقم — «المتبقّي = الإجمالي − المدفوع». */}
                       <td
                         className="p-2 text-right font-bold tabular-nums"
                         dir="ltr"
+                        title="المتبقّي = الإجمالي − المدفوع"
                       >
                         {p.agreedCurrency === "USD"
                           ? `${D(p.usdTotal ?? 0)
@@ -469,9 +509,16 @@ export default function Purchases() {
                           : `${positiveDiff(p.total ?? 0, p.paidAmount ?? 0).toFixed(2)} د.ع`}
                       </td>
                       <td className="p-2">
-                        {SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType}
+                        {/* ٢٤/٨ (تدقيق): شارةُ لون بدل نصٍّ خام. */}
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${SETTLEMENT_CLASS[p.settlementType] ?? "badge-status-pending"}`}>
+                          {SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType}
+                        </span>
                       </td>
-                      <td className="p-2">{PO_STATUS[p.status] ?? p.status}</td>
+                      <td className="p-2">
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[p.status] ?? "badge-status-pending"}`}>
+                          {PO_STATUS[p.status] ?? p.status}
+                        </span>
+                      </td>
                       <td className="p-2 text-center">
                         <RowActions
                           mode="auto"
