@@ -22,6 +22,7 @@ import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { D } from "@/lib/money";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { HandCoins, Plus, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { EmployeeAdvanceRepaymentPanel } from "@/components/hr/EmployeeAdvanceRepaymentPanel";
@@ -36,10 +37,18 @@ const STATUS_CLS: Record<string, string> = {
   SETTLED: "badge-status-active",
   CANCELLED: "bg-muted text-muted-foreground",
 };
+const STATUS_TITLE: Record<string, string> = {
+  ACTIVE: "نشطة — تُخصم تلقائياً من كل مسيّر راتب حتى تصفير المتبقّي",
+  SETTLED: "مسوّاة — استُوفي المبلغ كاملاً بخصوماتٍ من الرواتب",
+  CANCELLED: "ملغاة — أُلغيت قبل بدء الخصم (سند الصرف لم يُعكَس آلياً)",
+};
 
 function StatusBadge({ status }: { status: string }) {
   return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-xs whitespace-nowrap ${STATUS_CLS[status] ?? "bg-muted text-muted-foreground"}`}>
+    <span
+      className={`inline-block rounded-full px-2 py-0.5 text-xs whitespace-nowrap ${STATUS_CLS[status] ?? "bg-muted text-muted-foreground"}`}
+      title={STATUS_TITLE[status] ?? undefined}
+    >
       {STATUS_LABEL[status] ?? status}
     </span>
   );
@@ -47,6 +56,17 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function EmployeeAdvances() {
   const utils = trpc.useUtils();
+  // مرآة الخادم: `payroll.advanceGrant` و`payroll.advanceCancel` = `hrWrite` (hr:FULL) —
+  // server/routers/payrollRouter.ts:522/547. إخفاءُ زرّ «منح سلفة» على من لا يستطيع الحفظ (بدل
+  // فتحِ حوارٍ يُرفض عند submit).
+  const me = trpc.auth.me.useQuery();
+  const canGrant = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "hr",
+    "FULL",
+    ["manager"],
+  );
   const [status, setStatus] = useState<"" | "ACTIVE" | "SETTLED" | "CANCELLED">("ACTIVE");
   const [empFilter, setEmpFilter] = useState("");
   const [branchFilter, setBranchFilter] = useState("");
@@ -99,9 +119,11 @@ export default function EmployeeAdvances() {
         title="سلف الموظفين"
         description="تُمنح السلفة بسند صرف حقيقي من الخزينة وتُخصم تلقائياً من مسيّرات الرواتب حتى التسوية."
         actions={
-          <Button onClick={() => setGrantOpen(true)}>
-            <Plus className="size-4" aria-hidden /> منح سلفة
-          </Button>
+          canGrant ? (
+            <Button onClick={() => setGrantOpen(true)}>
+              <Plus className="size-4" aria-hidden /> منح سلفة
+            </Button>
+          ) : undefined
         }
       />
 
@@ -116,7 +138,7 @@ export default function EmployeeAdvances() {
             }
             count={filtered.length}
             loading={listQ.isLoading}
-            search={{ value: q, onChange: setQ, placeholder: "بحث باسم الموظف أو رقم السند…" }}
+            search={{ value: q, onChange: setQ, placeholder: "بحث باسم الموظف أو رقم السند…", autoFocus: true }}
             activeFilterCount={(status ? 1 : 0) + (empFilter ? 1 : 0) + (branchFilter ? 1 : 0)}
             onResetFilters={() => { setQ(""); setStatus(""); setEmpFilter(""); setBranchFilter(""); }}
             onRefresh={() => void refresh()}
@@ -180,7 +202,9 @@ export default function EmployeeAdvances() {
               </thead>
               <tbody>
                 {filtered.map((r) => {
-                  const cancellable = r.status === "ACTIVE" && D(r.remaining).eq(D(r.amount));
+                  const cancellable = canGrant && r.status === "ACTIVE" && D(r.remaining).eq(D(r.amount));
+                  // سلفةٌ نشطة بدأ الخصم فيها: نُظهر «—» بتوضيح — لا نتركها فارغة صامتاً.
+                  const partiallyDeducted = r.status === "ACTIVE" && !D(r.remaining).eq(D(r.amount));
                   return (
                     <tr key={r.id} className="border-t hover:bg-accent/40">
                       <td className="p-2.5">
@@ -208,7 +232,7 @@ export default function EmployeeAdvances() {
                       </td>
                       <td className="p-2.5 text-center"><StatusBadge status={r.status} /></td>
                       <td className="p-2.5 text-center">
-                        {cancellable && (
+                        {cancellable ? (
                           <button
                             className="text-xs text-destructive font-medium hover:underline inline-flex items-center gap-1"
                             onClick={async () => {
@@ -224,7 +248,14 @@ export default function EmployeeAdvances() {
                           >
                             <X className="size-3.5" aria-hidden /> إلغاء
                           </button>
-                        )}
+                        ) : partiallyDeducted ? (
+                          <span
+                            className="text-xs text-muted-foreground"
+                            title="لا يُلغى بعد بدء الخصم — استوفِ الباقي كليّاً أو أنشئ سلفةً معاكسة"
+                          >
+                            —
+                          </span>
+                        ) : null}
                       </td>
                     </tr>
                   );
