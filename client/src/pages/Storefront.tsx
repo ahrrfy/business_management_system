@@ -1269,6 +1269,14 @@ function matchesPriceFilter(price: number, filter: PriceFilter): boolean {
   }
 }
 
+export function getStorefrontSearchSuggestions<T extends { productName: string; brand?: string | null }>(products: T[], rawSearch: string): T[] {
+  const term = normalizeStorefrontArabic(rawSearch.trim());
+  if (term.length < 2) return [];
+  return products
+    .filter((product) => normalizeStorefrontArabic(`${product.productName} ${product.brand ?? ""}`).includes(term))
+    .slice(0, 6);
+}
+
 function hasStorefrontAnalyticsConsent(): boolean {
   try {
     const raw = window.localStorage.getItem("arabia_store_consent_v1");
@@ -1283,6 +1291,8 @@ function hasStorefrontAnalyticsConsent(): boolean {
 function StorefrontContent() {
   const [rawSearch, setRawSearch] = useState("");
   const [search, setSearch] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [searchSuggestionIndex, setSearchSuggestionIndex] = useState(0);
   const [categoryId, setCategoryId] = useState<number | null>(null);
   // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
   const [availability, setAvailability] = useState<AvailabilityFilter>("IN_STOCK");
@@ -1709,6 +1719,16 @@ function StorefrontContent() {
   }, [labelQ.data]);
 
   const items = useMemo(() => (catalogQ.data?.pages ?? []).flatMap((page) => page.items), [catalogQ.data]);
+  const searchSuggestions = useMemo(() => getStorefrontSearchSuggestions(items, rawSearch), [items, rawSearch]);
+  useEffect(() => {
+    setSearchSuggestionIndex(0);
+  }, [rawSearch]);
+  const chooseSearchSuggestion = (product: (typeof items)[number]) => {
+    setRawSearch(product.productName);
+    setSearch(product.productName);
+    setSearchFocused(false);
+    scrollToResults();
+  };
   useEffect(() => {
     const sentinel = catalogLoadMoreRef.current;
     if (!sentinel || !catalogQ.hasNextPage) return;
@@ -2206,9 +2226,37 @@ function StorefrontContent() {
               type="search"
               value={rawSearch}
               onChange={(e) => setRawSearch(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => window.setTimeout(() => setSearchFocused(false), 120)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") { setSearchFocused(false); return; }
+                if (event.key === "ArrowDown" && searchSuggestions.length > 0) { event.preventDefault(); setSearchSuggestionIndex((index) => Math.min(index + 1, searchSuggestions.length - 1)); return; }
+                if (event.key === "ArrowUp" && searchSuggestions.length > 0) { event.preventDefault(); setSearchSuggestionIndex((index) => Math.max(index - 1, 0)); return; }
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  const suggestion = searchSuggestions[searchSuggestionIndex];
+                  if (suggestion) chooseSearchSuggestion(suggestion);
+                  else { setSearch(rawSearch.trim()); setSearchFocused(false); scrollToResults(); }
+                }
+              }}
               placeholder="ما الذي تبحث عنه اليوم؟"
               className="w-full rounded-lg border border-[#d7d2ca] bg-white py-3 pr-10 pl-11 text-sm font-semibold text-[#20252a] outline-none transition placeholder:text-[#92999c] focus:border-[#1e4a63] focus:ring-2 focus:ring-[#1e4a63]/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={searchFocused && searchSuggestions.length > 0}
+              aria-controls="store-search-suggestions"
+              aria-activedescendant={searchFocused && searchSuggestions[searchSuggestionIndex] ? `store-search-suggestion-${searchSuggestions[searchSuggestionIndex].productId}` : undefined}
             />
+            {searchFocused && searchSuggestions.length > 0 && (
+              <div id="store-search-suggestions" role="listbox" className="absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-xl border border-[#ded8d0] bg-white p-1.5 shadow-xl">
+                {searchSuggestions.map((product, index) => (
+                  <button key={product.productId} id={`store-search-suggestion-${product.productId}`} type="button" role="option" aria-selected={index === searchSuggestionIndex} onMouseDown={(event) => event.preventDefault()} onMouseEnter={() => setSearchSuggestionIndex(index)} onClick={() => chooseSearchSuggestion(product)} className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-right focus:outline-none ${index === searchSuggestionIndex ? "bg-[#f6f1eb]" : "hover:bg-[#f6f1eb]"}`}>
+                    <span className="min-w-0"><span className="block truncate text-xs font-black text-[#30383e]">{product.productName}</span><span className="mt-0.5 block text-[10px] font-bold text-[#8a918f]">{product.brand ?? "مكتبة العربية"} · {priceLabel(product.salePrice ?? product.price)}</span></span>
+                    <ChevronLeft aria-hidden className="size-4 shrink-0 text-[#1e4a63]" />
+                  </button>
+                ))}
+              </div>
+            )}
             {rawSearch && (
               <button type="button" onClick={() => { setRawSearch(""); setSearch(""); }} aria-label="مسح البحث" className="absolute left-2.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-[#7d8589] transition hover:bg-[#f0ece7] hover:text-[#20252a]">
                 <X aria-hidden className="size-4" />

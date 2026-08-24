@@ -19,12 +19,22 @@ import {
   storefrontCategoryCount,
   storefrontMediaUrls,
   clampStorefrontZoomPoint,
+  getStorefrontSearchSuggestions,
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+
+describe("storefront search suggestions", () => {
+  it("يطبع اقتراحات عربية من الاسم أو الماركة ويحدها بستة عناصر", () => {
+    const products = Array.from({ length: 8 }, (_, index) => ({ productId: index, productName: `دفتر عربي ${index}`, brand: index === 7 ? "مختلف" : "العربية" }));
+    expect(getStorefrontSearchSuggestions(products, "دفتر")).toHaveLength(6);
+    expect(getStorefrontSearchSuggestions(products, "العربية")[0]?.productId).toBe(0);
+    expect(getStorefrontSearchSuggestions(products, "د")).toHaveLength(0);
+  });
+});
 
 describe("storefront Turnstile submission gate", () => {
   it("fails closed until ordering, public site key and a fresh token are all present", () => {
