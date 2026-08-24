@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ListToolbar, RowActions } from "@/components/list";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
@@ -29,9 +30,12 @@ type BranchRow = RouterOutputs["branches"]["adminList"][number];
 type BranchType = "MAIN" | "SALES";
 
 const TYPE_LABEL: Record<string, string> = { MAIN: "رئيسي (كل الخدمات)", SALES: "مبيعات" };
+// Codex P2 (٢٤/٨ على PR #760): النوعُ **تصنيفٌ إداريّ للتنظيم** لا حرّاسٌ خادميّ — بوّابات
+// كاشيرَي الطباعة/الاستقبال تعتمد على الدور وصلاحيّة الوحدة والفرع المُسنَد فقط، لا تقرأ
+// `branches.type`. نصفُ الاستعمالَ الشائع لا الحرمانَ التقنيّ.
 const TYPE_TITLE: Record<string, string> = {
-  MAIN: "الفرع الرئيسي — يستقبل كل الخدمات (طباعة/استقبال/تجزئة/تحويلات/شراء)",
-  SALES: "فرع مبيعات — قناة بيع تجزئة رئيسية، بلا خدمات طباعة/استقبال",
+  MAIN: "الفرع الرئيسي — تصنيفٌ إداريّ للفرع الذي تُدار منه كل الخدمات (طباعة/استقبال/تجزئة/تحويلات/شراء)",
+  SALES: "فرع مبيعات — تصنيفٌ إداريّ لفرع بيع تجزئة رئيسي (الوصول للخدمات محكومٌ بأدوار المستخدمين لا بنوع الفرع)",
 };
 
 export default function Branches() {
@@ -147,7 +151,10 @@ export default function Branches() {
             title="قائمة الفروع"
             count={visibleRows.length}
             loading={list.isLoading}
-            search={{ value: query, onChange: setQuery, placeholder: "اسم الفرع، الرمز، العنوان أو الهاتف…", autoFocus: true }}
+            // Codex P2 (٢٤/٨): لا `autoFocus` هنا — الصفحةُ تبويبٌ داخل AdminHub. `autoFocus` يسرق
+            // التركيزَ من زرّ التبويب فور التركيب فيكسر ملاحةَ الأسهم بين التبويبات لمستعمِلي
+            // لوحة المفاتيح. الشاشات المستقلّة (Suppliers/Employees/…) تحتفظ به.
+            search={{ value: query, onChange: setQuery, placeholder: "اسم الفرع، الرمز، العنوان أو الهاتف…" }}
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
@@ -184,16 +191,41 @@ export default function Branches() {
                   <tr key={b.id} className={`border-t ${b.isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{b.name}</td>
                     <td className="p-2 font-mono text-xs" dir="ltr">{b.code}</td>
-                    <td className="p-2" title={TYPE_TITLE[b.type] ?? undefined}>{TYPE_LABEL[b.type] ?? b.type}</td>
+                    <td className="p-2">
+                      {/* Codex P2 (٢٤/٨): Tooltip قابلٌ للتركيز/اللمس بدل `title` الذي يعمل عند الحوم فقط.
+                          `tabIndex={0}` يجعل الخليّة نفسها هدفَ ملاحة لوحة المفاتيح لكشف الشرح. */}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span
+                            tabIndex={0}
+                            className="cursor-help underline decoration-dotted decoration-muted-foreground/40 underline-offset-2 outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+                          >
+                            {TYPE_LABEL[b.type] ?? b.type}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs text-xs">
+                          {TYPE_TITLE[b.type] ?? TYPE_LABEL[b.type] ?? b.type}
+                        </TooltipContent>
+                      </Tooltip>
+                    </td>
                     <td className="p-2 text-muted-foreground">{b.address || "—"}</td>
                     <td className="p-2 text-xs" dir="ltr">{b.phone || "—"}</td>
                     <td className="p-2 text-center">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${b.isActive ? "badge-status-active" : "badge-stock-out"}`}
-                        title={b.isActive ? "الفرع نشط — يظهر في منتقيات العمليات الجديدة" : "الفرع معطّل — مستثنى من المنتقيات؛ العمليات التاريخية المرتبطة به تبقى بلا مسّ"}
-                      >
-                        {b.isActive ? "مفعّل" : "معطّل"}
-                      </span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span
+                            tabIndex={0}
+                            className={`inline-block cursor-help rounded-full px-2 py-0.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring ${b.isActive ? "badge-status-active" : "badge-stock-out"}`}
+                          >
+                            {b.isActive ? "مفعّل" : "معطّل"}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-xs text-xs">
+                          {b.isActive
+                            ? "الفرع نشط — يظهر في منتقيات العمليات الجديدة."
+                            : "الفرع معطّل — مستثنى من المنتقيات؛ العمليات التاريخية المرتبطة به تبقى بلا مسّ."}
+                        </TooltipContent>
+                      </Tooltip>
                     </td>
                     <td className="p-2 text-center">
                       <RowActions
