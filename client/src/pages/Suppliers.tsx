@@ -17,7 +17,7 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
@@ -101,6 +101,15 @@ export default function Suppliers() {
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];
   const pages = Math.max(1, Math.ceil(total / limit));
+  // Codex P2 (٢٤/٨، PR #751): رابطٌ مُشارَك بـ`page=9` مع نتائج تقلّصت إلى صفحةٍ واحدة كان يُنتج
+  // «251–100 من 100» ويُخفي جدولاً بينما `total > 0`. نُصحّح URL إلى آخر صفحةٍ صالحة (لا 0) —
+  // 0 يفقد سياق «كان مُشاركاً في نهاية القائمة»، والأخيرةُ الصالحة أقرب لنيّة الرابط. الشرطُ
+  // مُقيَّدٌ بـ`list.data`: أثناء التحميل الأوّل نتركُ الحال بلا مسّ (`total=0` كذبة عابرة).
+  useEffect(() => {
+    if (list.data && page >= pages) setPage(Math.max(0, pages - 1));
+  }, [list.data, page, pages]);
+  // للعرضِ في هذا التمرير قبل ما يستقرّ الـURL: نستعمل نسخةً محبوسة داخل [0, pages-1].
+  const displayPage = Math.min(page, Math.max(0, pages - 1));
   // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ).
   const hasLegacy = rows.some((r) => legacyCodeOf(r) !== null);
 
@@ -411,8 +420,8 @@ export default function Suppliers() {
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
           <div className="text-muted-foreground">
             {pages > 1 ? (
-              <>يعرض {(page * limit + 1).toLocaleString("ar-IQ-u-nu-latn")}–
-                {Math.min((page + 1) * limit, total).toLocaleString("ar-IQ-u-nu-latn")} من
+              <>يعرض {(displayPage * limit + 1).toLocaleString("ar-IQ-u-nu-latn")}–
+                {Math.min((displayPage + 1) * limit, total).toLocaleString("ar-IQ-u-nu-latn")} من
                 {" "}
                 {total.toLocaleString("ar-IQ-u-nu-latn")} مورّد</>
             ) : (
@@ -421,9 +430,9 @@ export default function Suppliers() {
           </div>
           {pages > 1 && (
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-              <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
-              <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
+              <Button variant="outline" size="sm" disabled={displayPage <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
+              <div className="text-muted-foreground">صفحة {displayPage + 1} من {pages}</div>
+              <Button variant="outline" size="sm" disabled={displayPage >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
             </div>
           )}
         </div>
