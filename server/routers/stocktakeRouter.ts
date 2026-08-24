@@ -40,6 +40,7 @@ import {
   requestStocktakeRecount,
   resolveStocktakeConflict,
   listUnknownScans,
+  listPickerVariants,
   resolveUnknownScan,
   computeBarcodeCoverage,
   listSplitCandidates,
@@ -229,6 +230,33 @@ export const stocktakeRouter = router({
   barcodeCoverage: inventoryReadProcedure
     .input(z.object({ variantIds: z.array(idNum).max(10_000) }))
     .query(async ({ input }) => computeBarcodeCoverage(input.variantIds)),
+
+  /**
+   * منتقي MANUAL في معالج إنشاء الجرد — يعرض **كل** الكتالوج المخزنيّ للفرع، بما في ذلك المنتجات
+   * التي لم تُلامَس بحركةٍ في هذا الفرع (لا صفَّ لها في `branchStock` بعد). كان الاستخدام السابق
+   * `inventory.onHand` يبدأ من `branchStock` بـINNER JOIN فيُخفيها ⇒ يظهر الصنف «مخزون 0» في
+   * الكاشير ولا يجده المستخدم في اختيار الجرد لتصحيحه — بلاغ المالك ٢٤/٨.
+   *
+   * البوّابة والعزل نفسا `previewScopeCount` أعلاه (inventoryReadProcedure + scopedBranchId).
+   */
+  pickerVariants: inventoryReadProcedure
+    .input(
+      z.object({
+        branchId: idNum,
+        q: z.string().trim().max(120).optional(),
+        limit: z.number().int().positive().max(1000).default(200),
+        offset: z.number().int().min(0).default(0),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = ctx.scopedBranchId ?? input.branchId;
+      return listPickerVariants({
+        branchId,
+        q: input.q,
+        limit: input.limit,
+        offset: input.offset,
+      });
+    }),
 
   /** مرشّحو فصل البدائل المدمجة (م٤): وحداتٌ تحمل باركوداً بديلاً — كتالوج عامّ. */
   splitCandidates: inventoryReadProcedure.query(async () => listSplitCandidates()),

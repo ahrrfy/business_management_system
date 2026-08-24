@@ -15,7 +15,10 @@
  *    الجلسة فعلاً (نفس منطق resolveScope في create.ts). كان يعتمد onHand.length ⇒ يعدّ صفوف
  *    branchStock السابقة فقط ⇒ يُخفي الأصناف التي لم تُلامَس بحركة بعد ⇒ فارقٌ قاتلٌ في الجرد
  *    الافتتاحي (يعرض ٤٩٠ بدل الآلاف).
- *  - منتقي MANUAL: trpc.inventory.onHand (يحترم عزل الفرع خادمياً) — يبقى للبحث.
+ *  - منتقي MANUAL: trpc.stocktakes.pickerVariants (يحترم عزل الفرع خادمياً) — يبدأ من الكتالوج
+ *    بـLEFT JOIN على branchStock فيُظهر حتى المنتجات بلا صفّ رصيدٍ للفرع (يعرضها الكاشير «مخزون 0»).
+ *    كان الاستخدام السابق trpc.inventory.onHand يبدأ من branchStock بـINNER JOIN فيُخفيها ⇒ فارقٌ
+ *    قاتلٌ (المستخدم يرى المنتج في الكاشير ولا يجده في اختيار الجرد لتصحيحه — بلاغ المالك ٢٤/٨).
  *  - المستخدمون (تكليف USER): trpc.stocktakes.assignableUsers — warehouseProcedure، قائمة منسدلة
  *    لكل الأدوار المخوّلة؛ الإدخال اليدوي لمعرّف الحساب يبقى بديلاً عند فشل التحميل.
  *  - الفئات (CATEGORY): trpc.catalog.categories — النطاق مفعَّل، والخادم يحلّ منتجات الفئات لحظة الإنشاء.
@@ -209,13 +212,14 @@ export default function StocktakeNew() {
   const branchName = branches.find((b) => b.id === effectiveBranchId)?.name ?? "—";
 
   /* منتجات الفرع — لمنتقي MANUAL فقط. بحثٌ خادميّ (لا حدّ ١٠٠٠ محليّ يُخفي صامتاً ما وراءه في فروعٍ
-     كبيرة) — نفس الاستعلام يقبل `q` أصلاً (نمط شاشة المخزون). بلا نصّ بحث نعرض أوّل صفحة (٢٠٠)
-     كنقطة انطلاق؛ اكتب للبحث عن أي صنفٍ آخر.
-     عدّاد النطاق نفسه لم يعد يعتمد onHand: كان يعدّ صفوف branchStock السابقة فقط ⇒ يُخفي
-     الأصناف التي لم تُلامَس بحركة بعد، وفارقٌ قاتلٌ في الجرد الافتتاحي. صار العدّاد يُحسب
-     خادمياً عبر `stocktakes.previewScopeCount` بنفس منطق resolveScope حرفياً. */
+     كبيرة). بلا نصّ بحث نعرض أوّل صفحة (٢٠٠) كنقطة انطلاق؛ اكتب للبحث عن أيّ صنفٍ آخر.
+     `stocktakes.pickerVariants` يبدأ من الكتالوج بـLEFT JOIN على branchStock ⇒ يُظهر حتى
+     المنتجات بلا صفّ رصيدٍ للفرع (يعرضها الكاشير «مخزون 0» بنفس النمط). الاستخدام السابق
+     `inventory.onHand` يبدأ من branchStock بـINNER JOIN ⇒ كان يُخفيها فيختفي الصنف من اختيار
+     الجرد فلا يستطيع المستخدم تصحيح رصيده (بلاغ المالك ٢٤/٨).
+     عدّاد النطاق يُحسب خادمياً عبر `stocktakes.previewScopeCount` بنفس منطق resolveScope حرفياً. */
   const debouncedPickQ = useDebouncedValue(pickQ, 250);
-  const onHandQ = trpc.inventory.onHand.useQuery(
+  const onHandQ = trpc.stocktakes.pickerVariants.useQuery(
     { branchId: effectiveBranchId, q: debouncedPickQ.trim() || undefined, limit: 200 },
     { enabled: effectiveBranchId > 0 && scopeType === "MANUAL" }
   );
