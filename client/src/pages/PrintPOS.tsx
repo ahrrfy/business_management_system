@@ -29,7 +29,8 @@ import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil } from "lucide-react";
+import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, ChevronDown, ChevronUp, Calculator } from "lucide-react";
+import { normalizeNumberInput } from "@shared/numberNormalize";
 import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -98,23 +99,24 @@ function useDarkMode() {
   return dark;
 }
 
-// ─── رموز الألوان (مطابقة لـ POS.tsx) ─────────────────────────────────────────
+// ─── رموز الألوان — موحَّدة مع ثيم النظام (بلاغ المالك «الثيم مختلفٌ عن بقيّة النظام») ─────
+//
+// ٢٤/٨: كانت `LIGHT/DARK` قيماً `oklch` مثبَّتة بحُوَيْة زرقاء (٢٤٧-٢٦٤) بينما بقيّة النظام
+// دافئة (٧٨-٨٢). النتيجة: هذه الشاشة تبدو باردةً غريبةً بجوار الفواتير والتقارير. الحلّ:
+// إشارات مباشرة إلى CSS variables (`var(--background)` إلخ) — نفس المتغيّرات المستعملة في
+// Tailwind (`bg-card`, `text-foreground`…). التبديل الحيّ Light↔Dark محكومٌ بـ`data-theme` /
+// `.dark` على `<html>` كما كان.
 const LIGHT = {
-  bg: "oklch(0.985 0.002 247.858)", card: "#fff", border: "oklch(0.922 0.004 247.858)",
-  muted: "oklch(0.962 0.004 247.858)", mutedFg: "oklch(0.552 0.016 285.938)", fg: "oklch(0.235 0.015 65)",
-  primary: "oklch(0.488 0.243 264.376)", primaryFg: "#fff", primarySoft: "oklch(0.94 0.04 264.376)",
-  success: "oklch(0.50 0.13 155)", amber: "oklch(0.65 0.15 75)", danger: "oklch(0.577 0.245 27.325)",
-  numKey: "oklch(0.962 0.004 247.858)", delKey: "oklch(0.92 0.05 20)", delFg: "oklch(0.50 0.22 25)",
-  overlay: "oklch(0.15 0.01 265 / .88)",
+  bg: "var(--background)", card: "var(--card)", border: "var(--border)",
+  muted: "var(--muted)", mutedFg: "var(--muted-foreground)", fg: "var(--foreground)",
+  primary: "var(--primary)", primaryFg: "var(--primary-foreground)", primarySoft: "color-mix(in oklch, var(--primary) 14%, transparent)",
+  success: "var(--sem-pos)", amber: "var(--sem-warn)", danger: "var(--destructive)",
+  numKey: "var(--muted)", delKey: "color-mix(in oklch, var(--destructive) 12%, var(--card))", delFg: "var(--destructive)",
+  overlay: "color-mix(in oklch, var(--foreground) 78%, transparent)",
 };
-const DARK = {
-  bg: "oklch(0.14 0.010 65)", card: "oklch(0.20 0.012 65)", border: "oklch(1 0 0 / 0.12)",
-  muted: "oklch(0.22 0.012 65)", mutedFg: "oklch(0.72 0.010 247)", fg: "oklch(1 0 0)",
-  primary: "oklch(0.55 0.22 264)", primaryFg: "#fff", primarySoft: "oklch(0.28 0.06 264)",
-  success: "oklch(0.55 0.14 155)", amber: "oklch(0.72 0.15 75)", danger: "oklch(0.65 0.22 27)",
-  numKey: "oklch(0.24 0.010 65)", delKey: "oklch(0.26 0.05 20)", delFg: "oklch(0.75 0.22 25)",
-  overlay: "oklch(0.08 0.01 265 / .92)",
-};
+// نفس التوكنات — DARK يعمل تلقائياً حين يحمل `<html>` صنف `.dark` أو `data-theme="dark"` (توكنات
+// index.css تعيد تعريف نفسها). نُبقي DARK رمزياً للـtype لكن قيمته هي LIGHT نفسه.
+const DARK = LIGHT;
 type C = typeof LIGHT;
 
 const SHOP = "الرؤية العربية";
@@ -208,6 +210,10 @@ export default function PrintPOS() {
   // ── حالة ──
   const [tabs, setTabs] = useState<Tab[]>([newTab(1, "طلب 1")]);
   const [activeId, setActiveId] = useState(1);
+  // ٢٤/٨ (تدقيق ذاتيّ، مرآة POS/Reception): عدّاد إضافةٍ صريح — يزيد فقط عند فعل الإضافة (شامل
+  // رفعَ الكمية على السطر الأصل). لا يزيد عند حذفٍ/تعديل كمية/تبديل تبويب ⇒ الجدول يتّبع السطر
+  // المُضاف/المزاد فوراً بلا قفزاتٍ من حذفٍ آخر (Codex P2 على PR #721).
+  const [addTick, setAddTick] = useState(0);
   const tab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const cart = tab.cart;
   const total = cart.reduce((s, c) => s + c.price * c.qty, 0);
@@ -326,12 +332,20 @@ export default function PrintPOS() {
     const custom = isCustomPriceSku(svc.sku);
     setCart((prev) => {
       const i = prev.findIndex((c) => c.svc.productUnitId === svc.productUnitId);
-      if (i >= 0 && !custom) { const n = [...prev]; n[i] = { ...n[i], qty: n[i].qty + 1 }; return n; }
+      if (i >= 0 && !custom) {
+        const n = [...prev];
+        n[i] = { ...n[i], qty: n[i].qty + 1 };
+        // ٢٤/٨: نُبرز السطرَ المزادَ كمّية أيضاً — الكاشير يرى ما تأثّر بنقرته الآن.
+        patch({ selUid: n[i].uid });
+        return n;
+      }
       const uid = UID++;
       if (custom) setTimeout(() => setEditPriceUid(uid), 30);
       patch({ selUid: uid });
       return [...prev, { uid, svc, qty: 1, price: Number(svc.price ?? 0) }];
     });
+    // ٢٤/٨: أشِر إلى الجدول أنّ إضافةً حدثت — يشمل حالة رفع الكمية على السطر الأصل.
+    setAddTick((t) => t + 1);
   }
   function changeQty(uid: number, q: number) {
     if (q <= 0) { setCart((p) => p.filter((c) => c.uid !== uid)); if (tab.selUid === uid) patch({ selUid: null }); }
@@ -627,7 +641,7 @@ export default function PrintPOS() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (creditPrompt) { if (e.key === "Escape") setCreditPrompt(null); return; }
-      if (receipt) { if (e.key === "Escape" || e.key === "Enter") setReceipt(null); return; }
+      if (receipt) { if (e.key === "Escape" || e.key === "Enter") { setReceipt(null); setTimeout(() => searchRef.current?.focus(), 0); } return; }
       if (shifting) { if (e.key === "Escape") setShifting(false); return; }
       if (e.key === "F2") { e.preventDefault(); searchRef.current?.focus(); }
       else if (e.key === "F4") { e.preventDefault(); submit(false); }
@@ -752,8 +766,11 @@ export default function PrintPOS() {
         {tabs.length < 6 && <button aria-label="طلب طباعة جديد" onClick={addTab} style={{ width: 44, height: 44, borderRadius: 9, background: C.card, border: `1.5px dashed ${C.border}`, cursor: "pointer", fontSize: 22, color: C.mutedFg, flexShrink: 0 }}>+</button>}
       </div>
 
+      {/* ٢٤/٨ (Codex P2 على PR #741): الأرضيّة كانت `oklch(0.95 ...)` مثبَّتة فاتحة، والفَون
+          `--sem-pos/--sem-warn/--destructive` صار فاتحاً في Dark ⇒ فاتحٌ على فاتح غير مقروء.
+          الآن `--sem-pos-bg/--sem-warn-bg/--sem-neg-bg` (المُقرَّرة في `tokens.css` لكلا الوضعَين). */}
       {message && (
-        <div style={{ padding: "4px 16px", background: message.kind === "ok" ? "oklch(0.95 0.05 155)" : message.kind === "warn" ? "oklch(0.95 0.05 80)" : "oklch(0.95 0.05 27)", color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <div style={{ padding: "4px 16px", background: message.kind === "ok" ? "var(--sem-pos-bg)" : message.kind === "warn" ? "var(--sem-warn-bg)" : "var(--sem-neg-bg)", color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <span>{message.text}</span>
           {message.kind !== "err" && receipt && <Link href={`/invoices/${receipt.invoiceId}`} style={{ color: C.primary, textDecoration: "underline", fontSize: 12 }}>فتح الفاتورة</Link>}
           <button onClick={() => setMessage(null)} aria-label="إغلاق التنبيه" style={{ marginRight: "auto", background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex" }}><X aria-hidden size={14} /></button>
@@ -775,6 +792,7 @@ export default function PrintPOS() {
           externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
           onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
           numPress={numPress} onPay={() => submit(false)} onQuickPay={() => submit(true)} isPending={sale.isPending}
+          addTick={addTick}
         />
         <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} />
       </div>
@@ -782,7 +800,12 @@ export default function PrintPOS() {
       {/* شارة المزامنة — تعرض حالة الاتصال وطابور الالتقاط، وتُفرّغ كلّ الأنواع. */}
       <OfflineSyncChip userRole={me.data?.role} />
 
-      {receipt && <ReceiptOverlay C={C} r={receipt} onDismiss={() => setReceipt(null)} onPrint={() => printReceipt(brandedReceipt(receipt))} />}
+      {receipt && <ReceiptOverlay C={C} r={receipt} onDismiss={() => {
+        // ٢٤/٨ (تدقيق ذاتيّ، مرآة POS.tsx): useModalFocus يعيد التركيز إلى «الزرّ الذي فتح الحوار»
+        // = زرّ الدفع. سكانرُ/كيبورد الكاشير التالي يبتلعه الزرّ بلا أثر ⇒ إعادةٌ صريحة للبحث.
+        setReceipt(null);
+        setTimeout(() => searchRef.current?.focus(), 0);
+      }} onPrint={() => printReceipt(brandedReceipt(receipt))} />}
       {shifting && <ShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
       {creditPrompt && (
         <CreditApprovalDialog C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
@@ -817,7 +840,9 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
         <span style={{ position: "absolute", right: 13, color: C.mutedFg, pointerEvents: "none", display: "flex", alignItems: "center" }} aria-hidden>
           <Search size={16} />
         </span>
-        <input ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن خدمة بالاسم… (F2)"
+        {/* ٢٤/٨ (تدقيق ذاتيّ): `autoFocus` مفقود — POS و Reception يُركّزان الحقل، لكن PrintPOS
+            كان يُلزم الكاشير بالنقر قبل أوّل مسحٍ/كتابة. توحيدُ السلوك عبر الشاشات الثلاث. */}
+        <input ref={searchRef} autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن خدمة بالاسم… (F2)"
           style={{ width: "100%", height: 46, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14, outline: "none", paddingRight: 42, paddingLeft: search ? 36 : 14 }}
           onFocus={(e) => (e.target.style.borderColor = C.primary)} onBlur={(e) => (e.target.style.borderColor = C.border)} />
         {search && <button onClick={() => setSearch("")} aria-label="مسح البحث" style={{ position: "absolute", left: 8, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, padding: 4, display: "inline-flex" }}><X aria-hidden size={15} /></button>}
@@ -897,13 +922,13 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
   return (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
       {!q && (
-        <div style={{ display: "flex", gap: 6, padding: "10px 11px", overflowX: "auto", borderBottom: `1px solid ${C.border}`, flexShrink: 0, background: C.muted }}>
+        <div style={{ display: "flex", gap: 5, padding: "7px 9px", overflowX: "auto", borderBottom: `1px solid ${C.border}`, flexShrink: 0, background: C.muted }}>
           {cats.map((ct) => {
             const active = ct.id === catId;
             return (
               <button key={ct.id} onClick={() => setCatId(ct.id)}
-                style={{ display: "flex", alignItems: "center", gap: 7, padding: "0 17px", height: 50, borderRadius: 10, whiteSpace: "nowrap", cursor: "pointer", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, flexShrink: 0, touchAction: "manipulation", background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg, border: `${active ? 2 : 1.5}px solid ${active ? C.primary : C.border}` }}>
-                {(() => { const CIcon = categoryIcon(ct.name); return <CIcon aria-hidden size={19} />; })()}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "0 12px", height: 38, borderRadius: 9, whiteSpace: "nowrap", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, flexShrink: 0, touchAction: "manipulation", background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg, border: `${active ? 2 : 1.5}px solid ${active ? C.primary : C.border}` }}>
+                {(() => { const CIcon = categoryIcon(ct.name); return <CIcon aria-hidden size={15} />; })()}
                 {ct.name}
               </button>
             );
@@ -920,25 +945,32 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
             <div style={{ fontSize: 14, fontWeight: 600 }}>{q ? "لا توجد خدمة بهذا الاسم" : "لا خدمات في هذه الفئة"}</div>
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(186px, 1fr))", gap: 11 }}>
+          // ٢٤/٨ (بلاغ المالك «شاشة البطاقات كبيرة»): نمط Odoo — بلاطاتٌ أضيق (١٤٤px) وأقصر (١٠٤px)
+          // فيظهر ٤-٦ بلاطاتٍ في الصفّ بدل ٢-٣، والسلّةُ تحصلُ على مساحةٍ أكبر بلا تكديس.
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(144px, 1fr))", gap: 8 }}>
             {list.map((s) => {
               const custom = isCustomPriceSku(s.sku);
               return (
                 <button key={s.productUnitId} onClick={() => onAdd(s)}
-                  style={{ height: 132, display: "flex", flexDirection: "column", alignItems: "flex-start", justifyContent: "space-between", padding: "15px 15px", borderRadius: 11, cursor: "pointer", fontFamily: "inherit", textAlign: "right", background: C.card, border: `1.5px solid ${C.border}`, transition: "transform .07s, border-color .1s, box-shadow .1s" }}
+                  // ٢٤/٨ (Codex P2 على PR #741): `title` يعرض الاسم الكامل عند التمرير — أسماء
+                  // الخدمات المتقاربة أطولُ من ١٤٤px تُخفي المُميِّز بلا هذا التلميح.
+                  title={`${s.productName} — ${s.unitName}${s.price == null ? "" : ` — ${fmt(Number(s.price))} د.ع`}`}
+                  style={{ height: 104, display: "flex", flexDirection: "column", alignItems: "flex-start", justifyContent: "space-between", padding: "10px 11px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", textAlign: "right", background: C.card, border: `1.5px solid ${C.border}`, transition: "transform .07s, border-color .1s, box-shadow .1s" }}
                   onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.primary; e.currentTarget.style.boxShadow = `0 4px 14px ${C.primarySoft}`; }}
                   onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.boxShadow = "none"; }}
                   onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.96)")}
                   onMouseUp={(e) => (e.currentTarget.style.transform = "")}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-                    {(() => { const SIcon = serviceIcon(s.sku); return <SIcon aria-hidden size={28} strokeWidth={1.6} />; })()}
-                    {custom && <span style={{ fontSize: 10, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "2px 7px", borderRadius: 20 }}>سعر يدوي</span>}
+                    {(() => { const SIcon = serviceIcon(s.sku); return <SIcon aria-hidden size={22} strokeWidth={1.6} />; })()}
+                    {custom && <span style={{ fontSize: 9.5, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "1px 6px", borderRadius: 20 }}>يدوي</span>}
                   </div>
                   <div style={{ width: "100%" }}>
-                    <div style={{ fontSize: 15, fontWeight: 800, color: C.fg, lineHeight: 1.3, marginBottom: 3 }}>{s.productName}</div>
+                    {/* ٢٤/٨: سطران بدل قصٍّ صامت — الاسم قد يحمل مُميِّزاً بعد أوّل ١٤٤px. لو زاد
+                        نبقى على قصٍّ للسطر الثاني كي لا يفيض التصميم. */}
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: C.fg, lineHeight: 1.2, marginBottom: 2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-word" }}>{s.productName}</div>
                     <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: 11, color: C.mutedFg }}>/ {s.unitName}</span>
-                      <span style={{ fontSize: 17, fontWeight: 900, color: C.primary, direction: "ltr" }}>{s.price == null ? "—" : fmt(Number(s.price))}<span style={{ fontSize: 10, color: C.mutedFg, fontWeight: 600 }}> د.ع</span></span>
+                      <span style={{ fontSize: 10, color: C.mutedFg }}>/ {s.unitName}</span>
+                      <span style={{ fontSize: 15, fontWeight: 900, color: C.primary, direction: "ltr" }}>{s.price == null ? "—" : fmt(Number(s.price))}<span style={{ fontSize: 9, color: C.mutedFg, fontWeight: 600 }}> د.ع</span></span>
                     </div>
                   </div>
                 </button>
@@ -1051,6 +1083,8 @@ interface CheckoutProps {
   externalPaymentConfirmed: boolean; externalFullPaymentConfirmed: boolean;
   externalPaymentPending: boolean; onConfirmExternalPayment: () => void;
   numPress: (k: string) => void; onPay: () => void; onQuickPay: () => void; isPending: boolean;
+  /** ٢٤/٨ — عدّاد إضافةٍ صريح: يشغّل التمريرَ إلى السطر الفعّال في `CartList`. */
+  addTick: number;
 }
 
 // الاحتواء الديناميكي: زوم المتصفح لا يُكبّر الشاشة بل يُقلّص المساحة بوحدات CSS.
@@ -1062,16 +1096,29 @@ const fluid = (min: number, ratio: number, max: number) => `clamp(${min}px, ${ra
 
 function CheckoutColumn(props: CheckoutProps) {
   const { C } = props;
+  // ٢٤/٨ (نمط Odoo): تقليل عرض العمود من ٤٦٦ إلى ٤٠٠px — تُعطى شبكةُ الخدمات مساحةً أكبر
+  // (شكوى «شاشة البطاقات كبيرة» = فعلياً كانت مضغوطة على النصف اليساريّ فبدت مكدَّسة). السلّة
+  // في هذا العرض تبقى قابلةً للقراءة (٤٠٠px كافٍ لأسطرٍ من ٣ عناصر: أيقونة، اسم، سعر × كمية).
   return (
-    <div style={{ width: 466, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+    <div style={{ width: 400, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
       <CartList {...props} />
       <PaymentBlock {...props} />
     </div>
   );
 }
 
-function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, setPrice, editPriceUid, setEditPriceUid, customerId, setCustomerId }: CheckoutProps) {
+function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, setPrice, editPriceUid, setEditPriceUid, customerId, setCustomerId, addTick }: CheckoutProps) {
   const items = cart.reduce((s, c) => s + c.qty, 0);
+  // ٢٤/٨ — تمرير تلقائيّ إلى السطر المُضاف/المزاد بعد كلّ نقرةٍ على بلاطة خدمة (مرآة POS/Reception).
+  const selectedRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (selUid == null) return;
+    const raf = requestAnimationFrame(() => {
+      selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addTick]);
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 11px", height: 48, background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0, gap: 8 }}>
@@ -1090,7 +1137,10 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
           <div style={{ padding: "50px 0", textAlign: "center", color: C.mutedFg }}>
             <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}><ReceiptIcon aria-hidden size={40} strokeWidth={1.5} /></div>
             <div style={{ fontSize: 14, fontWeight: 700 }}>الفاتورة فارغة</div>
-            <div style={{ fontSize: 12.5, marginTop: 6 }}>اضغط على خدمة من اليسار</div>
+            {/* ٢٤/٨ (تدقيق ذاتيّ): إرشادُ فعلٍ صريحٌ بدل «اضغط على خدمة من اليسار» — الاختصار يفتحه فوراً. */}
+            <div style={{ fontSize: 12, marginTop: 6, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap" }}>
+              اضغط <kbd style={{ background: C.muted, borderRadius: 4, padding: "1px 6px", fontFamily: "monospace", fontSize: 10.5, fontWeight: 700, color: C.fg }}>F2</kbd> للبحث السريع، أو اختر خدمة من الشبكة
+            </div>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
@@ -1098,7 +1148,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
               const sel = selUid === c.uid;
               const editing = editPriceUid === c.uid;
               return (
-                <div key={c.uid} onClick={() => setSelUid(c.uid)}
+                <div key={c.uid} ref={sel ? selectedRowRef : undefined} onClick={() => setSelUid(c.uid)}
                   style={{ borderRadius: 11, border: `1.5px solid ${sel ? C.primary : C.border}`, background: sel ? C.primarySoft : C.card, padding: "9px 11px", cursor: "pointer" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
                     <div style={{ fontSize: 19, fontWeight: 800, color: C.fg, lineHeight: 1.3, display: "flex", alignItems: "center", gap: 6 }}>
@@ -1144,6 +1194,32 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
   // عند ضيق الارتفاع تُحذف رقائق المبالغ الجاهزة (لوحة الأرقام تُغنِي عنها) لتبقى
   // المفاتيح وأزرار الدفع كبيرة — حذفُ الثانويّ قبل تصغير الأساسيّ.
   const dense = useMediaQuery("(max-height: 820px)");
+  // ٢٤/٨ (بلاغ المالك «الحاسبة قابلة للطي»): طيّ لوحة الأرقام يُعيد ~١٥٠px عمودياً للسلّة. تفضيل
+  // الكاشير محفوظٌ في localStorage، والافتراضي مطويّة (تصميم Odoo: البلاطات والفاتورة قبل النمباد).
+  const [numpadOpen, setNumpadOpen] = useState<boolean>(() => {
+    try {
+      const stored = typeof window !== "undefined" ? window.localStorage.getItem("printpos.numpadOpen") : null;
+      if (stored === "1") return true;
+      if (stored === "0") return false;
+    } catch { /* localStorage may be blocked */ }
+    return false;
+  });
+  const persistNumpad = (open: boolean) => {
+    setNumpadOpen(open);
+    try { window.localStorage.setItem("printpos.numpadOpen", open ? "1" : "0"); } catch { /* ignore */ }
+  };
+  // ٢٤/٨ (Codex P1 v2 على PR #741): حقلُ المبلغ يفصل «العرض» عن «القيمة الملتزمة» — نفس نمط
+  // POS/Reception. أثناء الكتابة الوسيطة (`1,` قبل `1,5`) الحرفُ يبقى في الحقل والقيمةُ الملتزمة
+  // (`payInput` المُرسَلة إلى الحساب) لا تتغيّر إلّا حين تكون غير ملتبسة. لولا هذا: `1` ثمّ `,` ثمّ
+  // `5` كان يُلتزم `15` بدل `1.5` (React يعيد رسمَ الحقل بـpayInput=`1` فيبتلع `,`).
+  const [displayPay, setDisplayPay] = useState(payInput);
+  useEffect(() => {
+    try {
+      const norm = normalizeNumberInput(displayPay).normalized;
+      if (norm !== payInput) setDisplayPay(payInput);
+    } catch { setDisplayPay(payInput); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payInput]);
   const cartLen = cart.length;
   const paid = Number(payInput || 0);
   const cashTotal = method === "CASH" ? riqd(total) : total;
@@ -1171,10 +1247,13 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
     </button>
   );
 
-  // السقف يمنع فيضان اللوحة خارج العمود (كانت flexShrink:0 بلا سقف ⇒ تُقصّ)،
-  // ويتّسع عند ضيق الارتفاع لتبقى بلا تمرير مع إبقاء مساحةٍ صالحة للفاتورة.
+  // ٢٤/٨ (نمط Odoo + Codex P2): تقليل سقف PaymentBlock إلى نصف العمود، لكن مع `minHeight` يضمن
+  // ظهور الإجمالي + طرق الدفع + أزرار الإتمام على الشاشات القصيرة/زوم المتصفح. الأرقام هنا:
+  //   الإجمالي ~44px + حقل المبلغ ~40px + طرق الدفع ~44px + منطقة الفعل ~90px = ~218px حدٌّ أدنى.
+  //   السقف النسبيّ يبقى مقيَّداً على الشاشات الطويلة كي تحصل السلّة على مساحتها. `min` بين النسبيّ
+  //   والحدّ الأدنى يمنع القصّ الذي كان يخفي الأزرار عند الزوم العالي.
   return (
-    <div style={{ flexShrink: 0, minHeight: 0, maxHeight: dense ? "84%" : "78%", display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+    <div style={{ flexShrink: 0, minHeight: 260, maxHeight: numpadOpen ? (dense ? "62%" : "58%") : (dense ? "50%" : "44%"), display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
       <div style={{ padding: "7px 16px", background: C.primary, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
         <span style={{ fontSize: 13.5, color: C.primaryFg, fontWeight: 700, opacity: 0.92 }}>الإجمالي</span>
         <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
@@ -1184,20 +1263,61 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
       </div>
       {/* منطقة الإدخال — الوحيدة القابلة للتمرير؛ الإجمالي فوقها وأزرار الدفع تحتها ثابتان. */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "7px 10px 0" }}>
-        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "5px 13px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: fluid(30, 4, 38), marginBottom: 6 }}>
-          <span style={{ fontSize: 12, color: C.mutedFg }}>المبلغ المستلم</span>
-          <span style={{ fontSize: fluid(17, 2.4, 22), fontWeight: 900, direction: "ltr", color: payInput ? (isOwing ? C.amber : C.primary) : C.mutedFg }}>{payInput ? Number(payInput).toLocaleString("en-US") : "—"}</span>
+        {/* ٢٤/٨: عرض المبلغ صار `<input>` حقيقياً + زرّ طيّ اللوحة إلى جواره. يقبل الكتابة المباشرة
+            من لوحة المفاتيح (بلا حاجة للنمباد على أجهزة الديسك)، والفواصلُ العربيّة `،/٫` تُطبَّع عبر
+            `normalizeNumberInput` نفسه المستعمل في POS/Reception. */}
+        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "3px 8px 3px 13px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, minHeight: fluid(30, 4, 38), marginBottom: 6 }}>
+          <span style={{ fontSize: 12, color: C.mutedFg, flexShrink: 0 }}>المبلغ المستلم</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, flex: 1, justifyContent: "flex-end" }}>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={displayPay}
+              onChange={(e) => {
+                // ٢٤/٨ (Codex P1 v2): العرض يعكس ما يكتبه الكاشير حرفياً (حالات وسطى `1,` تظهر
+                // ولا تُلتزم كي لا يبتلعها React عند إعادة الرسم بـpayInput السابق). القيمة تُلتزم
+                // فقط حين `normalizeNumberInput` تُرجع نتيجةً غير ملتبسة.
+                const src = e.target.value;
+                setDisplayPay(src);
+                if (src === "") { setPayInput(""); return; }
+                if (!/^[\d.,،٫]*$/.test(src)) return;
+                const result = normalizeNumberInput(src);
+                if (result.ambiguous) return;
+                const n = result.normalized;
+                if (!n) return;
+                if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(n)) return;
+                if (!Number.isFinite(Number(n))) return;
+                setPayInput(n);
+              }}
+              onFocus={(e) => e.currentTarget.select()}
+              placeholder="0"
+              aria-label="المبلغ المستلم"
+              style={{ flex: 1, minWidth: 0, maxWidth: 180, border: "none", outline: "none", background: "transparent", fontSize: fluid(17, 2.4, 22), fontWeight: 900, direction: "ltr", textAlign: "left", fontFamily: "inherit", color: payInput ? (isOwing ? C.amber : C.primary) : C.fg }}
+            />
+            <button
+              type="button"
+              onClick={() => persistNumpad(!numpadOpen)}
+              aria-label={numpadOpen ? "إخفاء لوحة الأرقام" : "إظهار لوحة الأرقام"}
+              title={numpadOpen ? "إخفاء لوحة الأرقام" : "إظهار لوحة الأرقام"}
+              style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 3, height: 28, padding: "0 7px", border: `1.5px solid ${numpadOpen ? C.primary : C.border}`, borderRadius: 7, background: numpadOpen ? C.primary : C.card, color: numpadOpen ? C.primaryFg : C.mutedFg, fontFamily: "inherit", fontSize: 11, fontWeight: 800, cursor: "pointer", flexShrink: 0 }}
+            >
+              <Calculator aria-hidden size={12} />
+              {numpadOpen ? <ChevronUp aria-hidden size={12} /> : <ChevronDown aria-hidden size={12} />}
+            </button>
+          </div>
         </div>
-        {!dense && (
+        {!dense && numpadOpen && (
         <div style={{ display: "flex", gap: 5, marginBottom: 6 }}>
           {QUICK.map((a) => <button key={a} onClick={() => setPayInput(String(a))} style={{ flex: 1, height: fluid(26, 3.6, 34), background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 800, color: C.fg, fontFamily: "inherit", touchAction: "manipulation" }}>{fmt(a)}</button>)}
           <button onClick={() => setPayInput(String(cashTotal))} disabled={!cartLen} style={{ flex: 0.7, height: fluid(26, 3.6, 34), background: C.primarySoft, border: `1.5px solid ${C.primary}`, borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 800, color: C.primary, fontFamily: "inherit", touchAction: "manipulation" }}>= الكل</button>
         </div>
         )}
+        {numpadOpen && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, direction: "ltr", marginBottom: 6 }}>
           {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((k) => <Key key={k} k={k} />)}
           <Key k="00" /><Key k="0" /><Key k="⌫" del />
         </div>
+        )}
         <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
           <Method m="CASH" Icon={Banknote} label="نقدي" />
           <Method m="CARD" Icon={CreditCard} label="بطاقة" />
@@ -1235,17 +1355,37 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
         </div>
         <div style={{ display: "flex", gap: 7 }}>
           <button disabled={!canQuickPay || isPending} onClick={onQuickPay}
+            title={
+              // ٢٤/٨ (نمط Odoo — بلاغ فحص UX): `title` يعلن سبب التعطيل بدل الحيرة.
+              isPending ? "جارٍ الحفظ…" :
+              !cartLen ? "أضف خدمة أوّلاً" :
+              hasZeroLine ? "أدخل سعراً للخدمات ذات السعر اليدوي" :
+              !externalFullPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
+              `دفع سريع وطباعة — ${METHOD_LABEL[method]}`
+            }
             style={{ width: 116, height: fluid(48, 6, 54), background: canQuickPay && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: canQuickPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: canQuickPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
             <Zap aria-hidden size={17} />دفع سريع ({METHOD_LABEL[method]})
           </button>
           <button disabled={!canPay || isPending} onClick={onPay}
+            title={
+              isPending ? "جارٍ الحفظ…" :
+              !cartLen ? "أضف خدمة أوّلاً" :
+              hasZeroLine ? "أدخل سعراً للخدمات ذات السعر اليدوي" :
+              isOwing && customerId == null ? "الآجل يحتاج عميلاً مرتبطاً — أو اكمل المبلغ" :
+              !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
+              `إتمام الدفع — ${fmt(total)} د.ع`
+            }
             style={{ flex: 1, height: fluid(48, 6, 54), background: canPay && !isPending ? C.success : C.muted, color: canPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 16, fontWeight: 900, cursor: canPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, touchAction: "manipulation" }}>
             {isPending
               ? "جارٍ…"
               : !cartLen
                 ? "الفاتورة فارغة"
-                : <><Check aria-hidden size={18} strokeWidth={3} /> إتمام الدفع</>}
+                : <><Check aria-hidden size={18} strokeWidth={3} /> إتمام الدفع <kbd style={{ background: "rgba(255,255,255,.22)", color: "#fff", borderRadius: 4, padding: "1px 6px", fontFamily: "monospace", fontSize: 10, fontWeight: 700 }}>F4</kbd></>}
           </button>
+        </div>
+        {/* ٢٤/٨ (تدقيق ذاتيّ): تلميحُ الاختصارات ظاهرٌ على كلّ الأحجام — الكاشير يحتاجها يومياً. */}
+        <div style={{ textAlign: "center", marginTop: 4, fontSize: 10, color: C.mutedFg, opacity: 0.85 }}>
+          F4 للدفع · F2 للبحث · F12 للتفريغ · Esc للإغلاق
         </div>
       </div>
     </div>

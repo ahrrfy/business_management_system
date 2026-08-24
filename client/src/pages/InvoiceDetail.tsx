@@ -225,6 +225,21 @@ export default function InvoiceDetail() {
   // نُخفي لوحة «تسديد دفعة» عمّن يرفضه الخادم (محاسب/مدقّق/مندوب: sales=READ) بدل عرض نموذج يفشل
   // بـ403 — بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const me = trpc.auth.me.useQuery();
+  // ٢٤/٨ (Codex P2 على PR #744): بوّابتان للروابط المُضافة حديثاً — كلاهما لأدوارٍ فعلاً تستطيع فتح الوجهة.
+  const canOpenStatement = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "reports",
+    "READ",
+    ["admin", "manager", "accountant", "auditor"],
+  );
+  const canOpenVouchers = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "treasury",
+    "READ",
+    ["admin", "manager", "accountant"],
+  );
   const canCorrectInvoice =
     !!me.data?.role &&
     (me.data.role === "admin" || me.data.role === "manager") &&
@@ -550,7 +565,12 @@ export default function InvoiceDetail() {
         <AutoPrintOnce onPrint={() => void printApprovedA4()} />
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">تفاصيل الفاتورة</h1>
+        {/* ٢٤/٨ (تدقيق): رقم الفاتورة في العنوان — عند فتح تبويباتٍ متعدّدة لفواتير مختلفة كلٌّ منها
+            كان يعرض «تفاصيل الفاتورة» ذاتها. الرقم يميّز التبويبات بصرياً وفي `document.title` عبر
+            نمطٍ لاحق. */}
+        <h1 className="text-2xl font-bold">
+          تفاصيل الفاتورة <span dir="ltr" className="font-mono text-primary">#{data.invoiceNumber}</span>
+        </h1>
         <div className="flex flex-wrap items-center gap-2">
           <DocumentWhatsAppDialog
             kind="INVOICE"
@@ -769,7 +789,21 @@ export default function InvoiceDetail() {
                   <span className="text-xs text-muted-foreground">{sourceTypeLabel(data.sourceType)}</span>
                 </span>
               </Field>
-              <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
+              <Field label="العميل">
+                {/* ٢٤/٨ (تدقيق + Codex P2): اسمُ العميل رابطٌ لكشف الحساب — لأدوارٍ لها `reports:READ`
+                    فقط (Cashier/print/reception يذهبون إلى تبويبٍ محذوف). «عميل نقدي» يبقى نصاً. */}
+                {data.customerId && canOpenStatement ? (
+                  <Link
+                    href={`/customers-statement?id=${data.customerId}`}
+                    className="text-primary hover:underline"
+                    title="فتح كشف حساب العميل"
+                  >
+                    {data.customerName ?? `#${data.customerId}`}
+                  </Link>
+                ) : (
+                  data.customerName ?? "عميل نقدي"
+                )}
+              </Field>
               <Field label="موظف المبيعات">{data.salespersonName ?? "—"}</Field>
               <Field label="الوردية">
                 {data.shiftId
@@ -1085,9 +1119,20 @@ export default function InvoiceDetail() {
                     </td>
                     <td className="px-3 py-2 text-xs">
                       {p.voucherNumber && (
-                        <span className="text-muted-foreground">
-                          {p.voucherNumber}
-                        </span>
+                        // ٢٤/٨ (تدقيق + Codex P2): رقمُ السند رابطٌ لصفحة السندات — لأدوار الخزينة
+                        // فقط (Cashier يذهب إلى /treasury بلا تبويب vouchers). الفلترُ عبر `q` — العقد
+                        // الفعليّ في Vouchers.tsx (لا يتعرّف على `number`).
+                        canOpenVouchers ? (
+                          <Link
+                            href={`/vouchers?q=${encodeURIComponent(p.voucherNumber)}`}
+                            className="text-primary hover:underline"
+                            title="فتح السند"
+                          >
+                            {p.voucherNumber}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">{p.voucherNumber}</span>
+                        )
                       )}
                       {p.attachmentUrl && (
                         <a

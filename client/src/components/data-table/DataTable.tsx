@@ -78,6 +78,9 @@ type DataTableProps<T, K = string> = {
   data: T[];
   searchable?: boolean;
   searchPlaceholder?: string;
+  /** ٢٤/٨ — تركيزٌ تلقائيّ لحقل البحث عند تركيب الجدول. مفيدٌ للشاشات التي يفتحها المستخدم
+   *  ليكتب فوراً (فواتير/عملاء)، لا يُفعَّل افتراضياً كي لا يخطف التركيزَ من نماذجَ حاضرة. */
+  autoFocusSearch?: boolean;
   /** البحث يقبل قارئ HID (باركود/رقم مستند): تصحيح تخطيط عربي + هوية بصرية. */
   barcodeSearch?: boolean;
   emptyText?: string;
@@ -181,6 +184,7 @@ export function DataTable<T, K = string>({
   data,
   searchable = true,
   searchPlaceholder = "بحث…",
+  autoFocusSearch = false,
   barcodeSearch = false,
   emptyText = "لا بيانات",
   loading = false,
@@ -351,6 +355,7 @@ export function DataTable<T, K = string>({
           {showSearch ? (
             <div className={cn("relative w-full", barcodeSearch ? "max-w-sm" : "max-w-xs")}>
               <Input
+                autoFocus={autoFocusSearch}
                 className={cn(barcodeSearch && barcodeSearchInputClass)}
                 placeholder={searchPlaceholder}
                 value={serverSearch ? serverSearch.value : globalFilter}

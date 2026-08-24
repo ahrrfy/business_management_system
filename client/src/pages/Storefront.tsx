@@ -73,6 +73,7 @@ import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { ConsentChoice, ConsentProvider } from "@/components/storefront/ConsentChoice";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -319,20 +320,6 @@ function storefrontShareUrl(params: Record<string, string>): string {
   const url = new URL("/store", window.location.origin);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
   return url.toString();
-}
-
-function encodeStorefrontCartShare(lines: CartLine[]): string {
-  return JSON.stringify(lines.slice(0, 24).map((line) => ({
-    productUnitId: line.productUnitId,
-    productId: line.productId,
-    name: line.name,
-    price: line.price,
-    imageUrl: line.imageUrl,
-    unitName: line.unitName,
-    variantLabel: line.variantLabel,
-    customization: line.customization,
-    qty: Math.min(Math.max(Math.floor(line.qty), 1), 999),
-  })));
 }
 
 export type StorefrontCheckoutAttempt = {
@@ -1191,7 +1178,7 @@ function hasStorefrontAnalyticsConsent(): boolean {
   }
 }
 
-export default function Storefront() {
+function StorefrontContent() {
   const [rawSearch, setRawSearch] = useState("");
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<number | null>(null);
@@ -1339,6 +1326,7 @@ export default function Storefront() {
   const labelQ = trpc.storefront.labelSummary.useQuery(labelParams ?? { orderNumber: "-", token: "-" }, { enabled: labelParams != null, retry: false });
   const relatedQ = trpc.storefront.related.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const recommendationClickM = trpc.storefront.trackRecommendationClick.useMutation();
+  const createCartShareM = trpc.storefront.createCartShare.useMutation();
   const cartRecommendationsQ = trpc.storefront.cartRecommendations.useQuery(
     { productIds: cartRecommendationProductIds },
     {
@@ -1367,29 +1355,24 @@ export default function Storefront() {
     const params = new URLSearchParams(window.location.search);
     const sharedProductId = Number(params.get("product"));
     if (Number.isInteger(sharedProductId) && sharedProductId > 0) setSelectedId(sharedProductId);
-    const rawCart = params.get("cart");
-    if (!rawCart) return;
-    try {
-      const parsed = JSON.parse(rawCart) as unknown;
-      if (!Array.isArray(parsed)) return;
+    const token = params.get("cartToken")?.trim();
+    if (!token || !/^[A-Za-z0-9_-]{20,32}$/.test(token)) return;
+    let cancelled = false;
+    void utils.storefront.getCartShare.fetch({ token }).then((shared) => {
+      if (cancelled) return;
       const incoming = new Map<string, CartLine>();
-      for (const raw of parsed.slice(0, 24) as Array<Partial<CartLine>>) {
-        const productUnitId = Number(raw.productUnitId);
-        const productId = Number(raw.productId);
-        const quantity = Number(raw.qty);
-        if (!Number.isInteger(productUnitId) || !Number.isInteger(productId) || !Number.isInteger(quantity) || quantity <= 0) continue;
-        const line = {
-          cartKey: customizationCartKey(productUnitId, raw.customization),
-          productUnitId,
-          productId,
-          name: typeof raw.name === "string" && raw.name ? raw.name : "منتج مشارك",
-          price: typeof raw.price === "string" && /^\d{1,15}(?:\.\d{1,2})?$/.test(raw.price) ? raw.price : "0",
-          imageUrl: typeof raw.imageUrl === "string" ? raw.imageUrl : null,
-          unitName: typeof raw.unitName === "string" ? raw.unitName : "وحدة",
-          variantLabel: typeof raw.variantLabel === "string" ? raw.variantLabel : undefined,
-          customization: raw.customization,
-          qty: Math.min(quantity, 999),
-        } as CartLine;
+      for (const item of shared.items) {
+        const line: CartLine = {
+          cartKey: customizationCartKey(item.productUnitId),
+          productUnitId: item.productUnitId,
+          productId: item.productId,
+          name: item.name,
+          price: Number(item.price).toFixed(2),
+          imageUrl: item.imageUrl,
+          unitName: item.unitName,
+          variantLabel: item.variantLabel,
+          qty: Math.min(Math.max(Math.floor(item.quantity), 1), 999),
+        };
         incoming.set(line.cartKey, line);
       }
       if (incoming.size > 0) {
@@ -1399,18 +1382,21 @@ export default function Storefront() {
           saveCart(next);
           return next;
         });
-        setShareFeedback("تم تحميل المنتجات المشتركة إلى سلتك؛ راجع الأسعار قبل التأكيد");
+        setShareFeedback(shared.skippedCount > 0
+          ? `تم تحميل ${incoming.size} من المنتجات؛ أزيل ${shared.skippedCount} لم يعد متاحاً. راجع الأسعار قبل التأكيد`
+          : "تم تحميل السلة المشتركة؛ راجع الأسعار قبل التأكيد");
       }
-    } catch {
-      setShareFeedback("تعذّر قراءة رابط السلة؛ يمكنك متابعة التصفح بشكل طبيعي");
-    }
-  }, []);
+    }).catch(() => {
+      if (!cancelled) setShareFeedback("تعذّر فتح رابط السلة أو انتهت صلاحيته؛ يمكنك متابعة التصفح بشكل طبيعي");
+    });
+    return () => { cancelled = true; };
+  }, [utils]);
 
   // كل فتح متعمد لتفاصيل منتج = مشاهدة؛ لا نرسل اسم المنتج أو هويّة/جلسة الزائر.
   useEffect(() => {
     if (selectedId != null && !viewedProductIds.current.has(selectedId)) {
       viewedProductIds.current.add(selectedId);
-      trackConversion.mutate({ event: "PRODUCT_VIEW" });
+      if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "PRODUCT_VIEW" });
     }
   // useMutation يعيد مرجعاً مستقراً؛ ربط الحدث بالمُنتج فقط يمنع إعادة عدّه عند كل render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1768,14 +1754,25 @@ export default function Storefront() {
       url: storefrontShareUrl({ product: String(productId) }),
     });
   }
-  function shareCart() {
-    if (cartLines.length === 0) return;
+  async function shareCart() {
+    if (cartLines.length === 0 || createCartShareM.isPending) return;
     pulseShare("cart");
-    void shareStorefrontContent({
-      title: `سلة من ${STORE_NAME}`,
-      text: `هذه سلة منتجات من ${STORE_NAME} — راجع الأسعار قبل تثبيت الطلب`,
-      url: storefrontShareUrl({ cart: encodeStorefrontCartShare(cartLines) }),
-    });
+    try {
+      const shared = await createCartShareM.mutateAsync({
+        lines: cartLines.slice(0, 100).map((line) => ({
+          productId: line.productId,
+          productUnitId: line.productUnitId,
+          quantity: Math.min(Math.max(Math.floor(line.qty), 1), 999),
+        })),
+      });
+      await shareStorefrontContent({
+        title: `سلة من ${STORE_NAME}`,
+        text: `هذه سلة منتجات من ${STORE_NAME} — راجع الأسعار قبل تثبيت الطلب`,
+        url: storefrontShareUrl({ cartToken: shared.token }),
+      });
+    } catch {
+      setShareFeedback("تعذّر إنشاء رابط السلة حالياً؛ يمكنك متابعة التصفح بشكل طبيعي");
+    }
   }
   function retrySupportingSources() {
     const retries: Promise<unknown>[] = [];
@@ -1863,7 +1860,7 @@ export default function Storefront() {
   }, sourceElement?: HTMLElement | null) {
     const eff = p.salePrice ?? p.price;
     if (eff == null || p.inStock === false) return;
-    trackConversion.mutate({ event: "ADD_TO_CART" });
+    if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((prev) => addStorefrontCartLine(prev, p, eff));
     triggerCartFlight(sourceElement, p.imageUrl);
@@ -1873,6 +1870,29 @@ export default function Storefront() {
     addToCart(p, event.currentTarget);
     setRecentlyAddedProductId(p.productId);
     window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
+  }
+  function addCatalogProduct(p: typeof items[number], event: React.MouseEvent<HTMLButtonElement>) {
+    const availableUnits = [
+      ...(p.storeUnits ?? []),
+      ...(p.variants ?? []).flatMap((variant) => variant.units),
+    ].filter((unit) => unit.inStock);
+    const needsDetails = p.isCustomizable || (p.variants?.length ?? 0) > 1 || (p.storeUnits?.length ?? 0) > 1;
+    if (needsDetails || availableUnits.length !== 1) {
+      setSelectedId(p.productId);
+      return;
+    }
+    const unit = availableUnits[0];
+    addToCart({
+      productUnitId: unit.productUnitId,
+      productId: p.productId,
+      productName: p.productName,
+      price: unit.price,
+      salePrice: unit.salePrice,
+      imageUrl: p.imageUrl,
+      unitName: unit.unitName,
+      variantLabel: p.variants?.find((variant) => variant.units.some((candidate) => candidate.productUnitId === unit.productUnitId))?.label,
+      inStock: unit.inStock,
+    }, event.currentTarget);
   }
 
   function setVariantQuantity(productUnitId: number, quantity: number) {
@@ -1907,7 +1927,7 @@ export default function Storefront() {
       }
     }
     if (selections.length === 0) return;
-    trackConversion.mutate({ event: "ADD_TO_CART" });
+    if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((previous) => addStorefrontCartLines(previous, selections));
     triggerCartFlight(sourceElement, detailQ.data.imageUrl);
@@ -1929,7 +1949,7 @@ export default function Storefront() {
       effectivePrice,
       quantity,
     };
-    trackConversion.mutate({ event: "ADD_TO_CART" });
+    if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((previous) => addStorefrontCartLines(previous, [selection]));
     triggerCartFlight(sourceElement, detailQ.data.imageUrl);
@@ -1948,7 +1968,7 @@ export default function Storefront() {
 
   function openCheckout() {
     if (!storeOpen || !orderingEnabled) return; // بوابتا المتجر والطلب ظاهرتان للزبون.
-    trackConversion.mutate({ event: "BEGIN_CHECKOUT" });
+    if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "BEGIN_CHECKOUT" });
     setTurnstileToken(null);
     setTurnstileResetKey((key) => key + 1);
     setPanel("checkout");
@@ -2185,7 +2205,7 @@ export default function Storefront() {
           <div className="mb-6 flex flex-col gap-3 border border-[#d9d3ca] bg-white p-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"><button type="button" onClick={() => { setAvailability((value) => value === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }} aria-pressed={availability === "IN_STOCK"} className={`shrink-0 border px-3 py-2 text-xs font-black ${availability === "IN_STOCK" ? "border-[#1e4a63] bg-[#1e4a63] text-white" : "border-[#d7d2ca] text-[#59636a]"}`}>{availability === "IN_STOCK" ? "متوفر الآن" : "كل المنتجات"}</button><label className="relative shrink-0"><span className="sr-only">نطاق السعر</span><select value={priceFilter} onChange={(e) => { setPriceFilter(e.target.value as PriceFilter); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="ALL">كل الأسعار</option><option value="UNDER_5000">أقل من 5,000 د.ع</option><option value="FROM_5000_TO_15000">5,000 – 15,000 د.ع</option><option value="OVER_15000">أكثر من 15,000 د.ع</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{brands.length > 0 && <label className="relative shrink-0"><span className="sr-only">الماركة</span><select value={brand} onChange={(e) => { setBrand(e.target.value); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="">كل الماركات</option>{brands.map((name) => <option key={name} value={name}>{name}</option>)}</select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>}</div><div className="flex items-center justify-between gap-3"><label className="relative shrink-0"><span className="sr-only">ترتيب النتائج</span><select value={sort} onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="RECOMMENDED">الترتيب المقترح</option><option value="BEST_SELLERS">الأكثر مبيعاً</option><option value="PRICE_ASC">السعر: الأقل أولاً</option><option value="PRICE_DESC">السعر: الأعلى أولاً</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{(hasRefinements || categoryId != null || search) && <button type="button" onClick={clearCatalogFilters} className="text-xs font-black text-[#a4513f] hover:underline">مسح الفلاتر</button>}</div>
           </div>
-          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} role="button" tabIndex={0} aria-label={`فتح تفاصيل ${p.productName}`} onClick={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; setSelectedId(p.productId); }} onKeyDown={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(p.productId); } }} className={`store-product-card group relative flex h-full cursor-pointer flex-col overflow-hidden border border-[#ddd8d1] bg-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1e4a63] focus-visible:ring-offset-2 ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button onClick={() => setSelectedId(p.productId)} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="absolute left-3 top-12 z-10 flex gap-1.5"><button type="button" onClick={() => toggleWishlist(p.productId)} aria-label={wishlistIds.has(p.productId) ? `إزالة ${p.productName} من أعجبتني` : `إضافة ${p.productName} إلى أعجبتني`} aria-pressed={wishlistIds.has(p.productId)} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${wishlistIds.has(p.productId) ? "text-[#e65f4a]" : "text-[#5c6870]"} ${heartPulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Heart key={`wishlist-${p.productId}-${heartPulseNonce}`} aria-hidden className={`size-4 ${wishlistIds.has(p.productId) ? "fill-current" : ""} ${heartPulseTarget === `product-${p.productId}` ? "animate__animated animate__heartBeat animate__faster" : ""}`} /></button><button type="button" onClick={() => shareProduct(p.productId, p.productName)} aria-label={`مشاركة ${p.productName}`} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 text-[#1e4a63] shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${sharePulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Share2 key={`share-${p.productId}-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === `product-${p.productId}` ? "animate__animated animate__pulse animate__faster" : ""}`} /></button></div><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => setSelectedId(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}{onSale && <span className="basis-full text-[10px] font-bold text-[#a4513f]">وفّر {money(Number(p.price) - Number(p.salePrice))} د.ع</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={() => setSelectedId(p.productId)} disabled={!p.inStock} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]"><Plus aria-hidden className="size-4" />{p.inStock ? "أضف إلى السلة" : "غير متوفر"}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
+          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} role="button" tabIndex={0} aria-label={`فتح تفاصيل ${p.productName}`} onClick={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; setSelectedId(p.productId); }} onKeyDown={(event) => { if ((event.target as HTMLElement).closest("button, a")) return; if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(p.productId); } }} className={`store-product-card group relative flex h-full cursor-pointer flex-col overflow-hidden border border-[#ddd8d1] bg-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1e4a63] focus-visible:ring-offset-2 ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button onClick={() => setSelectedId(p.productId)} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="absolute left-3 top-12 z-10 flex gap-1.5"><button type="button" onClick={() => toggleWishlist(p.productId)} aria-label={wishlistIds.has(p.productId) ? `إزالة ${p.productName} من أعجبتني` : `إضافة ${p.productName} إلى أعجبتني`} aria-pressed={wishlistIds.has(p.productId)} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${wishlistIds.has(p.productId) ? "text-[#e65f4a]" : "text-[#5c6870]"} ${heartPulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Heart key={`wishlist-${p.productId}-${heartPulseNonce}`} aria-hidden className={`size-4 ${wishlistIds.has(p.productId) ? "fill-current" : ""} ${heartPulseTarget === `product-${p.productId}` ? "animate__animated animate__heartBeat animate__faster" : ""}`} /></button><button type="button" onClick={() => shareProduct(p.productId, p.productName)} aria-label={`مشاركة ${p.productName}`} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 text-[#1e4a63] shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${sharePulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Share2 key={`share-${p.productId}-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === `product-${p.productId}` ? "animate__animated animate__pulse animate__faster" : ""}`} /></button></div><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => setSelectedId(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}{onSale && <span className="basis-full text-[10px] font-bold text-[#a4513f]">وفّر {money(Number(p.price) - Number(p.salePrice))} د.ع</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={(event) => addCatalogProduct(p, event)} disabled={!p.inStock} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]"><Plus aria-hidden className="size-4" />{p.inStock ? "أضف إلى السلة" : "غير متوفر"}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
           {catalogQ.hasNextPage && <div ref={catalogLoadMoreRef} className="mt-8 flex min-h-12 items-center justify-center" aria-live="polite">{catalogQ.isFetchingNextPage ? <span className="flex items-center gap-2 text-xs font-bold text-[#1e4a63]"><Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ تحميل منتجات إضافية…</span> : <span className="text-[11px] font-bold text-[#8b9395]">نحمّل المزيد تلقائياً عند الاقتراب</span>}</div>}
           {catalogQ.isError && <div className="mt-3 flex flex-col items-center gap-2 text-center" role="alert"><p className="text-xs font-bold text-rose-700">تعذّر تحميل المنتجات الإضافية تلقائياً.</p><button type="button" onClick={() => void catalogQ.fetchNextPage()} disabled={catalogQ.isFetchingNextPage} className="text-xs font-black text-[#1e4a63] underline disabled:opacity-50">إعادة المحاولة</button></div>}
         </section>
@@ -2256,12 +2276,13 @@ export default function Storefront() {
         </div>
       )}
 
+      {/* شارة «الخصوصية» ثابتة أسفل اليسار؛ نرفع واتساب 4rem حتى لا يتراكبا على الهاتف. */}
       {panel == null && cartCount === 0 && settingsQ.data?.whatsappNumber && (
         <a
           href={`https://wa.me/${settingsQ.data.whatsappNumber.replace(/[^\d]/g, "")}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="fixed bottom-4 left-4 z-20 flex items-center gap-2 rounded-full bg-[#1f9d6a] px-4 py-3 text-xs font-black text-white shadow-lg shadow-emerald-900/20 transition hover:-translate-y-0.5 hover:bg-[#168457]"
+          className="fixed bottom-16 left-4 z-20 flex items-center gap-2 rounded-full bg-[#1f9d6a] px-4 py-3 text-xs font-black text-white shadow-lg shadow-emerald-900/20 transition hover:-translate-y-0.5 hover:bg-[#168457]"
           aria-label="تواصل مع فريق المتجر عبر واتساب"
         >
           <MessageCircle aria-hidden className="size-4" /> اسألنا عبر واتساب
@@ -2858,6 +2879,15 @@ export default function Storefront() {
  * بل تشرح فقط ما يطبّقه مسار الطلب فعلياً: الدفع عند الاستلام، احتساب التوصيل
  * قبل التأكيد، واتصال الفريق لتأكيد الطلب. هذا يمنع «الثقة التسويقية» الوهمية.
  */
+export default function Storefront() {
+  return (
+    <ConsentProvider>
+      <StorefrontContent />
+      <ConsentChoice />
+    </ConsentProvider>
+  );
+}
+
 function StoreTrustAndHelp({
   whatsappNumber,
   freeShippingThreshold,

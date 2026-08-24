@@ -31,6 +31,7 @@ import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "..
 import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
 import { listStorefrontProductReviews, submitStorefrontProductReview } from "../services/storefrontProductReviewService";
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
+import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
 
 const labelSummaryInput = z.object({
   orderNumber: z.string().trim().min(1).max(50),
@@ -166,6 +167,22 @@ export const storefrontRouter = router({
   getWishlistShare: storefrontPublicReadProcedure
     .input(z.object({ token: z.string().trim().regex(/^[A-Za-z0-9_-]{20,32}$/) }))
     .query(({ input }) => resolveStorefrontWishlistShare(input.token)),
+
+  /** ينشئ رابط سلة يحفظ معرفات وحدات البيع والكميات فقط؛ يعاد التسعير عند فتحه. */
+  createCartShare: storefrontPublicWriteProcedure
+    .input(z.object({
+      lines: z.array(z.object({
+        productId: z.number().int().positive(),
+        productUnitId: z.number().int().positive(),
+        quantity: z.number().int().positive().max(999),
+      })).min(1).max(100),
+    }))
+    .mutation(({ input }) => createStorefrontCartShare(input.lines)),
+
+  /** يسترجع السلة الحية من token منتهي بعد سبعة أيام؛ لا يعيد لقطة السعر القديمة. */
+  getCartShare: storefrontPublicReadProcedure
+    .input(z.object({ token: z.string().trim().regex(/^[A-Za-z0-9_-]{20,32}$/) }))
+    .query(({ input }) => resolveStorefrontCartShare(input.token)),
 
   /** منتجات ذات صلة (cross-sell «يُشترى معه») — نفس الفئة، متوفّرة. */
   related: publicProcedure
