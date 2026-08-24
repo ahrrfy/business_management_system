@@ -75,6 +75,14 @@ export default function Employees() {
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / limit));
+  // Codex P2 على PR #751 (نفس الفخّ هنا): تخفيضٌ في نتائج القائمة (تعطيلٌ يخرج صفوفاً، بحثٌ
+  // يُقلّصها) دون تصفير `page` كان يُنتج «251–100 من 100» ويُظهر «مسح الفلاتر» مع `total > 0`.
+  // نُصحّح إلى آخر صفحةٍ صالحة لا 0 (يحفظ نيّة كون المستخدم في نهاية القائمة). داخل useEffect
+  // لأنّ `page` هنا `useState` (لا URL) — إعادة الضبط في التقديم (render) تُطلق تحذير React.
+  useEffect(() => {
+    if (list.data && page >= pages) setPage(Math.max(0, pages - 1));
+  }, [list.data, page, pages]);
+  const displayPage = Math.min(page, Math.max(0, pages - 1));
 
   return (
     <div className="space-y-4">
@@ -225,8 +233,8 @@ export default function Employees() {
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
           <div className="text-muted-foreground">
             {pages > 1 ? (
-              <>يعرض {(page * limit + 1).toLocaleString("ar-IQ-u-nu-latn")}–
-                {Math.min((page + 1) * limit, total).toLocaleString("ar-IQ-u-nu-latn")} من
+              <>يعرض {(displayPage * limit + 1).toLocaleString("ar-IQ-u-nu-latn")}–
+                {Math.min((displayPage + 1) * limit, total).toLocaleString("ar-IQ-u-nu-latn")} من
                 {" "}
                 {total.toLocaleString("ar-IQ-u-nu-latn")} موظف</>
             ) : (
@@ -235,9 +243,9 @@ export default function Employees() {
           </div>
           {pages > 1 && (
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-              <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
-              <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
+              <Button variant="outline" size="sm" disabled={displayPage <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
+              <div className="text-muted-foreground">صفحة {displayPage + 1} من {pages}</div>
+              <Button variant="outline" size="sm" disabled={displayPage >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
             </div>
           )}
         </div>
