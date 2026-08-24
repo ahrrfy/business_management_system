@@ -8,7 +8,15 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { Platform } from "react-native";
+import { I18nManager, Platform } from "react-native";
+
+// Force RTL layout for the Arabic customer base. Idempotent: allowRTL enables
+// runtime direction swaps, forceRTL locks it to RTL regardless of device locale.
+// Effect takes hold on the next full app launch; a first-run LTR flash is acceptable.
+if (!I18nManager.isRTL) {
+  I18nManager.allowRTL(true);
+  I18nManager.forceRTL(true);
+}
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
 import {
