@@ -17,6 +17,18 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
+*.pem
+
+# EAS/Play/Apple credentials — never commit
+credentials.json
+google-play-service-account*.json
+apple-api-key*.p8
+asc-auth*.json
+secrets/
+
+# scratch / temporary output files
+.tmp_*
+tmp/
 
 # Metro
 .metro-health-check*
