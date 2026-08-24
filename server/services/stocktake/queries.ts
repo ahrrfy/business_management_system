@@ -687,6 +687,115 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
   };
 }
 
+/* ─────────── منتقي MANUAL (Wizard الإنشاء) — الكتالوج مع لقطة رصيد الفرع (LEFT JOIN). ─────────── */
+
+export interface PickerVariantsInput {
+  branchId: number;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PickerVariantRow {
+  variantId: number;
+  branchId: number;
+  /** رصيد الفرع الحاليّ — 0 عند غياب صفّ branchStock (المنتج لم تُلامَسه حركةٌ في هذا الفرع بعد). */
+  quantity: number;
+  sku: string;
+  variantName: string | null;
+  color: string | null;
+  size: string | null;
+  minStock: number | null;
+  reorderPoint: number | null;
+  productName: string;
+  lastCountedAt: Date | null;
+  /** علم «تحت الحدّ الأدنى» — نفس اشتقاق inventory.onHand للتماثل البصريّ. */
+  isLow: boolean;
+}
+
+/**
+ * قائمة المتغيّرات القابلة للجرد لهذا الفرع — تبدأ من كتالوج `productVariants` بـLEFT JOIN
+ * على `branchStock` كي يظهر المنتج **حتى إن لم يكن له صفّ رصيد بعد** (رصيده الافتراضيّ 0).
+ *
+ * لماذا هذه الدالة موجودة أصلاً (وليست `inventory.onHand` كافية):
+ *  - `inventory.onHand` تبدأ من `branchStock` بـINNER JOIN ⇒ أيّ منتج لم يُلامَس بحركة في هذا الفرع
+ *    (شراء/بيع/تحويل/تسوية) لا صفَّ له في `branchStock` ⇒ يختفي كلّياً من الاستعلام.
+ *  - الكاشير يعرضه (يقرأ عبر `listStockByUnitIds` وهي LEFT JOIN) بوصفه «مخزون 0».
+ *  - لكن الجرد نفسه (منتقي MANUAL) كان يعتمد `onHand` ⇒ فارق قاتل: المستخدم يرى الصنف «نافذاً»
+ *    في الكاشير ولا يجد له أثراً في اختيار الجرد كي يُصحّح رصيده — بلاغ المالك ٢٤/٨.
+ *  - `resolveScope` MANUAL في الخادم لا يحتاج صفّ `branchStock`؛ يقبل أيّ متغيّرٍ موجود، ويُنشئ اللقطة
+ *    بمقدار 0 عند غياب الصفّ (سلوك قائم). المشكلة كانت في **رؤية** المنتج للاختيار فقط.
+ *
+ * حدود الفلترة: تطابق `resolveScope` NORMAL — متغيّر نشط + منتج نشط + غير خدميّ + غير بكج.
+ * (الأمانة تُشمَل هنا؛ إن كانت الجلسة OPENING فسيرفضها `resolveScope` بـBAD_REQUEST برسالةٍ ناطقة.)
+ * لا نقيّد على وجود `productUnit` — منتقي MANUAL يعمل بحبيبة المتغيّر (لا الوحدة).
+ */
+export async function listPickerVariants(input: PickerVariantsInput): Promise<PickerVariantRow[]> {
+  const db = requireDb();
+  const branchId = input.branchId;
+  const limit = Math.min(Math.max(input.limit ?? 200, 1), 1000);
+  const offset = Math.max(input.offset ?? 0, 0);
+
+  const conds: ReturnType<typeof eq>[] = [
+    eq(productVariants.isActive, true),
+    eq(products.isActive, true),
+    eq(products.isService, false),
+    eq(products.isBundle, false),
+  ];
+
+  const search = input.q?.trim();
+  if (search) {
+    const pat = `%${escLike(search)}%`;
+    conds.push(
+      sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!')`,
+    );
+  }
+
+  const rows = await db
+    .select({
+      variantId: productVariants.id,
+      quantity: branchStock.quantity,
+      sku: productVariants.sku,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      minStock: productVariants.minStock,
+      reorderPoint: productVariants.reorderPoint,
+      productName: products.name,
+      lastCountedAt: branchStock.lastCountedAt,
+    })
+    .from(productVariants)
+    .innerJoin(products, eq(products.id, productVariants.productId))
+    // شرط الفرع في ON الخاصّ بالـLEFT JOIN — وضعُه في WHERE يقلب الـLEFT إلى INNER فيُعيد العلّة.
+    .leftJoin(
+      branchStock,
+      and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)),
+    )
+    .where(and(...conds))
+    .orderBy(asc(products.name), asc(productVariants.sku))
+    .limit(limit)
+    .offset(offset);
+
+  return rows.map((r) => {
+    const quantity = Number(r.quantity ?? 0);
+    const minStock = r.minStock == null ? null : Number(r.minStock);
+    return {
+      variantId: Number(r.variantId),
+      branchId,
+      quantity,
+      sku: r.sku,
+      variantName: r.variantName,
+      color: r.color,
+      size: r.size,
+      minStock,
+      reorderPoint: r.reorderPoint == null ? null : Number(r.reorderPoint),
+      productName: r.productName,
+      lastCountedAt: r.lastCountedAt ?? null,
+      isLow: (minStock ?? 0) > 0 && quantity <= (minStock ?? 0),
+    };
+  });
+}
+
 /** عدّادات بطاقة لوحة التحكم/القائمة. */
 export async function getStocktakeStats(opts: { restrictBranchId?: number | null } = {}) {
   const db = requireDb();
