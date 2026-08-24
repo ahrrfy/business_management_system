@@ -102,13 +102,118 @@ describe("inventory.onHand", () => {
     for (const r of rows) expect("costPrice" in r).toBe(false);
   });
 
-  it("عزل الفرع: مستخدم المخزن مقيَّد بفرعه ويتجاهل branchId المُرسَل", async () => {
+  it("عزل الفرع: مستخدم المخزن مقيَّد بفرعه ويتجاهل branchId المُرسَل — لا تسريب أرصدة الفرع الآخر", async () => {
     const caller = appRouter.createCaller(makeCtx(await userRow(2))); // warehouse, branch 2
     const rows = await caller.inventory.onHand({ branchId: 1 }); // يحاول فرع 1
-    // مُجبَر على فرعه (2): يرى V1@branch2=50 فقط، لا أصناف فرع 1.
-    expect(rows).toHaveLength(1);
-    expect(Number(rows[0].branchId)).toBe(2);
-    expect(rows[0].quantity).toBe(50);
+    // بعد إصلاح ٢٤/٨ (LEFT JOIN من الكتالوج): يرى **كل** الكتالوج النشط برصيد فرعه ٢
+    // — v1 له صفٌّ في فرع ٢ (50)، وv2 بلا صفٍّ لفرع ٢ (⇒ 0). فرع ١ رقم 100 لا يُرى.
+    // مقياس الحرص: `branchId` في كلّ صفٍّ = 2، والأرصدة لا تشمل رقم فرع ١ (100).
+    expect(rows.every((r) => Number(r.branchId) === 2)).toBe(true);
+    const quantities = rows.map((r) => r.quantity).sort((a, b) => a - b);
+    // مقبول: [0 (v2 بلا صفٍّ لفرع ٢), 50 (v1 بفرع ٢)]. ممنوع صراحةً: 100 (رصيد v2 في فرع ١) أو 5 (رصيد v1 في فرع ١).
+    expect(quantities).not.toContain(100);
+    expect(quantities).not.toContain(5);
+    expect(quantities).toContain(50);
+  });
+
+  /* ─────────── بلاغ المالك ٢٤/٨: LEFT JOIN من الكتالوج (لا INNER من branchStock) ─────────── */
+
+  it("يُظهر متغيّراً لم يُلامَس بحركةٍ في الفرع (لا صفَّ branchStock) بـquantity=0 — بلاغ المالك", async () => {
+    // نضيف متغيّراً جديداً لمنتج قائم بلا صفّ رصيدٍ لأيّ فرع (كأنّه أُدخل الكتالوج ولم يُشترَ بعد)
+    await db().insert(s.productVariants).values({
+      id: 99,
+      productId: 1,
+      sku: "ENV-COLDEN-110",
+      variantName: "ظرف ابيض 110×220 COLDEN 8S8643P-AA1",
+      minStock: 0,
+      isActive: true,
+    });
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const rows = await caller.inventory.onHand({ branchId: 1 });
+    const envelope = rows.find((r) => r.sku === "ENV-COLDEN-110");
+    expect(envelope).toBeDefined(); // كان يختفي قبل الإصلاح (INNER JOIN)
+    expect(envelope?.quantity).toBe(0);
+    expect(envelope?.lastCountedAt).toBeNull();
+    // الآن المدير يستطيع فتح تسوية على هذا الصنف من نفس الشاشة (Inventory.tsx).
+  });
+
+  it("البحث يجد المتغيّر بلا صفّ branchStock (سيناريو «أعرف اسمه لكن لا يظهر»)", async () => {
+    await db().insert(s.productVariants).values({
+      id: 100,
+      productId: 1,
+      sku: "ORPHAN-SKU",
+      variantName: "متغيّر بلا رصيد",
+      isActive: true,
+    });
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const bySku = await caller.inventory.onHand({ branchId: 1, q: "ORPHAN-SKU" });
+    expect(bySku).toHaveLength(1);
+    expect(bySku[0].quantity).toBe(0);
+  });
+
+  it("lowOnly لا يُصنّف المتغيّر بلا صفٍّ «تحت الحدّ» (منع فيضان الفلتر)", async () => {
+    await db().insert(s.productVariants).values({
+      id: 101,
+      productId: 1,
+      sku: "NOSTOCK-LOW",
+      variantName: "لا رصيد وحدّه 50",
+      minStock: 50,
+      isActive: true,
+    });
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const low = await caller.inventory.onHand({ branchId: 1, lowOnly: true });
+    // فقط v1 (رصيد 5 وحدّه 10). NOSTOCK-LOW له NULL quantity ⇒ يسقط من الفلتر.
+    expect(low.map((r) => r.sku).sort()).toEqual(["SKU-1"]);
+  });
+
+  it("negativeOnly لا يشمل المتغيّر بلا صفّ (NULL ليس <0)", async () => {
+    await db().insert(s.productVariants).values({
+      id: 102,
+      productId: 1,
+      sku: "NOSTOCK-NEG",
+      variantName: "لا رصيد — ليس سالباً",
+      isActive: true,
+    });
+    // نجعل v1 سالباً للتأكيد
+    await db().update(s.branchStock).set({ quantity: -3 }).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const neg = await caller.inventory.onHand({ branchId: 1, negativeOnly: true });
+    expect(neg.map((r) => r.sku).sort()).toEqual(["SKU-1"]);
+  });
+
+  it("يستبعد المتغيّر غير النشط والمنتج غير النشط (البدء من الكتالوج يستدعي هذين الفلترَين صراحةً)", async () => {
+    await db().insert(s.products).values({ id: 9, name: "منتج معطَّل", isActive: false });
+    await db().insert(s.productVariants).values([
+      { id: 200, productId: 9, sku: "INACTIVE-PROD", isActive: true },
+      { id: 201, productId: 1, sku: "INACTIVE-VAR", isActive: false },
+    ]);
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const rows = await caller.inventory.onHand({ branchId: 1 });
+    const skus = rows.map((r) => r.sku);
+    expect(skus).not.toContain("INACTIVE-PROD");
+    expect(skus).not.toContain("INACTIVE-VAR");
+  });
+
+  it("رصيد الفرع الآخر لا يُفسِد عدّ الفرع المطلوب (شرط الفرع في ON لا WHERE)", async () => {
+    await db().insert(s.productVariants).values({
+      id: 300,
+      productId: 1,
+      sku: "OTHER-BRANCH-ONLY",
+      variantName: "له رصيد بفرع ٢ فقط",
+      isActive: true,
+    });
+    await db().insert(s.branchStock).values({ variantId: 300, branchId: 2, quantity: 77 });
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const rowsBranch1 = await caller.inventory.onHand({ branchId: 1 });
+    const other = rowsBranch1.find((r) => r.sku === "OTHER-BRANCH-ONLY");
+    // الصنف يظهر في فرع ١ بـ0 (LEFT JOIN مع شرط branch في ON)
+    expect(other).toBeDefined();
+    expect(other?.quantity).toBe(0);
+    // فرع ٢ يعرضه بـ77
+    const admin1WithScope = appRouter.createCaller(makeCtx(await userRow(1)));
+    const rowsBranch2 = await admin1WithScope.inventory.onHand({ branchId: 2 });
+    const otherAt2 = rowsBranch2.find((r) => r.sku === "OTHER-BRANCH-ONLY");
+    expect(otherAt2?.quantity).toBe(77);
   });
 });
 

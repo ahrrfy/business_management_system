@@ -646,6 +646,21 @@ export const inventoryRouter = router({
    * الأرصدة الحالية لكل متغيّر في فرع، بالأسماء + علم «تحت الحد الأدنى».
    * عزل الفرع: الكاشير/المخزن يُقيَّدان بفرعهما؛ المدير/الأدمن يختاران (افتراضي فرعهما).
    * لا تُعاد التكلفة (لا تسريب هامش الربح).
+   *
+   * ⛔ **بلاغ المالك ٢٤/٨ + سبب الاستبدال البنيويّ (لا `?? 1` على الرصيد):**
+   * كان هذا الاستعلام يبدأ من `branchStock` بـINNER JOIN ⇒ يُخفي كل متغيّرٍ لم يُلامَس بحركةٍ
+   * في الفرع (لا صفَّ له). لكن `listStockByUnitIds` في الكاشير يبدأ من الكتالوج بـLEFT JOIN
+   * فيعرضه «مخزون 0» — وشاشة تسوية المخزون في Inventory.tsx تستعمل هذا الاستعلام ⇒ لم يكن
+   * المدير يستطيع أن يفتح تسويةً على المنتج الذي يشتكيه المالك (مثال: «ظرف ابيض 110×220
+   * COLDEN 8S8643P-AA1»). الفئة نفسها أوّل من كشفها إصلاحُ منتقي MANUAL بالجرد قبل ساعات
+   * (#763)، وبقيَ هذا الأخ عالقاً — الدرس في [[sweep-siblings-when-fixing-shared-concept-drift]].
+   *
+   * الإصلاح: بدء من كتالوج `productVariants` + INNER JOIN products + **LEFT JOIN branchStock**
+   * (شرط الفرع في `ON` لا `WHERE` كي لا يُقلَب إلى INNER). المتغيّر بلا صفٍّ يظهر بـ`quantity=0`
+   * (COALESCE في الإسقاط). فلاتر `isActive` صريحة على المتغيّر والمنتج (لم تكن مطلوبةً حين
+   * البدء من branchStock — الرصيد يعني موجوداً — لكنّ البدءَ من الكتالوج يستدعيها).
+   * `lowOnly` و`negativeOnly` يبقيان **صارمَي دلالة** بمقارنة الحقل الخام (NULL ⇒ يسقط) —
+   * أي صنفٍ بلا صفٍّ لا يُعدّ «تحت الحد» ولا «سالباً»؛ فلا انفجار في هذين الفلترَين.
    */
   onHand: inventoryReadProcedure
     .input(
@@ -672,7 +687,12 @@ export const inventoryRouter = router({
       // input.branchId؛ الأدمن كذلك. الكاشير/المخزن مُجبَران على فرعهما عبر scopedBranchId. (الكتابة تبقى على الفرع.)
       const branchId = ctx.scopedBranchId ?? input?.branchId ?? ctx.user.branchId ?? 1;
 
-      const conds: any[] = [eq(branchStock.branchId, branchId)];
+      // ملاحظة (٢٤/٨): كان هنا `eq(branchStock.branchId, branchId)` في WHERE ⇒ عاد INNER
+      // ضمنياً حتى بعد LEFT JOIN. شرط الفرع صار في `ON` أدناه.
+      const conds: any[] = [
+        eq(productVariants.isActive, true),
+        eq(products.isActive, true),
+      ];
       const search = input?.q?.trim();
       if (search) {
         const pat = `%${escLike(search)}%`;
@@ -680,6 +700,9 @@ export const inventoryRouter = router({
           sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!')`
         );
       }
+      // «تحت الحدّ» و«سالب فقط»: مقارنةٌ على الحقل الخام دون COALESCE — المتغيّر بلا صفٍّ
+      // (quantity = NULL) لا يُصنّف «تحت الحدّ» ولا «سالباً»، فلا يُفيض هذان الفلتران بمنتجاتٍ
+      // كتالوجيّة صفريّة. من يريد رؤيتها يفتح القائمة بلا فلتر «تحت الحدّ».
       if (input?.lowOnly) {
         conds.push(sql`${productVariants.minStock} > 0 AND ${branchStock.quantity} <= ${productVariants.minStock}`);
       }
@@ -694,8 +717,7 @@ export const inventoryRouter = router({
 
       const rows = await db
         .select({
-          variantId: branchStock.variantId,
-          branchId: branchStock.branchId,
+          variantId: productVariants.id,
           quantity: branchStock.quantity,
           sku: productVariants.sku,
           variantName: productVariants.variantName,
@@ -707,18 +729,36 @@ export const inventoryRouter = router({
           // آخر جرد معتمد شمل الصنف — يبني الثقة بالأرقام ويغذّي الجرد الدوري ABC.
           lastCountedAt: branchStock.lastCountedAt,
         })
-        .from(branchStock)
-        .innerJoin(productVariants, eq(productVariants.id, branchStock.variantId))
+        .from(productVariants)
         .innerJoin(products, eq(products.id, productVariants.productId))
+        // شرط الفرع في ON — وضعُه في WHERE يُلغي معنى LEFT (يُسقط الصفوف NULL).
+        .leftJoin(
+          branchStock,
+          and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)),
+        )
         .where(and(...conds))
         .orderBy(asc(products.name), asc(productVariants.sku))
         .limit(input?.limit ?? 300)
         .offset(input?.offset ?? 0);
 
-      return rows.map((r) => ({
-        ...r,
-        isLow: (r.minStock ?? 0) > 0 && r.quantity <= (r.minStock ?? 0),
-      }));
+      return rows.map((r) => {
+        const quantity = Number(r.quantity ?? 0);
+        const minStock = r.minStock == null ? null : Number(r.minStock);
+        return {
+          variantId: Number(r.variantId),
+          branchId,
+          quantity,
+          sku: r.sku,
+          variantName: r.variantName,
+          color: r.color,
+          size: r.size,
+          minStock,
+          reorderPoint: r.reorderPoint == null ? null : Number(r.reorderPoint),
+          productName: r.productName,
+          lastCountedAt: r.lastCountedAt ?? null,
+          isLow: (minStock ?? 0) > 0 && quantity <= (minStock ?? 0),
+        };
+      });
     }),
 
   stockByBranch: inventoryReadProcedure
