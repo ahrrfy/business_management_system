@@ -416,6 +416,7 @@ export default function Products() {
                 { key: "isCustomizable", header: "قابل للتخصيص", map: (r) => yesNo(r.isCustomizable) },
                 { key: "isService", header: "بلا مخزون", map: (r) => yesNo(r.isService) },
                 { key: "showInReception", header: "يظهر في الاستقبال", map: (r) => yesNo(r.showInReception) },
+                { key: "showInPrintPos", header: "يظهر في كاشير الطباعة", map: (r) => yesNo(r.showInPrintPos) },
                 { key: "isBundle", header: "بكج/حزمة", map: (r) => yesNo(r.isBundle) },
                 { key: "isConsignment", header: "بضاعة أمانة", map: (r) => yesNo(r.isConsignment) },
                 ...(isElevated
