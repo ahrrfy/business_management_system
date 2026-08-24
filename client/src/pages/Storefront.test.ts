@@ -89,13 +89,19 @@ describe("storefront media sources", () => {
 
 describe("storefront zoom lens", () => {
   it("keeps the single zoom lens inside the image frame at every edge", () => {
-    expect(clampStorefrontZoomPoint({ x: 0, y: 0 }, 600, 600)).toEqual({ x: 16, y: 16 });
-    expect(clampStorefrontZoomPoint({ x: 100, y: 100 }, 600, 600)).toEqual({ x: 84, y: 84 });
+    const squareTopLeft = clampStorefrontZoomPoint({ x: 0, y: 0 }, 600, 600);
+    expect(squareTopLeft.x).toBeCloseTo(21.3333, 4);
+    expect(squareTopLeft.y).toBeCloseTo(21.3333, 4);
+    const squareBottomRight = clampStorefrontZoomPoint({ x: 100, y: 100 }, 600, 600);
+    expect(squareBottomRight.x).toBeCloseTo(78.6667, 4);
+    expect(squareBottomRight.y).toBeCloseTo(78.6667, 4);
     expect(clampStorefrontZoomPoint({ x: 50, y: 50 }, 600, 600)).toEqual({ x: 50, y: 50 });
     const wide = clampStorefrontZoomPoint({ x: 0, y: 100 }, 1200, 720);
-    expect(wide.x).toBeCloseTo(8, 6);
-    expect(wide.y).toBeCloseTo(86.6667, 4);
-    expect(clampStorefrontZoomPoint({ x: 100, y: 0 }, 320, 480)).toEqual({ x: 70, y: 20 });
+    expect(wide.x).toBeCloseTo(10.6667, 4);
+    expect(wide.y).toBeCloseTo(82.2222, 4);
+    const narrow = clampStorefrontZoomPoint({ x: 100, y: 0 }, 320, 480);
+    expect(narrow.x).toBeCloseTo(60, 4);
+    expect(narrow.y).toBeCloseTo(26.6667, 4);
   });
 });
 
