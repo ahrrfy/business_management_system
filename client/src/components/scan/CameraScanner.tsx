@@ -13,6 +13,15 @@ interface Props {
   onClose: () => void;
   /** يُستدعى بالنص المفكوك من الباركود أو QR. */
   onDetect: (code: string) => void;
+  /**
+   * إبقاء الكاميرا مفتوحةً بعد كلّ مسحٍ ناجح لتمكين دورة «امسح ثمّ التالي» بلا إعادة فتح.
+   * الافتراضي `false` للتوافق مع الاستدعاءات القائمة التي تتوقّع الإغلاق التلقائيّ.
+   * حين تُفعَّل، يُطبَّق زمن تبريدٍ بين المسحات (`cooldownMs`) لمنع نفس الباركود من الإطلاق
+   * مرّاتٍ متتاليةً بلا فائدة.
+   */
+  keepOpen?: boolean;
+  /** زمنُ تبريدٍ بين مسحات `keepOpen` (بالميلي ثانية). الافتراضي ١٥٠٠ (ثلاث ثوانٍ نصفَين). */
+  cooldownMs?: number;
 }
 
 type FallbackControls = {
@@ -62,13 +71,19 @@ function ManualEntry({ onSubmit }: { onSubmit: (value: string) => void }) {
   );
 }
 
-export function CameraScanner({ open, onClose, onDetect }: Props) {
+export function CameraScanner({ open, onClose, onDetect, keepOpen = false, cooldownMs = 1500 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const onDetectRef = useRef(onDetect);
   const controlsRef = useRef<FallbackControls | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectedRef = useRef(false);
+  const lastCodeRef = useRef<string | null>(null);
+  const cooldownTimerRef = useRef<number | null>(null);
+  const keepOpenRef = useRef(keepOpen);
+  const cooldownMsRef = useRef(cooldownMs);
   onDetectRef.current = onDetect;
+  keepOpenRef.current = keepOpen;
+  cooldownMsRef.current = cooldownMs;
 
   const [error, setError] = useState("");
   const [engine, setEngine] = useState<"starting" | "native" | "zxing">("starting");
@@ -89,6 +104,21 @@ export function CameraScanner({ open, onClose, onDetect }: Props) {
     (raw: string) => {
       const code = raw.trim();
       if (!code || detectedRef.current) return;
+      // في وضع «الاستمرار» نُبقي الكاميرا مفتوحة، ونمنع التكرار بزمن تبريدٍ لا بالإغلاق.
+      // ولمنع الباركود ذاته من الإطلاق مرّاتٍ متتالية حين يظلّ في الإطار: نفس الرمز
+      // خلال نافذة التبريد يُتجاهَل، ورمزٌ آخر يعمل فوراً (الحقل معدّ لدورة سريعة).
+      if (keepOpenRef.current) {
+        if (lastCodeRef.current === code && cooldownTimerRef.current != null) return;
+        detectedRef.current = true;
+        lastCodeRef.current = code;
+        if (cooldownTimerRef.current != null) window.clearTimeout(cooldownTimerRef.current);
+        cooldownTimerRef.current = window.setTimeout(() => {
+          detectedRef.current = false;
+          cooldownTimerRef.current = null;
+        }, Math.max(400, cooldownMsRef.current));
+        onDetectRef.current(code);
+        return;
+      }
       detectedRef.current = true;
       stopMedia();
       onDetectRef.current(code);
@@ -101,6 +131,11 @@ export function CameraScanner({ open, onClose, onDetect }: Props) {
     let stopped = false;
     let nativeRaf = 0;
     detectedRef.current = false;
+    lastCodeRef.current = null;
+    if (cooldownTimerRef.current != null) {
+      window.clearTimeout(cooldownTimerRef.current);
+      cooldownTimerRef.current = null;
+    }
     setError("");
     setEngine("starting");
 
@@ -221,6 +256,10 @@ export function CameraScanner({ open, onClose, onDetect }: Props) {
     return () => {
       stopped = true;
       stop();
+      if (cooldownTimerRef.current != null) {
+        window.clearTimeout(cooldownTimerRef.current);
+        cooldownTimerRef.current = null;
+      }
     };
   }, [deliver, open, stopMedia]);
 

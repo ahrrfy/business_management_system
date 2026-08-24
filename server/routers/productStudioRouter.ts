@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
 
 function actor(ctx: {
   user: {
@@ -143,6 +143,41 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => bulkAssignStudioTasks(actor(ctx), input)),
+  /**
+   * إعادةُ إسناد مهمّةٍ **قائمة** إلى مصوّرٍ آخر — أو إلى الطابور المفتوح
+   * (`newAssigneeId=null`). المسار الوحيد لتحرير مهمّةٍ عالقةٍ بيد مصوّرٍ غائب
+   * بلا إلغاءٍ وفقدانِ سبب الرفض.
+   */
+  reassign: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskId,
+        newAssigneeId: z.number().int().positive().nullable(),
+        expectedRevision,
+        reason: z.string().trim().max(500).optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => reassignStudioTask(actor(ctx), input)),
+  /** إعادةُ إسنادٍ جماعيّة — يستقبل معرّفات مهام لا منتجات؛ يوفّق المصوّر الجديد بلا إنشاء صفوف. */
+  bulkReassign: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskIds: z.array(z.number().int().positive()).min(1).max(100),
+        newAssigneeId: z.number().int().positive().nullable(),
+        reason: z.string().trim().max(500).optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => bulkReassignStudioTasks(actor(ctx), input)),
+  /** ضبطُ الأولويّة على دفعةٍ من المهام دفعةً واحدة — بلا هذا المسار كان المدير يفتح كلاًّ منفرداً. */
+  bulkSetPriority: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskIds: z.array(z.number().int().positive()).min(1).max(100),
+        priority,
+        dueAt: z.coerce.date().nullable().optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => bulkSetStudioPriority(actor(ctx), input)),
   updateSchedule: productStudioManagerProcedure
     .input(
       z.object({
@@ -172,6 +207,7 @@ export const productStudioRouter = router({
         processingReceipt: z.string().uuid(),
         candidateDataUrl: z.string().max(1_300_000),
         adminOverrideReason,
+        expectedRevision: expectedRevision.optional(),
       }),
     )
     .mutation(({ ctx, input }) => bindStudioProcessingCandidate(actor(ctx), input)),

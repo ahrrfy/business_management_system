@@ -779,22 +779,42 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
 }
 
 export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: string) {
-  const result = await listStudioProducts(actor, {
+  // بحثٌ أوّليّ باحترام صلاحيّة المستخدم — يعطي المنتج النشط إن وُجد.
+  const activeOnly = await listStudioProducts(actor, {
     search: barcode,
     includeInactive: isManager(actor),
   });
-  const match = result.rows.find((row) => row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS");
-  if (!match) throw new TRPCError({ code: "NOT_FOUND", message: "الباركود غير معروف" });
-  return {
-    productId: match.productId,
-    productName: match.productName,
-    variantId: match.variantId,
-    variantName: match.variantName,
-    unitId: match.unitId,
-    unitName: match.unitName,
-    isActive: match.isActive,
-    matchKind: match.matchKind,
-  };
+  const activeMatch = activeOnly.rows.find((row) => row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS");
+  if (activeMatch) {
+    return {
+      productId: activeMatch.productId,
+      productName: activeMatch.productName,
+      variantId: activeMatch.variantId,
+      variantName: activeMatch.variantName,
+      unitId: activeMatch.unitId,
+      unitName: activeMatch.unitName,
+      isActive: activeMatch.isActive,
+      matchKind: activeMatch.matchKind,
+    };
+  }
+  // بحثٌ ثانٍ يشمل المُعطَّل — إن وُجد، فرّق الرسالة كي لا يظنّ المصوّر أنّ الماسح مكسور
+  // أو الباركود مطبوعٌ خطأ. قبل هذا: كل الحالات ⇒ «الباركود غير معروف» رسالةً واحدة.
+  // تمريرُ دور «admin» هنا آمن: `listStudioProducts` يقصر `includeInactive` على المدير
+  // فقط، والكتالوج نفسه ليس مُفرَّعاً (المنتجات مشتركة بين الفروع) ⇒ لا تسريبَ عبر فروع
+  // من إظهار اسم منتجٍ معطَّل — نفس الاسم يظهر لكل مدير في النظام.
+  if (!isManager(actor)) {
+    const withInactive = await listStudioProducts({ ...actor, role: "admin" }, {
+      search: barcode,
+      includeInactive: true,
+    });
+    const inactiveMatch = withInactive.rows.find(
+      (row) => (row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS") && row.isActive === false,
+    );
+    if (inactiveMatch) {
+      throw new TRPCError({ code: "NOT_FOUND", message: `«${inactiveMatch.productName}» منتجٌ معطَّل — راجع المدير قبل تصويره` });
+    }
+  }
+  throw new TRPCError({ code: "NOT_FOUND", message: "الباركود غير معروف — لم يُطابق أيّ منتجٍ في نظامك" });
 }
 
 export async function listStudioAssignees(actor: ProductStudioActor) {
@@ -1205,13 +1225,28 @@ async function loadCampaign(actor: ProductStudioActor, campaignId: number): Prom
  * وكل صفوف الصور والمهام المطابقة ثم تطرح بينها بـSet — تكلفةٌ تنمو مع الكتالوج كلّه في كل معاينة.
  */
 /**
- * شرط النطاق: الكتالوج كلّه · فئةٌ **بفئاتها الفرعية** (العمق مستويان) · مجموعةٌ مختارة.
- * الفئة بلا فروعها كانت ستُسقط منتجاتِ الأقسام الفرعية صامتاً — وهي حيث تعيش أغلب القرطاسية.
+ * شرط النطاق: الكتالوج كلّه · فئةٌ **بكامل شجرتها الفرعية** (عمقٌ غير محدود) · مجموعةٌ مختارة.
+ *
+ * قبل هذا: `parentId = X` وحدها ⇒ العمق **مستويان فقط** بلا إعلان. شجرةٌ ثلاثيّةٌ
+ * «قرطاسية → أوراق → دفاتر» تُسقط أحفاد `دفاتر` صامتاً، ولوحةُ المدير تعلن «الحملة
+ * مكتملة» بينما شجرةٌ كاملةٌ لم تُولَّد لها مهمّةٌ قط. الجذر: تدقيق ٢٤/٨ (بنك الوكلاء الخامس).
+ *
+ * الحلّ: **CTE عودي** (MySQL 8 يدعمه بلا امتداد) يبدأ من الفئة المطلوبة ويتوسّع نزولاً
+ * إلى كل الأحفاد. كلفة الحساب على شجرةٍ عمقها N هي N جولات صغيرة بحجم عرضِ الشجرة —
+ * أسرع من N استعلاماً منفصلاً في Node، وأدقّ من التقطيع بالعمق.
  */
 function campaignScopeCondition(campaign: { id: number | string; scopeKind: "ALL" | "CATEGORY" | "PRODUCTS"; scopeCategoryId: number | null }) {
   if (campaign.scopeKind === "CATEGORY") {
     const categoryId = Number(campaign.scopeCategoryId);
-    return or(eq(products.categoryId, categoryId), sql`${products.categoryId} in (select ${categories.id} from ${categories} where ${categories.parentId} = ${categoryId})`)!;
+    return sql`${products.categoryId} in (
+      with recursive category_tree (id) as (
+        select ${categoryId}
+        union all
+        select ${categories.id} from ${categories}
+        inner join category_tree on ${categories.parentId} = category_tree.id
+      )
+      select id from category_tree
+    )`;
   }
   if (campaign.scopeKind === "PRODUCTS") {
     return sql`exists (select 1 from ${productStudioCampaignProducts} where ${productStudioCampaignProducts.campaignId} = ${Number(campaign.id)} and ${productStudioCampaignProducts.productId} = ${products.id})`;
@@ -1760,6 +1795,11 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
     if (row.branchId == null) continue;
     const overdueCount = Number(row.count);
     if (overdueCount === 0) continue;
+    // شريحةُ العدّ (band) تدخل مفتاحَ الحدث ⇒ قفزةٌ عدديّةٌ ماديّة (٥ ⇒ ٤٠) تُنتج
+    // مفتاحاً مختلفاً فيبلغ المديرَ إشعارٌ جديد بالرقم الصحيح. قبله كان المفتاح يحوي
+    // اليوم فقط ⇒ أوّلُ إشعارٍ يوميٍّ يقتنص التاريخ، وبقيّة اليوم يقرأ المدير رقماً
+    // قديماً بينما الحقيقةُ تضاعفت (الجذر: تدقيق ٢٤/٨ / بنك الوكلاء الرابع).
+    const countBand = overdueCount < 10 ? "0-9" : overdueCount < 25 ? "10-24" : overdueCount < 50 ? "25-49" : overdueCount < 100 ? "50-99" : overdueCount < 200 ? "100-199" : "200+";
     for (const managerId of managersByBranch.get(Number(row.branchId)) ?? []) {
       const result = await createAppNotification({
         userId: managerId,
@@ -1767,7 +1807,7 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
         title: "استثناء: مهام استوديو متأخرة",
         body: `لديك ${overdueCount} مهمة استوديو تجاوزت موعدها.`,
         route: "/catalog/image-studio?view=overdue",
-        eventKey: `product-studio:overdue-digest:${overdueDayKey}:branch:${Number(row.branchId)}:manager:${managerId}`,
+        eventKey: `product-studio:overdue-digest:${overdueDayKey}:band:${countBand}:branch:${Number(row.branchId)}:manager:${managerId}`,
         entityType: "productStudioOverdueDigest",
         entityId: Number(row.branchId),
         requiresAction: true,
@@ -1846,8 +1886,11 @@ export async function reconcileStudioAssignmentNotifications(
   const missing = await requireDb()
     .select({
       id: productImageJobs.id,
+      status: productImageJobs.status,
       assignedTo: productImageJobs.assignedTo,
       revision: productImageJobs.revision,
+      reviewedAt: productImageJobs.reviewedAt,
+      assignedAt: productImageJobs.assignedAt,
       assigneeRole: users.role,
     })
     .from(productImageJobs)
@@ -1875,13 +1918,19 @@ export async function reconcileStudioAssignmentNotifications(
   let createdCount = 0;
   for (const job of missing) {
     if (!isRoutineStudioRecipient(job.assigneeRole)) continue;
+    // المصالحةُ تُميّز بين الرفض المفقود والإسناد المفقود بحسب حالة المهمّة — قبل هذا
+    // كانت كلّها تُرسَل بعنوان «مهمة جديدة» فيقرأ المصوّر «جديدة» بينما هي مرفوضة
+    // بانتظار تصحيحه. الجذر: تدقيق ٢٤/٨ (بنك الوكلاء الرابع).
+    const isRejected = job.status === "REJECTED";
     const result = await createAppNotification({
       userId: Number(job.assignedTo),
       kind: "TASK_ASSIGNED",
-      title: "مهمة جديدة في استوديو المنتجات",
-      body: `أُسندت إليك مهمة الاستوديو رقم ${job.id}.`,
+      title: isRejected ? "مهمة استوديو تحتاج تعديلاً" : "مهمة جديدة في استوديو المنتجات",
+      body: isRejected ? `أُعيدت مهمة الاستوديو رقم ${job.id} للتعديل.` : `أُسندت إليك مهمة الاستوديو رقم ${job.id}.`,
       route: `/catalog/image-studio?task=${job.id}`,
-      eventKey: studioAssignedEventKey(Number(job.id), Number(job.assignedTo), Number(job.revision)),
+      eventKey: isRejected
+        ? studioRejectedEventKey(Number(job.id), Number(job.revision))
+        : studioAssignedEventKey(Number(job.id), Number(job.assignedTo), Number(job.revision)),
       entityType: "productImageJob",
       entityId: Number(job.id),
       requiresAction: true,
@@ -2846,6 +2895,224 @@ export async function bulkAssignStudioTasks(
   return { createdCount: result.createdCount };
 }
 
+/**
+ * إعادةُ إسناد مهمّة استوديو قائمة إلى مصوّرٍ آخر (أو إلى الطابور المفتوح).
+ *
+ * قبل هذه الدالة: مهمّةٌ عالقةٌ بيد مصوّرٍ غادر/انشغل تظلّ بيده أبداً — لا مسارَ للمدير
+ * لتحريرها إلّا إلغاؤها ثم إعادة توليدها، وهو مسارٌ يفقد سبب الرفض والمرشّح المرفوض
+ * والتدقيق. `newAssigneeId=null` يُعيد المهمة إلى **الطابور المفتوح** (blind pool)
+ * فيسحبها أوّلُ مصوّرٍ يمسح باركود منتجها. القيد الفريد `(productId, activeSlot)` يمنع
+ * تكرار المهمة، فإعادة الإسناد آمنةٌ ذرّياً.
+ *
+ * ما يُحدَّث: `assignedTo/By/At`، ويُحدَّث `sourceProductHash` (نفس منطق إصلاح
+ * `bulkAssignStudioTasks`) لأنّ المصوّر الجديد سيعمل على المحتوى الراهن، ورُفع المراجعة
+ * (`revision`) لكسر أيّ محرّرٍ مفتوحٍ على النسخة القديمة.
+ */
+export async function reassignStudioTask(
+  actor: ProductStudioActor,
+  input: {
+    taskId: number;
+    newAssigneeId: number | null;
+    expectedRevision: number;
+    reason?: string;
+  },
+) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const cleanReason = input.reason?.trim() ?? null;
+  const result = await withStudioTx(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    assertExpectedRevision(task, input.expectedRevision);
+    assertTaskAccess(actor, task, true);
+    if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "لا يمكن إعادة إسناد مهمّةٍ منتظرةٍ للمراجعة أو مغلقة",
+      });
+    }
+    let newAssigneeRole: string | null = null;
+    if (input.newAssigneeId != null) {
+      const [assignee] = await tx
+        .select({ id: users.id, role: users.role, branchId: users.branchId, permissionsOverride: users.permissionsOverride })
+        .from(users)
+        .where(and(eq(users.id, input.newAssigneeId), eq(users.isActive, true)))
+        .limit(1)
+        .for("share");
+      if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "المصوّر الجديد غير متاح" });
+      assertAssignableBranch(actor, assignee.branchId);
+      if (Number(assignee.branchId) !== Number(task.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن نقل المهمة إلى مصوّرٍ من فرعٍ آخر" });
+      }
+      if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "المصوّر الجديد لا يملك صلاحية استوديو المنتجات" });
+      }
+      newAssigneeRole = assignee.role;
+    }
+    // بصمةُ المحتوى تُحدَّث كي لا يُرفَض اعتماد المرشّح لاحقاً بـ«عُدّل محتوى المنتج».
+    const product = task.productId
+      ? (await tx.select({ id: products.id, name: products.name, description: products.description }).from(products).where(eq(products.id, task.productId)).limit(1))[0]
+      : null;
+    await tx
+      .update(productImageJobs)
+      .set({
+        assignedTo: input.newAssigneeId,
+        assignedBy: actor.userId,
+        assignedAt: new Date(),
+        sourceProductHash: product ? productContentHash(product) : null,
+        revision: sql`${productImageJobs.revision} + 1`,
+      })
+      .where(eq(productImageJobs.id, input.taskId));
+    await tx.insert(auditLogs).values(
+      auditValues(actor, "productStudio.reassign", input.taskId, {
+        oldAssigneeId: task.assignedTo,
+        newAssigneeId: input.newAssigneeId,
+        reason: cleanReason,
+      }),
+    );
+    return {
+      response: { taskId: input.taskId, newAssigneeId: input.newAssigneeId, revision: nextRevision(task) },
+      newAssigneeRole,
+      revision: nextRevision(task),
+    };
+  });
+  // إشعارُ المسنَد إليه إن كان لدينا واحدٌ (لا إشعارَ لمن يعود إلى الطابور المفتوح).
+  if (input.newAssigneeId != null && result.newAssigneeRole) {
+    await notifyStudioAssignment(input.taskId, input.newAssigneeId, result.newAssigneeRole, result.revision);
+  }
+  return result.response;
+}
+
+/**
+ * إسنادٌ جماعيّ لمهامٍ **قائمة** — بلا إنشاء صفوف. يستقبل معرّفات المهمات لا المنتجات،
+ * فيوفّق المصوّر الجديد على كلٍّ منها في نداءٍ واحد. مصمَّم لإعادة توزيع أعباء طابور
+ * حملةٍ بعد غياب أحد المصوّرين. سقفٌ ١٠٠ مهمّة لكل نداء كسقف `bulkAssign`.
+ */
+export async function bulkReassignStudioTasks(
+  actor: ProductStudioActor,
+  input: { taskIds: number[]; newAssigneeId: number | null; reason?: string },
+) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const taskIds = Array.from(new Set(input.taskIds.map(Number)));
+  if (taskIds.length === 0 || taskIds.length > 100) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر من مهمّة واحدة إلى ١٠٠ مهمّة" });
+  }
+  const cleanReason = input.reason?.trim() ?? null;
+  const result = await withStudioTx(async (tx) => {
+    let newAssignee: { id: number; role: string; branchId: number | null } | null = null;
+    if (input.newAssigneeId != null) {
+      const [assignee] = await tx
+        .select({ id: users.id, role: users.role, branchId: users.branchId, permissionsOverride: users.permissionsOverride })
+        .from(users)
+        .where(and(eq(users.id, input.newAssigneeId), eq(users.isActive, true)))
+        .limit(1)
+        .for("share");
+      if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "المصوّر الجديد غير متاح" });
+      assertAssignableBranch(actor, assignee.branchId);
+      if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "المصوّر الجديد لا يملك صلاحية استوديو المنتجات" });
+      }
+      newAssignee = { id: Number(assignee.id), role: assignee.role, branchId: assignee.branchId == null ? null : Number(assignee.branchId) };
+    }
+    const tasks = await tx
+      .select({ id: productImageJobs.id, productId: productImageJobs.productId, branchId: productImageJobs.branchId, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, revision: productImageJobs.revision })
+      .from(productImageJobs)
+      .where(inArray(productImageJobs.id, taskIds))
+      .for("update");
+    if (tasks.length !== taskIds.length) throw new TRPCError({ code: "NOT_FOUND", message: "بعض المهام غير موجود" });
+    for (const t of tasks) {
+      if (!canCrossBranches(actor) && Number(t.branchId) !== Number(actor.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "بعض المهام في فرعٍ آخر" });
+      }
+      if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(t.status)) {
+        throw new TRPCError({ code: "CONFLICT", message: "بعض المهام لا تقبل إعادة الإسناد (منتظرة مراجعةً أو مغلقة)" });
+      }
+      if (newAssignee && Number(t.branchId) !== newAssignee.branchId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "المصوّر الجديد في فرعٍ آخر" });
+      }
+    }
+    const productIds = tasks.map((t) => Number(t.productId)).filter((id) => Number.isSafeInteger(id));
+    const productRows = productIds.length === 0
+      ? []
+      : await tx.select({ id: products.id, name: products.name, description: products.description }).from(products).where(inArray(products.id, productIds));
+    const productById = new Map(productRows.map((p) => [Number(p.id), p]));
+    const updated: Array<{ id: number; revision: number }> = [];
+    for (const t of tasks) {
+      const product = t.productId ? productById.get(Number(t.productId)) : null;
+      await tx
+        .update(productImageJobs)
+        .set({
+          assignedTo: input.newAssigneeId,
+          assignedBy: actor.userId,
+          assignedAt: new Date(),
+          sourceProductHash: product ? productContentHash(product) : null,
+          revision: sql`${productImageJobs.revision} + 1`,
+        })
+        .where(eq(productImageJobs.id, Number(t.id)));
+      updated.push({ id: Number(t.id), revision: Number(t.revision) + 1 });
+    }
+    await tx.insert(auditLogs).values({
+      ...auditValues(actor, "productStudio.bulkReassign", 0, {
+        taskIds,
+        newAssigneeId: input.newAssigneeId,
+        reason: cleanReason,
+      }),
+      entityId: "bulk",
+    });
+    return { updated, newAssigneeRole: newAssignee?.role ?? null };
+  });
+  if (input.newAssigneeId != null && result.newAssigneeRole) {
+    await Promise.all(result.updated.map((row) => notifyStudioAssignment(row.id, input.newAssigneeId!, result.newAssigneeRole!, row.revision)));
+  }
+  return { reassignedCount: result.updated.length };
+}
+
+/**
+ * ضبطُ الأولويّة على دفعةٍ من المهام — بدون هذا المسار كان المدير يفتح كلاً منها منفرداً.
+ * لا يمسّ الحالة ولا المسنَد إليه، فقط الأولوية (والموعد اختيارياً).
+ */
+export async function bulkSetStudioPriority(
+  actor: ProductStudioActor,
+  input: { taskIds: number[]; priority: StudioPriority; dueAt?: Date | null },
+) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const taskIds = Array.from(new Set(input.taskIds.map(Number)));
+  if (taskIds.length === 0 || taskIds.length > 100) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر من مهمّة واحدة إلى ١٠٠ مهمّة" });
+  }
+  return withStudioTx(async (tx) => {
+    const tasks = await tx
+      .select({ id: productImageJobs.id, branchId: productImageJobs.branchId, status: productImageJobs.status })
+      .from(productImageJobs)
+      .where(inArray(productImageJobs.id, taskIds))
+      .for("update");
+    if (tasks.length !== taskIds.length) throw new TRPCError({ code: "NOT_FOUND", message: "بعض المهام غير موجود" });
+    for (const t of tasks) {
+      if (!canCrossBranches(actor) && Number(t.branchId) !== Number(actor.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "بعض المهام في فرعٍ آخر" });
+      }
+      if (!["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(t.status)) {
+        throw new TRPCError({ code: "CONFLICT", message: "لا يمكن ضبط أولويّة مهمّة مغلقة" });
+      }
+    }
+    await tx
+      .update(productImageJobs)
+      .set({
+        priority: input.priority,
+        ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }),
+        revision: sql`${productImageJobs.revision} + 1`,
+      })
+      .where(inArray(productImageJobs.id, taskIds));
+    await tx.insert(auditLogs).values({
+      ...auditValues(actor, "productStudio.bulkSetPriority", 0, {
+        taskIds,
+        priority: input.priority,
+        dueAt: input.dueAt?.toISOString() ?? null,
+      }),
+      entityId: "bulk",
+    });
+    return { updatedCount: tasks.length };
+  });
+}
+
 export async function updateStudioTaskSchedule(
   actor: ProductStudioActor,
   input: {
@@ -3041,12 +3308,20 @@ export async function bindStudioProcessingCandidate(
     processingReceipt: string;
     candidateDataUrl: string;
     adminOverrideReason?: string | null;
+    /**
+     * تحقّقٌ متفائل: كلّ كاتبٍ آخر (`saveDraft`/`updateSchedule`/`submitCandidate`/…)
+     * يُلزم `expectedRevision`؛ غيابُه هنا كان يجعل هذا المسار **الوحيد** الذي يقبل
+     * كتابةً على مهمّةٍ تغيّرت تحت يد المصوّر (إعادة إسناد إداريّ · تحديث موعد). لا
+     * يفسد بيانات (submit لاحقاً يتحقّق من hash المرشّح)، لكنه يكسر عقد الاتّساق المُعلَن.
+     */
+    expectedRevision?: number;
   },
-): Promise<{ ok: true }> {
+): Promise<{ ok: true; revision?: number }> {
   const candidate = decodeStudioImage(input.candidateDataUrl);
   const receiptHash = contentHash(Buffer.from(input.processingReceipt, "utf8"));
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
+    if (input.expectedRevision !== undefined) assertExpectedRevision(task, input.expectedRevision);
     const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
@@ -3062,7 +3337,7 @@ export async function bindStudioProcessingCandidate(
     }
     await tx.update(productImageJobs).set({ processingProofCandidateHash: candidate.hash }).where(eq(productImageJobs.id, input.taskId));
     await recordAdminOverride(tx, actor, input.taskId, "bindProcessingProof", overrideReason, task.assignedTo);
-    return { ok: true as const };
+    return input.expectedRevision === undefined ? { ok: true as const } : { ok: true as const, revision: task.revision };
   });
 }
 
@@ -3513,6 +3788,16 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
       .set({
         status: "REJECTED",
         processedUrl: null,
+        // مفاتيحُ المخزن للمرشّح المرفوض تُفرَّغ كما تُفرَّغ في الإلغاء — دفعُ إعادة الإرسال
+        // ستضع كائناً جديداً (المفاتيح موجَّهةٌ بالمحتوى)، فحفظُ القديم لا فائدةَ تشغيليّة له.
+        // الأثر الجنائيّ باقٍ في `auditLogs.productStudio.reject` بمفاتيحه، وسبب الرفض
+        // يبقى في الصفّ ذاته. غياب هذا الحقل كان يمنع سعاة R2 من استرداد المرشّحات المرفوضة أبداً.
+        processedObjectKey: null,
+        processedContentHash: null,
+        processedMime: null,
+        processedBytes: null,
+        processedWidth: null,
+        processedHeight: null,
         reviewedBy: actor.userId,
         reviewedAt: new Date(),
         rejectionReason: cleanReason,
@@ -3546,7 +3831,18 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
 /** الحالات التي يجوز إلغاؤها: عملٌ لم يُنشَر بعد. المعتمدة لها مسارها الخاصّ (استرجاع الأصل). */
 const CANCELLABLE_STUDIO_STATUSES: StudioStatus[] = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
 
-/** الحقول التي يُفرغها الإلغاء: الحجوزات والإثباتات والمرشّح المعروض — لا مفاتيح المخزن (أثرٌ يُصان). */
+/**
+ * الحقول التي يُفرغها الإلغاء: الحجوزات والإثباتات والمرشّح المعروض — **ومفاتيح المخزن**.
+ *
+ * قبل هذا: `processedObjectKey/Hash/Mime/Bytes/Width/Height` تُصان «أثراً» — لكن مسّاح
+ * `productImageObjectStaging` يعتبرها **مرجعاً نشطاً** (line ~2242) فلا يستردّ الكائن
+ * أبداً حتى وضع GC = `delete`. النتيجة: مرشّحات المرفوضين والملغاة تتكدّس في R2 بلا نهاية.
+ *
+ * الأثر الجنائيّ يبقى في `auditLogs` (كل تحوّلٍ ماريّ به دخل بالإجراء والمُنفّذ والوقت
+ * ومفاتيح الكائنات مطبوعةٌ في مدخلات submit/approve) — لا نحتاج مؤشّراً على الصفّ نفسه.
+ * وتفريغُ المفاتيح يُدرج الكائنَ في مسار المسح البنيويّ (REFERENCED → PENDING → حذف بعد
+ * نافذة الاحتفاظ) بلا مساسٍ بأيّ عارضٍ للصورة (المرشّح المرفوض لا يُخدَم أصلاً).
+ */
 function cancelledTaskFields(actor: ProductStudioActor, reason: string, now: Date) {
   return {
     status: "CANCELLED" as const,
@@ -3554,6 +3850,12 @@ function cancelledTaskFields(actor: ProductStudioActor, reason: string, now: Dat
     // المنتج إلى الأبد خلف مهمةٍ خاطئة فلا يقبل مهمةً صحيحة بديلة.
     activeSlot: null,
     processedUrl: null,
+    processedObjectKey: null,
+    processedContentHash: null,
+    processedMime: null,
+    processedBytes: null,
+    processedWidth: null,
+    processedHeight: null,
     cancellationReason: reason,
     cancelledBy: actor.userId,
     cancelledAt: now,

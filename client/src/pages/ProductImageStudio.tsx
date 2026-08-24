@@ -14,7 +14,7 @@ import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask } fr
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { canEditStudioTask, canReviewStudioTask, hasStudioOverrideReason, needsStudioEditOverride, needsStudioReviewOverride } from "@/lib/imageStudio/studioWorkflowPolicy";
-import { adjustStudioReviewZoom, defaultStudioScope, mobileStudioPanel, STUDIO_REJECTION_PRESETS, type StudioReviewImage } from "@/lib/productStudio/mobileStudioUi";
+import { adjustStudioReviewZoom, defaultStudioScope, mobileStudioPanel, STUDIO_EMPTY_HINTS, STUDIO_REJECTION_PRESETS, type StudioReviewImage } from "@/lib/productStudio/mobileStudioUi";
 import { loadStudioDraft, purgeStudioDraft, purgeStudioDraftsForUser, reconcileStudioDraftAfterReconnect, saveStudioDraft, listStudioDraftsForUser, loadStudioDraftIdentity, saveStudioDraftIdentity, type StudioDraft, type StudioDraftTaskSnapshot } from "@/lib/productStudio/studioDrafts";
 import { studioOfflineCapabilities, studioOfflineProfileInput } from "@/lib/productStudio/coldOfflinePolicy";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -274,6 +274,9 @@ export default function ProductImageStudio() {
   const [offlineProfile, setOfflineProfile] = useState<OfflineProfile | null | undefined>(undefined);
   const [inlineAssigneeId, setInlineAssigneeId] = useState("");
   const [cancelReason, setCancelReason] = useState("");
+  // إعادةُ إسنادٍ لمهمّةٍ عالقة — القيمة الفارغة تعني «إلى الطابور المفتوح».
+  const [reassignAssigneeId, setReassignAssigneeId] = useState("");
+  const [reassignReason, setReassignReason] = useState("");
   const [backlogCancelReason, setBacklogCancelReason] = useState("");
   /** منتجاتٌ محدَّدة للإسناد الجماعيّ (بمعرّف المنتج — لأنّ عقد الخادم بالمنتجات لا بالمهام). */
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set());
@@ -598,6 +601,31 @@ export default function ProductImageStudio() {
   const updateSchedule = trpc.productStudio.updateSchedule.useMutation({
     onSuccess: async () => {
       notify.ok("حُدّثت أولوية المهمة وموعدها");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const reassign = trpc.productStudio.reassign.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(result.newAssigneeId == null ? "أُعيدت المهمة إلى الطابور المفتوح" : "أُعيد إسناد المهمة");
+      setReassignAssigneeId("");
+      setReassignReason("");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const bulkReassign = trpc.productStudio.bulkReassign.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(`أُعيد إسناد ${result.reassignedCount} مهمة`);
+      setSelectedTaskIds(new Set());
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const bulkSetPriority = trpc.productStudio.bulkSetPriority.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(`حُدّثت أولوية ${result.updatedCount} مهمة`);
+      setSelectedTaskIds(new Set());
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -1854,7 +1882,12 @@ export default function ProductImageStudio() {
                       </Button>
                     </div>
                   )}
-                  {!tasks.isLoading && !tasks.isError && taskItems.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">لا مهام في هذا المسار.</p>}
+                  {/* حالةٌ فارغة تشرح السبب والخطوة التالية بحسب التبويب — بدل نصٍّ عامّ صامت. */}
+                  {!tasks.isLoading && !tasks.isError && taskItems.length === 0 && (
+                    <div className="py-8 text-center text-sm text-muted-foreground">
+                      <p>{STUDIO_EMPTY_HINTS[tab]}</p>
+                    </div>
+                  )}
                   {taskItems.map((task) => (
                     <div key={Number(task.id)} className="flex items-start gap-2">
                       {/* التحديد المتعدّد: الخادم يدعم الإسناد الجماعيّ منذ البداية، ولم يكن له
@@ -1975,6 +2008,42 @@ export default function ProductImageStudio() {
                           >
                             حفظ الأولوية والموعد
                           </Button>
+                        </div>
+                      )}
+                      {/* إعادةُ الإسناد — مسارٌ حين يغيب المصوّر أو يعجز عن الإكمال، بدل
+                          إلغاء المهمّة وفقدان سبب الرفض وأثر التدقيق. اترك الحقل فارغاً لتعيدها
+                          إلى الطابور المفتوح (أوّلُ مصوّرٍ يمسحها يسحبها). */}
+                      {dashboard.data?.canManage && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status) && selected.assigneeName != null && (
+                        <div className="space-y-2 rounded-md border p-3">
+                          <Label htmlFor="studio-reassign-select">إعادة إسناد المهمّة (المسنَد الآن: {selected.assigneeName})</Label>
+                          <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                            <AppSelect id="studio-reassign-select" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={reassignAssigneeId} onValueChange={setReassignAssigneeId} disabled={assignees.isError}>
+                              <option value="">إلى الطابور المفتوح (blind pool)</option>
+                              {(assignees.data ?? [])
+                                .filter((user) => user.canStudio && user.id !== Number(selected.assignedTo))
+                                .map((user) => (
+                                  <option key={user.id} value={user.id}>
+                                    {user.name}
+                                  </option>
+                                ))}
+                            </AppSelect>
+                            <Button
+                              type="button"
+                              className="min-h-11"
+                              disabled={offline || reassign.isPending}
+                              onClick={() =>
+                                reassign.mutate({
+                                  taskId: Number(selected.id),
+                                  expectedRevision: selected.revision,
+                                  newAssigneeId: reassignAssigneeId ? Number(reassignAssigneeId) : null,
+                                  reason: reassignReason.trim() || undefined,
+                                })
+                              }
+                            >
+                              <UserCheck aria-hidden className="size-4" /> إعادة إسناد
+                            </Button>
+                          </div>
+                          <Textarea rows={1} maxLength={500} value={reassignReason} onChange={(event) => setReassignReason(event.target.value)} placeholder="سبب اختياريّ يُسجَّل في التدقيق" />
                         </div>
                       )}
                       {/* الإلغاء: كان توليدُ طابورٍ خاطئ نهائياً بلا تراجع — لا إلغاء للمهمة
@@ -2177,7 +2246,8 @@ export default function ProductImageStudio() {
           </Button>
           {taskScannerOpen && (
             <Suspense fallback={null}>
-              <CameraScanner open onClose={() => setTaskScannerOpen(false)} onDetect={(barcode) => claimScannedBarcode(barcode)} />
+              {/* keepOpen: نفس مبرّرات محطّة التصوير — دورةٌ متكرّرة بلا احتكاك إعادة الفتح. */}
+              <CameraScanner open keepOpen onClose={() => setTaskScannerOpen(false)} onDetect={(barcode) => claimScannedBarcode(barcode)} />
             </Suspense>
           )}
         </>
