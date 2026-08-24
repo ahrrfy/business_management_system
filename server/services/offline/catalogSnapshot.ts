@@ -47,7 +47,7 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
   const [prod] = await db
     .select({
       cnt: sql<number>`count(*)`,
-      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, '')))), 0)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}))), 0)`,
     })
     .from(products);
   const [vars] = await db
@@ -76,8 +76,12 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
     .from(productUnitBarcodes);
   return [
     // بادئة نسخة الاشتقاق: تُرفَع يدوياً عند أي تغيير في **صيغة** اللقطة (حقول/searchText…)
-    // — بصمة الـCRC تلتقط تغيّر البيانات فقط، لا تغيّر الكود المُشتِق. v2: الباركودات في searchText.
-    "v2",
+    // — بصمة الـCRC تلتقط تغيّر البيانات فقط، لا تغيّر الكود المُشتِق.
+    // v2: الباركودات في searchText.
+    // v3 (٢٤/٨، Codex P2 على PR #755): إضافة `showInPrintPos` إلى CRC — تحوّطاً لأيّ تغييرٍ يدويٍّ
+    // لاحق لهذا الحقل (لا واجهة تحرير له اليوم — قد تُضاف لاحقاً). يضمن أن أجهزة الأوفلاين تُحدّث
+    // لقطتها فوراً بدل الاعتماد على تغيّر productType الملازم في المهاجرة القائمة.
+    "v3",
     prod.cnt, prod.crc,
     vars.cnt, vars.crc,
     prices.cnt, prices.crc,
@@ -133,7 +137,6 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
         isCustomizable: products.isCustomizable,
         isBundle: products.isBundle,
         productType: products.productType,
-        showInPrintPos: products.showInPrintPos,
       })
       .from(productUnits)
       .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -199,9 +202,14 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
       isService: !!r.isService,
       isBundle: !!r.isBundle,
       isCustomizable: !!r.isCustomizable,
-      // 0262 (٢٤/٨): الرؤية في شبكة الطباعة قرارٌ مستقلّ (`showInPrintPos`) لا نتيجةُ productType.
-      // الحقل يبقى بالاسم القائم `isPrintService` (يستهلكه العميل offline) — تعريفه تغيّر فقط.
-      isPrintService: !!r.showInPrintPos,
+      // Codex P2 (٢٤/٨ على PR #755): هذا الحقل هويّةٌ تشغيليّة لا مؤشّرَ رؤية —
+      // `offlineSearchCatalog` يُقصي به الخدماتِ الطبيعيّة من نتائج كاشير التجزئة العامّ
+      // ([`catalogSync.ts:241`](client/src/lib/offline/catalogSync.ts#L241)). لو أخفى المديرُ خدمةً
+      // من شبكة الطباعة بجعل `showInPrintPos=FALSE`، فهي لا تزال خدمةَ طباعة تشغيلياً — لا يجب
+      // أن تظهر في مسار كاشير التجزئة العامّ. الرؤيةُ (شبكة الطباعة) قرارٌ منفصل يديره
+      // `printPos.services` الخادميّ مع كاشير الطباعة الخاصّ به (النسخة المحلّية في
+      // `printServicesCache` تُحدَّث من نتيجته مباشرةً — لا اعتماد على لقطة الكتالوج العامّة).
+      isPrintService: r.productType === "PRINT_SERVICE",
       priceRetail: prices.RETAIL ?? null,
       priceWholesale: prices.WHOLESALE ?? null,
       priceGovernment: prices.GOVERNMENT ?? null,

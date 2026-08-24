@@ -43,3 +43,16 @@ WHERE `showInPrintPos` = FALSE
     `productType` = 'PRINT_SERVICE'
     OR (`isService` = TRUE AND `productType` IS NULL)
   );
+--> statement-breakpoint
+
+-- Codex P1 (٢٤/٨): سلامةُ البيع تلزمها موافقة `productType` — `createPrintSale` يرفض أيّ سطرٍ
+-- بـ`productType !== 'PRINT_SERVICE'` بـ«هذه الشاشة تبيع خدمات الطباعة فقط»
+-- ([`printSaleService.ts:290`](server/services/printSaleService.ts#L290)). بلا هذا الشطر تكون
+-- الخدماتُ التي كشفَتها التعبئةُ الأولى **مرئيّةً في الشبكة لكنها تُرفض عند الدفع** — عكس النيّة.
+-- نُضبِط `productType='PRINT_SERVICE'` للخدمات النشطة التي لا نوعَ لها (المسار الطبيعيّ لخدمة قديمة
+-- تُنشأ اليوم عبر ServiceForm يجعلها كذلك)، فيتّسق المسلكان.
+UPDATE `products`
+SET `productType` = 'PRINT_SERVICE'
+WHERE `showInPrintPos` = TRUE
+  AND `isService` = TRUE
+  AND `productType` IS NULL;
