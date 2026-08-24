@@ -106,12 +106,153 @@ ios: {
 
 ---
 
+---
+
+## F-٨ / بند م٣ #٢٤+٣٠ — مسار `storefront.deleteMe` (Play مطلوب)
+
+**الحالة**: زرّ الحذف مبنيٌّ في `app/(tabs)/account.tsx` مع تأكيدٍ مزدوج، وواجهة العميل [`deleteMyStorefrontAccount`](../lib/storefront-api.ts) تستدعي `storefront.deleteMe`. الطرفُ الخادميّ **غير مبنيٍّ بعدُ** — الزرّ يعرض رسالة «قيد التجهيز» عند الضغط.
+
+**Google Play يفرض حذفاً داخل التطبيق منذ مايو ٢٠٢٤** — عدم توفّره حاجزُ نشرٍ على Production.
+
+**الإصلاح المقترح** (على جانب الخادم):
+
+```ts
+// server/routers/storefrontRouter.ts
+deleteMe: publicProcedure
+  .input(z.object({ firebaseIdToken: z.string().min(1) }))
+  .mutation(async ({ input, ctx }) => {
+    // ١) فكّ الرمز الحيّ (لا اعتماد جلسةٍ قديمة قد تكون مسروقة)
+    const decoded = await verifyFirebaseIdToken(input.firebaseIdToken);
+    const phone = decoded.phone_number;
+    if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "الرمز لا يحمل رقم هاتف" });
+
+    // ٢) اعثر على العميل بالهاتف
+    const customer = await ctx.db.query.customers.findFirst({ where: eq(customers.phone, phone) });
+    if (!customer) return { ok: true, deletedAt: new Date().toISOString() };
+
+    // ٣) تنفيذ الطمس في transaction:
+    await ctx.db.transaction(async (tx) => {
+      await tx.update(customers).set({
+        name: "عميلٌ محذوف",
+        phone: `deleted:${crypto.createHash("sha256").update(phone).digest("hex").slice(0, 24)}`,
+        addressText: null,
+        governorate: null,
+        isActive: false,
+        deletedAt: new Date(),
+        sessionVersion: (customer.sessionVersion ?? 0) + 1, // يبطل كل الجلسات القائمة (يتقاطع مع ت-١١)
+      }).where(eq(customers.id, customer.id));
+
+      // ٤) لا نحذف الطلبات — نُبقيها لأغراض المحاسبة (٥ سنوات)
+      // ٥) لا نحذف نقاط الولاء — نجعلها في حالةٍ نهائيّة بلا مالك
+      await tx.update(loyaltyBalances).set({ status: "OWNER_DELETED", frozenAt: new Date() })
+        .where(eq(loyaltyBalances.customerId, customer.id));
+    });
+
+    return { ok: true, deletedAt: new Date().toISOString() };
+  })
+```
+
+**هجرة لازمة**: إضافة `customers.deletedAt TIMESTAMP NULL` + `loyaltyBalances.status ENUM('ACTIVE','OWNER_DELETED','FROZEN')`.
+
+**تحقّق**: بعد الحذف — قراءة `customer.name` من DB = «عميلٌ محذوف» · `phone` مطموس · `orderNumber` القديم لا يزال يفتح تاريخ الطلب بلا اسم/هاتف · محاولة استعمال التوكن القديم = 401 (بفضل sessionVersion).
+
+**Play Console**: بعد النشر، سجّل «Account deletion → In-app path» = مسار داخل التطبيق (شاشة الحساب → «حذف حسابي نهائيّاً»).
+
+---
+
+## F-٣ / بند م٣ #٢٦ — Rate limiting على OTP + منع تعداد الأرقام
+
+**الموقع**: خدمة إرسال OTP في ERP (`server/services/storefrontFirebaseCustomer.ts` أو ما يعادلها).
+
+**المشكلة**: بلا حدٍّ per phone/IP/device، Blaze plan تفتح فاتورة SMS مفتوحة. ورسائل الخطأ إن ميّزت بين «رقم موجود» و«رقم غير موجود» = تعداد.
+
+**الإصلاح المقترح**:
+- **per phone**: ٣ محاولات في الساعة، رفض الرابعة بـ429 حتى انقضاء الساعة.
+- **per IP**: ١٠ محاولات في الساعة (يشترك عدّة أشخاصٍ خلف NAT واحد).
+- **cooldown 60 ثانية** بين إعادات الإرسال للرقم نفسه.
+- **رسائل خطأ موحّدة**: «تعذّر إرسال الرمز الآن، حاول لاحقاً» — بلا كشفٍ عن سبب الرفض (رقم غير موجود / محظور / حدّ سقف).
+- **Redis أو DB counter بـTTL** يحفظ العدّاد.
+
+**اختبار**: `for i in {1..10}; do curl -X POST .../storefront.sendOtp -d '{"phone":"+9647712345678"}'; done` — من الرابعة يجب `429 Too Many Requests`.
+
+---
+
+## F-٧ / بند م٣ #٢٦ — Cloudflare WAF على مسارات storefront
+
+**الموقع**: Cloudflare Dashboard → alarabiya.online → Security → WAF (خارج المستودع).
+
+**قواعد مقترحة**:
+1. `/api/trpc/storefront.createOrder` → ١٠ req/min/IP (rate limit rule).
+2. `/api/trpc/storefront.sendOtp` → ٣ req/min/IP + ١٠/hour/IP.
+3. `/api/trpc/storefront.customerBenefits` → ٦٠ req/min/IP (بعد تحويلها إلى mutation في ت-٣).
+4. Block أيّ user-agent بلا `x-alrueya-client: android-native` على مسارات mutation (يتقاطع مع storefrontMutationHeaders الحاليّة).
+
+**تحقّق**: راجع سجلّات WAF أسبوعياً — أيّ IP يجاوز الحدّ يظهر في تقرير Cloudflare Analytics.
+
+**دوران المفاتيح**: TURNSTILE_SITE_KEY + TURNSTILE_SECRET_KEY كل ٩٠ يوماً (تنبيه cron).
+
+---
+
+## F-٩ / قرار مالك #٩ — Certificate pinning + Network Security Config
+
+**الحالة**: **مؤجَّل** بقرار المالك (توازن بين صلابة MITM على شبكات Wi-Fi العامّة وعبء تدوير الشهادات).
+
+**إن اعتُمِد لاحقاً**، الخطوات:
+
+### Android — `network_security_config.xml`
+
+```xml
+<network-security-config>
+  <domain-config cleartextTrafficPermitted="false">
+    <domain includeSubdomains="true">alarabiya.online</domain>
+    <pin-set expiration="2027-01-01">
+      <!-- Pin على intermediate CA (لا leaf) — يستمرّ عبر تجديد الشهادة -->
+      <pin digest="SHA-256">LEAF_INTERMEDIATE_PUBKEY_HASH</pin>
+      <!-- Backup pin على CA بديل (Let's Encrypt / DigiCert) — يمنع bricking عند طوارئ التدوير -->
+      <pin digest="SHA-256">BACKUP_CA_PUBKEY_HASH</pin>
+    </pin-set>
+  </domain-config>
+</network-security-config>
+```
+
+يُلحق عبر Expo config plugin (`app.config.ts`) أو `expo-build-properties`.
+
+### iOS — `NSPinnedDomains`
+
+```xml
+<key>NSAppTransportSecurity</key>
+<dict>
+  <key>NSPinnedDomains</key>
+  <dict>
+    <key>alarabiya.online</key>
+    <dict>
+      <key>NSIncludesSubdomains</key><true/>
+      <key>NSPinnedCAIdentities</key>
+      <array>
+        <dict><key>SPKI-SHA256-BASE64</key><string>INTERMEDIATE_PUBKEY</string></dict>
+        <dict><key>SPKI-SHA256-BASE64</key><string>BACKUP_PUBKEY</string></dict>
+      </array>
+    </dict>
+  </dict>
+</dict>
+```
+
+### الحماية التشغيليّة اللازمة
+
+- **cron تنبيه قبل انتهاء الشهادة بـ٣٠ يوماً** (البصمة الحاليّة تنتهي مع الشهادة).
+- **backup pin على CA بديل** — بلاها، تدوير Cloudflare/Let's Encrypt يُقفل التطبيق لكلّ العملاء دفعةً واحدة.
+- **مسار عودة سريع**: إصدار OTA (أو Play emergency update) خلال ساعتَين إن انقلبت البصمة قسراً.
+
+---
+
 ## ترتيب التنفيذ المقترح
 
 1. **الأولوية الأولى — ك-٢ (assetlinks)**: بلا هذا، Play App Links لا تعمل لأيّ عميل. صريح، لا يحتاج قراراً.
-2. **الأولوية الثانية — ت-٣ (customerBenefits query→mutation)**: تسريب توكنات إلى access.log على VPS مشترك — قابل للاستغلال إن فُقد وصول لأودو/سراج.
-3. **الأولوية الثالثة — ت-١١ + ت-١٧ (session_version + activeCheck)**: يحتاج قرار المالك على TTL (٢٤س بـrefresh أم أسبوع بلا). ينفَّذ بعد قرار.
-4. **الأولوية الرابعة — ك-٣ (AASA)**: بلا معنى قبل قرار Apple Developer.
+2. **الأولوية الثانية — F-٨ (deleteMe)**: Google Play يفرض حذفاً داخل التطبيق منذ مايو ٢٠٢٤. زرّ الواجهة جاهز، ينتظر endpoint.
+3. **الأولوية الثالثة — ت-٣ (customerBenefits query→mutation)**: تسريب توكنات إلى access.log على VPS مشترك — قابل للاستغلال إن فُقد وصول لأودو/سراج.
+4. **الأولوية الرابعة — F-٣ + F-٧ (OTP rate limits + Cloudflare WAF)**: بلا هذا، ترقية Blaze تفتح فاتورة SMS مفتوحة. ينفَّذ قبل تفعيل Blaze.
+5. **الأولوية الخامسة — ت-١١ + ت-١٧ (session_version + activeCheck)**: يحتاج قرار المالك على TTL (٢٤س بـrefresh أم أسبوع بلا). ينفَّذ بعد قرار.
+6. **الأولوية السادسة — ك-٣ (AASA) + F-٩ (cert pinning)**: بلا معنى قبل قرار Apple Developer + قرار مالك على cert pinning.
 
 ---
 
