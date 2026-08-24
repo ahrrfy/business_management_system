@@ -306,7 +306,16 @@ export const imageStudioRouter = router({
               : e.kind === "BLOCKED" || e.kind === "BAD_INPUT" || e.kind === "NO_IMAGE"
                 ? "BAD_REQUEST"
                 : "INTERNAL_SERVER_ERROR";
-          throw new TRPCError({ code, message: aiImageErrorMessageAr(e.kind) });
+          // ⭐ جذر بلاغ المالك (٢٤/٨): NO_IMAGE و BLOCKED يحملان نصَّ رفض المزوّد وسببه في `e.message`
+          // بعد fix استخراج التشخيص. نمرّرهما للمستخدم كي يعرف السبب فعلاً (نموذج خاطئ؟ صورة رُفضت؟)،
+          // بدل رسالة عامّة «جرّب مجدّداً» كانت تُبقيه أعمى. AUTH/QUOTA رسالتها العامّة تكفي ولا نُسرّب
+          // تفاصيل الشبكة/المفتاح؛ SERVICE/NETWORK غير مفيدة للمستخدم.
+          const showDetail = e.kind === "NO_IMAGE" || e.kind === "BLOCKED";
+          const message =
+            showDetail && e.message && !e.message.startsWith("HTTP ")
+              ? `${aiImageErrorMessageAr(e.kind)} — ${e.message}`
+              : aiImageErrorMessageAr(e.kind);
+          throw new TRPCError({ code, message });
         }
         throw e;
       } finally {

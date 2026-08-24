@@ -122,22 +122,78 @@ describe("generateStudioImage (fetch مُموَّه)", () => {
     await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "SERVICE" });
   });
 
-  it("promptFeedback.blockReason ⇒ BLOCKED", async () => {
+  it("promptFeedback.blockReason ⇒ BLOCKED + السبب في الرسالة", async () => {
     const fakeFetch: typeof fetch = async () =>
       new Response(JSON.stringify({ promptFeedback: { blockReason: "SAFETY" }, candidates: [] }), { status: 200, headers: { "content-type": "application/json" } });
-    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "BLOCKED" });
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({
+      kind: "BLOCKED",
+      message: expect.stringContaining("blockReason=SAFETY"),
+    });
   });
 
-  it("finishReason IMAGE_SAFETY ⇒ BLOCKED", async () => {
+  it("finishReason IMAGE_SAFETY ⇒ BLOCKED + finishReason في الرسالة", async () => {
     const fakeFetch: typeof fetch = async () =>
       new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "no" }] }, finishReason: "IMAGE_SAFETY" }] }), { status: 200, headers: { "content-type": "application/json" } });
-    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "BLOCKED" });
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({
+      kind: "BLOCKED",
+      message: expect.stringContaining("finishReason=IMAGE_SAFETY"),
+    });
   });
 
-  it("نصّ فقط بلا صورة ⇒ NO_IMAGE", async () => {
+  // ⭐ جذر البلاغ (٢٤/٨): النموذج يُرجع نصَّ رفضٍ ضمنيّ بدل الصورة (finishReason=STOP).
+  // كان المستخدم يرى «جرّب مجدّداً» بلا سبب. الآن يجب أن يحمل الاستثناء نصَّ المزوّد الفعليّ.
+  it("نصّ فقط بلا صورة ⇒ NO_IMAGE + نصّ المزوّد في الرسالة (منع الرجعة إلى العمى)", async () => {
     const fakeFetch: typeof fetch = async () =>
-      new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "I cannot" }] }, finishReason: "STOP" }] }), { status: 200, headers: { "content-type": "application/json" } });
-    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "NO_IMAGE" });
+      new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: "I cannot edit this image because it contains sensitive content." }] }, finishReason: "STOP" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({
+      kind: "NO_IMAGE",
+      message: expect.stringMatching(/finishReason=STOP.*نصّ المزوّد.*I cannot edit this image/),
+    });
+  });
+
+  it("finishReason غير SAFETY وغير STOP (مثلاً MAX_TOKENS) ⇒ NO_IMAGE + finishReason للتشخيص", async () => {
+    const fakeFetch: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({ candidates: [{ content: { parts: [] }, finishReason: "MAX_TOKENS" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({
+      kind: "NO_IMAGE",
+      message: expect.stringContaining("finishReason=MAX_TOKENS"),
+    });
+  });
+
+  it("استجابة فارغة تماماً ⇒ NO_IMAGE برسالة الاحتياط (لا سقوط)", async () => {
+    const fakeFetch: typeof fetch = async () =>
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({
+      kind: "NO_IMAGE",
+      message: expect.stringContaining("قد يكون رفض التعديل"),
+    });
+  });
+
+  it("نصّ رفضٍ ضخم ⇒ يُقتصّ إلى ≤٥٠٠ حرف (لا تفجّر السجلّ ولا تُسرّب حمولة)", async () => {
+    const huge = "X".repeat(5000);
+    const fakeFetch: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({ candidates: [{ content: { parts: [{ text: huge }] }, finishReason: "STOP" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    try {
+      await generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch });
+      throw new Error("لم يُرمَ الاستثناء المتوقّع");
+    } catch (e) {
+      const msg = (e as Error).message;
+      // 500 للنصّ + حدود الوصف — يجب ألّا يقترب المجموع من الحمولة الكاملة.
+      expect(msg.length).toBeLessThan(700);
+      expect(msg).toContain("X".repeat(500));
+      expect(msg).not.toContain("X".repeat(501));
+    }
   });
 
   it("model فارغ ⇒ يستعمل الافتراضي gemini-2.5-flash-image", async () => {
