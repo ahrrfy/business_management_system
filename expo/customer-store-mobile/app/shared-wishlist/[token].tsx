@@ -8,9 +8,14 @@ import { ScreenContainer } from "@/components/screen-container";
 import { getStorefrontWishlistShare } from "@/lib/storefront-api";
 import type { Product } from "@/shared/storefront";
 
+// المُولِّد الخادميّ = randomBytes(18).toString("base64url") ⇒ ٢٤ محرفاً بالضبط.
+// نرفض قبل الطلب الخادميّ ما لا يطابق الشكل ⇒ لا تُدفَع محاولات تخمينٍ نحو الشبكة.
+const WISHLIST_SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{24}$/;
+
 export default function SharedWishlistScreen() {
   const params = useLocalSearchParams<{ token?: string | string[] }>();
-  const token = Array.isArray(params.token) ? params.token[0] : params.token;
+  const rawToken = Array.isArray(params.token) ? params.token[0] : params.token;
+  const token = rawToken && WISHLIST_SHARE_TOKEN_PATTERN.test(rawToken) ? rawToken : null;
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

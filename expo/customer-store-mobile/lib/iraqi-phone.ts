@@ -1,7 +1,10 @@
-const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
+const arabicIndicDigits = "٠١٢٣٤٥٦٧٨٩";
+const extendedArabicIndicDigits = "۰۱۲۳۴۵۶۷۸۹";
 
 export function latinDigits(value: string) {
-  return value.replace(/[٠-٩]/g, (digit) => String(arabicDigits.indexOf(digit)));
+  return value
+    .replace(/[٠-٩]/g, (digit) => String(arabicIndicDigits.indexOf(digit)))
+    .replace(/[۰-۹]/g, (digit) => String(extendedArabicIndicDigits.indexOf(digit)));
 }
 
 /** يحفظ الرقم المحلي بصيغة 7XXXXXXXXX، وتبقى +964 خارج حقل التحرير. */
