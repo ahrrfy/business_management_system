@@ -19,12 +19,23 @@ import {
   storefrontCategoryCount,
   storefrontMediaUrls,
   clampStorefrontZoomPoint,
+  recommendationActionLabel,
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+
+describe("storefront related product actions", () => {
+  it("يفصل الإضافة المباشرة عن المنتجات التي تحتاج اختياراً", () => {
+    const base = { productId: 1, productName: "دفتر", imageUrl: null, price: "5000", productUnitId: 11, unitName: "قطعة", inStock: true };
+    expect(recommendationActionLabel(base)).toBe("أضف إلى السلة");
+    expect(recommendationActionLabel({ ...base, isCustomizable: true })).toBe("اختر الخيارات");
+    expect(recommendationActionLabel({ ...base, variants: [{ label: "لون", units: [{ productUnitId: 11, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }, { label: "قياس", units: [{ productUnitId: 12, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }] })).toBe("اختر الخيارات");
+    expect(recommendationActionLabel({ ...base, inStock: false })).toBe("غير متوفر");
+  });
+});
 
 describe("storefront Turnstile submission gate", () => {
   it("fails closed until ordering, public site key and a fresh token are all present", () => {
