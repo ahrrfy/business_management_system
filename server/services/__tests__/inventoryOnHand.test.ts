@@ -62,6 +62,18 @@ async function userRow(id: number) {
   return (await db().select().from(s.users).where(eq(s.users.id, id)).limit(1))[0];
 }
 
+/** يبذر خدمةً وبكجاً (بلا صفّ رصيد) لاختبارات «لا تظهر زوراً كصفريّات كتالوجيّة». */
+async function d_seedNonStockables() {
+  await db().insert(s.products).values([
+    { id: 90, name: "كارت زين رقميّ", isActive: true, isService: true, isBundle: false, isConsignment: false },
+    { id: 91, name: "بكج البداية", isActive: true, isService: false, isBundle: true, isConsignment: false },
+  ]);
+  await db().insert(s.productVariants).values([
+    { id: 499, productId: 90, sku: "SVC-DIGITAL-CARD", isActive: true },
+    { id: 500, productId: 91, sku: "PKG-STARTER-BUNDLE", isActive: true },
+  ]);
+}
+
 beforeEach(async () => {
   await reset();
   await seed();
@@ -181,17 +193,79 @@ describe("inventory.onHand", () => {
     expect(neg.map((r) => r.sku).sort()).toEqual(["SKU-1"]);
   });
 
-  it("يستبعد المتغيّر غير النشط والمنتج غير النشط (البدء من الكتالوج يستدعي هذين الفلترَين صراحةً)", async () => {
+  it("يستبعد المتغيّر/المنتج غير النشط **الذي لا رصيد له** (كتالوجٌ نظيف)", async () => {
     await db().insert(s.products).values({ id: 9, name: "منتج معطَّل", isActive: false });
     await db().insert(s.productVariants).values([
-      { id: 200, productId: 9, sku: "INACTIVE-PROD", isActive: true },
-      { id: 201, productId: 1, sku: "INACTIVE-VAR", isActive: false },
+      { id: 200, productId: 9, sku: "INACTIVE-PROD-NOSTOCK", isActive: true },
+      { id: 201, productId: 1, sku: "INACTIVE-VAR-NOSTOCK", isActive: false },
     ]);
     const caller = appRouter.createCaller(makeCtx(await userRow(1)));
     const rows = await caller.inventory.onHand({ branchId: 1 });
     const skus = rows.map((r) => r.sku);
-    expect(skus).not.toContain("INACTIVE-PROD");
-    expect(skus).not.toContain("INACTIVE-VAR");
+    expect(skus).not.toContain("INACTIVE-PROD-NOSTOCK");
+    expect(skus).not.toContain("INACTIVE-VAR-NOSTOCK");
+  });
+
+  it("يُظهر الصنف المُعطَّل **إن كان له صفّ رصيد** (توافقٌ عكسيٌّ — مراجعة Codex P2 على إخفاء الرصيد بعد التعطيل)", async () => {
+    // متغيّرٌ صار غير نشط لكنّه لا يزال يحمل رصيداً في الفرع ⇒ لا بدّ أن يبقى ظاهراً كي
+    // يستطيع المدير تسويته من الشاشة (setProductActive لا يشترط رصيداً صفرياً قبل التعطيل).
+    await db().insert(s.productVariants).values({
+      id: 400,
+      productId: 1,
+      sku: "INACTIVE-WITH-STOCK",
+      isActive: false,
+    });
+    await db().insert(s.branchStock).values({ variantId: 400, branchId: 1, quantity: 12 });
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const rows = await caller.inventory.onHand({ branchId: 1 });
+    const stale = rows.find((r) => r.sku === "INACTIVE-WITH-STOCK");
+    expect(stale).toBeDefined();
+    expect(stale?.quantity).toBe(12);
+  });
+
+  it("لا يُدرج الخدمات/البكجات كصفريّات كتالوجيّة زائفة (زرّ التسوية يفشل عليها — مراجعة Codex P2)", async () => {
+    // خدمة (كارت رقميّ) وبكج — كلاهما بلا رصيدٍ لأيّ فرع. LEFT JOIN الوسيع كان
+    // سيُدرجهما كصفريّاتٍ صالحة للتسوية، والزرّ سيفشل لأنّ `setStock` يرفض الخدمة/البكج.
+    await d_seedNonStockables();
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const rows = await caller.inventory.onHand({ branchId: 1 });
+    const skus = rows.map((r) => r.sku);
+    expect(skus).not.toContain("SVC-DIGITAL-CARD");
+    expect(skus).not.toContain("PKG-STARTER-BUNDLE");
+  });
+
+  it("لكن يُظهر البكج/الخدمة **إن كان لهما صفّ رصيدٍ فعليّ** (بكجٌ من الإنتاج مثلاً — التوافق العكسيّ)", async () => {
+    await d_seedNonStockables();
+    // نُنشئ صفّ رصيدٍ للبكج (كأنّ عمليةَ إنتاج ركّبت وحدة) ⇒ يجب أن يبقى ظاهراً بالسلوك القديم.
+    await db().insert(s.branchStock).values({ variantId: 500, branchId: 1, quantity: 3 });
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const rows = await caller.inventory.onHand({ branchId: 1 });
+    const bundle = rows.find((r) => r.sku === "PKG-STARTER-BUNDLE");
+    expect(bundle).toBeDefined();
+    expect(bundle?.quantity).toBe(3);
+  });
+
+  it("تطابق فلتر lowOnly وشارة isLow: الصنف بلا صفّ رصيد لا يُصنّف «تحت الحدّ» في الاثنين معاً — مراجعة Codex P2", async () => {
+    await db().insert(s.productVariants).values({
+      id: 600,
+      productId: 1,
+      sku: "LOW-CONSISTENCY",
+      variantName: "لا رصيد وحدّه 50",
+      minStock: 50,
+      isActive: true,
+    });
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+
+    // بلا فلتر: الصنف يظهر (كتالوج نشط قابل للجرد) لكنّ isLow=false (لا صفَّ فعلي).
+    const all = await caller.inventory.onHand({ branchId: 1 });
+    const cat = all.find((r) => r.sku === "LOW-CONSISTENCY");
+    expect(cat).toBeDefined();
+    expect(cat?.quantity).toBe(0);
+    expect(cat?.isLow).toBe(false); // تطابق مع lowOnly
+
+    // مع فلتر lowOnly: لا يظهر (فلاتر مبنيّة على الحقل الخام NULL).
+    const low = await caller.inventory.onHand({ branchId: 1, lowOnly: true });
+    expect(low.map((r) => r.sku)).not.toContain("LOW-CONSISTENCY");
   });
 
   it("رصيد الفرع الآخر لا يُفسِد عدّ الفرع المطلوب (شرط الفرع في ON لا WHERE)", async () => {

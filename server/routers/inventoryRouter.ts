@@ -657,10 +657,20 @@ export const inventoryRouter = router({
    *
    * الإصلاح: بدء من كتالوج `productVariants` + INNER JOIN products + **LEFT JOIN branchStock**
    * (شرط الفرع في `ON` لا `WHERE` كي لا يُقلَب إلى INNER). المتغيّر بلا صفٍّ يظهر بـ`quantity=0`
-   * (COALESCE في الإسقاط). فلاتر `isActive` صريحة على المتغيّر والمنتج (لم تكن مطلوبةً حين
-   * البدء من branchStock — الرصيد يعني موجوداً — لكنّ البدءَ من الكتالوج يستدعيها).
-   * `lowOnly` و`negativeOnly` يبقيان **صارمَي دلالة** بمقارنة الحقل الخام (NULL ⇒ يسقط) —
-   * أي صنفٍ بلا صفٍّ لا يُعدّ «تحت الحد» ولا «سالباً»؛ فلا انفجار في هذين الفلترَين.
+   * (COALESCE في الإسقاط).
+   *
+   * **قاعدة الرؤية = اتّحاد** (مراجعة Codex — ثلاث ملاحظات P2 على الإصدار الأوّل من هذا الإصلاح):
+   *   (١) أيّ صفٍّ حقيقيّ في `branchStock` يبقى ظاهراً بلا استثناء — حتى لو صار المنتج/المتغيّر
+   *       غير نشط، أو تحوّل النوع إلى خدمة/بكج لاحقاً. هذا التزامٌ عكسيٌّ بالسلوك السابق: قبل
+   *       الإصلاح كانت الأرصدة تظهر دائماً؛ لا يجوز إخفاؤها بمنطقٍ جديد وإلّا فقد المدير قدرة
+   *       التسوية على صنفٍ مُعطَّل يحمل رصيداً فعلياً.
+   *   (٢) **زائداً** كتالوجٌ نشطٌ قابلٌ للجرد (متغيّر + منتج نشطان، غير خدميّ، غير بكج) حتى بلا
+   *       صفّ رصيد — بـ`quantity=0` — لتُغلَق ثغرة البلاغ. الخدمة والبكج لا يُضافان زوراً كصفٍّ
+   *       صفريّ لأنّ `inventory.adjust` يرفضهما (فيفشل الزرّ المعروض)؛ ويأتيان فقط إن كان لهما
+   *       صفّ رصيدٍ حقيقيّ (شرط ١).
+   * `lowOnly` و`negativeOnly` يبقيان **صارمَي دلالة** بمقارنة `branchStock.quantity` الخام
+   * (NULL ⇒ يسقط) — لا فيضان بصفريّات كتالوجيّة. و`isLow` في الإسقاط يشترط وجود الصفّ (`hasStockRow`)
+   * كي يتطابق مع فلتر `lowOnly` (كلاهما دلالياً «تحت الحدّ لصنفٍ له رصيدٌ فعليّ»).
    */
   onHand: inventoryReadProcedure
     .input(
@@ -689,9 +699,13 @@ export const inventoryRouter = router({
 
       // ملاحظة (٢٤/٨): كان هنا `eq(branchStock.branchId, branchId)` في WHERE ⇒ عاد INNER
       // ضمنياً حتى بعد LEFT JOIN. شرط الفرع صار في `ON` أدناه.
+      //
+      // قاعدة الرؤية = اتّحاد (انظر الشرح أعلى): أيّ صفّ branchStock قائم يظهر (شرط ١، للمحافظة
+      // على أرصدة المنتجات المُعطَّلة/المُحوَّلة)، **أو** كتالوجٌ نشطٌ قابلٌ للجرد (شرط ٢). بدون
+      // OR هذا كانت مراجعة Codex محقّة: (أ) الخدمة/البكج تظهر زوراً كصفر ⇒ الزرّ يفشل، (ب) الصنف
+      // المُعطَّل ذو الرصيد يختفي ⇒ لا سبيل لتسوية رصيدٍ حقيقيّ من هذه الشاشة.
       const conds: any[] = [
-        eq(productVariants.isActive, true),
-        eq(products.isActive, true),
+        sql`(${branchStock.variantId} IS NOT NULL OR (${productVariants.isActive} = true AND ${products.isActive} = true AND ${products.isService} = false AND ${products.isBundle} = false))`,
       ];
       const search = input?.q?.trim();
       if (search) {
@@ -742,6 +756,11 @@ export const inventoryRouter = router({
         .offset(input?.offset ?? 0);
 
       return rows.map((r) => {
+        // hasStockRow = صفٌّ فعليّ في branchStock (LEFT JOIN التقط الرصيد). المتغيّرات
+        // الكتالوجيّة الصفريّة (لا صفَّ) تخرج بـ`quantity = 0` لكنّ isLow=false — كي يتطابق
+        // مع فلتر lowOnly (الذي يقارن الحقل الخام NULL فيسقطها). دلالياً: «تحت الحدّ» تُطبَّق
+        // على صنفٍ **له رصيدٌ فعليّ** لا على كتالوجٍ لم يُلامَس بعد (مراجعة Codex P2 لتطابق الفلتر والشارة).
+        const hasStockRow = r.quantity != null;
         const quantity = Number(r.quantity ?? 0);
         const minStock = r.minStock == null ? null : Number(r.minStock);
         return {
@@ -756,7 +775,7 @@ export const inventoryRouter = router({
           reorderPoint: r.reorderPoint == null ? null : Number(r.reorderPoint),
           productName: r.productName,
           lastCountedAt: r.lastCountedAt ?? null,
-          isLow: (minStock ?? 0) > 0 && quantity <= (minStock ?? 0),
+          isLow: hasStockRow && (minStock ?? 0) > 0 && quantity <= (minStock ?? 0),
         };
       });
     }),
