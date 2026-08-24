@@ -39,34 +39,42 @@ internal class NotificationPermissionLifecycleGuard(
     }
 
     fun onActivityStopping(): Boolean {
-        if (!isRequestActive()) {
-            // Clear the pending bypass so a stale request does not later grant a resume-bypass
-            // on the next stop/resume cycle (the request has already timed out).
-            resumeBypassPending = false
-            return false
+        return when (evaluateRequestState()) {
+            RequestState.Active -> {
+                resumeBypassPending = true
+                true
+            }
+            // Inactive covers both "never started" and "resolved via callback" — pending stays valid
+            // for the imminent resume the OEM dialog may still trigger. Expired paths already
+            // cleared pending inside evaluateRequestState() so a stale bypass never leaks.
+            RequestState.Inactive, RequestState.Expired -> false
         }
-        resumeBypassPending = true
-        return true
     }
 
     fun consumeResumeBypass(): Boolean {
         if (!resumeBypassPending) return false
         resumeBypassPending = false
-        // Any resume clears an in-flight request the OS never resolved — the next stop must lock.
-        requestInFlight = false
-        requestStartedAtNanos = 0L
+        // Deliberately do NOT clear requestInFlight here: some OEMs fire multiple stop/resume
+        // pairs before finally delivering the permission callback. Clearing here would lock the
+        // session on the second stop while the dialog is still up. The age cap in
+        // evaluateRequestState() is what caps runaway state.
         return true
     }
 
-    private fun isRequestActive(): Boolean {
-        if (!requestInFlight) return false
+    private fun evaluateRequestState(): RequestState {
+        if (!requestInFlight) return RequestState.Inactive
         if (nowNanos() - requestStartedAtNanos > maxRequestAgeNanos) {
             requestInFlight = false
             requestStartedAtNanos = 0L
-            return false
+            // The OEM never fired the callback and the user never came back to consume the bypass.
+            // Any resume that happens now is a real user return, not a dialog transition.
+            resumeBypassPending = false
+            return RequestState.Expired
         }
-        return true
+        return RequestState.Active
     }
+
+    private enum class RequestState { Inactive, Active, Expired }
 
     companion object {
         val DEFAULT_MAX_REQUEST_AGE_NANOS: Long = TimeUnit.SECONDS.toNanos(30)

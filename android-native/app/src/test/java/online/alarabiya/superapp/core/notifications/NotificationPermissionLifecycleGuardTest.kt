@@ -20,11 +20,7 @@ class NotificationPermissionLifecycleGuardTest {
     }
 
     @Test
-    fun resumeConsumingBypassClearsInFlightSoNextStopLocks() {
-        // Safety semantic: after the Activity resumes (dialog dismissed or user answered), any
-        // subsequent onStop is a real user departure — the session MUST re-lock even if the
-        // system never fired onRequestPermissionsResult. Prevents the H1 defect where a stalled
-        // OEM callback left requestInFlight = true forever and every stop bypassed the lock.
+    fun resumeBeforePermissionCallbackStillConsumesOnlyOneBypass() {
         val guard = NotificationPermissionLifecycleGuard()
 
         guard.requestStarting()
@@ -32,6 +28,8 @@ class NotificationPermissionLifecycleGuardTest {
         assertTrue(guard.onActivityStopping())
         assertTrue(guard.consumeResumeBypass())
         assertFalse(guard.consumeResumeBypass())
+        assertTrue(guard.onActivityStopping())
+        guard.permissionResultReceived()
         assertFalse(guard.onActivityStopping())
     }
 
@@ -83,7 +81,10 @@ class NotificationPermissionLifecycleGuardTest {
     }
 
     @Test
-    fun expiredRequestClearsPendingBypassOnNextStop() {
+    fun expiredRequestClearsStaleBypassOnNextStop() {
+        // User taps the permission action, the OEM shows the dialog, then the user leaves for
+        // hours. Once the request has expired, the next stop must NOT re-arm the bypass so a
+        // late resume cannot skip the session lock.
         var clock = 0L
         val guard = NotificationPermissionLifecycleGuard(
             maxRequestAgeNanos = TimeUnit.SECONDS.toNanos(30),
@@ -93,7 +94,6 @@ class NotificationPermissionLifecycleGuardTest {
         guard.requestStarting()
         assertTrue(guard.onActivityStopping())
 
-        // Clock advances past the deadline; a stale resumeBypassPending must not linger.
         clock += TimeUnit.SECONDS.toNanos(60)
         assertFalse(guard.onActivityStopping())
         assertFalse(guard.consumeResumeBypass())
