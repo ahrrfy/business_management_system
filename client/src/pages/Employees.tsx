@@ -2,12 +2,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { FilterField, ListToolbar } from "@/components/list";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { EmpAvatar, EmploymentStatusBadge } from "@/lib/hr/ui";
 import { CopyInline } from "@/components/CopyButton";
 import { EMPLOYMENT_STATUSES, HR_DEPARTMENTS, employmentStatusLabel, fullEmployeeName, payTypeLabel } from "@shared/hr";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { ChevronLeft, Fingerprint } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
@@ -21,6 +24,16 @@ type Row = RouterOutputs["employees"]["list"]["rows"][number];
 export default function Employees() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  // مرآة بوّابة الخادم: `employees.create` = `hrWrite` (hr:FULL) — server/routers/employeeRouter.ts:154.
+  // إخفاء زرّ «موظف جديد» على من لا يستطيع الحفظ (بدل رابطٍ يفتح ثمّ يُرفض عند submit).
+  const me = trpc.auth.me.useQuery();
+  const canCreate = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "hr",
+    "FULL",
+    ["manager"],
+  );
   // فلاتر محفوظة في querystring (تعيش مع فتح بطاقة موظف والرجوع، وتُشارَك رابطاً).
   const [f, setF, resetF] = useUrlFilters({
     q: "", department: "", branchId: "", status: "", includeInactive: "",
@@ -65,7 +78,10 @@ export default function Employees() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">الموظفون</h1>
+      <PageHeader
+        title="الموظفون"
+        description="قائمة الموظفين — الأقسام والفروع، نوع الأجر، ربط جهاز الحضور، والحالة الوظيفية."
+      />
 
       <Card>
         <CardHeader>
@@ -73,7 +89,12 @@ export default function Employees() {
             title="القائمة"
             count={total}
             loading={list.isLoading}
-            search={{ value: f.q, onChange: (v) => { setF({ q: v }); setPage(0); }, placeholder: "بحث (اسم/هاتف/هوية/مسمى)" }}
+            search={{
+              value: f.q,
+              onChange: (v) => { setF({ q: v }); setPage(0); },
+              placeholder: "بحث (اسم/هاتف/هوية/مسمى)",
+              autoFocus: true,
+            }}
             activeFilterCount={activeFilterCount}
             onResetFilters={resetF}
             filters={
@@ -126,7 +147,7 @@ export default function Employees() {
                 { key: "deviceLinked", header: "مربوط بجهاز الحضور", map: (r) => (r.attendanceExempt ? "معفى" : r.deviceLinked ? "نعم" : "لا") },
               ],
             }}
-            add={{ href: "/hr/employees/new", label: "موظف جديد" }}
+            add={canCreate ? { href: "/hr/employees/new", label: "موظف جديد" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -176,7 +197,23 @@ export default function Employees() {
                   </tr>
                 ))}
                 {!list.isLoading && rows.length === 0 && (
-                  <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا موظفين مطابقين. غيّر الفلاتر أو أضف موظفاً جديداً.</td></tr>
+                  <TableEmptyRow
+                    colSpan={7}
+                    message={
+                      f.q || activeFilterCount > 0 ? (
+                        <div className="space-y-2">
+                          <div>لا موظفين مطابقين للفلاتر الحالية.</div>
+                          <Button variant="outline" size="sm" onClick={() => { resetF(); setPage(0); }}>
+                            مسح الفلاتر
+                          </Button>
+                        </div>
+                      ) : canCreate ? (
+                        "لا موظفين بعد. أضف أوّل موظف بزرّ «موظف جديد» أعلاه."
+                      ) : (
+                        "لا موظفين بعد."
+                      )
+                    }
+                  />
                 )}
               </tbody>
             </table>
@@ -184,11 +221,25 @@ export default function Employees() {
         </CardContent>
       </Card>
 
-      {pages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-          <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
-          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
+      {total > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <div className="text-muted-foreground">
+            {pages > 1 ? (
+              <>يعرض {(page * limit + 1).toLocaleString("ar-IQ-u-nu-latn")}–
+                {Math.min((page + 1) * limit, total).toLocaleString("ar-IQ-u-nu-latn")} من
+                {" "}
+                {total.toLocaleString("ar-IQ-u-nu-latn")} موظف</>
+            ) : (
+              <>الإجمالي: {total.toLocaleString("ar-IQ-u-nu-latn")} موظف</>
+            )}
+          </div>
+          {pages > 1 && (
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
+              <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
+              <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
+            </div>
+          )}
         </div>
       )}
     </div>
