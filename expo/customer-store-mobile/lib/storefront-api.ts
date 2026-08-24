@@ -411,8 +411,13 @@ export function claimStorefrontFirebaseCustomer(input: { firebaseIdToken: string
   return storefrontMutation<StorefrontCustomerSession>("storefront.claimFirebaseCustomer", input);
 }
 
+/**
+ * رصيد الولاء والقسائم. **mutation لا query** ⇒ التوكن ينتقل في body POST بدل ?input=،
+ * فلا يظهر في nginx access.log على VPS المشترك (راجع docs/erp-followups.md § ت-٣).
+ * نداءٌ خالٍ من التأثير الجانبيّ رغم كونه mutation دلالياً.
+ */
 export function getStorefrontCustomerBenefits(customerSessionToken: string) {
-  return storefrontQuery<StorefrontCustomerBenefits>("storefront.customerBenefits", { customerSessionToken }, { retries: 0, cacheTtlMs: 10_000 });
+  return storefrontMutation<StorefrontCustomerBenefits>("storefront.customerBenefits", { customerSessionToken });
 }
 
 export function getStorefrontProductReviews(productId: number) {
