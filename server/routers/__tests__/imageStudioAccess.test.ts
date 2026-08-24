@@ -144,6 +144,41 @@ describe("image studio worker permission", () => {
     expect(providerMocks.generateStudioImage).toHaveBeenCalledTimes(1);
   });
 
+  // ⭐ جذر بلاغ المالك (٢٤/٨): NO_IMAGE/BLOCKED كانا يظهران للمستخدم كرسالةٍ عامّة «جرّب مجدّداً» بلا
+  // معرفة السبب. بعد إصلاح التقاط تشخيص المزوّد يجب أن تُلحق الرسالة العربية بنصّ الرفض / finishReason
+  // كي يعرف المالك ما جرى (نموذج خاطئ؟ رفض ضمنيّ؟). حارسٌ منع الرجعة إلى العمى.
+  it.each([
+    { kind: "NO_IMAGE" as const, detail: "finishReason=STOP · نصّ المزوّد: \"I cannot edit\"", code: "BAD_REQUEST" },
+    { kind: "BLOCKED" as const, detail: "blockReason=SAFETY", code: "BAD_REQUEST" },
+  ])("AI provider $kind ⇒ يُلحق تفصيل المزوّد بالرسالة العربية للمستخدم", async ({ kind, detail, code }) => {
+    const { AiImageError } = await import("../../services/aiImageStudioService");
+    providerMocks.generateStudioImage.mockImplementationOnce(async () => {
+      throw new AiImageError(kind, 200, detail);
+    });
+    const worker = caller("print_operator");
+    await expect(worker.aiStudioTransform({ imageDataUrl: PNG_1X1, mode: "EDIT", taskId: 920 })).rejects.toMatchObject({
+      code,
+      message: expect.stringContaining(detail),
+    });
+  });
+
+  // AUTH/QUOTA لا يجب أن تُسرّب تفاصيل الشبكة/المفتاح — الرسالة العامّة تكفي.
+  it.each([
+    { kind: "AUTH" as const, code: "PRECONDITION_FAILED", secret: "api key sk-abcd1234" },
+    { kind: "QUOTA" as const, code: "PRECONDITION_FAILED", secret: "Bearer 4kJk9-secret-token" },
+    { kind: "SERVICE" as const, code: "INTERNAL_SERVER_ERROR", secret: "internal stack trace at /home/deploy" },
+  ])("AI provider $kind ⇒ لا يُسرّب تفصيل المزوّد (رسالة عامّة فقط)", async ({ kind, code, secret }) => {
+    const { AiImageError } = await import("../../services/aiImageStudioService");
+    providerMocks.generateStudioImage.mockImplementationOnce(async () => {
+      throw new AiImageError(kind, 500, secret);
+    });
+    const worker = caller("print_operator");
+    await expect(worker.aiStudioTransform({ imageDataUrl: PNG_1X1, mode: "EDIT", taskId: 920 })).rejects.toMatchObject({
+      code,
+      message: expect.not.stringContaining(secret),
+    });
+  });
+
   it("requires a task for managers and confines processing to their own assignment", async () => {
     const managerCaller = caller("manager", undefined, { id: 95 });
     await expect(managerCaller.proCutout({ imageDataUrl: PNG_1X1 }))

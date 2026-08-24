@@ -130,6 +130,36 @@ function extractImagePart(json: any): { data: string; mime: string } | null {
   return null;
 }
 
+/**
+ * يجمع أجزاء النصّ من أوّل مرشّح ويصف سبب انتهاء المرشّح — للتشخيص عند NO_IMAGE/BLOCKED.
+ *
+ * ⭐ **جذر الفجوة**: عندما يرفض النموذج ضمنياً (يُرجع نصّاً بدلَ صورة، مثلاً "I cannot edit this")،
+ * فالنصّ يحمل السبب الفعليّ لكن كنّا نتجاهله ⇒ المستخدم يرى «جرّب مجدّداً» بلا معرفة لماذا.
+ * نستخرجه هنا كي يظهر في `AiImageError.message` ثمّ يُلحق بالرسالة العربية في الراوتر.
+ *
+ * حدود الأمان: يقتصّ النصّ عند ٥٠٠ حرف (يمنع تسريب حمولات ضخمة/مسيئة في السجلّ)، ويُنظّف من التحكّم.
+ */
+function extractProviderDiagnostic(json: any): string {
+  const cand = json?.candidates?.[0];
+  const parts = cand?.content?.parts;
+  const finishReason = cand?.finishReason ? String(cand.finishReason) : "";
+  const blockReason = json?.promptFeedback?.blockReason ? String(json.promptFeedback.blockReason) : "";
+  const texts: string[] = [];
+  if (Array.isArray(parts)) {
+    for (const p of parts) {
+      const t = p?.text;
+      if (typeof t === "string" && t.trim()) texts.push(t.trim());
+    }
+  }
+  // نظّف من الأسطر/التحكّم واقصص عند ٥٠٠ لكل حقل — كي لا يُفجّر السجلّ ولا يُعرض حمولةً خبيثة.
+  const clean = (s: string) => s.replace(/[ -]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+  const bits: string[] = [];
+  if (blockReason) bits.push(`blockReason=${clean(blockReason)}`);
+  if (finishReason) bits.push(`finishReason=${clean(finishReason)}`);
+  if (texts.length) bits.push(`نصّ المزوّد: "${clean(texts.join(" · "))}"`);
+  return bits.join(" · ");
+}
+
 /** يصنّف ردّ الخطأ (غير 2xx) إلى AiImageErrorKind بحسب الرمز والرسالة. */
 function classifyHttpError(status: number, message: string): AiImageErrorKind {
   const m = message.toLowerCase();
@@ -216,12 +246,25 @@ export async function generateStudioImage(
   const blockReason = json?.promptFeedback?.blockReason;
   const finishReason = json?.candidates?.[0]?.finishReason;
   if (blockReason || (finishReason && SAFETY_FINISH_REASONS.has(String(finishReason)))) {
-    throw new AiImageError("BLOCKED", res.status, `حُجِب من المزوّد: ${blockReason ?? finishReason}`);
+    const diag = extractProviderDiagnostic(json);
+    throw new AiImageError(
+      "BLOCKED",
+      res.status,
+      diag ? `حُجِب من المزوّد — ${diag}` : `حُجِب من المزوّد: ${blockReason ?? finishReason}`,
+    );
   }
 
   const img = extractImagePart(json);
   if (!img) {
-    throw new AiImageError("NO_IMAGE", res.status, "لم يُعِد المزوّد صورةً (قد يكون رفض التعديل).");
+    // ⭐ فجوة تشخيصية أُغلقت: النموذج يُرجع أحياناً نصَّ رفضٍ ضمنيّ («I cannot edit this image...»)
+    // أو ينهي بـfinishReason غير STOP (MAX_TOKENS/OTHER/IMAGE_OTHER) — كنّا نبتلع كليهما فيرى المالك
+    // «جرّب مجدّداً» بلا معرفة السبب. الآن نمرّر السبب الحقيقيّ في `message` (يُلحقه الراوتر بالرسالة).
+    const diag = extractProviderDiagnostic(json);
+    throw new AiImageError(
+      "NO_IMAGE",
+      res.status,
+      diag ? `لم يُعِد المزوّد صورةً — ${diag}` : "لم يُعِد المزوّد صورةً (قد يكون رفض التعديل).",
+    );
   }
   if (
     !ALLOWED_OUTPUT_MIME_TYPES.has(img.mime.toLowerCase()) ||
