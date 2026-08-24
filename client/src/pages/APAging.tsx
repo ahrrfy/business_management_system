@@ -311,9 +311,10 @@ export default function APAging() {
                         <button
                           type="button"
                           aria-label="شرح: غير مفوتر/افتتاحي"
-                          className="inline-flex items-center rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground hover:text-foreground"
+                          // Codex P2 (٢٤/٨ على PR #770): هدف لمس ٢٤×٢٤ (WCAG 2.5.8).
+                          className="inline-flex h-6 w-6 items-center justify-center rounded outline-none focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground hover:text-foreground hover:bg-accent"
                         >
-                          <Info aria-hidden className="size-3" />
+                          <Info aria-hidden className="size-3.5" />
                         </button>
                       </PopoverTrigger>
                       <PopoverContent side="top" className="max-w-xs text-xs">
