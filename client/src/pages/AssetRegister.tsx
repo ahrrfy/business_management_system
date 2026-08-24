@@ -1,4 +1,8 @@
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { FilterField, ListToolbar } from "@/components/list";
 import { trpc } from "@/lib/trpc";
@@ -6,6 +10,7 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { AssetStatusBadge, CategoryIcon, iqd } from "@/lib/assets/ui";
 import { assetSettlementPresentation } from "@/lib/assetAccrualStatus";
 import { ASSET_CATEGORIES, ASSET_STATUSES, assetCategoryLabel, assetStatusLabel } from "@shared/assets";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { ChevronLeft } from "lucide-react";
 import { useMemo } from "react";
 import { useLocation } from "wouter";
@@ -21,6 +26,16 @@ function initials(name?: string | null): string {
 
 export default function AssetRegister() {
   const [, navigate] = useLocation();
+  // مرآة الخادم: `assets.create = assetWrite` (assets:FULL) — server/routers/assetsRouter.ts:133.
+  // إخفاءُ زرّ «أصل جديد» على القرّاء (تبويب managerOnly لكن `assets:FULL` قد يُمنح بـoverride).
+  const me = trpc.auth.me.useQuery();
+  const canWrite = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "assets",
+    "FULL",
+    ["manager"],
+  );
   const [f, setF, resetF] = useUrlFilters({ q: "", category: "", branchId: "", status: "", includeDisposed: "" });
 
   const opts = trpc.assets.formOptions.useQuery();
@@ -45,7 +60,10 @@ export default function AssetRegister() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">سجلّ الأصول</h1>
+      <PageHeader
+        title="سجلّ الأصول"
+        description="قائمة الأصول الثابتة — القيم الدفترية، العُهد، الحالة والتسويات."
+      />
 
       <Card>
         <CardHeader>
@@ -104,7 +122,7 @@ export default function AssetRegister() {
                 { key: "settlementStatus", header: "تسوية الاقتناء", map: (r) => assetSettlementPresentation(r.settlementStatus).label },
               ],
             }}
-            add={{ href: "/assets/new", label: "أصل جديد" }}
+            add={canWrite ? { href: "/assets/new", label: "أصل جديد" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -164,7 +182,25 @@ export default function AssetRegister() {
                             : settlement.tone === "cancelled"
                               ? "badge-status-cancelled"
                               : "badge-status-pending";
-                          return <span title={settlement.detail} className={`${badge} rounded-full px-2 py-0.5 text-xs`}>{settlement.label}</span>;
+                          // Popover بدل title (نمط ٢٤/٨، Codex #764): متاحٌ باللمس/التركيز.
+                          // stopPropagation يمنع تفعيل onClick على `<tr>` (فتح تفاصيل الأصل).
+                          return (
+                            <Popover>
+                              <PopoverTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={(ev) => ev.stopPropagation()}
+                                  aria-label={`شرح تسوية الاقتناء: ${settlement.label}`}
+                                  className={`${badge} rounded-full px-2 py-0.5 text-xs cursor-help outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80`}
+                                >
+                                  {settlement.label}
+                                </button>
+                              </PopoverTrigger>
+                              <PopoverContent side="top" className="max-w-xs text-xs" onClick={(ev) => ev.stopPropagation()}>
+                                {settlement.detail}
+                              </PopoverContent>
+                            </Popover>
+                          );
                         })()}
                       </div>
                     </td>
@@ -172,7 +208,23 @@ export default function AssetRegister() {
                   </tr>
                 ))}
                 {!list.isLoading && rows.length === 0 && (
-                  <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا أصول مطابقة. غيّر الفلاتر أو أضف أصلاً جديداً.</td></tr>
+                  <TableEmptyRow
+                    colSpan={9}
+                    message={
+                      filtersActive ? (
+                        <div className="space-y-2">
+                          <div>لا أصول مطابقة للفلاتر الحالية.</div>
+                          <Button variant="outline" size="sm" onClick={resetF}>
+                            مسح الفلاتر
+                          </Button>
+                        </div>
+                      ) : canWrite ? (
+                        "لا أصول بعد — أضِف أوّل أصل بزرّ «أصل جديد» أعلاه."
+                      ) : (
+                        "لا أصول بعد."
+                      )
+                    }
+                  />
                 )}
               </tbody>
             </table>
