@@ -25,6 +25,7 @@ import { notify } from "@/lib/notify";
 import { matchQuery } from "@/components/search/filter";
 import { CategoryOptionList } from "@/lib/categoryTree";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { CornerDownLeft, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -34,6 +35,17 @@ const num = (n: number) => n.toLocaleString("ar-IQ-u-nu-latn");
 
 export default function Categories() {
   const utils = trpc.useUtils();
+  // مرآة الخادم: `catalog.createCategory/updateCategory/deleteCategory/mergeCategories` كلّها
+  // `productsManagerProcedure(["manager"], "products", "FULL")` — server/trpc.ts:590. إخفاءُ زرّ
+  // «إضافة فئة» على من لا يستطيع الحفظ (بدل زرٍّ يفتح ثمّ يُرفض عند submit).
+  const me = trpc.auth.me.useQuery();
+  const canWrite = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "products",
+    "FULL",
+    ["manager"],
+  );
   const list = trpc.catalog.categoriesAdmin.useQuery();
   const rows = list.data ?? [];
   const sel = useRowSelection<number>();
@@ -175,7 +187,7 @@ export default function Categories() {
             <span className="font-medium">المنتجات</span>، حدّدها، ثم «نقل إلى فئة».
           </>
         }
-        actions={<Button size="sm" onClick={() => openAdd()}><Plus className="size-4" /> إضافة فئة</Button>}
+        actions={canWrite ? <Button size="sm" onClick={() => openAdd()}><Plus className="size-4" /> إضافة فئة</Button> : undefined}
       />
 
       <Card>
@@ -190,6 +202,8 @@ export default function Categories() {
               onChange={(e) => setQuery(e.target.value)}
               placeholder="بحث بالاسم أو الوصف…"
               className="h-8 w-56 pr-8"
+              autoFocus
+              aria-label="بحث في الفئات"
             />
           </div>
         </CardHeader>
@@ -234,7 +248,10 @@ export default function Categories() {
                         {isChild && <CornerDownLeft aria-hidden className="size-3.5 text-muted-foreground shrink-0" />}
                         {c.name}
                         {!isChild && kids.length > 0 && (
-                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                          <span
+                            className="rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                            title="عدد الأقسام الفرعية تحت هذه الفئة"
+                          >
                             {num(kids.length)} فرعية
                           </span>
                         )}
@@ -254,7 +271,10 @@ export default function Categories() {
                       )}
                     </td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${c.isActive ? "badge-status-active" : "badge-status-cancelled"}`}>
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${c.isActive ? "badge-status-active" : "badge-status-cancelled"}`}
+                        title={c.isActive ? "الفئة تظهر في نماذج تصنيف المنتج" : "الفئة مخفيّة عن نماذج تصنيف المنتج — منتجاتها القائمة تبقى فيها"}
+                      >
                         {c.isActive ? "مفعّلة" : "معطّلة"}
                       </span>
                     </td>
@@ -304,7 +324,23 @@ export default function Categories() {
                 <tr><td colSpan={6}><LoadingState /></td></tr>
               )}
               {!list.isLoading && filtered.length === 0 && (
-                <TableEmptyRow colSpan={6} message={query ? "لا فئات مطابقة للبحث." : "لا فئات بعد — أضِف أوّل فئة."} />
+                <TableEmptyRow
+                  colSpan={6}
+                  message={
+                    query ? (
+                      <div className="space-y-2">
+                        <div>لا فئات مطابقة للبحث «{query}».</div>
+                        <Button variant="outline" size="sm" onClick={() => setQuery("")}>
+                          مسح البحث
+                        </Button>
+                      </div>
+                    ) : canWrite ? (
+                      "لا فئات بعد — أضِف أوّل فئة بزرّ «إضافة فئة» أعلاه."
+                    ) : (
+                      "لا فئات بعد."
+                    )
+                  }
+                />
               )}
             </tbody>
           </table>

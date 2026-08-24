@@ -1279,6 +1279,11 @@ export const catalogRouter = router({
   categories: productsReadProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
+    // Codex P2 (٢٤/٨ على PR #758): «معطّلة» يجب أن تعني فعلاً «مخفيّةٌ عن نماذج التصنيف».
+    // كان الاستعلامُ يُعيد كلَّ الفئات بلا فلترٍ، فلمّا تُعطَّل فئةٌ تبقى قابلةً للاختيار في
+    // ProductNew/ServiceForm/BundleForm/SimpleProductForm/Inventory ⇒ الشرح يكذبُ على المدير.
+    // فلترُ `isActive=true` هنا وحده يُصلح كلَّ المستهلكين. الفئاتُ الفرعيةُ المعطَّلة كذلك
+    // (المعنى واحد). شاشةُ الإدارة (`categoriesAdmin`) تظلّ تُظهر الكلَّ بالطبع.
     return db
       .select({
         id: categories.id,
@@ -1286,6 +1291,7 @@ export const catalogRouter = router({
         parentId: categories.parentId,
       })
       .from(categories)
+      .where(eq(categories.isActive, true))
       .orderBy(asc(categories.sortOrder), asc(categories.name));
   }),
 
