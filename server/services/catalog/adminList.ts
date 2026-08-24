@@ -34,6 +34,9 @@ export interface AdminProductRow {
   isCustomizable: boolean;
   isService: boolean;
   showInReception: boolean;
+  // ٢٤/٨ — إكمال شريحة PR #755/#757: وسم رؤية شبكة كاشير الطباعة يخرج من `products.showInPrintPos`،
+  // ويظهر في التصدير الإداريّ ليعرف المدير أيّ منتجاته تظهر هناك دون فتح كل واحد.
+  showInPrintPos: boolean;
   isBundle: boolean;
   isConsignment: boolean;
   consignorId: number | null;
@@ -156,6 +159,7 @@ export async function listProductsAdmin(
       isCustomizable: products.isCustomizable,
       isService: products.isService,
       showInReception: products.showInReception,
+      showInPrintPos: products.showInPrintPos,
       isBundle: products.isBundle,
       isConsignment: products.isConsignment,
       consignorId: products.consignorId,
@@ -279,6 +283,7 @@ export async function listProductsAdmin(
       isCustomizable: !!r.isCustomizable,
       isService: !!r.isService,
       showInReception: !!r.showInReception,
+      showInPrintPos: !!r.showInPrintPos,
       isBundle: !!r.isBundle,
       isConsignment: !!r.isConsignment,
       consignorId: includeSensitivePrices && r.consignorId != null ? Number(r.consignorId) : null,
