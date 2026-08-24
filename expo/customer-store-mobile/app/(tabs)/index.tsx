@@ -50,7 +50,6 @@ export default function HomeScreen() {
     });
   }, [homeCategoryId, homeSort, products]);
   const catalogState = catalogDisplayState(homeProducts, loading, error);
-  const newProducts = products.slice(0, 6);
   const quickMatches = useMemo(() => {
     const clean = debouncedQuery.trim().toLocaleLowerCase("ar");
     if (clean.length < 2) return [];

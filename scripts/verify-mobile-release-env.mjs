@@ -659,6 +659,10 @@ function verifySourceContract() {
     "INTEGRATIONS_ENCRYPTION_KEY_SHA256=",
     "HR_DEVICE_BRIDGE=1",
     "HR_DEVICE_LEGACY_IDENTITY_MIGRATION=0",
+    // App Links للتطبيق الأصيل — إن غاب المفتاح، wellKnown يخدم بصمة EAS-dev فتنكسر App Links
+    // لكلّ عميل Play. راجع expo/customer-store-mobile/docs/erp-followups.md § ك-٢.
+    "STOREFRONT_ANDROID_PACKAGE=online.alarabiya.customerstore",
+    "STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS=",
   ]) {
     if (!productionEnvTemplate.includes(declaration)) fail("production environment template is incomplete");
   }
@@ -913,6 +917,26 @@ async function verifyReleaseEnvironment() {
   validateDeviceIdentityBindings(process.env.HR_DEVICE_IDENTITY_BINDINGS?.trim() ?? "", bridgeSecret);
   if (requireText("ALRUEYA_PROD_BASE_URL", { max: 2048 }).replace(/\/$/, "") !== expected.productionBaseUrl) {
     fail("ALRUEYA_PROD_BASE_URL does not match the approved production endpoint");
+  }
+  // App Links للتطبيق الأصيل expo/customer-store-mobile — بلا هذه البصمة، /.well-known/assetlinks.json
+  // يخدم بصمة EAS-dev المدمجة في wellKnown.ts، فApp Links على كلّ عميل Play يفتح Chrome بدل التطبيق.
+  // البصمة تُقرأ من Play Console → Setup → App integrity → App signing → SHA-256.
+  const storefrontFingerprintsRaw = requireText("STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS", { max: 8192 });
+  const storefrontFingerprints = storefrontFingerprintsRaw
+    .split(",")
+    .map((entry) => entry.trim().replace(/:/g, ""))
+    .filter(Boolean);
+  if (storefrontFingerprints.length === 0) {
+    fail("STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS is required for production storefront App Links");
+  }
+  for (const fingerprint of storefrontFingerprints) {
+    if (!/^[0-9a-fA-F]{64}$/.test(fingerprint)) {
+      fail("STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS must be one or more SHA-256 hex fingerprints");
+    }
+  }
+  const storefrontPackage = requireText("STOREFRONT_ANDROID_PACKAGE", { max: 255 });
+  if (storefrontPackage !== "online.alarabiya.customerstore") {
+    fail("STOREFRONT_ANDROID_PACKAGE must match the approved storefront applicationId");
   }
   if (!await verifyFirebaseCredentialExchange(serviceAccount, firebasePrivateKey)) {
     fail("FCM service-account OAuth credential exchange failed");

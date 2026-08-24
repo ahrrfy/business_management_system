@@ -28,7 +28,7 @@ import { verifyStorefrontTurnstile } from "../services/storefrontTurnstile";
 import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
-import { claimFirebaseStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
+import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
 import { listStorefrontProductReviews, submitStorefrontProductReview } from "../services/storefrontProductReviewService";
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
@@ -94,10 +94,30 @@ export const storefrontRouter = router({
     .input(z.object({ firebaseIdToken: z.string().trim().min(100).max(8_000), displayName: z.string().trim().min(2).max(120) }))
     .mutation(({ input }) => claimFirebaseStorefrontCustomer(input)),
 
-  /** رصيد الولاء والقسائم الشخصية بعد تحقق الجلسة الموقعة فقط؛ لا تقبل هاتفاً يرسله التطبيق. */
+  /**
+   * @deprecated نداءُ GET يترك JWT في `?input=...` فيسجَّل في nginx access.log على VPS مشترك.
+   * الاستعمالُ المستقبليّ يجب أن يذهب إلى `customerBenefitsPrivate` (POST body).
+   * نُبقيه مؤقّتاً لتوافق البُنى المنشورة سابقاً على أجهزة المختبِرين — يُحذَف بعد نافذة نشر
+   * تكفي لتبديل جميع الحُزَم (Play Internal → Play Production).
+   * راجع مراجعة Codex P2 (نافذة التوافق) و docs/erp-followups.md § ت-٣.
+   */
   customerBenefits: storefrontPublicReadProcedure
     .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
     .query(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
+
+  /**
+   * رصيد الولاء والقسائم الشخصية بعد تحقق الجلسة الموقعة فقط؛ لا تقبل هاتفاً يرسله التطبيق.
+   *
+   * لماذا mutation لا query؟ نستعمل tRPC POST كي يبقى customerSessionToken (JWT بعمر ٧ أيّام)
+   * في جسم الطلب، لا في `?input=...`. VPS Hostinger مشترك مع أودو/سراج، وnginx access.log
+   * يسجّل الـURL كاملاً لكلّ طلب — كان الرمز يظهر مع كلّ استعلام رصيد. التغيير آمن دلالياً:
+   * الإجراء قراءةٌ محضة بلا آثار جانبيّة (لا كتابة، تُخزَّن نتيجته بـcacheTtlMs في العميل).
+   * مسارٌ جديد لا استبدال ⇒ التوافق مع البُنى المنشورة القديمة يبقى (راجع customerBenefits أعلاه).
+   * راجع expo/customer-store-mobile/docs/erp-followups.md § ت-٣.
+   */
+  customerBenefitsPrivate: storefrontPublicWriteProcedure
+    .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
+    .mutation(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
 
   /** كتالوج المتجر: فلترة فئة + بحث نصّي + صفحات متسلسلة بلا اقتطاع صامت. */
   catalog: publicProcedure
@@ -140,8 +160,11 @@ export const storefrontRouter = router({
       rating: z.number().int().min(1).max(5),
       comment: z.string().trim().min(8).max(1_000),
     }))
+    // requireActiveStorefrontCustomer بدل verifyStorefrontCustomerSession وحده: يفحص isActive
+    // ومطابقة الهاتف بلحظة النشر — عميلٌ عُطِّل حسابه أو غيّر هاتفه لا يجوز أن ينشر مراجعةً بجلسته القديمة.
+    // راجع expo/customer-store-mobile/docs/erp-followups.md § ت-١٧.
     .mutation(async ({ input }) => submitStorefrontProductReview({
-      customerId: (await verifyStorefrontCustomerSession(input.customerSessionToken)).customerId,
+      customerId: (await requireActiveStorefrontCustomer(input.customerSessionToken)).customerId,
       productId: input.productId,
       rating: input.rating,
       comment: input.comment,

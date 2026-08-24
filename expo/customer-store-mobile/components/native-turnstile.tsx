@@ -36,18 +36,32 @@ export function NativeTurnstile({ visible, onVerified, onCancel, onFailure }: Na
         domStorageEnabled
         javaScriptEnabled
         onError={failOnce}
+        onHttpError={failOnce}
         onMessage={(event) => {
+          // نتحقّق من أنّ الرسالة صادرة من صفحة التحدّي بالضبط قبل الوثوق بالرمز.
+          // (WebView قد يمرّر رسائل من أيّ مسارٍ يُطابق originWhitelist).
+          if (!event.nativeEvent.url?.startsWith(CHALLENGE_URL)) return;
           const token = extractTurnstileToken(event.nativeEvent.data);
           if (token && !verifiedRef.current) {
             verifiedRef.current = true;
             onVerified(token);
           }
         }}
-        originWhitelist={["https://alarabiya.online/*"]}
+        onShouldStartLoadWithRequest={(request) => {
+          // نضيّق التصفّح داخل النافذة: صفحة التحدّي فقط + endpoints Cloudflare Turnstile.
+          // أيّ ملاحة إلى مسارٍ آخر حتى ضمن alarabiya.online = محاولة توسيع سطح الهجوم.
+          return (
+            request.url.startsWith(CHALLENGE_URL) ||
+            request.url.startsWith("https://challenges.cloudflare.com/") ||
+            request.url.startsWith("https://static.cloudflareinsights.com/")
+          );
+        }}
+        originWhitelist={[CHALLENGE_URL, "https://challenges.cloudflare.com/*"]}
         source={{ uri: CHALLENGE_URL }}
         style={styles.webview}
-        thirdPartyCookiesEnabled
-        sharedCookiesEnabled
+        // كوكيز التحدّي معزولة عن كوكيز التطبيق. Cloudflare Turnstile لا يحتاج جلسة مشتركة.
+        thirdPartyCookiesEnabled={false}
+        sharedCookiesEnabled={false}
         userAgent="Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36"
       />
     </View>

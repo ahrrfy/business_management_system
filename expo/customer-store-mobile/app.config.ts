@@ -68,22 +68,12 @@ const config: ExpoConfig = {
     intentFilters: [
       {
         action: "VIEW",
-        autoVerify: false,
-        data: [
-          {
-            scheme: env.scheme,
-          },
-        ],
-        category: ["BROWSABLE", "DEFAULT"],
-      },
-      {
-        action: "VIEW",
         autoVerify: true,
         data: [
           {
             scheme: "https",
             host: "alarabiya.online",
-            pathPrefix: "/s/w",
+            pathPrefix: "/s/w/",
           },
         ],
         category: ["BROWSABLE", "DEFAULT"],
@@ -105,20 +95,9 @@ const config: ExpoConfig = {
     "expo-router",
     "expo-secure-store",
     "@react-native-firebase/app",
+    "@react-native-firebase/app-check",
     "@react-native-firebase/auth",
-    [
-      "expo-audio",
-      {
-        microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone.",
-      },
-    ],
-    [
-      "expo-video",
-      {
-        supportsBackgroundPlayback: true,
-        supportsPictureInPicture: true,
-      },
-    ],
+    "@react-native-firebase/crashlytics",
     [
       "expo-splash-screen",
       {
@@ -143,8 +122,8 @@ const config: ExpoConfig = {
       "expo-build-properties",
       {
         android: {
-          buildArchs: ["armeabi-v7a", "arm64-v8a"],
-          minSdkVersion: 24,
+          buildArchs: ["arm64-v8a"],
+          minSdkVersion: 26,
         },
         ios: {
           useFrameworks: "dynamic",

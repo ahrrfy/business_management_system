@@ -20,7 +20,7 @@ export function IraqiPhoneInput({ value, onChangeText, editable = true, accessib
         accessibilityLabel={accessibilityLabel}
         editable={editable}
         keyboardType="phone-pad"
-        maxLength={11}
+        maxLength={20}
         onChangeText={(next) => onChangeText(canonicalIraqiLocalPhone(next))}
         placeholder="7XXXXXXXXX"
         placeholderTextColor="#8A9992"

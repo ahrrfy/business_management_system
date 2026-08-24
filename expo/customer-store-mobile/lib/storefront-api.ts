@@ -190,6 +190,29 @@ function delay(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
+// نميّز مصدر الفشل حتى تعرض الواجهة رسالةً قابلة للفهم بدل نصٍّ تقنيٍّ مبهم.
+// TypeError("Network request failed") = انقطاع اتصال · AbortError = مهلة/إلغاء يدويّ · HTTP status = رفض خادميّ.
+export function classifyNetworkError(error: unknown): { kind: "OFFLINE" | "TIMEOUT" | "SERVER" | "CLIENT" | "UNKNOWN"; message: string } {
+  if (error instanceof Error) {
+    if (error.name === "AbortError") return { kind: "TIMEOUT", message: "استغرقت العملية وقتاً أطول من المتوقّع. تحقّق من الاتصال ثم حاول مرة أخرى." };
+    // React Native fetch يرمي TypeError("Network request failed") عند غياب الاتصال بالكامل.
+    if (error.name === "TypeError" && /network request failed|failed to fetch/i.test(error.message)) {
+      return { kind: "OFFLINE", message: "لا يوجد اتصال بالإنترنت. تأكّد من الشبكة ثم حاول مرة أخرى." };
+    }
+    // الرسائل التي أنشأها storefrontQuery نفسها تحمل رمز الحالة بين قوسَين.
+    const httpMatch = /\((\d{3})\)/.exec(error.message);
+    if (httpMatch) {
+      const status = Number(httpMatch[1]);
+      if (status >= 500) return { kind: "SERVER", message: "المتجر يواجه ضغطاً حالياً. حاول بعد دقيقة." };
+      if (status === 429) return { kind: "SERVER", message: "طلباتٌ كثيرة في وقتٍ قصير. انتظر قليلاً ثم أعِد المحاولة." };
+      if (status === 401 || status === 403) return { kind: "CLIENT", message: "الجلسة انتهت. أعِد التحقّق من هاتفك ثم حاول مرة أخرى." };
+      if (status === 400 || status === 422) return { kind: "CLIENT", message: error.message };
+    }
+    return { kind: "UNKNOWN", message: error.message };
+  }
+  return { kind: "UNKNOWN", message: "حدث خطأٌ غير متوقّع." };
+}
+
 function shouldRetry(error: unknown) {
   return error instanceof Error && error.name !== "AbortError";
 }
@@ -388,8 +411,17 @@ export function claimStorefrontFirebaseCustomer(input: { firebaseIdToken: string
   return storefrontMutation<StorefrontCustomerSession>("storefront.claimFirebaseCustomer", input);
 }
 
+/**
+ * رصيد الولاء والقسائم. **mutation لا query** ⇒ التوكن ينتقل في body POST بدل ?input=،
+ * فلا يظهر في nginx access.log على VPS المشترك (راجع docs/erp-followups.md § ت-٣).
+ * نداءٌ خالٍ من التأثير الجانبيّ رغم كونه mutation دلالياً.
+ *
+ * ملاحظة توافقٍ خلفيّ: الخادم يُبقي `storefront.customerBenefits` (query) كما كان لصالح
+ * البُنى المنشورة سابقاً. البناءُ الجديد يستدعي `customerBenefitsPrivate` مباشرةً ⇒ التوكن
+ * لا يمرّ في URL على أيّ عميلٍ حديث. راجع مراجعة Codex P2 (نافذة التوافق).
+ */
 export function getStorefrontCustomerBenefits(customerSessionToken: string) {
-  return storefrontQuery<StorefrontCustomerBenefits>("storefront.customerBenefits", { customerSessionToken }, { retries: 0, cacheTtlMs: 10_000 });
+  return storefrontMutation<StorefrontCustomerBenefits>("storefront.customerBenefitsPrivate", { customerSessionToken });
 }
 
 export function getStorefrontProductReviews(productId: number) {
@@ -398,6 +430,30 @@ export function getStorefrontProductReviews(productId: number) {
 
 export function submitStorefrontProductReview(input: { customerSessionToken: string; productId: number; rating: number; comment: string }) {
   return storefrontMutation<{ ok: true; status: "PENDING" }>("storefront.submitProductReview", input);
+}
+
+/**
+ * حذف حساب العميل نهائيّاً بعد تأكيد OTP جديد. مطلوبٌ لسياسة Google Play (٢٠٢٤+).
+ * يستدعي `storefront.deleteMe` على ERP الذي:
+ *   - يفكّ Firebase ID token الجديد (يضمن التحقّق الحيّ لا اعتماد جلسةٍ قديمة)
+ *   - يبمّم بيانات العميل (phone → hash، name → «عميلٌ محذوف»، address → NULL)
+ *   - يزيد session_version لإبطال كلّ الجلسات القائمة
+ *   - يحفظ الطلبات نفسها لأغراض المحاسبة (٥ سنوات) لكن يفكّ ربطها بالهويّة
+ *
+ * ⚠️ الطرف الخادميّ غير مبنيّ بعدُ — يُنجَز في جلسة `pnpm session:new erp-mobile-followups`
+ * (راجع docs/erp-followups.md). حتى يُنجَز، هذا الاستدعاء سيُرجع 404 والواجهة تعرض
+ * الرسالة الوسيطة أدناه بلا crash.
+ */
+export async function deleteMyStorefrontAccount(input: { firebaseIdToken: string }) {
+  try {
+    return await storefrontMutation<{ ok: true; deletedAt: string }>("storefront.deleteMe", input);
+  } catch (error) {
+    const classified = classifyNetworkError(error);
+    if (classified.message.includes("(404)") || classified.message.includes("(501)")) {
+      throw new Error("مسار حذف الحساب قيد التجهيز. تواصل مع دعم المكتبة لطلب الحذف بريدياً حتى يُتاح الزرّ خلال أيّامٍ قليلة.");
+    }
+    throw error;
+  }
 }
 
 /** ينشئ مرجعاً عاماً عابراً للمنتجات فقط، من دون هوية صاحب القائمة أو أسعاره المتغيرة. */
