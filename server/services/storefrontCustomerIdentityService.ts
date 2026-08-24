@@ -166,17 +166,34 @@ export async function verifyStorefrontCustomerSession(token: string): Promise<{ 
  * لا يزال يحمل توكناً ساري التوقيع، والتوقيع بلا فحص حالة يمنحه صلاحيّة الكتابة.
  * `storefrontCustomerBenefits` يفعل الفحص داخلياً بالفعل (اتساقاً)، لكنّ الـwrapper هذا يوحّد النمط.
  * راجع expo/customer-store-mobile/docs/erp-followups.md § ت-١٧.
+ *
+ * ⚠️ P2 مراجعة Codex: `resolveCustomer` يقبل مطابقةً على أيٍّ من phone/phone2/phone3/whatsapp،
+ * فيلزم أن يقارن هذا الحارس أيضاً على الأربعة — وإلّا عميلٌ مُدخَلٌ بواحدٍ من الثانوية يُرفض
+ * هنا رغم أنّه صحيحٌ، ومسار مراجعة المنتج يتعطّل له خصوصاً.
  */
 export async function requireActiveStorefrontCustomer(token: string): Promise<{ customerId: number; firebaseUid: string; phone: string }> {
   const session = await verifyStorefrontCustomerSession(token);
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
   const customer = (await db
-    .select({ id: customers.id, phone: customers.phone, isActive: customers.isActive })
+    .select({
+      id: customers.id,
+      phone: customers.phone,
+      phone2: customers.phone2,
+      phone3: customers.phone3,
+      whatsapp: customers.whatsapp,
+      isActive: customers.isActive,
+    })
     .from(customers)
     .where(eq(customers.id, session.customerId))
     .limit(1))[0];
-  if (!customer || customer.isActive === false || canonicalIraqiMobile(customer.phone) !== session.phone) {
+  if (!customer || customer.isActive === false) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "لم تعد جلسة العميل صالحة؛ أعد تحقق الهاتف" });
+  }
+  const phoneCandidates = [customer.phone, customer.phone2, customer.phone3, customer.whatsapp]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .map(canonicalIraqiMobile);
+  if (!phoneCandidates.includes(session.phone)) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "لم تعد جلسة العميل صالحة؛ أعد تحقق الهاتف" });
   }
   return session;

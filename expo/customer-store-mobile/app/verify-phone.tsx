@@ -7,7 +7,7 @@ import { IraqiPhoneInput } from "@/components/iraqi-phone-input";
 import { ScreenContainer } from "@/components/screen-container";
 import { saveVerifiedCustomerSession } from "@/lib/customer-session";
 import { confirmStorefrontPhoneOtp, sendStorefrontPhoneOtp } from "@/lib/firebase-phone-auth";
-import { openLegalPage } from "@/lib/legal-urls";
+import { LEGAL_ENABLED, openLegalPage } from "@/lib/legal-urls";
 import { claimStorefrontFirebaseCustomer } from "@/lib/storefront-api";
 
 export default function VerifyPhoneScreen() {
@@ -70,7 +70,7 @@ export default function VerifyPhoneScreen() {
           <TouchableOpacity accessibilityLabel="تعديل الرقم أو إعادة إرسال الرمز" accessibilityRole="button" disabled={busy} onPress={() => { setStep("PHONE"); setCode(""); }} style={styles.secondary}><Text style={styles.secondaryText}>تعديل الرقم أو إعادة الإرسال</Text></TouchableOpacity>
         </>}
         <View style={styles.note}><MaterialIcons name="lock-outline" size={18} color="#075B4E" /><Text style={styles.noteText}>التحقق مطلوب فقط قبل استخدام النقاط والقسائم الشخصية. تبقى عملية التصفح والشراء الأساسية متاحة دون إنشاء حساب.</Text></View>
-        <TouchableOpacity
+        {LEGAL_ENABLED && <TouchableOpacity
           accessibilityLabel="اقرأ سياسة الخصوصيّة قبل التحقّق"
           accessibilityRole="link"
           activeOpacity={0.7}
@@ -82,7 +82,7 @@ export default function VerifyPhoneScreen() {
         >
           <MaterialIcons color="#075B4E" name="privacy-tip" size={16} />
           <Text style={styles.policyLinkText}>سياسة الخصوصيّة</Text>
-        </TouchableOpacity>
+        </TouchableOpacity>}
       </ScrollView>
       </KeyboardAvoidingView>
     </ScreenContainer>

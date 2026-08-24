@@ -30,18 +30,10 @@ const STOREFRONT_EAS_DEVELOPMENT_SHA256 = "24:6B:73:BE:E1:B5:B7:7F:22:E4:E2:9B:5
  * تُرجعه هذه الاستجابة ⇒ لو استجابت بـEAS-dev، كلّ عميلٍ نهائيّ يرى الرابط يفتح Chrome بدل التطبيق،
  * والفشل صامتٌ لأنّ الاستجابة 200+JSON صحيحان بحدّ ذاتهما. راجع
  * expo/customer-store-mobile/docs/erp-followups.md § ك-٢.
+ *
+ * الحماية مضمَّنةٌ داخل معالج المسار: في production بلا env، نُسقط مدخل storefront وحده
+ * (نُبقي TWA يعمل مستقلاً) — راجع مراجعة Codex P2 على السلوك السابق.
  */
-function assertStorefrontFingerprintsInProduction(source: "env" | "fallback"): void {
-  if (source === "fallback" && process.env.NODE_ENV === "production") {
-    // سبب صريح للتحقيق (ليس رسالة مبهمة): يفشل النشر بلا مسٍّ لأيّ حزمة عميل.
-    // إعادة الحياة: ضبط STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS في .env على القيمة من
-    // Play Console → Setup → App integrity → App signing → SHA-256.
-    throw new Error(
-      "STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS is required in production — refusing to serve EAS-dev fingerprint",
-    );
-  }
-}
-
 export function registerWellKnown(app: Express): void {
   app.get("/.well-known/assetlinks.json", (_req: Request, res: Response) => {
     const pkg = process.env.TWA_ANDROID_PACKAGE?.trim();
@@ -51,21 +43,23 @@ export function registerWellKnown(app: Express): void {
       .filter(Boolean);
     const storefrontPkg = process.env.STOREFRONT_ANDROID_PACKAGE?.trim() || STOREFRONT_ANDROID_PACKAGE;
     const storefrontEnv = process.env.STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS?.trim();
-    const storefrontFingerprintSource: "env" | "fallback" = storefrontEnv ? "env" : "fallback";
-    try {
-      assertStorefrontFingerprintsInProduction(storefrontFingerprintSource);
-    } catch (error) {
-      // يفشل مفتوحاً بـ500 على مسار storefront فقط (مسار TWA يبقى يعمل إن ضُبط). لا تكشف السبب للعامّة.
-      const reason = error instanceof Error ? error.message : "storefront assetlinks misconfigured";
-      // eslint-disable-next-line no-console -- تنبيه تشغيليّ محدود لسبب فشل النشر
-      console.error("[wellKnown] refusing storefront assetlinks:", reason);
-      res.status(500).type("application/json").send(JSON.stringify({ error: "storefront assetlinks configuration error" }));
-      return;
+    // P2 مراجعة Codex: نُقصر الحرمان على مدخل storefront فقط — TWA مدخلٌ مستقلٌّ ولا
+    // يُعقل أن تسقط استجابة أصلٍ صحيحة كليّاً لأنّ سبيلاً آخر ضمنها غير مُعدّ.
+    // منطق التحقّق: إن كنّا في production واستُعمل fallback بصمة EAS-dev، نُسقط
+    // المدخل الـstorefront بصمتٍ مسجَّلٍ، ونستمرّ في خدمة TWA إن كان مُعدّاً.
+    const storefrontDegraded = process.env.NODE_ENV === "production" && !storefrontEnv;
+    if (storefrontDegraded) {
+      // eslint-disable-next-line no-console -- تنبيه تشغيليّ محدود لسبب حذف المدخل
+      console.error(
+        "[wellKnown] omitting storefront entry: STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS missing in production",
+      );
     }
-    const storefrontFingerprints = (storefrontEnv ?? STOREFRONT_EAS_DEVELOPMENT_SHA256)
-      .split(",")
-      .map((s) => s.trim().toUpperCase())
-      .filter(Boolean);
+    const storefrontFingerprints = storefrontDegraded
+      ? []
+      : (storefrontEnv ?? STOREFRONT_EAS_DEVELOPMENT_SHA256)
+          .split(",")
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean);
 
     if ((!pkg || fingerprints.length === 0) && (!storefrontPkg || storefrontFingerprints.length === 0)) {
       res

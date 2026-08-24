@@ -5,7 +5,7 @@ import { ActivityIndicator, Alert, Platform, StyleSheet, Switch, Text, Touchable
 
 import { ScreenContainer } from "@/components/screen-container";
 import { disableMarketingPush, enableMarketingPush, isMarketingPushEnabled } from "@/lib/customer-notifications";
-import { openLegalPage } from "@/lib/legal-urls";
+import { LEGAL_ENABLED, openLegalPage } from "@/lib/legal-urls";
 
 export default function NotificationPreferencesScreen() {
   const [enabled, setEnabled] = useState(false);
@@ -42,7 +42,7 @@ export default function NotificationPreferencesScreen() {
         <View style={styles.card}><View style={styles.row}><View style={styles.rowText}><Text style={styles.rowTitle}>عروض وتخفيضات مكتبة العربية</Text><Text style={styles.rowSubtitle}>تنبيهات اختيارية عن التخفيضات والبنرات والمنتجات المناسبة.</Text></View>{loading ? <ActivityIndicator color="#075B4E" /> : <Switch value={enabled} onValueChange={toggleMarketing} disabled={updating || Platform.OS === "web"} trackColor={{ false: "#D6DDD9", true: "#A8D8C8" }} thumbColor={enabled ? "#075B4E" : "#F7F7F7"} />}</View></View>
         <View style={styles.info}><MaterialIcons name="local-shipping" size={20} color="#075B4E"/><Text style={styles.infoText}>إشعارات حالة الطلب مهمة للتوصيل والمتابعة، أما الرسائل التسويقية فهي اختيارية ويمكن إيقافها في أي وقت.</Text></View>
         <View style={styles.info}><MaterialIcons name="privacy-tip" size={20} color="#075B4E"/><Text style={styles.infoText}>يقتصر رابط الإشعار على صفحات التطبيق الداخلية، ولا ينقل رقم هاتفك أو رصيدك في نص الإشعار.</Text></View>
-        <TouchableOpacity
+        {LEGAL_ENABLED && <TouchableOpacity
           accessibilityLabel="اقرأ سياسة الخصوصيّة لبيانات الإشعارات"
           accessibilityRole="link"
           activeOpacity={0.7}
@@ -54,7 +54,7 @@ export default function NotificationPreferencesScreen() {
         >
           <MaterialIcons color="#075B4E" name="open-in-new" size={16} />
           <Text style={styles.policyLinkText}>سياسة الخصوصيّة وبيانات الإشعارات</Text>
-        </TouchableOpacity>
+        </TouchableOpacity>}
       </View>
     </ScreenContainer>
   );

@@ -6,7 +6,7 @@ import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, Toucha
 import { ScreenContainer } from "@/components/screen-container";
 import { clearVerifiedCustomerSession } from "@/lib/customer-session";
 import { confirmStorefrontPhoneOtp, sendStorefrontPhoneOtp } from "@/lib/firebase-phone-auth";
-import { openLegalPage, type LegalPage } from "@/lib/legal-urls";
+import { LEGAL_ENABLED, openLegalPage, type LegalPage } from "@/lib/legal-urls";
 import { deleteMyStorefrontAccount, useStorefrontSettings } from "@/lib/storefront-api";
 import { useWishlist } from "@/lib/wishlist-context";
 
@@ -61,46 +61,51 @@ export default function AccountScreen() {
     if (deleting) return;
     setDeleting(true);
     try {
-      // TODO(erp-followups): يفترض أن الشاشة القادمة تفتح إدخال رمز OTP للتحقّق ثمّ تستدعي deleteMyStorefrontAccount.
-      // حالياً — لأن مسار حذف الحساب الخادميّ غير مبنيٍّ بعدُ (docs/erp-followups.md) — نُظهر رسالةً مؤقّتة.
-      // بعد إنجاز ERP: استبدل بجلسة verify-phone تدفع نتيجتها إلى deleteMyStorefrontAccount({ firebaseIdToken }).
-      await sendStorefrontPhoneOtp("");
-      // في الوضع الفعليّ:
+      // ⚠️ P2 مراجعة Codex: مسار حذف الحساب الخادميّ (storefront.deleteMe) غير مبنيٍّ بعدُ —
+      // راجع docs/erp-followups.md § F-٨. لا نستدعي sendStorefrontPhoneOtp("") لأنّ
+      // canonicalIraqiMobile يرفض النصّ الفارغ فوراً قبل ملامسة Firebase، ويُظهر للعميل
+      // رسالةَ «هاتف غير صحيح» المضلِّلة بعد أن أعلنّا له أنّ رمزاً سيصله. الحلّ الشفّاف: عرضُ
+      // الرسالة المؤقّتة مباشرةً حتى يُنجَز endpoint، ثمّ نحوّل هذا المسار إلى جلسة verify-phone.
+      //
+      // المسار الحيّ بعد إنجاز ERP:
       //   const otp = await promptOtp();
       //   const verified = await confirmStorefrontPhoneOtp(otp);
       //   await deleteMyStorefrontAccount({ firebaseIdToken: verified.firebaseIdToken });
       //   await clearVerifiedCustomerSession();
       //   router.replace("/" as never);
-      Alert.alert("قيد التجهيز", "مسار حذف الحساب سيُفعَّل قريباً. حتى ذلك الحين، تواصل مع دعم المكتبة لطلب الحذف يدوياً.");
-    } catch (error) {
-      Alert.alert("تعذّر بدء الحذف", error instanceof Error ? error.message : "حاول لاحقاً.");
+      Alert.alert(
+        "قيد التجهيز",
+        "مسار حذف الحساب سيُفعَّل قريباً. حتى ذلك الحين، تواصل مع دعم المكتبة عبر واتساب لطلب الحذف يدوياً — يتمّ خلال ٧ أيّامٍ من طلبك.",
+      );
     } finally {
       setDeleting(false);
     }
   };
   // نضمّن hooks حتى لا يحذفها مُجمِّع Metro؛ يستعملها المسار الحيّ بعد نشر ERP.
-  void confirmStorefrontPhoneOtp; void deleteMyStorefrontAccount; void clearVerifiedCustomerSession;
+  void sendStorefrontPhoneOtp; void confirmStorefrontPhoneOtp; void deleteMyStorefrontAccount; void clearVerifiedCustomerSession;
   return <ScreenContainer className="flex-1" containerClassName="bg-background"><ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}><Text style={styles.title}>حسابي</Text><View style={styles.profile}><View style={styles.avatar}><MaterialIcons color="#FFFFFF" name="person" size={30} /></View><View style={styles.profileText}><Text style={styles.profileTitle}>أهلاً بك في مكتبة العربية</Text><Text style={styles.profileSub}>تابع طلباتك واكتشف مزاياك من مكان واحد</Text></View></View>{settings?.announcement && <View style={styles.announcement}><MaterialIcons color="#A56B10" name="campaign" size={20} /><Text style={styles.announcementText}>{settings.announcement}</Text></View>}<Text style={styles.section}>مزايا العميل</Text><View style={styles.loyalty}><View style={styles.loyaltyTop}><View style={styles.loyaltyIcon}><MaterialIcons color="#0E806A" name="stars" size={27} /></View><View style={styles.loyaltyText}><Text style={styles.loyaltyTitle}>برنامج ولاء مكتبة العربية</Text><Text style={styles.loyaltySub}>تحقق برقم هاتفك لتظهر نقاطك والقسائم، وتُحتسب النقاط بعد اكتمال الطلبات.</Text></View></View><TouchableOpacity activeOpacity={0.85} onPress={() => router.push("/loyalty" as never)} style={styles.loyaltyButton}><Text style={styles.loyaltyButtonText}>رصيدي وقسائمي</Text><MaterialIcons color="#0E806A" name="arrow-back" size={17} /></TouchableOpacity></View><Text style={styles.section}>الخدمات</Text><View style={styles.card}><TouchableOpacity activeOpacity={0.8} onPress={() => router.push("/orders" as never)} style={[styles.action, styles.divider]}><MaterialIcons color="#0E806A" name="local-shipping" size={23} /><View style={styles.actionText}><Text style={styles.actionTitle}>طلباتي</Text><Text style={styles.actionSub}>تتبع طلبك برقم الطلب ورقم الهاتف</Text></View><MaterialIcons color="#94A19B" name="chevron-left" size={22} /></TouchableOpacity><TouchableOpacity activeOpacity={0.8} onPress={() => router.push("/wishlist" as never)} style={[styles.action, styles.divider]}><MaterialIcons color="#F05D53" name="favorite" size={23} /><View style={styles.actionText}><Text style={styles.actionTitle}>قائمة رغباتي</Text><Text style={styles.actionSub}>{ids.length ? `${ids.length} منتجاً محفوظاً للعودة إليها` : "احفظ المنتجات التي تود الرجوع إليها"}</Text></View><MaterialIcons color="#94A19B" name="chevron-left" size={22} /></TouchableOpacity><TouchableOpacity activeOpacity={0.8} onPress={() => router.push("/categories" as never)} style={[styles.action, styles.divider]}><MaterialIcons color="#0E806A" name="local-offer" size={23} /><View style={styles.actionText}><Text style={styles.actionTitle}>العروض والمنتجات</Text><Text style={styles.actionSub}>اكتشف العروض المفعّلة من المكتبة</Text></View><MaterialIcons color="#94A19B" name="chevron-left" size={22} /></TouchableOpacity><TouchableOpacity activeOpacity={0.8} onPress={() => router.push("/notification-preferences" as never)} style={[styles.action, styles.divider]}><MaterialIcons color="#0E806A" name="notifications-active" size={23} /><View style={styles.actionText}><Text style={styles.actionTitle}>إشعارات العروض</Text><Text style={styles.actionSub}>تحكم بالعروض والتنبيهات التي توافق على تلقيها</Text></View><MaterialIcons color="#94A19B" name="chevron-left" size={22} /></TouchableOpacity><TouchableOpacity activeOpacity={0.8} onPress={openSupport} style={styles.action}><MaterialIcons color="#0E806A" name="support-agent" size={23} /><View style={styles.actionText}><Text style={styles.actionTitle}>المساعدة والتواصل</Text><Text style={styles.actionSub}>{settings?.whatsappNumber ? "التواصل مباشرة مع فريق المكتبة" : "وسيلة التواصل تضبط من الداشبورد"}</Text></View><MaterialIcons color="#94A19B" name="chevron-left" size={22} /></TouchableOpacity></View><View style={styles.status}><View style={[styles.dot, settings?.isOpen && settings?.orderingEnabled ? styles.openDot : styles.closedDot]} /><Text style={styles.statusText}>{settings?.isOpen && settings?.orderingEnabled ? "المتجر يستقبل الطلبات حالياً" : "حالة استقبال الطلبات تُحدّث من نظام المكتبة"}</Text></View><View style={styles.note}><MaterialIcons color="#0E806A" name="privacy-tip" size={20} /><Text style={styles.noteText}>تستخدم بيانات العميل لإتمام الطلب والتوصيل فقط، ولا تظهر أي صلاحيات أو معلومات إدارية داخل التطبيق.</Text></View>
 
-<Text style={styles.section}>الوثائق القانونيّة</Text>
-<View style={styles.card}>
-  {LEGAL_LINKS.map((link, idx) => (
-    <TouchableOpacity
-      key={link.id}
-      accessibilityLabel={`افتح ${link.label}`}
-      accessibilityRole="link"
-      activeOpacity={0.8}
-      onPress={() => openLegal(link.id, link.label)}
-      style={[styles.action, idx < LEGAL_LINKS.length - 1 && styles.divider]}
-    >
-      <MaterialIcons color="#0E806A" name={link.icon} size={22} />
-      <View style={styles.actionText}>
-        <Text style={styles.actionTitle}>{link.label}</Text>
-      </View>
-      <MaterialIcons color="#94A19B" name="open-in-new" size={18} />
-    </TouchableOpacity>
-  ))}
-</View>
+{LEGAL_ENABLED && <>
+  <Text style={styles.section}>الوثائق القانونيّة</Text>
+  <View style={styles.card}>
+    {LEGAL_LINKS.map((link, idx) => (
+      <TouchableOpacity
+        key={link.id}
+        accessibilityLabel={`افتح ${link.label}`}
+        accessibilityRole="link"
+        activeOpacity={0.8}
+        onPress={() => openLegal(link.id, link.label)}
+        style={[styles.action, idx < LEGAL_LINKS.length - 1 && styles.divider]}
+      >
+        <MaterialIcons color="#0E806A" name={link.icon} size={22} />
+        <View style={styles.actionText}>
+          <Text style={styles.actionTitle}>{link.label}</Text>
+        </View>
+        <MaterialIcons color="#94A19B" name="open-in-new" size={18} />
+      </TouchableOpacity>
+    ))}
+  </View>
+</>}
 
 <Text style={styles.section}>الحساب</Text>
 <TouchableOpacity

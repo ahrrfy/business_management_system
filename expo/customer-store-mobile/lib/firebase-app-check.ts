@@ -12,11 +12,12 @@
  * Expo Go/web/node ⇒ نغلّفه بحيث لا يمنع تحميل بقية التطبيق حين لا يتوفّر.
  */
 
+// نسمح بإعادة المحاولة إن فشل أوّل نداء (شبكة/تهيئة Firebase Auth غير جاهزة بعد)،
+// ولا نُقفل الحالة بـ`initialized = true` قبل نجاح init فعلياً. راجع مراجعة Codex P1.
 let initialized = false;
 
 export async function initFirebaseAppCheck() {
   if (initialized) return;
-  initialized = true;
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports -- gated dynamic native import
@@ -24,7 +25,14 @@ export async function initFirebaseAppCheck() {
     const appCheck = appCheckModule.default ?? appCheckModule;
     if (!appCheck) return;
 
-    const providerFactory = appCheck.newReactNativeFirebaseAppCheckProvider();
+    // ⚠️ P1 من مراجعة Codex: `newReactNativeFirebaseAppCheckProvider()` مُتاح على
+    // **instance** الذي يُعيده `appCheck()` — لا على الوحدة المُصدَّرة `appCheck`
+    // مباشرةً. استدعاؤها على الوحدة يرمي، وcatch الواسع يبتلع الخطأ، وinitialized=true
+    // كان يُبقي App Check معطَّلاً دائماً بلا إعادة محاولة.
+    const instance = typeof appCheck === "function" ? appCheck() : appCheck;
+    if (!instance?.newReactNativeFirebaseAppCheckProvider || !instance.initializeAppCheck) return;
+
+    const providerFactory = instance.newReactNativeFirebaseAppCheckProvider();
     // اختيار المزوّد حسب المنصّة يُبنى داخل @react-native-firebase/app-check:
     //   Android → PlayIntegrity + AppAttestFactory (fallback) في Release
     //   Android debug → SafetyNet DebugProvider (SDK يعرضه)
@@ -34,9 +42,10 @@ export async function initFirebaseAppCheck() {
       apple: { provider: __DEV__ ? "debug" : "deviceCheck", debugToken: undefined },
     });
 
-    const instance = typeof appCheck === "function" ? appCheck() : appCheck;
-    await instance.initializeAppCheck?.({ provider: providerFactory, isTokenAutoRefreshEnabled: true });
+    await instance.initializeAppCheck({ provider: providerFactory, isTokenAutoRefreshEnabled: true });
+    initialized = true;
   } catch {
-    // Native module غير متوفّر (Expo Go/web/node) — تجاهل بصمت.
+    // Native module غير متوفّر (Expo Go/web/node) أو تهيئة Firebase لم تكتمل — نُبقي
+    // `initialized = false` حتى تُتاح إعادة المحاولة من useEffect لاحق (تركيب/إعادة تركيب).
   }
 }

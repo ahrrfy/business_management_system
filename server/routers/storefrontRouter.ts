@@ -95,15 +95,27 @@ export const storefrontRouter = router({
     .mutation(({ input }) => claimFirebaseStorefrontCustomer(input)),
 
   /**
+   * @deprecated نداءُ GET يترك JWT في `?input=...` فيسجَّل في nginx access.log على VPS مشترك.
+   * الاستعمالُ المستقبليّ يجب أن يذهب إلى `customerBenefitsPrivate` (POST body).
+   * نُبقيه مؤقّتاً لتوافق البُنى المنشورة سابقاً على أجهزة المختبِرين — يُحذَف بعد نافذة نشر
+   * تكفي لتبديل جميع الحُزَم (Play Internal → Play Production).
+   * راجع مراجعة Codex P2 (نافذة التوافق) و docs/erp-followups.md § ت-٣.
+   */
+  customerBenefits: storefrontPublicReadProcedure
+    .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
+    .query(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
+
+  /**
    * رصيد الولاء والقسائم الشخصية بعد تحقق الجلسة الموقعة فقط؛ لا تقبل هاتفاً يرسله التطبيق.
    *
    * لماذا mutation لا query؟ نستعمل tRPC POST كي يبقى customerSessionToken (JWT بعمر ٧ أيّام)
    * في جسم الطلب، لا في `?input=...`. VPS Hostinger مشترك مع أودو/سراج، وnginx access.log
    * يسجّل الـURL كاملاً لكلّ طلب — كان الرمز يظهر مع كلّ استعلام رصيد. التغيير آمن دلالياً:
    * الإجراء قراءةٌ محضة بلا آثار جانبيّة (لا كتابة، تُخزَّن نتيجته بـcacheTtlMs في العميل).
+   * مسارٌ جديد لا استبدال ⇒ التوافق مع البُنى المنشورة القديمة يبقى (راجع customerBenefits أعلاه).
    * راجع expo/customer-store-mobile/docs/erp-followups.md § ت-٣.
    */
-  customerBenefits: storefrontPublicWriteProcedure
+  customerBenefitsPrivate: storefrontPublicWriteProcedure
     .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
     .mutation(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
 

@@ -13,13 +13,15 @@ import { governorates } from "@/shared/governorates";
 import { normalizeIraqiPhone } from "@/lib/iraqi-phone";
 
 export default function CheckoutScreen() {
-  const { clearCart, itemCount, lines } = useCart();
+  const { clearCart, isRestoring, itemCount, lines } = useCart();
   // سلّةٌ فارغةٌ عند الدخول ⇒ إعادة توجيهٍ سلسة بدل نموذجٍ يفشل عند الضغط برسالةٍ مبهمة.
+  // ⚠️ P2 مراجعة Codex: يجب انتظار isRestoring=false — CartProvider يبدأ بـlines=[] أثناء
+  // استعادة AsyncStorage، فتوجيهٌ فوريّ يطرد العميل العائد من checkout قبل استعادة سلّته.
   useEffect(() => {
-    if (lines.length === 0) {
+    if (!isRestoring && lines.length === 0) {
       router.replace("/(tabs)/cart" as never);
     }
-  }, [lines.length]);
+  }, [isRestoring, lines.length]);
   const [name, setName] = useState("");
   const [phoneLocal, setPhoneLocal] = useState("");
   const [address, setAddress] = useState("");

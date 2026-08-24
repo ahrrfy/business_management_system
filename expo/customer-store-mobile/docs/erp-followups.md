@@ -4,17 +4,21 @@
 >
 > الأصل: تدقيق `wf_4c973b32-831` — راجع `scratchpad/expo-store-audit.html`.
 
-## ت-٣ / بند م٢ #٨ — `customerSessionToken` في query string لطلب GET
+## ت-٣ — customerBenefits: query→mutation (✅ نُفِّذ + إبقاء توافق خلفيّ)
 
-**الموقع**: [server/routers/storefrontRouter.ts:97-99](../../../server/routers/storefrontRouter.ts#L97) — إجراء `customerBenefits.query`، و[lib/storefront-api.ts:210-211,392](../lib/storefront-api.ts#L210) (جهة العميل، للتحديث بعد تحديث العقد).
+**الحالة**: **مُنجَز** في commit `d25da9c4` مع طبقةِ توافقٍ خلفيّ بعد مراجعة Codex.
 
-**المشكلة**: JWT بعمر ٧ أيّام يُرسَل في `?input=...` لطلب GET. nginx access.log على VPS Hostinger مشترك مع أودو/سراج يسجّل الـURL كاملاً، والتوكن يظهر مع كل استعلام رصيد.
+**ما تمّ**:
+- **الخادم**: `customerBenefits` القديم بقي `.query()` (مع علامة `@deprecated`) — البُنى المنشورة سابقاً على أجهزة المختبِرين لا تتعطّل.
+- **مسارٌ جديد `customerBenefitsPrivate`** `.mutation()` — البُنى الجديدة تستدعيه ⇒ التوكن في POST body لا `?input=...`.
+- **العميل**: `lib/storefront-api.ts` يستدعي المسار الجديد.
 
-**الإصلاح المقترح** (على جانب الخادم):
-- **الخيار الأصحّ**: حوّل `storefront.customerBenefits` من `.query()` إلى `.mutation()` — الرمز ينتقل إلى body، لا يُسجَّل في access.log.
-- **البديل**: أبقِه query لكن أرسل الرمز في header `Authorization: Bearer` — يحتاج تحديث client fetch call ليمرّر header عبر `httpLink.headers`.
+**متبقٍّ** (نافذة الرولاوت):
+- بعد اكتمال نشر Play Production والتأكّد من تحديث كلّ التركيبات النشطة، **احذف** `customerBenefits` القديم من `storefrontRouter.ts` (اترك `customerBenefitsPrivate` وحده).
+- مؤشّر آمن: `grep customerBenefits /var/log/nginx/access.log*` = صفر مطابقات لمدّة أسبوعَين متتاليَين.
+- ثمّ commit جديد بتنظيف endpoint القديم + تحديث `authz-inventory`.
 
-**تحقّق**: `grep customerSessionToken /var/log/nginx/access.log*` بعد التحديث = صفر مطابقات.
+**قياس على nginx**: `grep customerSessionToken /var/log/nginx/access.log*` بعد الرولاوت = صفر مطابقات (البُنى الجديدة تستعمل POST body).
 
 ---
 

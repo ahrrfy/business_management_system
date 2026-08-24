@@ -415,9 +415,13 @@ export function claimStorefrontFirebaseCustomer(input: { firebaseIdToken: string
  * رصيد الولاء والقسائم. **mutation لا query** ⇒ التوكن ينتقل في body POST بدل ?input=،
  * فلا يظهر في nginx access.log على VPS المشترك (راجع docs/erp-followups.md § ت-٣).
  * نداءٌ خالٍ من التأثير الجانبيّ رغم كونه mutation دلالياً.
+ *
+ * ملاحظة توافقٍ خلفيّ: الخادم يُبقي `storefront.customerBenefits` (query) كما كان لصالح
+ * البُنى المنشورة سابقاً. البناءُ الجديد يستدعي `customerBenefitsPrivate` مباشرةً ⇒ التوكن
+ * لا يمرّ في URL على أيّ عميلٍ حديث. راجع مراجعة Codex P2 (نافذة التوافق).
  */
 export function getStorefrontCustomerBenefits(customerSessionToken: string) {
-  return storefrontMutation<StorefrontCustomerBenefits>("storefront.customerBenefits", { customerSessionToken });
+  return storefrontMutation<StorefrontCustomerBenefits>("storefront.customerBenefitsPrivate", { customerSessionToken });
 }
 
 export function getStorefrontProductReviews(productId: number) {
