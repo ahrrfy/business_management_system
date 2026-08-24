@@ -50,7 +50,6 @@ import {
 import type { PrintOpenResult } from "@shared/printAudit";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { INVOICE_LIST_GATE, canSeeGate } from "@/lib/navVisibility";
 import {
   CheckCircle2,
   XCircle,
@@ -166,13 +165,17 @@ export default function Vouchers() {
   // فلتر الفرع فعّال للأدمن/مدير بلا فرع مُسنَد فقط — الخادم يفرض فرع البقية أياً كان المُرسَل.
   const canFilterBranch =
     me.data != null && (me.data.role === "admin" || me.data.branchId == null);
-  // ٢٤/٨ (Codex P2 على PR #746): البوّابة الحاكمة هي `INVOICE_LIST_GATE` نفسها التي يستعملها
-  // التنقّل — تقبل `sales:READ` أو `workorders:FULL` (كاشير الاستقبال) أو `pos:FULL` (كاشير
-  // الطباعة). قصْرُها على `sales:READ` كان يُخفي الرابط عن أدوارٍ لها بابٌ خادميٌّ مشروع.
-  const canOpenInvoices = canSeeGate(
-    INVOICE_LIST_GATE,
-    (me.data?.role ?? null) as RoleKey | null,
-    (me.data?.permissionsOverride ?? null) as PermissionMap | null,
+  // ٢٤/٨ (Codex P2 على PR #749): بوّابةٌ ضيّقة (`sales:READ`) لا `INVOICE_LIST_GATE` الواسعة.
+  // مستخدمو `workorders:FULL` أو `pos:FULL` لهم نطاقُ فواتيرِ محطّتهم فقط عبر
+  // `invoiceViewScopeForUser`. لقطةُ السند لا تحمل قناة الفاتورة (`sourceType`/`shiftType`)،
+  // فلا نستطيع التمييزَ سطراً سطراً بين فاتورةٍ مسموحةٍ لهم وأخرى محجوبة. نُقصر الرابطَ على من
+  // له sales:READ فيرى كلّ الفواتير — البقيّة يظلّ رقم الفاتورة نصاً (يجدها من محطّته).
+  const canOpenInvoices = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "sales",
+    "READ",
+    ["admin", "manager", "accountant", "auditor"],
   );
 
   const filterInput = useMemo(

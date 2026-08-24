@@ -99,17 +99,12 @@ export default function Purchases() {
   // فلتر الفرع وعموده — للمرتفعين العابرين للفروع فقط (الخادم يتجاهل branchId لغيرهم أصلاً:
   // scopedBranchId الحاكم في buildPurchasesListConds، فالإخفاء هنا عرضيّ لا أمنيّ — نمط Invoices.tsx).
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
-  // ٢٤/٨ (Codex P2 على PR #746): البوّابة على `reports:READ` — لا `suppliers:READ`.
-  // `/suppliers-statement` يعيد التوجيه إلى `/suppliers?tab=statement`، والتبويبُ `managerOnly`
-  // في `SuppliersHub` ⇒ auditor/accountant يُدفعون خارجَه. المسار الخادميّ للكشف كذلك محكومٌ
-  // بـreports. توحيدُ البوّابة يمنع رابطاً يخذل.
-  const canOpenSupplierStatement = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
-    (me.data.permissionsOverride ?? null) as PermissionMap | null,
-    "reports",
-    "READ",
-    ["admin", "manager"],
-  );
+  // ٢٤/٨ (Codex P2 على PR #749): تبويبُ الوجهة `statement` في `SuppliersHub` مُحصَّنٌ
+  // بـ`managerOnly` صراحةً — لا يحترم `permissionsOverride`. مستخدمُ شراءٍ مخصَّصٌ مُنِح
+  // `reports:READ` صراحةً كان يرى الرابط ثمّ يُدفَع خارج التبويب. البوّابة الصحيحة الوحيدة
+  // هنا: **الدور** (لا `moduleAccessAllowed`). حين يُحدَّث الوجهةُ لتحترم reports، ترجع
+  // البوّابةُ إليها؛ إلى ذلك الحين نُطابق `managerOnly` بالحرف.
+  const canOpenSupplierStatement = isElevated;
   const canViewIntegrity =
     me.data?.role === "admin" ||
     me.data?.role === "manager" ||
