@@ -3,6 +3,7 @@
 // التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
 import { AlertTriangle } from "lucide-react";
 import { Link } from "wouter";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
@@ -91,6 +92,15 @@ export default function Products() {
   const me = trpc.auth.me.useQuery();
   // imports.products = managerProcedure خادمياً — زرّ الاستيراد للمدير/الأدمن فقط (مرآة requireRole).
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  // ٢٤/٨ (Codex P2 على PR #746): بوّابة تحرير المنتج على `products:FULL` صراحةً — مديرٌ
+  // بـpermissionsOverride إلى READ لا يجب أن يرى رابطَ التحرير (المسار سيرفض المحاولة بأي حال).
+  const canEditProduct = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "products",
+    "FULL",
+    ["admin", "manager"],
+  );
   // سياسة العزل الحديثة: الأدمن وحده يعبر الفروع؛ المدير مثبت على فرعه كالكاشير.
   const canPickBranch = me.data?.role === "admin";
 
@@ -510,9 +520,9 @@ export default function Products() {
                       />
                     </td>
                     <td className="p-2 font-medium">
-                      {/* ٢٤/٨ (تدقيق): اسم المنتج رابطٌ لتحريره — الفعلُ اليوميّ للمرتفعين
-                          (تعديل السعر/الوصفة/الوحدات). لغيرهم يبقى نصاً. */}
-                      {isElevated ? (
+                      {/* ٢٤/٨ (تدقيق + Codex P2 على PR #746): البوّابة على `products:FULL` صراحةً —
+                          مديرٌ بpermissionsOverride إلى READ لا يجب أن يرى رابط تحرير سيرفضه المسار. */}
+                      {canEditProduct ? (
                         <Link href={`/products/${r.productId}/edit`} className="text-primary hover:underline" title="تعديل المنتج">
                           {r.productName}
                         </Link>

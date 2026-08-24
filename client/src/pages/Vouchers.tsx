@@ -50,6 +50,7 @@ import {
 import type { PrintOpenResult } from "@shared/printAudit";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { INVOICE_LIST_GATE, canSeeGate } from "@/lib/navVisibility";
 import {
   CheckCircle2,
   XCircle,
@@ -165,14 +166,13 @@ export default function Vouchers() {
   // فلتر الفرع فعّال للأدمن/مدير بلا فرع مُسنَد فقط — الخادم يفرض فرع البقية أياً كان المُرسَل.
   const canFilterBranch =
     me.data != null && (me.data.role === "admin" || me.data.branchId == null);
-  // ٢٤/٨ (تدقيق): بوّابة `sales:READ` لرابط الفاتورة — بلا الوصول رقمُ الفاتورة يبقى نصاً بدل
-  // رابطٍ يُوهم بوظيفةٍ ثم يفشل صامتاً.
-  const canOpenInvoices = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
-    (me.data.permissionsOverride ?? null) as PermissionMap | null,
-    "sales",
-    "READ",
-    ["admin", "manager", "cashier", "accountant", "auditor"],
+  // ٢٤/٨ (Codex P2 على PR #746): البوّابة الحاكمة هي `INVOICE_LIST_GATE` نفسها التي يستعملها
+  // التنقّل — تقبل `sales:READ` أو `workorders:FULL` (كاشير الاستقبال) أو `pos:FULL` (كاشير
+  // الطباعة). قصْرُها على `sales:READ` كان يُخفي الرابط عن أدوارٍ لها بابٌ خادميٌّ مشروع.
+  const canOpenInvoices = canSeeGate(
+    INVOICE_LIST_GATE,
+    (me.data?.role ?? null) as RoleKey | null,
+    (me.data?.permissionsOverride ?? null) as PermissionMap | null,
   );
 
   const filterInput = useMemo(
@@ -1065,11 +1065,13 @@ export default function Vouchers() {
                               : "غير موثق")}
                         </div>
                         {r.invoiceNumber && (
-                          // ٢٤/٨ (تدقيق): كانت أيقونةُ Link2 توهم برابطٍ بلا فعلٍ — الآن رابطٌ حقيقيّ
-                          // إلى قائمة الفواتير مفلترةً برقمها، خلف بوّابة `sales:READ`.
-                          canOpenInvoices ? (
+                          // ٢٤/٨ (تدقيق + Codex P2 على PR #746): رابطٌ مباشرٌ بـ`invoiceId` لا فلترٍ
+                          // بالرقم — «INV-1» و«INV-10» و«INV-11» يتشابهان في `q=INV-1` فتُرجع
+                          // القائمةُ نتائجَ كثيرة، والمستخدم عليه تمييز الصحيحة يدوياً. الآن قفزةٌ
+                          // مباشرة إلى الفاتورة المذكورة.
+                          canOpenInvoices && r.invoiceId != null ? (
                             <Link
-                              href={`/invoices?q=${encodeURIComponent(r.invoiceNumber)}`}
+                              href={`/invoices/${r.invoiceId}`}
                               className="text-[10px] text-primary hover:underline inline-flex items-center gap-1"
                               title="فتح الفاتورة"
                             >

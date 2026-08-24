@@ -99,13 +99,16 @@ export default function Purchases() {
   // فلتر الفرع وعموده — للمرتفعين العابرين للفروع فقط (الخادم يتجاهل branchId لغيرهم أصلاً:
   // scopedBranchId الحاكم في buildPurchasesListConds، فالإخفاء هنا عرضيّ لا أمنيّ — نمط Invoices.tsx).
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
-  // ٢٤/٨ (تدقيق): كشفُ حساب المورّد للمرتفعين والمحاسبين — لغيرهم اسم المورّد نصٌّ.
+  // ٢٤/٨ (Codex P2 على PR #746): البوّابة على `reports:READ` — لا `suppliers:READ`.
+  // `/suppliers-statement` يعيد التوجيه إلى `/suppliers?tab=statement`، والتبويبُ `managerOnly`
+  // في `SuppliersHub` ⇒ auditor/accountant يُدفعون خارجَه. المسار الخادميّ للكشف كذلك محكومٌ
+  // بـreports. توحيدُ البوّابة يمنع رابطاً يخذل.
   const canOpenSupplierStatement = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
-    "suppliers",
+    "reports",
     "READ",
-    ["admin", "manager", "accountant", "auditor"],
+    ["admin", "manager"],
   );
   const canViewIntegrity =
     me.data?.role === "admin" ||
