@@ -216,7 +216,9 @@ async function main() {
     if (exVar) {
       // خدمات الطباعة/الاستنساخ تحتاج مدخلات تنفيذ أو ملفاً قبل الطلب؛ ثبّت العلم صراحةً
       // أيضاً للبيانات القديمة التي أُنشئت قبل إضافة isCustomizable.
-      await db.update(products).set({ isCustomizable: true }).where(eq(products.id, Number(exVar.productId)));
+      // Codex P2 (٢٤/٨): وثبِّت `showInPrintPos=TRUE` أيضاً — لولاه فرع الإصلاح يترك العلم على
+      // قيمته الافتراضية (FALSE) للسجلّات المُنشأة قبل هجرة 0262 فتختفي من شبكة كاشير الطباعة.
+      await db.update(products).set({ isCustomizable: true, showInPrintPos: true }).where(eq(products.id, Number(exVar.productId)));
       productId = Number(exVar.productId);
       variantId = Number(exVar.id);
       const exUnit = (await db.select().from(productUnits).where(eq(productUnits.variantId, variantId)).limit(1))[0];
@@ -229,7 +231,9 @@ async function main() {
         await db.insert(productPrices).values({ productUnitId, priceTier: "RETAIL", price: s.price });
       }
     } else {
-      const pr = await db.insert(products).values({ name: s.name, productType: PRINT_SERVICE_TYPE, categoryId: s.categoryId, isCustomizable: true });
+      // Codex P2 (٢٤/٨): البذرةُ الآن تضبط `showInPrintPos=true` صراحةً — الافتراضيّ الجديد
+      // في المخطط FALSE ⇒ خدماتُ البذرة كانت تُنشأ مخفيّةً عن شبكة كاشير الطباعة رغم كون الغاية عرضها.
+      const pr = await db.insert(products).values({ name: s.name, productType: PRINT_SERVICE_TYPE, categoryId: s.categoryId, isCustomizable: true, showInPrintPos: true });
       productId = insertId(pr);
       const vr = await db.insert(productVariants).values({ productId, sku: s.sku, costPrice: "0" });
       variantId = insertId(vr);

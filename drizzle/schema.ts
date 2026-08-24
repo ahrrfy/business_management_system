@@ -626,6 +626,11 @@ export const products = mysqlTable(
     // توجيه الخدمة لنقطة خدمة العملاء (الاستقبال): خدمة طباعة (productType=PRINT_SERVICE) مفعَّلة هنا
     // تَظهر أيضاً في كاشير الاستقبال وتُباع عبر مسار createPrintSale المدقَّق (خصم المواد + COGS).
     showInReception: boolean("showInReception").default(false).notNull(),
+    // 0262 (٢٤/٨): تعيينٌ صريحٌ للظهور في شبكة «خدمات الطباعة» — مرآةً لـshowInReception.
+    // قبله كان listPrintServices يُصفّي بـ`productType='PRINT_SERVICE'` STRICT ⇒ كلّ خدمةٍ
+    // مُنشأةٍ بلا هذا النوع (قبل توفّر التبديل، أو مُستوردة، أو عبر مسارٍ آخر) تختفي من
+    // الشبكة رغم كونها `isService=true`. الآن الظهور قرارٌ مستقلّ يديره المدير للمنتج.
+    showInPrintPos: boolean("showInPrintPos").default(false).notNull(),
     // bundles (٧/٧/٢٦): منتج مركّب (باندل/بكج) — بلا رصيد مخزنيّ خاص به؛ سعره مستقلّ يضعه المدير،
     // وتكلفته تُحسب لحظة البيع من مجموع تكاليف مكوّناته (WAVG الحيّ)، والمخزون يُخصَم من كل مكوّن.
     // النَسْت مَمنوع (مكوّن البكج لا يكون بكجاً) — يُفرض خادمياً في bundleService.

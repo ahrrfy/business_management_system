@@ -1730,6 +1730,13 @@
 			"when": 1788052312000,
 			"tag": "0261_storefront_cart_shares",
 			"breakpoints": true
+		},
+		{
+			"idx": 262,
+			"version": "5",
+			"when": 1788052313000,
+			"tag": "0262_show_in_print_pos",
+			"breakpoints": true
 		}
 	]
 }
