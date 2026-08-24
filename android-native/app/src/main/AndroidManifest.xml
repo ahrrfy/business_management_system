@@ -24,17 +24,24 @@
 
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|density|uiMode|locale|layoutDirection|fontScale"
             android:exported="true"
             android:launchMode="singleTop"
+            android:taskAffinity=""
             android:theme="@style/Theme.AlrueyaSuperApp.Starting">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!--
+                 قناةُ الإشعارات الأصيلة: intent مُنشَأ داخلياً من AlrueyaFirebaseMessagingService
+                 عبر PendingIntent صريح. حذفنا فئة BROWSABLE (H2) لأنّها كانت تسمح لأيّ متصفّح
+                 أو تطبيقٍ خارجيّ بفتح alrueya://app/... واستدراج المستخدم المصادَق إلى شاشات
+                 حسّاسة (اعتماد صرف، تحرير مصروف). الإشعارات الداخليّة لا تحتاج BROWSABLE.
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:host="app"
                     android:scheme="${notificationDeepLinkScheme}" />

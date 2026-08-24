@@ -26,6 +26,12 @@ class ApiException(
     val correlationId: String? = null,
     val dbCode: String? = null,
     val retryableTransportFailure: Boolean = false,
+    /**
+     * Delay the server hinted before retrying (parsed from RFC 7231 Retry-After: seconds form).
+     * Present only when the server sent the header — honored by [IdempotentRequestRetryPolicy]
+     * so the client does not stampede at Retry-After boundaries during peak load (H4).
+     */
+    val retryAfterMillis: Long? = null,
     cause: Throwable? = null,
 ) : Exception(message, cause)
 
@@ -202,14 +208,37 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         try {
             if (body != null) connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val status = connection.responseCode
-            persistSessionCookie(connection)
+            // Retry-After only applies to non-2xx (particularly 429/503). Captured here so the
+            // retry policy honors the server's stampede hint at peak load (H4).
+            val retryAfterMillis = if (status in 200..299) null else parseRetryAfterMillis(connection)
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val payload = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (payload.isBlank()) throw ApiException("لم يصل رد صالح من الخادم", status)
-            return if (allowNullResult) {
-                TrpcEnvelopeParser.parseNullable(payload, status)
-            } else {
-                TrpcEnvelopeParser.parse(payload, status)
+
+            if (status in 200..299) {
+                // Only persist Set-Cookie from a real success — a 4xx/5xx that carries Set-Cookie
+                // used to overwrite the live cookie (M2). Also swallow biometric-lock exceptions
+                // from Keystore so a locked device does not turn a good response into a false
+                // transport failure that the caller then retries with the same cookie.
+                runCatching { persistSessionCookie(connection) }
+                if (payload.isBlank()) throw ApiException("لم يصل رد صالح من الخادم", status)
+                return if (allowNullResult) {
+                    TrpcEnvelopeParser.parseNullable(payload, status)
+                } else {
+                    TrpcEnvelopeParser.parse(payload, status)
+                }
+            }
+
+            if (payload.isBlank()) {
+                throw ApiException("لم يصل رد صالح من الخادم", status, retryAfterMillis = retryAfterMillis)
+            }
+            try {
+                return if (allowNullResult) {
+                    TrpcEnvelopeParser.parseNullable(payload, status)
+                } else {
+                    TrpcEnvelopeParser.parse(payload, status)
+                }
+            } catch (parsed: ApiException) {
+                throw withRetryAfter(parsed, retryAfterMillis)
             }
         } catch (error: ApiException) {
             throw error
@@ -282,6 +311,33 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         sessionStore.saveCookie(pair)
     }
 
+    /**
+     * Reads RFC 7231 Retry-After. Only the delta-seconds form is honored — the HTTP-date form
+     * requires wall clock and is discarded to keep the retry policy device-time-independent.
+     * Values outside [0, 30 s] are clamped to keep the client responsive at peak.
+     */
+    private fun parseRetryAfterMillis(connection: HttpURLConnection): Long? {
+        val header = connection.getHeaderField("Retry-After")?.trim().orEmpty()
+        if (header.isEmpty()) return null
+        val seconds = header.toLongOrNull() ?: return null
+        return seconds.coerceIn(0L, MAX_RETRY_AFTER_SECONDS) * 1_000L
+    }
+
+    private fun withRetryAfter(base: ApiException, retryAfterMillis: Long?): ApiException {
+        if (retryAfterMillis == null || base.retryAfterMillis != null) return base
+        return ApiException(
+            message = base.message ?: "",
+            status = base.status,
+            code = base.code,
+            appCode = base.appCode,
+            correlationId = base.correlationId,
+            dbCode = base.dbCode,
+            retryableTransportFailure = base.retryableTransportFailure,
+            retryAfterMillis = retryAfterMillis,
+            cause = base.cause,
+        )
+    }
+
     private fun requireObject(value: Any?): JSONObject = value as? JSONObject
         ?: throw ApiException("استجابة الخادم ليست كائناً كما يتطلب هذا الإجراء")
 
@@ -292,6 +348,8 @@ class TrpcClient(private val sessionStore: SecureSessionStore) {
         // requests ordered; read-only requests are signed independently and may run concurrently.
         val mutationMutex = Mutex()
         const val LOCKED_COOKIE_PREFIX = "__alrueya_locked__="
+        // 30 s hard cap on Retry-After: the server may send anything but we keep the UI responsive.
+        const val MAX_RETRY_AFTER_SECONDS = 30L
         val AUTH_COMPLETION_PROCEDURES = setOf(
             "auth.login",
             "auth.twoFactorVerify",

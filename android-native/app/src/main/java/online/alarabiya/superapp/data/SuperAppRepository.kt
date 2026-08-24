@@ -239,9 +239,13 @@ class SuperAppRepository(
     }
 
     suspend fun logout() {
+        // Bounded budget so a hung network does not strand the user on a spinning "logging out"
+        // screen (H3: mutex + connectTimeout=15s + readTimeout=25s + retry backoff = ~65s worst
+        // case). We clear the local session even if the server never confirms — the cookie is
+        // useless without device-proof signatures generated locally.
         try {
-            withTimeoutOrNull(5_000) { beforeLogout() }
-            runCatching { api.mutate("auth.logout") }
+            withTimeoutOrNull(3_000) { beforeLogout() }
+            withTimeoutOrNull(3_000) { runCatching { api.mutate("auth.logout") } }
         } finally {
             api.clearSession()
         }
