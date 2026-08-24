@@ -1049,21 +1049,47 @@ function ProductRow({
   );
 }
 
-type RelatedProduct = {
+type StorefrontUnitForCartAction = {
+  productUnitId: number;
+  price: string | null;
+  salePrice?: string | null;
+  unitName: string;
+  inStock: boolean;
+};
+
+type StorefrontProductForCartAction = {
   productId: number;
   productName: string;
   imageUrl: string | null;
   price: string | null;
   salePrice?: string | null;
+  productUnitId: number;
+  unitName: string;
+  inStock?: boolean;
+  isCustomizable?: boolean;
+  storeUnits?: StorefrontUnitForCartAction[];
+  variants?: Array<{ label: string; units: StorefrontUnitForCartAction[] }>;
+  bundleImageUrls?: string[];
 };
+
+type RelatedProduct = StorefrontProductForCartAction;
+
+export function recommendationActionLabel(product: RelatedProduct): string {
+  const needsSelection = Boolean(product.isCustomizable)
+    || (product.variants?.length ?? 0) > 1
+    || (product.storeUnits?.length ?? 0) > 1;
+  return needsSelection ? "اختر الخيارات" : product.inStock === false ? "غير متوفر" : "أضف إلى السلة";
+}
 
 function RelatedProductStrip({
   products,
   onSelect,
+  onAdd,
   onRecommendationClick,
 }: {
   products: RelatedProduct[];
   onSelect: (id: number) => void;
+  onAdd: (product: RelatedProduct, event: React.MouseEvent<HTMLButtonElement>) => void;
   onRecommendationClick: (recommendedProductId: number) => void;
 }) {
   const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
@@ -1133,16 +1159,16 @@ function RelatedProductStrip({
         aria-label="منتجات مقترحة — اسحب لاكتشاف المزيد"
       >
         {filteredProducts.length === 0 ? <p className="w-full py-4 text-center text-xs font-bold text-slate-400">لا توجد اقتراحات ضمن هذا النطاق السعري.</p> : filteredProducts.map((rp) => (
-          <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 snap-start flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
-            <button type="button" onClick={() => { onRecommendationClick(rp.productId); onSelect(rp.productId); }} className="text-right">
+          <article key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 snap-start flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+            <button type="button" onClick={() => { onRecommendationClick(rp.productId); onSelect(rp.productId); }} aria-label={`فتح تفاصيل ${rp.productName}`} className="text-right">
               <ProductImage url={rp.imageUrl} alt={rp.productName} className="store-product-media aspect-square w-full" />
             </button>
             <div className="flex flex-1 flex-col gap-1 p-2">
-              <span className="line-clamp-2 min-h-[2.2em] text-[11px] font-bold leading-tight">{rp.productName}</span>
+              <button type="button" onClick={() => { onRecommendationClick(rp.productId); onSelect(rp.productId); }} className="line-clamp-2 min-h-[2.2em] text-right text-[11px] font-bold leading-tight" aria-label={`فتح تفاصيل ${rp.productName}`}>{rp.productName}</button>
               <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
-              <button type="button" onClick={() => { onRecommendationClick(rp.productId); onSelect(rp.productId); }} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95"><Plus aria-hidden className="size-3" /> اختر</button>
+              <button type="button" onClick={(event) => { onRecommendationClick(rp.productId); onAdd(rp, event); }} disabled={rp.inStock === false} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"><Plus aria-hidden className="size-3" /> {recommendationActionLabel(rp)}</button>
             </div>
-          </div>
+          </article>
         ))}
       </div>
     </div>
@@ -1973,7 +1999,7 @@ function StorefrontContent() {
     setRecentlyAddedProductId(p.productId);
     window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
   }
-  function addCatalogProduct(p: typeof items[number], event: React.MouseEvent<HTMLButtonElement>) {
+  function addCatalogProduct(p: StorefrontProductForCartAction, event: React.MouseEvent<HTMLButtonElement>) {
     const availableUnits = [
       ...(p.storeUnits ?? []),
       ...(p.variants ?? []).flatMap((variant) => variant.units),
@@ -2591,6 +2617,7 @@ function StorefrontContent() {
                   <RelatedProductStrip
                     products={relatedQ.data!}
                     onSelect={setSelectedId}
+                    onAdd={(product, event) => addCatalogProduct(product, event)}
                     onRecommendationClick={trackRecommendationClick}
                   />
                 )}
