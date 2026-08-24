@@ -14,7 +14,8 @@ import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
-import { ArrowDown, ArrowUp, ArrowUpDown, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Info, X } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
@@ -302,7 +303,26 @@ export default function APAging() {
                 <SortTh label="61–90" k="d61_90" sort={sort} onSort={onSort} />
                 <SortTh label="+90" k="d91p" sort={sort} onSort={onSort} />
                 <SortTh label="إجمالي غير المدفوع" k="unpaidTotal" sort={sort} onSort={onSort} />
-                <th className="p-2 text-right" title="الرصيد الحالي ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم">غير مفوتر/افتتاحي</th>
+                <th className="p-2 text-right">
+                  <span className="inline-flex items-center gap-1">
+                    غير مفوتر/افتتاحي
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label="شرح: غير مفوتر/افتتاحي"
+                          // Codex P2 (٢٤/٨ على PR #770): هدف لمس ٢٤×٢٤ (WCAG 2.5.8).
+                          className="inline-flex h-6 w-6 items-center justify-center rounded outline-none focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground hover:text-foreground hover:bg-accent"
+                        >
+                          <Info aria-hidden className="size-3.5" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent side="top" className="max-w-xs text-xs">
+                        الرصيد الحالي ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم أو الحركات غير المُوثَّقة بفاتورة.
+                      </PopoverContent>
+                    </Popover>
+                  </span>
+                </th>
                 <SortTh label="الرصيد (له علينا)" k="currentBalance" sort={sort} onSort={onSort} />
                 <th className="p-2">أقدم أمر شراء</th>
                 <th className="p-2 text-center">إجراء</th>
