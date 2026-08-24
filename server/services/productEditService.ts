@@ -96,6 +96,11 @@ export interface ProductForVariantEdit {
   /** gstack B12 (٧/٧/٢٦): علم البكج — يُشغّل تبويب وصفة المكوّنات في ProductEdit. */
   isBundle: boolean;
   isActive: boolean;
+  // ٢٤/٨ — متابعةُ PR #755 (هجرة 0262): توجيهُ العرض في نقاط البيع قابلٌ للتحرير بعد الإنشاء.
+  // كان مُقتصراً على ServiceForm ⇒ لا وسيلةَ لإخفاء خدمةٍ عن كاشير معيّن دون تعطيلها كلياً.
+  // ProductEdit يعرضهما تبديلَين مماثلَين لتبديلَي ServiceForm للاتساق.
+  showInReception: boolean;
+  showInPrintPos: boolean;
   // بضاعة الأمانة (٢٠/٧): الوسم + المودِع (اسمه للعرض) — للبانر العلوي وإعادة تسمية «التكلفة»→«حصة المودِع».
   isConsignment: boolean;
   consignorId: number | null;
@@ -178,11 +183,13 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       isService: !!p.isService,
       isBundle: !!p.isBundle,
       isActive: !!p.isActive,
+      showInReception: !!p.showInReception,
+      showInPrintPos: !!p.showInPrintPos,
       ...consignFields,
       unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail: "", wholesale: "", government: "" }],
       variants: [],
       images,
-    };
+    } satisfies ProductForVariantEdit;
   }
   const variantIds = variants.map((v) => Number(v.id));
   const units = (await db.select().from(productUnits).where(inArray(productUnits.variantId, variantIds))).filter(
@@ -260,6 +267,8 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     isService: !!p.isService,
     isBundle: !!p.isBundle,
     isActive: !!p.isActive,
+    showInReception: !!p.showInReception,
+    showInPrintPos: !!p.showInPrintPos,
     ...consignFields,
     unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail: "", wholesale: "", government: "" }],
     variants: variantRows,
@@ -329,6 +338,9 @@ export interface UpdateProductVariantsInput {
   allowAutoCartRecommendations?: boolean;
   isService?: boolean;
   isActive?: boolean;
+  // ٢٤/٨ — متابعةُ PR #755: تحرير التوجيه بعد الإنشاء. اختياريّان بلا افتراض — نمط PATCH.
+  showInReception?: boolean;
+  showInPrintPos?: boolean;
   isConsignment?: boolean;
   consignorId?: number | null;
   unitTemplate: UpdateUnitTemplate[];
@@ -598,6 +610,8 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         allowAutoCartRecommendations: input.allowAutoCartRecommendations ?? p.allowAutoCartRecommendations !== false,
         isService: input.isService ?? !!p.isService,
         ...(input.isActive != null ? { isActive: input.isActive } : {}),
+        ...(input.showInReception !== undefined ? { showInReception: input.showInReception } : {}),
+        ...(input.showInPrintPos !== undefined ? { showInPrintPos: input.showInPrintPos } : {}),
         ...(wantConsign !== undefined ? { isConsignment: wantConsign } : {}),
         ...(wantConsignor !== undefined ? { consignorId: wantConsignor ?? null } : {}),
       })
