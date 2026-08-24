@@ -20,7 +20,12 @@ export function applyBodyParsers(app: Express): void {
   // ١mb مع بقية حمولة السند. استثناء مماثل لـ/api/print/raw أعلاه — لكن بفحص substring لا مسار ثابت
   // (batch tRPC قد يُجمِّع عدّة إجراءات في مسار واحد ك"vouchers.create,other").
   app.use("/api/trpc", (req, res, next) => {
-    if (req.path.includes("vouchers.create")) {
+    if (
+      req.path.includes("vouchers.create") ||
+      req.path.includes("expenses.requestAccrualCorrection") ||
+      req.path.includes("payroll.createRemittance") ||
+      req.path.includes("payroll.advanceGrant")
+    ) {
       return express.json({ limit: "3mb" })(req, res, next);
     }
     // بنرات المتجر تحمل صورة data-URL مضغوطة (نمط vouchers.create) ⇒ استثناء ٣mb لإنشائها/تعديلها.

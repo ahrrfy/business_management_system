@@ -28,6 +28,7 @@ import { nanoid } from "nanoid";
 import {
   passwordResetTokens,
   roles,
+  branches,
   userRecoveryCodes,
   userSessions,
   users,
@@ -45,6 +46,31 @@ import { notifyAdminsOfSessionEvent } from "./sessionEventNotifier";
 import { revokeAllNativePushDevicesForUser } from "./nativePushService";
 
 export type Role = typeof ALL_ROLES[number];
+
+/** تحقق مركزي من وجود الفرع ومن سياسة النطاق قبل إنشاء/تعديل الحساب. */
+async function assertUserBranchAssignmentTx(
+  tx: Tx,
+  branchId: number | null | undefined,
+  role: Role,
+): Promise<void> {
+  if (branchId == null) {
+    if (role !== "admin") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الحساب غير الإداري يجب أن يرتبط بفرع." });
+    }
+    return;
+  }
+  if (!Number.isSafeInteger(branchId) || branchId <= 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "معرّف الفرع غير صالح." });
+  }
+  const [branch] = await tx
+    .select({ id: branches.id, isActive: branches.isActive })
+    .from(branches)
+    .where(eq(branches.id, branchId))
+    .limit(1);
+  if (!branch || branch.isActive === false) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود أو معطّل." });
+  }
+}
 
 export interface CreateUserInput {
   /** البريد أو اسم المستخدم — يجب توفّر أحدهما على الأقل (معرّف الدخول). */
@@ -245,6 +271,7 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Actor
       roleValue = r.baseRole as Role;
       customRoleId = Number(r.id);
     }
+    await assertUserBranchAssignmentTx(tx, input.branchId, roleValue);
     try {
       const res = await tx.insert(users).values({
         openId: `local_${nanoid()}`,
@@ -307,7 +334,7 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
     if (!finalEmail && !finalUsername) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "يجب إبقاء بريد إلكتروني أو اسم مستخدم واحد على الأقل." });
     }
-    if (input.branchId !== undefined) patch.branchId = input.branchId ?? null;
+
     if (input.phone !== undefined) patch.phone = input.phone?.trim() || null;
     if (input.jobTitle !== undefined) patch.jobTitle = input.jobTitle?.trim() || null;
     if (input.hiredAt !== undefined) patch.hiredAt = input.hiredAt ? new Date(input.hiredAt) : null;
@@ -354,6 +381,10 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
         // تغيير الدور يُبطل الجلسات (يُعاد تحميل السياق/الصلاحيات).
         patch.sessionsValidFrom = new Date();
       }
+    }
+    if (input.branchId !== undefined) {
+      await assertUserBranchAssignmentTx(tx, input.branchId, (nextRole ?? existing.role) as Role);
+      patch.branchId = input.branchId ?? null;
     }
     const requestedOverride = input.permissionsOverride === undefined
       ? undefined

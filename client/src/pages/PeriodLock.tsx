@@ -21,6 +21,7 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { RowActions } from "@/components/list/RowActions";
 import { useState } from "react";
 
 export default function PeriodLockPage() {
@@ -73,6 +74,22 @@ export default function PeriodLockPage() {
 
   const lock = status.data?.lock;
   const sequence = status.data?.sequence;
+
+  async function exportCertificate(certificateId: number, certificateNumber: string) {
+    await exportRows(
+      async () => {
+        const exported = await utils.client.periodLock.exportCertificate.query({ id: certificateId });
+        return exported.rows;
+      },
+      {
+        filename: certificateNumber,
+        columns: [
+          { key: "section", header: "البند" },
+          { key: "value", header: "القيمة" },
+        ],
+      },
+    );
+  }
 
   return (
     <div className="container mx-auto p-4 space-y-4">
@@ -366,41 +383,27 @@ export default function PeriodLockPage() {
                       </td>
                       <td className="p-2">{fmtDateTime(row.approvedAt)}</td>
                       <td className="p-2">
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setSelectedCertificateId(row.id)}
-                          >
-                            <ShieldCheck aria-hidden className="size-3.5" />
-                            تحقق
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              exportRows(
-                                async () => {
-                                  const exported =
-                                    await utils.client.periodLock.exportCertificate.query(
-                                      { id: row.id },
-                                    );
-                                  return exported.rows;
-                                },
-                                {
-                                  filename: row.certificateNumber,
-                                  columns: [
-                                    { key: "section", header: "البند" },
-                                    { key: "value", header: "القيمة" },
-                                  ],
-                                },
-                              )
-                            }
-                          >
-                            <Download aria-hidden className="size-3.5" />
-                            Excel
-                          </Button>
-                        </div>
+                        <RowActions
+                          mode="inline"
+                          actions={[
+                            {
+                              key: "verify",
+                              kind: "view",
+                              label: "تحقق",
+                              icon: ShieldCheck,
+                              gate: { module: "reports", level: "READ" },
+                              onSelect: () => setSelectedCertificateId(row.id),
+                            },
+                            {
+                              key: "export",
+                              kind: "export",
+                              label: "Excel",
+                              icon: Download,
+                              gate: { module: "reports", level: "READ" },
+                              onSelect: () => void exportCertificate(row.id, row.certificateNumber),
+                            },
+                          ]}
+                        />
                       </td>
                     </tr>
                   ))}

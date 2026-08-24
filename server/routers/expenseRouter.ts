@@ -235,7 +235,7 @@ export const expenseRouter = router({
         obligationId: z.number().int().positive(),
         reason: z.string().trim().min(3).max(2000),
         externalEvidenceReference: z.string().trim().min(1).max(191),
-        attachmentUrl: z.string().trim().min(1).max(8_000_000),
+        attachmentUrl: z.string().trim().min(1).max(3_000_000),
         refundPaymentMethod: method.nullish(),
         refundCashBucket: z.enum(["DRAWER", "TREASURY"]).nullish(),
         refundReferenceNumber: z.string().trim().max(100).nullish(),
@@ -415,7 +415,7 @@ export const expenseRouter = router({
   cancel: expensesManagerProcedure
     .input(z.object({ expenseId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null) {
+      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "لا فرع مُسنَد لهذا المستخدم",
@@ -423,7 +423,9 @@ export const expenseRouter = router({
       }
       const res = await cancelExpense(input.expenseId, {
         userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId),
+        // Actor.branchId is ignored by cancelExpense for admin; use 0 rather than
+        // pretending that a global admin belongs to branch 1.
+        branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
       });
       await logAudit(ctx, {
