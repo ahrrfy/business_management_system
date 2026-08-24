@@ -4453,6 +4453,24 @@ export const storefrontWishlistShares = mysqlTable(
 export type StorefrontWishlistShare = typeof storefrontWishlistShares.$inferSelect;
 export type InsertStorefrontWishlistShare = typeof storefrontWishlistShares.$inferInsert;
 
+/** رابط عام عابر للسلة؛ يحفظ معرفات وحدات البيع والكميات فقط ويُعاد تسعيره عند الفتح. */
+export const storefrontCartShares = mysqlTable(
+  "storefrontCartShares",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    token: varchar("token", { length: 32 }).notNull(),
+    lines: json("lines").$type<Array<{ productId: number; productUnitId: number; quantity: number }>>().notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    tokenUq: unique("uq_storefront_cart_share_token").on(table.token),
+    expiryIdx: index("idx_storefront_cart_share_expiry").on(table.expiresAt),
+  }),
+);
+export type StorefrontCartShare = typeof storefrontCartShares.$inferSelect;
+export type InsertStorefrontCartShare = typeof storefrontCartShares.$inferInsert;
+
 // ═══════════════════════ إدارة المتجر (لوحة hPanel): بنرات + إعدادات ═══════════════════════
 /**
  * storeBanners — بنرات ترويجية **يديرها الموظف** من لوحة المتجر (عنوان/وصف/صورة/زرّ/ترتيب/نافذة
