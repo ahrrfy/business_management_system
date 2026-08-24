@@ -17,6 +17,7 @@ import {
   setStorefrontCartQuantity,
   storefrontCheckoutFingerprint,
   storefrontCategoryCount,
+  storefrontMediaUrls,
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
   type CartLine,
@@ -75,17 +76,28 @@ describe("storefront reservation deadline", () => {
   });
 });
 
+describe("storefront media sources", () => {
+  it("يحافظ على ترتيب الصور الحقيقية ويزيل التكرار ويحدّ العدد", () => {
+    expect(storefrontMediaUrls(["/one.webp", "/two.webp", "/one.webp"], "/three.webp", 3)).toEqual([
+      "/one.webp",
+      "/two.webp",
+      "/three.webp",
+    ]);
+  });
+});
+
 describe("storefront bundle media", () => {
-  it("يعرض حتى أربع صور مكوّنات في شبكة واحدة دون تكرار النص البديل", () => {
+  it("يعرض صورة واحدة في كل لحظة مع عداد السلايد دون تكرار النص البديل", () => {
     const html = renderToStaticMarkup(createElement(BundleMedia, {
       urls: ["/a.webp", "/b.webp", "/c.webp", "/d.webp", "/ignored.webp"],
       fallbackUrl: "/a.webp",
       alt: "بكج العودة إلى المدرسة",
     }));
 
-    expect(html.match(/<img/g)).toHaveLength(4);
+    expect(html.match(/<img/g)).toHaveLength(1);
     expect(html).toContain('role="img"');
-    expect(html).toContain("صور مكوّنات البكج: بكج العودة إلى المدرسة");
+    expect(html).toContain('aria-label="معاينة 1 من 4"');
+    expect(html).toContain("/a.webp");
     expect(html).not.toContain("/ignored.webp");
   });
 
