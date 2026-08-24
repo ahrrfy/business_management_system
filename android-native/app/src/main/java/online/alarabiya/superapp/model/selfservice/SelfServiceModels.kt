@@ -143,6 +143,12 @@ data class PersonalNotification(
     val requiresAction: Boolean,
     val entityType: String?,
     val entityId: Long?,
+    /**
+     * Server-vetted internal route (starts with "/", no origin, safe against open-redirect).
+     * When set, tapping the notification navigates the app to the associated screen.
+     * See safeInternalRoute() in server/services/appNotificationService.ts.
+     */
+    val route: String?,
 ) {
     val isUnread: Boolean get() = readAt == null
 }

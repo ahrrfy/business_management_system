@@ -239,6 +239,10 @@ import online.alarabiya.superapp.feature.insights.InsightsViewModel
 import online.alarabiya.superapp.feature.insights.InsightsViewModelFactory
 import online.alarabiya.superapp.feature.marketing.MarketingScreen
 import online.alarabiya.superapp.feature.marketing.MarketingViewModel
+import online.alarabiya.superapp.feature.notifications.NotificationsInboxScreen
+import online.alarabiya.superapp.feature.notifications.NotificationsInboxViewModel
+import online.alarabiya.superapp.feature.notifications.NotificationsInboxViewModelFactory
+import online.alarabiya.superapp.feature.notifications.mapNotificationRouteToDestination
 import online.alarabiya.superapp.feature.operations.OperationsScreen
 import online.alarabiya.superapp.feature.operations.OperationsViewModel
 import online.alarabiya.superapp.feature.purchasing.PurchasingRoute
@@ -2015,8 +2019,27 @@ private fun NativeWorkspaceNavHost(
             }
         }
         composable(NativeComposeRoute.Alerts.route) {
+            val notificationsViewModel: NotificationsInboxViewModel = viewModel(
+                key = "notifications-inbox-${state.bootstrap.user.id}",
+                factory = NotificationsInboxViewModelFactory(selfServiceSource),
+            )
             Box(Modifier.fillMaxSize().testTag("native-route-alerts")) {
-                NotificationsScreen(state.workspace.notifications)
+                NotificationsInboxScreen(
+                    state = notificationsViewModel.state,
+                    onRefresh = { notificationsViewModel.refresh(initial = notificationsViewModel.state.rows.isEmpty()) },
+                    onFilterChange = notificationsViewModel::setFilter,
+                    onOpenRoute = { route ->
+                        // Server-vetted internal route (starts with "/"; safeInternalRoute clamps to
+                        // "/mobile" for any string that fails validation). We map the tail hash to a
+                        // NativeDestination so tapping a payroll notification lands on the payroll
+                        // tab, an approval lands on Approvals, etc. Unknown tails fall back to
+                        // SelfService (the notification's home) rather than crashing.
+                        onOpen(mapNotificationRouteToDestination(route))
+                    },
+                    onMarkRead = notificationsViewModel::markRead,
+                    onMarkAllRead = notificationsViewModel::markAllRead,
+                    onDismissBanner = notificationsViewModel::dismissBanner,
+                )
             }
         }
         composable(NativeComposeRoute.Approvals.route) {
@@ -3863,13 +3886,9 @@ private fun TasksScreen(tasks: List<TaskSummary>) {
     }
 }
 
-@Composable
-private fun NotificationsScreen(notifications: List<NotificationSummary>) {
-    AppListScaffold("التنبيهات", "${notifications.size} حديثة") {
-        if (notifications.isEmpty()) item { EmptyState(Icons.Rounded.Notifications, "لا توجد تنبيهات") }
-        items(notifications, key = { it.id }) { TimelineRow(it) }
-    }
-}
+// ن-١ (٢٤/٨) — استُبدلت شاشة التنبيهات الوهميّة القائمة على bootstrap.notifications بشاشةٍ
+// أصيلة NotificationsInboxScreen تقرأ superApp.notifications الحيّة عبر SelfServiceDataSource.
+// النموذج NotificationSummary والدالّة TimelineRow لا يزالان يخدمان سياقاتٍ أخرى ويُبقيان.
 
 @Composable
 private fun ProfileScreen(

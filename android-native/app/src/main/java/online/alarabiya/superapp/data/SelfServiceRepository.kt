@@ -12,9 +12,15 @@ import online.alarabiya.superapp.model.selfservice.SelfServiceSnapshot
 import online.alarabiya.superapp.model.selfservice.SelfServiceWorkspace
 import org.json.JSONObject
 
+/**
+ * ن-١: مرشّحات الإشعارات التي تعبر خادمياً لاقتطاع الصندوق على المصدر الحيّ لا الشاشة —
+ * لأنّ `limit` يقتطع قبل أن تصل الحمولةُ إلى العميل.
+ */
+enum class NotificationFilter { All, UnreadOnly, RequiresActionOnly }
+
 interface SelfServiceDataSource {
     suspend fun loadWorkspace(): SelfServiceWorkspace
-    suspend fun loadNotifications(limit: Int = 40): NotificationCenter
+    suspend fun loadNotifications(limit: Int = 40, filter: NotificationFilter = NotificationFilter.All): NotificationCenter
     suspend fun loadNotificationPreferences(): NotificationPreferences
     suspend fun loadPayrollHistory(limit: Int = 24): List<PersonalPayroll> = emptyList()
     suspend fun loadPayslip(payrollItemId: Long): PersonalPayslip =
@@ -38,10 +44,15 @@ class SelfServiceRepository(private val api: TrpcClient) : SelfServiceDataSource
     override suspend fun loadWorkspace(): SelfServiceWorkspace =
         SelfServiceMappers.workspace(api.query("superApp.myWorkspace"))
 
-    override suspend fun loadNotifications(limit: Int): NotificationCenter =
-        SelfServiceMappers.notifications(
-            api.query("superApp.notifications", JSONObject().put("limit", limit.coerceIn(1, 100))),
-        )
+    override suspend fun loadNotifications(limit: Int, filter: NotificationFilter): NotificationCenter {
+        val input = JSONObject().put("limit", limit.coerceIn(1, 100))
+        when (filter) {
+            NotificationFilter.UnreadOnly -> input.put("unreadOnly", true)
+            NotificationFilter.RequiresActionOnly -> input.put("requiresActionOnly", true)
+            NotificationFilter.All -> Unit
+        }
+        return SelfServiceMappers.notifications(api.query("superApp.notifications", input))
+    }
 
     override suspend fun loadNotificationPreferences(): NotificationPreferences =
         SelfServiceMappers.notificationPreferences(api.query("superApp.notificationPreferences"))
