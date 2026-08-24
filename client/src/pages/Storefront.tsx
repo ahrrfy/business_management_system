@@ -18,6 +18,7 @@ import {
   Briefcase,
   Check,
   ChevronDown,
+  ChevronLeft,
   Flame,
   ImageOff,
   Heart,
