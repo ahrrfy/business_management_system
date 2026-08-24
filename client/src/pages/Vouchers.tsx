@@ -165,6 +165,15 @@ export default function Vouchers() {
   // فلتر الفرع فعّال للأدمن/مدير بلا فرع مُسنَد فقط — الخادم يفرض فرع البقية أياً كان المُرسَل.
   const canFilterBranch =
     me.data != null && (me.data.role === "admin" || me.data.branchId == null);
+  // ٢٤/٨ (تدقيق): بوّابة `sales:READ` لرابط الفاتورة — بلا الوصول رقمُ الفاتورة يبقى نصاً بدل
+  // رابطٍ يُوهم بوظيفةٍ ثم يفشل صامتاً.
+  const canOpenInvoices = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "sales",
+    "READ",
+    ["admin", "manager", "cashier", "accountant", "auditor"],
+  );
 
   const filterInput = useMemo(
     () => ({
@@ -819,6 +828,7 @@ export default function Vouchers() {
           <FilterField label="بحث (رقم/وصف/اسم مُستفيد)" className="md:col-span-3 lg:col-span-5">
             <Input
               type="search"
+              autoFocus
               value={f.q}
               onChange={(e) => applyFilter({ q: e.target.value })}
               placeholder="رقم السند، الوصف، المستفيد، المرجع أو رقم الفاتورة…"
@@ -926,7 +936,9 @@ export default function Vouchers() {
                 <tr>
                   <th className="p-2">رقم السند</th>
                   <th className="p-2">التاريخ</th>
-                  <th className="p-2">الفرع</th>
+                  {/* ٢٤/٨ (تدقيق): عمود الفرع يُظهر للمرتفعين فقط — لغيرهم قيمةٌ واحدة مكرَّرة
+                      في كلّ صفٍّ = إهدار عرضٍ لا فائدةَ منه. */}
+                  {canFilterBranch && <th className="p-2">الفرع</th>}
                   <th className="p-2 text-center">النوع</th>
                   <th className="p-2">الطرف</th>
                   <th className="p-2">الفئة</th>
@@ -941,14 +953,14 @@ export default function Vouchers() {
               <tbody>
                 {list.isLoading && (
                   <tr>
-                    <td colSpan={12}>
+                    <td colSpan={canFilterBranch ? 12 : 11}>
                       <LoadingState />
                     </td>
                   </tr>
                 )}
                 {list.isError && !list.isLoading && (
                   <tr>
-                    <td colSpan={12}>
+                    <td colSpan={canFilterBranch ? 12 : 11}>
                       <ErrorState
                         message={list.error?.message}
                         onRetry={() => void list.refetch()}
@@ -1021,12 +1033,14 @@ export default function Vouchers() {
                           </div>
                         )}
                       </td>
-                      <td className="p-2 text-xs">
-                        {r.branchId != null
-                          ? (branchMap.get(Number(r.branchId)) ??
-                            `فرع ${r.branchId}`)
-                          : "—"}
-                      </td>
+                      {canFilterBranch && (
+                        <td className="p-2 text-xs">
+                          {r.branchId != null
+                            ? (branchMap.get(Number(r.branchId)) ??
+                              `فرع ${r.branchId}`)
+                            : "—"}
+                        </td>
+                      )}
                       <td className="p-2 text-center">
                         <span
                           className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}
@@ -1051,10 +1065,21 @@ export default function Vouchers() {
                               : "غير موثق")}
                         </div>
                         {r.invoiceNumber && (
-                          <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
-                            <Link2 aria-hidden className="size-3" /> فاتورة #
-                            {r.invoiceNumber}
-                          </div>
+                          // ٢٤/٨ (تدقيق): كانت أيقونةُ Link2 توهم برابطٍ بلا فعلٍ — الآن رابطٌ حقيقيّ
+                          // إلى قائمة الفواتير مفلترةً برقمها، خلف بوّابة `sales:READ`.
+                          canOpenInvoices ? (
+                            <Link
+                              href={`/invoices?q=${encodeURIComponent(r.invoiceNumber)}`}
+                              className="text-[10px] text-primary hover:underline inline-flex items-center gap-1"
+                              title="فتح الفاتورة"
+                            >
+                              <Link2 aria-hidden className="size-3" /> فاتورة #{r.invoiceNumber}
+                            </Link>
+                          ) : (
+                            <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                              فاتورة #{r.invoiceNumber}
+                            </div>
+                          )
                         )}
                       </td>
                       <td className="p-2 text-xs">
@@ -1267,7 +1292,7 @@ export default function Vouchers() {
                 })}
                 {!list.isLoading && !list.isError && rows.length === 0 && (
                   <TableEmptyRow
-                    colSpan={12}
+                    colSpan={canFilterBranch ? 12 : 11}
                     message="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً."
                   />
                 )}
@@ -1288,11 +1313,16 @@ export default function Vouchers() {
           >
             ← السابق
           </Button>
+          {/* ٢٤/٨ (تدقيق): نطاق الصفوف المعروضة (س-ص) — العدّاد أعلى القائمة يقول «١٢٥٠ سند»
+              بينما المستخدم لم يعرف أيّ سنداتٍ في الصفحة قبل هذا الإضافة. */}
           <div className="text-muted-foreground">
             صفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")}
             {pageCount != null
               ? ` من ${pageCount.toLocaleString("ar-IQ-u-nu-latn")}`
               : ""}
+            {rows.length > 0 && (
+              <> · يعرض <span className="tabular-nums" dir="ltr">{page * limit + 1}-{page * limit + rows.length}</span></>
+            )}
           </div>
           <Button
             variant="outline"

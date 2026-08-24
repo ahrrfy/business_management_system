@@ -2,6 +2,7 @@
 // على نمط Customers.tsx. تستبدل posList (INNER JOIN يخفي الناقص + حدّ 500) بـadminList
 // التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
 import { AlertTriangle } from "lucide-react";
+import { Link } from "wouter";
 import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
@@ -315,6 +316,9 @@ export default function Products() {
               onChange: (v) => setQ(v),
               placeholder: "بحث (اسم/SKU/باركود)",
               barcode: true,
+              // ٢٤/٨ (تدقيق): القائمة تُفتح مئات المرّات يومياً؛ الموظّف يمسك الماسح وينتظر — بلا
+              // تركيزٍ تلقائيّ يسقط أوّل مسحٍ في العدم.
+              autoFocus: true,
             }}
             activeFilterCount={activeFilterCount}
             onResetFilters={resetFilters}
@@ -505,7 +509,17 @@ export default function Products() {
                         onChange={() => sel.toggle(key)}
                       />
                     </td>
-                    <td className="p-2 font-medium">{r.productName}</td>
+                    <td className="p-2 font-medium">
+                      {/* ٢٤/٨ (تدقيق): اسم المنتج رابطٌ لتحريره — الفعلُ اليوميّ للمرتفعين
+                          (تعديل السعر/الوصفة/الوحدات). لغيرهم يبقى نصاً. */}
+                      {isElevated ? (
+                        <Link href={`/products/${r.productId}/edit`} className="text-primary hover:underline" title="تعديل المنتج">
+                          {r.productName}
+                        </Link>
+                      ) : (
+                        r.productName
+                      )}
+                    </td>
                     <td className="p-2 text-muted-foreground">{r.categoryName ?? "—"}</td>
                     <td className="p-2 text-muted-foreground">{r.variantName ?? r.color ?? r.sku ?? "—"}</td>
                     <td className="p-2">{r.unitName ?? "—"}</td>
@@ -540,7 +554,17 @@ export default function Products() {
                       {r.bundleCapacity && <BundleCapacityNote capacity={r.bundleCapacity} />}
                     </td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "badge-status-active" : "badge-stock-out"}`}>
+                      {/* ٢٤/٨ (تدقيق): `title` يوضّح سبب العتم الفعليّ حين الصفّ خاملٌ (`dimmed`) —
+                          كانت الشارة تقول «مفعّل» بينما الصفّ خافت لأنّ المتغيّر أو الوحدة معطّلان. */}
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "badge-status-active" : "badge-stock-out"}`}
+                        title={
+                          !r.productIsActive ? "المنتج معطَّل" :
+                          r.variantIsActive === false ? "المنتج مفعَّل لكن هذا المتغيّر معطَّل" :
+                          r.unitIsActive === false ? "المنتج مفعَّل لكن هذه الوحدة معطَّلة" :
+                          "المنتج مفعَّل"
+                        }
+                      >
                         {r.productIsActive ? "مفعّل" : "معطّل"}
                       </span>
                     </td>
