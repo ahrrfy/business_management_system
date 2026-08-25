@@ -24,11 +24,12 @@ import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
-import { canSeeCost } from "@shared/permissions";
+import { canSeeCost, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
 
@@ -82,6 +83,13 @@ export default function WorkOrderDetail() {
   // كاملةً بدل عرضها فارغة («—») بلا داعٍ.
   const showCost = me.data ? canSeeCost(me.data.role) : true;
   const canCancel = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
+  const role = me.data?.role as RoleKey | undefined;
+  const permissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  // مرايا بوابات الخادم نفسها: التنفيذ = كاشير/مدير/فني، والمال/التعديل = كاشير/مدير.
+  const canExecuteWorkOrder = !!role && moduleAccessAllowed(role, permissions, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
+  const canDeliverWorkOrder = !!role && moduleAccessAllowed(role, permissions, "workorders", "FULL", ["cashier", "manager"]);
+  const canEditWorkOrder = canDeliverWorkOrder;
+  const canRequestDesignApproval = canExecuteWorkOrder;
 
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -92,6 +100,8 @@ export default function WorkOrderDetail() {
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [payReference, setPayReference] = useState("");
+  const [partialDispatchMessage, setPartialDispatchMessage] = useState("");
+  const deliverRequestIdRef = useRef<string | null>(null);
   const cancelRequestIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -158,8 +168,23 @@ export default function WorkOrderDetail() {
     onError: (e) => setError(e.message),
   });
   const deliver = trpc.workOrders.deliver.useMutation({
-    onSuccess: async (r) => { setDone(`تم التسليم. فاتورة ${r.invoiceNumber} (${r.status}).`); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
-    onError: (e) => setError(e.message),
+    onSuccess: async (r) => {
+      setDone(`تم التسليم. فاتورة ${r.invoiceNumber} (${r.status}).`);
+      setPartialDispatchMessage("");
+      deliverRequestIdRef.current = null;
+      setAwaitingOwnerRefund(false);
+      setError("");
+      await refresh();
+    },
+    onError: (e) => {
+      // حارس الطلب الجامع: لا يتحول الرفض إلى طريق مسدود؛ الإقرار الجزئي إجراءٌ منفصل وصريح.
+      if (isPartialDispatchRejection(e)) {
+        setPartialDispatchMessage(e.message);
+        setError("");
+        return;
+      }
+      setError(e.message);
+    },
   });
   const [cancelOpen, setCancelOpen] = useState(false);
   /**
@@ -229,6 +254,7 @@ export default function WorkOrderDetail() {
   if (wo.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
   if (!wo.data) return <div className="p-10 text-center text-muted-foreground">طلب الخدمة غير موجود.</div>;
   const data = wo.data;
+  const blockedByDesign = !!data.blockingTask;
   const displayStatus = data.status === "DELIVERED" && data.consignmentId
     ? (data.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل")
     : workOrderStatusLabel(data.status);
@@ -445,14 +471,14 @@ export default function WorkOrderDetail() {
             workOrderId={Number(data.id)}
             status={String(data.status)}
             blockingTask={(data.blockingTask as never) ?? null}
-            canManage={canCancel}
+            canManage={canRequestDesignApproval}
           />
 
           {/* **ملفّ التصميم** — كان الخادم يُرسل `images` والشاشة تُهملها كلّياً (صفر استعمال
               في ٦٨٣ سطراً)، فيقف الفنّيّ أمام أمرٍ لا يرى تصميمه. النسخةُ العليا أوّلاً،
               والسابقةُ تُعرَض مطويّةً — سجلٌّ بلا حذف. */}
           {data.images && data.images.length > 0 && (
-            <DesignFileCard images={data.images as never} workOrderId={Number(data.id)} canEdit={data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
+            <DesignFileCard images={data.images as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
           )}
         </CardContent>
       </Card>
@@ -477,7 +503,7 @@ export default function WorkOrderDetail() {
         <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
           <CardTitle className="text-base">المواد</CardTitle>
           {/* التعديل متاحٌ ما لم يُسلَّم الأمر أو يُلغَ — نفس ما يفرضه الخادم، فلا زرٌّ يقود لرفض. */}
-          {data.status !== "DELIVERED" && data.status !== "CANCELLED" && (
+          {canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED" && (
             <Button size="sm" variant="outline" onClick={() => setEditingMaterials(true)}>
               تعديل البنود
             </Button>
@@ -601,6 +627,27 @@ export default function WorkOrderDetail() {
           <div>{durableRefundNotice.description}</div>
         </div>
       )}
+      {partialDispatchMessage && (
+        <div role="alert" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]">
+          <p>{partialDispatchMessage}</p>
+          <Button
+            type="button"
+            size="sm"
+            className="mt-2"
+            disabled={deliver.isPending}
+            onClick={() => deliver.mutate({
+              workOrderId,
+              clientRequestId: deliverRequestIdRef.current ?? (deliverRequestIdRef.current = newClientRequestId()),
+              partialDispatchConfirmed: true,
+              ...(payAmount && D(payAmount).gt(0)
+                ? { payment: { amount: D(payAmount).toFixed(2), method: payMethod, reference: payMethod !== "CASH" ? payReference.trim() : undefined } }
+                : {}),
+            })}
+          >
+            {deliver.isPending ? "جارٍ التنفيذ…" : "أقرّ التسليم الجزئي"}
+          </Button>
+        </div>
+      )}
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
           <p>{error}</p>
@@ -642,9 +689,10 @@ export default function WorkOrderDetail() {
       )}
 
       <div className="flex gap-2 flex-wrap">
-        {data.status === "RECEIVED" && (
+        {canExecuteWorkOrder && data.status === "RECEIVED" && (
           <Button
             onClick={async () => {
+              if (blockedByDesign) return;
               if (!(await confirm({
                 variant: "warning",
                 title: "بدء تنفيذ طلب الخدمة",
@@ -653,12 +701,12 @@ export default function WorkOrderDetail() {
               }))) return;
               start.mutate({ workOrderId });
             }}
-            disabled={start.isPending}
+            disabled={start.isPending || blockedByDesign}
           >
-            {start.isPending ? "جارٍ…" : "بدء التنفيذ (خصم المواد)"}
+            {start.isPending ? "جارٍ…" : blockedByDesign ? "بانتظار موافقة العميل" : "بدء التنفيذ (خصم المواد)"}
           </Button>
         )}
-        {data.status === "IN_PROGRESS" && (
+        {canExecuteWorkOrder && data.status === "IN_PROGRESS" && (
           <Button
             onClick={async () => {
               if (!(await confirm({
@@ -674,12 +722,12 @@ export default function WorkOrderDetail() {
             {markReady.isPending ? "جارٍ…" : "وضع علامة جاهز"}
           </Button>
         )}
-        {data.status === "READY" && data.hasDelivery && !data.consignmentId && (
+        {canDeliverWorkOrder && data.status === "READY" && data.hasDelivery && !data.consignmentId && (
           <Button asChild>
             <Link href="/delivery"><Truck aria-hidden className="me-1 size-4" /> إسناد للتوصيل</Link>
           </Button>
         )}
-        {data.status === "READY" && !data.hasDelivery && (
+        {canDeliverWorkOrder && data.status === "READY" && !data.hasDelivery && (
           <Button
             onClick={async () => {
               const payAmountD = D(payAmount || "0");
@@ -703,7 +751,9 @@ export default function WorkOrderDetail() {
               }))) return;
               deliver.mutate({
                 workOrderId,
+                clientRequestId: deliverRequestIdRef.current ?? (deliverRequestIdRef.current = newClientRequestId()),
                 payment: payNow ? { amount: payAmountD.toFixed(2), method: payMethod, reference: payMethod !== "CASH" ? payReference.trim() : undefined } : undefined,
+                partialDispatchConfirmed: false,
               });
             }}
             disabled={deliver.isPending}

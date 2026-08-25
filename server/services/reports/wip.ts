@@ -26,7 +26,6 @@ export async function getWIPReport(opts: { branchId?: number; limit?: number } =
   const db = getDb();
   if (!db) return { rows: [], totalCount: 0, totalMaterialsCost: "0.00" };
   const limit = Math.max(1, Math.min(opts.limit ?? 200, 1000));
-  const { workOrders } = await import("../../../drizzle/schema");
   const branchFilter = opts.branchId ? sql`AND wo.branchId = ${opts.branchId}` : sql``;
   const rows = await db.execute(sql`
     SELECT
@@ -46,6 +45,17 @@ export async function getWIPReport(opts: { branchId?: number; limit?: number } =
     LIMIT ${limit}
   `);
   const data = ((rows as any)[0] ?? rows) as Array<any>;
+  // الإجماليات مصدرها كامل النطاق، لا الصفوف المحدودة المعروضة في الجدول.
+  const summaryResult = await db.execute(sql`
+    SELECT
+      COUNT(*) AS totalCount,
+      COALESCE(SUM(COALESCE(wo.materialsCost, 0)), 0) AS totalMaterialsCost
+    FROM workOrders wo
+    WHERE wo.workOrderStatus IN ('IN_PROGRESS', 'READY')
+    ${branchFilter}
+  `);
+  const summaryRows = ((summaryResult as any)[0] ?? summaryResult) as Array<any>;
+  const summary = summaryRows[0] ?? { totalCount: 0, totalMaterialsCost: "0" };
   const wipRows: WIPRow[] = (Array.isArray(data) ? data : []).map((r) => ({
     workOrderId: Number(r.workOrderId),
     orderNumber: String(r.orderNumber),
@@ -56,10 +66,10 @@ export async function getWIPReport(opts: { branchId?: number; limit?: number } =
     materialsCost: String(r.materialsCost ?? "0"),
     createdAt: new Date(r.createdAt),
   }));
-  const totalMaterialsCost = sumMoney(wipRows.map((r) => r.materialsCost)).toFixed(2);
+  const totalMaterialsCost = sumMoney([String(summary.totalMaterialsCost ?? "0")]).toFixed(2);
   return {
     rows: wipRows,
-    totalCount: wipRows.length,
+    totalCount: Number(summary.totalCount ?? 0),
     totalMaterialsCost,
   };
 }

@@ -204,7 +204,7 @@ export const leaveRouter = router({
             kind: "LEAVE_STATUS",
             title: input.decision === "approved" ? "تمت الموافقة على الإجازة" : "تم تحديث طلب الإجازة",
             body: `${lv.leaveType} · ${lv.fromDate} — ${lv.toDate}`,
-            route: "/mobile#leave",
+            route: "/hr?tab=leaves",
             eventKey: `leave:${input.id}:${input.decision}`,
             entityType: "leaveRequest",
             entityId: input.id,

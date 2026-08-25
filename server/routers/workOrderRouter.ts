@@ -445,6 +445,23 @@ export const workOrderRouter = router({
         .select({
           id: workOrders.id,
           customerId: workOrders.customerId,
+          // ش٥: ملخص الطلب الجامع مشتقّ من المسوّدة، كي تعرض نقاط الدخول حالة الطلب كاملة.
+          draftId: workOrders.draftId,
+          draftNumber: sql<string | null>`(
+            SELECT rd.draftNumber FROM receptionDrafts rd
+            WHERE rd.id = ${workOrders.draftId}
+            LIMIT 1
+          )`,
+          draftTotalCount: sql<number>`(
+            SELECT COUNT(*) FROM workOrders wo_draft
+            WHERE wo_draft.draftId = ${workOrders.draftId}
+              AND wo_draft.workOrderStatus <> 'CANCELLED'
+          )`,
+          draftReadyCount: sql<number>`(
+            SELECT COUNT(*) FROM workOrders wo_draft_ready
+            WHERE wo_draft_ready.draftId = ${workOrders.draftId}
+              AND wo_draft_ready.workOrderStatus IN ('READY', 'DELIVERED')
+          )`,
           orderNumber: workOrders.orderNumber,
           title: workOrders.title,
           customizationText: workOrders.customizationText,

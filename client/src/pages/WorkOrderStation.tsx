@@ -1,5 +1,6 @@
 import { WO_PROGRESS_STAGES, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { ChannelMark } from "@/components/ChannelBadge";
+import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
 import { receptionChannelLabel } from "@shared/receptionChannel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 /**
  * محطة فني التنفيذ — `/work-orders/station` (دور print_operator + الكاشير/المدير).
@@ -135,7 +137,7 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
   );
 }
 
-function StationDetail({ id, onChanged }: { id: number; onChanged: () => void }) {
+function StationDetail({ id, onChanged, canRequestDesignApproval }: { id: number; onChanged: () => void; canRequestDesignApproval: boolean }) {
   const detail = trpc.workOrders.get.useQuery({ workOrderId: id });
   const timeline = trpc.workOrders.timeline.useQuery({ workOrderId: id });
   const utils = trpc.useUtils();
@@ -200,6 +202,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
   }
 
   const chLabel = receptionChannelLabel(d.receptionChannel);
+  const blockedByDesign = !!d.blockingTask;
   const pri = PRIORITIES[d.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   const cur = STAGE_INDEX[d.status] ?? 0;
   const remainingDue = positiveDiff(d.salePrice, d.deposit ?? 0);
@@ -497,10 +500,20 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
             </CardContent>
           </Card>
 
+          {/* حجز التصميم يُعرض في نقطة التنفيذ نفسها؛ لا نترك الفني يكتشفه برسالة 403 بعد محاولة البدء. */}
+          <DesignApprovalCard
+            workOrderId={Number(d.id)}
+            status={String(d.status)}
+            blockingTask={(d.blockingTask as never) ?? null}
+            canManage={canRequestDesignApproval}
+          />
+
           {/* زر الإجراء المتدرّج */}
           {d.status === "RECEIVED" && (
             <div className="space-y-2">
-              <Button className="w-full h-12 text-base" disabled={busy} onClick={doStart}><ChevronRight aria-hidden className="size-4 me-1" /> بدء التنفيذ (خصم المواد)</Button>
+              <Button className="w-full h-12 text-base" disabled={busy || blockedByDesign} onClick={doStart}>
+                <ChevronRight aria-hidden className="size-4 me-1" /> {blockedByDesign ? "بانتظار موافقة العميل" : "بدء التنفيذ (خصم المواد)"}
+              </Button>
               {/* ش٣: المخرجُ المشروع قبل البدء — بعده يرفضه الخادم ويُوجّه إلى النقل بسبب. */}
               {d.assignedTo != null && (
                 <Button
@@ -544,6 +557,13 @@ const ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
 export default function WorkOrderStation() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
+  const canRequestDesignApproval = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "workorders",
+    "FULL",
+    ["cashier", "manager", "print_operator"],
+  );
   const [selId, setSelId] = useState<number | null>(null);
 
   // ترشيح **خادميّ** لقائمتَي المحطة بدل تصفية نافذةٍ مقتطعة في المتصفّح.
@@ -630,7 +650,7 @@ export default function WorkOrderStation() {
       {/* لوحة التفاصيل */}
       <div className="flex-1 min-w-0 border rounded-xl bg-card overflow-hidden">
         {selId != null ? (
-          <StationDetail id={selId} onChanged={() => { /* القوائم تُبطَّل داخلياً */ }} />
+          <StationDetail id={selId} canRequestDesignApproval={canRequestDesignApproval} onChanged={() => { /* القوائم تُبطَّل داخلياً */ }} />
         ) : (
           <div className="grid place-items-center h-full text-muted-foreground">اختر أمراً من القائمة لبدء التنفيذ.</div>
         )}
