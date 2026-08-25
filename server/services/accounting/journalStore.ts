@@ -205,6 +205,9 @@ export async function writeJournal(
       journalId,
       role: l.role,
       accountId: accountIdByRole.get(l.role) ?? null,
+      // Tier-2 #6: البعد التحليليّ على السطر يأخذ فرع الرأس افتراضياً — أدوات المستقبل
+      // (تقسيمُ قيدٍ على فروع) قد تمرّر فرعاً لكل سطر إن دُعم في `JournalLine`.
+      branchId,
       debit: l.debit,
       credit: l.credit,
     })),
@@ -263,6 +266,7 @@ export async function writeShadowOpeningJournal(
       journalId,
       role: line.role,
       accountId: accountIdByRole.get(line.role) ?? null,
+      branchId: input.branchId,
       debit: line.debit,
       credit: line.credit,
     })),

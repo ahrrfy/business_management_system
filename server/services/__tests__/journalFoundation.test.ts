@@ -147,6 +147,30 @@ describe("journalStore — وعاء الدفتر المزدوج (ش٠)", () => {
     expect(lines.every((l) => l.accountId === null)).toBe(true);
   });
 
+  it("Tier-2 #6: writeJournal يملأ branchId من فرع الرأس (بُعد تحليليّ)", async () => {
+    const entryId = await seedEntry();
+    await withTx(async (tx) => {
+      await writeJournal(tx, entryId, new Date("2026-08-11"), 1, BALANCED);
+    });
+    const heads = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, entryId));
+    const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, heads[0].id));
+    expect(lines).toHaveLength(2);
+    // كلا السطرَين يحمل فرع الرأس (١) — الافتراض القائم أنّ القيد الواحد لفرعٍ واحد.
+    expect(lines.every((l) => l.branchId === 1)).toBe(true);
+  });
+
+  it("Tier-2 #6: قيدٌ برأس بلا فرع ⇒ الأسطر تحمل branchId=null (لا افتراضاً ضمنياً)", async () => {
+    const entryId = await seedEntry();
+    await withTx(async (tx) => {
+      // null branchId — قيدٌ عامٌّ (تحويلٌ خزينيّ أو حركةٌ لا تخصّ فرعاً).
+      await writeJournal(tx, entryId, new Date("2026-08-11"), null, BALANCED);
+    });
+    const heads = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, entryId));
+    const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, heads[0].id));
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => l.branchId === null)).toBe(true);
+  });
+
   it("ج) قيدٌ غير متوازن ⇒ يرمي ولا يكتب صفّاً واحداً (س٦)", async () => {
     const entryId = await seedEntry();
     await expect(
