@@ -292,7 +292,7 @@ export default function CardAccount() {
                 <Landmark aria-hidden className="size-4" />
                 الرصيد الحالي
               </div>
-              <div className={`mt-1 text-2xl font-bold ${s && D(s.balance).lt(0) ? "text-red-600" : ""}`}>
+              <div className={`mt-1 text-2xl font-bold ${s && D(s.balance).lt(0) ? "text-[var(--money-negative)]" : ""}`}>
                 {formatIqd(s?.balance ?? "0")}
               </div>
               {s?.branchId == null && <div className="mt-0.5 text-xs text-muted-foreground">مجموع كل الفروع</div>}
@@ -301,28 +301,28 @@ export default function CardAccount() {
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                <ArrowDownCircle aria-hidden className="size-4 text-green-600" />
+                <ArrowDownCircle aria-hidden className="size-4 text-[var(--money-positive)]" />
                 دخل اليوم
               </div>
-              <div className="mt-1 text-xl font-semibold text-green-700">{fmtAr(s?.todayIn ?? "0")}</div>
+              <div className="mt-1 text-xl font-semibold text-[var(--money-positive)]">{fmtAr(s?.todayIn ?? "0")}</div>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                <ArrowUpCircle aria-hidden className="size-4 text-red-600" />
+                <ArrowUpCircle aria-hidden className="size-4 text-[var(--money-negative)]" />
                 صرف اليوم
               </div>
-              <div className="mt-1 text-xl font-semibold text-red-700">{fmtAr(s?.todayOut ?? "0")}</div>
+              <div className="mt-1 text-xl font-semibold text-[var(--money-negative)]">{fmtAr(s?.todayOut ?? "0")}</div>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-4">
               <div className="text-muted-foreground text-sm">إجمالي دخل/صرف {isTelecom ? "رصيد زين" : "البطاقة"}</div>
               <div className="mt-1 text-sm">
-                <span className="text-green-700">{fmtAr(s?.totalIn ?? "0")}</span>
+                <span className="text-[var(--money-positive)]">{fmtAr(s?.totalIn ?? "0")}</span>
                 <span className="mx-1 text-muted-foreground">/</span>
-                <span className="text-red-700">{fmtAr(s?.totalOut ?? "0")}</span>
+                <span className="text-[var(--money-negative)]">{fmtAr(s?.totalOut ?? "0")}</span>
               </div>
               <div className="mt-0.5 text-xs text-muted-foreground">{fmtAr(String(s?.movementCount ?? 0))} حركة</div>
             </CardContent>
@@ -336,7 +336,7 @@ export default function CardAccount() {
           <span className="text-muted-foreground">آخر مطابقة ({s.lastReconciliation.asOfDate}):</span>
           <span>النظام {fmtAr(s.lastReconciliation.systemBalance)}</span>
           <span className="text-muted-foreground">مقابل الكشف {fmtAr(s.lastReconciliation.statementBalance)}</span>
-          <span className={`font-semibold ${D(s.lastReconciliation.difference).abs().gt(0) ? "text-amber-600" : "text-green-600"}`}>
+          <span className={`font-semibold ${D(s.lastReconciliation.difference).abs().gt(0) ? "text-[var(--sem-warn)]" : "text-[var(--money-positive)]"}`}>
             الفرق {fmtAr(s.lastReconciliation.difference)}
           </span>
         </div>
@@ -421,8 +421,8 @@ export default function CardAccount() {
 
           {mv && (
             <div className="mb-2 flex flex-wrap gap-4 text-sm text-muted-foreground">
-              <span>دخل: <span className="font-medium text-green-700">{fmtAr(mv.totalIn)}</span></span>
-              <span>صرف: <span className="font-medium text-red-700">{fmtAr(mv.totalOut)}</span></span>
+              <span>دخل: <span className="font-medium text-[var(--money-positive)]">{fmtAr(mv.totalIn)}</span></span>
+              <span>صرف: <span className="font-medium text-[var(--money-negative)]">{fmtAr(mv.totalOut)}</span></span>
               <span>الصافي: <span className="font-medium">{fmtAr(mv.net)}</span></span>
               <span>{fmtAr(String(mv.count))} حركة</span>
             </div>
@@ -465,16 +465,16 @@ export default function CardAccount() {
                       </td>
                       <td className="p-2 text-center">
                         {r.direction === "IN" ? (
-                          <span className="inline-flex items-center gap-1 text-green-700">
+                          <span className="inline-flex items-center gap-1 text-[var(--money-positive)]">
                             <ArrowDownCircle aria-hidden className="size-3.5" />دخل
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-red-700">
+                          <span className="inline-flex items-center gap-1 text-[var(--money-negative)]">
                             <ArrowUpCircle aria-hidden className="size-3.5" />صرف
                           </span>
                         )}
                       </td>
-                      <td className={`p-2 text-end font-medium ${r.direction === "IN" ? "text-green-700" : "text-red-700"}`}>
+                      <td className={`p-2 text-end font-medium ${r.direction === "IN" ? "text-[var(--money-positive)]" : "text-[var(--money-negative)]"}`}>
                         {r.direction === "IN" ? "" : "−"}
                         {fmtAr(r.amount)}
                       </td>
@@ -516,7 +516,7 @@ export default function CardAccount() {
           </p>
 
           {needsBranchForRecon && (
-            <div className="mb-3 flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <div className="mb-3 flex items-center gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-sm text-[var(--sem-warn)]">
               <AlertTriangle aria-hidden className="size-4" />
               اختر فرعاً محدَّداً (من الأعلى) لتسجيل مطابقة.
             </div>
@@ -581,7 +581,7 @@ export default function CardAccount() {
                       </td>
                       <td className="p-2 text-end">{fmtAr(r.systemBalance)}</td>
                       <td className="p-2 text-end">{fmtAr(r.statementBalance)}</td>
-                      <td className={`p-2 text-end font-semibold ${D(r.difference).abs().gt(0) ? "text-amber-600" : "text-green-600"}`}>
+                      <td className={`p-2 text-end font-semibold ${D(r.difference).abs().gt(0) ? "text-[var(--sem-warn)]" : "text-[var(--money-positive)]"}`}>
                         {fmtAr(r.difference)}
                       </td>
                       <td className="p-2 text-xs text-muted-foreground">{r.createdByName ?? "—"}</td>
