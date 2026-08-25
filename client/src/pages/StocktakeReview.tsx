@@ -32,6 +32,7 @@ import { exportRows } from "@/lib/export";
 import { STOCKTAKE_REASON_LABEL } from "@/lib/printing/stocktakeTemplates";
 import { useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
+import { PageHeader } from "@/components/PageHeader";
 import {
   Printer,
   Download,
@@ -731,26 +732,15 @@ export default function StocktakeReview() {
 
   return (
     <div className="space-y-4">
-      {/* مسار الرجوع */}
-      <div className="flex items-center gap-2 text-sm">
-        <Link
-          href="/stocktakes"
-          className="font-semibold text-primary hover:underline"
-        >
-          → جلسات الجرد
-        </Link>
-        <span className="text-border">/</span>
-        <span className="text-muted-foreground">{s.name} — المراجعة</span>
-      </div>
-
-      {/* الترويسة */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold">مراجعة وتدقيق الجرد</h1>
+      <PageHeader
+        title={
+          <span className="flex items-center gap-3">
+            مراجعة وتدقيق الجرد
             <StatusBadge status={s.status} />
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">
+          </span>
+        }
+        description={
+          <>
             {s.name} ·{" "}
             <span className="font-mono" dir="ltr">
               {s.code}
@@ -758,9 +748,10 @@ export default function StocktakeReview() {
             · {s.branchName}
             {s.submittedAt && <> · سلّم العدّ {dt(s.submittedAt)}</>} · الحدّ
             المعتمد: {pctStr(s.thresholdPct)}٪ أو {money(s.thresholdValue)}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+          </>
+        }
+        breadcrumbs={[{ label: "جلسات الجرد", href: "/stocktakes" }, { label: `${s.name} — المراجعة` }]}
+        actions={<>
           <Link href={`/stocktakes/${sessionId}`}>
             <Button variant="outline" size="sm">
               تفاصيل العدّ والسجلّ
@@ -801,8 +792,8 @@ export default function StocktakeReview() {
                 : approveLabel}
             </Button>
           )}
-        </div>
-      </div>
+        </>}
+      />
 
       {/* لافتات الحالة والحواجز */}
       {s.sessionType === "OPENING" && (
