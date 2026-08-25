@@ -5,6 +5,7 @@
 
 import { lazy, Suspense } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { PageHeader } from "@/components/PageHeader";
 
 const SalesReport = lazy(() => import("./SalesReport"));
 const SalesRegister = lazy(() => import("./SalesRegister"));
@@ -17,13 +18,11 @@ function TabFallback() {
 
 export default function SalesReportsHub() {
   return (
-    <div className="p-4 max-w-7xl">
-      <div className="mb-3">
-        <h1 className="text-2xl font-bold">تقارير المبيعات</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          أربع زوايا للنظر إلى مبيعاتك: الملخّص، التفصيل بنداً-بنداً، التوزيع حسب البُعد (عميل/فرع/طريقة دفع/كاشير)، وربحية أوامر الشغل.
-        </p>
-      </div>
+    <div className="p-4 max-w-7xl space-y-4">
+      <PageHeader
+        title="تقارير المبيعات"
+        description="أربع زوايا للنظر إلى مبيعاتك: الملخّص، التفصيل بنداً-بنداً، التوزيع حسب البُعد (عميل/فرع/طريقة دفع/كاشير)، وربحية أوامر الشغل."
+      />
       <Tabs defaultValue="summary" className="w-full">
         <TabsList>
           <TabsTrigger value="summary">ملخّص</TabsTrigger>

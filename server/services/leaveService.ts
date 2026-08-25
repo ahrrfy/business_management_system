@@ -83,7 +83,8 @@ export interface LeaveInput {
   leaveType: string;
   fromDate: string;
   toDate: string;
-  days: number;
+  /** قيمة قديمة للتوافق فقط؛ لا تُستخدم. الأيام تُحسب خادميًا من fromDate/toDate. */
+  days?: number;
   reason?: string | null;
 }
 

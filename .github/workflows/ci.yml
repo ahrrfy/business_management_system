@@ -213,6 +213,14 @@ jobs:
         run: pnpm check:nginx-abuse
       - name: حارِس صلاحية Docker Compose
         run: pnpm check:compose
+      # PR #772 (٢٥/٨): FK اسمٌ ٦٥ حرفاً في storeRecommendationDailyMetrics حاصر CI. حارسٌ آليّ
+      # يمنع تكراره — أيّ اسم مُتولَّد من `.references()` inline > ٦٤ يُرفض قبل الدمج.
+      - name: حارِس أسماء FK (حدّ ٦٤ حرفاً على MySQL 8.4)
+        run: pnpm check:fk-name
+      # PR #771 كشف `--sem-warning` (بدلاً من `--sem-warn`) في ٦ مواقع بعناصر تحذير غير مرئية.
+      # PR #775 (٢٥/٨): حارسٌ يمنع typos في التوكنز المُوحَّدة، حتى داخل `var(--x, fallback)`.
+      - name: حارِس متغيّرات CSS غير المعرَّفة (typos في التوكنز)
+        run: pnpm check:css-vars
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: بناء الإنتاج

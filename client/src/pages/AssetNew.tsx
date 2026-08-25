@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
 import { iqd } from "@/lib/assets/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -97,10 +98,11 @@ export default function AssetNew() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">إضافة أصل جديد</h1>
-        <Link href="/assets/register" className="text-sm text-muted-foreground">← رجوع للسجلّ</Link>
-      </div>
+      <PageHeader
+        title="إضافة أصل جديد"
+        backHref="/assets/register"
+        backLabel="رجوع للسجلّ"
+      />
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>

@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { fmtAr } from "@/lib/money";
+import { RowActions } from "@/components/list/RowActions";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, CreditCard, TrendingUp, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -351,28 +352,31 @@ export default function DigitalDashboard() {
                       <td className="p-2 text-muted-foreground">{h.branchName}</td>
                       <td className="p-2">{AVAIL_LABEL[h.availability] ?? h.availability}</td>
                       <td className="p-2 text-center">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            const pricingIssue = h.availability === "NO_PRICE" || h.availability === "STALE_PRICE";
-                            const tab = pricingIssue
-                              ? "pricing"
+                        <RowActions
+                          mode="inline"
+                          actions={[{
+                            key: "fix-readiness",
+                            kind: "edit",
+                            label: h.availability === "NO_PRICE" || h.availability === "STALE_PRICE"
+                              ? "فتح التسعير"
                               : h.availability === "INSUFFICIENT_BALANCE" || h.availability === "WALLET_INACTIVE"
-                                ? "wallets"
-                                : "offerings";
-                            const params = new URLSearchParams({ tab });
-                            params.set("branchId", String(h.branchId));
-                            params.set("providerId", String(h.providerId));
-                            navigate(`/digital-cards?${params.toString()}`);
-                          }}
-                        >
-                          {h.availability === "NO_PRICE" || h.availability === "STALE_PRICE"
-                            ? "فتح التسعير"
-                            : h.availability === "INSUFFICIENT_BALANCE" || h.availability === "WALLET_INACTIVE"
-                              ? "فتح رصيد المزوّد"
-                              : "إصلاح الربط"}
-                        </Button>
+                                ? "فتح رصيد المزوّد"
+                                : "إصلاح الربط",
+                            gate: { module: "digital_cards", level: "READ" },
+                            onSelect: () => {
+                              const pricingIssue = h.availability === "NO_PRICE" || h.availability === "STALE_PRICE";
+                              const tab = pricingIssue
+                                ? "pricing"
+                                : h.availability === "INSUFFICIENT_BALANCE" || h.availability === "WALLET_INACTIVE"
+                                  ? "wallets"
+                                  : "offerings";
+                              const params = new URLSearchParams({ tab });
+                              params.set("branchId", String(h.branchId));
+                              params.set("providerId", String(h.providerId));
+                              navigate(`/digital-cards?${params.toString()}`);
+                            },
+                          }]}
+                        />
                       </td>
                     </tr>
                   ))}

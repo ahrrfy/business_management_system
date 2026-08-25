@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -504,23 +505,20 @@ export default function ProductNew() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-4 pb-28">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">
-            المنتجات / <span className="text-foreground">إضافة منتج</span>
-          </div>
-          <h1 className="text-2xl font-bold leading-tight">
-            {mode === "service"
-              ? "إضافة خِدمة"
-              : mode === "simple"
-                ? "إضافة سلعة بسيطة"
-                : mode === "bundle"
-                  ? "إضافة بكج (باندل)"
-                  : "إضافة منتج بمتغيّرات"}
-          </h1>
-        </div>
-        <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
-      </div>
+      <PageHeader
+        title={
+          mode === "service"
+            ? "إضافة خِدمة"
+            : mode === "simple"
+              ? "إضافة سلعة بسيطة"
+              : mode === "bundle"
+                ? "إضافة بكج (باندل)"
+                : "إضافة منتج بمتغيّرات"
+        }
+        breadcrumbs={[{ label: "المنتجات", href: "/products" }, { label: "إضافة منتج" }]}
+        backHref="/products"
+        backLabel="رجوع للمنتجات"
+      />
 
       {/* ── نوع البَند: سلعة بسيطة / بمتغيّرات / خِدمة / بكج ── */}
       <div className="inline-flex flex-wrap rounded-lg border bg-muted/40 p-1 gap-1">

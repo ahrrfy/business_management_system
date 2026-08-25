@@ -20,9 +20,12 @@ import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } from "@shared/workOrderDeliveryState";
+import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { cn } from "@/lib/utils";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
+type PickupPayment = NonNullable<RouterInputs["workOrders"]["deliver"]["payment"]>;
+type PartialPickup = { row: QueueRow; payment?: PickupPayment; message: string; clientRequestId: string };
 
 // مرآة بوّابتي الخادم بالضبط (لا مفتاح وحدة صلاحيات منفصل لـ"delivery" — راجع server/trpc.ts):
 //   workOrders.deliver / workOrders.setDeliveryMethod ⇐ workordersCashierProcedure (كاشير/مدير + وحدة workorders=FULL).
@@ -51,6 +54,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 
   const [dispatchTarget, setDispatchTarget] = useState<QueueRow | null>(null);
   const [pickupTarget, setPickupTarget] = useState<QueueRow | null>(null);
+  const [partialPickup, setPartialPickup] = useState<PartialPickup | null>(null);
   const [reclassifyTarget, setReclassifyTarget] = useState<QueueRow | null>(null);
   // ردّ أمانة أجرة توصيلٍ عبر ورديةٍ غير وردية القبض ⇒ الخادم يرفض (FORBIDDEN «اعتماد مدير»):
   // نلتقط بيانات المحاولة ونطلب اعتماد مدير ثم نعيدها معه (نمط DraftPaymentsDialog حرفياً).
@@ -73,9 +77,16 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     onSuccess: (r) => {
       notify.ok("تم التسليم", `فاتورة ${r.invoiceNumber}`);
       setPickupTarget(null);
+      setPartialPickup(null);
       invalidateAll();
     },
-    onError: (e) => notify.err(e),
+    onError: (e, vars) => {
+      if (isPartialDispatchRejection(e) && pickupTarget) {
+        setPartialPickup({ row: pickupTarget, payment: vars.payment, message: e.message, clientRequestId: vars.clientRequestId ?? crypto.randomUUID() });
+        return;
+      }
+      notify.err(e);
+    },
   });
   const setDeliveryMethod = trpc.workOrders.setDeliveryMethod.useMutation({
     onSuccess: (r) => {
@@ -179,7 +190,21 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         onClose={() => setPickupTarget(null)}
         onConfirm={(payment) => {
           const ord = pickupTarget!;
-          deliver.mutate({ workOrderId: ord.id, payment, clientRequestId: crypto.randomUUID() });
+          deliver.mutate({ workOrderId: ord.id, payment, clientRequestId: crypto.randomUUID(), partialDispatchConfirmed: false });
+        }}
+      />
+      <PartialPickupConfirmDialog
+        state={partialPickup}
+        pending={deliver.isPending}
+        onClose={() => { setPartialPickup(null); setPickupTarget(null); }}
+        onConfirm={() => {
+          if (!partialPickup) return;
+          deliver.mutate({
+            workOrderId: partialPickup.row.id,
+            payment: partialPickup.payment,
+            clientRequestId: partialPickup.clientRequestId,
+            partialDispatchConfirmed: true,
+          });
         }}
       />
 
@@ -220,6 +245,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, onDispa
   onPickup?: (r: QueueRow) => void;
   onReclassify?: (r: QueueRow) => void;
 }) {
+  const groups = groupQueueRows(rows);
   return (
     <section className="rounded-xl border bg-card">
       <div className="flex items-center gap-2 border-b px-4 py-2.5">
@@ -231,13 +257,44 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, onDispa
         <EmptyState icon={Icon} title="لا شيء هنا" description={emptyLabel} />
       ) : (
         <ul className="divide-y">
-          {rows.map((r) => (
-            <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
+          {groups.map((group) => group.draftId == null ? (
+            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
+          ) : (
+            <li key={`draft-${group.draftId}`}>
+              <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-4 py-2 text-xs">
+                <span className="font-bold">طلب {group.draftNumber ?? `#${group.draftId}`}</span>
+                <span className={cn("rounded px-1.5 py-0.5 font-bold", group.readyCount === group.totalCount ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]")}>
+                  {group.readyCount}/{group.totalCount} جاهزة
+                </span>
+                {group.readyCount < group.totalCount && <span className="text-muted-foreground">لا يُسلَّم الجزء الجاهز إلا بإقرار صريح</span>}
+              </div>
+              <ul className="divide-y">
+                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />)}
+              </ul>
+            </li>
           ))}
         </ul>
       )}
     </section>
   );
+}
+
+function groupQueueRows(rows: QueueRow[]) {
+  const groups = new Map<string, { draftId: number | null; draftNumber: string | null; totalCount: number; readyCount: number; rows: QueueRow[] }>();
+  for (const row of rows) {
+    const draftId = row.draftId == null ? null : Number(row.draftId);
+    const key = draftId == null ? `single-${row.id}` : `draft-${draftId}`;
+    const group = groups.get(key) ?? {
+      draftId,
+      draftNumber: row.draftNumber ?? null,
+      totalCount: draftId == null ? 1 : Math.max(1, Number(row.draftTotalCount ?? 1)),
+      readyCount: draftId == null ? (row.status === "READY" || row.status === "DELIVERED" ? 1 : 0) : Number(row.draftReadyCount ?? 0),
+      rows: [],
+    };
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+  return Array.from(groups.values());
 }
 
 function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }: {
@@ -321,6 +378,23 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
       </div>
       <RowActions actions={actions} />
     </li>
+  );
+}
+
+function PartialPickupConfirmDialog({ state, pending, onClose, onConfirm }: { state: PartialPickup | null; pending: boolean; onClose: () => void; onConfirm: () => void }) {
+  if (!state) return null;
+  return (
+    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/70 p-4" dir="rtl" role="dialog" aria-modal="true" aria-label="إقرار التسليم الجزئي">
+      <div className="w-full max-w-lg rounded-2xl bg-card p-6 shadow-2xl">
+        <h3 className="mb-2 text-lg font-extrabold">تأكيد تسليم جزء من الطلب</h3>
+        <p className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]">{state.message}</p>
+        <p className="mt-3 text-xs text-muted-foreground">سيُسجّل هذا الإقرار باسم المستخدم الحالي، ويبقى باقي الطلب في الطابور حتى يجهز.</p>
+        <div className="mt-5 flex gap-2">
+          <Button variant="outline" className="flex-1" disabled={pending} onClick={onClose}>تراجع</Button>
+          <Button variant="destructive" className="flex-1" disabled={pending} onClick={onConfirm}>{pending ? "جارٍ…" : "أقرّ التسليم الجزئي"}</Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

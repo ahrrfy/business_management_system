@@ -63,7 +63,7 @@ async function notifyPayrollUsers(runId: number, periodValue: string, stage: "ap
       kind: "PAYROLL_READY",
       title: stage === "paid" ? "تم صرف الراتب" : "كشف الراتب جاهز",
       body: `الفترة ${periodValue}`,
-      route: "/mobile#payroll",
+      route: "/hr?tab=payroll",
       eventKey: `payroll:${runId}:${row.employeeId}:${stage}`,
       entityType: "payrollRun",
       entityId: runId,
@@ -247,7 +247,7 @@ export const payrollRouter = router({
       amount: positiveMoneyString,
       authorityName: z.string().trim().min(1).max(200),
       referenceNumber: z.string().trim().min(1).max(100),
-      supportingDocumentUrl: z.string().trim().min(1).max(4_000_000),
+      supportingDocumentUrl: z.string().trim().min(1).max(3_000_000),
       clientRequestId: z.string().trim().min(1).max(80),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -528,7 +528,7 @@ export const payrollRouter = router({
         monthlyDeduction: moneyStr.nullish(),
         note: z.string().trim().max(255).nullish(),
         // مُرفق سند الصرف (صورة مضغوطة data URL أو رابط) — اختياريّ، نفس سقف voucherRouter.
-        attachmentUrl: z.string().max(4_000_000).nullish(),
+        attachmentUrl: z.string().max(3_000_000).nullish(),
         // idempotency (تدقيق ١٧/٧): منع صرف نقدي مزدوج عند إعادة الإرسال.
         clientRequestId: z.string().trim().min(1).max(64),
       }),

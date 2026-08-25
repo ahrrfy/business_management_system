@@ -575,24 +575,23 @@ export default function ProductEdit() {
     <div className="max-w-6xl mx-auto space-y-4 pb-28">
       <PageHeader
         title="تعديل منتج بمتغيّرات"
-        description="المنتجات / تعديل المنتج"
+        breadcrumbs={[{ label: "المنتجات", href: "/products" }, { label: "تعديل المنتج" }]}
+        backHref="/products"
+        backLabel="رجوع للمنتجات"
         actions={
-          <div className="flex items-center gap-2">
-            {isSimple && (
-              <Button type="button" variant="outline" size="sm" onClick={async () => {
-                const ok = await confirm({
-                  variant: "warning",
-                  title: "العودة للتحرير المبسّط",
-                  description: "العودة للتحرير المبسّط تتجاهل أي تعديلات غير محفوظة هنا. متابعة؟",
-                  confirmText: "متابعة",
-                });
-                if (ok) setAdvanced(false);
-              }} title="العودة للتحرير المبسّط">
-                تحرير مبسّط
-              </Button>
-            )}
-            <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
-          </div>
+          isSimple ? (
+            <Button type="button" variant="outline" size="sm" onClick={async () => {
+              const ok = await confirm({
+                variant: "warning",
+                title: "العودة للتحرير المبسّط",
+                description: "العودة للتحرير المبسّط تتجاهل أي تعديلات غير محفوظة هنا. متابعة؟",
+                confirmText: "متابعة",
+              });
+              if (ok) setAdvanced(false);
+            }} title="العودة للتحرير المبسّط">
+              تحرير مبسّط
+            </Button>
+          ) : undefined
         }
       />
 

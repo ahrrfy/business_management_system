@@ -107,7 +107,7 @@ async function fanOutAnnouncementNotifications(
           kind: "ANNOUNCEMENT",
           title,
           body,
-          route: "/mobile",
+          route: "/my-work#announcements",
           eventKey: `ANNOUNCEMENT:${announcementId}:${userId}`,
           entityType: "announcement",
           entityId: announcementId,

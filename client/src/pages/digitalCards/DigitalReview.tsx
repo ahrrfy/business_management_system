@@ -12,6 +12,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { D, fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { RowActions } from "@/components/list/RowActions";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { CheckCircle2, CircleAlert, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -205,15 +206,18 @@ export default function DigitalReview() {
                       <td className="p-3 text-muted-foreground whitespace-nowrap" dir="ltr">{fmtDateTime(row.createdAt)}</td>
                       <td className="p-3 max-w-xs">{cause.next}</td>
                       <td className="p-3 text-center">
-                        <Button
-                          size="sm"
-                          variant={row.resolutionStatus === "PENDING" ? "default" : "outline"}
-                          disabled={active}
-                          title={active ? "نافذة الإصدار ما زالت نشطة" : undefined}
-                          onClick={() => setReviewing(row)}
-                        >
-                          {row.resolutionStatus === "PENDING" ? "مراجعة القرار" : "معالجة الآن"}
-                        </Button>
+                        <RowActions
+                          mode="inline"
+                          actions={[{
+                            key: "review",
+                            kind: "view",
+                            label: row.resolutionStatus === "PENDING" ? "مراجعة القرار" : "معالجة الآن",
+                            gate: { module: "digital_cards", level: "READ" },
+                            disabled: active,
+                            disabledReason: "نافذة الإصدار ما زالت نشطة",
+                            onSelect: () => setReviewing(row),
+                          }]}
+                        />
                       </td>
                     </tr>
                   );
@@ -268,7 +272,16 @@ export default function DigitalReview() {
                         جهاز المزوّد {higher ? "أعلى" : "أقل"} من النظام بهذا المبلغ
                       </td>
                       <td className="p-3 text-center">
-                        <Button size="sm" variant="outline" onClick={() => setResolving(row)}>معالجة الفرق</Button>
+                        <RowActions
+                          mode="inline"
+                          actions={[{
+                            key: "resolve-variance",
+                            kind: "correct",
+                            label: "معالجة الفرق",
+                            gate: { module: "digital_cards", level: "FULL" },
+                            onSelect: () => setResolving(row),
+                          }]}
+                        />
                       </td>
                     </tr>
                   );

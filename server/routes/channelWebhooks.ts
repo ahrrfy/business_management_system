@@ -228,8 +228,9 @@ export function channelWebhooksRouter(): Router {
       }
       return res.status(200).send("ok");
     } catch (e: any) {
+      // لا نُقرّ بالنجاح عند فشل الحفظ: 503 يطلب إعادة الإرسال، وexternalId يمنع التكرار عند وصوله لاحقاً.
       log.error({ err: e?.message, branchId: match.branchId }, "Instagram webhook: فَشل");
-      return res.status(200).send("error logged");
+      return res.status(503).send("temporary failure");
     }
   });
 
@@ -258,8 +259,9 @@ export function channelWebhooksRouter(): Router {
       await addMessage({ conversationId: conv.id, direction: "IN", body, externalId });
       return res.status(200).send("ok");
     } catch (e: any) {
+      // لا نُقرّ بالنجاح عند فشل الحفظ: 503 يطلب إعادة الإرسال، وexternalId يمنع التكرار عند وصوله لاحقاً.
       log.error({ err: e?.message, branchId: matchedBranchId }, "Store webhook: فَشل");
-      return res.status(200).send("error logged");
+      return res.status(503).send("temporary failure");
     }
   });
 

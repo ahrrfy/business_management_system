@@ -29,6 +29,7 @@ import { LoadingState } from "@/components/PageState";
 import { notify } from "@/lib/notify";
 import { D, formatIqd } from "@/lib/money";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
+import { RowActions } from "@/components/list/RowActions";
 
 type Report = RouterOutputs["deliveryLegacyRepair"]["report"];
 type RepairInput = RouterInputs["deliveryLegacyRepair"]["repair"];
@@ -217,17 +218,21 @@ export default function LegacyDataRepair() {
                   <td className={cell}><div>{row.contactName ?? "—"}</div><div className="max-w-xs text-xs text-muted-foreground">{row.deliveryAddress ?? "بلا عنوان محفوظ"}</div></td>
                   <td className={cell}>{fmtDate(row.deliveredAt)}</td>
                   <td className={cell}>
-                    <Button size="sm" onClick={() => openDialog({
-                      action: "CREATE_MISSING_CONSIGNMENT",
-                      targetId: row.id,
-                      title: "إنشاء الإرسالية المفقودة",
-                      description: "اختر الجهة والأجرة صراحةً. ستنشأ الإرسالية DISPATCHED بلا ختم تسليم.",
-                      expectedConfirmation: row.orderNumber,
-                      deliveryFee: String(row.deliveryCost ?? "0"),
-                    })}>
-                      <Truck className="size-4" aria-hidden />
-                      معالجة
-                    </Button>
+                    <RowActions mode="inline" actions={[{
+                      key: "create-missing-consignment",
+                      kind: "edit",
+                      label: "معالجة",
+                      icon: Truck,
+                      gate: { module: "reports", level: "FULL" },
+                      onSelect: () => openDialog({
+                        action: "CREATE_MISSING_CONSIGNMENT",
+                        targetId: row.id,
+                        title: "إنشاء الإرسالية المفقودة",
+                        description: "اختر الجهة والأجرة صراحةً. ستنشأ الإرسالية DISPATCHED بلا ختم تسليم.",
+                        expectedConfirmation: row.orderNumber,
+                        deliveryFee: String(row.deliveryCost ?? "0"),
+                      }),
+                    }]} />
                   </td>
                 </tr>
               ))}</tbody>
@@ -248,32 +253,41 @@ export default function LegacyDataRepair() {
                   <td className={cell}>{row.partyName}</td>
                   <td className={cell}>{fmtDate(row.dispatchedAt)}</td>
                   <td className={`${cell} space-x-2 space-x-reverse`}>
-                    <Button size="sm" onClick={() => openDialog({
-                      action: "RECORD_PREPAID_DELIVERY_PROOF",
-                      targetId: row.id,
-                      title: "تسجيل إثبات التسليم",
-                      description: "أدخل الوقت والمرجع من مستند/اتصال تشغيلي حقيقي. لا يملأ النظام أياً منهما.",
-                      expectedConfirmation: row.consignmentNumber,
-                      deliveredAt: "",
-                      evidenceRef: "",
-                      feeSettlementAction: "",
-                      proofDeliveryFee: row.deliveryFee,
-                      proofFeeCollection: row.feeCollection,
-                    })}>
-                      <ClipboardCheck className="size-4" aria-hidden />
-                      إثبات التسليم
-                    </Button>
-                    {row.parcelStatus === "DELIVERED" && (
-                      <Button variant="outline" size="sm" onClick={() => openDialog({
-                        action: "REOPEN_PREPAID_CONSIGNMENT",
-                        targetId: row.id,
-                        title: "إعادة فتح الإرسالية",
-                        description: "يُعاد الصف إلى DISPATCHED ليظهر في العمل الميداني؛ لا يُسجل إثبات تسليم.",
-                        expectedConfirmation: row.consignmentNumber,
-                      })}>
-                        إعادة فتح
-                      </Button>
-                    )}
+                    <RowActions mode="inline" actions={[
+                      {
+                        key: "record-proof",
+                        kind: "approve",
+                        label: "إثبات التسليم",
+                        icon: ClipboardCheck,
+                        gate: { module: "reports", level: "FULL" },
+                        onSelect: () => openDialog({
+                          action: "RECORD_PREPAID_DELIVERY_PROOF",
+                          targetId: row.id,
+                          title: "تسجيل إثبات التسليم",
+                          description: "أدخل الوقت والمرجع من مستند/اتصال تشغيلي حقيقي. لا يملأ النظام أياً منهما.",
+                          expectedConfirmation: row.consignmentNumber,
+                          deliveredAt: "",
+                          evidenceRef: "",
+                          feeSettlementAction: "",
+                          proofDeliveryFee: row.deliveryFee,
+                          proofFeeCollection: row.feeCollection,
+                        }),
+                      },
+                      ...(row.parcelStatus === "DELIVERED" ? [{
+                        key: "reopen",
+                        kind: "edit" as const,
+                        label: "إعادة فتح",
+                        icon: RefreshCw,
+                        gate: { module: "reports" as const, level: "FULL" as const },
+                        onSelect: () => openDialog({
+                          action: "REOPEN_PREPAID_CONSIGNMENT" as const,
+                          targetId: row.id,
+                          title: "إعادة فتح الإرسالية",
+                          description: "يُعاد الصف إلى DISPATCHED ليظهر في العمل الميداني؛ لا يُسجل إثبات تسليم.",
+                          expectedConfirmation: row.consignmentNumber,
+                        }),
+                      }] : []),
+                    ]} />
                   </td>
                 </tr>
               ))}</tbody>
@@ -299,13 +313,20 @@ export default function LegacyDataRepair() {
                   ) : row.reviewedAt ? (
                     <Badge variant="secondary">رُوجعت {fmtDate(row.reviewedAt)}</Badge>
                   ) : (
-                    <Button variant="outline" size="sm" onClick={() => openDialog({
-                      action: "ACKNOWLEDGE_PARTIAL_OUTSTANDING",
-                      targetId: row.id,
-                      title: "تسجيل مراجعة الرصيد الجزئي",
-                      description: "لن يتغير المبلغ أو الحالة؛ يُسجل قرار إبقاء المتبقي للتحصيل مرة واحدة.",
-                      expectedConfirmation: row.consignmentNumber,
-                    })}>تسجيل المراجعة</Button>
+                    <RowActions mode="inline" actions={[{
+                      key: "acknowledge-partial",
+                      kind: "approve",
+                      label: "تسجيل المراجعة",
+                      icon: ClipboardCheck,
+                      gate: { module: "reports", level: "FULL" },
+                      onSelect: () => openDialog({
+                        action: "ACKNOWLEDGE_PARTIAL_OUTSTANDING",
+                        targetId: row.id,
+                        title: "تسجيل مراجعة الرصيد الجزئي",
+                        description: "لن يتغير المبلغ أو الحالة؛ يُسجل قرار إبقاء المتبقي للتحصيل مرة واحدة.",
+                        expectedConfirmation: row.consignmentNumber,
+                      }),
+                    }]} />
                   )}</td>
                 </tr>
               ))}</tbody>
@@ -326,26 +347,37 @@ export default function LegacyDataRepair() {
                   <td className={cell}>{row.openCount.toLocaleString("ar-IQ")}</td>
                   <td className={cell}>{fmtDate(row.oldestOpenAt)}</td>
                   <td className={`${cell} space-x-2 space-x-reverse`}>
-                    <Button size="sm" onClick={() => openDialog({
-                      action: "LINK_GATEWAY_ACCOUNT",
-                      targetId: row.id,
-                      title: "ربط حساب البوابة",
-                      description: "اختر حساب مندوب نشطاً وغير مرتبط بجهة أخرى.",
-                      expectedConfirmation: row.name,
-                      gatewayUserId: "",
-                    })}>
-                      <Link2 className="size-4" aria-hidden />
-                      ربط حساب
-                    </Button>
-                    {!row.reviewedAt && (
-                      <Button variant="outline" size="sm" onClick={() => openDialog({
-                        action: "CONFIRM_EXTERNAL_WITHOUT_GATEWAY",
-                        targetId: row.id,
-                        title: "اعتماد جهة خارجية بلا بوابة",
-                        description: "يسجل القرار فقط؛ تبقى الجهة بلا حساب ويجب متابعة إرسالياتها إدارياً.",
-                        expectedConfirmation: row.name,
-                      })}>جهة خارجية</Button>
-                    )}
+                    <RowActions mode="inline" actions={[
+                      {
+                        key: "link-gateway",
+                        kind: "edit",
+                        label: "ربط حساب",
+                        icon: Link2,
+                        gate: { module: "reports", level: "FULL" },
+                        onSelect: () => openDialog({
+                          action: "LINK_GATEWAY_ACCOUNT",
+                          targetId: row.id,
+                          title: "ربط حساب البوابة",
+                          description: "اختر حساب مندوب نشطاً وغير مرتبط بجهة أخرى.",
+                          expectedConfirmation: row.name,
+                          gatewayUserId: "",
+                        }),
+                      },
+                      ...(!row.reviewedAt ? [{
+                        key: "confirm-external",
+                        kind: "approve" as const,
+                        label: "جهة خارجية",
+                        icon: ShieldCheck,
+                        gate: { module: "reports" as const, level: "FULL" as const },
+                        onSelect: () => openDialog({
+                          action: "CONFIRM_EXTERNAL_WITHOUT_GATEWAY" as const,
+                          targetId: row.id,
+                          title: "اعتماد جهة خارجية بلا بوابة",
+                          description: "يسجل القرار فقط؛ تبقى الجهة بلا حساب ويجب متابعة إرسالياتها إدارياً.",
+                          expectedConfirmation: row.name,
+                        }),
+                      }] : []),
+                    ]} />
                     {row.reviewedAt && <Badge variant="secondary">قرار مسجل</Badge>}
                   </td>
                 </tr>
@@ -372,17 +404,21 @@ export default function LegacyDataRepair() {
                   <td className={cell}>{fmtMoney(row.paidAmount)}</td>
                   <td className={`${cell} font-medium`}>{fmtMoney(row.outstandingAmount)}</td>
                   <td className={cell}>
-                    <Button size="sm" onClick={() => openDialog({
-                      action: "RESTORE_INVOICE_CUSTOMER",
-                      targetId: row.id,
-                      title: "استعادة هوية عميل الفاتورة",
-                      description: `المصدر هو أمر الشغل ${row.orderNumber} وعميله المحفوظ ${row.customerName}. المتبقي المرصود ${fmtMoney(row.outstandingAmount)}؛ قرر بعد مراجعة الذمة إن كان سيُضاف.`,
-                      expectedConfirmation: row.invoiceNumber,
-                      customerBalanceAction: "",
-                    })}>
-                      <UserRoundSearch className="size-4" aria-hidden />
-                      استعادة العميل
-                    </Button>
+                    <RowActions mode="inline" actions={[{
+                      key: "restore-customer",
+                      kind: "correct",
+                      label: "استعادة العميل",
+                      icon: UserRoundSearch,
+                      gate: { module: "reports", level: "FULL" },
+                      onSelect: () => openDialog({
+                        action: "RESTORE_INVOICE_CUSTOMER",
+                        targetId: row.id,
+                        title: "استعادة هوية عميل الفاتورة",
+                        description: `المصدر هو أمر الشغل ${row.orderNumber} وعميله المحفوظ ${row.customerName}. المتبقي المرصود ${fmtMoney(row.outstandingAmount)}؛ قرر بعد مراجعة الذمة إن كان سيُضاف.`,
+                        expectedConfirmation: row.invoiceNumber,
+                        customerBalanceAction: "",
+                      }),
+                    }]} />
                   </td>
                 </tr>
               ))}</tbody>

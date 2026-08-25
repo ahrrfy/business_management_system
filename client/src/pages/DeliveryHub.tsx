@@ -827,7 +827,7 @@ function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTran
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" onClick={onCancel} dir="rtl">
       <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-ok)]">
+        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-pos)]">
           <CheckCircle2 aria-hidden className="size-5" />
           تم التسليم — {row.consignmentNumber}
         </div>
@@ -847,7 +847,7 @@ function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTran
           {QUICK_NOTES.map((n) => (
             <button key={n} type="button" onClick={() => setNote(n)} className={cn(
               "rounded-full px-2.5 py-1 text-xs font-medium transition",
-              note === n ? "bg-[var(--sem-ok)] text-white" : "bg-muted text-muted-foreground hover:bg-accent",
+              note === n ? "bg-[var(--sem-pos)] text-white" : "bg-muted text-muted-foreground hover:bg-accent",
             )}>{n}</button>
           ))}
         </div>
@@ -1241,7 +1241,7 @@ function SettleTab() {
                         {/* ٢٣/٨: جسر التسليم–التحصيل. طرودٌ سُلِّمت ونقدها بيد الجهة ⇒ شارةٌ صريحة. */}
                         {p.deliveredAwaitingRemitCount > 0 && (
                           <span
-                            className="ms-1.5 rounded-md bg-[var(--sem-ok-bg)] px-1.5 py-0.5 text-[10px] font-black text-[var(--sem-ok)]"
+                            className="ms-1.5 rounded-md bg-[var(--sem-pos-bg)] px-1.5 py-0.5 text-[10px] font-black text-[var(--sem-pos)]"
                             title={`${p.deliveredAwaitingRemitCount} طرود سُلِّمت — النقد بذمّة الجهة`}
                           >
                             سُلِّم {p.deliveredAwaitingRemitCount}
@@ -1361,7 +1361,7 @@ function SettleTab() {
                           {remittable && (
                             <button
                               type="button"
-                              className={cn("rounded px-2 py-1 text-xs font-bold", st.outcome === "COLLECTED" ? "bg-[var(--sem-ok-bg)] text-[var(--sem-ok)]" : "bg-muted text-muted-foreground")}
+                              className={cn("rounded px-2 py-1 text-xs font-bold", st.outcome === "COLLECTED" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-muted text-muted-foreground")}
                               onClick={() => setRows((r) => ({ ...r, [c.id]: { outcome: st.outcome === "COLLECTED" ? "NONE" : "COLLECTED", collected: st.outcome === "COLLECTED" ? "0" : String(remaining) } }))}
                             ><Check aria-hidden className="inline size-3" /> {st.outcome === "COLLECTED" ? "مُحدَّد" : "حدّد"}</button>
                           )}
