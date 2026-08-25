@@ -25,6 +25,20 @@
 import Decimal from "decimal.js";
 import { round2 } from "../money";
 
+/**
+ * **مضاعف العمل الإضافيّ = ١.٥×** (Tier-2 #2 — ٢٥/٨)
+ *
+ * قانون العمل العراقي رقم ٣٧ لسنة ٢٠١٥ — المادة ٦٨ (وما بعدها بشأن ساعات العمل): كل
+ * ساعةٍ فوق ساعات العمل اليومية القانونية تُدفع بأجرٍ يُضاف إليه **٥٠٪** على الأقل من
+ * الأجر العادي. تطبيقاً لهذا: الأجر عن الساعة الإضافية = سعرُ الساعة × ١.٥.
+ *
+ * ⛔ **لا يشمل هذا المضاعف عملَ يوم الراحة** — قرار المالك ٣١/٧ الصريح: «سعر عادي» بلا
+ * مضاعف (السطور ٣٦٦-٣٦٨ أدناه). عملُ يوم الراحة يبقى بالسعر الأساس (١.٠×).
+ *
+ * ⛔ **لا أثر رجعيّ**: الأشهر المُصرَفة مجمَّدة (#635) — التغيير يسري على المسيّرات القادمة.
+ */
+const OVERTIME_MULTIPLIER = new Decimal("1.5");
+
 /** أسماء الأيام العربية بترتيب getUTCDay (الأحد=0) — مطابقة لـWEEK_DAYS في @shared/hr. */
 const DAY_NAMES = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"] as const;
 
@@ -257,7 +271,8 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
       ot: Decimal,
       amount: Decimal,
     ) => {
-      const otAmount = round2(rate.times(ot));
+      // Tier-2 #2 (٢٥/٨): OT بمضاعف ١.٥× — قانون العمل العراقي 37/2015 المادة ٦٨.
+      const otAmount = round2(rate.times(OVERTIME_MULTIPLIER).times(ot));
       days.push({
         date: d,
         dayName: dayNameOf(d),
@@ -328,7 +343,8 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     payable = payable.plus(counted);
     basePay = basePay.plus(rate.times(counted));
     otHours = otHours.plus(ot);
-    otPay = otPay.plus(rate.times(ot));
+    // مطابقٌ لخانة اليوم في `push` — نفس المضاعف ١.٥× (قانون العراق 37/2015 م٦٨).
+    otPay = otPay.plus(rate.times(OVERTIME_MULTIPLIER).times(ot));
     if (counted.lt(daily)) shortHours = shortHours.plus(daily.minus(counted));
     push("present", attended, counted, ot, rate.times(counted));
   }
