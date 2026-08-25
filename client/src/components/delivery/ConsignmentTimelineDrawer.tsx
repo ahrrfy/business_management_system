@@ -80,7 +80,7 @@ const LEDGER_ENTRY_SIGN: Record<string, 1 | -1> = {
 
 /** لون النقطة الزمنية بحسب نوع الحدث — يقود العين للأخطر. */
 function eventDot(eventType: string): string {
-  if (eventType === "DELIVERED") return "bg-[var(--sem-ok)]";
+  if (eventType === "DELIVERED") return "bg-[var(--sem-pos)]";
   if (eventType === "FAILED" || eventType === "CANCELLED" || eventType === "STALE_ESCALATED")
     return "bg-[var(--sem-danger)]";
   if (eventType === "RETURN_DECLARED" || eventType === "RETURNED") return "bg-[var(--sem-warn)]";

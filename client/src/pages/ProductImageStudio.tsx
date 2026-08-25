@@ -1319,7 +1319,7 @@ export default function ProductImageStudio() {
                   <span className="text-xs text-muted-foreground">التوجيه: {campaignBoard.data.requiredImages} صورة لكل منتج</span>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <div className="rounded-md border bg-[var(--sem-ok-bg,transparent)] p-3">
+                  <div className="rounded-md border bg-[var(--sem-pos-bg,transparent)] p-3">
                     <div className="text-xs text-muted-foreground">منتجات اكتملت صورها</div>
                     <div className="mt-1 text-2xl font-bold">
                       {campaignBoard.data.done}

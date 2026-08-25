@@ -59,13 +59,13 @@ export default function EmployeeOffboarding() {
             className={cn(
               "border-2",
               clearance.data.clearedToExit
-                ? "border-[var(--sem-ok)]/50 bg-[var(--sem-ok-bg)]"
+                ? "border-[var(--sem-pos)]/50 bg-[var(--sem-pos-bg)]"
                 : "border-destructive/50 bg-destructive/5",
             )}
           >
             <CardContent className="flex items-start gap-3 p-4">
               {clearance.data.clearedToExit ? (
-                <CheckCircle2 aria-hidden className="mt-0.5 size-6 shrink-0 text-[var(--sem-ok)]" />
+                <CheckCircle2 aria-hidden className="mt-0.5 size-6 shrink-0 text-[var(--sem-pos)]" />
               ) : (
                 <ShieldAlert aria-hidden className="mt-0.5 size-6 shrink-0 text-destructive" />
               )}
