@@ -402,7 +402,7 @@ export default function StocktakeNew() {
               <span
                 className={`grid size-7 place-items-center rounded-full text-xs font-bold ${
                   i < step
-                    ? "bg-emerald-500 text-white"
+                    ? "bg-[var(--sem-pos)] text-white"
                     : i === step
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted text-muted-foreground"
@@ -423,7 +423,7 @@ export default function StocktakeNew() {
             {isManagerPlus && (
               <div
                 className={`flex items-start justify-between gap-3 rounded-lg border p-3 ${
-                  isOpeningSession ? "border-amber-500/50 bg-amber-500/10" : ""
+                  isOpeningSession ? "border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]" : ""
                 }`}
               >
                 <div className="space-y-0.5">
@@ -1239,7 +1239,7 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
                   <Button
                     size="sm"
                     variant="outline"
-                    className="text-emerald-700"
+                    className="text-[var(--sem-pos)]"
                     onClick={() => openWhatsApp(null, waMessage(a))}
                   >
                     واتساب

@@ -772,7 +772,7 @@ export default function CountPortal() {
   if (sessionStatus === "APPROVED") {
     return frame(
       <CenterScreen>
-        <div className="grid size-16 place-items-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+        <div className="grid size-16 place-items-center rounded-full bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">
           <Check aria-hidden className="size-8" />
         </div>
         <p className="text-lg font-bold">اعتُمدت نتائج الجرد</p>
@@ -798,7 +798,7 @@ export default function CountPortal() {
       .join("\n");
     return frame(
       <CenterScreen>
-        <div className="grid size-20 place-items-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+        <div className="grid size-20 place-items-center rounded-full bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">
           <Check aria-hidden className="size-10" />
         </div>
         <p className="flex items-center justify-center gap-2 text-xl font-bold">
@@ -826,7 +826,7 @@ export default function CountPortal() {
   if (sessionStatus === "REVIEW" && !submittedAssignment) {
     return frame(
       <CenterScreen>
-        <div className="grid size-16 place-items-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+        <div className="grid size-16 place-items-center rounded-full bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
           <Lock aria-hidden className="size-8" />
         </div>
         <p className="text-lg font-bold">أُقفل العدّ</p>
@@ -859,7 +859,7 @@ export default function CountPortal() {
           </div>
           <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
             {queueCount > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="عدّات بانتظار المزامنة">
+              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]" title="عدّات بانتظار المزامنة">
                 <Hourglass aria-hidden className="size-3" /> {fmtInt(queueCount)}
               </span>
             )}
@@ -871,7 +871,7 @@ export default function CountPortal() {
             <span
               className={cn(
                 "inline-block size-2.5 rounded-full",
-                online ? "bg-emerald-500" : "bg-rose-500",
+                online ? "bg-[var(--sem-pos)]" : "bg-[var(--sem-neg)]",
               )}
               title={online ? "متصل" : "لا اتصال"}
               aria-label={online ? "متصل" : "لا اتصال"}
@@ -881,7 +881,7 @@ export default function CountPortal() {
         <div className="mt-2.5 flex items-center gap-2">
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-primary/15">
             <div
-              className={cn("h-full rounded-full transition-all", allDone ? "bg-emerald-500" : "bg-primary")}
+              className={cn("h-full rounded-full transition-all", allDone ? "bg-[var(--sem-pos)]" : "bg-primary")}
               style={{ width: `${pct}%` }}
             />
           </div>
@@ -893,20 +893,20 @@ export default function CountPortal() {
 
       {/* مؤشر انقطاع الاتصال */}
       {!online && (
-        <div className="flex items-center justify-between border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-bold text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300">
+        <div className="flex items-center justify-between border-b border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-4 py-2 text-xs font-bold text-[var(--sem-warn)]">
           <span className="inline-flex items-center gap-1.5">
             <WifiOff aria-hidden className="size-3.5" /> لا اتصال — العدّ يُحفظ محلياً
           </span>
           {queueCount > 0 && (
-            <span className="rounded-full bg-amber-200 px-2 py-0.5 dark:bg-amber-900">{fmtInt(queueCount)} بانتظار المزامنة</span>
+            <span className="rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5">{fmtInt(queueCount)} بانتظار المزامنة</span>
           )}
         </div>
       )}
 
       {/* مهام إعادة العدّ */}
       {canCount && st.recountTasks.length > 0 && (
-        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2.5 dark:border-amber-900 dark:bg-amber-950/40">
-          <p className="inline-flex items-center gap-1 text-xs font-bold text-amber-800 dark:text-amber-300">
+        <div className="border-b border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-4 py-2.5">
+          <p className="inline-flex items-center gap-1 text-xs font-bold text-[var(--sem-warn)]">
             <RefreshCw aria-hidden className="size-3.5" /> مطلوب إعادة عدّ ({fmtInt(st.recountTasks.length)}):
           </p>
           {st.recountTasks.map((t) => (
@@ -917,16 +917,16 @@ export default function CountPortal() {
                 const it = items.find((i) => i.variantId === t.variantId);
                 if (it) openCard(it);
               }}
-              className="mt-1.5 flex w-full items-center justify-between gap-2 rounded-lg border border-amber-300 bg-card px-3 py-2.5 text-right text-sm font-semibold active:scale-[0.99] dark:border-amber-800"
+              className="mt-1.5 flex w-full items-center justify-between gap-2 rounded-lg border border-[var(--sem-warn)]/40 bg-card px-3 py-2.5 text-right text-sm font-semibold active:scale-[0.99]"
             >
               <span className="min-w-0">
                 <span className="block truncate">
                   {t.productName}
                   {t.variantName ? <span className="font-normal text-muted-foreground"> {t.variantName}</span> : null}
                 </span>
-                <span className="block truncate text-[11px] font-normal text-amber-700 dark:text-amber-400">السبب: {t.reason}</span>
+                <span className="block truncate text-[11px] font-normal text-[var(--sem-warn)]">السبب: {t.reason}</span>
               </span>
-              <span className="shrink-0 text-amber-700 dark:text-amber-400">عدّ الآن ←</span>
+              <span className="shrink-0 text-[var(--sem-warn)]">عدّ الآن ←</span>
             </button>
           ))}
         </div>
@@ -1018,9 +1018,9 @@ export default function CountPortal() {
                 className={cn(
                   "grid size-9 shrink-0 place-items-center rounded-full text-sm font-bold",
                   countedHere && !isRecPending
-                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                    ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
                     : isRecPending
-                      ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                      ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
                       : "bg-muted text-muted-foreground",
                 )}
               >
@@ -1043,7 +1043,7 @@ export default function CountPortal() {
               </div>
               {countedHere && shownQty != null ? (
                 <span
-                  className="flex shrink-0 items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                  className="flex shrink-0 items-center gap-1 rounded-lg bg-[var(--sem-pos-bg)] px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-[var(--sem-pos)]"
                   dir="ltr"
                 >
                   {queued && <Hourglass aria-hidden className="size-3" />}
@@ -1110,7 +1110,7 @@ export default function CountPortal() {
                         verifiedByMe
                           ? "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300"
                           : i.colleagueCounted
-                            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                            ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
                             : "bg-muted text-muted-foreground",
                       )}
                     >
@@ -1174,7 +1174,7 @@ export default function CountPortal() {
           </button>
         )}
         {submittedAssignment ? (
-          <div className="pointer-events-auto inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-100 px-4 py-3 text-center text-sm font-bold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+          <div className="pointer-events-auto inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-[var(--sem-pos-bg)] px-4 py-3 text-center text-sm font-bold text-[var(--sem-pos)]">
             <Check aria-hidden className="size-4" /> سلّمت العدّ — بانتظار مراجعة المسؤول
           </div>
         ) : (
@@ -1185,7 +1185,7 @@ export default function CountPortal() {
             className={cn(
               "pointer-events-auto h-12 w-full rounded-xl text-base font-bold transition-colors",
               allDone && online && queueCount === 0 && !finishMut.isPending
-                ? "bg-emerald-600 text-white active:bg-emerald-700"
+                ? "bg-[var(--sem-pos)] text-background active:opacity-90"
                 : "cursor-not-allowed bg-muted text-muted-foreground",
             )}
           >
@@ -1357,7 +1357,7 @@ function QtySheet({
         </div>
       )}
       {isRecount && (
-        <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold leading-relaxed text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+        <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-[var(--sem-warn-bg)] px-3 py-2 text-xs font-semibold leading-relaxed text-[var(--sem-warn)]">
           <RefreshCw aria-hidden className="mt-0.5 size-3.5 shrink-0" />
           <span>مطلوب إعادة عدّ ثانية لهذا المنتج{recountReason ? ` — السبب: ${recountReason}` : ""}. عُدّ من جديد بتمعّن.</span>
         </div>

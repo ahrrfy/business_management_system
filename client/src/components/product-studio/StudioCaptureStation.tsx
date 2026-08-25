@@ -138,11 +138,14 @@ export function StudioCaptureStation({
 
       {cameraOpen && (
         <Suspense fallback={null}>
+          {/* keepOpen: عشرةُ منتجاتٍ = عشرة إعادات فتحٍ للكاميرا — سياقٌ يقاطع دورة المصوّر
+              (طلبُ الإذن أوّل مرّة، ثمّ ثوانٍ لبدء الإطار، ثمّ إغلاقٌ فوريّ). الآن تبقى مفتوحةً
+              مع تبريدٍ يمنع إعادة قراءة الباركود ذاته، ويُغلقها المصوّر يدوياً عند الفراغ. */}
           <CameraScanner
             open
+            keepOpen
             onClose={() => setCameraOpen(false)}
             onDetect={(barcode) => {
-              setCameraOpen(false);
               submitCode(barcode);
             }}
           />

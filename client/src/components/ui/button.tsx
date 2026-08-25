@@ -19,6 +19,18 @@ const buttonVariants = cva(
         ghost:
           "hover:bg-accent dark:hover:bg-accent/50",
         link: "text-primary underline-offset-4 hover:underline",
+        /* — variants دلاليّة (٢٥/٨) —
+           استعمل كلٌّ منها بدل نمط `className="bg-[var(--sem-*)] hover:opacity-90"` — الأخير
+           **لا يُلغي** `hover:bg-primary/90` من متغيّر default فيصير الزرّ أزرق عند التمرير
+           (أمسكها Codex على PR #801 ثلاث مرّات). و`text-white` وحدها بلا `dark:` تسقط تحت
+           2.18:1 على الوضع الليليّ (Codex #800). التوكن `--sem-*-fg` غير معرَّف بعد؛ إلى
+           حينه: `text-background` أفضل تكيّفٍ متاح (كريميّ فاتح في الفاتح، شبه أسود في الغامق). */
+        success:
+          "bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90",
+        warning:
+          "bg-[var(--sem-warn)] text-background hover:bg-[var(--sem-warn)]/90",
+        info:
+          "bg-[var(--sem-info)] text-background hover:bg-[var(--sem-info)]/90",
       },
       size: {
         default: "h-[var(--ui-control)] px-4 py-2 has-[>svg]:px-3",

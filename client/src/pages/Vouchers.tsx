@@ -667,14 +667,10 @@ export default function Vouchers() {
               </Button>
             </Link>
             <Link href="/vouchers/receipt/new">
-              <Button className="bg-[var(--sem-pos)] text-white hover:opacity-90">
-                + سند قبض
-              </Button>
+              <Button variant="success">+ سند قبض</Button>
             </Link>
             <Link href="/vouchers/payment/new">
-              <Button className="bg-[var(--sem-neg)] text-white hover:opacity-90">
-                + طلب صرف
-              </Button>
+              <Button variant="destructive">+ طلب صرف</Button>
             </Link>
           </div>
         }

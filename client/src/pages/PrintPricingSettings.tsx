@@ -57,7 +57,7 @@ export default function PrintPricingSettings() {
       {bundle.isLoading ? (
         <Card><CardContent className="p-6 text-center text-muted-foreground">جارٍ التحميل…</CardContent></Card>
       ) : bundle.isError ? (
-        <Card><CardContent className="p-6 text-center text-amber-600">{bundle.error?.message}</CardContent></Card>
+        <Card><CardContent className="p-6 text-center text-[var(--sem-warn)]">{bundle.error?.message}</CardContent></Card>
       ) : (
         <>
           <GeneralSettings settings={bundle.data!.settings} onSaved={invalidate} />
@@ -130,7 +130,7 @@ function GeneralSettings({
           <Button
             onClick={() => save.mutate({ pricingMode: form.pricingMode, defaultMarginPercent: form.defaultMarginPercent || "0", setupFee: form.setupFee || "0" })}
             disabled={save.isPending}
-            className="bg-emerald-600 hover:bg-emerald-700"
+            className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90"
           >
             حفظ الإعدادات العامّة
           </Button>
@@ -195,7 +195,7 @@ function FacePricesSection({
             {PAPER_SIZES.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
           <MoneyInput value={price} onChange={setPrice} ariaLabel="سعر الوجه" placeholder="سعر الوجه" />
-          <Button onClick={submit} disabled={upsert.isPending} className="bg-emerald-600 hover:bg-emerald-700">
+          <Button onClick={submit} disabled={upsert.isPending} className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90">
             <Plus aria-hidden className="size-4 ms-1" /> حفظ السعر
           </Button>
         </div>
@@ -324,7 +324,7 @@ function ManagedListSection({
           )}
           <MoneyInput value={money} onChange={setMoney} ariaLabel={moneyLabel} placeholder={moneyLabel} />
           <div className="flex gap-1">
-            <Button onClick={submit} disabled={busy} className="flex-1 bg-emerald-600 hover:bg-emerald-700">
+            <Button onClick={submit} disabled={busy} className="flex-1 bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90">
               {editingId != null ? <><Check aria-hidden className="size-4 ms-1" /> حفظ</> : <><Plus aria-hidden className="size-4 ms-1" /> إضافة</>}
             </Button>
             {editingId != null && (

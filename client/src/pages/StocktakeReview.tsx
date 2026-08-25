@@ -1438,7 +1438,7 @@ export default function StocktakeReview() {
                       r.overThreshold && !r.decision && !recPending
                         ? "bg-rose-50/40"
                         : r.diff != null && r.diff !== 0
-                          ? "bg-amber-50/30"
+                          ? "bg-[var(--sem-warn-bg)]/40"
                           : ""
                     }`}
                   >
@@ -1510,7 +1510,7 @@ export default function StocktakeReview() {
                         </p>
                       )}
                       {r.verify && r.verify.match && !conflictOpen && (
-                        <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                        <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--sem-pos)]">
                           <CheckCheck aria-hidden className="size-3" />
                           عدّ تحقّقي مطابق من {r.verify.byName}
                         </p>
@@ -1624,7 +1624,7 @@ export default function StocktakeReview() {
                           ? "text-[var(--sem-info)]"
                           : r.diff != null && r.diff < 0
                             ? "text-rose-700"
-                            : "text-emerald-700"
+                            : "text-[var(--sem-pos)]"
                       }`}
                       dir="ltr"
                     >
@@ -1809,7 +1809,7 @@ export default function StocktakeReview() {
                             </>
                           ) : !r.overThreshold && s.directUnderThreshold ? (
                             <>
-                              <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
+                              <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--sem-pos)]">
                                 تسوية تلقائية{" "}
                                 <Check aria-hidden className="size-3" />
                               </span>

@@ -135,15 +135,15 @@ export default function KioskDevices() {
       {/* الرمز المكشوف مرّة واحدة — يُستثنى من الطباعة (print:hidden): زرّ «طباعة» أدناه يطبع
           الصفحة كاملة بـwindow.print()، ولا يصحّ أن يخرج الرمز السرّي الخام على الورق أبداً. */}
       {reveal && (
-        <Card className="border-emerald-400/60 bg-emerald-50/50 dark:bg-emerald-950/20 print:hidden">
+        <Card className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)]/60 print:hidden">
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base text-emerald-700 dark:text-emerald-400">
+            <CardTitle className="text-base text-[var(--sem-pos)]">
               رمز الجهاز «{reveal.label}» — يظهر مرّة واحدة فقط
             </CardTitle>
             <button className="text-muted-foreground hover:text-foreground" onClick={() => setReveal(null)} aria-label="إغلاق"><X aria-hidden className="size-5" /></button>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 p-3 text-xs text-amber-800 dark:text-amber-300">
+            <div className="rounded-md bg-[var(--sem-warn-bg)] border border-[var(--sem-warn)]/40 p-3 text-xs text-[var(--sem-warn)]">
               انسخ الرمز الآن — لن يظهر ثانيةً. الصقه في مُشغّل الكشك على الجهاز عند طلب «الرمز».
               إن فقدته: «تدوير الرمز» يُصدر رمزاً جديداً ويُبطل القديم فوراً.
             </div>

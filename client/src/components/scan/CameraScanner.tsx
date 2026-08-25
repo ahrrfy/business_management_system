@@ -13,6 +13,15 @@ interface Props {
   onClose: () => void;
   /** يُستدعى بالنص المفكوك من الباركود أو QR. */
   onDetect: (code: string) => void;
+  /**
+   * إبقاء الكاميرا مفتوحةً بعد كلّ مسحٍ ناجح لتمكين دورة «امسح ثمّ التالي» بلا إعادة فتح.
+   * الافتراضي `false` للتوافق مع الاستدعاءات القائمة التي تتوقّع الإغلاق التلقائيّ.
+   * حين تُفعَّل، يُطبَّق زمن تبريدٍ بين المسحات (`cooldownMs`) لمنع نفس الباركود من الإطلاق
+   * مرّاتٍ متتاليةً بلا فائدة.
+   */
+  keepOpen?: boolean;
+  /** زمنُ تبريدٍ بين مسحات `keepOpen` (بالميلي ثانية). الافتراضي ١٥٠٠ (ثلاث ثوانٍ نصفَين). */
+  cooldownMs?: number;
 }
 
 type FallbackControls = {
@@ -62,13 +71,19 @@ function ManualEntry({ onSubmit }: { onSubmit: (value: string) => void }) {
   );
 }
 
-export function CameraScanner({ open, onClose, onDetect }: Props) {
+export function CameraScanner({ open, onClose, onDetect, keepOpen = false, cooldownMs = 1500 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const onDetectRef = useRef(onDetect);
   const controlsRef = useRef<FallbackControls | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectedRef = useRef(false);
+  const lastCodeRef = useRef<string | null>(null);
+  const cooldownTimerRef = useRef<number | null>(null);
+  const keepOpenRef = useRef(keepOpen);
+  const cooldownMsRef = useRef(cooldownMs);
   onDetectRef.current = onDetect;
+  keepOpenRef.current = keepOpen;
+  cooldownMsRef.current = cooldownMs;
 
   const [error, setError] = useState("");
   const [engine, setEngine] = useState<"starting" | "native" | "zxing">("starting");
@@ -89,6 +104,21 @@ export function CameraScanner({ open, onClose, onDetect }: Props) {
     (raw: string) => {
       const code = raw.trim();
       if (!code || detectedRef.current) return;
+      // في وضع «الاستمرار» نُبقي الكاميرا مفتوحة، ونمنع التكرار بزمن تبريدٍ لا بالإغلاق.
+      // ولمنع الباركود ذاته من الإطلاق مرّاتٍ متتالية حين يظلّ في الإطار: نفس الرمز
+      // خلال نافذة التبريد يُتجاهَل، ورمزٌ آخر يعمل فوراً (الحقل معدّ لدورة سريعة).
+      if (keepOpenRef.current) {
+        if (lastCodeRef.current === code && cooldownTimerRef.current != null) return;
+        detectedRef.current = true;
+        lastCodeRef.current = code;
+        if (cooldownTimerRef.current != null) window.clearTimeout(cooldownTimerRef.current);
+        cooldownTimerRef.current = window.setTimeout(() => {
+          detectedRef.current = false;
+          cooldownTimerRef.current = null;
+        }, Math.max(400, cooldownMsRef.current));
+        onDetectRef.current(code);
+        return;
+      }
       detectedRef.current = true;
       stopMedia();
       onDetectRef.current(code);
@@ -101,6 +131,11 @@ export function CameraScanner({ open, onClose, onDetect }: Props) {
     let stopped = false;
     let nativeRaf = 0;
     detectedRef.current = false;
+    lastCodeRef.current = null;
+    if (cooldownTimerRef.current != null) {
+      window.clearTimeout(cooldownTimerRef.current);
+      cooldownTimerRef.current = null;
+    }
     setError("");
     setEngine("starting");
 
@@ -141,14 +176,23 @@ export function CameraScanner({ open, onClose, onDetect }: Props) {
       await video.play();
       setEngine("native");
       const scanFrame = async () => {
-        if (stopped || detectedRef.current) return;
+        if (stopped) return;
+        // في وضع `keepOpen` نُبقي الحلقةَ حيّةً أثناء التبريد بدل موتها بعد أوّل رصد.
+        // قبل الإصلاح: `if (stopped || detectedRef.current) return;` كان يوقف الجدولة
+        // نهائياً على أوّل رصد، فيبدو الماسح مفتوحاً على الشاشة لكنه ميّت — الجذر: مراجعة
+        // Codex P2 على PR #776 (٢٥/٨) — وضع `keepOpen` كان بلا أثرٍ على المسار الأصليّ.
+        if (detectedRef.current) {
+          if (keepOpenRef.current) nativeRaf = requestAnimationFrame(scanFrame);
+          return;
+        }
         if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
           try {
             const codes = await detector.detect(video);
             const value = codes[0]?.rawValue;
             if (value) {
               deliver(value);
-              return;
+              // اللقطةُ الواحدة تموت بعد deliver (يستدعي stopMedia)، والمستمرّ يعيد الجدولة.
+              if (!keepOpenRef.current) return;
             }
           } catch {
             // إطار غير صالح أو ضبابي؛ نستمر حتى يستقر التركيز.
@@ -221,6 +265,10 @@ export function CameraScanner({ open, onClose, onDetect }: Props) {
     return () => {
       stopped = true;
       stop();
+      if (cooldownTimerRef.current != null) {
+        window.clearTimeout(cooldownTimerRef.current);
+        cooldownTimerRef.current = null;
+      }
     };
   }, [deliver, open, stopMedia]);
 

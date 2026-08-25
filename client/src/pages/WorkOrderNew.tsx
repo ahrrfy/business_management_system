@@ -636,7 +636,7 @@ export default function WorkOrderNew() {
                       className={cn(
                         "border-t",
                         stock.isOut && "border-s-[3px] border-s-destructive bg-destructive/5",
-                        !stock.isOut && stock.isShort && "border-s-[3px] border-s-amber-500 bg-amber-50",
+                        !stock.isOut && stock.isShort && "border-s-[3px] border-s-[var(--sem-warn)] bg-[var(--sem-warn-bg)]",
                       )}
                     >
                       <td className="px-3 py-1.5">
@@ -648,7 +648,7 @@ export default function WorkOrderNew() {
                             </span>
                           )}
                           {!stock.isOut && stock.isShort && (
-                            <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
+                            <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-white">
                               {stock.availInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${stock.availInUnit} فقط`}
                             </span>
                           )}
@@ -658,7 +658,7 @@ export default function WorkOrderNew() {
                       <td
                         className={cn(
                           "px-2 py-1.5 text-center text-xs font-extrabold tabular-nums",
-                          stock.isOut ? "text-destructive" : stock.isShort ? "text-amber-600" : "text-muted-foreground",
+                          stock.isOut ? "text-destructive" : stock.isShort ? "text-[var(--sem-warn)]" : "text-muted-foreground",
                         )}
                         dir="ltr"
                       >
@@ -896,7 +896,7 @@ export default function WorkOrderNew() {
           {/* الملخّص الهجين — وثيقتان: بيع مباشر (يُدفع كاملاً) + أمر تخصيص (عربون + متبقٍّ) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
             {/* بطاقة البيع المباشر */}
-            <div className={cn("rounded-md border p-3 space-y-1", hasCart ? "bg-emerald-500/5 border-emerald-500/30" : "bg-muted/20 opacity-60")}>
+            <div className={cn("rounded-md border p-3 space-y-1", hasCart ? "bg-[var(--sem-pos-bg)] border-[var(--sem-pos)]/30" : "bg-muted/20 opacity-60")}>
               <div className="flex items-center justify-between font-semibold"><span className="inline-flex items-center gap-1.5"><ShoppingCart aria-hidden className="size-4" /> بيع مباشر (جاهز)</span>{hasCart && <Badge variant="outline" className="badge-status-active">فاتورة مستقلّة</Badge>}</div>
               <div className="flex justify-between"><span>إجمالي السلّة</span><span dir="ltr">{fmt(cartSubtotal.toFixed(2))} د.ع</span></div>
               {discount.gt(0) && <div className="flex justify-between text-money-positive"><span>− خصم</span><span dir="ltr">{fmt(discount.toFixed(2))} د.ع</span></div>}
