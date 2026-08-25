@@ -508,7 +508,7 @@ function NewBroadcastDialog({
             onVarsMapChange={setVarsMap}
           />
           {selectedTemplate && unmappedCount > 0 && (
-            <p className="text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+            <p className="text-xs text-[var(--sem-warn)] flex items-center gap-1.5">
               <Info aria-hidden className="size-3.5" /> {unmappedCount} متغيّر بلا ربط — سيُرسَل فارغاً.
             </p>
           )}
@@ -564,9 +564,9 @@ function ApprovalQueueCard({
   if (!canManage || pending.length === 0) return null;
 
   return (
-    <Card className="border-amber-300/70 dark:border-amber-800/60">
+    <Card className="border-[var(--sem-warn)]/40">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
+        <CardTitle className="text-sm flex items-center gap-1.5 text-[var(--sem-warn)]">
           <ShieldAlert aria-hidden className="size-4" /> بانتظار الاعتماد ({pending.length})
         </CardTitle>
         <CardDescription>فوق عتبة حجم الجمهور — يلزم اعتماد مديرٍ آخر غير منشئ الحملة (فصل المهام، بلا استثناء).</CardDescription>
@@ -796,7 +796,7 @@ function BroadcastDetailDialog({
         )}
 
         {isSelfCreator && d.broadcastStatus === "PENDING_APPROVAL" && (
-          <p className="text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+          <p className="text-xs text-[var(--sem-warn)] flex items-center gap-1.5">
             <ShieldAlert aria-hidden className="size-3.5" /> أنت منشئ هذه الحملة — يلزم اعتمادها من مديرٍ آخر (فصل المهام، بلا استثناء).
           </p>
         )}

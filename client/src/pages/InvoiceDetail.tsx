@@ -77,8 +77,8 @@ const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethod
 // التعريب من `@shared/invoiceStatus` وحده (مصدر الحقيقة) — كانت نسخةً محلّية سابعة تنجرف
 // عن الـenum عند كل قيمةٍ جديدة. خريطة الأصناف اللونية تبقى محلّية: نطاقها العرض لا التعريب.
 const STATUS_CLS: Record<string, string> = {
-  PAID: "bg-emerald-100 text-emerald-700",
-  PARTIALLY_PAID: "bg-amber-100 text-amber-700",
+  PAID: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+  PARTIALLY_PAID: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
   PENDING: "bg-muted text-foreground/70",
   RETURNED: "bg-rose-100 text-rose-700",
   CANCELLED: "bg-rose-100 text-rose-700",
@@ -131,8 +131,8 @@ function SummaryRow({
         className={cn(
           "tabular-nums",
           strong ? "text-lg font-bold" : "text-sm",
-          tone === "amber" && "text-amber-600",
-          tone === "emerald" && "text-emerald-600",
+          tone === "amber" && "text-[var(--sem-warn)]",
+          tone === "emerald" && "text-[var(--sem-pos)]",
         )}
       >
         <CopyInline value={value} display={fmt(value)} mono={false} />
@@ -1040,7 +1040,7 @@ export default function InvoiceDetail() {
                         <span
                           className={
                             returned
-                              ? "text-amber-600 font-medium"
+                              ? "text-[var(--sem-warn)] font-medium"
                               : "text-muted-foreground"
                           }
                         >
@@ -1101,7 +1101,7 @@ export default function InvoiceDetail() {
                         className={cn(
                           "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
                           p.direction === "IN"
-                            ? "bg-emerald-100 text-emerald-700"
+                            ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
                             : "bg-rose-100 text-rose-700",
                         )}
                       >
@@ -1144,7 +1144,7 @@ export default function InvoiceDetail() {
                         >
                           <Paperclip
                             aria-hidden
-                            className="size-3.5 text-emerald-700 inline"
+                            className="size-3.5 text-[var(--sem-pos)] inline"
                           />
                         </a>
                       )}
@@ -1441,7 +1441,7 @@ export default function InvoiceDetail() {
       </Dialog>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-emerald-600">{done}</p>}
+      {done && <p className="text-sm text-[var(--sem-pos)]">{done}</p>}
 
       {/* حوار الإلغاء (قرار مالك ١٢/٨): جهة صرفٍ إلزاميّة + سبب اختياريّ + تأكيد كتابيٌّ لرقم الفاتورة. */}
       <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>

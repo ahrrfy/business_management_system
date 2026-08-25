@@ -273,9 +273,9 @@ export default function CustomerNew() {
       </Card>
 
       {dupMatches.length > 0 && (
-        <Card className="lg:col-span-2 border-amber-300 bg-amber-50/60" role="status" aria-live="polite">
+        <Card className="lg:col-span-2 border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/60" role="status" aria-live="polite">
           <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm text-amber-800">
+            <CardTitle className="flex items-center gap-2 text-sm text-[var(--sem-warn)]">
               <TriangleAlert aria-hidden className="size-4" />
               عملاء مشابهون موجودون — تأكّد أنك لا تكرّر عميلاً قائماً
             </CardTitle>
@@ -291,7 +291,7 @@ export default function CustomerNew() {
                   {m.customerType}
                   {m.city ? ` — ${m.city}` : ""}
                 </span>
-                <span className="rounded border border-amber-300 px-1.5 py-0.5 text-[10px] text-amber-800">
+                <span className="rounded border border-[var(--sem-warn)]/40 px-1.5 py-0.5 text-[10px] text-[var(--sem-warn)]">
                   {m.matchedOn === "phone" ? "تطابق هاتف" : m.matchedOn === "both" ? "تطابق اسم وهاتف" : "تشابه اسم"}
                 </span>
                 {!m.isActive && (
@@ -302,7 +302,7 @@ export default function CustomerNew() {
                 </Link>
               </div>
             ))}
-            <p className="text-[11px] text-amber-700">
+            <p className="text-[11px] text-[var(--sem-warn)]">
               التحذير لا يمنع الحفظ — إن كان هو العميل نفسه فافتح بطاقته بدل إنشائه من جديد.
             </p>
           </CardContent>
@@ -356,7 +356,7 @@ export default function CustomerNew() {
               ))}
             </select>
             {tierMismatch && (
-              <p className="text-[11px] text-amber-700">
+              <p className="text-[11px] text-[var(--sem-warn)]">
                 النوع «{customerType}» يُسعَّر عادةً «{PRICE_OPTIONS.find((o) => o.v === suggestedTier(customerType))?.l}».
                 هذه الفئة تُطبَّق تلقائياً في الكاشير.
               </p>
@@ -437,7 +437,7 @@ export default function CustomerNew() {
             </div>
             <div className="md:col-span-2">
               {openingAmount.trim() && Number(openingAmount) > 0 ? (
-                <p className="text-[11px] text-amber-700">
+                <p className="text-[11px] text-[var(--sem-warn)]">
                   سيُسجَّل قيد رصيد افتتاحي:{" "}
                   {openingDir === "OWED_TO_US"
                     ? `«لنا على العميل» ${fmt(openingAmount)} د.ع (يبدأ رصيده مديناً لنا).`
