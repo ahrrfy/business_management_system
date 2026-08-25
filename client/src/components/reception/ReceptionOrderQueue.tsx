@@ -529,7 +529,7 @@ function ReclassifyDialog({ order, pending, onClose, onConfirm }: {
         )}
 
         {priceMayHaveChanged && (
-          <p className="mb-4 flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
+          <p className="mb-4 flex items-start gap-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs text-[var(--sem-warn)]">
             <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
             <span>هذا التغيير لا يُعدِّل سعر بيع الأمر تلقائياً — راجع السعر مع العميل إن استلزم فرق التوصيل تعديلاً.</span>
           </p>
@@ -538,14 +538,14 @@ function ReclassifyDialog({ order, pending, onClose, onConfirm }: {
         {/* أمانة أجرة توصيل COUNTER مقبوضة نقداً: التحوّل لاستلامٍ مباشر يردّها للزبون — نُظهر المبلغ
             ونطلب تأكيد صرفه صراحةً قبل الحفظ (لا حركة نقدٍ صامتة تُحدث عجز درجٍ عند الإقفال). */}
         {mustRefundFee && (
-          <div className="mb-4 space-y-2.5 rounded-lg border border-amber-300 bg-amber-50 p-3">
-            <p className="flex items-start gap-1.5 text-xs text-amber-800">
+          <div className="mb-4 space-y-2.5 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3">
+            <p className="flex items-start gap-1.5 text-xs text-[var(--sem-warn)]">
               <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
               <span>على هذا الطلب أمانة أجرة توصيل <b className="tabular-nums" dir="ltr">{fmt(heldNet)}</b> د.ع مقبوضة نقداً — بالحفظ تُردّ نقداً من الدرج. <b>سلّمها للزبون.</b></span>
             </p>
             {needShiftPick && (
               <div className="space-y-1">
-                <Label className="text-[11px] text-amber-900">أكثر من درجٍ مفتوح — من أيّ درجٍ يخرج النقد؟</Label>
+                <Label className="text-[11px] text-[var(--sem-warn)]">أكثر من درجٍ مفتوح — من أيّ درجٍ يخرج النقد؟</Label>
                 <select
                   aria-label="درج ردّ الأمانة النقدي"
                   className="h-9 w-full rounded-md border bg-card px-2 text-xs font-bold"
@@ -559,7 +559,7 @@ function ReclassifyDialog({ order, pending, onClose, onConfirm }: {
                 </select>
               </div>
             )}
-            <label className="flex items-center gap-2 text-xs font-bold text-amber-900">
+            <label className="flex items-center gap-2 text-xs font-bold text-[var(--sem-warn)]">
               <input type="checkbox" checked={confirmRefund} onChange={(e) => setConfirmRefund(e.target.checked)} className="size-4 accent-amber-600" aria-label="تأكيد تسليم أمانة الأجرة للزبون" />
               سلّمتُ مبلغ الأمانة للزبون نقداً
             </label>

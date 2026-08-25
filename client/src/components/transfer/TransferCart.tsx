@@ -142,7 +142,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
             <Package aria-hidden className="size-4" /> إضافة متعددة
           </Button>
           {lines.length > 0 && (
-            <Button type="button" size="sm" variant="outline" className="h-7 border-rose-400/40 text-rose-600 hover:bg-rose-50" onClick={() => setLines([])}>
+            <Button type="button" size="sm" variant="outline" className="h-7 border-[var(--sem-neg)]/40 text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]" onClick={() => setLines([])}>
               تفريغ الكل
             </Button>
           )}
@@ -181,7 +181,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
                   className={cn(
                     "border-b transition hover:bg-muted/50",
                     st.isOut && "border-s-[3px] border-s-destructive bg-destructive/5",
-                    !st.isOut && st.isShort && "border-s-[3px] border-s-amber-500 bg-amber-50 dark:bg-amber-950/20",
+                    !st.isOut && st.isShort && "border-s-[3px] border-s-amber-500 bg-[var(--sem-warn-bg)]",
                   )}
                 >
                   <td className={cn(td, "font-semibold text-muted-foreground")}>{idx + 1}</td>
@@ -193,7 +193,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
                         <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">نافذ — لا مخزون</span>
                       )}
                       {!st.isOut && st.isShort && (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
+                        <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
                           {st.availInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${fmtInt(st.availInUnit)} فقط`}
                         </span>
                       )}
@@ -205,7 +205,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
                     <span
                       className={cn(
                         "rounded px-1.5 py-0.5 text-xs font-extrabold tabular-nums",
-                        st.isOut ? "bg-destructive text-destructive-foreground" : st.isShort ? "bg-amber-100 text-amber-700" : "text-muted-foreground",
+                        st.isOut ? "bg-destructive text-destructive-foreground" : st.isShort ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "text-muted-foreground",
                       )}
                       dir="ltr"
                     >
@@ -226,7 +226,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
                       type="button"
                       variant="outline"
                       size="icon"
-                      className="h-8 w-8 border-rose-300/40 text-rose-600 hover:bg-rose-50"
+                      className="h-8 w-8 border-[var(--sem-neg)]/40 text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"
                       onClick={() => removeAt(idx)}
                       aria-label="حذف"
                     >

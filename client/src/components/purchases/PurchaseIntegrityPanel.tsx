@@ -16,9 +16,9 @@ const SEVERITY_LABEL: Record<Finding["severity"], string> = {
 };
 
 const SEVERITY_CLASS: Record<Finding["severity"], string> = {
-  CRITICAL: "border-red-700 bg-red-50 text-red-900",
-  HIGH: "border-orange-600 bg-orange-50 text-orange-900",
-  MEDIUM: "border-amber-500 bg-amber-50 text-amber-900",
+  CRITICAL: "border-[var(--sem-neg)] bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
+  HIGH: "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
+  MEDIUM: "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
   INFO: "border-slate-400 bg-slate-50 text-slate-800",
 };
 
@@ -94,7 +94,7 @@ export function PurchaseIntegrityPanel({
       {open && (
         <CardContent className="space-y-4 border-t pt-4">
           {requiresBranchSelection ? (
-            <p className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
+            <p className="rounded border border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]">
               اختر فرعاً محدداً من فلتر القائمة لتشغيل التقرير. القراءة المجمعة
               لكل الفروع ممنوعة.
             </p>
@@ -103,7 +103,7 @@ export function PurchaseIntegrityPanel({
               جارٍ فحص أوامر الشراء في الفرع…
             </p>
           ) : report.error ? (
-            <p className="rounded border border-red-500 bg-red-50 p-3 text-sm text-red-900">
+            <p className="rounded border border-[var(--sem-neg)] bg-[var(--sem-neg-bg)] p-3 text-sm text-[var(--sem-neg)]">
               تعذّر تشغيل التقرير: {report.error.message}
             </p>
           ) : data ? (

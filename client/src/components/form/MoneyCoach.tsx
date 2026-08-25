@@ -66,11 +66,11 @@ export function MoneyCoach({ cost, retail, categoryStats, className }: MoneyCoac
 
   const marginColor =
     marginLevel === "good"
-      ? "text-emerald-600 dark:text-emerald-400"
+      ? "text-[var(--sem-pos)]"
       : marginLevel === "warn"
-      ? "text-amber-600 dark:text-amber-400"
+      ? "text-[var(--sem-warn)]"
       : marginLevel === "bad"
-      ? "text-red-600 dark:text-red-400 font-semibold"
+      ? "text-[var(--sem-neg)] font-semibold"
       : "text-muted-foreground";
 
   const outOfCatRange =
@@ -88,7 +88,7 @@ export function MoneyCoach({ cost, retail, categoryStats, className }: MoneyCoac
         </span>
       )}
       {hasCatStats && (
-        <span className={cn("tabular-nums", outOfCatRange ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>
+        <span className={cn("tabular-nums", outOfCatRange ? "text-[var(--sem-warn)]" : "text-muted-foreground")}>
           الفئة: <span className="font-mono" dir="ltr">{fmt(minC as number)}–{fmt(maxC as number)}</span>
           <span className="text-muted-foreground/70 ms-1">(n={n})</span>
           {outOfCatRange && <span className="ms-1 text-[10px]">— خارج المدى</span>}

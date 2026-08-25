@@ -56,10 +56,10 @@ export function ConsignmentField({
   }
 
   return (
-    <Card className={cn("lg:col-span-2", value.isConsignment && "border-amber-200 bg-amber-50/30")}>
+    <Card className={cn("lg:col-span-2", value.isConsignment && "border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)]/40")}>
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
-          <Handshake aria-hidden className="size-4 text-amber-600" />
+          <Handshake aria-hidden className="size-4 text-[var(--sem-warn)]" />
           بضاعة أمانة (برسم البيع)
         </CardTitle>
       </CardHeader>
@@ -78,7 +78,7 @@ export function ConsignmentField({
             <p className="text-[11px] text-muted-foreground">
               البضاعة ملك المودِع؛ حصته تُسجَّل في خانة «حصة المودِع» ويستحقها عند البيع. لا دين عند الاستلام.
             </p>
-            {disabled && disabledHint && <p className="text-[11px] text-amber-700">{disabledHint}</p>}
+            {disabled && disabledHint && <p className="text-[11px] text-[var(--sem-warn)]">{disabledHint}</p>}
           </div>
         </div>
 
@@ -86,14 +86,14 @@ export function ConsignmentField({
           <div className="space-y-1.5">
             <Label>المودِع <span className="text-destructive">*</span></Label>
             {value.consignorId ? (
-              <div className="flex items-center justify-between rounded-md border border-amber-300 bg-amber-50 px-3 py-2">
-                <span className="text-sm font-medium text-amber-900">{value.consignorName || `مودِع #${value.consignorId}`}</span>
+              <div className="flex items-center justify-between rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2">
+                <span className="text-sm font-medium text-[var(--sem-warn)]">{value.consignorName || `مودِع #${value.consignorId}`}</span>
                 {!disabled && (
                   <button
                     type="button"
                     onClick={() => onChange({ isConsignment: true, consignorId: null })}
                     aria-label="إزالة المودِع"
-                    className="text-amber-700 hover:text-amber-900"
+                    className="text-[var(--sem-warn)] hover:text-[var(--sem-warn)]"
                   >
                     <X aria-hidden className="size-4" />
                   </button>

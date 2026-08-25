@@ -226,7 +226,8 @@ export async function streamStudioImageExport(
   archive.append(
     Buffer.from(
       [
-        `تصدير صور استوديو المنتجات — ${new Date().toLocaleString("ar-IQ")}`,
+        // en-GB لأنّ قرار المالك (٢٥/٨) كل رقمٍ يعرضه النظام لاتينيّ — `ar-IQ` يُنتج هندية.
+        `تصدير صور استوديو المنتجات — ${new Date().toLocaleString("en-GB")}`,
         `النطاق: ${scope.kind === "ALL" ? "كل الكتالوج" : scope.kind === "CATEGORY" ? `فئة ${scope.categoryId}` : `منتجات ${scope.productIds.length}`}`,
         `مؤهَّلات: ${rows.length}${truncated ? ` (مقصوصة إلى ${MAX_EXPORT_IMAGES})` : ""}`,
         `أُضيفت للأرشيف: ${added}`,

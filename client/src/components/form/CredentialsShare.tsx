@@ -81,9 +81,9 @@ export function CredentialsShare({
   }
 
   return (
-    <Card className="border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-800">
+    <Card className="border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]">
       <CardHeader className="pb-2 flex flex-row items-center justify-between">
-        <CardTitle className="text-base text-emerald-700 dark:text-emerald-400 inline-flex items-center gap-1">
+        <CardTitle className="text-base text-[var(--sem-pos)] inline-flex items-center gap-1">
           <CheckCircle2 aria-hidden className="size-4" /> تمّ إنشاء الحساب بنجاح
         </CardTitle>
         {onClose && (
@@ -111,7 +111,7 @@ export function CredentialsShare({
           <div><span className="text-muted-foreground text-xs">كلمة المرور: </span><span dir="ltr" className="font-bold tracking-wider">{password}</span></div>
           <div><span className="text-muted-foreground text-xs">الرابط: </span><span dir="ltr">{resolvedUrl}</span></div>
           {mustChangePassword && (
-            <p className="text-xs text-amber-600 mt-1 inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" /> سيُطلب تغيير كلمة المرور عند أول دخول (صالحة 72 ساعة)</p>
+            <p className="text-xs text-[var(--sem-warn)] mt-1 inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" /> سيُطلب تغيير كلمة المرور عند أول دخول (صالحة 72 ساعة)</p>
           )}
         </div>
 
@@ -124,18 +124,18 @@ export function CredentialsShare({
             title={!waUrl ? "أضف رقم الهاتف أولاً لإرسال واتساب" : undefined}
             className="gap-1"
           >
-            <MessageCircleIcon className="h-4 w-4 text-green-600" />
+            <MessageCircleIcon className="h-4 w-4 text-[var(--sem-pos)]" />
             إرسال واتساب
           </Button>
 
           <Button variant="outline" size="sm" onClick={copyAll} className="gap-1">
-            {copied ? <CheckIcon className="h-4 w-4 text-emerald-600" /> : <CopyIcon className="h-4 w-4" />}
+            {copied ? <CheckIcon className="h-4 w-4 text-[var(--sem-pos)]" /> : <CopyIcon className="h-4 w-4" />}
             {copied ? "تمّ النسخ!" : "نسخ الكل"}
           </Button>
         </div>
 
         {!waUrl && (
-          <p className="text-xs text-amber-600">
+          <p className="text-xs text-[var(--sem-warn)]">
             لا يوجد رقم هاتف لهذا المستخدم — أضفه في «البيانات الوظيفية» لتفعيل إرسال الواتساب (يبقى بإمكانك «نسخ الكل»).
           </p>
         )}

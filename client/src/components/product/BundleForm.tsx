@@ -395,8 +395,8 @@ export default function BundleForm() {
                   className={cn(
                     "pl-9",
                     barcodeSearchInputClass,
-                    flash === "ok" && "border-emerald-500 ring-1 ring-emerald-500",
-                    flash === "err" && "border-red-500 ring-1 ring-red-500",
+                    flash === "ok" && "border-[var(--sem-pos)] ring-1 ring-[var(--sem-pos)]",
+                    flash === "err" && "border-[var(--sem-neg)] ring-1 ring-[var(--sem-neg)]",
                   )}
                   aria-label="بحث ذكيّ للمكوّن (باركود أو نصّ)"
                 />
@@ -454,7 +454,7 @@ export default function BundleForm() {
                             <span className="flex items-center gap-2 truncate">
                               {!already && <Plus aria-hidden className="size-3.5 shrink-0" />}
                               <span className="truncate">{r.productName}</span>
-                              {already && <span className="text-xs text-emerald-600 shrink-0">مُضاف</span>}
+                              {already && <span className="text-xs text-[var(--sem-pos)] shrink-0">مُضاف</span>}
                             </span>
                             <span className="text-xs text-muted-foreground shrink-0 font-mono">{r.sku}</span>
                           </button>
@@ -546,18 +546,18 @@ export default function BundleForm() {
                 placeholder="EAN-13 أو Code128"
                 className={cn(
                   bcState === "takenInDb"
-                    ? "border-amber-500 ring-1 ring-amber-500"
+                    ? "border-[var(--sem-warn)] ring-1 ring-[var(--sem-warn)]"
                     : bcState === "invalid"
-                      ? "border-amber-500"
+                      ? "border-[var(--sem-warn)]"
                       : bcState === "valid"
-                        ? "border-emerald-500/60"
+                        ? "border-[var(--sem-pos)]/60"
                         : ""
                 )}
               />
               <ScanButton onClick={() => setBarcode(genEan13())} />
             </div>
             {taken && (
-              <div className="mt-1 text-xs text-amber-600">مُستخدَم في «{taken.takenBy}» — غيّره.</div>
+              <div className="mt-1 text-xs text-[var(--sem-warn)]">مُستخدَم في «{taken.takenBy}» — غيّره.</div>
             )}
           </Field>
           <Field label="سعر المفرد" required hint="سعر البيع الرئيسي للبكج.">
@@ -597,9 +597,9 @@ export default function BundleForm() {
         <div
           role="alert"
           aria-live="assertive"
-          className="rounded-md border border-red-500/40 bg-red-50 dark:bg-red-950/40 p-3 text-sm flex items-start gap-2"
+          className="rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-3 text-sm flex items-start gap-2"
         >
-          <AlertCircle className="size-4 mt-0.5 shrink-0 text-red-600" />
+          <AlertCircle className="size-4 mt-0.5 shrink-0 text-[var(--sem-neg)]" />
           <div>{error}</div>
         </div>
       )}
@@ -708,7 +708,7 @@ export default function BundleForm() {
                             <span className="truncate">{r.productName}</span>
                             <span className="text-xs text-muted-foreground shrink-0 font-mono">{r.sku}</span>
                           </span>
-                          {already && <span className="text-xs text-emerald-600 shrink-0">مُضاف مسبقاً</span>}
+                          {already && <span className="text-xs text-[var(--sem-pos)] shrink-0">مُضاف مسبقاً</span>}
                         </label>
                       </li>
                     );

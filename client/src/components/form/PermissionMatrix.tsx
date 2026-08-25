@@ -33,13 +33,13 @@ export interface PermissionMatrixProps {
 const LEVELS: AccessLevel[] = ["FULL", "READ", "NONE"];
 
 const LEVEL_STYLES: Record<AccessLevel, string> = {
-  FULL: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20",
-  READ: "bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20",
+  FULL: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] hover:bg-[var(--sem-pos-bg)]/80",
+  READ: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] hover:bg-[var(--sem-warn-bg)]/80",
   NONE: "bg-muted text-muted-foreground hover:bg-muted/80",
 };
 const LEVEL_ACTIVE: Record<AccessLevel, string> = {
-  FULL: "bg-emerald-600 text-white hover:bg-emerald-600",
-  READ: "bg-amber-500 text-white hover:bg-amber-500",
+  FULL: "bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]",
+  READ: "bg-[var(--sem-warn)] text-background hover:bg-[var(--sem-warn-hover)]",
   NONE: "bg-foreground text-background hover:bg-foreground",
 };
 

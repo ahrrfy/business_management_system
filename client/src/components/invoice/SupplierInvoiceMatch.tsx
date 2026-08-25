@@ -33,10 +33,10 @@ export interface SupplierInvoiceMatchProps {
 
 const TONE: Record<MatchResult["verdict"], string> = {
   UNSET: "border-dashed",
-  INVALID: "border-rose-400/50 bg-rose-50/50",
-  MATCH: "border-emerald-500/50 bg-emerald-50/50",
-  OURS_HIGHER: "border-amber-500/50 bg-amber-50/40",
-  OURS_LOWER: "border-amber-500/50 bg-amber-50/40",
+  INVALID: "border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)]/50",
+  MATCH: "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)]/50",
+  OURS_HIGHER: "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/50",
+  OURS_LOWER: "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/50",
 };
 
 export function SupplierInvoiceMatch({
@@ -85,7 +85,7 @@ export function SupplierInvoiceMatch({
               dir="ltr"
               className={cn(
                 "font-extrabold tabular-nums",
-                result.verdict === "MATCH" ? "text-emerald-600" : "text-amber-600",
+                result.verdict === "MATCH" ? "text-[var(--sem-pos)]" : "text-[var(--sem-warn)]",
               )}
             >
               {fmtAr(result.difference)} {curSym}
@@ -97,7 +97,7 @@ export function SupplierInvoiceMatch({
           <p
             className={cn(
               "flex items-start gap-1.5 text-[11px] leading-relaxed",
-              result.verdict === "MATCH" ? "font-bold text-emerald-700" : "text-amber-700",
+              result.verdict === "MATCH" ? "font-bold text-[var(--sem-pos)]" : "text-[var(--sem-warn)]",
             )}
           >
             {result.verdict === "MATCH" ? (
@@ -118,7 +118,7 @@ export function SupplierInvoiceMatch({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-8 w-full border-emerald-500/40 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-100/60"
+                className="h-8 w-full border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)]/60 text-[var(--sem-pos)] hover:bg-[var(--sem-pos-bg)]/80"
                 onClick={onApplyAsDiscount}
                 disabled={!canDistribute}
               >
