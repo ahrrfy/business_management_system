@@ -418,8 +418,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   }
 
   const submitColor = isReceipt
-    ? "bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90"
-    : "bg-[var(--sem-neg)] text-background hover:bg-[var(--sem-neg)]/90";
+    ? "bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]"
+    : "bg-[var(--sem-neg)] text-background hover:bg-[var(--sem-neg-hover)]";
 
   function validate(): string {
     if (

@@ -162,7 +162,7 @@ export function VoucherCategoryQuickCreate({
           <Button
             onClick={submit}
             disabled={create.isPending}
-            className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90"
+            className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]"
           >
             {create.isPending ? "جارٍ الحفظ…" : "حفظ واختيار"}
           </Button>

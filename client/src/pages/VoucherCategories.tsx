@@ -310,7 +310,7 @@ export default function VoucherCategories() {
                   resetForm();
                   setShowForm(true);
                 }}
-                className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90"
+                className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]"
               >
                 <Plus aria-hidden className="size-4 ms-1" /> فئة جديدة
               </Button>
@@ -541,7 +541,7 @@ export default function VoucherCategories() {
               <Button
                 onClick={submitForm}
                 disabled={create.isPending || update.isPending}
-                className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90"
+                className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]"
               >
                 {editing ? "حفظ التَعديل" : "حفظ الفئة"}
               </Button>
