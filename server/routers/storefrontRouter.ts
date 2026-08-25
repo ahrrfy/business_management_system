@@ -95,15 +95,24 @@ export const storefrontRouter = router({
     .mutation(({ input }) => claimFirebaseStorefrontCustomer(input)),
 
   /**
-   * @deprecated نداءُ GET يترك JWT في `?input=...` فيسجَّل في nginx access.log على VPS مشترك.
-   * الاستعمالُ المستقبليّ يجب أن يذهب إلى `customerBenefitsPrivate` (POST body).
-   * نُبقيه مؤقّتاً لتوافق البُنى المنشورة سابقاً على أجهزة المختبِرين — يُحذَف بعد نافذة نشر
-   * تكفي لتبديل جميع الحُزَم (Play Internal → Play Production).
-   * راجع مراجعة Codex P2 (نافذة التوافق) و docs/erp-followups.md § ت-٣.
+   * @deprecated منزوعُ الوظيفة (Tier-1 #2، ٢٥/٨). كان GET يترك JWT في `?input=...` فيسجَّل في
+   * nginx access.log على VPS مشترك. المسار `customerBenefitsPrivate` (POST body) صار مصدر
+   * الحقيقة الوحيد، وكلّ عملاء ERP يستدعونه (فحص grep على `client/` و`expo/` و`android-native/`
+   * لا يُظهر مستدعياً واحداً للـGET القديم — بقيت المراجع في التوثيق فقط).
+   *
+   * نُبقي الاسم مسجّلاً لكنّه يرفض فوراً بدلاً من الحذف الكامل ⇒ عميلٌ متأخّرٌ على بناءٍ قديم
+   * يتلقّى رفضاً واضحاً بدل 404 غامض، ولا يحدث تحقّقٌ للتوكن (لا كتابة، لا استعلام). التوكنُ
+   * لا يزال يظهر في URL على nginx — هذا ثمنُ التوافق الخلفيّ. عندما يبلغ grep على access.log
+   * صفراً لأسبوعَين نحذفه كلّياً (راجع docs/erp-followups.md § ت-٣).
    */
   customerBenefits: storefrontPublicReadProcedure
     .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
-    .query(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
+    .query(() => {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "المسار القديم `customerBenefits` أُغلق (يُسرّب التوكن في URL). حدّث التطبيق لاستعمال `customerBenefitsPrivate`.",
+      });
+    }),
 
   /**
    * رصيد الولاء والقسائم الشخصية بعد تحقق الجلسة الموقعة فقط؛ لا تقبل هاتفاً يرسله التطبيق.

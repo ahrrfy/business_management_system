@@ -217,6 +217,13 @@ jobs:
       # يمنع تكراره — أيّ اسم مُتولَّد من `.references()` inline > ٦٤ يُرفض قبل الدمج.
       - name: حارِس أسماء FK (حدّ ٦٤ حرفاً على MySQL 8.4)
         run: pnpm check:fk-name
+      # Tier-1 #3 (٢٥/٨): audit:actions يرصد إجراءَ صفٍّ بلا بوّابة صلاحية (RowActions parity).
+      # اليوم يفشل على خطّ أساسٍ قائم (~٢٥ شاشة) فلا يُدرَج في `check:guards` blocking؛ لكنّ
+      # تشغيلَه هنا كتقريرٍ صامتٍ (`continue-on-error: true`) يُظهر أي انزلاقٍ جديد في CI
+      # بلا حجب الدمج. تحويلُه إلى ratchet (شبه `check:orphans`) شريحةٌ مستقلّة.
+      - name: تقرير جرد إجراءات القوائم (RowActions parity — غير حاجب)
+        run: pnpm audit:actions
+        continue-on-error: true
       # PR #771 كشف `--sem-warning` (بدلاً من `--sem-warn`) في ٦ مواقع بعناصر تحذير غير مرئية.
       # PR #775 (٢٥/٨): حارسٌ يمنع typos في التوكنز المُوحَّدة، حتى داخل `var(--x, fallback)`.
       - name: حارِس متغيّرات CSS غير المعرَّفة (typos في التوكنز)

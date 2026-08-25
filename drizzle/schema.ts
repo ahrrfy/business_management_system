@@ -9139,12 +9139,22 @@ export const deliveryOutbox = mysqlTable(
     processedAt: timestamp("processedAt"),
     lastError: varchar("lastError", { length: 500 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
+    /**
+     * حالةُ الصفّ (Tier-1 #1، ٢٥/٨): PENDING = مُتاحٌ للسحب؛ DEAD_LETTER = مستنفَدٌ (attempts
+     * تجاوز الحدّ) لا يُعاد سحبه بلا إعادة تفعيلٍ إداريّة. قبل هذه الهجرة كان صفٌّ سامٌّ يُعاد
+     * كلّ ٥ دقائق للأبد بلا تصعيد — الحلقةُ صامتةٌ على الإنتاج.
+     */
+    status: mysqlEnum("status", ["PENDING", "DEAD_LETTER"]).default("PENDING").notNull(),
+    /** لحظة النقل إلى DEAD_LETTER — للتقرير + للاسترجاع الإداريّ. NULL طالما PENDING. */
+    deadLetteredAt: timestamp("deadLetteredAt"),
   },
   (table) => ({
     pendingIdx: index("idx_delivery_outbox_pending").on(
       table.processedAt,
       table.availableAt,
     ),
+    // فهرسٌ ضيّق للمسح الإداريّ للـDEAD_LETTER — أفضل من فحصٍ عبر (processedAt IS NULL).
+    statusIdx: index("idx_delivery_outbox_status").on(table.status),
   }),
 );
 export type DeliveryOutboxRow = typeof deliveryOutbox.$inferSelect;

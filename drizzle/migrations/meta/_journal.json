@@ -1765,6 +1765,13 @@
 			"when": 1788052317000,
 			"tag": "0266_inventory_valuation_snapshots",
 			"breakpoints": true
+		},
+		{
+			"idx": 267,
+			"version": "5",
+			"when": 1788052318000,
+			"tag": "0267_delivery_outbox_dead_letter",
+			"breakpoints": true
 		}
 	]
 }
