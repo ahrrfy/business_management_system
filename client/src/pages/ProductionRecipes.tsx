@@ -12,9 +12,8 @@ import { normalizeSearchText } from "@shared/searchNormalize";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 let _k = 1;
 type CompUnit = { productUnitId: number; unitName: string; conversionFactor: string; isBaseUnit?: boolean };
@@ -193,7 +192,7 @@ export default function ProductionRecipes() {
                         <div className="truncate"><span className="font-medium">{out.productName}</span> <span className="text-xs text-muted-foreground font-mono" dir="ltr">{out.sku}</span></div>
                         <div className="flex items-center gap-2 shrink-0">
                           {out.units.length > 0 && (
-                            <select className={selectCls + " w-auto"} value={out.unitId} onChange={(e) => setOut({ ...out, unitId: Number(e.target.value) })}>
+                            <select className={selectClsFull + " w-auto"} value={out.unitId} onChange={(e) => setOut({ ...out, unitId: Number(e.target.value) })}>
                               {out.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{u.isBaseUnit ? " (أساس)" : ""}</option>)}
                             </select>
                           )}
@@ -241,7 +240,7 @@ export default function ProductionRecipes() {
                       <Input dir="ltr" value={c.qty} onChange={(e) => setComps((p) => p.map((x) => x.key === c.key ? { ...x, qty: e.target.value } : x))} placeholder="كمية" />
                     </div>
                     <div className="col-span-5 md:col-span-3">
-                      <select className={selectCls} value={c.productUnitId ?? ""} onChange={(e) => {
+                      <select className={selectClsFull} value={c.productUnitId ?? ""} onChange={(e) => {
                         const u = c.units.find((x) => x.productUnitId === Number(e.target.value));
                         setComps((p) => p.map((x) => x.key === c.key ? { ...x, productUnitId: Number(e.target.value), conversionFactor: u?.conversionFactor ?? "1" } : x));
                       }}>

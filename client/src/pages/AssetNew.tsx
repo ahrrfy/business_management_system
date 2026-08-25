@@ -12,8 +12,8 @@ import { ASSET_CATEGORIES, DEPRECIATION_METHODS, categoryDefaultLife } from "@sh
 import { AlertCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const today = () => new Date().toISOString().slice(0, 10);
 
 /** الحالة الابتدائية للنموذج — تُستعمل مرّةً للقيمة الأولى ومرّةً كمرجع مقارنة لحارس فقد البيانات. */
@@ -111,7 +111,7 @@ export default function AssetNew() {
           <div className="space-y-1"><Label>اسم الأصل *</Label><Input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="لابتوب Dell Latitude" /></div>
           <div className="space-y-1">
             <Label>الفئة *</Label>
-            <select className={selectCls} value={form.category} onChange={(e) => set({ category: e.target.value, usefulLifeYears: String(categoryDefaultLife(e.target.value)) })}>
+            <select className={selectClsFull} value={form.category} onChange={(e) => set({ category: e.target.value, usefulLifeYears: String(categoryDefaultLife(e.target.value)) })}>
               {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
             </select>
           </div>
@@ -125,7 +125,7 @@ export default function AssetNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label>الفرع</Label>
-            <select className={selectCls} value={form.branchId} onChange={(e) => set({ branchId: e.target.value })}>
+            <select className={selectClsFull} value={form.branchId} onChange={(e) => set({ branchId: e.target.value })}>
               <option value="">— اختر الفرع —</option>
               {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
             </select>
@@ -133,7 +133,7 @@ export default function AssetNew() {
           <div className="space-y-1"><Label>الموقع</Label><Input value={form.location} onChange={(e) => set({ location: e.target.value })} placeholder="مكتب الإدارة" /></div>
           <div className="space-y-1">
             <Label>العهدة (الموظف المسؤول)</Label>
-            <select className={selectCls} value={form.custodianId} onChange={(e) => set({ custodianId: e.target.value })}>
+            <select className={selectClsFull} value={form.custodianId} onChange={(e) => set({ custodianId: e.target.value })}>
               <option value="">— بلا عهدة —</option>
               {(opts.data?.employees ?? []).map((emp) => <option key={emp.id} value={String(emp.id)}>{emp.name}{emp.position ? ` — ${emp.position}` : ""}</option>)}
             </select>
@@ -147,7 +147,7 @@ export default function AssetNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label>المورّد</Label>
-            <select className={selectCls} value={form.supplierId} onChange={(e) => set({ supplierId: e.target.value })}>
+            <select className={selectClsFull} value={form.supplierId} onChange={(e) => set({ supplierId: e.target.value })}>
               <option value="">— بلا مورّد —</option>
               {(opts.data?.suppliers ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
             </select>
@@ -167,7 +167,7 @@ export default function AssetNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1">
             <Label>الطريقة</Label>
-            <select className={selectCls} value={form.method} onChange={(e) => set({ method: e.target.value as "sl" | "db" })}>
+            <select className={selectClsFull} value={form.method} onChange={(e) => set({ method: e.target.value as "sl" | "db" })}>
               {DEPRECIATION_METHODS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
             </select>
           </div>

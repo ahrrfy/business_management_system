@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { Star, Handshake, Printer } from "lucide-react";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
 /**
  * تعديل مورّد — موحَّد على نمط شاشة الإضافة (SupplierNew v3).
@@ -41,8 +42,6 @@ import { Star, Handshake, Printer } from "lucide-react";
 const CATEGORIES = ["محلي", "إقليمي", "دولي"] as const;
 const PAYMENT_TERMS = ["نقدي فوري", "آجل 15 يوم", "آجل 30 يوم", "آجل 60 يوم", "آجل 90 يوم"];
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function SupplierEdit() {
   const [, params] = useRoute<{ id: string }>("/suppliers/:id/edit");
@@ -263,7 +262,7 @@ export default function SupplierEdit() {
             </div>
             <div className="space-y-1">
               <Label htmlFor="cat">تصنيف المورّد</Label>
-              <select id="cat" className={selectCls} value={supplierCategory} onChange={(e) => setSupplierCategory(e.target.value)}>
+              <select id="cat" className={selectClsFull} value={supplierCategory} onChange={(e) => setSupplierCategory(e.target.value)}>
                 <option value="">—</option>
                 {categoryOptions.map((c) => (
                   <option key={c} value={c}>{c}</option>
@@ -345,7 +344,7 @@ export default function SupplierEdit() {
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
               <Label htmlFor="terms">شروط الدفع</Label>
-              <select id="terms" className={selectCls} value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)}>
+              <select id="terms" className={selectClsFull} value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)}>
                 <option value="">—</option>
                 {termOptions.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
@@ -421,7 +420,7 @@ export default function SupplierEdit() {
                 <Label htmlFor="openDir">اتجاه الرصيد</Label>
                 <select
                   id="openDir"
-                  className={selectCls}
+                  className={selectClsFull}
                   value={openingDir}
                   onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
                 >
@@ -472,7 +471,7 @@ export default function SupplierEdit() {
             <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               <div className="space-y-1">
                 <Label htmlFor="cycle">دورية التسوية</Label>
-                <select id="cycle" className={selectCls} value={settlementCycle} onChange={(e) => setSettlementCycle(e.target.value)}>
+                <select id="cycle" className={selectClsFull} value={settlementCycle} onChange={(e) => setSettlementCycle(e.target.value)}>
                   <option value="MONTHLY">شهرية</option>
                   <option value="WEEKLY">أسبوعية</option>
                   <option value="ON_DEMAND">عند الطلب</option>
