@@ -130,11 +130,11 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
 
   const offline = connState !== "online";
   const chipTone = summary.parked > 0 || summary.needsLogin
-    ? "bg-red-600 text-white"
+    ? "bg-[var(--sem-neg)] text-white"
     : summary.flushing
       ? "bg-sky-600 text-white"
       : offline
-        ? "bg-amber-500 text-amber-950"
+        ? "bg-[var(--sem-warn)] text-white"
         : busy
           ? "bg-sky-600 text-white"
           : "border bg-background/90 text-muted-foreground";
@@ -234,7 +234,7 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
                   }}
                   className={cn(
                     "rounded-full px-3 py-1 text-[11px] font-bold disabled:opacity-60",
-                    saleEnabled ? "bg-emerald-600 text-white" : "border bg-background",
+                    saleEnabled ? "bg-[var(--sem-pos)] text-background" : "border bg-background",
                   )}
                 >
                   {saleEnabled ? "مفعَّل" : "معطَّل"}
@@ -250,7 +250,7 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
                   </p>
                 </div>
                 {persisted === "1" ? (
-                  <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">مثبَّت</span>
+                  <span className="rounded-full bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]">مثبَّت</span>
                 ) : (
                   <button
                     type="button"
@@ -268,7 +268,7 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
               <div>
                 <p className="font-bold">
                   رمز PIN للإقلاع دون اتصال
-                  {profile?.hasPin ? <span className="ms-2 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] text-emerald-800">مضبوط</span> : null}
+                  {profile?.hasPin ? <span className="ms-2 rounded-full bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[10px] text-[var(--sem-pos)]">مضبوط</span> : null}
                 </p>
                 <p className="mb-1 text-[10px] text-muted-foreground">
                   يفتح شاشة الكاشير عند تشغيل الجهاز والاتصال مقطوع ({profile?.name ?? "سجّل الدخول أولاً"}).
@@ -336,9 +336,9 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
                     <span
                       className={cn(
                         "rounded-full px-2 py-0.5 text-[10px] font-bold",
-                        item.status === "SENT" && "bg-emerald-100 text-emerald-800",
-                        item.status === "PARKED" && "bg-red-100 text-red-800",
-                        (item.status === "QUEUED" || item.status === "SENDING") && "bg-amber-100 text-amber-900",
+                        item.status === "SENT" && "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+                        item.status === "PARKED" && "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
+                        (item.status === "QUEUED" || item.status === "SENDING") && "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
                       )}
                     >
                       {STATUS_LABEL[item.status]}
@@ -348,14 +348,14 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
                     <span>{Number(item.total).toLocaleString("en")} د.ع</span>
                     {item.status === "SENT" && item.resultInvoiceNumber ? (
                       <span className="flex items-center gap-1 font-mono">
-                        <CheckCircle2 aria-hidden className="size-3 text-emerald-600" />
+                        <CheckCircle2 aria-hidden className="size-3 text-[var(--sem-pos)]" />
                         {item.resultInvoiceNumber}
                       </span>
                     ) : null}
                   </div>
                   {item.status === "PARKED" ? (
                     <div className="mt-1 space-y-1">
-                      {item.lastError ? <p className="text-red-700 dark:text-red-400">{item.lastError}</p> : null}
+                      {item.lastError ? <p className="text-[var(--sem-neg)]">{item.lastError}</p> : null}
                       <div className="flex flex-wrap gap-1">
                         <button
                           type="button"

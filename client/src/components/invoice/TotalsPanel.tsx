@@ -99,8 +99,8 @@ export function TotalsPanel({
         {/* Item discounts */}
         {showDiscount && Number(t.totalDiscount) > 0 && (
           <div className={rowCls}>
-            <span className={cn(labelCls, "text-rose-600")}>خصم المنتجات (−)</span>
-            <span className={cn(valueCls, "text-rose-600")} dir="ltr">−{fmtNum(t.totalDiscount)}</span>
+            <span className={cn(labelCls, "text-[var(--sem-neg)]")}>خصم المنتجات (−)</span>
+            <span className={cn(valueCls, "text-[var(--sem-neg)]")} dir="ltr">−{fmtNum(t.totalDiscount)}</span>
           </div>
         )}
 
@@ -139,7 +139,7 @@ export function TotalsPanel({
             </Button>
           </div>
           {Number(overrideDiscountAmount ?? t.globalDiscAmt) > 0 && (
-            <span className={cn(valueCls, "text-rose-600")} dir="ltr">
+            <span className={cn(valueCls, "text-[var(--sem-neg)]")} dir="ltr">
               −{fmtNum(overrideDiscountAmount ?? t.globalDiscAmt)}
             </span>
           )}
@@ -270,7 +270,7 @@ export function TotalsPanel({
         </div>
 
         {state.paymentTerms === "CREDIT" ? (
-          <div className="flex items-center gap-2 rounded-lg border border-amber-300/40 bg-amber-50 px-3.5 py-3 text-amber-700">
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3.5 py-3 text-[var(--sem-warn)]">
             <Lock aria-hidden className="size-5" />
             <div>
               <div className="text-sm font-extrabold">دفع آجل (ذمة)</div>
@@ -346,8 +346,8 @@ export function TotalsPanel({
                 className={cn(
                   "mt-1 flex items-center justify-between rounded-lg border px-3 py-2",
                   remainingNum > 0
-                    ? "border-amber-400/40 bg-amber-50 text-amber-700"
-                    : "border-emerald-400/40 bg-emerald-50 text-emerald-700"
+                    ? "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                    : "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
                 )}
               >
                 <span className="text-sm font-bold">{remainingNum > 0 ? "المتبقي (ذمة)" : "الباقي للعميل"}</span>

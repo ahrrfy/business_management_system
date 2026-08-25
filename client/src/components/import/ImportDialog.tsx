@@ -552,14 +552,14 @@ export function ImportDialog<TRow>({
             </div>
 
             {unmappedRequired.length > 0 && (
-              <div className="flex items-center gap-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              <div className="flex items-center gap-2 rounded-md bg-[var(--sem-neg-bg)] px-3 py-2 text-xs text-[var(--sem-neg)]">
                 <AlertCircle className="size-4 shrink-0" />
                 حقول مطلوبة غير مربوطة: {unmappedRequired.map((f) => f.label).join("، ")}
               </div>
             )}
 
             {currencyGuard && (
-              <div className="flex items-center gap-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+              <div className="flex items-center gap-2 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] px-3 py-2 text-xs font-medium text-[var(--sem-neg)]">
                 <AlertCircle className="size-4 shrink-0" />
                 ربطتَ الرصيد الافتتاحي بينما عمود «{currencyField?.label}» موجود في الملف وغير مربوط —
                 اربطه أو افصل الرصيد، وإلا خُزّنت أرصدة USD كأنها دينار حرفياً.
@@ -585,7 +585,7 @@ export function ImportDialog<TRow>({
                     />
                     <span className="text-muted-foreground">أرصدة USD ستُحوَّل إلى دينار بهذا السعر.</span>
                     {!usdRateValid && usdRate.trim() !== "" && (
-                      <span className="text-rose-700">سعر صرف غير صالح (رقم موجب، منزلتان كحدّ أقصى).</span>
+                      <span className="text-[var(--sem-neg)]">سعر صرف غير صالح (رقم موجب، منزلتان كحدّ أقصى).</span>
                     )}
                   </div>
                 )}
@@ -666,7 +666,7 @@ export function ImportDialog<TRow>({
                   {checked.slice(0, PREVIEW_LIMIT).map((r) => (
                     <tr
                       key={r.rowNumber}
-                      className={`border-t ${r.errors.length ? "bg-rose-50/60" : r.warnings.length ? "bg-amber-50/60" : ""}`}
+                      className={`border-t ${r.errors.length ? "bg-[var(--sem-neg-bg)]/60" : r.warnings.length ? "bg-[var(--sem-warn-bg)]/60" : ""}`}
                     >
                       <td className="p-2 text-muted-foreground">{r.rowNumber}</td>
                       {previewFields.map((f) => (
@@ -676,16 +676,16 @@ export function ImportDialog<TRow>({
                       ))}
                       <td className="p-2">
                         {r.errors.length ? (
-                          <span className="text-rose-700" title={r.errors.map((e) => e.message).join("\n")}>
+                          <span className="text-[var(--sem-neg)]" title={r.errors.map((e) => e.message).join("\n")}>
                             {r.errors[0].message}
                             {r.errors.length > 1 ? ` (+${r.errors.length - 1})` : ""}
                           </span>
                         ) : r.warnings.length ? (
-                          <span className="text-amber-700" title={r.warnings.map((w) => w.message).join("\n")}>
+                          <span className="text-[var(--sem-warn)]" title={r.warnings.map((w) => w.message).join("\n")}>
                             {r.warnings[0].message}
                           </span>
                         ) : (
-                          <CheckCircle2 className="size-4 text-emerald-600" />
+                          <CheckCircle2 className="size-4 text-[var(--sem-pos)]" />
                         )}
                       </td>
                     </tr>
@@ -700,12 +700,12 @@ export function ImportDialog<TRow>({
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-emerald-700">صحيح: {validRows.length.toLocaleString("ar-IQ-u-nu-latn")}</span>
+              <span className="text-[var(--sem-pos)]">صحيح: {validRows.length.toLocaleString("ar-IQ-u-nu-latn")}</span>
               {warningCount > 0 && (
-                <span className="text-amber-700">بتحذيرات: {warningCount.toLocaleString("ar-IQ-u-nu-latn")}</span>
+                <span className="text-[var(--sem-warn)]">بتحذيرات: {warningCount.toLocaleString("ar-IQ-u-nu-latn")}</span>
               )}
               {invalidCount > 0 && (
-                <span className="text-rose-700">به أخطاء: {invalidCount.toLocaleString("ar-IQ-u-nu-latn")}</span>
+                <span className="text-[var(--sem-neg)]">به أخطاء: {invalidCount.toLocaleString("ar-IQ-u-nu-latn")}</span>
               )}
               {invalidCount > 0 && (
                 <Button variant="ghost" size="sm" onClick={exportErrorLog}>
@@ -739,13 +739,13 @@ export function ImportDialog<TRow>({
         {step === "done" && summary && (
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <SummaryPill label="مُنشأ" value={summary.created} cls="text-emerald-700 bg-emerald-50" />
+              <SummaryPill label="مُنشأ" value={summary.created} cls="text-[var(--sem-pos)] bg-[var(--sem-pos-bg)]" />
               <SummaryPill label="محدَّث" value={summary.updated} cls="text-[var(--sem-info)] bg-[var(--sem-info-bg)]" />
-              <SummaryPill label="متجاوَز" value={summary.skipped} cls="text-amber-700 bg-amber-50" />
-              <SummaryPill label="فاشل" value={summary.failed} cls="text-rose-700 bg-rose-50" />
+              <SummaryPill label="متجاوَز" value={summary.skipped} cls="text-[var(--sem-warn)] bg-[var(--sem-warn-bg)]" />
+              <SummaryPill label="فاشل" value={summary.failed} cls="text-[var(--sem-neg)] bg-[var(--sem-neg-bg)]" />
             </div>
             {batchNote && (
-              <div className="flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <div className="flex items-start gap-2 rounded-md bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">
                 <AlertTriangle className="size-4 shrink-0" />
                 {batchNote}
               </div>
@@ -753,7 +753,7 @@ export function ImportDialog<TRow>({
             {/* صندوق الفشل الأحمر عند فشلٍ فعلي بلا أي كتابة ملتزمة — لا لمجرد committed=false:
                 دفعة كلها «متجاوَز» (إعادة استيراد) ليست فشلاً ولا تستحق إنذاراً أحمر كاذباً. */}
             {summary.failed > 0 && writtenCount === 0 && !batchNote && (
-              <div className="flex items-center gap-2 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              <div className="flex items-center gap-2 rounded-md bg-[var(--sem-neg-bg)] px-3 py-2 text-xs text-[var(--sem-neg)]">
                 <AlertCircle className="size-4 shrink-0" />
                 لم تُكتب أي بيانات (الكل أو لا شيء) — صحّح الصفوف الفاشلة ثم أعد المحاولة.
               </div>

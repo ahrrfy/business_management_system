@@ -289,7 +289,7 @@ export function ProductTable({
               type="button"
               size="sm"
               variant="outline"
-              className="h-7 border-rose-400/40 text-rose-600 hover:bg-rose-50"
+              className="h-7 border-[var(--sem-neg)]/40 text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"
               onClick={() => dispatch({ type: "CLEAR_ITEMS" })}
             >
               تفريغ الكل
@@ -362,7 +362,7 @@ export function ProductTable({
                   className={cn(
                     "border-b transition hover:bg-muted/50",
                     stock.isKnown && stock.isOut && "border-s-[3px] border-s-destructive bg-destructive/5",
-                    stock.isKnown && !stock.isOut && stock.isShort && "border-s-[3px] border-s-amber-500 bg-amber-50",
+                    stock.isKnown && !stock.isOut && stock.isShort && "border-s-[3px] border-s-[var(--sem-warn)] bg-[var(--sem-warn-bg)]",
                   )}
                 >
                   <td className={cn(td, "font-semibold text-muted-foreground")}>{idx + 1}</td>
@@ -391,7 +391,7 @@ export function ProductTable({
                         </span>
                       )}
                       {!isPurchase && stock.isKnown && !stock.isOut && stock.isShort && (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
+                        <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-white">
                           {stock.availableInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${stock.availableInUnit} فقط`}
                         </span>
                       )}
@@ -405,7 +405,7 @@ export function ProductTable({
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
                         <span>{branchLabel(item.stockBranchId ?? branchId)}</span>
                         <span>فعلي {fmtNum(stock.onHandBase)}</span>
-                        <span className={stock.reservedBase > 0 ? "font-bold text-amber-700 dark:text-amber-400" : ""}>
+                        <span className={stock.reservedBase > 0 ? "font-bold text-[var(--sem-warn)]" : ""}>
                           محجوز {fmtNum(stock.reservedBase)}
                         </span>
                         <span className="font-bold">متاح للبيع {fmtNum(stock.availableBase)}</span>
@@ -416,7 +416,7 @@ export function ProductTable({
                         {allocations.map((allocation) => (
                           <span
                             key={allocation.reservationId}
-                            className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                            className="rounded border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]"
                           >
                             حجز باسم {allocation.customerName} · {fmtNum(allocation.remainingBase)} وحدة أساس
                           </span>
@@ -435,19 +435,19 @@ export function ProductTable({
                           </div>
                         )}
                         {isAboveHistoricalLow && (
-                          <div className="flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-400">
+                          <div className="flex items-center gap-1 font-semibold text-[var(--sem-warn)]">
                             <AlertTriangle aria-hidden className="size-3 shrink-0" />
                             الأرخص سابقاً: {purchaseInsight.lowestPurchase.supplierName} بـ <span dir="ltr">{fmtNum(purchaseInsight.lowestPurchase.price)}</span> د.ع
                             <span>(فرق {fmtNum(enteredPriceIqd! - lowestPriceIqd!)} د.ع)</span>
                           </div>
                         )}
                         {isBelowHistoricalLow && (
-                          <div className="font-semibold text-emerald-700 dark:text-emerald-400">
+                          <div className="font-semibold text-[var(--sem-pos)]">
                             سعر ممتاز: أقل من أدنى شراء سابق بـ <span dir="ltr">{fmtNum(lowestPriceIqd! - enteredPriceIqd!)}</span> د.ع
                           </div>
                         )}
                         {!isAboveHistoricalLow && supplierLastPriceIqd != null && enteredPriceIqd != null && enteredPriceIqd > supplierLastPriceIqd && (
-                          <div className="font-semibold text-amber-700 dark:text-amber-400">
+                          <div className="font-semibold text-[var(--sem-warn)]">
                             أعلى من آخر سعر لهذا المورد بـ <span dir="ltr">{fmtNum(enteredPriceIqd - supplierLastPriceIqd)}</span> د.ع
                           </div>
                         )}
@@ -457,13 +457,13 @@ export function ProductTable({
                   <td className={cn(td, "text-xs text-muted-foreground")}>{item.unit}</td>
                   <td className={td}>
                     {item.isService ? (
-                      <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">خدمة</span>
+                      <span className="rounded bg-[var(--sem-pos-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]">خدمة</span>
                     ) : (
                       <span
                         className={cn(
                           "rounded px-1.5 py-0.5 text-xs font-extrabold tabular-nums",
                           stock.isKnown && stock.isOut ? "bg-destructive text-destructive-foreground"
-                            : stock.isShort ? "bg-amber-100 text-amber-700"
+                            : stock.isShort ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
                             : "text-muted-foreground",
                         )}
                         dir="ltr"
@@ -560,7 +560,7 @@ export function ProductTable({
                       className={cn(
                         td,
                         "text-xs font-bold",
-                        marginNum > 20 ? "text-emerald-600" : marginNum > 0 ? "text-amber-600" : "text-rose-600"
+                        marginNum > 20 ? "text-[var(--sem-pos)]" : marginNum > 0 ? "text-[var(--sem-warn)]" : "text-[var(--sem-neg)]"
                       )}
                     >
                       {margin}%
@@ -579,7 +579,7 @@ export function ProductTable({
                       type="button"
                       variant="outline"
                       size="icon"
-                      className="h-8 w-8 border-rose-300/40 text-rose-600 hover:bg-rose-50"
+                      className="h-8 w-8 border-[var(--sem-neg)]/40 text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"
                       onClick={() => dispatch({ type: "REMOVE_ITEM", idx })}
                       aria-label="حذف"
                     >
