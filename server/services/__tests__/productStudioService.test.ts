@@ -169,13 +169,16 @@ describe("product studio governed workflow", () => {
       revision: 1,
       templateVersion: 1,
     });
+    // Date-drift fix (٢٥/٨): كان تاريخاً ثابتاً "2026-08-25T12:00:00Z" — يفشل الاختبار
+    // بعد الظهر (UTC) لأنّ startsAt يتقصّى Date.now() ⇒ dueAt <= startsAt. نصنع dueAt
+    // نسبياً بعد ٢٤ ساعة من زمن التنفيذ لضمان أنّه دائماً في المستقبل، **مُقتطعاً إلى ثانية
+    // كاملة** لأنّ عمود MySQL DATETIME ذو دقّة 0 يقرِّب الكسور فيختلف الرقم المخزَّن عن
+    // القيمة الأصلية بميلي ثانية إلى ثانية كاملة — يكسر توقّع دقيق في السطر ٢٠٠ أدناه.
+    const dueAt = new Date(Math.floor((Date.now() + 24 * 60 * 60 * 1000) / 1000) * 1000);
     const campaign = await createStudioCampaign(manager, {
       name: "اكتمال صور الصيف",
       status: "ACTIVE",
-      // Date-drift fix (٢٥/٨): كان تاريخاً ثابتاً "2026-08-25T12:00:00Z" — يفشل الاختبار
-      // بعد الظهر (UTC) لأنّ startsAt يتقصّى Date.now() ⇒ dueAt <= startsAt. نصنع dueAt
-      // نسبياً بعد ٢٤ ساعة من زمن التنفيذ لضمان أنّه دائماً في المستقبل.
-      dueAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      dueAt,
     });
     expect(campaign.startsAt).toEqual(expect.any(Date));
 
