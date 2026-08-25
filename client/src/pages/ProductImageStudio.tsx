@@ -14,7 +14,7 @@ import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask } fr
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { canEditStudioTask, canReviewStudioTask, hasStudioOverrideReason, needsStudioEditOverride, needsStudioReviewOverride } from "@/lib/imageStudio/studioWorkflowPolicy";
-import { adjustStudioReviewZoom, defaultStudioScope, mobileStudioPanel, STUDIO_REJECTION_PRESETS, type StudioReviewImage } from "@/lib/productStudio/mobileStudioUi";
+import { adjustStudioReviewZoom, defaultStudioScope, mobileStudioPanel, STUDIO_EMPTY_HINTS, STUDIO_REJECTION_PRESETS, type StudioReviewImage } from "@/lib/productStudio/mobileStudioUi";
 import { loadStudioDraft, purgeStudioDraft, purgeStudioDraftsForUser, reconcileStudioDraftAfterReconnect, saveStudioDraft, listStudioDraftsForUser, loadStudioDraftIdentity, saveStudioDraftIdentity, type StudioDraft, type StudioDraftTaskSnapshot } from "@/lib/productStudio/studioDrafts";
 import { studioOfflineCapabilities, studioOfflineProfileInput } from "@/lib/productStudio/coldOfflinePolicy";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -144,6 +144,90 @@ function PreviewPair({ data }: { data: RouterOutputs["productStudio"]["candidate
   );
 }
 
+/**
+ * محرّرُ فريق الحملة: يستقبل قائمة المصوّرين الحاليّة ولوحةَ الأشخاص، ويُقدّم بديلاً
+ * سريعاً للمدير من إعادة إنشاء الحملة كلّها. يعرض حالة «مُنجزٌ الآن» لكل مصوّرٍ ضمن
+ * الحملة ليقرّر المدير الإزالة عن علم، ويطالب بمنح صلاحية الاستوديو صراحةً لمن لا يملكها
+ * قبل السماح باختياره — بلا اختيارٍ صامتٍ لموظفٍ يعجز عمليّاً عن استعمال الصلاحية.
+ */
+function CampaignAssigneeEditor({
+  campaignBoard,
+  assignees,
+  disabled,
+  onSave,
+  onGrant,
+  grantPending,
+}: {
+  campaignBoard: RouterOutputs["productStudio"]["campaignBoard"] | undefined;
+  assignees: RouterOutputs["productStudio"]["assignees"];
+  disabled: boolean;
+  onSave: (assigneeIds: number[]) => void;
+  onGrant: (userId: number) => void;
+  grantPending: boolean;
+}) {
+  const memberIds = useMemo(() => new Set((campaignBoard?.photographers ?? []).map((p) => Number(p.userId))), [campaignBoard]);
+  const [pendingIds, setPendingIds] = useState<Set<number>>(memberIds);
+  useEffect(() => setPendingIds(new Set(memberIds)), [memberIds]);
+  const memberProgress = useMemo(() => new Map((campaignBoard?.photographers ?? []).map((p) => [Number(p.userId), { done: p.done, active: p.active }])), [campaignBoard]);
+  const dirty = useMemo(() => {
+    if (pendingIds.size !== memberIds.size) return true;
+    let differs = false;
+    pendingIds.forEach((id) => {
+      if (!memberIds.has(id)) differs = true;
+    });
+    return differs;
+  }, [pendingIds, memberIds]);
+  const toggle = (id: number) =>
+    setPendingIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {assignees.length === 0 && <span className="text-xs text-muted-foreground">لا موظفين متاحين في هذا الفرع.</span>}
+        {assignees.map((user) => {
+          const picked = pendingIds.has(user.id);
+          if (!user.canStudio) {
+            return (
+              <span key={user.id} className="inline-flex items-center gap-1 rounded-md border border-dashed px-2 py-1 text-xs text-muted-foreground">
+                {user.name}
+                <Button type="button" size="sm" variant="ghost" className="min-h-11 px-2 text-xs" disabled={disabled || grantPending} onClick={() => onGrant(user.id)}>
+                  امنح الصلاحية
+                </Button>
+              </span>
+            );
+          }
+          const progress = memberProgress.get(user.id);
+          return (
+            <Button key={user.id} type="button" size="sm" variant={picked ? "default" : "outline"} className="min-h-11" disabled={disabled} onClick={() => toggle(user.id)}>
+              {user.name}
+              {progress && (progress.done > 0 || progress.active > 0) && (
+                <span className="ms-1 text-xs opacity-80">
+                  · {progress.done}/{progress.done + progress.active}
+                </span>
+              )}
+            </Button>
+          );
+        })}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" className="min-h-11" disabled={disabled || !dirty} onClick={() => onSave(Array.from(pendingIds))}>
+          احفظ فريق الحملة
+        </Button>
+        {dirty && (
+          <Button type="button" variant="ghost" className="min-h-11" disabled={disabled} onClick={() => setPendingIds(new Set(memberIds))}>
+            إلغاء التعديل
+          </Button>
+        )}
+        <span className="text-xs text-muted-foreground">{pendingIds.size} مصوّرٍ في القائمة النهائيّة{dirty ? " · لم يُحفظ بعد" : ""}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function ProductImageStudio() {
   const [scope, setScope] = useState<Scope>("MINE");
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -190,10 +274,23 @@ export default function ProductImageStudio() {
   const [offlineProfile, setOfflineProfile] = useState<OfflineProfile | null | undefined>(undefined);
   const [inlineAssigneeId, setInlineAssigneeId] = useState("");
   const [cancelReason, setCancelReason] = useState("");
+  // نموذجُ تعديل بيانات الحملة (اسم/عدد صور/مواعيد) — يفتحه المدير بحاجةٍ عمليّة
+  // (اكتشاف أنّ منتجاتٍ تحتاج أكثر من صورة بعد بدء الحملة). حالةٌ محلّية بلا مسودةٍ
+  // خادمية: يعبّئها زرّ «تعديل» من الحملة المحمّلة، ويُصفّرها الحفظ.
+  const [campaignEditOpen, setCampaignEditOpen] = useState(false);
+  const [editCampaignName, setEditCampaignName] = useState("");
+  const [editCampaignRequired, setEditCampaignRequired] = useState("");
+  const [editCampaignStartsAt, setEditCampaignStartsAt] = useState("");
+  const [editCampaignDueAt, setEditCampaignDueAt] = useState("");
+  // إعادةُ إسنادٍ لمهمّةٍ عالقة — القيمة الفارغة تعني «إلى الطابور المفتوح».
+  const [reassignAssigneeId, setReassignAssigneeId] = useState("");
+  const [reassignReason, setReassignReason] = useState("");
   const [backlogCancelReason, setBacklogCancelReason] = useState("");
   /** منتجاتٌ محدَّدة للإسناد الجماعيّ (بمعرّف المنتج — لأنّ عقد الخادم بالمنتجات لا بالمهام). */
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set());
   const [bulkAssigneeId, setBulkAssigneeId] = useState("");
+  const [bulkReassignAssigneeId, setBulkReassignAssigneeId] = useState("");
+  const [bulkPriorityValue, setBulkPriorityValue] = useState<"LOW" | "NORMAL" | "HIGH" | "URGENT">("NORMAL");
   const [assigneeFilter, setAssigneeFilter] = useState("ALL");
   /** المنتج الذي بيد المصوّر الآن (من مسح الباركود) — يقود محطّة التصوير. */
   const [captured, setCaptured] = useState<ClaimedStudioProduct | null>(null);
@@ -258,6 +355,12 @@ export default function ProductImageStudio() {
   const campaigns = trpc.productStudio.campaigns.useQuery(undefined, {
     enabled: !offline && dashboard.data?.canManage === true,
   });
+  // نافذةُ المصوّر على حملاته: تُفتح متى كان له حسابٌ حيّ، ولا تُفتح للمدير (يرى كل شيء).
+  // الشرط `!canManage` يمنع الازدواج بين هذه البطاقة ولوحة الحملات الإدارية أدناه.
+  const myCampaigns = trpc.productStudio.myCampaigns.useQuery(undefined, {
+    enabled: !offline && Boolean(me.data?.id) && dashboard.data?.canManage !== true,
+    staleTime: 60_000,
+  });
   const campaignPreview = trpc.productStudio.previewCampaignBacklog.useQuery(
     { campaignId: selectedCampaignId ?? 0 },
     {
@@ -301,6 +404,15 @@ export default function ProductImageStudio() {
   const canBulkAssign = dashboard.data?.canManage === true && !offline;
   const queuedProductIds = taskItems.filter((task) => isQueuedStudioTask(task)).map((task) => Number(task.productId));
   const allQueuedSelected = queuedProductIds.length > 0 && queuedProductIds.every((id) => selectedTaskIds.has(id));
+  // فرزُ التحديد بحسب نوع العمل الممكن — أزرارُ الشريط الجماعيّ تعمل على مجموعاتٍ مختلفة:
+  // الإسناد على غير المسنَد، وإعادة الإسناد على المسنَد، والأولوية على أيّ نشط.
+  const selectedTasks = taskItems.filter((task) => selectedTaskIds.has(Number(task.productId)));
+  const selectedAssignedTaskIds = selectedTasks
+    .filter((task) => task.assignedTo != null && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status))
+    .map((task) => Number(task.id));
+  const selectedActiveTaskIds = selectedTasks
+    .filter((task) => ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(task.status))
+    .map((task) => Number(task.id));
   const toggleTaskSelection = (productId: number) =>
     setSelectedTaskIds((current) => {
       const next = new Set(current);
@@ -388,7 +500,7 @@ export default function ProductImageStudio() {
 
   async function refresh() {
     if (offline) return;
-    await Promise.all([utils.productStudio.dashboard.invalidate(), utils.productStudio.tasks.invalidate(), utils.productStudio.products.invalidate(), utils.productStudio.campaigns.invalidate(), utils.productStudio.previewCampaignBacklog.invalidate(), utils.productStudio.campaignAnalytics.invalidate(), utils.productStudio.campaignBoard.invalidate()]);
+    await Promise.all([utils.productStudio.dashboard.invalidate(), utils.productStudio.tasks.invalidate(), utils.productStudio.products.invalidate(), utils.productStudio.campaigns.invalidate(), utils.productStudio.myCampaigns.invalidate(), utils.productStudio.previewCampaignBacklog.invalidate(), utils.productStudio.campaignAnalytics.invalidate(), utils.productStudio.campaignBoard.invalidate()]);
   }
 
   const assign = trpc.productStudio.assign.useMutation({
@@ -484,6 +596,13 @@ export default function ProductImageStudio() {
     },
     onError: (error) => notify.err(error),
   });
+  const updateCampaignAssignees = trpc.productStudio.updateCampaignAssignees.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(`حُدّث فريق الحملة: +${result.added} · −${result.removed} · إجماليّ ${result.total}`);
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
   const revokeTemporaryPhotographers = trpc.productStudio.revokeTemporaryPhotographers.useMutation({
     onSuccess: async (result) => {
       notify.ok(result.revoked > 0 ? `أُغلق وصول ${result.revoked} مصوّراً مؤقّتاً` : "لا مصوّرين مؤقّتين نشطين في هذه الحملة");
@@ -501,6 +620,31 @@ export default function ProductImageStudio() {
   const updateSchedule = trpc.productStudio.updateSchedule.useMutation({
     onSuccess: async () => {
       notify.ok("حُدّثت أولوية المهمة وموعدها");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const reassign = trpc.productStudio.reassign.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(result.newAssigneeId == null ? "أُعيدت المهمة إلى الطابور المفتوح" : "أُعيد إسناد المهمة");
+      setReassignAssigneeId("");
+      setReassignReason("");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const bulkReassign = trpc.productStudio.bulkReassign.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(`أُعيد إسناد ${result.reassignedCount} مهمة`);
+      setSelectedTaskIds(new Set());
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const bulkSetPriority = trpc.productStudio.bulkSetPriority.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(`حُدّثت أولوية ${result.updatedCount} مهمة`);
+      setSelectedTaskIds(new Set());
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -525,6 +669,14 @@ export default function ProductImageStudio() {
     onSuccess: async (result) => {
       // «تبقّى» صريحٌ لأنّ التوليد يجري على دفعات: بدونه يظنّ المدير أنّ الطابور اكتمل.
       notify.ok(result.createdCount > 0 ? `أُنشئت ${result.createdCount} مهمة غير مسندة${result.remaining > 0 ? ` — تبقّى ${result.remaining} منتجاً، أعد التوليد` : ""}` : "لا توجد منتجات ناقصة جديدة");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const updateCampaignDetails = trpc.productStudio.updateCampaignDetails.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(`حُدّثت الحملة: ${result.updated.join("، ")}`);
+      setCampaignEditOpen(false);
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -758,29 +910,47 @@ export default function ProductImageStudio() {
     setSelectedId(Number(task.id));
   }
 
-  async function selectScannedOwnedTask(barcode: string) {
-    if (offline) return;
+  // إسنادُ الشريحة الرئيسيّة بعد كل مسحٍ ناجح — يُستعمل من محطّة التصوير في الأعلى
+  // ومن زرّ مسح الجوّال في الأسفل. كان الزرّ الأخير يستدعي `selectScannedOwnedTask`
+  // الذي يبحث في مهامّ المصوّر `MINE` فقط، فيبلغه «لا توجد مهمة مسندة» حتى وهو ضمن
+  // مصوّري حملةٍ نشطة — نقيض الإسناد الأعمى الذي يعِد به هذا العقد.
+  const applyStudioClaim = (claimed: ClaimedStudioProduct) => {
+    setCaptured(claimed);
+    setOfflineSelectedDraft(null);
+    setScannedTask(null);
+    setScope("MINE");
+    setSavedView("ALL");
+    setOverdueOnly(false);
+    setTaskPriorityFilter("ALL");
+    setAssigneeFilter("ALL");
+    setTaskSearch("");
+    setDebouncedTaskSearch("");
+    setSelectedCampaignId(null);
+    setSelectedTaskIds(new Set());
+    setSelectedId(claimed.taskId);
+    void refresh();
+  };
+
+  const mobileClaimByBarcode = trpc.productStudio.claimByBarcode.useMutation({
+    onSuccess: (result) => {
+      applyStudioClaim({
+        taskId: result.taskId,
+        productName: result.productName,
+        revision: result.revision,
+        approvedImages: result.approvedImages,
+        requiredImages: result.requiredImages,
+      });
+      notify.ok(result.claimed ? `فُتح «${result.productName}» للتصوير` : `«${result.productName}» بين يديك أصلاً`);
+    },
+    onError: (error) => notify.err(error),
+  });
+
+  function claimScannedBarcode(barcode: string) {
+    if (offline || mobileClaimByBarcode.isPending) return;
     setTaskScannerOpen(false);
-    try {
-      const product = await utils.productStudio.resolveBarcode.fetch({
-        barcode,
-      });
-      const resolved = await utils.productStudio.tasks.fetch({
-        scope: "MINE",
-        productId: product.productId,
-        limit: 1,
-      });
-      const task = resolved.items[0];
-      if (!task) {
-        notify.err("لا توجد مهمة مسندة إليك لهذا المنتج.");
-        return;
-      }
-      setOfflineSelectedDraft(null);
-      setScannedTask(task);
-      setSelectedId(Number(task.id));
-    } catch (error) {
-      notify.err(error);
-    }
+    const clean = barcode.trim();
+    if (!clean) return;
+    mobileClaimByBarcode.mutate({ barcode: clean });
   }
 
   async function submitForReview() {
@@ -892,27 +1062,53 @@ export default function ProductImageStudio() {
         <StudioCaptureStation
           active={captured}
           offline={offline}
-          onClaimed={(claimed) => {
-            setCaptured(claimed);
-            // تصفيرُ كل مرشّحٍ قد يُخفي المهمة المسحوبة: بدونه يُسنِد الخادمُ المهمة
-            // ولا تظهر في القائمة، فيبقى المحرّر مغلقاً والمصوّر أمام شاشةٍ لا تستجيب.
-            setScope("MINE");
-            setSavedView("ALL");
-            setOverdueOnly(false);
-            setTaskPriorityFilter("ALL");
-            setAssigneeFilter("ALL");
-            setTaskSearch("");
-            setDebouncedTaskSearch("");
-            setSelectedCampaignId(null);
-            setSelectedTaskIds(new Set());
-            setSelectedId(claimed.taskId);
-            void refresh();
-          }}
+          onClaimed={(claimed) => applyStudioClaim(claimed)}
           onClear={() => {
             setCaptured(null);
             setSelectedId(null);
           }}
         />
+      )}
+
+      {/* حملاتي — يفتحها المصوّر فيرى موعدها ونصيبه منها وما تبقّى في الحملة كلّها.
+          قبلها كان يعمل «أعمى»: قوائم المهام مسجَّلة له، لكن اسم الحملة نفسه محجوبٌ عنه.
+          البطاقة تختفي للمدير (يرى لوحته الأكمل أدناه) ولمن ليس في حملةٍ نشطة. */}
+      {!offline && dashboard.data?.canManage !== true && (myCampaigns.data?.length ?? 0) > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Megaphone aria-hidden className="size-4" /> حملاتي النشطة
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {(myCampaigns.data ?? []).map((camp) => (
+              <div key={camp.campaignId} className="min-w-0 rounded-md border p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 truncate text-sm font-medium">{camp.name}</p>
+                  {camp.requiredImages > 1 && <Badge variant="outline">{camp.requiredImages} صور</Badge>}
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                  <div className="rounded bg-muted/30 p-2">
+                    <div className="text-muted-foreground">قيد عملي</div>
+                    <div className="text-base font-semibold">{camp.personal.active}</div>
+                  </div>
+                  <div className="rounded bg-muted/30 p-2">
+                    <div className="text-muted-foreground">بانتظار المراجعة</div>
+                    <div className="text-base font-semibold">{camp.personal.pendingReview}</div>
+                  </div>
+                  <div className="rounded bg-muted/30 p-2">
+                    <div className="text-muted-foreground">اعتَمدتُ</div>
+                    <div className="text-base font-semibold">{camp.personal.done}</div>
+                  </div>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  الحملة: أُنجز {camp.campaign.done} من {camp.campaign.totalProducts} منتجاً
+                  {camp.dueAt ? ` · ينتهي ${new Date(camp.dueAt as unknown as string | Date).toLocaleDateString("ar-IQ")}` : ""}
+                </p>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -944,25 +1140,30 @@ export default function ProductImageStudio() {
         </Card>
       </div>
 
+      {/* مؤشّرات المدير الثانوية داخل بطاقةٍ واحدة عوض ٦ بطاقاتٍ عائمة — كانت
+          تُفرّق البصرَ وتتنافس مع مؤشّرات النطاق الأربعة أعلاها. */}
       {dashboard.data?.canManage && (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          {[
-            ["غير المسندة", dashboard.data.unassigned ?? "—"],
-            ["المتأخرة", dashboard.data.overdue],
-            // منها متأخّرٌ بلا منفّذ: يوضّح أنّ الخانتين تصفان المهام نفسها لا مشكلتين منفصلتين.
-            ["منها بلا منفّذ", dashboard.data.overdueUnassigned ?? "—"],
-            ["مرفوضة (تنتظر التصحيح)", dashboard.data.rejected],
-            ["المنجزة اليوم", dashboard.data.completedToday],
-            [`وسيط زمن الدورة (${dashboard.data.medianCycleWindowDays} يوماً)`, dashboard.data.medianCycleMinutes == null ? "—" : `${dashboard.data.medianCycleMinutes} د`],
-          ].map(([label, value]) => (
-            <Card key={String(label)}>
-              <CardContent className="p-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">صحّة الطابور الإدارية</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            {[
+              ["غير المسندة", dashboard.data.unassigned ?? "—"],
+              ["المتأخرة", dashboard.data.overdue],
+              // منها متأخّرٌ بلا منفّذ: يوضّح أنّ الخانتين تصفان المهام نفسها لا مشكلتين منفصلتين.
+              ["منها بلا منفّذ", dashboard.data.overdueUnassigned ?? "—"],
+              ["مرفوضة (تنتظر التصحيح)", dashboard.data.rejected],
+              ["المنجزة اليوم", dashboard.data.completedToday],
+              [`وسيط زمن الدورة (${dashboard.data.medianCycleWindowDays} يوماً)`, dashboard.data.medianCycleMinutes == null ? "—" : `${dashboard.data.medianCycleMinutes} د`],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="rounded-md border bg-muted/20 p-3">
                 <div className="text-xs text-muted-foreground">{label}</div>
                 <div className="mt-1 text-xl font-bold">{value}</div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       {/* تجهيزٌ اختياريّ لاستعادة المسودة عند الانقطاع. كان بطاقةً كاملة فوق المؤشرات
@@ -1207,41 +1408,120 @@ export default function ProductImageStudio() {
             </div>
 
             {selectedCampaign && (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border p-3">
-                <span className="text-sm font-medium">الحالة: {selectedCampaign.status}</span>
-                {selectedCampaign.status === "DRAFT" && (
-                  <Button
-                    className="min-h-11"
-                    disabled={offline || transitionCampaign.isPending}
-                    onClick={() => transitionCampaign.mutate({
-                      campaignId: Number(selectedCampaign.id),
-                      status: "ACTIVE",
-                      startsAt: campaignStartAt ? new Date(campaignStartAt) : null,
-                      dueAt: campaignDueAt ? new Date(campaignDueAt) : selectedCampaign.dueAt,
-                    })}
-                  >
-                    تفعيل الحملة
-                  </Button>
-                )}
-                {selectedCampaign.status === "ACTIVE" && (
-                  <Button
-                    className="min-h-11"
-                    disabled={offline || transitionCampaign.isPending}
-                    onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "COMPLETED" })}
-                  >
-                    إكمال الحملة
-                  </Button>
-                )}
-                {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
-                  <Button
-                    variant="outline"
-                    className="min-h-11"
-                    disabled={offline || transitionCampaign.isPending || backlogCancelReason.trim().length < 5}
-                    title={backlogCancelReason.trim().length < 5 ? "اكتب سبب الإلغاء في الحقل أدناه أولاً" : undefined}
-                    onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "CANCELLED", reason: backlogCancelReason })}
-                  >
-                    إلغاء الحملة ومهام طابورها
-                  </Button>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2 rounded-md border p-3">
+                  <span className="text-sm font-medium">الحالة: {selectedCampaign.status}</span>
+                  {selectedCampaign.status === "DRAFT" && (
+                    <Button
+                      className="min-h-11"
+                      disabled={offline || transitionCampaign.isPending}
+                      onClick={() => transitionCampaign.mutate({
+                        campaignId: Number(selectedCampaign.id),
+                        status: "ACTIVE",
+                        startsAt: campaignStartAt ? new Date(campaignStartAt) : null,
+                        dueAt: campaignDueAt ? new Date(campaignDueAt) : selectedCampaign.dueAt,
+                      })}
+                    >
+                      تفعيل الحملة
+                    </Button>
+                  )}
+                  {selectedCampaign.status === "ACTIVE" && (
+                    <Button
+                      className="min-h-11"
+                      disabled={offline || transitionCampaign.isPending}
+                      onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "COMPLETED" })}
+                    >
+                      إكمال الحملة
+                    </Button>
+                  )}
+                  {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                    <Button
+                      variant="outline"
+                      className="min-h-11"
+                      disabled={offline || transitionCampaign.isPending || backlogCancelReason.trim().length < 5}
+                      title={backlogCancelReason.trim().length < 5 ? "اكتب سبب الإلغاء في الحقل أدناه أولاً" : undefined}
+                      onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "CANCELLED", reason: backlogCancelReason })}
+                    >
+                      إلغاء الحملة ومهام طابورها
+                    </Button>
+                  )}
+                  {/* تعديلُ بيانات الحملة الجارية: اسم، عدد صور مطلوبة، مواعيد. مسموحٌ على
+                      DRAFT وACTIVE فقط — المُغلقة (COMPLETED/CANCELLED) لا تُعدَّل. رفعُ عدد
+                      الصور يُعيد منتجاتٍ كانت مكتملةً إلى الطابور — سلوكٌ مطلوب حين يكتشف
+                      المدير أنّ منتجاتٍ تحتاج أكثر من صورة بعد بدء العمل. */}
+                  {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                    <Button
+                      variant="outline"
+                      className="min-h-11"
+                      onClick={() => {
+                        setEditCampaignName(selectedCampaign.name);
+                        setEditCampaignRequired(String(selectedCampaign.requiredImages ?? 1));
+                        setEditCampaignStartsAt(studioDatetimeLocal(selectedCampaign.startsAt));
+                        setEditCampaignDueAt(studioDatetimeLocal(selectedCampaign.dueAt));
+                        setCampaignEditOpen((open) => !open);
+                      }}
+                    >
+                      {campaignEditOpen ? "إخفاء التعديل" : "تعديل بيانات الحملة"}
+                    </Button>
+                  )}
+                </div>
+                {campaignEditOpen && (selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                  <div className="grid gap-3 rounded-md border bg-muted/20 p-3 md:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="studio-edit-campaign-name">اسم الحملة</Label>
+                      <Input id="studio-edit-campaign-name" value={editCampaignName} onChange={(event) => setEditCampaignName(event.target.value)} maxLength={180} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="studio-edit-campaign-required">عدد الصور المطلوبة لكل منتج</Label>
+                      <Input id="studio-edit-campaign-required" type="number" min={1} max={10} value={editCampaignRequired} onChange={(event) => setEditCampaignRequired(event.target.value)} />
+                      <p className="text-xs text-muted-foreground">
+                        رفعُه يُعيد منتجاتٍ اعتُمدت صورةٌ واحدةٌ فقط إلى الطابور — استعمله حين تكتشف الحاجة لأكثر من صورة بعد بدء العمل. تخفيضُه يُغلق مهامّاً كانت تنقص المنتج الذي بلغ العدد الجديد.
+                      </p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="studio-edit-campaign-start">بدء الحملة</Label>
+                      <Input id="studio-edit-campaign-start" type="datetime-local" value={editCampaignStartsAt} onChange={(event) => setEditCampaignStartsAt(event.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="studio-edit-campaign-due">موعد الإنجاز</Label>
+                      <Input id="studio-edit-campaign-due" type="datetime-local" value={editCampaignDueAt} onChange={(event) => setEditCampaignDueAt(event.target.value)} />
+                    </div>
+                    <div className="md:col-span-2 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        className="min-h-11"
+                        disabled={offline || updateCampaignDetails.isPending || editCampaignName.trim().length < 3}
+                        onClick={() => {
+                          // نبني الحمولة الفارقيّة فقط — الحقول غير المتغيّرة تُترك.
+                          const payload: {
+                            campaignId: number;
+                            name?: string;
+                            requiredImages?: number;
+                            startsAt?: Date | null;
+                            dueAt?: Date | null;
+                          } = { campaignId: Number(selectedCampaign.id) };
+                          const nameTrimmed = editCampaignName.trim();
+                          if (nameTrimmed !== selectedCampaign.name) payload.name = nameTrimmed;
+                          const required = Number(editCampaignRequired);
+                          if (Number.isFinite(required) && required !== Number(selectedCampaign.requiredImages ?? 1)) payload.requiredImages = required;
+                          const nextStartsAt = editCampaignStartsAt ? new Date(editCampaignStartsAt) : null;
+                          if (studioDatetimeLocal(nextStartsAt) !== studioDatetimeLocal(selectedCampaign.startsAt)) payload.startsAt = nextStartsAt;
+                          const nextDueAt = editCampaignDueAt ? new Date(editCampaignDueAt) : null;
+                          if (studioDatetimeLocal(nextDueAt) !== studioDatetimeLocal(selectedCampaign.dueAt)) payload.dueAt = nextDueAt;
+                          if (Object.keys(payload).length === 1) {
+                            notify.err("لا حقلَ للتعديل");
+                            return;
+                          }
+                          updateCampaignDetails.mutate(payload);
+                        }}
+                      >
+                        احفظ التعديلات
+                      </Button>
+                      <Button type="button" variant="ghost" className="min-h-11" onClick={() => setCampaignEditOpen(false)}>
+                        إلغاء
+                      </Button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
@@ -1347,6 +1627,20 @@ export default function ProductImageStudio() {
                       <div className="mt-0.5 font-bold">{value}</div>
                     </div>
                   ))}
+                </div>
+                {/* إضافة/إزالة مصوّرين على حملةٍ **قائمة** — قبل هذا كان الوحيد هو
+                    إعادة إنشاء الحملة أو استعمالُ حساب مصوّرٍ مؤقّت لموظفٍ حقيقيّ. */}
+                <div className="space-y-2 rounded-md border p-3">
+                  <Label>تعديل مصوّري الحملة</Label>
+                  <p className="text-xs text-muted-foreground">اختر القائمة النهائية: من كان محدَّداً ويُلغى اختياره يخرج، ومن يُضاف يدخل. لا يمسّ الحسابات المؤقّتة (لها زرّ إغلاقٍ خاصّ أدناه).</p>
+                  <CampaignAssigneeEditor
+                    campaignBoard={campaignBoard.data}
+                    assignees={assignees.data ?? []}
+                    disabled={offline || updateCampaignAssignees.isPending}
+                    onSave={(assigneeIds) => selectedCampaignId && updateCampaignAssignees.mutate({ campaignId: selectedCampaignId, assigneeIds })}
+                    onGrant={(userId) => grantStudioAccess.mutate({ userId })}
+                    grantPending={grantStudioAccess.isPending}
+                  />
                 </div>
                 {/* مصوّرٌ مؤقّت: حسابٌ بصلاحية استوديو فقط ينتهي بانتهاء الحملة. */}
                 <div className="space-y-2 rounded-md border p-3">
@@ -1570,6 +1864,9 @@ export default function ProductImageStudio() {
         </TabsList>
         <div className="mt-3 flex flex-wrap items-end gap-2">
           <div className="flex flex-wrap gap-2" aria-label="العروض المحفوظة">
+            {/* «صور ناقصة» عرضٌ إداريّ صرف — يحتاج منتقي حملة يظهر للمدير فقط.
+                إبقاؤه للمصوّر كان يقود إلى زرٍّ يُظهر خطأً «اختر حملة أولاً»
+                بينما المنتقي غير مرئيّ له أصلاً. */}
             {(
               [
                 ["ALL", "الكل"],
@@ -1578,7 +1875,9 @@ export default function ProductImageStudio() {
                 ["PENDING_REVIEW", "بانتظار المراجعة"],
                 ["MISSING_IMAGE", "صور ناقصة"],
               ] as const
-            ).map(([value, label]) => (
+            )
+              .filter(([value]) => value !== "MISSING_IMAGE" || dashboard.data?.canManage === true)
+              .map(([value, label]) => (
               <Button
                 key={value}
                 type="button"
@@ -1642,15 +1941,20 @@ export default function ProductImageStudio() {
                   <CardTitle className="text-base">المهام</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {canBulkAssign && queuedProductIds.length > 0 && (
+                  {canBulkAssign && (queuedProductIds.length > 0 || selectedTaskIds.size > 0) && (
                     <div className="space-y-2 rounded-md border bg-muted/30 p-2">
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <button type="button" className="min-h-11 underline underline-offset-2" onClick={toggleSelectAllQueued}>
-                          {allQueuedSelected ? "إلغاء تحديد الكل" : `تحديد كل المعروض (${queuedProductIds.length})`}
-                        </button>
+                        {queuedProductIds.length > 0 ? (
+                          <button type="button" className="min-h-11 underline underline-offset-2" onClick={toggleSelectAllQueued}>
+                            {allQueuedSelected ? "إلغاء تحديد الكل" : `تحديد كل المعروض في الطابور (${queuedProductIds.length})`}
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground">حدّد المهام يدوياً بمربّعات الاختيار</span>
+                        )}
                         <span className="text-muted-foreground">{selectedTaskIds.size} محدَّدة</span>
                       </div>
-                      {selectedTaskIds.size > 0 && (
+                      {/* إسنادُ غير المسنَد إلى موظّف. */}
+                      {selectedTaskIds.size > 0 && queuedProductIds.some((id) => selectedTaskIds.has(id)) && (
                         <div className="flex flex-wrap items-end gap-2">
                           <div className="min-w-40 flex-1">
                             <AppSelect id="studio-bulk-assignee" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={bulkAssigneeId} onValueChange={setBulkAssigneeId} disabled={assignees.isError}>
@@ -1666,11 +1970,73 @@ export default function ProductImageStudio() {
                             type="button"
                             className="min-h-11"
                             disabled={offline || bulkAssign.isPending || !bulkAssigneeId}
-                            onClick={() => bulkAssign.mutate({ productIds: Array.from(selectedTaskIds).slice(0, BULK_ASSIGN_MAX), assigneeId: Number(bulkAssigneeId) })}
+                            onClick={() => {
+                              // نُصفّي التحديد إلى الطابور فقط — بقيّةُ التحديد تخدم الأزرار الأخرى.
+                              const queuedSelected = queuedProductIds.filter((id) => selectedTaskIds.has(id)).slice(0, BULK_ASSIGN_MAX);
+                              bulkAssign.mutate({ productIds: queuedSelected, assigneeId: Number(bulkAssigneeId) });
+                            }}
                           >
-                            <UserCheck aria-hidden className="size-4" /> إسناد المحدَّد
+                            <UserCheck aria-hidden className="size-4" /> إسناد {queuedProductIds.filter((id) => selectedTaskIds.has(id)).length} من الطابور
                           </Button>
-                          {selectedTaskIds.size > BULK_ASSIGN_MAX && <p className="w-full text-xs text-[var(--sem-warn)]">يُسنَد {BULK_ASSIGN_MAX} في المرّة؛ كرّر للباقي.</p>}
+                          {queuedProductIds.filter((id) => selectedTaskIds.has(id)).length > BULK_ASSIGN_MAX && <p className="w-full text-xs text-[var(--sem-warn)]">يُسنَد {BULK_ASSIGN_MAX} في المرّة؛ كرّر للباقي.</p>}
+                        </div>
+                      )}
+                      {/* إعادةُ إسنادٍ جماعيّة — تعمل على المسنَد فقط، بمصوّرٍ محدَّد أو الطابور المفتوح. */}
+                      {selectedAssignedTaskIds.length > 0 && (
+                        <div className="flex flex-wrap items-end gap-2">
+                          <div className="min-w-40 flex-1">
+                            <AppSelect id="studio-bulk-reassign" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={bulkReassignAssigneeId} onValueChange={setBulkReassignAssigneeId} disabled={assignees.isError}>
+                              <option value="">إلى الطابور المفتوح (blind pool)</option>
+                              {(assignees.data ?? [])
+                                .filter((user) => user.canStudio)
+                                .map((user) => (
+                                  <option key={user.id} value={user.id}>
+                                    {user.name}
+                                  </option>
+                                ))}
+                            </AppSelect>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="min-h-11"
+                            disabled={offline || bulkReassign.isPending}
+                            onClick={() =>
+                              bulkReassign.mutate({
+                                taskIds: selectedAssignedTaskIds.slice(0, BULK_ASSIGN_MAX),
+                                newAssigneeId: bulkReassignAssigneeId ? Number(bulkReassignAssigneeId) : null,
+                              })
+                            }
+                          >
+                            <UserCheck aria-hidden className="size-4" /> إعادة إسناد {selectedAssignedTaskIds.length} مُسنَدة
+                          </Button>
+                        </div>
+                      )}
+                      {/* ضبطُ أولويّةٍ جماعيّ — يعمل على أيّ نشط (طابور أو مُسنَد أو مراجَع). */}
+                      {selectedActiveTaskIds.length > 0 && (
+                        <div className="flex flex-wrap items-end gap-2">
+                          <div className="min-w-32">
+                            <AppSelect id="studio-bulk-priority" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={bulkPriorityValue} onValueChange={(value) => setBulkPriorityValue(value as typeof bulkPriorityValue)}>
+                              <option value="LOW">منخفضة</option>
+                              <option value="NORMAL">عادية</option>
+                              <option value="HIGH">عالية</option>
+                              <option value="URGENT">عاجلة</option>
+                            </AppSelect>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="min-h-11"
+                            disabled={offline || bulkSetPriority.isPending}
+                            onClick={() =>
+                              bulkSetPriority.mutate({
+                                taskIds: selectedActiveTaskIds.slice(0, BULK_ASSIGN_MAX),
+                                priority: bulkPriorityValue,
+                              })
+                            }
+                          >
+                            ضبط أولوية {selectedActiveTaskIds.length} مهمّة
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -1689,12 +2055,19 @@ export default function ProductImageStudio() {
                       </Button>
                     </div>
                   )}
-                  {!tasks.isLoading && !tasks.isError && taskItems.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">لا مهام في هذا المسار.</p>}
+                  {/* حالةٌ فارغة تشرح السبب والخطوة التالية بحسب التبويب — بدل نصٍّ عامّ صامت. */}
+                  {!tasks.isLoading && !tasks.isError && taskItems.length === 0 && (
+                    <div className="py-8 text-center text-sm text-muted-foreground">
+                      <p>{STUDIO_EMPTY_HINTS[tab]}</p>
+                    </div>
+                  )}
                   {taskItems.map((task) => (
                     <div key={Number(task.id)} className="flex items-start gap-2">
-                      {/* التحديد المتعدّد: الخادم يدعم الإسناد الجماعيّ منذ البداية، ولم يكن له
-                          مدخلٌ في القائمة — فتفريغ طابورٍ كبير كان يعني بحثاً فرديّاً عن كل منتج. */}
-                      {canBulkAssign && isQueuedStudioTask(task) && (
+                      {/* التحديد المتعدّد: يظهر على أيّ مهمّةٍ نشطة (في الطابور · قيد العمل ·
+                          تنتظر مراجعةً · مرفوضة) للسماح بثلاث عمليّات جماعيّة: إسناد لغير المسنَد،
+                          إعادة إسناد للمسنَد، وضبط أولوية أيّ نشط. الشريط يفرز التحديد بحسب نوع
+                          العمل الممكن ويعرض العدد لكلّ زرّ. */}
+                      {canBulkAssign && ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(task.status) && (
                         <input
                           type="checkbox"
                           className="mt-4 size-4 shrink-0"
@@ -1810,6 +2183,48 @@ export default function ProductImageStudio() {
                           >
                             حفظ الأولوية والموعد
                           </Button>
+                        </div>
+                      )}
+                      {/* إعادةُ الإسناد — مسارٌ حين يغيب المصوّر أو يعجز عن الإكمال، بدل
+                          إلغاء المهمّة وفقدان سبب الرفض وأثر التدقيق. للطابور المفتوح شرط:
+                          المهمّةُ ضمن حملة (المسح الأعمى يقصر على تلك — راجع تعليق `claimByBarcode`). */}
+                      {dashboard.data?.canManage && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status) && selected.assigneeName != null && (
+                        <div className="space-y-2 rounded-md border p-3">
+                          <Label htmlFor="studio-reassign-select">إعادة إسناد المهمّة (المسنَد الآن: {selected.assigneeName})</Label>
+                          <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                            <AppSelect id="studio-reassign-select" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={reassignAssigneeId} onValueChange={setReassignAssigneeId} disabled={assignees.isError}>
+                              {selected.campaignId != null ? (
+                                <option value="">إلى الطابور المفتوح (blind pool)</option>
+                              ) : (
+                                <option value="" disabled>
+                                  اختر مصوّراً — مهمّةٌ بلا حملة لا تُسحَب بالمسح
+                                </option>
+                              )}
+                              {(assignees.data ?? [])
+                                .filter((user) => user.canStudio && user.id !== Number(selected.assignedTo))
+                                .map((user) => (
+                                  <option key={user.id} value={user.id}>
+                                    {user.name}
+                                  </option>
+                                ))}
+                            </AppSelect>
+                            <Button
+                              type="button"
+                              className="min-h-11"
+                              disabled={offline || reassign.isPending || (selected.campaignId == null && !reassignAssigneeId)}
+                              onClick={() =>
+                                reassign.mutate({
+                                  taskId: Number(selected.id),
+                                  expectedRevision: selected.revision,
+                                  newAssigneeId: reassignAssigneeId ? Number(reassignAssigneeId) : null,
+                                  reason: reassignReason.trim() || undefined,
+                                })
+                              }
+                            >
+                              <UserCheck aria-hidden className="size-4" /> إعادة إسناد
+                            </Button>
+                          </div>
+                          <Textarea rows={1} maxLength={500} value={reassignReason} onChange={(event) => setReassignReason(event.target.value)} placeholder="سبب اختياريّ يُسجَّل في التدقيق" />
                         </div>
                       )}
                       {/* الإلغاء: كان توليدُ طابورٍ خاطئ نهائياً بلا تراجع — لا إلغاء للمهمة
@@ -2000,14 +2415,20 @@ export default function ProductImageStudio() {
           </TabsContent>
         ))}
       </Tabs>
-      {scope === "MINE" && mobilePanel === "LIST" && (
+      {mobilePanel === "LIST" && (
         <>
-          <Button type="button" className="fixed bottom-24 end-4 z-30 min-h-11 rounded-full px-4 shadow-lg lg:hidden" disabled={offline} onClick={() => setTaskScannerOpen(true)}>
-            <ScanLine aria-hidden className="size-4" /> مسح مهمة
+          {/* زرٌّ عائم للجوّال — مسحٌ يُنشئ المهمّةَ فوراً إن كان المصوّر ضمن حملةٍ نشطة.
+              كان محصوراً بنطاق `MINE` ويبحث عن مهمّةٍ **مسبقة الإسناد** فقط
+              (`selectScannedOwnedTask`) فيبلغ «لا توجد مهمة مسندة إليك» — نقيض
+              الإسناد الأعمى الذي يعِد به عقد `claimByBarcode`. الآن يستدعي المسار
+              نفسه الذي تستدعيه محطّة التصوير في الأعلى، فيتّسق سلوك الشاشتين. */}
+          <Button type="button" className="fixed bottom-24 end-4 z-30 min-h-11 rounded-full px-4 shadow-lg lg:hidden" disabled={offline || mobileClaimByBarcode.isPending} onClick={() => setTaskScannerOpen(true)}>
+            {mobileClaimByBarcode.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <ScanLine aria-hidden className="size-4" />} امسح لبدء التصوير
           </Button>
           {taskScannerOpen && (
             <Suspense fallback={null}>
-              <CameraScanner open onClose={() => setTaskScannerOpen(false)} onDetect={(barcode) => void selectScannedOwnedTask(barcode)} />
+              {/* keepOpen: نفس مبرّرات محطّة التصوير — دورةٌ متكرّرة بلا احتكاك إعادة الفتح. */}
+              <CameraScanner open keepOpen onClose={() => setTaskScannerOpen(false)} onDetect={(barcode) => claimScannedBarcode(barcode)} />
             </Suspense>
           )}
         </>
