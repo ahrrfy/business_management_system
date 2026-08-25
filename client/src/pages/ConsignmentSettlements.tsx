@@ -278,7 +278,7 @@ export default function ConsignmentSettlements() {
                     <td className="p-2 text-center tabular-nums">{r.soldQty}</td>
                     <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(r.soldValue)}</td>
                     <td className="p-2 text-start tabular-nums text-muted-foreground" dir="ltr">{fmt(r.consignorShare)}</td>
-                    <td className="p-2 text-start tabular-nums font-semibold text-emerald-600 dark:text-emerald-400" dir="ltr">{fmt(r.libraryMargin)}</td>
+                    <td className="p-2 text-start tabular-nums font-semibold text-[var(--money-positive)]" dir="ltr">{fmt(r.libraryMargin)}</td>
                     <td className="p-2 text-center tabular-nums text-muted-foreground" dir="ltr">{r.marginPct}٪</td>
                   </tr>
                 ))}
@@ -291,7 +291,7 @@ export default function ConsignmentSettlements() {
                     <td className="p-2"></td>
                     <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(marginTotals.soldValue)}</td>
                     <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(marginTotals.consignorShare)}</td>
-                    <td className="p-2 text-start tabular-nums text-emerald-600 dark:text-emerald-400" dir="ltr">{fmt(marginTotals.libraryMargin)}</td>
+                    <td className="p-2 text-start tabular-nums text-[var(--money-positive)]" dir="ltr">{fmt(marginTotals.libraryMargin)}</td>
                     <td className="p-2 text-center tabular-nums" dir="ltr">{marginTotals.marginPct}٪</td>
                   </tr>
                 )}
@@ -338,7 +338,7 @@ export default function ConsignmentSettlements() {
                           <td className="p-2 text-center tabular-nums">{l.soldQty}</td>
                           <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(l.soldValue)}</td>
                           <td className="p-2 text-start tabular-nums text-muted-foreground" dir="ltr">{fmt(l.share)}</td>
-                          <td className="p-2 text-start tabular-nums text-emerald-600 dark:text-emerald-400" dir="ltr">{fmt(l.margin)}</td>
+                          <td className="p-2 text-start tabular-nums text-[var(--money-positive)]" dir="ltr">{fmt(l.margin)}</td>
                         </tr>
                       ))}
                       {statement.data.lines.length === 0 && <TableEmptyRow colSpan={5} message="لا مبيعات في هذه الفترة." />}

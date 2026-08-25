@@ -169,12 +169,20 @@ describe("product studio governed workflow", () => {
       revision: 1,
       templateVersion: 1,
     });
-    // تاريخٌ ثابتٌ آمن مستقبلاً — كان `2026-08-25T12:00:00Z` وتجاوزه الوقت الفعليّ ⇒ فشلٌ
-    // حتميّ بعد ظهر ٢٠٢٦-٨-٢٥ (dueAt ≤ startsAt=now). الآن ٢٠٣٠ يحمي الاختبار من انفجارٍ زمنيّ.
+    // ٢٥/٨/٢٦: كان تاريخاً ثابتاً `2026-08-25T12:00:00Z` — يوم كتابة الاختبار — فبقي يمرّ
+    // حتى بلغ الحاسوب تلك اللحظة، ومنها صار `dueAt < now()` فيرمي `createStudioCampaign`
+    // بـ«موعد الحملة يجب أن يكون بعد بدايتها» (validator). النمط الآمن: نسبيّ للحاضر.
+    //
+    // ⚠️ محاذاة الثانية إلزاميّة: MySQL DATETIME يخزّن بدقّة الثانية ويقرّب المللي إلى أقرب
+    // ثانية (`.500+` يقرّب لأعلى). بلا `setMilliseconds(0)` تُرجع القراءة قيمةً مختلفة عن
+    // قيمة الإدخال ⇒ `expect(rows).toEqual(arrayContaining({dueAt: campaign.dueAt}))` يفشل
+    // (المخزَّن `40.000Z` ≠ المُدخَل `39.634Z`). أُصلح على PR #804 بعد أوّل CI أخضر.
+    const dueAt = new Date(Date.now() + 86_400_000);
+    dueAt.setMilliseconds(0);
     const campaign = await createStudioCampaign(manager, {
       name: "اكتمال صور الصيف",
       status: "ACTIVE",
-      dueAt: new Date("2030-01-01T12:00:00.000Z"),
+      dueAt,
     });
     expect(campaign.startsAt).toEqual(expect.any(Date));
 
@@ -248,10 +256,11 @@ describe("product studio governed workflow", () => {
       campaignId: draft.campaignId,
       status: "ACTIVE",
     })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // كان `2026-08-29` ثابتاً — يمرّ اليوم لكن سينكسر تلقائياً بعد ٤ أيام (٢٩/٨/٢٦). دفاعياً: نسبيّ.
     await expect(transitionStudioCampaign(manager, {
       campaignId: draft.campaignId,
       status: "ACTIVE",
-      dueAt: new Date("2026-08-29T12:00:00.000Z"),
+      dueAt: new Date(Date.now() + 4 * 86_400_000),
     })).resolves.toMatchObject({ status: "ACTIVE", startsAt: expect.any(Date) });
     await expect(transitionStudioCampaign(manager, {
       campaignId: draft.campaignId,

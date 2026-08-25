@@ -31,9 +31,8 @@ import {
   type PaperUpchargeUnit,
   type PricingMode,
 } from "@shared/printPricing";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const sizeLabel = (c: string) => PAPER_SIZES.find((s) => s.code === c)?.label ?? c;
 
@@ -101,7 +100,7 @@ function GeneralSettings({
         <div className="space-y-1">
           <Label>وضع التسعير</Label>
           <select
-            className={selectCls}
+            className={selectClsFull}
             value={form.pricingMode}
             onChange={(e) => setForm({ ...form, pricingMode: e.target.value as PricingMode })}
           >
@@ -189,10 +188,10 @@ function FacePricesSection({
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
-          <select className={selectCls} value={mode} onChange={(e) => setMode(e.target.value as ColorMode)} aria-label="النمط">
+          <select className={selectClsFull} value={mode} onChange={(e) => setMode(e.target.value as ColorMode)} aria-label="النمط">
             {COLOR_MODES.map((m) => <option key={m} value={m}>{COLOR_MODE_AR[m]}</option>)}
           </select>
-          <select className={selectCls} value={size} onChange={(e) => setSize(e.target.value as PaperSizeCode)} aria-label="المقاس">
+          <select className={selectClsFull} value={size} onChange={(e) => setSize(e.target.value as PaperSizeCode)} aria-label="المقاس">
             {PAPER_SIZES.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
           </select>
           <MoneyInput value={price} onChange={setPrice} ariaLabel="سعر الوجه" placeholder="سعر الوجه" />
@@ -319,7 +318,7 @@ function ManagedListSection({
         <div className={`grid grid-cols-1 gap-2 ${unitOptions ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم" />
           {unitOptions && (
-            <select className={selectCls} value={unit} onChange={(e) => setUnit(e.target.value)} aria-label={unitLabel}>
+            <select className={selectClsFull} value={unit} onChange={(e) => setUnit(e.target.value)} aria-label={unitLabel}>
               {unitOptions.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
             </select>
           )}

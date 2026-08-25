@@ -38,6 +38,7 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
 function unresolvedCategoryLabel(name: string): string {
   return (UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES as readonly string[]).includes(
@@ -61,8 +62,6 @@ const DIR_LABEL: Record<string, string> = {
   OUT: "صرف فقط",
   BOTH: "قبض وصرف",
 };
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function VoucherCategories() {
   const utils = trpc.useUtils();
@@ -483,7 +482,7 @@ export default function VoucherCategories() {
             <div className="space-y-1">
               <Label>الاتجاه *</Label>
               <select
-                className={selectCls}
+                className={selectClsFull}
                 value={direction}
                 onChange={(e) => {
                   const next = e.target.value as "IN" | "OUT" | "BOTH";

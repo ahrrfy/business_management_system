@@ -21,9 +21,8 @@ import { ArrowRightLeft, Inbox, PackagePlus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import TransfersLog from "@/pages/TransfersLog";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const REASONS = [
   { value: "REBALANCE", label: "إعادة توزيع المخزون" },
@@ -209,7 +208,7 @@ export default function Transfers() {
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-end">
             <div className="space-y-1">
               <Label>من فرع *</Label>
-              <select className={selectCls} value={effectiveFrom || ""} onChange={(e) => changeFrom(e.target.value ? Number(e.target.value) : "")}>
+              <select className={selectClsFull} value={effectiveFrom || ""} onChange={(e) => changeFrom(e.target.value ? Number(e.target.value) : "")}>
                 <option value="">— اختر —</option>
                 {(branches.data ?? []).map(branchOption)}
               </select>
@@ -221,7 +220,7 @@ export default function Transfers() {
             </div>
             <div className="space-y-1">
               <Label>إلى فرع *</Label>
-              <select className={selectCls} value={effectiveTo || ""} onChange={(e) => setToBranchId(e.target.value ? Number(e.target.value) : "")}>
+              <select className={selectClsFull} value={effectiveTo || ""} onChange={(e) => setToBranchId(e.target.value ? Number(e.target.value) : "")}>
                 <option value="">— اختر —</option>
                 {(branches.data ?? []).filter((b) => Number(b.id) !== Number(effectiveFrom)).map(branchOption)}
               </select>
@@ -241,7 +240,7 @@ export default function Transfers() {
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1">
             <Label htmlFor="trf-reason">سبب التحويل</Label>
-            <select id="trf-reason" className={selectCls} value={reason} onChange={(e) => setReason(e.target.value)}>
+            <select id="trf-reason" className={selectClsFull} value={reason} onChange={(e) => setReason(e.target.value)}>
               {REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
           </div>

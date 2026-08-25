@@ -20,14 +20,13 @@ import { WEEK_DAYS } from "@shared/hr";
 import { Clock, Fingerprint, Moon, PenLine, RefreshCw, TriangleAlert, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
 type AttendanceRow = RouterOutputs["attendance"]["list"]["rows"][number];
 
 /** حجم صفحة السجلّ — الخادم يُرقّم (سقفه ٥٠٠). */
 const PAGE_SIZE = 50;
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 /** الشهر الحالي بصيغة "YYYY-MM". */
 const currentMonth = () => new Date().toISOString().slice(0, 7);
@@ -327,20 +326,20 @@ export default function Attendance() {
               <>
                 {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
                 <FilterField label="الموظف">
-                  <select className={selectCls} value={f.employeeId} onChange={(e) => setF({ employeeId: e.target.value })} aria-label="الموظف">
+                  <select className={selectClsSm} value={f.employeeId} onChange={(e) => setF({ employeeId: e.target.value })} aria-label="الموظف">
                     <option value="">كل الموظفين</option>
                     {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
                   </select>
                 </FilterField>
                 {/* النطاق — يفتح على «اليوم» بقرار المالك، وبقيةُ التواريخ باستعلامٍ صريح. */}
                 <FilterField label="النطاق">
-                  <select className={selectCls} value={range} onChange={(e) => setF({ range: e.target.value })} aria-label="النطاق">
+                  <select className={selectClsSm} value={range} onChange={(e) => setF({ range: e.target.value })} aria-label="النطاق">
                     {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
                   </select>
                 </FilterField>
                 {range === "month" && (
                   <FilterField label="الشهر">
-                    <select className={selectCls} value={f.period} onChange={(e) => setF({ period: e.target.value })} aria-label="الشهر">
+                    <select className={selectClsSm} value={f.period} onChange={(e) => setF({ period: e.target.value })} aria-label="الشهر">
                       {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
                     </select>
                   </FilterField>
@@ -348,11 +347,11 @@ export default function Attendance() {
                 {range === "custom" && (
                   <>
                     <FilterField label="من تاريخ">
-                      <input type="date" className={selectCls} dir="ltr" value={f.customFrom} max={f.customTo || undefined}
+                      <input type="date" className={selectClsSm} dir="ltr" value={f.customFrom} max={f.customTo || undefined}
                         onChange={(e) => setF({ customFrom: e.target.value })} aria-label="من تاريخ" />
                     </FilterField>
                     <FilterField label="إلى تاريخ">
-                      <input type="date" className={selectCls} dir="ltr" value={f.customTo} min={f.customFrom || undefined}
+                      <input type="date" className={selectClsSm} dir="ltr" value={f.customTo} min={f.customFrom || undefined}
                         onChange={(e) => setF({ customTo: e.target.value })} aria-label="إلى تاريخ" />
                     </FilterField>
                   </>
@@ -363,7 +362,7 @@ export default function Attendance() {
                   </span>
                 )}
                 <FilterField label="المصدر">
-                  <select className={selectCls} value={f.source} onChange={(e) => setF({ source: e.target.value })} aria-label="المصدر">
+                  <select className={selectClsSm} value={f.source} onChange={(e) => setF({ source: e.target.value })} aria-label="المصدر">
                     <option value="">كل المصادر</option>
                     <option value="fingerprint">بصمة</option>
                     <option value="manual">يدوي</option>

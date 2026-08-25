@@ -16,6 +16,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Star, TriangleAlert } from "lucide-react";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
 /**
  * إضافة مورّد — v3 add-screens (+ تحسينات الأولوية العليا ٤/٧).
@@ -31,8 +32,6 @@ import { Star, TriangleAlert } from "lucide-react";
 const CATEGORIES = ["محلي", "إقليمي", "دولي"] as const;
 const PAYMENT_TERMS = ["نقدي فوري", "آجل 15 يوم", "آجل 30 يوم", "آجل 60 يوم", "آجل 90 يوم"];
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function SupplierNew() {
   const [, navigate] = useLocation();
@@ -210,14 +209,14 @@ export default function SupplierNew() {
                 onClick={() => setSupplierKind("CONSIGNOR")}
                 className={cn(
                   "rounded-md border px-3 py-2 text-sm transition-colors",
-                  isConsignor ? "border-amber-400 bg-amber-50 text-amber-900" : "border-input text-muted-foreground hover:bg-muted"
+                  isConsignor ? "border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "border-input text-muted-foreground hover:bg-muted"
                 )}
               >
                 مودِع أمانة (برسم البيع)
               </button>
             </div>
             {isConsignor && (
-              <p className="text-[11px] text-amber-700">
+              <p className="text-[11px] text-[var(--sem-warn)]">
                 لا ينشأ دين عند استلام بضاعته — المستحق يتكوّن عند البيع فقط، وله سحبها في أي وقت بسند موقَّع.
               </p>
             )}
@@ -236,7 +235,7 @@ export default function SupplierNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="cat">تصنيف المورّد</Label>
-            <select id="cat" className={selectCls} value={supplierCategory} onChange={(e) => setSupplierCategory(e.target.value)}>
+            <select id="cat" className={selectClsFull} value={supplierCategory} onChange={(e) => setSupplierCategory(e.target.value)}>
               {CATEGORIES.map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
@@ -283,9 +282,9 @@ export default function SupplierNew() {
       </Card>
 
       {dupMatches.length > 0 && (
-        <Card className="lg:col-span-2 border-amber-300 bg-amber-50/60" role="status" aria-live="polite">
+        <Card className="lg:col-span-2 border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/60" role="status" aria-live="polite">
           <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm text-amber-800">
+            <CardTitle className="flex items-center gap-2 text-sm text-[var(--sem-warn)]">
               <TriangleAlert aria-hidden className="size-4" />
               مورّدون مشابهون موجودون — تأكّد أنك لا تكرّر مورّداً قائماً
             </CardTitle>
@@ -301,7 +300,7 @@ export default function SupplierNew() {
                   {m.supplierCategory ?? ""}
                   {m.city ? ` — ${m.city}` : ""}
                 </span>
-                <span className="rounded border border-amber-300 px-1.5 py-0.5 text-[10px] text-amber-800">
+                <span className="rounded border border-[var(--sem-warn)]/40 px-1.5 py-0.5 text-[10px] text-[var(--sem-warn)]">
                   {m.matchedOn === "phone" ? "تطابق هاتف" : m.matchedOn === "both" ? "تطابق اسم وهاتف" : "تشابه اسم"}
                 </span>
                 {!m.isActive && (
@@ -312,7 +311,7 @@ export default function SupplierNew() {
                 </Link>
               </div>
             ))}
-            <p className="text-[11px] text-amber-700">
+            <p className="text-[11px] text-[var(--sem-warn)]">
               التحذير لا يمنع الحفظ — إن كان هو المورّد نفسه فافتح بطاقته بدل إنشائه من جديد.
             </p>
           </CardContent>
@@ -346,7 +345,7 @@ export default function SupplierNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="terms">شروط الدفع</Label>
-            <select id="terms" className={selectCls} value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)}>
+            <select id="terms" className={selectClsFull} value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)}>
               <option value="">—</option>
               {PAYMENT_TERMS.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
@@ -374,7 +373,7 @@ export default function SupplierNew() {
                   aria-label={`${n} نجوم`}
                   className={cn(
                     "transition-colors",
-                    n <= rating ? "text-amber-500" : "text-muted-foreground/40 hover:text-muted-foreground"
+                    n <= rating ? "text-[var(--sem-warn)]" : "text-muted-foreground/40 hover:text-muted-foreground"
                   )}
                 >
                   <Star aria-hidden className={cn("size-5", n <= rating && "fill-current")} />
@@ -417,7 +416,7 @@ export default function SupplierNew() {
             <Label htmlFor="openDir">اتجاه الرصيد</Label>
             <select
               id="openDir"
-              className={selectCls}
+              className={selectClsFull}
               value={openingDir}
               onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
             >
@@ -437,7 +436,7 @@ export default function SupplierNew() {
           </div>
           <div className="md:col-span-2">
             {openingAmount.trim() && Number(openingAmount) > 0 ? (
-              <p className="text-[11px] text-amber-700">
+              <p className="text-[11px] text-[var(--sem-warn)]">
                 سيُسجَّل قيد رصيد افتتاحي:{" "}
                 {openingDir === "OWED_BY_US"
                   ? `«له علينا» ${fmt(openingAmount)} د.ع (يبدأ رصيده له علينا).`
@@ -454,14 +453,14 @@ export default function SupplierNew() {
       </Card>
 
       {isConsignor && (
-        <Card className="lg:col-span-2 border-amber-200">
+        <Card className="lg:col-span-2 border-[var(--sem-warn)]/30">
           <CardHeader>
-            <CardTitle className="text-base text-amber-900">اتفاقية الإيداع (بضاعة الأمانة)</CardTitle>
+            <CardTitle className="text-base text-[var(--sem-warn)]">اتفاقية الإيداع (بضاعة الأمانة)</CardTitle>
           </CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <div className="space-y-1">
               <Label htmlFor="cycle">دورية التسوية</Label>
-              <select id="cycle" className={selectCls} value={settlementCycle} onChange={(e) => setSettlementCycle(e.target.value)}>
+              <select id="cycle" className={selectClsFull} value={settlementCycle} onChange={(e) => setSettlementCycle(e.target.value)}>
                 <option value="MONTHLY">شهرية</option>
                 <option value="WEEKLY">أسبوعية</option>
                 <option value="ON_DEMAND">عند الطلب</option>

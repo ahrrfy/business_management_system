@@ -27,9 +27,8 @@ import { HandCoins, Plus, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { EmployeeAdvanceRepaymentPanel } from "@/components/hr/EmployeeAdvanceRepaymentPanel";
 import { toExcelMoney } from "@/lib/payrollAccrual";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STATUS_LABEL: Record<string, string> = { ACTIVE: "نشطة", SETTLED: "مسوّاة", CANCELLED: "ملغاة" };
 const STATUS_CLS: Record<string, string> = {
@@ -162,7 +161,7 @@ export default function EmployeeAdvances() {
             }}
             filters={<div className="flex items-end gap-2 flex-wrap">
               <FilterField label="الحالة">
-                <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as typeof status)} aria-label="حالة السلفة">
+                <select className={selectClsSm} value={status} onChange={(e) => setStatus(e.target.value as typeof status)} aria-label="حالة السلفة">
                   <option value="">كل الحالات</option>
                   <option value="ACTIVE">نشطة</option>
                   <option value="SETTLED">مسوّاة</option>
@@ -170,13 +169,13 @@ export default function EmployeeAdvances() {
                 </select>
               </FilterField>
               <FilterField label="الموظف">
-                <select className={selectCls} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
+                <select className={selectClsSm} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
                   <option value="">كل الموظفين</option>
                   {(empOpts.data?.managers ?? []).map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
                 </select>
               </FilterField>
               <FilterField label="الفرع">
-                <select className={selectCls} value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} aria-label="الفرع">
+                <select className={selectClsSm} value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} aria-label="الفرع">
                   <option value="">كل الفروع</option>
                   {(branchesQ.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
                 </select>
@@ -331,7 +330,7 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
         <div className="space-y-3 py-1">
           <div>
             <Label htmlFor="adv-emp">الموظف</Label>
-            <select id="adv-emp" className={`${selectCls} w-full h-9`} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <select id="adv-emp" className={`${selectClsSm} w-full h-9`} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
               <option value="">اختر موظفاً…</option>
               {emps.map((e) => (
                 <option key={e.id} value={String(e.id)}>

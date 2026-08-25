@@ -28,6 +28,7 @@ import { canSeeCost, moduleAccessAllowed, type PermissionMap, type RoleKey } fro
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
+import { PageHeader } from "@/components/PageHeader";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";
@@ -269,9 +270,11 @@ export default function WorkOrderDetail() {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">طلب خدمة</h1>
-        <div className="flex items-center gap-3">
+      <PageHeader
+        title="طلب خدمة"
+        backHref="/work-orders"
+        backLabel="رجوع للقائمة"
+        actions={<>
           <CopyAsMenu
             label="نَسخ التَفاصيل"
             plain={formatWorkOrderAsWhatsApp({
@@ -378,9 +381,8 @@ export default function WorkOrderDetail() {
             <Truck className="h-3.5 w-3.5" />
             ملصق شحن
           </Button>
-          <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
-        </div>
-      </div>
+        </>}
+      />
 
       <Card>
         <CardHeader className="pb-3">

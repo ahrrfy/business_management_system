@@ -24,9 +24,8 @@ import { trpc } from "@/lib/trpc";
 import { FileEdit, ShoppingCart } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string }): string {
   const parts = [r.variantName, r.color, r.size].filter(Boolean);
@@ -267,7 +266,7 @@ export default function ReorderAlerts() {
             <div className="space-y-1">
               <Label>الفرع</Label>
               <select
-                className={selectCls}
+                className={selectClsFull}
                 value={branchId ?? ""}
                 onChange={(e) => { setPickedBranch(e.target.value === "" ? null : Number(e.target.value)); setPage(0); }}
               >
@@ -503,7 +502,7 @@ export default function ReorderAlerts() {
             <div className="space-y-1">
               <Label>المورّد</Label>
               <select
-                className={selectCls}
+                className={selectClsFull}
                 value={supplierId ?? ""}
                 onChange={(e) => setSupplierId(e.target.value === "" ? null : Number(e.target.value))}
               >

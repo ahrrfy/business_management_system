@@ -30,9 +30,8 @@ import { printPayslip } from "@/lib/printing/printPayslip";
 import { payrollStatusLabel as accrualStatusLabel, toExcelMoney } from "@/lib/payrollAccrual";
 import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, TriangleAlert, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STATUS_CLS: Record<string, string> = {
   draft: "badge-stock-low",
@@ -289,7 +288,7 @@ export default function Payroll() {
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <select
-              className={selectCls}
+              className={selectClsSm}
               value={effectiveId != null ? String(effectiveId) : ""}
               onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
               aria-label="المسيّر"

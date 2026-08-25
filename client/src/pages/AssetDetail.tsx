@@ -23,9 +23,9 @@ import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
 import { PlayCircle, Trash2, Upload, FileText, ExternalLink } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
 const today = () => new Date().toISOString().slice(0, 10);
-const selectCls = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function Field({ label, value, dir }: { label: string; value: React.ReactNode; dir?: "ltr" | "rtl" }) {
   return (
@@ -460,7 +460,7 @@ export default function AssetDetail() {
                     <Label htmlFor="asset-refund-method">طريقة الاسترداد *</Label>
                     {/* الخيارات مشتقّة من سياسة القبض المشتركة — «صك» كان معروضاً بينما
                         `assertInboundPaymentMethodEnabled` يرفضه في سند الاسترداد ⇒ صفر مسار نجاح. */}
-                    <select id="asset-refund-method" className={selectCls} value={correctionRefundMethod} onChange={(event) => setCorrectionRefundMethod(event.target.value as typeof correctionRefundMethod)}>
+                    <select id="asset-refund-method" className={selectClsFull} value={correctionRefundMethod} onChange={(event) => setCorrectionRefundMethod(event.target.value as typeof correctionRefundMethod)}>
                       {INBOUND_METHOD_OPTIONS.map((m) => (
                         <option key={m.v} value={m.v}>{m.label}</option>
                       ))}
@@ -469,7 +469,7 @@ export default function AssetDetail() {
                   {correctionRefundMethod === "CASH" ? (
                     <div className="space-y-1">
                       <Label htmlFor="asset-refund-bucket">وجهة النقد *</Label>
-                      <select id="asset-refund-bucket" className={selectCls} value={correctionRefundBucket} onChange={(event) => setCorrectionRefundBucket(event.target.value as typeof correctionRefundBucket)}>
+                      <select id="asset-refund-bucket" className={selectClsFull} value={correctionRefundBucket} onChange={(event) => setCorrectionRefundBucket(event.target.value as typeof correctionRefundBucket)}>
                         <option value="TREASURY">الخزينة الإدارية</option>
                         <option value="DRAWER">درج الوردية</option>
                       </select>
@@ -529,7 +529,7 @@ export default function AssetDetail() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="handoverEmp">الموظف المستلِم</Label>
-              <select id="handoverEmp" className={selectCls} value={hEmp} onChange={(e) => setHEmp(e.target.value)}>
+              <select id="handoverEmp" className={selectClsFull} value={hEmp} onChange={(e) => setHEmp(e.target.value)}>
                 <option value="">— اختر موظفاً —</option>
                 {(opts.data?.employees ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}{e.position ? ` — ${e.position}` : ""}</option>)}
               </select>
@@ -551,7 +551,7 @@ export default function AssetDetail() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1"><Label htmlFor="maintType">النوع *</Label><Input id="maintType" value={mType} onChange={(e) => setMType(e.target.value)} placeholder="صيانة دورية / استبدال قطعة" /></div>
               <div className="space-y-1"><Label>التاريخ</Label><Input type="date" dir="ltr" value={mDate} onChange={(e) => setMDate(e.target.value)} /></div>
-              <div className="space-y-1"><Label>جهة الصيانة المسجلة</Label><select className={selectCls} value={mVendorSupplierId} onChange={(e) => setMVendorSupplierId(e.target.value)}><option value="">— جهة خارجية غير مسجلة —</option>{(opts.data?.suppliers ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}</select></div>
+              <div className="space-y-1"><Label>جهة الصيانة المسجلة</Label><select className={selectClsFull} value={mVendorSupplierId} onChange={(e) => setMVendorSupplierId(e.target.value)}><option value="">— جهة خارجية غير مسجلة —</option>{(opts.data?.suppliers ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}</select></div>
               {!mVendorSupplierId && <div className="space-y-1"><Label>اسم جهة الصيانة الحقيقي *</Label><Input value={mVendor} onChange={(e) => setMVendor(e.target.value)} /></div>}
               <div className="space-y-1"><Label htmlFor="maintCost">التكلفة (د.ع)</Label><MoneyInput id="maintCost" value={mCost} onChange={setMCost} decimals={0} /></div>
               <div className="space-y-1"><Label>مرجع فاتورة/وصل الصيانة *</Label><Input value={mEvidenceReference} onChange={(e) => setMEvidenceReference(e.target.value)} dir="ltr" /></div>
@@ -587,7 +587,7 @@ export default function AssetDetail() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="disposeKind">النوع</Label>
-              <select id="disposeKind" className={selectCls} value={dKind} onChange={(e) => setDKind(e.target.value as "retired" | "disposed")}>
+              <select id="disposeKind" className={selectClsFull} value={dKind} onChange={(e) => setDKind(e.target.value as "retired" | "disposed")}>
                 <option value="retired">إخراج من الخدمة</option>
                 <option value="disposed">استبعاد ببيع/خردة</option>
               </select>

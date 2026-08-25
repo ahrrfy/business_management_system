@@ -27,6 +27,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Check, AlertTriangle } from "lucide-react";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
 /* ───────────────────────── ثوابت العرض ───────────────────────── */
 
@@ -47,8 +48,6 @@ const SCOPE_TYPE_LABEL: Record<StScope, string> = {
   MANUAL: "منتجات مختارة",
 };
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 /* مقارنة زمنية فقط (للترتيب/اختيار الأحدث) — التنسيق عبر @/lib/date. */
 const toDate = (v: string | Date | null | undefined): Date | null =>
@@ -283,7 +282,7 @@ export default function Stocktakes() {
             filters={
               <>
                 <select
-                  className={selectCls}
+                  className={selectClsSm}
                   value={status}
                   onChange={(e) => {
                     setStatus(e.target.value as "" | StStatus);
@@ -299,7 +298,7 @@ export default function Stocktakes() {
                 </select>
                 {isAdmin && (
                   <select
-                    className={selectCls}
+                    className={selectClsSm}
                     value={branchId}
                     onChange={(e) => {
                       setBranchId(Number(e.target.value));

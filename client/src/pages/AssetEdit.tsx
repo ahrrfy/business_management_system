@@ -11,8 +11,8 @@ import { ASSET_CATEGORIES, DEPRECIATION_METHODS } from "@shared/assets";
 import { AlertCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const stripMoney = (v: string | number | null | undefined) => (v == null ? "" : String(v).replace(/\.00$/, ""));
 
 /** معاينة القسط السنوي (سنة أولى) — للعرض فقط؛ الخادم يحسب نهائياً. */
@@ -118,7 +118,7 @@ export default function AssetEdit() {
           <div className="space-y-1"><Label htmlFor="name">اسم الأصل *</Label><Input id="name" value={form.name} onChange={(e) => set({ name: e.target.value })} /></div>
           <div className="space-y-1">
             <Label htmlFor="cat">الفئة *</Label>
-            <select id="cat" className={selectCls} value={form.category} onChange={(e) => set({ category: e.target.value })}>
+            <select id="cat" className={selectClsFull} value={form.category} onChange={(e) => set({ category: e.target.value })}>
               {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
             </select>
           </div>
@@ -132,7 +132,7 @@ export default function AssetEdit() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="br">الفرع</Label>
-            <select id="br" className={selectCls} value={form.branchId} disabled aria-describedby="asset-financial-lock">
+            <select id="br" className={selectClsFull} value={form.branchId} disabled aria-describedby="asset-financial-lock">
               <option value="">— اختر الفرع —</option>
               {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
             </select>
@@ -151,7 +151,7 @@ export default function AssetEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="sup">المورّد</Label>
-            <select id="sup" className={selectCls} value={form.supplierId} disabled aria-describedby="asset-financial-lock">
+            <select id="sup" className={selectClsFull} value={form.supplierId} disabled aria-describedby="asset-financial-lock">
               <option value="">— بلا مورّد —</option>
               {(opts.data?.suppliers ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
             </select>
@@ -167,7 +167,7 @@ export default function AssetEdit() {
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1">
             <Label htmlFor="meth">الطريقة</Label>
-            <select id="meth" className={selectCls} value={form.method} onChange={(e) => set({ method: e.target.value as "sl" | "db" })}>
+            <select id="meth" className={selectClsFull} value={form.method} onChange={(e) => set({ method: e.target.value as "sl" | "db" })}>
               {DEPRECIATION_METHODS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
             </select>
           </div>

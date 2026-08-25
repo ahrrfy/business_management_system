@@ -13,6 +13,7 @@ import { ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { selectCls } from "@/lib/ui/formStyles";
 
 type Row = RouterOutputs["reports"]["abcAnalysis"]["rows"][number];
 type ClassFilter = "" | "A" | "B" | "C";
@@ -28,8 +29,6 @@ const CLASS_LABEL: Record<string, string> = {
   C: "ج (منخفضة)",
 };
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function AbcAnalysis() {
   const me = trpc.auth.me.useQuery();
