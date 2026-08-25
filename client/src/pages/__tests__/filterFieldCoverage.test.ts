@@ -17,7 +17,7 @@ describe("FilterField coverage for the remaining list screens", () => {
     ["Quotations.tsx", ["من تاريخ", "إلى تاريخ", "الحالة", "الفرع"]],
     // The branch selector (admin) and read-only branch scope (other roles) are
     // runtime-exclusive, but both source branches must retain an explicit caption.
-    ["Products.tsx", ["الفرع (للمخزون)", "الفرع (للمخزون)", "الفئة"]],
+    ["Products.tsx", ["الفرع (للمخزون)", "الفرع (للمخزون)", "الفئة", "كاشير الطباعة"]],
   ])("keeps an explicit caption above every structured filter in %s", (page, labels) => {
     expect(filterLabels(readPage(page as string))).toEqual(labels);
   });

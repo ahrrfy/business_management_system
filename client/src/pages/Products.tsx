@@ -105,21 +105,24 @@ export default function Products() {
   const canPickBranch = me.data?.role === "admin";
 
   // الفلاتر تعيش في querystring (تُشارَك رابطاً وتنجو من التنقّل). "" = افتراضي كل حقل.
-  const [f, setF] = useUrlFilters({ q: "", category: "", inactive: "", page: "0", branch: "" });
+  const [f, setF] = useUrlFilters({ q: "", category: "", inactive: "", page: "0", branch: "", printPos: "" });
   const q = f.q;
   const includeInactive = f.inactive === "1";
   const categoryFilter = f.category;
+  // فلتر رؤية شبكة كاشير الطباعة: "" ⇒ الكل · "1" ⇒ ما يظهر · "0" ⇒ ما لا يظهر.
+  const printPosFilter: "" | "1" | "0" = f.printPos === "1" || f.printPos === "0" ? f.printPos : "";
   const page = Number(f.page) || 0;
   const setQ = (v: string) => setF({ q: v, page: "0" });
   const setIncludeInactive = (v: boolean) => setF({ inactive: v ? "1" : "", page: "0" });
   const setCategoryFilter = (v: string) => setF({ category: v, page: "0" });
+  const setPrintPosFilter = (v: "" | "1" | "0") => setF({ printPos: v, page: "0" });
   const setPage = (updater: number | ((p: number) => number)) =>
     setF({ page: String(typeof updater === "function" ? updater(page) : updater) });
 
   // اتساق ListToolbar: شارة الفلاتر النشطة + زرّ المسح.
   // الفرع مُستثنى (منتقي منفصل هو مصدر بيانات الشاشة، ليس فلتراً ثانوياً — إعادة ضبطه تكسر الاستعلام).
-  const activeFilterCount = [categoryFilter, includeInactive ? "1" : ""].filter(Boolean).length;
-  const resetFilters = () => setF({ q: "", category: "", inactive: "", page: "0" });
+  const activeFilterCount = [categoryFilter, includeInactive ? "1" : "", printPosFilter].filter(Boolean).length;
+  const resetFilters = () => setF({ q: "", category: "", inactive: "", page: "0", printPos: "" });
 
   // منتقي فرع صريح (نمط PR #288): افتراضي فرع المستخدم إن مُسنَد؛ وإلا يلزم اختياراً صريحاً
   // (لا `?? 1` صامت) — أثره هنا على عمود «المخزون» المعروض فقط (المنتجات/الأسعار عابرة للفروع).
@@ -152,6 +155,7 @@ export default function Products() {
       q: dq.trim() || undefined,
       includeInactive,
       categoryId: categoryFilter === "" ? undefined : Number(categoryFilter),
+      showInPrintPos: printPosFilter === "" ? undefined : printPosFilter === "1",
       limit,
       offset: page * limit,
     },
@@ -368,6 +372,19 @@ export default function Products() {
                     <CategoryOptionList categories={categoriesQ.data ?? []} />
                   </select>
                 </FilterField>
+                {/* ٢٤/٨ — فلتر رؤية شبكة كاشير الطباعة (شريحة PR #755/#757/#767). */}
+                <FilterField label="كاشير الطباعة">
+                  <select
+                    value={printPosFilter}
+                    onChange={(e) => setPrintPosFilter(e.target.value as "" | "1" | "0")}
+                    className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+                    aria-label="فلتر رؤية شبكة كاشير الطباعة"
+                  >
+                    <option value="">الكل</option>
+                    <option value="1">يظهر</option>
+                    <option value="0">مخفيّ</option>
+                  </select>
+                </FilterField>
                 <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input
                     type="checkbox"
@@ -394,6 +411,7 @@ export default function Products() {
                         q: dq.trim() || undefined,
                         includeInactive,
                         categoryId: categoryFilter === "" ? undefined : Number(categoryFilter),
+                        showInPrintPos: printPosFilter === "" ? undefined : printPosFilter === "1",
                         limit: fetchLimit,
                         offset,
                       })

@@ -483,6 +483,8 @@ export const catalogRouter = router({
         includeInactive: z.boolean().default(false),
         // فلترة بالفئة: رقم = فئة محدّدة، 0 = «بلا فئة» (categoryId NULL)، غياب = الكل.
         categoryId: z.number().int().min(0).optional(),
+        // ٢٤/٨ — إكمال شريحة PR #755/#757: فلتر رؤية شبكة كاشير الطباعة.
+        showInPrintPos: z.boolean().optional(),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
       }),
