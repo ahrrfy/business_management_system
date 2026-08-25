@@ -52,7 +52,9 @@ type Msg = RouterOutputs["conversations"]["messages"][number];
 
 // التسمية من `@shared/receptionChannel` (المصدر الحاكم) — واللون/الأيقونة عرضٌ خاصٌّ بصندوق الوارد.
 const CHANNEL_META: Record<string, { label: string; Icon: typeof MessageSquare; cls: string }> = {
-  WHATSAPP: { label: receptionChannelLabel("WHATSAPP"), Icon: MessageSquare, cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
+  // ٢٥/٨/٢٦ (Codex #803 P2): هوّية القناة توكنٌ خاصّ بالعلامة، لا توكنَ حالة (--sem-*).
+  // WhatsApp له `--brand-whatsapp` في tokens.css. الهاتف بلا توكنٍ ⇒ يبقى raw كهوّية (لا تحذيراً).
+  WHATSAPP: { label: receptionChannelLabel("WHATSAPP"), Icon: MessageSquare, cls: "bg-[var(--brand-whatsapp)]/10 text-[var(--brand-whatsapp)]" },
   INSTAGRAM: { label: receptionChannelLabel("INSTAGRAM"), Icon: User, cls: "bg-pink-500/10 text-pink-700 dark:text-pink-400" },
   TIKTOK: { label: receptionChannelLabel("TIKTOK"), Icon: User, cls: "bg-muted text-muted-foreground" },
   STORE: { label: receptionChannelLabel("STORE"), Icon: ShoppingBag, cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },

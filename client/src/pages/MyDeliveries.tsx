@@ -427,7 +427,7 @@ function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: 
             </a>
             <button
               onClick={() => openWhatsApp(phone, waMsg)}
-              className="flex items-center gap-1 rounded-lg border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-3 py-2 text-xs font-bold text-[var(--sem-pos)] transition hover:bg-[var(--sem-pos-bg)]/80"
+              className="flex items-center gap-1 rounded-lg border border-[var(--brand-whatsapp)]/40 bg-[var(--brand-whatsapp)]/10 px-3 py-2 text-xs font-bold text-[var(--brand-whatsapp)] transition hover:bg-[var(--brand-whatsapp)]/20"
             >
               <MessageCircle aria-hidden className="size-3.5" /> واتساب
             </button>
