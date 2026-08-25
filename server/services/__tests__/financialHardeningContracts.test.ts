@@ -55,9 +55,9 @@ describe("financial hardening source contracts", () => {
   it("keeps dependency security overrides active under pnpm 11", () => {
     const workspace = read("pnpm-workspace.yaml");
     const packageJson = read("package.json");
-    expect(workspace).toContain('"uuid@<11.1.1": ">=11.1.1"');
-    expect(workspace).toContain('"@opentelemetry/core@<2.8.0": ">=2.8.0"');
-    expect(packageJson).not.toContain('"pnpm"');
+    expect(packageJson).toContain('"uuid@<11.1.1": ">=11.1.1"');
+    expect(packageJson).toContain('"@opentelemetry/core@<2.8.0": ">=2.8.0"');
+    expect(workspace).not.toContain("overrides:");
   });
 
   it("does not acknowledge external webhooks when persistence fails", () => {
