@@ -271,8 +271,9 @@ export default function CustomerEdit() {
         description="حدّث بيانات العميل وفئة سعره وسقف ائتمانه."
         actions={
           // زرّ لا رابط: يمرّ بنفس تأكيد Esc (handleCancel) — نقرة الفأرة لا تتجاوز تحذير فقد البيانات.
+          // نتركه في `actions` (لا `backHref`) لأنّه يستدعي تأكيداً قبل الرجوع؛ backHref رابطٌ مباشر يتخطّى ذلك.
           <button type="button" onClick={() => void handleCancel()} className="text-sm text-muted-foreground hover:underline">
-            ← رجوع للقائمة
+            رجوع للعملاء
           </button>
         }
       />

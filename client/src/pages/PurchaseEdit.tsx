@@ -44,6 +44,7 @@ import {
   type InvoiceLine,
   type InvoiceState,
 } from "@/components/invoice";
+import { PageHeader } from "@/components/PageHeader";
 
 const INVOICE_TYPE = "PURCHASE" as const;
 
@@ -529,23 +530,24 @@ export default function PurchaseEdit() {
 
   return (
     <div ref={containerRef} dir="rtl" className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-xl font-extrabold">
-          {(() => { const MIcon = meta.icon; return <MIcon aria-hidden className="size-6 text-primary" />; })()}
-          تعديل {meta.label}
-          <span className="font-mono text-sm font-semibold text-muted-foreground" dir="ltr">{order.poNumber}</span>
-        </h1>
-        <div className="flex items-center gap-3 text-xs">
-          <span className="hidden font-semibold text-muted-foreground sm:inline">
+      <PageHeader
+        title={
+          <span className="flex items-center gap-2">
+            <span>تعديل {meta.label}</span>
+            <span className="font-mono text-sm font-semibold text-muted-foreground" dir="ltr">{order.poNumber}</span>
+          </span>
+        }
+        icon={(() => { const MIcon = meta.icon; return <MIcon aria-hidden className="size-5 text-primary" />; })()}
+        backHref={`/purchases/${purchaseOrderId}`}
+        backLabel="رجوع للأمر"
+        actions={
+          <span className="hidden text-xs font-semibold text-muted-foreground sm:inline">
             الإجمالي:{" "}
             <span className="font-extrabold text-foreground" dir="ltr">{landed.grand.toFixed(2)}</span>{" "}
             د.ع
           </span>
-          <Link href={`/purchases/${purchaseOrderId}`} className="text-sm font-semibold text-muted-foreground hover:text-foreground">
-            ← رجوع للأمر
-          </Link>
-        </div>
-      </div>
+        }
+      />
 
       <InvoiceHeader
         state={state}

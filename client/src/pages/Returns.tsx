@@ -97,7 +97,8 @@ export default function Returns() {
       <PageHeader
         title="مرتجعات البيع"
         description="خطوتان: اختر الفاتورة، ثم حدّد ما يرجع — المبلغ وطريقة الردّ والدرج تأتي جاهزةً من الفاتورة نفسها."
-        actions={<Link href="/invoices" className="text-sm text-muted-foreground">← رجوع للمبيعات</Link>}
+        backHref="/invoices"
+        backLabel="رجوع للمبيعات"
       />
 
       <PendingReturnRequests />

@@ -451,11 +451,10 @@ export default function WorkOrderNew() {
     <div className="space-y-4">
       <PageHeader
         title="طلب خدمة جديد"
+        backHref="/work-orders"
+        backLabel="رجوع لأوامر الشغل"
         actions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={previewAndPrint}>معاينة وطباعة</Button>
-            <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع</Link>
-          </div>
+          <Button variant="outline" size="sm" onClick={previewAndPrint}>معاينة وطباعة</Button>
         }
       />
 

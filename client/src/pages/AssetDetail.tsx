@@ -1,4 +1,5 @@
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -146,9 +147,11 @@ export default function AssetDetail() {
 
   return (
     <div className="space-y-4 max-w-5xl">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <Link href="/assets/register" className="text-sm text-muted-foreground">← رجوع للسجلّ</Link>
-      </div>
+      <PageHeader
+        title="بطاقة الأصل"
+        backHref="/assets/register"
+        backLabel="رجوع لسجلّ الأصول"
+      />
 
       {/* ترويسة الأصل */}
       <Card>

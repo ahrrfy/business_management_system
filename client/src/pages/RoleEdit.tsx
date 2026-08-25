@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -134,10 +135,11 @@ export default function RoleEdit() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">{isEdit ? "تعديل دور" : "إضافة دور مخصّص"}</h1>
-        <Link href="/roles" className="text-sm text-muted-foreground">← رجوع للأدوار</Link>
-      </div>
+      <PageHeader
+        title={isEdit ? "تعديل دور" : "إضافة دور مخصّص"}
+        backHref="/roles"
+        backLabel="رجوع للأدوار"
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">بيانات الدور</CardTitle></CardHeader>

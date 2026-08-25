@@ -241,7 +241,8 @@ export default function SupplierEdit() {
             <span>الرصيد الحالي: <span className="tabular-nums" dir="ltr">{fmt(detail.data.currentBalance)}</span> دينار</span>
           </span>
         }
-        actions={<Link href="/suppliers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
+        backHref="/suppliers"
+        backLabel="رجوع للمورّدين"
       />
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">

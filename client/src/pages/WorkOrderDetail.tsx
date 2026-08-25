@@ -1,4 +1,5 @@
 import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
+import { PageHeader } from "@/components/PageHeader";
 import CancelWorkOrderDialog from "@/components/workorder/CancelWorkOrderDialog";
 import DesignFileCard from "@/components/workorder/DesignFileCard";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
@@ -269,9 +270,13 @@ export default function WorkOrderDetail() {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">طلب خدمة</h1>
-        <div className="flex items-center gap-3">
+      <PageHeader
+        title="طلب خدمة"
+        backHref="/work-orders"
+        backLabel="رجوع لأوامر الشغل"
+      />
+      <div className="flex items-center justify-end">
+        <div className="flex flex-wrap items-center gap-3">
           <CopyAsMenu
             label="نَسخ التَفاصيل"
             plain={formatWorkOrderAsWhatsApp({
@@ -378,7 +383,6 @@ export default function WorkOrderDetail() {
             <Truck className="h-3.5 w-3.5" />
             ملصق شحن
           </Button>
-          <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
         </div>
       </div>
 

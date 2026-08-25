@@ -477,11 +477,8 @@ export default function PurchaseReceive() {
     <div className="space-y-4">
       <PageHeader
         title="استلام أمر شراء"
-        actions={
-          <Link href="/purchases" className="text-sm text-muted-foreground">
-            ← رجوع للمشتريات
-          </Link>
-        }
+        backHref="/purchases"
+        backLabel="رجوع للمشتريات"
       />
 
       <Card>

@@ -17,6 +17,7 @@ import { trpc } from "@/lib/trpc";
 import { type EmployeeEducation, payTypeLabel, WEEK_DAYS } from "@shared/hr";
 import { useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
+import { PageHeader } from "@/components/PageHeader";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -75,7 +76,11 @@ export default function EmployeeDetail() {
 
   return (
     <div className="space-y-4 max-w-5xl">
-      <Link href="/hr/employees" className="text-sm text-muted-foreground">← رجوع للموظفين</Link>
+      <PageHeader
+        title="بطاقة الموظف"
+        backHref="/hr/employees"
+        backLabel="رجوع للموظفين"
+      />
 
       {/* ترويسة الموظف */}
       <Card>

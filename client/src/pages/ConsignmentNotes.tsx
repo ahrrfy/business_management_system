@@ -114,7 +114,9 @@ export default function ConsignmentNotes() {
           mode === "list" ? (
             <Button size="sm" onClick={() => setMode("new")}><Plus aria-hidden className="size-4 me-1" /> سند جديد</Button>
           ) : (
-            <Button size="sm" variant="outline" onClick={() => setMode("list")}>← رجوع للقائمة</Button>
+            // زرّ لا رابط: يعود من وضع «سند جديد» إلى وضع «القائمة» داخل الشاشة نفسها (لا تنقّل بين مسارَين)
+            // ⇒ لا يستعمل PageHeader.backHref (وهو رابط تنقّل حقيقيّ).
+            <Button size="sm" variant="outline" onClick={() => setMode("list")}>العودة للقائمة</Button>
           )
         }
       />

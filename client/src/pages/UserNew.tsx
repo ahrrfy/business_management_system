@@ -13,6 +13,7 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { ROLE_OPTIONS } from "@/lib/roles";
+import { PageHeader } from "@/components/PageHeader";
 
 export default function UserNew() {
   const [, navigate] = useLocation();
@@ -110,10 +111,11 @@ export default function UserNew() {
   if (createdInfo) {
     return (
       <div className="space-y-4 max-w-2xl">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">إضافة مستخدم</h1>
-          <Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
-        </div>
+        <PageHeader
+          title="إضافة مستخدم"
+          backHref="/users"
+          backLabel="رجوع للمستخدمين"
+        />
         <CredentialsShare
           name={createdInfo.name}
           email={createdInfo.email}
@@ -137,10 +139,11 @@ export default function UserNew() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">إضافة مستخدم</h1>
-        <Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
-      </div>
+      <PageHeader
+        title="إضافة مستخدم"
+        backHref="/users"
+        backLabel="رجوع للمستخدمين"
+      />
 
       {/* عنصر نموذج حقيقي يلفّ حقول الحفظ الفعلية (كان غائباً — يمنع حفظ متصفح/تعبئة تلقائية ويكسر
           دلالة Enter-to-submit، نمط UserEdit.tsx). AccountFields مكوّن مشترك خارج ملكيتي (يُستعمله

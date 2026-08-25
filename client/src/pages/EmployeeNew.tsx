@@ -313,10 +313,16 @@ export default function EmployeeNew() {
 
   return (
     <div className="space-y-4">
+      <PageHeader
+        title={isEdit ? "تعديل موظف" : "إضافة موظف"}
+        backHref="/hr/employees"
+        backLabel="رجوع للموظفين"
+      />
       {/* شريط أدوات ثابت أعلى النموذج — نموذجٌ طويل (٤٠+ حقلاً)، والتمرير كان يُغيّب زرّ الحفظ
-          عن النظر تماماً حتى العودة للأعلى. مطابقٌ لشريط الأسفل (نفس الأزرار) لا يفرض قراراً جديداً. */}
+          عن النظر تماماً حتى العودة للأعلى. مطابقٌ لشريط الأسفل (نفس الأزرار) لا يفرض قراراً جديداً.
+          استُعمل `<div>` بدل `<h1>` لتفادي تنافسٍ بصريٍّ ودلاليٍّ مع رأس الصفحة الرسميّ (PageHeader) أعلاه. */}
       <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <h1 className="text-2xl font-bold">{isEdit ? "تعديل موظف" : "إضافة موظف"}</h1>
+        <div className="text-lg font-semibold text-muted-foreground">{isEdit ? "تعديل موظف" : "إضافة موظف"}</div>
         <div className="flex items-center gap-2">
           <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
           <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
