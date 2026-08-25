@@ -80,11 +80,11 @@ export const attendanceRouter = router({
         entityType: "hrAttendanceSettings",
         entityId: 1,
         newValue: {
-          attendancePayEnabled: input.attendancePayEnabled,
-          attendancePayFrom: input.attendancePayFrom,
-          maxDailyHours: input.maxDailyHours,
-          nightShiftEnabled: input.nightShiftEnabled,
-          nightShiftCutoffHour: input.nightShiftCutoffHour,
+          attendancePayEnabled: row.attendancePayEnabled,
+          attendancePayFrom: row.attendancePayFrom,
+          maxDailyHours: row.maxDailyHours,
+          nightShiftEnabled: row.nightShiftEnabled,
+          nightShiftCutoffHour: row.nightShiftCutoffHour,
         },
       });
       return row;

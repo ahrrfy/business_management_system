@@ -2193,7 +2193,6 @@ export const superAppRouter = router({
       const leave = await createLeave({
         ...input,
         employeeId: employee.id,
-        days: 1,
       });
       await logAudit(ctx, {
         action: "leave.selfRequest",
