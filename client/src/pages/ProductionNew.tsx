@@ -276,7 +276,7 @@ export default function ProductionNew() {
       <PageHeader
         title="الإنتاج / تحويل المخزون"
         description="يُخصَم الورق المُدخَل ويُنتَج المنتج بكلفته الحقيقية. الورق مصدر حقيقة واحد ⇒ لا سالب."
-        actions={<Link href="/production" className="text-sm text-muted-foreground">← رجوع</Link>}
+        backHref="/production"
       />
 
       {/* محدّد الوضع */}

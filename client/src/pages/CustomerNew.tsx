@@ -199,7 +199,8 @@ export default function CustomerNew() {
       <PageHeader
         title="إضافة عميل"
         description="سجّل عميلاً جديداً ببياناته وفئة سعره وسقف ائتمانه."
-        actions={<Link href="/customers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
+        backHref="/customers"
+        backLabel="رجوع للقائمة"
       />
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
