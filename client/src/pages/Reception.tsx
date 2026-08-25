@@ -2368,7 +2368,7 @@ export default function Reception() {
                   <div
                     className={cn(
                       "mt-2 inline-flex flex-wrap items-center gap-1 text-sm font-bold",
-                      recDiff < 0 ? "text-destructive" : "text-emerald-600",
+                      recDiff < 0 ? "text-destructive" : "text-[var(--sem-pos)]",
                     )}
                   >
                     <span>الفرق: {recDiff >= 0 ? "+" : ""}{fmt(recDiff)} د.ع</span>
@@ -2629,7 +2629,7 @@ export default function Reception() {
                   <div
                     className={cn(
                       "grid size-10 flex-shrink-0 place-items-center rounded-lg",
-                      r.isCustomizable ? "bg-violet-100 text-violet-700" : "bg-emerald-100 text-emerald-700",
+                      r.isCustomizable ? "bg-violet-100 text-violet-700" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
                     )}
                   >
                     {r.isCustomizable ? <Palette aria-hidden className="size-5" /> : <Package aria-hidden className="size-5" />}
@@ -2640,7 +2640,7 @@ export default function Reception() {
                       <span
                         className={cn(
                           "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold",
-                          r.isCustomizable ? "bg-violet-100 text-violet-700" : "bg-emerald-100 text-emerald-700",
+                          r.isCustomizable ? "bg-violet-100 text-violet-700" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
                         )}
                       >
                         {r.isCustomizable ? "تخصيص" : "جاهز"}
@@ -2713,7 +2713,7 @@ export default function Reception() {
                 onClick={() => void testServerPrint()}
                 title={`جسر طباعة صامت: ${bridge.description} — اضغط لطباعة تذكرة اختبار`}
                 aria-label="جسر طباعة على الخادم — تذكرة اختبار"
-                className="inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border border-emerald-500 bg-card px-2.5 text-emerald-600 hover:bg-emerald-500/10"
+                className="inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border border-[var(--sem-pos)] bg-card px-2.5 text-[var(--sem-pos)] hover:bg-[var(--sem-pos-bg)]"
               >
                 <Printer aria-hidden className="size-4" />
                 <Globe aria-hidden className="size-3.5" />
@@ -2729,7 +2729,7 @@ export default function Reception() {
                 aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط طابعة حرارية"}
                 className={cn(
                   "inline-flex h-[var(--ui-control)] items-center gap-1 rounded-lg border bg-card px-2.5 hover:bg-muted/60",
-                  printerReady ? "border-emerald-500 text-emerald-600" : "border-border text-muted-foreground",
+                  printerReady ? "border-[var(--sem-pos)] text-[var(--sem-pos)]" : "border-border text-muted-foreground",
                 )}
               >
                 <Printer aria-hidden className="size-4" />

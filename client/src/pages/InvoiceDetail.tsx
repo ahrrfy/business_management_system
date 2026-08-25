@@ -78,6 +78,8 @@ const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethod
 // التعريب و variant من `@shared/invoiceStatus` وحده — كانت خريطة `STATUS_CLS` محلّية بألوان
 // Tailwind خامّة (`bg-emerald-100 text-emerald-700`) تتجاوز التوكنز الدلالية للحالة، ولا مقابل
 // لها في dark mode، وتنحرف عن Invoices.tsx و ReceptionInvoiceQueue.tsx بصرياً على نفس الحالة.
+// origin/main #799 حاول تسكينها بتوكنز sem لكنّ الخريطة المحلّية تبقى انحرافاً — الحلّ الجذريّ
+// هو الحذف الكامل والتحويل إلى `<Badge variant={invoiceStatusBadgeVariant(status)} />`.
 // METHOD_LABEL / METHODS → مستوردة من lib/paymentMethod.ts (مصدر واحد مع POS + Invoices + حوار الوردية).
 const PAY_STATUS: Record<string, string> = {
   COMPLETED: "مكتملة",
@@ -125,8 +127,8 @@ function SummaryRow({
         className={cn(
           "tabular-nums",
           strong ? "text-lg font-bold" : "text-sm",
-          tone === "amber" && "text-amber-600",
-          tone === "emerald" && "text-emerald-600",
+          tone === "amber" && "text-[var(--sem-warn)]",
+          tone === "emerald" && "text-[var(--sem-pos)]",
         )}
       >
         <CopyInline value={value} display={fmt(value)} mono={false} />
@@ -1032,7 +1034,7 @@ export default function InvoiceDetail() {
                         <span
                           className={
                             returned
-                              ? "text-amber-600 font-medium"
+                              ? "text-[var(--sem-warn)] font-medium"
                               : "text-muted-foreground"
                           }
                         >
@@ -1093,7 +1095,7 @@ export default function InvoiceDetail() {
                         className={cn(
                           "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
                           p.direction === "IN"
-                            ? "bg-emerald-100 text-emerald-700"
+                            ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
                             : "bg-rose-100 text-rose-700",
                         )}
                       >
@@ -1136,7 +1138,7 @@ export default function InvoiceDetail() {
                         >
                           <Paperclip
                             aria-hidden
-                            className="size-3.5 text-emerald-700 inline"
+                            className="size-3.5 text-[var(--sem-pos)] inline"
                           />
                         </a>
                       )}
@@ -1433,7 +1435,7 @@ export default function InvoiceDetail() {
       </Dialog>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-emerald-600">{done}</p>}
+      {done && <p className="text-sm text-[var(--sem-pos)]">{done}</p>}
 
       {/* حوار الإلغاء (قرار مالك ١٢/٨): جهة صرفٍ إلزاميّة + سبب اختياريّ + تأكيد كتابيٌّ لرقم الفاتورة. */}
       <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>

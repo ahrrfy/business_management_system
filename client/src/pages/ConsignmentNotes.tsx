@@ -30,8 +30,8 @@ type Line = { key: number; direction: Dir; variantId: number; productUnitId: num
 type NoteRow = RouterOutputs["consignments"]["list"]["rows"][number];
 
 const TYPE_META: Record<NoteType, { label: string; cls: string }> = {
-  DEPOSIT: { label: "إيداع", cls: "bg-emerald-100 text-emerald-800" },
-  WITHDRAW: { label: "سحب", cls: "bg-red-100 text-red-800" },
+  DEPOSIT: { label: "إيداع", cls: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" },
+  WITHDRAW: { label: "سحب", cls: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]" },
   EXCHANGE: { label: "استبدال", cls: "bg-blue-100 text-blue-800" },
 };
 
@@ -207,7 +207,7 @@ export default function ConsignmentNotes() {
                       <td className="p-2 font-mono text-xs" dir="ltr">{n.noteNumber}</td>
                       <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", TYPE_META[n.noteType as NoteType].cls)}>{TYPE_META[n.noteType as NoteType].label}</span></td>
                       <td className="p-2">{n.consignorName}</td>
-                      <td className="p-2 text-xs text-muted-foreground">{n.hasAttachment ? <Paperclip aria-hidden className="size-3.5 inline text-emerald-600" /> : null}</td>
+                      <td className="p-2 text-xs text-muted-foreground">{n.hasAttachment ? <Paperclip aria-hidden className="size-3.5 inline text-[var(--sem-pos)]" /> : null}</td>
                       <td className="p-2 text-xs" dir="ltr">{new Date(n.createdAt).toLocaleDateString("en-GB")}</td>
                       <td className="p-2 text-center">
                         <Button size="sm" variant="ghost" onClick={() => printFromNote(n.id)} title="طباعة السند">
@@ -351,10 +351,10 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
   // بعد حفظ سحب/استبدال: بطاقة إشعار المودِع بواتساب (ضابط SOD تعويضيّ) — يفتحها المستخدم بنقرة واحدة.
   if (postSave) {
     return (
-      <Card className="border-amber-300">
+      <Card className="border-[var(--sem-warn)]/40">
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
-            <Handshake aria-hidden className="size-4 text-amber-600" /> تم حفظ السند — أبلِغ المودِع
+            <Handshake aria-hidden className="size-4 text-[var(--sem-warn)]" /> تم حفظ السند — أبلِغ المودِع
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -362,7 +362,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
             إشعار المودِع بالسحب فورياً ضابطٌ رقابيّ (يتحقّق المودِع ممّا خرج من بضاعته). يفتح الزرّ واتساب برسالة جاهزة.
           </p>
           {!postSave.phone && (
-            <p className="text-xs text-amber-700">لا رقم هاتف مسجَّل لهذا المودِع — سيفتح واتساب لتختار المحادثة يدوياً.</p>
+            <p className="text-xs text-[var(--sem-warn)]">لا رقم هاتف مسجَّل لهذا المودِع — سيفتح واتساب لتختار المحادثة يدوياً.</p>
           )}
           <div className="flex flex-wrap items-center gap-2">
             <WhatsAppShare phone={postSave.phone} message={postSave.message} label="إشعار المودِع عبر واتساب" size="default" />
@@ -377,14 +377,14 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
     <div className="space-y-4">
       {/* النوع + المودِع */}
       <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><Handshake aria-hidden className="size-4 text-amber-600" /> سند جديد</CardTitle></CardHeader>
+        <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><Handshake aria-hidden className="size-4 text-[var(--sem-warn)]" /> سند جديد</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="نوع السند">
             {(["DEPOSIT", "WITHDRAW", "EXCHANGE"] as NoteType[]).map((t) => (
               <button key={t} type="button" role="radio" aria-checked={noteType === t}
                 onClick={() => { setNoteType(t); setLines([]); }}
                 className={cn("rounded-md border px-3 py-2 text-sm transition-colors",
-                  noteType === t ? "border-amber-400 bg-amber-50 text-amber-900" : "border-input text-muted-foreground hover:bg-muted")}>
+                  noteType === t ? "border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "border-input text-muted-foreground hover:bg-muted")}>
                 {TYPE_META[t].label}
               </button>
             ))}
@@ -392,9 +392,9 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
           <div className="space-y-1.5 max-w-md">
             <Label>المودِع <span className="text-destructive">*</span></Label>
             {consignorId ? (
-              <div className="flex items-center justify-between rounded-md border border-amber-300 bg-amber-50 px-3 py-2">
-                <span className="text-sm font-medium text-amber-900">{consignorName}</span>
-                <button type="button" onClick={() => { setConsignorId(null); setConsignorPhone(null); setLines([]); }} aria-label="تغيير المودِع"><X aria-hidden className="size-4 text-amber-700" /></button>
+              <div className="flex items-center justify-between rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2">
+                <span className="text-sm font-medium text-[var(--sem-warn)]">{consignorName}</span>
+                <button type="button" onClick={() => { setConsignorId(null); setConsignorPhone(null); setLines([]); }} aria-label="تغيير المودِع"><X aria-hidden className="size-4 text-[var(--sem-warn)]" /></button>
               </div>
             ) : (
               <div className="relative">
@@ -426,10 +426,10 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
                 <div key={p.variantId} className="flex items-center gap-1 rounded border px-2 py-1 text-xs">
                   <span>{p.productName}{p.color ? ` — ${p.color}` : ""}</span>
                   {noteType !== "WITHDRAW" && (
-                    <button type="button" className="text-emerald-700" title="إيداع" onClick={() => addLine("IN", { variantId: p.variantId, productUnitId: p.productUnitId, label: p.productName })}>+ إيداع</button>
+                    <button type="button" className="text-[var(--sem-pos)]" title="إيداع" onClick={() => addLine("IN", { variantId: p.variantId, productUnitId: p.productUnitId, label: p.productName })}>+ إيداع</button>
                   )}
                   {noteType !== "DEPOSIT" && (
-                    <button type="button" className="text-red-700" title="سحب" onClick={() => addLine("OUT", { variantId: p.variantId, productUnitId: p.productUnitId, label: p.productName })}>+ سحب</button>
+                    <button type="button" className="text-[var(--sem-neg)]" title="سحب" onClick={() => addLine("OUT", { variantId: p.variantId, productUnitId: p.productUnitId, label: p.productName })}>+ سحب</button>
                   )}
                 </div>
               ))}
@@ -442,7 +442,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
                 <tbody>
                   {lines.map((l) => (
                     <tr key={l.key} className="border-t">
-                      <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", l.direction === "IN" ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800")}>{l.direction === "IN" ? "إيداع" : "سحب"}</span></td>
+                      <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", l.direction === "IN" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]")}>{l.direction === "IN" ? "إيداع" : "سحب"}</span></td>
                       <td className="p-2">{l.label}</td>
                       {/* المخزون بالوحدة الأساس عدد صحيح (§٥) — يُرفَض إدخال كسور من الأصل. */}
                       <td className="p-2 w-28"><Input dir="ltr" inputMode="numeric" value={l.quantity} onChange={(e) => setLines((ls) => ls.map((x) => x.key === l.key ? { ...x, quantity: e.target.value.replace(/[^\d]/g, "") } : x))} className="h-8" /></td>

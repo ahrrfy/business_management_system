@@ -233,7 +233,7 @@ export default function SupplierEdit() {
         description={
           <span className="flex items-center gap-2">
             {isConsignor && (
-              <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+              <span className="inline-flex items-center gap-1 rounded bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]">
                 <Handshake aria-hidden className="size-3" /> أمانة
               </span>
             )}
@@ -373,7 +373,7 @@ export default function SupplierEdit() {
                     aria-label={`${n} نجوم`}
                     className={cn(
                       "transition-colors",
-                      n <= rating ? "text-amber-500" : "text-muted-foreground/40 hover:text-muted-foreground"
+                      n <= rating ? "text-[var(--sem-warn)]" : "text-muted-foreground/40 hover:text-muted-foreground"
                     )}
                   >
                     <Star aria-hidden className={cn("size-5", n <= rating && "fill-current")} />
@@ -444,10 +444,10 @@ export default function SupplierEdit() {
         )}
 
         {isConsignor && (
-          <Card className="lg:col-span-2 border-amber-200">
+          <Card className="lg:col-span-2 border-[var(--sem-warn)]/30">
             <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="flex items-center gap-2 text-base text-amber-900">
-                <Handshake aria-hidden className="size-4 text-amber-600" />
+              <CardTitle className="flex items-center gap-2 text-base text-[var(--sem-warn)]">
+                <Handshake aria-hidden className="size-4 text-[var(--sem-warn)]" />
                 اتفاقية الإيداع (بضاعة الأمانة)
               </CardTitle>
               <Button
