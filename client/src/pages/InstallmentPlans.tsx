@@ -55,13 +55,13 @@ type DueRow = RouterOutputs["installments"]["dueSoon"][number];
 const EMPTY_CUSTOMER: SmartCustomerValue = { customerId: null, name: "", phone: null, isNew: false };
 
 const PLAN_STATUS_AR: Record<string, { label: string; cls: string }> = {
-  ACTIVE: { label: "نشطة", cls: "bg-emerald-100 text-emerald-700" },
+  ACTIVE: { label: "نشطة", cls: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" },
   COMPLETED: { label: "مكتملة", cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
   CANCELLED: { label: "ملغاة", cls: "bg-muted text-muted-foreground" },
 };
 const LINE_STATUS_AR: Record<string, { label: string; cls: string }> = {
-  PENDING: { label: "معلَّق", cls: "bg-amber-500/15 text-amber-800" },
-  PAID: { label: "مسدَّد", cls: "bg-emerald-100 text-emerald-700" },
+  PENDING: { label: "معلَّق", cls: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" },
+  PAID: { label: "مسدَّد", cls: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" },
   BOUNCED: { label: "صك مرتجع", cls: "bg-destructive/15 text-destructive" },
   CANCELLED: { label: "ملغى", cls: "bg-muted text-muted-foreground" },
 };
@@ -300,11 +300,11 @@ function DueSoonSection({
   if (isLoading) return null;
   const overdue = rows.filter((r) => r.daysOverdue > 0).length;
   return (
-    <Card className="border-amber-300/60">
+    <Card className="border-[var(--sem-warn)]/40">
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2 text-base">
-            <AlarmClock className="size-4 text-amber-600" aria-hidden />
+            <AlarmClock className="size-4 text-[var(--sem-warn)]" aria-hidden />
             المستحقّ قريباً ({rows.length} قسطاً{overdue > 0 ? ` — منها ${overdue} متأخّر` : ""})
           </CardTitle>
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -480,7 +480,7 @@ function PlansTable({
                   <TableCell className="text-left tabular-nums" dir="ltr">{fmt(p.downPayment)}</TableCell>
                   <TableCell className="text-center">
                     <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs tabular-nums">
-                      <CheckCircle2 className={`size-3 ${p.paidLines === p.totalLines && p.totalLines > 0 ? "text-emerald-600" : "text-muted-foreground"}`} aria-hidden />
+                      <CheckCircle2 className={`size-3 ${p.paidLines === p.totalLines && p.totalLines > 0 ? "text-[var(--sem-pos)]" : "text-muted-foreground"}`} aria-hidden />
                       مدفوع {p.paidLines} من {p.totalLines}
                     </span>
                     {D(p.paidAmount).gt(0) && (
@@ -756,7 +756,7 @@ function CreatePlanDialog({
 
               {/* تحقّق حيّ للمجموع */}
               <div
-                className={`rounded-md border p-2 text-sm tabular-nums ${sumMatches ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-destructive/40 bg-destructive/5 text-destructive"}`}
+                className={`rounded-md border p-2 text-sm tabular-nums ${sumMatches ? "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "border-destructive/40 bg-destructive/5 text-destructive"}`}
                 role="status"
               >
                 مجموع الأقساط <span dir="ltr">{fmt(scheduled.toFixed(2))}</span>
@@ -1119,7 +1119,7 @@ function PayLineDialog({
             />
           </div>
           {needsApproval && (
-            <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+            <p className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
               المبلغ يبلغ عتبة الاعتماد — سيُسجَّل السند بانتظار اعتماد مدير ثانٍ (Maker-Checker) ويبقى القسط معلَّقاً حتى الاعتماد.
             </p>
           )}
