@@ -176,14 +176,23 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
       await video.play();
       setEngine("native");
       const scanFrame = async () => {
-        if (stopped || detectedRef.current) return;
+        if (stopped) return;
+        // في وضع `keepOpen` نُبقي الحلقةَ حيّةً أثناء التبريد بدل موتها بعد أوّل رصد.
+        // قبل الإصلاح: `if (stopped || detectedRef.current) return;` كان يوقف الجدولة
+        // نهائياً على أوّل رصد، فيبدو الماسح مفتوحاً على الشاشة لكنه ميّت — الجذر: مراجعة
+        // Codex P2 على PR #776 (٢٥/٨) — وضع `keepOpen` كان بلا أثرٍ على المسار الأصليّ.
+        if (detectedRef.current) {
+          if (keepOpenRef.current) nativeRaf = requestAnimationFrame(scanFrame);
+          return;
+        }
         if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
           try {
             const codes = await detector.detect(video);
             const value = codes[0]?.rawValue;
             if (value) {
               deliver(value);
-              return;
+              // اللقطةُ الواحدة تموت بعد deliver (يستدعي stopMedia)، والمستمرّ يعيد الجدولة.
+              if (!keepOpenRef.current) return;
             }
           } catch {
             // إطار غير صالح أو ضبابي؛ نستمر حتى يستقر التركيز.

@@ -1412,17 +1412,25 @@ export async function updateCampaignAssignees(actor: ProductStudioActor, input: 
     if (campaign.status === "CANCELLED" || campaign.status === "COMPLETED") {
       throw new TRPCError({ code: "CONFLICT", message: "لا يمكن تعديل مصوّري حملةٍ مُغلقة" });
     }
-    if (uniqueIds.length > 0) await assertCampaignAssignees(tx, actor, Number(campaign.branchId), uniqueIds);
     const existing = await tx
-      .select({ id: productStudioCampaignAssignees.id, userId: productStudioCampaignAssignees.userId, openId: users.openId })
+      .select({ id: productStudioCampaignAssignees.id, userId: productStudioCampaignAssignees.userId, openId: users.openId, isActive: users.isActive })
       .from(productStudioCampaignAssignees)
       .innerJoin(users, eq(users.id, productStudioCampaignAssignees.userId))
       .where(eq(productStudioCampaignAssignees.campaignId, input.campaignId));
-    // الحسابات المؤقّتة (`studio-temp:*`) خارج التوفيق — لها مسارٌ إبطالٍ مستقل.
-    const permanentExisting = existing.filter((row) => !(row.openId ?? "").startsWith("studio-temp:"));
+    // الحسابات المؤقّتة (`studio-temp:*`) خارج التوفيق — لها مسارٌ إبطالٍ مستقل. وحسابٌ
+    // مؤقّتٌ منتهي الصلاحية يبقى صفّه في `productStudioCampaignAssignees` بينما يصير المستخدم
+    // `isActive=false`، فيظهر على لوحة الحملة (`getStudioCampaignBoard`) لكنه غائبٌ عن قائمة
+    // المصوّرين في الشاشة (`listStudioAssignees` يفرض `isActive=true`). المصدر يُرسل هذا الـID
+    // ضمن القائمة النهائيّة، فيرفضه `assertCampaignAssignees` (لا يجد المستخدم) بـBAD_REQUEST
+    // ويُغلق كلّ تعديلٍ للفريق. الحلّ: **استبعادُ معرّفات الحسابات المؤقّتة من التحقّق ومن التوفيق**
+    // كأنّها ليست في القائمة أصلاً (الجذر: مراجعة Codex P2 على PR #776، ٢٥/٨).
+    const tempMemberIds = new Set(existing.filter((row) => (row.openId ?? "").startsWith("studio-temp:")).map((row) => Number(row.userId)));
+    const idsForValidation = uniqueIds.filter((id) => !tempMemberIds.has(id));
+    if (idsForValidation.length > 0) await assertCampaignAssignees(tx, actor, Number(campaign.branchId), idsForValidation);
+    const permanentExisting = existing.filter((row) => !tempMemberIds.has(Number(row.userId)));
     const existingIds = new Set(permanentExisting.map((row) => Number(row.userId)));
-    const nextIds = new Set(uniqueIds);
-    const toAdd = uniqueIds.filter((id) => !existingIds.has(id));
+    const nextIds = new Set(idsForValidation);
+    const toAdd = idsForValidation.filter((id) => !existingIds.has(id));
     const toRemove = permanentExisting.filter((row) => !nextIds.has(Number(row.userId))).map((row) => Number(row.userId));
     if (toAdd.length > 0) {
       await tx
@@ -1443,9 +1451,9 @@ export async function updateCampaignAssignees(actor: ProductStudioActor, input: 
       entityType: "productStudioCampaign",
       entityId: String(input.campaignId),
       oldValue: { assigneeIds: Array.from(existingIds) },
-      newValue: { assigneeIds: uniqueIds, added: toAdd, removed: toRemove },
+      newValue: { assigneeIds: idsForValidation, added: toAdd, removed: toRemove, ignoredTempAccounts: Array.from(tempMemberIds).filter((id) => uniqueIds.includes(id)) },
     });
-    return { campaignId: input.campaignId, added: toAdd.length, removed: toRemove.length, total: uniqueIds.length };
+    return { campaignId: input.campaignId, added: toAdd.length, removed: toRemove.length, total: idsForValidation.length };
   });
 }
 
@@ -1908,8 +1916,20 @@ export async function reconcileStudioAssignmentNotifications(
         // مهلةُ سماحٍ: لا نسابق المُرسِل المباشر.
         isNotNull(productImageJobs.assignedAt),
         lte(productImageJobs.assignedAt, cutoff),
-        // القيد ١: أيّ إشعارٍ لهذا الموظّف عن هذه المهمّة يكفي — بأيّ مفتاحٍ وأيّ تنقيح.
-        sql`not exists (select 1 from ${appNotifications} n where n.userId = ${productImageJobs.assignedTo} and n.entityType = 'productImageJob' and n.entityId = ${productImageJobs.id})`,
+        // الغياب يُقاس بمفتاح الحدث المتوقّع للحالة الراهنة، لا بأيّ إشعارٍ سابق للمهمّة:
+        //   • ASSIGNED/IN_PROGRESS ⇒ مفتاح إسنادٍ لهذا التنقيح غائب
+        //   • REJECTED             ⇒ مفتاح رفضٍ لهذا التنقيح غائب
+        // قبل هذا الفرق كان أيُّ إشعارٍ سابقٍ يُلغي المصالحة، فرفضٌ فشل إرساله بعد إسنادٍ نجح
+        // كان يظلّ صامتاً أبداً (الجذر: مراجعة Codex P2 على PR #776، ٢٥/٨).
+        sql`not exists (
+          select 1 from ${appNotifications} n
+          where n.userId = ${productImageJobs.assignedTo}
+          and n.eventKey = case
+            when ${productImageJobs.status} = 'REJECTED'
+              then concat('product-studio:', ${productImageJobs.id}, ':rejected:r', ${productImageJobs.revision})
+            else concat('product-studio:', ${productImageJobs.id}, ':assigned:', ${productImageJobs.assignedTo}, ':r', ${productImageJobs.revision})
+          end
+        )`,
       ),
     )
     .orderBy(desc(productImageJobs.id))
@@ -2927,6 +2947,15 @@ export async function reassignStudioTask(
       throw new TRPCError({
         code: "CONFLICT",
         message: "لا يمكن إعادة إسناد مهمّةٍ منتظرةٍ للمراجعة أو مغلقة",
+      });
+    }
+    // الطابور المفتوح متاحٌ فقط لمهامّ الحملات: `claimStudioProductByBarcode` يرفض سحب
+    // مهمّةٍ بلا `campaignId` («تُسنَد من المدير ولا تُسحَب بالمسح»). إرسالُها للطابور
+    // إذن يُعلّقها بلا يدٍ ولا مسارِ استرداد — يلزم اختيارُ مصوّرٍ صراحةً.
+    if (input.newAssigneeId == null && task.campaignId == null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "المهمّةُ غير مرتبطةٍ بحملة — لا يمكن إعادتها للطابور المفتوح، اختر مصوّراً صراحةً",
       });
     }
     let newAssigneeRole: string | null = null;

@@ -281,6 +281,8 @@ export default function ProductImageStudio() {
   /** منتجاتٌ محدَّدة للإسناد الجماعيّ (بمعرّف المنتج — لأنّ عقد الخادم بالمنتجات لا بالمهام). */
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set());
   const [bulkAssigneeId, setBulkAssigneeId] = useState("");
+  const [bulkReassignAssigneeId, setBulkReassignAssigneeId] = useState("");
+  const [bulkPriorityValue, setBulkPriorityValue] = useState<"LOW" | "NORMAL" | "HIGH" | "URGENT">("NORMAL");
   const [assigneeFilter, setAssigneeFilter] = useState("ALL");
   /** المنتج الذي بيد المصوّر الآن (من مسح الباركود) — يقود محطّة التصوير. */
   const [captured, setCaptured] = useState<ClaimedStudioProduct | null>(null);
@@ -394,6 +396,15 @@ export default function ProductImageStudio() {
   const canBulkAssign = dashboard.data?.canManage === true && !offline;
   const queuedProductIds = taskItems.filter((task) => isQueuedStudioTask(task)).map((task) => Number(task.productId));
   const allQueuedSelected = queuedProductIds.length > 0 && queuedProductIds.every((id) => selectedTaskIds.has(id));
+  // فرزُ التحديد بحسب نوع العمل الممكن — أزرارُ الشريط الجماعيّ تعمل على مجموعاتٍ مختلفة:
+  // الإسناد على غير المسنَد، وإعادة الإسناد على المسنَد، والأولوية على أيّ نشط.
+  const selectedTasks = taskItems.filter((task) => selectedTaskIds.has(Number(task.productId)));
+  const selectedAssignedTaskIds = selectedTasks
+    .filter((task) => task.assignedTo != null && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status))
+    .map((task) => Number(task.id));
+  const selectedActiveTaskIds = selectedTasks
+    .filter((task) => ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(task.status))
+    .map((task) => Number(task.id));
   const toggleTaskSelection = (productId: number) =>
     setSelectedTaskIds((current) => {
       const next = new Set(current);
@@ -1835,15 +1846,20 @@ export default function ProductImageStudio() {
                   <CardTitle className="text-base">المهام</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {canBulkAssign && queuedProductIds.length > 0 && (
+                  {canBulkAssign && (queuedProductIds.length > 0 || selectedTaskIds.size > 0) && (
                     <div className="space-y-2 rounded-md border bg-muted/30 p-2">
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <button type="button" className="min-h-11 underline underline-offset-2" onClick={toggleSelectAllQueued}>
-                          {allQueuedSelected ? "إلغاء تحديد الكل" : `تحديد كل المعروض (${queuedProductIds.length})`}
-                        </button>
+                        {queuedProductIds.length > 0 ? (
+                          <button type="button" className="min-h-11 underline underline-offset-2" onClick={toggleSelectAllQueued}>
+                            {allQueuedSelected ? "إلغاء تحديد الكل" : `تحديد كل المعروض في الطابور (${queuedProductIds.length})`}
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground">حدّد المهام يدوياً بمربّعات الاختيار</span>
+                        )}
                         <span className="text-muted-foreground">{selectedTaskIds.size} محدَّدة</span>
                       </div>
-                      {selectedTaskIds.size > 0 && (
+                      {/* إسنادُ غير المسنَد إلى موظّف. */}
+                      {selectedTaskIds.size > 0 && queuedProductIds.some((id) => selectedTaskIds.has(id)) && (
                         <div className="flex flex-wrap items-end gap-2">
                           <div className="min-w-40 flex-1">
                             <AppSelect id="studio-bulk-assignee" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={bulkAssigneeId} onValueChange={setBulkAssigneeId} disabled={assignees.isError}>
@@ -1859,11 +1875,73 @@ export default function ProductImageStudio() {
                             type="button"
                             className="min-h-11"
                             disabled={offline || bulkAssign.isPending || !bulkAssigneeId}
-                            onClick={() => bulkAssign.mutate({ productIds: Array.from(selectedTaskIds).slice(0, BULK_ASSIGN_MAX), assigneeId: Number(bulkAssigneeId) })}
+                            onClick={() => {
+                              // نُصفّي التحديد إلى الطابور فقط — بقيّةُ التحديد تخدم الأزرار الأخرى.
+                              const queuedSelected = queuedProductIds.filter((id) => selectedTaskIds.has(id)).slice(0, BULK_ASSIGN_MAX);
+                              bulkAssign.mutate({ productIds: queuedSelected, assigneeId: Number(bulkAssigneeId) });
+                            }}
                           >
-                            <UserCheck aria-hidden className="size-4" /> إسناد المحدَّد
+                            <UserCheck aria-hidden className="size-4" /> إسناد {queuedProductIds.filter((id) => selectedTaskIds.has(id)).length} من الطابور
                           </Button>
-                          {selectedTaskIds.size > BULK_ASSIGN_MAX && <p className="w-full text-xs text-[var(--sem-warn)]">يُسنَد {BULK_ASSIGN_MAX} في المرّة؛ كرّر للباقي.</p>}
+                          {queuedProductIds.filter((id) => selectedTaskIds.has(id)).length > BULK_ASSIGN_MAX && <p className="w-full text-xs text-[var(--sem-warn)]">يُسنَد {BULK_ASSIGN_MAX} في المرّة؛ كرّر للباقي.</p>}
+                        </div>
+                      )}
+                      {/* إعادةُ إسنادٍ جماعيّة — تعمل على المسنَد فقط، بمصوّرٍ محدَّد أو الطابور المفتوح. */}
+                      {selectedAssignedTaskIds.length > 0 && (
+                        <div className="flex flex-wrap items-end gap-2">
+                          <div className="min-w-40 flex-1">
+                            <AppSelect id="studio-bulk-reassign" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={bulkReassignAssigneeId} onValueChange={setBulkReassignAssigneeId} disabled={assignees.isError}>
+                              <option value="">إلى الطابور المفتوح (blind pool)</option>
+                              {(assignees.data ?? [])
+                                .filter((user) => user.canStudio)
+                                .map((user) => (
+                                  <option key={user.id} value={user.id}>
+                                    {user.name}
+                                  </option>
+                                ))}
+                            </AppSelect>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="min-h-11"
+                            disabled={offline || bulkReassign.isPending}
+                            onClick={() =>
+                              bulkReassign.mutate({
+                                taskIds: selectedAssignedTaskIds.slice(0, BULK_ASSIGN_MAX),
+                                newAssigneeId: bulkReassignAssigneeId ? Number(bulkReassignAssigneeId) : null,
+                              })
+                            }
+                          >
+                            <UserCheck aria-hidden className="size-4" /> إعادة إسناد {selectedAssignedTaskIds.length} مُسنَدة
+                          </Button>
+                        </div>
+                      )}
+                      {/* ضبطُ أولويّةٍ جماعيّ — يعمل على أيّ نشط (طابور أو مُسنَد أو مراجَع). */}
+                      {selectedActiveTaskIds.length > 0 && (
+                        <div className="flex flex-wrap items-end gap-2">
+                          <div className="min-w-32">
+                            <AppSelect id="studio-bulk-priority" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={bulkPriorityValue} onValueChange={(value) => setBulkPriorityValue(value as typeof bulkPriorityValue)}>
+                              <option value="LOW">منخفضة</option>
+                              <option value="NORMAL">عادية</option>
+                              <option value="HIGH">عالية</option>
+                              <option value="URGENT">عاجلة</option>
+                            </AppSelect>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="min-h-11"
+                            disabled={offline || bulkSetPriority.isPending}
+                            onClick={() =>
+                              bulkSetPriority.mutate({
+                                taskIds: selectedActiveTaskIds.slice(0, BULK_ASSIGN_MAX),
+                                priority: bulkPriorityValue,
+                              })
+                            }
+                          >
+                            ضبط أولوية {selectedActiveTaskIds.length} مهمّة
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -1890,9 +1968,11 @@ export default function ProductImageStudio() {
                   )}
                   {taskItems.map((task) => (
                     <div key={Number(task.id)} className="flex items-start gap-2">
-                      {/* التحديد المتعدّد: الخادم يدعم الإسناد الجماعيّ منذ البداية، ولم يكن له
-                          مدخلٌ في القائمة — فتفريغ طابورٍ كبير كان يعني بحثاً فرديّاً عن كل منتج. */}
-                      {canBulkAssign && isQueuedStudioTask(task) && (
+                      {/* التحديد المتعدّد: يظهر على أيّ مهمّةٍ نشطة (في الطابور · قيد العمل ·
+                          تنتظر مراجعةً · مرفوضة) للسماح بثلاث عمليّات جماعيّة: إسناد لغير المسنَد،
+                          إعادة إسناد للمسنَد، وضبط أولوية أيّ نشط. الشريط يفرز التحديد بحسب نوع
+                          العمل الممكن ويعرض العدد لكلّ زرّ. */}
+                      {canBulkAssign && ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(task.status) && (
                         <input
                           type="checkbox"
                           className="mt-4 size-4 shrink-0"
@@ -2011,14 +2091,20 @@ export default function ProductImageStudio() {
                         </div>
                       )}
                       {/* إعادةُ الإسناد — مسارٌ حين يغيب المصوّر أو يعجز عن الإكمال، بدل
-                          إلغاء المهمّة وفقدان سبب الرفض وأثر التدقيق. اترك الحقل فارغاً لتعيدها
-                          إلى الطابور المفتوح (أوّلُ مصوّرٍ يمسحها يسحبها). */}
+                          إلغاء المهمّة وفقدان سبب الرفض وأثر التدقيق. للطابور المفتوح شرط:
+                          المهمّةُ ضمن حملة (المسح الأعمى يقصر على تلك — راجع تعليق `claimByBarcode`). */}
                       {dashboard.data?.canManage && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status) && selected.assigneeName != null && (
                         <div className="space-y-2 rounded-md border p-3">
                           <Label htmlFor="studio-reassign-select">إعادة إسناد المهمّة (المسنَد الآن: {selected.assigneeName})</Label>
                           <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
                             <AppSelect id="studio-reassign-select" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={reassignAssigneeId} onValueChange={setReassignAssigneeId} disabled={assignees.isError}>
-                              <option value="">إلى الطابور المفتوح (blind pool)</option>
+                              {selected.campaignId != null ? (
+                                <option value="">إلى الطابور المفتوح (blind pool)</option>
+                              ) : (
+                                <option value="" disabled>
+                                  اختر مصوّراً — مهمّةٌ بلا حملة لا تُسحَب بالمسح
+                                </option>
+                              )}
                               {(assignees.data ?? [])
                                 .filter((user) => user.canStudio && user.id !== Number(selected.assignedTo))
                                 .map((user) => (
@@ -2030,7 +2116,7 @@ export default function ProductImageStudio() {
                             <Button
                               type="button"
                               className="min-h-11"
-                              disabled={offline || reassign.isPending}
+                              disabled={offline || reassign.isPending || (selected.campaignId == null && !reassignAssigneeId)}
                               onClick={() =>
                                 reassign.mutate({
                                   taskId: Number(selected.id),
