@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
 import { iqd } from "@/lib/assets/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -99,10 +100,16 @@ export default function AssetEdit() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">تعديل الأصل <span className="font-mono text-base text-muted-foreground" dir="ltr">{q.data.code}</span></h1>
-        <Link href={`/assets/${id}`} className="text-sm text-muted-foreground">← رجوع للأصل</Link>
-      </div>
+      <PageHeader
+        title={
+          <>
+            تعديل الأصل{" "}
+            <span className="font-mono text-base text-muted-foreground" dir="ltr">{q.data.code}</span>
+          </>
+        }
+        backHref={`/assets/${id}`}
+        backLabel="رجوع للأصل"
+      />
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>
