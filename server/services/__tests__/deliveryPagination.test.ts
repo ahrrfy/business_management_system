@@ -89,17 +89,18 @@ describe("listInTransitConsignments — ترقيم keyset", () => {
     expect(res.nextCursor).toBeNull();
   });
 
-  it("limit=3 مع 5 صفوف ⇒ hasMore=true و nextCursor يُشير إلى id الأصغر في الصفحة", async () => {
+  it("limit=3 مع 5 صفوف ⇒ hasMore=true و nextCursor يُشير إلى id الأكبر في الصفحة", async () => {
     await seed(5);
     const page1 = await listInTransitConsignments(1, null, { limit: 3 });
     expect(page1.rows).toHaveLength(3);
     expect(page1.hasMore).toBe(true);
-    // DESC by id ⇒ الصفوف [5,4,3]، nextCursor = 3
-    expect(page1.rows.map((r) => Number(r.id))).toEqual([5, 4, 3]);
+    // Codex P1 #2 (٢٥/٨): ASC by id ⇒ الأقدم أوّلاً (الصفوف [1,2,3]، nextCursor = 3)
+    // — «الأقدم أوّلاً» شرطُ سير العمل: المطالبةُ بأقدم عهدةٍ أوّلاً لا بأحدثها.
+    expect(page1.rows.map((r) => Number(r.id))).toEqual([1, 2, 3]);
     expect(page1.nextCursor).toBe(3);
 
     const page2 = await listInTransitConsignments(1, null, { limit: 3, cursor: page1.nextCursor! });
-    expect(page2.rows.map((r) => Number(r.id))).toEqual([2, 1]);
+    expect(page2.rows.map((r) => Number(r.id))).toEqual([4, 5]);
     expect(page2.hasMore).toBe(false);
     expect(page2.nextCursor).toBeNull();
 
