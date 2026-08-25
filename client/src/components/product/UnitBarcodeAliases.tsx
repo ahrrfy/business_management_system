@@ -168,7 +168,7 @@ export function UnitBarcodeAliases({ productUnitId: unitIdProp, variantId, unitN
 
           <div className="space-y-3">
             {isLocal && (
-              <div className="rounded-md border border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs">
+              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs">
                 هذه البدائل ستُحفظ ذرّياً مع المنتج عند الضغط على «حفظ». لا تعبر الشبكة قبلها.
               </div>
             )}
@@ -281,9 +281,9 @@ export function UnitBarcodeAliases({ productUnitId: unitIdProp, variantId, unitN
               <div
                 role="alert"
                 aria-live="assertive"
-                className="rounded-md border border-red-500/40 bg-red-50 dark:bg-red-950/40 p-2 text-xs flex items-start gap-2"
+                className="rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-2 text-xs flex items-start gap-2"
               >
-                <AlertCircle className="size-3.5 mt-0.5 shrink-0 text-red-600" />
+                <AlertCircle className="size-3.5 mt-0.5 shrink-0 text-[var(--sem-neg)]" />
                 <div>{error}</div>
               </div>
             )}

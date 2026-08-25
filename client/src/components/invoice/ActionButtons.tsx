@@ -119,7 +119,7 @@ export function ActionButtons({
               variant="outline"
               onClick={() => onAction("draft")}
               title="حفظ كمسوّدة — بلا اعتماد، قابلة للاستكمال لاحقاً"
-              className="h-11 border-amber-300/40 bg-amber-50 text-amber-700 hover:bg-amber-100"
+              className="h-11 border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] hover:bg-[var(--sem-warn-bg)]/80"
             >
               <FilePen aria-hidden className="size-4" /> مسوّدة
             </Button>
@@ -147,7 +147,7 @@ export function ActionButtons({
               type="button"
               variant="outline"
               onClick={() => onAction("send")}
-              className="h-11 border-emerald-300/40 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+              className="h-11 border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] hover:bg-[var(--sem-pos-bg)]/80"
             >
               <Send aria-hidden className="size-4" /> إرسال
             </Button>
@@ -207,7 +207,7 @@ export function ActionButtons({
               type="button"
               variant="outline"
               onClick={() => onAction("return")}
-              className="h-9 flex-1 border-rose-300/40 text-xs text-rose-600 hover:bg-rose-50"
+              className="h-9 flex-1 border-[var(--sem-neg)]/40 text-xs text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"
             >
               <Undo2 aria-hidden className="size-3.5" /> مرتجع
             </Button>

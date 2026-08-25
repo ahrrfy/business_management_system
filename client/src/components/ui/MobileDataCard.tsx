@@ -74,8 +74,8 @@ export function MobileDataCard({
                 variant={badge.variant === "success" || badge.variant === "warning" ? "outline" : (badge.variant || "secondary")}
                 className={cn(
                   "text-[11px] px-2 py-0.5 font-medium rounded-md",
-                  badge.variant === "success" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-                  badge.variant === "warning" && "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+                  badge.variant === "success" && "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+                  badge.variant === "warning" && "border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
                   badge.className
                 )}
               >
@@ -99,7 +99,7 @@ export function MobileDataCard({
             <div
               className={cn(
                 "font-bold text-base tracking-tight leading-tight",
-                amount.positive && "text-emerald-600 dark:text-emerald-400",
+                amount.positive && "text-[var(--sem-pos)]",
                 amount.negative && "text-destructive",
                 !amount.positive && !amount.negative && "text-foreground"
               )}

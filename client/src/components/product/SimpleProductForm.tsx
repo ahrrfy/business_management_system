@@ -443,22 +443,22 @@ export default function SimpleProductForm() {
             // إطار الحقل يعكس شدّة الحالة (a11y — لا نكتفي بـaria-invalid): حاصر أحمر، تحذير كهرماني، ok أخضر، معلومة زرقاء.
             const bcCls =
               info.severity === "blocker"
-                ? "border-amber-500 ring-1 ring-amber-500"
+                ? "border-[var(--sem-warn)] ring-1 ring-[var(--sem-warn)]"
                 : info.severity === "warn"
-                  ? "border-amber-500"
+                  ? "border-[var(--sem-warn)]"
                   : info.severity === "ok"
-                    ? "border-emerald-500/60"
+                    ? "border-[var(--sem-pos)]/60"
                     : info.severity === "info"
                       ? "border-blue-500/40"
                       : "";
             const bcTitle = info.message;
             const bcHelpColor =
               info.severity === "blocker"
-                ? "text-red-600 dark:text-red-400"
+                ? "text-[var(--sem-neg)]"
                 : info.severity === "warn"
-                  ? "text-amber-600 dark:text-amber-400"
+                  ? "text-[var(--sem-warn)]"
                   : info.severity === "ok"
-                    ? "text-emerald-600 dark:text-emerald-400"
+                    ? "text-[var(--sem-pos)]"
                     : "text-blue-600 dark:text-blue-400";
             // بادج نوع الترميز — يُعرض عند وجود باركود (يكشف EAN-13/UPC-A/EAN-8/ITF-14/ISBN/Code128/داخلي…).
             const symBadgeVariant =
