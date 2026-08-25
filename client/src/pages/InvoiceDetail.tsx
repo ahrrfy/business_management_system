@@ -576,6 +576,7 @@ export default function InvoiceDetail() {
         }
         backHref="/invoices"
         backLabel="رجوع للمبيعات"
+        actionsClassName="sm:w-full sm:shrink"
         actions={<>
           <DocumentWhatsAppDialog
             kind="INVOICE"
