@@ -43,21 +43,29 @@ function* walkTsx(dir) {
 
 const relOf = (full) => path.relative(REPO_ROOT, full).replace(/\\/g, "/");
 
-// نطاق مطابقة: `<select` في بداية سطر (بعد whitespace فقط) — يمسك JSX الحقيقيّ.
-// السطور بحرف قبل `<select` (مثلاً داخل نصّ/تعليق أو داخل props) لا تُعدّ انتهاكاً.
-const SELECT_RE = /^\s*<select[\s>]/gm;
+// نطاق مطابقة: `<select` أينما ظهر — يمسك JSX الحقيقيّ حتى داخل wrapper (`<div><select>`)
+// أو مع `return` في نفس السطر. ملاحظة Codex الصائبة (PR #819): كان `^\s*<select` يفوّت
+// `Coupons.tsx` و`AssetDetail.tsx:557` لأنّ الـselect مسبوقٌ بحرف في نفس السطر.
+//
+// نتغاضى عن الأسطر التي كلّها تعليق (`//`, `*`, `/*`) — قد تذكر `<select>` نصّاً.
+// نستثني `<select>` داخل template literal ` `` ` (HTML طباعة نادر) بـheuristic: backtick قبله.
 
 const current = new Map();
 for (const file of walkTsx(SCAN_ROOT)) {
   const rel = relOf(file);
   const text = readFileSync(file, "utf8");
-  // اقتطاع كل التعليقات المفردة (بدون سطر عدة استعمالات، لأنّ التعليق قد يذكر `<select>` نصّاً).
   const lines = text.split(/\r?\n/);
   let count = 0;
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
-    if (/^\s*<select[\s>]/.test(line)) count++;
+    // regex واسع — أينما ظهر `<select` مع حرف whitespace/`>` بعده (لمنع التداخل مع `<selector>`).
+    if (!/<select[\s>]/.test(line)) continue;
+    // استثناء `<select>` داخل template literal — heuristic: backtick قبله في نفس السطر.
+    const selIdx = line.indexOf("<select");
+    const backtickIdx = line.indexOf("`");
+    if (backtickIdx >= 0 && backtickIdx < selIdx) continue;
+    count++;
   }
   if (count > 0) current.set(rel, count);
 }
