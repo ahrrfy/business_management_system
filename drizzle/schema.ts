@@ -11862,6 +11862,16 @@ export const journalLines = mysqlTable(
       .notNull()
       .references(() => journalEntries.id, { onDelete: "cascade" }),
     role: varchar("role", { length: 40 }).notNull(),
+    /**
+     * Tier-2 #5 (٢٦/٨، هجرة 0270): FK صريحة إلى `accounts.id` — يُغني عن ربط soft-link
+     * عبر `role`→`systemRole` (بلا FK، بلا حماية إعادة تسمية، ولا يدعم حساباً بلا systemRole).
+     * Nullable ⇒ صفوف SHADOW قديمة تبقى صحيحة، والكاتب الجديد يملؤه دائماً.
+     * `ON DELETE RESTRICT`: حسابٌ استُعمل في يوميّة لا يُحذَف (قرارٌ محاسبيّ).
+     */
+    accountId: bigint("accountId", { mode: "number" }).references(
+      () => accounts.id,
+      { onDelete: "restrict" },
+    ),
     debit: decimal("debit", { precision: 15, scale: 2 }).default("0").notNull(),
     credit: decimal("credit", { precision: 15, scale: 2 })
       .default("0")
@@ -11869,6 +11879,7 @@ export const journalLines = mysqlTable(
   },
   (t) => ({
     roleIdx: index("idx_journal_line_role").on(t.role),
+    accountIdx: index("idx_journal_line_account").on(t.accountId),
   }),
 );
 export type JournalLineRow = typeof journalLines.$inferSelect;

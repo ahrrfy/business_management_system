@@ -114,6 +114,39 @@ describe("journalStore — وعاء الدفتر المزدوج (ش٠)", () => {
     expect(lines.map((l) => l.role).sort()).toEqual(["AR", "SALES_STATIONERY"]);
   });
 
+  it("Tier-2 #5: writeJournal يملأ accountId من `role→systemRole` عند وجود الحساب", async () => {
+    // نبذر حسابَي AR وSALES_STATIONERY بـsystemRole مطابقٍ للـrole المستعمل في BALANCED.
+    await db().insert(s.accounts).values([
+      { code: "1100", name: "ذمم مدينة", type: "ASSET", systemRole: "AR" },
+      { code: "4100", name: "مبيعات قرطاسية", type: "REVENUE", systemRole: "SALES_STATIONERY" },
+    ]);
+    const arRow = (await db().select().from(s.accounts).where(eq(s.accounts.systemRole, "AR")))[0];
+    const salesRow = (await db().select().from(s.accounts).where(eq(s.accounts.systemRole, "SALES_STATIONERY")))[0];
+
+    const entryId = await seedEntry();
+    await withTx(async (tx) => {
+      await writeJournal(tx, entryId, new Date("2026-08-11"), 1, BALANCED);
+    });
+    const heads = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, entryId));
+    const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, heads[0].id));
+
+    const byRole = new Map(lines.map((l) => [l.role, l]));
+    expect(byRole.get("AR")?.accountId).toBe(Number(arRow.id));
+    expect(byRole.get("SALES_STATIONERY")?.accountId).toBe(Number(salesRow.id));
+  });
+
+  it("Tier-2 #5: role بلا حسابٍ مطابق ⇒ accountId=null (لا كسر للكتابة، انحدار محاسبيّ صريح)", async () => {
+    // لا نبذر حسابات ⇒ لا يوجد systemRole=AR ولا SALES_STATIONERY ⇒ الأسطر تُكتَب بـaccountId=null.
+    const entryId = await seedEntry();
+    await withTx(async (tx) => {
+      await writeJournal(tx, entryId, new Date("2026-08-11"), 1, BALANCED);
+    });
+    const heads = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, entryId));
+    const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, heads[0].id));
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => l.accountId === null)).toBe(true);
+  });
+
   it("ج) قيدٌ غير متوازن ⇒ يرمي ولا يكتب صفّاً واحداً (س٦)", async () => {
     const entryId = await seedEntry();
     await expect(
