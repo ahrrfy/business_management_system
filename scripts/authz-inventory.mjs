@@ -1284,6 +1284,8 @@ function scanExpress(root) {
     "server/backupRoutes.ts",
     "server/routes/channelWebhooks.ts",
     "server/routes/waMedia.ts",
+    "server/routes/jobApplicantCv.ts",
+    "server/routes/studioExportRouter.ts",
     "server/wellKnown.ts",
     "server/index.ts",
   ];

@@ -67,6 +67,7 @@ import {
 } from "./routes/channelWebhooks";
 import { waMediaRouter } from "./routes/waMedia";
 import { jobApplicantCvRouter } from "./routes/jobApplicantCv";
+import { studioExportRouter } from "./routes/studioExportRouter";
 import { tenancyMiddleware } from "./tenancy/expressMiddleware";
 import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
@@ -620,6 +621,11 @@ async function startServer() {
   // CVs are private binary documents: authenticated HR permission + vacancy
   // branch scope are rechecked on every GET, and the response is attachment-only.
   app.use("/api/hr/applicant-cv", tenancy, jobApplicantCvRouter());
+
+  // تصدير صور استوديو المنتجات — GET يبثّ ZIP للمدير المصادَق. خارج tRPC كي يقبله زرّ
+  // التنزيل في المتصفح مباشرةً بلا JS إضافيّ. المصدر: `productImages` المعتمدة (APPROVED)
+  // فقط — لا الأصل. كل صورةٍ باسم المنتج (وبديله عند وجوده). سقفٌ صارم ٢٠٠٠ صورة/نداء.
+  app.use("/api/studio", tenancy, studioExportRouter());
 
   // Webhooks خارِجية لِلقَنوات (شَريحة #5): WhatsApp/Instagram/Store.
   // ⚠️ لا csrfGuard هُنا — webhooks تَأتي مِن مُزوّدين خارِجيين بَلا كوكي/Origin، ولا
