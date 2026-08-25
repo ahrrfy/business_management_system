@@ -61,9 +61,8 @@ import {
   Users,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STAGE_COLOR: Record<string, string> = {
   new: "var(--status-pending)",
@@ -268,18 +267,18 @@ export default function Recruitment() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="بحث (اسم/وظيفة/هاتف/بريد)"
-            className={selectCls + " w-56"}
+            className={selectClsSm + " w-56"}
             aria-label="بحث"
           />
-          <select className={selectCls} value={stage} onChange={(e) => setStage(e.target.value)} aria-label="المرحلة">
+          <select className={selectClsSm} value={stage} onChange={(e) => setStage(e.target.value)} aria-label="المرحلة">
             <option value="">كل المراحل</option>
             {APPLICANT_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
-          <select className={selectCls} value={source} onChange={(e) => setSource(e.target.value)} aria-label="المصدر">
+          <select className={selectClsSm} value={source} onChange={(e) => setSource(e.target.value)} aria-label="المصدر">
             <option value="">كل المصادر</option>
             {APPLICANT_SOURCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
-          <select className={selectCls} value={vacancyFilter} onChange={(e) => setVacancyFilter(e.target.value)} aria-label="الوظيفة">
+          <select className={selectClsSm} value={vacancyFilter} onChange={(e) => setVacancyFilter(e.target.value)} aria-label="الوظيفة">
             <option value="">كل الوظائف</option>
             {(vacancyOptsQ.data ?? []).map((v) => <option key={v.id} value={String(v.id)}>{v.title}</option>)}
           </select>
@@ -604,14 +603,14 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
           </div>
           <div className="space-y-1.5">
             <Label>المصدر</Label>
-            <select className={selectCls + " w-full"} value={source} onChange={(e) => setSource(e.target.value as "paper" | "archive")}>
+            <select className={selectClsSm + " w-full"} value={source} onChange={(e) => setSource(e.target.value as "paper" | "archive")}>
               <option value="paper">استمارة ورقية</option>
               <option value="archive">أرشيف</option>
             </select>
           </div>
           <div className="space-y-1.5">
             <Label>المرحلة</Label>
-            <select className={selectCls + " w-full"} value={stage} onChange={(e) => setStage(e.target.value)}>
+            <select className={selectClsSm + " w-full"} value={stage} onChange={(e) => setStage(e.target.value)}>
               {APPLICANT_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
           </div>
@@ -916,7 +915,7 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
           </div>
           <div className="space-y-1.5">
             <Label>نوع التعاقد</Label>
-            <select className={selectCls + " w-full"} value={employmentType} onChange={(e) => setEmploymentType(e.target.value)}>
+            <select className={selectClsSm + " w-full"} value={employmentType} onChange={(e) => setEmploymentType(e.target.value)}>
               {EMPLOYMENT_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
           </div>
