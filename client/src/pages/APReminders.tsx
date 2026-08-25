@@ -51,8 +51,8 @@ function sendViaApiReasonAr(reason: string): string {
 
 function daysBadgeCls(days: number): string {
   if (days >= 90) return "bg-destructive/15 text-destructive font-semibold";
-  if (days >= 60) return "bg-amber-500/15 text-amber-700 font-semibold";
-  if (days >= 30) return "bg-orange-500/15 text-orange-700";
+  if (days >= 60) return "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] font-semibold";
+  if (days >= 30) return "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]";
   return "bg-muted text-muted-foreground";
 }
 
@@ -537,12 +537,12 @@ function QueueTab({
                 </TableRow>
               ) : (
                 filtered.map((row) => (
-                  <TableRow key={row.supplierId} className={row.isPromiseDue ? "bg-amber-50/60" : ""}>
+                  <TableRow key={row.supplierId} className={row.isPromiseDue ? "bg-[var(--sem-warn-bg)]/60" : ""}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span>{row.supplierName}</span>
                         {row.isPromiseDue && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
                             <CalendarClock className="size-3" aria-hidden />
                             موعود{row.promisedDate ? ` (${row.promisedDate})` : ""}
                           </span>
@@ -707,7 +707,7 @@ function HistoryTab({
                   <TableCell className="text-left tabular-nums" dir="ltr">{fmtAmount(r.totalUnpaidSnapshot)}</TableCell>
                   <TableCell className="text-center tabular-nums">{r.daysOverdue}</TableCell>
                   <TableCell className="text-center">
-                    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs ${r.status === "SENT" ? "bg-emerald-100 text-emerald-700" : r.promisedDate ? "bg-amber-500/15 text-amber-800" : "bg-muted text-muted-foreground"}`}>
+                    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs ${r.status === "SENT" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : r.promisedDate ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "bg-muted text-muted-foreground"}`}>
                       {r.status === "SENT" ? "متابَع" : r.promisedDate ? "وعد" : "تأجيل"}
                     </span>
                   </TableCell>
@@ -715,7 +715,7 @@ function HistoryTab({
                     <div className="flex flex-col gap-0.5">
                       <span>{r.skipReason ?? (r.status === "SENT" ? "متابعة داخلية" : "—")}</span>
                       {r.promisedDate && (
-                        <span className="text-[11px] text-amber-800 inline-flex items-center gap-1">
+                        <span className="text-[11px] text-[var(--sem-warn)] inline-flex items-center gap-1">
                           <CalendarClock className="size-3" aria-hidden />
                           موعود بالسداد: <span dir="ltr" className="tabular-nums">{r.promisedDate}</span>
                         </span>
