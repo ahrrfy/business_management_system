@@ -39,7 +39,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { CopyContextMenu } from "@/lib/copy/CopyContextMenu";
-import { TableSkeleton } from "@/components/PageState";
+import { TableSkeleton, EmptyState } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
@@ -84,6 +84,18 @@ type DataTableProps<T, K = string> = {
   /** البحث يقبل قارئ HID (باركود/رقم مستند): تصحيح تخطيط عربي + هوية بصرية. */
   barcodeSearch?: boolean;
   emptyText?: string;
+  /**
+   * مفتاح domain لِـ`@shared/emptyStateMessages` — يمكّن العرض من التمييز التلقائيّ بين
+   * `NO_ROWS_YET` (قائمة فارغة أصلاً) و`NO_MATCH_FILTER` (بحث/فلتر بلا مطابقة). قبل هذا كانت
+   * الشاشتان تُعرَضان بنفس النصّ «لا بيانات» فيتوهّم الموظّف أنّ الفلتر أفرغ القائمة.
+   * إن مُرِّر، يُتَخطّى `emptyText` بالنصّ الاشتقاقيّ المناسب. أمثلة: `"invoices"`, `"customers"`,
+   * `"products"`. القائمة الكاملة في `EMPTY_STATE_RESOURCE_KEYS`.
+   */
+  resourceKey?: string;
+  /** تجاوز يدويّ للفراغ الأصليّ (لا صفوف بعد) — استُهلك عادةً كـ`<EmptyState action=… />` مع CTA. */
+  emptyState?: React.ReactNode;
+  /** تجاوز يدويّ للفراغ بعد فلتر — يعرض عادةً «امسح الفلاتر» كـCTA. */
+  emptyFilteredState?: React.ReactNode;
   /** أثناء التحميل: تُعرض صفوف هيكلية (skeleton) بدل النصّ الفارغ — إحساس سرعة أفضل بلا قفزة تخطيط. */
   loading?: boolean;
   /**
@@ -187,6 +199,9 @@ export function DataTable<T, K = string>({
   autoFocusSearch = false,
   barcodeSearch = false,
   emptyText = "لا بيانات",
+  resourceKey,
+  emptyState,
+  emptyFilteredState,
   loading = false,
   errorState,
   toolbar,
@@ -272,6 +287,12 @@ export function DataTable<T, K = string>({
    * صدق الخطأ: ما يُعرَض حين لا صفوف — رسالةُ الفشل الحقيقية (بزرّ إعادة) إن فشل الجلب،
    * وإلّا نصّ الفراغ. بلا هذا التمييز يُقرأ الرفض ٤٠٣ «لا بيانات» فيُضلّل الموظف والإدارة.
    */
+  // تمييز صريح: بحث/فلتر نشط ⇒ NO_MATCH_FILTER، وإلا NO_ROWS_YET. البحث المحلّيّ يقاس بـglobalFilter،
+  // والخادميّ بـserverSearch.value. حالة الفلاتر الأخرى (شارة/تاريخ/…) تُمرَّر يدوياً عبر
+  // emptyFilteredState (المستدعي يعلم متى تكون فلاتره نشطة).
+  const anySearchActive =
+    (serverSearch?.value?.trim() ?? "") !== "" ||
+    (globalFilter?.trim() ?? "") !== "";
   const emptyOrError = errorState?.isError ? (
     <div className="flex flex-col items-center gap-2 text-sm">
       <span className="inline-flex items-center gap-1.5 font-bold text-[var(--sem-danger)]">
@@ -284,8 +305,20 @@ export function DataTable<T, K = string>({
         </Button>
       )}
     </div>
+  ) : anySearchActive ? (
+    // فلتر/بحث نشط — رسالة NO_MATCH_FILTER
+    emptyFilteredState ?? (
+      resourceKey
+        ? <EmptyState resourceKey={resourceKey} reason="NO_MATCH_FILTER" />
+        : emptyText
+    )
   ) : (
-    emptyText
+    // لا صفوف أصلاً — رسالة NO_ROWS_YET
+    emptyState ?? (
+      resourceKey
+        ? <EmptyState resourceKey={resourceKey} reason="NO_ROWS_YET" />
+        : emptyText
+    )
   );
 
   // مُعَرِّفات الصُفوف المَرئية (للأَزرار الكُلِّية + شِفت‑range).
