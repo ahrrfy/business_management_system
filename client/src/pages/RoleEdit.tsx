@@ -17,6 +17,7 @@ import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
+import { PageHeader } from "@/components/PageHeader";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -134,10 +135,11 @@ export default function RoleEdit() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">{isEdit ? "تعديل دور" : "إضافة دور مخصّص"}</h1>
-        <Link href="/roles" className="text-sm text-muted-foreground">← رجوع للأدوار</Link>
-      </div>
+      <PageHeader
+        title={isEdit ? "تعديل دور" : "إضافة دور مخصّص"}
+        backHref="/roles"
+        backLabel="رجوع للأدوار"
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">بيانات الدور</CardTitle></CardHeader>
