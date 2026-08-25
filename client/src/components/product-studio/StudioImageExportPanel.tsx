@@ -92,8 +92,11 @@ export function StudioImageExportPanel({ categories }: { categories: CategoryOpt
           )}
         </div>
         <div>
-          <Button asChild className="min-h-11" disabled={!downloadUrl || parsedProductIds.length > 500}>
-            {downloadUrl && parsedProductIds.length <= 500 ? (
+          {/* قيدُ ٥٠٠ لنطاق PRODUCTS فقط — تبديلُ النطاق يترك حقلَ المنتجات معبَّأً،
+              فتقييدُ الأزرار كلّها به يُبقيها معطَّلةً بلا سببٍ فعّال (الجذر: مراجعة
+              Codex P2 على PR #811). */}
+          <Button asChild className="min-h-11" disabled={!downloadUrl || (scope === "PRODUCTS" && parsedProductIds.length > 500)}>
+            {downloadUrl && (scope !== "PRODUCTS" || parsedProductIds.length <= 500) ? (
               // <a download> يُخبِر المتصفح بفتح مربّع حفظ (بدل عرض الاستجابة). الخادم يُرسل
               // Content-Disposition attachment كذلك كإحتياط. الفتحُ في نافذةٍ جديدة يمنع
               // خسارة حالة الاستوديو إن ألغى المستخدمُ التنزيل.

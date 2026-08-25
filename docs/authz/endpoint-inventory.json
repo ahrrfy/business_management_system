@@ -73,7 +73,7 @@
       "WRITE_WITHOUT_MODULE_GATE": 23,
       "HANDLER_ROLE_CHECK": 6
     },
-    "expressRoutes": 17,
+    "expressRoutes": 19,
     "expressMounts": 12,
     "jobs": 21,
     "routerFiles": 95,
@@ -18548,6 +18548,28 @@
       "roles": "session",
       "sensitivity": "HIGH",
       "note": "جلسة مستخدم — وسائط محادثات (PII)"
+    },
+    {
+      "surface": "express",
+      "method": "GET",
+      "path": "/:publicKey",
+      "file": "server/routes/jobApplicantCv.ts",
+      "line": 24,
+      "authority": "unknown",
+      "roles": "",
+      "sensitivity": "",
+      "note": ""
+    },
+    {
+      "surface": "express",
+      "method": "GET",
+      "path": "/export.zip",
+      "file": "server/routes/studioExportRouter.ts",
+      "line": 60,
+      "authority": "unknown",
+      "roles": "",
+      "sensitivity": "",
+      "note": ""
     },
     {
       "surface": "express",

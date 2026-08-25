@@ -7,10 +7,20 @@
  * GET (لا POST) كي يقبله زرُّ التنزيل في المتصفح مباشرةً بلا JavaScript إضافيّ. الأمان
  * كوكي الجلسة نفسها التي تحمي كل مسارات الاستوديو، مع فحصٍ صريحٍ للدور. لا نستعمل tRPC
  * لأنّه لا يبثّ binary — الأرشيف يُبنى قطعةً قطعةً من R2 ويُدفَع مباشرةً.
+ *
+ * سلسلةُ الحرّاس تُطابق ما تفعله procedures في tRPC:
+ *   1. مصادقةُ الجلسة (`getUserFromRequest`).
+ *   2. **حلّ الدور الفعّال** (`normalizeOwnerAuthority`/`resolveCustomRole`) —
+ *      قبل هذا كان `role` الخام يتجاوز أدواراً مخصّصةً تُلغي الوصول.
+ *   3. **إلزامُ 2FA** (`twoFactorEnrollmentRequired`) — مسارُ REST خارج tRPC كان يفلت
+ *      من سياسة الإلزام السارية بلا هذا الفحص.
+ *   4. دور من مجموعة المدراء + `productStudio: READ` على الأقلّ.
  */
 import { Router, type Request, type Response } from "express";
 import { getUserFromRequest } from "../auth/session";
-import { hasModuleAccess, type PermissionMap } from "../../shared/permissions";
+import { normalizeOwnerAuthority, resolveCustomRole, type AuthUser } from "../context";
+import { hasModuleAccess, type PermissionMap, type RoleKey } from "../../shared/permissions";
+import { twoFactorEnrollmentRequired } from "../trpc";
 import { logger } from "../logger";
 import { streamStudioImageExport, type StudioExportScope } from "../services/productStudioImageExport";
 import type { ProductStudioActor } from "../services/productStudioService";
@@ -48,12 +58,25 @@ export function studioExportRouter(): Router {
   const r = Router({ caseSensitive: true, strict: true });
 
   r.get("/export.zip", async (req: Request, res: Response) => {
-    const user = await getUserFromRequest(req).catch(() => null);
-    if (!user) return res.status(401).json({ error: "مصادقةٌ مطلوبة" });
+    const rawUser = await getUserFromRequest(req).catch(() => null);
+    if (!rawUser) return res.status(401).json({ error: "مصادقةٌ مطلوبة" });
+
+    // حلّ الدور الفعّال — أدوارٌ مخصّصة قد تُلغي وصول المدير الأساسيّ (الجذر: مراجعة Codex
+    // P1 على PR #811). النمطُ يتّبع `jobApplicantCvRouter` بالضبط.
+    const user = rawUser as AuthUser;
+    if (user.isOwner) normalizeOwnerAuthority(user);
+    else await resolveCustomRole(user);
+
+    // إلزامُ 2FA حين تكون السياسة سارية — مسارُ REST كان يفلت منها لأنّه خارج tRPC
+    // (الجذر: مراجعة Codex P1 على PR #811). tRPC procedures تفحصه في كل نداء.
+    if (twoFactorEnrollmentRequired(user)) {
+      return res.status(403).json({ error: "يلزم تفعيل المصادقة الثنائية (2FA) للمتابعة — سياسة إلزامية للمدير/المشرف." });
+    }
+
     // التصدير مسارٌ إداريّ (يكشف كامل الكتالوج) — مقصورٌ على المدير كما قائمة الحملات.
-    const isManager = user.role === "admin" || user.role === "manager" || user.isOwner === true;
-    if (!isManager) return res.status(403).json({ error: "التصدير للمدير فقط" });
-    if (!hasModuleAccess(user.role, (user.permissionsOverride ?? null) as PermissionMap | null, "productStudio", "READ")) {
+    const isManagerRole = user.role === "admin" || user.role === "manager" || user.isOwner === true;
+    if (!isManagerRole) return res.status(403).json({ error: "التصدير للمدير فقط" });
+    if (!hasModuleAccess(user.role as RoleKey, (user.permissionsOverride ?? null) as PermissionMap | null, "productStudio", "READ")) {
       return res.status(403).json({ error: "لا صلاحيةَ للاستوديو" });
     }
 
