@@ -15,11 +15,22 @@
  * الأمان: manager فقط (وقفٌ عند بوّابة الراوتر)، ومقيَّدٌ بفرع الفاعل (لا عبور)، ومعزولٌ
  * عن الأصل والمرشّح غير المُعتمَد (فقط `APPROVED` — لا مرشّح `PENDING_REVIEW`).
  */
-// @types/archiver يُصدِّر أسماءً فقط بينما الحزمة تُصدّر دالّةً افتراضيّةً قابلة للاستدعاء.
-// esModuleInterop يُلف الوحدة CJS ⇒ الاستيراد الافتراضيّ يعمل وقت التشغيل، لكن TS يتشكّى
-// لأنّ التعريفات لا تُعلن default. `@ts-expect-error` يُقصر التجاوز على السطر الواحد.
-// @ts-expect-error — CJS interop; runtime returns the archiver factory function.
-import archiver from "archiver";
+// Hotfix ٢٦/٨: PROD ينهار على `import archiver from "archiver"` بـ:
+//   SyntaxError: The requested module 'archiver' does not provide an export named 'default'
+// السبب: عامل ESM Node (النشر بـtsx) لا يُطبّق `esModuleInterop` — تلك خاصيّة `tsc` وقت
+// الترجمة لا وقت التشغيل. الوحدة CJS (`module.exports = archiver`) بلا `default` ⇒ الاستيراد
+// الافتراضيّ يفشل. `createRequire` يستوردها كما هي وقت التشغيل. الاختبارات (وvite dev)
+// كانت تمرّ لأنّ tsx يترجم أوّلاً، لكن `node --import tsx` في PROD يسقط.
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+// النموذج الوحيد الصحيح: `@types/archiver` يُعلن الوحدة **namespace** لا `default` ولا callable،
+// والوحدة CJS تُصدّر factory قابلة للاستدعاء وقت التشغيل. نُلمّح TS إلى شكل الاستدعاء الفعليّ.
+type ArchiverFactory = (
+  format: "zip" | "tar",
+  options?: import("archiver").ArchiverOptions,
+) => import("archiver").Archiver;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const archiver = require("archiver") as ArchiverFactory;
 import type { Response } from "express";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { requireDb } from "./tx";
