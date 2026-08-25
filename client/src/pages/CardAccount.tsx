@@ -18,6 +18,7 @@ import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { selectCls } from "@/lib/ui/formStyles";
 import {
   CreditCard,
   Landmark,
@@ -33,8 +34,6 @@ import {
   CheckCircle2,
 } from "lucide-react";
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const SOURCE_AR: Record<string, string> = {
   SALE: "بيع",

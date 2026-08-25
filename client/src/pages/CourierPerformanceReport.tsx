@@ -11,11 +11,10 @@ import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
+import { selectCls } from "@/lib/ui/formStyles";
 
 type Row = RouterOutputs["reports"]["courierPerformance"]["rows"][number];
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const dateCls = selectCls;
 
 const NOTE =

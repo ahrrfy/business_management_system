@@ -14,11 +14,10 @@ import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { selectCls } from "@/lib/ui/formStyles";
 
 type DC = RouterOutputs["reports"]["dayCloseReconciliation"];
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const NOTE =
   "المتوقَّع = الرصيد الافتتاحي + المقبوضات النقدية − المرتجعات والمصروفات النقدية (النقد فقط، درج الكاشير). " +

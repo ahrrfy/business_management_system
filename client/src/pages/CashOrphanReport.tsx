@@ -14,6 +14,7 @@ import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { selectCls } from "@/lib/ui/formStyles";
 
 type CO = RouterOutputs["reports"]["cashOrphans"];
 type Tab = "all" | "TREASURY" | "TRUE_ORPHAN";
@@ -41,8 +42,6 @@ const NOTE =
   "تَبويب «النقد اليتيم الحقيقي» (cashBucket=NULL أو DRAWER+shiftId=null) سجلات تاريخية قبل ١٧/٦/٢٠٢٦ أو خَلل يَستدعي قيد تَسوية يدوي. " +
   "كلتا الفئتَين خارج Z-report.";
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function ymdOf(d: Date | string): string {
   if (typeof d === "string") return d.slice(0, 10);

@@ -15,6 +15,7 @@ import { openWhatsApp } from "@/lib/whatsapp";
 import { RowActions } from "@/components/list";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
+import { selectCls } from "@/lib/ui/formStyles";
 
 type Row = RouterOutputs["reports"]["creditExposure"]["rows"][number];
 type RiskFilter = "all" | "high" | "medium" | "low";
@@ -25,8 +26,6 @@ const RISK_CLS: Record<string, string> = {
   medium: "badge-stock-low",
   low: "bg-muted text-muted-foreground",
 };
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const NOTE =
   "الرصيد الحالي والمتأخّر مشتقّان من الفواتير غير المسدّدة + الرصيد الافتتاحي. تصنيف الخطر: عالٍ = تجاوز الحدّ أو ذمم +٩٠ يوم؛ متوسّط = ٦١–٩٠ يوم أو استخدام >٨٠٪ من الحدّ.";
