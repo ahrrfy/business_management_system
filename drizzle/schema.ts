@@ -1423,6 +1423,43 @@ export const stockAdjustmentRequests = mysqlTable(
 export type StockAdjustmentRequest =
   typeof stockAdjustmentRequests.$inferSelect;
 
+/* ==================== عتبات المخزون المخصّصة للفرع (تقرير المراجعة P1-#4، ٢٥/٨) ====================
+ *
+ * `productVariants.minStock`/`reorderPoint` عالميّة على مستوى المتغيّر ⇒ الفرعُ سريع الدوران
+ * والبطيء يتلقّيان نفس التنبيه بنفس الحدّ، وهو ما يُنبِّه عليه تقرير الفحص التشغيليّ (٢٥/٨).
+ * هذا الجدول يحمل **override** لكل (متغيّر × فرع)؛ العتبةُ الفرعيّة إن وُجدت تسود، وإلّا يُستعمل
+ * الافتراض المخزَّن على المتغيّر (fallback). أعمدةُ المتغيّر تبقى كما هي (توافق ⇒ صفر أثر تحميل).
+ * الاستعلاماتُ الرئيسة (`listReorderAlerts` وشاشة الرصيد الحيّ) تقرأ عبر LEFT JOIN + COALESCE.
+ * القارئُ العامّ (dashboard/reports) يبقى على الافتراض حتى يُطلَب توسيعُه بشريحةٍ لاحقة.
+ */
+export const variantBranchThresholds = mysqlTable(
+  "variantBranchThresholds",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    variantId: bigint("variantId", { mode: "number" })
+      .notNull()
+      .references(() => productVariants.id, { onDelete: "cascade" }),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** override الحدّ الأدنى؛ NULL = ورث الافتراضَ من `productVariants.minStock`. */
+    minStock: int("minStock"),
+    /** override حدّ إعادة الطلب؛ NULL = ورث الافتراضَ من `productVariants.reorderPoint`. */
+    reorderPoint: int("reorderPoint"),
+    updatedBy: int("updatedBy").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    // مفتاح الاتّحاد وحمايةٌ من التكرار: صفٌّ واحد لكل (متغيّر × فرع). القيدُ الفريد يُلتقط من الشاشة
+    // بـER_DUP_ENTRY فيتحوّل إلى upsert عبر ON DUPLICATE KEY UPDATE في الطبقة العليا.
+    vbtUq: unique("uq_vbt_variant_branch").on(table.variantId, table.branchId),
+    branchIdx: index("idx_vbt_branch").on(table.branchId),
+  }),
+);
+
+export type VariantBranchThreshold = typeof variantBranchThresholds.$inferSelect;
+
 /* ==================== إعادة تقييم تكلفة المخزون (حوكمة التكلفة — تدقيق ٢٧/٧ H3/H4) ====================
  *
  * `productVariants.costPrice` مصدر الحقيقة الوحيد لتقييم المخزون في الميزانية ولتكلفة البضاعة

@@ -238,7 +238,24 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
         message: "معرّف طلب الاستلام استُخدم لسند تحويل آخر — استعمل معرّفاً جديداً",
       });
     }
-    return { transferId: a.transferId, idempotentReplay: true as const, discrepancyUnits: 0 };
+    // ⭐ replay = العملية مُستهلَكةٌ سابقاً؛ الأثر محفوظ على السند. أعِد الفرقَ الحقيقيّ من الوثيقة بدل
+    // صفرٍ ثابت كان يُخفي عجزَ السند الأصليّ عن العميل الذي يعيد المحاولة (اقتراح تقرير المراجعة P2-#2،
+    // ٢٥/٨). المسار الأصليّ يحسبه فرقَ الإرسال ناقص المستلَم في نفس الفرع المستلِم — نقرأ اللقطة نفسها.
+    const replayDoc = (
+      await tx
+        .select({ totalSentBase: stockTransfers.totalSentBase, totalReceivedBase: stockTransfers.totalReceivedBase })
+        .from(stockTransfers)
+        .where(eq(stockTransfers.id, a.transferId))
+        .limit(1)
+    )[0];
+    const replayDiscrepancy = replayDoc
+      ? Number(replayDoc.totalSentBase) - Number(replayDoc.totalReceivedBase ?? 0)
+      : 0;
+    return {
+      transferId: a.transferId,
+      idempotentReplay: true as const,
+      discrepancyUnits: replayDiscrepancy,
+    };
   }
 
   const doc = (

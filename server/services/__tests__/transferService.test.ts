@@ -314,4 +314,33 @@ describe("I6: لا ازدواج", () => {
     expect(b.idempotentReplay).toBe(true);
     expect(await stockOf(1, 2)).toBe(8);
   });
+
+  // P2-#2 (تقرير المراجعة ٢٥/٨): replay استلام سندٍ فيه عجز كان يُعيد `discrepancyUnits: 0` ثابتاً،
+  // فكان الكاشير يرى «صفر عجز» في المحاولة الثانية بينما السند الأصلي فيه ٢ وحدة عجز حقيقي. الإصلاح:
+  // نقرأ الرقم من الوثيقة نفسها ونُعيده عند replay — يطابق ما أعادته الاستجابة الأصلية بالضبط.
+  it("replay لسندٍ فيه عجز يُعيد الرقم الحقيقيّ لا صفراً (P2-#2)", async () => {
+    const { r, doc } = await createStd();
+    const wh2 = appRouter.createCaller(makeCtx(await userById(3)));
+    // استلامٌ بعجز ٢ (٦ من أصل ٨ للورق، الكامل للقلم) + ملاحظة إلزامية.
+    const partialLines = doc.lines.map((l: any) => ({
+      lineId: Number(l.id),
+      quantityReceived: Number(l.variantId) === 1 ? 6 : Number(l.quantitySent),
+      note: Number(l.variantId) === 1 ? "نقص فعليّ" : undefined,
+    }));
+    const first = await wh2.inventory.transferReceive({
+      transferId: r.transferId,
+      lines: partialLines,
+      clientRequestId: "rcv-short-1",
+    });
+    expect(first.idempotentReplay).toBe(false);
+    expect(first.discrepancyUnits).toBe(2);
+    const replay = await wh2.inventory.transferReceive({
+      transferId: r.transferId,
+      lines: partialLines,
+      clientRequestId: "rcv-short-1",
+    });
+    expect(replay.idempotentReplay).toBe(true);
+    // كان يُعيد 0؛ الآن يُعيد ٢ الحقيقيّة — نفسُ الرقم الذي أعادته الاستجابة الأولى.
+    expect(replay.discrepancyUnits).toBe(2);
+  });
 });

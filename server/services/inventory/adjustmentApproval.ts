@@ -19,9 +19,12 @@ import { setStock, isBundleVariant, isServiceVariant } from "../inventoryService
 import { loadOpeningPurchaseLinkedVariantIds } from "../stocktake/openingEligibility";
 import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { money } from "../money";
 import { requireDb } from "../tx";
 import { type Actor, withTx } from "../tx";
+
+const ADJUSTMENT_REQUEST_OPERATION = "inventory.adjustRequest";
 
 const COST_SNAPSHOT_RE = /^\[COST_SNAPSHOT:([0-9]+(?:\.[0-9]{1,2})?)\](?:\n|$)/;
 
@@ -45,6 +48,11 @@ export interface RequestAdjustmentInput {
   branchId: number;
   targetQuantity: number;
   notes?: string | null;
+  /**
+   * مفتاح تكرار من العميل. إعادةُ الإرسال بنفس المفتاح والحمولة تُرجع الطلب الأوّل بدل إنشاء
+   * ثانٍ (اقتراح تقرير المراجعة P2-#1، ٢٥/٨). الحمولةُ المختلفة على نفس المفتاح تُرفَض CONFLICT.
+   */
+  clientRequestId?: string | null;
 }
 
 function assertRequesterBranch(branchId: number, actor: Actor): void {
@@ -55,12 +63,30 @@ function assertRequesterBranch(branchId: number, actor: Actor): void {
 }
 
 /** يُنشئ طلب تسوية مخزونٍ معلَّقاً — **بلا تغيير مخزون** حتى الاعتماد. */
-export async function requestStockAdjustment(input: RequestAdjustmentInput, actor: Actor): Promise<{ requestId: number }> {
+export async function requestStockAdjustment(input: RequestAdjustmentInput, actor: Actor): Promise<{ requestId: number; idempotentReplay?: true }> {
   // حارس خدمة لا يعتمد على الراوتر: لا يجوز للمستدعي تزوير actor.branchId=target.
   assertRequesterBranch(input.branchId, actor);
+  // ⭐ Idempotency على مستوى الطلب (P2-#1): إعادةُ الشاشة إرسالَ نفس العملية (نقر مضاعف، انقطاعُ شبكة)
+  // كانت تُنشئ طلبَين معلَّقَين متطابقَين. اعتمادُهما لاحقاً بالخطأ = **مضاعفةُ تسوية**. الحلّ: نفس مفتاح
+  // العميل + نفس الحمولة ⇒ إعادةُ الطلب الأوّل بلا إنشاء. نفس المفتاح بحمولةٍ مختلفة ⇒ CONFLICT (بصمة).
+  const clientRequestId = input.clientRequestId?.trim() || null;
+  const payloadHash = clientRequestId
+    ? idempotencyHash({
+        variantId: Number(input.variantId),
+        branchId: Number(input.branchId),
+        targetQuantity: Number(input.targetQuantity),
+        notes: input.notes?.trim() || null,
+      })
+    : null;
   return withTx(async (tx) => {
     if (!Number.isInteger(input.targetQuantity) || input.targetQuantity < 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
+    }
+    if (clientRequestId) {
+      const existing = await checkIdempotency(tx, ADJUSTMENT_REQUEST_OPERATION, clientRequestId, payloadHash);
+      if (existing != null) {
+        return { requestId: existing, idempotentReplay: true as const };
+      }
     }
     const v = (
       await tx
@@ -105,7 +131,13 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
       status: "PENDING_APPROVAL",
       createdBy: actor.userId,
     });
-    return { requestId: extractInsertId(res) };
+    const requestId = extractInsertId(res);
+    if (clientRequestId) {
+      // نسجّل المفتاح **بعد** نجاح الإدراج ⇒ فشلٌ داخل المعاملة يعمل ROLLBACK فيُلغى المفتاح مع الطلب،
+      // وسباقُ طلبَين بنفس المفتاح يتلقّى ER_DUP_ENTRY على القيد الفريد فيراه المستدعي.
+      await recordIdempotencyKey(tx, ADJUSTMENT_REQUEST_OPERATION, clientRequestId, requestId, payloadHash);
+    }
+    return { requestId };
   });
 }
 
