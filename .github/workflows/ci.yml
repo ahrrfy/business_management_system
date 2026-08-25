@@ -230,6 +230,8 @@ jobs:
         run: pnpm check:invoice-status-variants
       - name: حارِس اعتماد DataTable (يمنع <table> جديدة في pages)
         run: pnpm check:raw-tables
+      - name: حارِس اعتماد printReportDoc (يمنع window.print() جديدة في pages)
+        run: pnpm check:window-print
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: بناء الإنتاج

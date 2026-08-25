@@ -103,12 +103,39 @@ export function ListToolbar<T>({
   const exportDisabled =
     !exportSpec || exporting || (!exportSpec.fetchAll && exportSpec.rows.length === 0);
 
+  /**
+   * كشف الفقدان الصامت: القائمة مُصفَّحة خادمياً (`count > rows.length`) ولا `fetchAll`.
+   * الضغط على التصدير الآن سيُصدّر **الصفحة الحالية فقط** بينما المستخدم يظنّ أنه صدَّر
+   * كامل المطابقات — بلاغ المالك ٦/٨: «فاتورة ٢٠١ من سقف ٢٠٠ لا تُرى ولا تُصدَّر ولا تُبحَث».
+   * نعرض شارة توضّح النطاق ونصّاً في tooltip. أفضل: مرّر `fetchAll` للتصدير الكامل.
+   */
+  const willExportPartial = Boolean(
+    exportSpec?.fetchAll == null &&
+      count != null &&
+      count > (exportSpec?.rows.length ?? 0),
+  );
+  const partialExportHint = willExportPartial
+    ? `سيُصدَّر ${(exportSpec?.rows.length ?? 0).toLocaleString("ar-IQ-u-nu-latn")} من ${(count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} — الصفحة المعروضة فقط.`
+    : undefined;
+
+  /**
+   * إثراء اسم الملف تلقائياً بالتاريخ+الوقت — كان الاسم مثل «العملاء.xlsx» يُعاد كتابته
+   * كلّ تصدير ⇒ ملفّات متعدّدة بنفس الاسم يستبدل بعضها بعضاً في مجلّد التنزيلات.
+   * الآن: «العملاء_2026-08-25_12-35.xlsx». لا تكرار ولا التباس بأيّ لقطة أحدث.
+   */
+  function stampFilename(base: string): string {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}`;
+    return `${base}_${stamp}`;
+  }
+
   // متزامنة عمداً: exportRows تفتح حوار «حفظ باسم» داخل إيماءة النقر نفسها —
   // أي await هنا قبلها (كجلب fetchAll) يُبطل الإيماءة فيسقط الحوار للتنزيل التقليدي.
   function doExport(format: "xlsx" | "csv") {
     if (!exportSpec) return;
     const opts = {
-      filename: exportSpec.filename,
+      filename: stampFilename(exportSpec.filename),
       columns: exportSpec.columns,
       sheetName: exportSpec.sheetName,
       format,
@@ -166,9 +193,12 @@ export function ListToolbar<T>({
             (formats.length > 1 ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" disabled={exportDisabled}>
+                  <Button variant="outline" size="sm" disabled={exportDisabled} title={partialExportHint}>
                     {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
                     {exporting ? "جارٍ التحضير…" : "تصدير"}
+                    {willExportPartial && (
+                      <span className="ms-1 rounded bg-[var(--sem-warn-bg)] px-1 text-[10px] font-bold text-[var(--sem-warn)]">جزئي</span>
+                    )}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
@@ -181,9 +211,18 @@ export function ListToolbar<T>({
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : (
-              <Button variant="outline" size="sm" disabled={exportDisabled} onClick={() => doExport(formats[0])}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={exportDisabled}
+                onClick={() => doExport(formats[0])}
+                title={partialExportHint}
+              >
                 {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
                 {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
+                {willExportPartial && (
+                  <span className="ms-1 rounded bg-[var(--sem-warn-bg)] px-1 text-[10px] font-bold text-[var(--sem-warn)]">جزئي</span>
+                )}
               </Button>
             ))}
           {onPrint && (
