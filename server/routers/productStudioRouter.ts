@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
 
 function actor(ctx: {
   user: {
@@ -63,6 +63,11 @@ export const productStudioRouter = router({
     )
     .query(({ ctx, input }) => listStudioTasks(actor(ctx), input)),
   campaigns: productStudioReadProcedure.query(({ ctx }) => listStudioCampaigns(actor(ctx))),
+  /**
+   * حملاتُ المستخدم الحاليّ (نشطةٌ وهو عضوٌ فيها) — نافذته الوحيدة على «ماذا يخصّني».
+   * قراءةٌ ضيّقة تُعوّض غياب `campaigns` عن الأدوار غير الإدارية بلا تسريب حملاتٍ لا تعنيه.
+   */
+  myCampaigns: productStudioReadProcedure.query(({ ctx }) => listMyStudioCampaigns(actor(ctx))),
   createCampaign: productStudioManagerProcedure
     .input(
       z.object({
@@ -79,6 +84,22 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => createStudioCampaign(actor(ctx), input)),
+  /**
+   * تعديلُ بيانات حملةٍ نشطة أو مسوَّدة: الاسم، عدد الصور المطلوبة، والمواعيد.
+   * كلّ الحقول اختياريّة (مسار PATCH)؛ الحمولةُ الفارغة مرفوضة. الحالة والفرع والنطاق
+   * مسائل مستقلّة لها مساراتها.
+   */
+  updateCampaignDetails: productStudioManagerProcedure
+    .input(
+      z.object({
+        campaignId,
+        name: z.string().trim().min(3).max(180).optional(),
+        requiredImages: z.number().int().min(1).max(10).optional(),
+        startsAt: z.coerce.date().nullable().optional(),
+        dueAt: z.coerce.date().nullable().optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => updateStudioCampaignDetails(actor(ctx), input)),
   transitionCampaign: productStudioManagerProcedure
     .input(z.object({
       campaignId,
@@ -95,6 +116,13 @@ export const productStudioRouter = router({
   createTemporaryPhotographer: productStudioManagerProcedure
     .input(z.object({ campaignId, name: z.string().trim().min(3).max(80) }))
     .mutation(({ ctx, input }) => createTemporaryCampaignPhotographer(actor(ctx), input)),
+  /**
+   * توفيقُ مصوّري الحملة بعد الإنشاء — إضافةٌ وإزالةٌ في نداءٍ واحد.
+   * يستقبل القائمة النهائيّة (لا الفرق) فتغيّرات الشاشة تنعكس ذرّياً بلا سباق.
+   */
+  updateCampaignAssignees: productStudioManagerProcedure
+    .input(z.object({ campaignId, assigneeIds: z.array(z.number().int().positive()).max(50) }))
+    .mutation(({ ctx, input }) => updateCampaignAssignees(actor(ctx), input)),
   revokeTemporaryPhotographers: productStudioManagerProcedure
     .input(z.object({ campaignId }))
     .mutation(({ ctx, input }) => revokeTemporaryCampaignPhotographers(actor(ctx), input.campaignId)),
@@ -131,6 +159,41 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => bulkAssignStudioTasks(actor(ctx), input)),
+  /**
+   * إعادةُ إسناد مهمّةٍ **قائمة** إلى مصوّرٍ آخر — أو إلى الطابور المفتوح
+   * (`newAssigneeId=null`). المسار الوحيد لتحرير مهمّةٍ عالقةٍ بيد مصوّرٍ غائب
+   * بلا إلغاءٍ وفقدانِ سبب الرفض.
+   */
+  reassign: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskId,
+        newAssigneeId: z.number().int().positive().nullable(),
+        expectedRevision,
+        reason: z.string().trim().max(500).optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => reassignStudioTask(actor(ctx), input)),
+  /** إعادةُ إسنادٍ جماعيّة — يستقبل معرّفات مهام لا منتجات؛ يوفّق المصوّر الجديد بلا إنشاء صفوف. */
+  bulkReassign: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskIds: z.array(z.number().int().positive()).min(1).max(100),
+        newAssigneeId: z.number().int().positive().nullable(),
+        reason: z.string().trim().max(500).optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => bulkReassignStudioTasks(actor(ctx), input)),
+  /** ضبطُ الأولويّة على دفعةٍ من المهام دفعةً واحدة — بلا هذا المسار كان المدير يفتح كلاًّ منفرداً. */
+  bulkSetPriority: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskIds: z.array(z.number().int().positive()).min(1).max(100),
+        priority,
+        dueAt: z.coerce.date().nullable().optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => bulkSetStudioPriority(actor(ctx), input)),
   updateSchedule: productStudioManagerProcedure
     .input(
       z.object({
@@ -160,6 +223,7 @@ export const productStudioRouter = router({
         processingReceipt: z.string().uuid(),
         candidateDataUrl: z.string().max(1_300_000),
         adminOverrideReason,
+        expectedRevision: expectedRevision.optional(),
       }),
     )
     .mutation(({ ctx, input }) => bindStudioProcessingCandidate(actor(ctx), input)),
