@@ -110,9 +110,9 @@ export const employeeRouter = router({
    */
   clearance: hrRead
     .input(z.object({ employeeId: z.number().int().positive() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       try {
-        return await getEmployeeClearance(input.employeeId);
+        return await getEmployeeClearance(input.employeeId, companyBranchScope(ctx.user));
       } catch (error) {
         throw new TRPCError({
           code: "NOT_FOUND",

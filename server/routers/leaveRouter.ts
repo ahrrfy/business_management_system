@@ -161,7 +161,8 @@ export const leaveRouter = router({
         leaveType: z.enum(LEAVE_TYPE_KEYS),
         fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح"),
         toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح"),
-        days: z.number().int().positive("عدد الأيام يجب أن يكون أكبر من صفر"),
+        // يُقبل للتوافق مع العملاء القدامى، لكن لا يُستخدم مصدرًا للحقيقة؛ الخادم يحسب المدى شاملًا للطرفين.
+        days: z.number().int().positive("عدد الأيام يجب أن يكون أكبر من صفر").optional(),
         reason: z.string().trim().optional(),
       }),
     )
@@ -171,7 +172,7 @@ export const leaveRouter = router({
         action: "leave.create",
         entityType: "leaveRequest",
         entityId: lv?.id,
-        newValue: { employeeId: input.employeeId, leaveType: input.leaveType, from: input.fromDate, to: input.toDate, days: input.days },
+        newValue: { employeeId: lv?.employeeId ?? input.employeeId, leaveType: lv?.leaveType ?? input.leaveType, from: lv?.fromDate ?? input.fromDate, to: lv?.toDate ?? input.toDate, days: lv?.days ?? null },
       });
       return lv;
     }),

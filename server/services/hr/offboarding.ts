@@ -28,6 +28,7 @@ import {
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
+import type { CompanyBranchScope } from "../companyBranchScope";
 
 export type ClearanceKey =
   | "OPEN_SHIFT"
@@ -72,7 +73,10 @@ function requireDb() {
  * يجمع ذمّة الموظّف عبر الوحدات الستّ. الموظّف بلا `userId` (سجلّ موارد بشرية بلا حساب
  * دخول) تُتخطّى بنوده المرتبطة بالحساب — لا وردية ولا جلسات ولا عضوية توصيل ولا عمولة.
  */
-export async function getEmployeeClearance(employeeId: number): Promise<EmployeeClearance> {
+export async function getEmployeeClearance(
+  employeeId: number,
+  scope: CompanyBranchScope = { branchId: null },
+): Promise<EmployeeClearance> {
   const db = requireDb();
   const [emp] = await db
     .select({
@@ -83,7 +87,11 @@ export async function getEmployeeClearance(employeeId: number): Promise<Employee
       isActive: employees.isActive,
     })
     .from(employees)
-    .where(eq(employees.id, employeeId))
+    .where(
+      scope.branchId == null
+        ? eq(employees.id, employeeId)
+        : and(eq(employees.id, employeeId), eq(employees.branchId, scope.branchId)),
+    )
     .limit(1);
   if (!emp) throw new Error("الموظّف غير موجود");
 
