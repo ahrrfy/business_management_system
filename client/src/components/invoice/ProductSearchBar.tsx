@@ -255,11 +255,12 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
           {/* توحيد بصريّ (٢٥/٨): استعمال `barcodeSearchInputClass` + `<BarcodeSearchCue />` كنمطٍ موحَّد
-              عبر كلّ الشاشات (Reception/PrintPOS/POS/Bundle/Studio/Production/WorkOrders). كانت هذه
-              الشاشة تستعمل `barcodeSearchVisualClass` الاستيلائيّ وحده (بلا شارةٍ داخلية) فتظهر
-              مختلفةً بصرياً عن نظيراتها. أيقونة البحث + زرّ المسح انتقلا للجهة الأخرى (المسار
-              المُلائم لـRTL) لتفسحا للشارة موقعها القياسي على `right-2`. */}
-          <span aria-hidden className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+              عبر كلّ الشاشات (Reception/PrintPOS/POS/Bundle/Studio/Production/WorkOrders).
+              ملاحظة: الشارة مثبَّتة على `right-2` **فيزيائياً** (لا logical)، والمستنَد RTL:
+                • `right-*` (physical) = `start-*` (logical) في RTL ⇒ نفس الجانب البصريّ ⇒ تضارب.
+              فأيقونة البحث + زرّ المسح على `end-*` (logical) لينحسبا للجانب المقابل بصرياً
+              (اليسار في RTL)، مع `pe-10` padding للجانب نفسه. Codex #777 أمسك التضارب الأصليّ. */}
+          <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
             <Search aria-hidden className="size-4" />
           </span>
           <Input
@@ -271,7 +272,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
               if (results.length > 0) setShowDrop(true);
             }}
             placeholder="ابحث بالاسم أو SKU أو امسح الباركود..."
-            className={`h-11 ps-10 text-sm ${barcodeSearchInputClass}`}
+            className={`h-11 pe-10 text-sm ${barcodeSearchInputClass}`}
             aria-label="بحث المنتجات"
           />
           {query && (
@@ -282,7 +283,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                 setQuery("");
                 inputRef.current?.focus();
               }}
-              className="absolute start-9 top-1/2 -translate-y-1/2 rounded-md p-1 text-sm text-muted-foreground hover:bg-muted"
+              className="absolute end-9 top-1/2 -translate-y-1/2 rounded-md p-1 text-sm text-muted-foreground hover:bg-muted"
             >
               <X aria-hidden className="size-4" />
             </button>
