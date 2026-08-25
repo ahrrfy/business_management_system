@@ -360,9 +360,11 @@ describe("product studio governed workflow", () => {
     ]);
     // المتأخّرات تُجمَّع في إشعارٍ واحد للمدير في اليوم، لا إشعاراً لكل مهمة:
     // حملةٌ تَسِم آلاف المهام بموعدٍ واحد كانت تُغرق المدير وتُعيد المحاولة كل خمس دقائق.
+    // مفتاحُ الحدث يضمّ شريحةَ العدّ (band) ⇒ قفزةٌ ماديّة (٥ ⇒ ٤٠) تُنتج مفتاحاً جديداً
+    // فيُبلَّغ المدير — وشريحةٌ واحدة تُدمَج بلا تكرار. الجذر: تدقيق ٢٤/٨.
     expect(managerNotices).toEqual([
       expect.objectContaining({
-        eventKey: `product-studio:overdue-digest:2026-08-19:branch:1:manager:${manager.userId}`,
+        eventKey: `product-studio:overdue-digest:2026-08-19:band:0-9:branch:1:manager:${manager.userId}`,
         kind: "APPROVAL_REQUIRED",
         body: "لديك 1 مهمة استوديو تجاوزت موعدها.",
       }),

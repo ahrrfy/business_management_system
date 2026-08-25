@@ -1916,19 +1916,23 @@ export async function reconcileStudioAssignmentNotifications(
         // مهلةُ سماحٍ: لا نسابق المُرسِل المباشر.
         isNotNull(productImageJobs.assignedAt),
         lte(productImageJobs.assignedAt, cutoff),
-        // الغياب يُقاس بمفتاح الحدث المتوقّع للحالة الراهنة، لا بأيّ إشعارٍ سابق للمهمّة:
-        //   • ASSIGNED/IN_PROGRESS ⇒ مفتاح إسنادٍ لهذا التنقيح غائب
-        //   • REJECTED             ⇒ مفتاح رفضٍ لهذا التنقيح غائب
-        // قبل هذا الفرق كان أيُّ إشعارٍ سابقٍ يُلغي المصالحة، فرفضٌ فشل إرساله بعد إسنادٍ نجح
-        // كان يظلّ صامتاً أبداً (الجذر: مراجعة Codex P2 على PR #776، ٢٥/٨).
+        // الغياب يُقاس بمعيارَين متمايزَين بحسب الحالة، مقصودَين معاً:
+        //   • ASSIGNED/IN_PROGRESS ⇒ أيّ إشعارٍ سابقٍ للمهمّة يكفي (منعُ إغراقٍ عند رفع
+        //     `revision` من حفظ مسودة أو تعديل موعد — يحرسه اختبار ⭐).
+        //   • REJECTED             ⇒ يلزم إشعارُ رفضٍ لهذا التنقيح بالضبط، لأنّ إشعار
+        //     إسنادٍ سابقٍ لا يُبلّغ عن الرفض. الجذر: مراجعة Codex P2 على PR #776 (٢٥/٨).
+        // الفرق حاسم: توسيعُ المعيار الثاني على الإسناد يُنشئ إشعاراً بعد كل حفظ مسودة،
+        // وتضييقُه على الرفض وحده يُبقي الرفضَ المفقود صامتاً.
         sql`not exists (
           select 1 from ${appNotifications} n
           where n.userId = ${productImageJobs.assignedTo}
-          and n.eventKey = case
-            when ${productImageJobs.status} = 'REJECTED'
-              then concat('product-studio:', ${productImageJobs.id}, ':rejected:r', ${productImageJobs.revision})
-            else concat('product-studio:', ${productImageJobs.id}, ':assigned:', ${productImageJobs.assignedTo}, ':r', ${productImageJobs.revision})
-          end
+          and (
+            (${productImageJobs.status} = 'REJECTED'
+              and n.eventKey = concat('product-studio:', ${productImageJobs.id}, ':rejected:r', ${productImageJobs.revision}))
+            or
+            (${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS')
+              and n.entityType = 'productImageJob' and n.entityId = ${productImageJobs.id})
+          )
         )`,
       ),
     )
