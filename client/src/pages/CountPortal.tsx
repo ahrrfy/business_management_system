@@ -1185,7 +1185,7 @@ export default function CountPortal() {
             className={cn(
               "pointer-events-auto h-12 w-full rounded-xl text-base font-bold transition-colors",
               allDone && online && queueCount === 0 && !finishMut.isPending
-                ? "bg-[var(--sem-pos)] text-white active:opacity-90"
+                ? "bg-[var(--sem-pos)] text-background active:opacity-90"
                 : "cursor-not-allowed bg-muted text-muted-foreground",
             )}
           >
