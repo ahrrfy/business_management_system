@@ -66,6 +66,14 @@
   --sem-danger: var(--sem-neg); --sem-danger-bg: var(--sem-neg-bg);
   --sem-warn: oklch(0.520 0.110 80);  --sem-warn-bg: oklch(0.958 0.038 80);
   --sem-info: oklch(0.505 0.120 240); --sem-info-bg: oklch(0.955 0.024 240);
+  /* ٢٥/٨/٢٦ — hover states: أغمق في الفاتح (تباين WCAG على text-background المُقلَب). كان
+     نمط `hover:bg-[var(--sem-*)]/90` يقصر الفاتحَ بألفا فيسقط التباينُ إلى ~3.5:1 على cream
+     background (Codex #814 P2). التوكن opaque = عكس ذلك تماماً: تقليل L بمقدار ~‎0.09‎ في الفاتح. */
+  --sem-pos-hover: oklch(0.415 0.120 152);
+  --sem-neg-hover: oklch(0.440 0.170 27);
+  --sem-warn-hover: oklch(0.430 0.110 80);
+  --sem-info-hover: oklch(0.415 0.120 240);
+  --sem-danger-hover: var(--sem-neg-hover);
   /* قناة الفاتورة (١٩/٨) — **هويّة لا حالة**: تَدرجٌ خفيفة تُميّز المحطّة بلا أن
      تُزاحم ألوان الحالة (sem-*) التي تحمل الإنذار والمال — التشبّع أدنى عمداً. */
   --chan-retail: oklch(0.480 0.075 262);   --chan-retail-bg: oklch(0.960 0.020 262);
@@ -147,6 +155,13 @@
   --sem-danger: var(--sem-neg); --sem-danger-bg: var(--sem-neg-bg);
   --sem-warn: oklch(0.800 0.130 80);  --sem-warn-bg: oklch(0.315 0.050 80);
   --sem-info: oklch(0.740 0.100 240); --sem-info-bg: oklch(0.300 0.045 240);
+  /* ٢٥/٨/٢٦ — hover states في الوضع الليليّ: أفتح قليلاً (تباين مقلوب — القاعدة أساساً فاتحة).
+     زيادة L بمقدار ~‎0.06‎ ⇒ hover ظاهرٌ بلا خسارة تباين text-background (شبه أسود هنا). */
+  --sem-pos-hover: oklch(0.800 0.140 152);
+  --sem-neg-hover: oklch(0.785 0.150 27);
+  --sem-warn-hover: oklch(0.860 0.130 80);
+  --sem-info-hover: oklch(0.800 0.100 240);
+  --sem-danger-hover: var(--sem-neg-hover);
   --chan-retail: oklch(0.760 0.070 262);   --chan-retail-bg: oklch(0.290 0.035 262);
   --chan-reception: oklch(0.760 0.070 300); --chan-reception-bg: oklch(0.290 0.035 300);
   --chan-print: oklch(0.760 0.070 190);    --chan-print-bg: oklch(0.290 0.035 190);
