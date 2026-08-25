@@ -919,6 +919,7 @@ export default function Shifts() {
                               !isOwner ||
                               Number(r.userId) === Number(me.data?.id),
                             onSelect: () => openFundingDialog(r.id),
+                            gate: { module: "treasury", level: "FULL" },
                           },
                           {
                             key: "close",

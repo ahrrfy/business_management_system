@@ -591,6 +591,7 @@ export default function Promotions() {
                                   kind: "print",
                                   label: "طباعة بيان التفكيك",
                                   icon: Printer,
+                                  gate: { module: "hr", level: "READ" },
                                   onSelect: () => printTerminationSettlement({
                                     id: t.id,
                                     employeeName: t.employeeName,

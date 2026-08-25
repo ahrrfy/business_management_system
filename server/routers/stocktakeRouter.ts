@@ -515,7 +515,7 @@ export const stocktakeRouter = router({
     }),
 
   /** شاشة المراجعة (مدير فأعلى — تكاليف وقيم). autoAdjust=false للمقارنة في الواجهة فقط. */
-  review: managerProcedure
+  review: inventoryManagerProcedure
     .input(
       z.object({ sessionId: idNum, autoAdjust: z.boolean().default(true) }),
     )
@@ -555,7 +555,7 @@ export const stocktakeRouter = router({
       return res;
     }),
 
-  resolveConflict: managerProcedure
+  resolveConflict: inventoryManagerProcedure
     .input(
       z.object({
         sessionId: idNum,
@@ -577,7 +577,7 @@ export const stocktakeRouter = router({
       return res;
     }),
 
-  decide: managerProcedure
+  decide: inventoryManagerProcedure
     .input(
       z.object({
         sessionId: idNum,
@@ -683,7 +683,7 @@ export const stocktakeRouter = router({
       return res;
     }),
 
-  firstSign: managerProcedure
+  firstSign: inventoryManagerProcedure
     .input(z.object({ sessionId: idNum }))
     .mutation(async ({ input, ctx }) => {
       await assertManagerStocktakeBranch(ctx, input.sessionId);
@@ -702,7 +702,7 @@ export const stocktakeRouter = router({
       return res;
     }),
 
-  approve: managerProcedure
+  approve: inventoryManagerProcedure
     .input(z.object({ sessionId: idNum }))
     .mutation(async ({ input, ctx }) => {
       await assertManagerStocktakeBranch(ctx, input.sessionId);
@@ -727,7 +727,7 @@ export const stocktakeRouter = router({
       return res;
     }),
 
-  forceReview: managerProcedure
+  forceReview: inventoryManagerProcedure
     .input(z.object({ sessionId: idNum }))
     .mutation(async ({ input, ctx }) => {
       await assertManagerStocktakeBranch(ctx, input.sessionId);
@@ -790,7 +790,7 @@ export const stocktakeRouter = router({
       return rows.map(({ annualValue: _hidden, ...safe }) => safe);
     }),
 
-  ira: managerProcedure.query(async ({ ctx }) => getIraStats(restrictedBranchOf(ctx))),
+  ira: inventoryManagerProcedure.query(async ({ ctx }) => getIraStats(restrictedBranchOf(ctx))),
 
   /** جودة العدّاد (م٥): انضباط المسح لكل عامل — بوّابة وحدة المخزون (مدير)، معزولٌ بالفرع. */
   counterQuality: inventoryManagerProcedure.query(async ({ ctx }) =>
@@ -802,7 +802,7 @@ export const stocktakeRouter = router({
   }),
 
   /* ─────────── المخرجات ─────────── */
-  report: managerProcedure
+  report: inventoryManagerProcedure
     .input(z.object({ sessionId: idNum }))
     .query(async ({ input, ctx }) => {
       await assertManagerStocktakeBranch(ctx, input.sessionId);
@@ -818,7 +818,7 @@ export const stocktakeRouter = router({
     }),
 
   /** سجلّ الجلسة من auditLogs (entityType=stocktake) — يشمل عدّات البوابة (user=null باسم العامل). */
-  log: managerProcedure
+  log: inventoryManagerProcedure
     .input(z.object({ sessionId: idNum }))
     .query(async ({ input, ctx }) => {
       await assertManagerStocktakeBranch(ctx, input.sessionId);
