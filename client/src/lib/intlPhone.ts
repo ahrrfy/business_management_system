@@ -9,6 +9,7 @@
  *  - parseE164: يفكّك السلسلة لمفتاح ورقم لإعادة عرضها في النموذج.
  *  - أرقامنا العراقية تحذف الصفر البادئ تلقائياً (0770 → 770).
  */
+import { digitsArabicToLatin } from "@shared/numberNormalize";
 
 export interface DialCode {
   code: string;   // مثل "+964"
@@ -39,9 +40,16 @@ export const DIAL_CODES: DialCode[] = [
 
 export const DEFAULT_DIAL = "+964";
 
-/** يطبع رقم وطني (يحذف الصفر البادئ ويترك الأرقام فقط). */
+/**
+ * يطبع رقم وطني (يحذف الصفر البادئ ويترك الأرقام فقط).
+ *
+ * ⚠️ الجذر (S5، ٢٥/٨/٢٦): كان `.replace(/\D+/g, "")` يبتلع الأرقام العربية-الهندية صامتاً —
+ * لصق «٠٧٧٠١٢٣٤٥٦٧» من واتساب مثلاً كان يُنتج سلسلة فارغة، فيظنّ الموظّف أنّ الحقل لا يقبل
+ * الأرقام. الحلّ: تطبيع `digitsArabicToLatin` أوّلاً قبل فلترة `\D+`. اختبار نصّيّ في
+ * `intlPhone.test.ts` يحرس ذلك.
+ */
 export function normalizeNational(input: string): string {
-  return (input || "")
+  return digitsArabicToLatin(input || "")
     .replace(/\D+/g, "")
     .replace(/^0+/, "")
     .slice(0, 15);

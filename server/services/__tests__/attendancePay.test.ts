@@ -147,7 +147,9 @@ describe("حدّ يوم العمل (س٦)", () => {
     const r = base({ attendedHoursByDate: att });
     expect(r.payableHours).toBe("208.00"); // الأساس لا يتضخّم
     expect(r.overtimeHours).toBe("4.00");
-    expect(Number(r.overtimePay)).toBeCloseTo(17307.69, 1); // ٤ × 4326.92
+    // Tier-2 #2 (٢٥/٨): OT بمضاعف ١.٥× — قانون العمل العراقي 37/2015 المادة ٦٨.
+    // ٤ × 4326.92 × 1.5 = 25961.54.
+    expect(Number(r.overtimePay)).toBeCloseTo(25961.54, 1);
   });
 
   it("سعر ساعةٍ صريح لكل يوم هو الأصل — والراتب = مجموع (ساعات × سعر يومها)", () => {
@@ -408,7 +410,8 @@ describe("تفصيل أجر اليوم — أساس + إضافي = إجمالي 
     const row = r.days.find((x) => x.date === day)!;
     const rate = Number(row.rate);
 
-    expect(Number(row.overtimeAmount)).toBeCloseTo(rate * 4, 0);
+    // Tier-2 #2 (٢٥/٨): OT بمضاعف ١.٥× — قانون العمل العراقي 37/2015 المادة ٦٨.
+    expect(Number(row.overtimeAmount)).toBeCloseTo(rate * 4 * 1.5, 0);
     expect(Number(row.totalAmount)).toBeCloseTo(Number(row.amount) + Number(row.overtimeAmount), 2);
   });
 

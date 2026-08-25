@@ -204,7 +204,7 @@ export default function Suppliers() {
                         onClick={() => setKind(t.v)}
                         className={`h-8 rounded-md border px-2.5 text-xs transition-colors ${
                           kind === t.v
-                            ? t.v === "CONSIGNOR" ? "border-amber-400 bg-amber-50 text-amber-900" : "border-primary bg-primary/10 text-foreground"
+                            ? t.v === "CONSIGNOR" ? "border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "border-primary bg-primary/10 text-foreground"
                             : "border-input text-muted-foreground hover:bg-muted"
                         }`}
                       >
@@ -288,7 +288,7 @@ export default function Suppliers() {
                       )}
                       {(s as { supplierKind?: string }).supplierKind === "CONSIGNOR" && (
                         <span
-                          className="mr-1.5 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 align-middle text-[10px] font-bold text-amber-800"
+                          className="mr-1.5 inline-flex items-center rounded bg-[var(--sem-warn-bg)] px-1.5 py-0.5 align-middle text-[10px] font-bold text-[var(--sem-warn)]"
                           title="مودِعُ أمانة — بضاعتُه ملكُه، حصّتُه في تكلفة السطر"
                         >
                           أمانة

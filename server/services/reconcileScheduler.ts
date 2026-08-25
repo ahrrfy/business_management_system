@@ -18,6 +18,7 @@
  * ========================================================================== */
 import cron, { type ScheduledTask } from "node-cron";
 import { logger } from "../logger";
+import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import {
   getFinancialReconciliationDetails,
   toFinancialReconciliationSummary,
@@ -57,17 +58,24 @@ export function startReconcileScheduler(): void {
       if (running) return;
       running = true;
       try {
-        const summary = await runReconcileScanOnce();
-        // WARN إن وُجد انحرافٌ ماليّ — يُلتقط في سجلّات pino/PM2 بمستوى تنبيه.
-        // INFO إن لم يوجد — يبقى أثرٌ يوميٌّ على العمل يُثبت أن الفحص جرى.
-        const write = summary.balanced
-          ? logger.info.bind(logger)
-          : logger.warn.bind(logger);
+        // Codex P1 (٢٥/٨): في وضع multi-tenancy، `getDb()` بلا ALS context يفشل — كل شركةٍ
+        // تحتاج تشغيلاً مستقلاً داخل `runWithCompany`. `runAcrossActiveTenants` يُقصّر
+        // على مسارٍ واحد في الوضع الأحادي (`isMultiTenantModeActive=false`) ⇒ لا انحدار.
+        const summaries = await runAcrossActiveTenants(
+          "reconcile_nightly_scan",
+          () => runReconcileScanOnce(),
+        );
+        // WARN إن وُجد انحرافٌ ماليّ في أيّ شركة — يُلتقط في سجلّات pino/PM2 بمستوى تنبيه.
+        // INFO إن كان الكلّ نظيفاً — يبقى أثرٌ يوميٌّ على العمل يُثبت أن الفحص جرى.
+        const anyDrift = summaries.some((s) => !s.balanced);
+        const write = anyDrift
+          ? logger.warn.bind(logger)
+          : logger.info.bind(logger);
         write(
-          summary,
-          summary.balanced
-            ? "[reconcile-scheduler] nightly scan clean"
-            : "[reconcile-scheduler] nightly scan surfaced drift",
+          { summaries },
+          anyDrift
+            ? "[reconcile-scheduler] nightly scan surfaced drift"
+            : "[reconcile-scheduler] nightly scan clean",
         );
       } catch (error) {
         logger.error({ err: error }, "[reconcile-scheduler] nightly scan failed");
