@@ -172,7 +172,7 @@ export default function TreasuryTransfers() {
         accessorKey: "toBranchName",
         cell: ({ row }) => (
           <span className="text-xs">
-            <ArrowDownLeft className="inline h-3 w-3 ml-1 text-emerald-600" />
+            <ArrowDownLeft className="inline h-3 w-3 ml-1 text-[var(--sem-pos)]" />
             {row.original.toBranchName}
           </span>
         ),
@@ -787,11 +787,11 @@ function SendDialog({
         </div>
 
         {pendingConfirm && (
-          <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3">
-            <div className="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-1">
+          <div className="mt-4 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3">
+            <div className="text-sm font-semibold text-[var(--sem-warn)] mb-1">
               تحذير: الرصيد قد يَصبح سالباً
             </div>
-            <div className="text-xs text-amber-700 dark:text-amber-400 mb-3">
+            <div className="text-xs text-[var(--sem-warn)] mb-3">
               المتاح في خزينة الفرع:{" "}
               <span dir="ltr" className="tabular-nums">
                 {fmtAr(pendingConfirm.available)}
