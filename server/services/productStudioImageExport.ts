@@ -15,11 +15,12 @@
  * الأمان: manager فقط (وقفٌ عند بوّابة الراوتر)، ومقيَّدٌ بفرع الفاعل (لا عبور)، ومعزولٌ
  * عن الأصل والمرشّح غير المُعتمَد (فقط `APPROVED` — لا مرشّح `PENDING_REVIEW`).
  */
-// @types/archiver يُصدِّر أسماءً فقط بينما الحزمة تُصدّر دالّةً افتراضيّةً قابلة للاستدعاء.
-// esModuleInterop يُلف الوحدة CJS ⇒ الاستيراد الافتراضيّ يعمل وقت التشغيل، لكن TS يتشكّى
-// لأنّ التعريفات لا تُعلن default. `@ts-expect-error` يُقصر التجاوز على السطر الواحد.
-// @ts-expect-error — CJS interop; runtime returns the archiver factory function.
-import archiver from "archiver";
+// `archiver@8` مكتبةٌ ESM خالصة (`type: "module"` في package.json) بلا default export،
+// وواجهتها الجديدة **صفوفٌ لا دالّة**: `new ZipArchive(opts)` بدل `archiver('zip', opts)`.
+// النسخةُ الأولى استعملت النمط القديم مع `@ts-expect-error` تجاوز تعريفاتٍ صحيحة —
+// فجاز على tsx (يُوفّر default synthetically) وسقط في إنتاج Node ESM بـSyntaxError عند
+// الإقلاع. الجذر: انهيار نشرٍ ٢٥/٨/٢٦ على PR #811 (`archiver does not provide 'default'`).
+import { ZipArchive } from "archiver";
 import type { Response } from "express";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { requireDb } from "./tx";
@@ -189,7 +190,7 @@ export async function streamStudioImageExport(
   // من `ImageUploader`. تطبيقُ ضغطٍ إضافيٍّ يوفّر ~١٪ سعةً مقابل استهلاكِ CPU كبير على
   // آلاف الصور. القرارُ يحفظ الجودةَ بالبايت الواحد (المصدرُ لا يُفَكّ ترميزُه) وينسخُه
   // إلى ZIP كما هو من R2. الصور المُنشَرة في المتجر هي نفسها المُصدَّرة هنا بلا فرق.
-  const archive = archiver("zip", { store: true });
+  const archive = new ZipArchive({ store: true });
   archive.on("warning", (err: unknown) => {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
     logger.warn({ err }, "studio-image-export: archiver warning");
@@ -226,6 +227,8 @@ export async function streamStudioImageExport(
   archive.append(
     Buffer.from(
       [
+        // `ar-IQ-u-nu-latn` = عربيّة عراقيّة بأرقام لاتينيّة (BCP47 -u-nu-latn) — قرار
+        // المالك (٢٥/٨) كل رقمٍ يعرضه النظام لاتينيّ، مع الحفاظ على الأسماء العربيّة.
         `تصدير صور استوديو المنتجات — ${new Date().toLocaleString("ar-IQ-u-nu-latn")}`,
         `النطاق: ${scope.kind === "ALL" ? "كل الكتالوج" : scope.kind === "CATEGORY" ? `فئة ${scope.categoryId}` : `منتجات ${scope.productIds.length}`}`,
         `مؤهَّلات: ${rows.length}${truncated ? ` (مقصوصة إلى ${MAX_EXPORT_IMAGES})` : ""}`,
