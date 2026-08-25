@@ -509,7 +509,8 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
     when ${namePrefix ?? sql`false`} then 3
     else 4
   end)`;
-  const baseWhere = and(showInactive ? undefined : eq(products.isActive, true), matches);
+  // المنتجات الخدميّة تُستبعَد من الاستوديو كلّياً — لا صور مادّية لها.
+  const baseWhere = and(showInactive ? undefined : eq(products.isActive, true), eq(products.isService, false), matches);
   const afterCursor = cursor ? sql`(${rank} > ${cursor.rank} or (${rank} = ${cursor.rank} and (${products.name} > ${cursor.name} or (${products.name} = ${cursor.name} and ${products.id} > ${cursor.id}))))` : undefined;
   const productsPage = await db
     .select({
@@ -668,7 +669,7 @@ async function claimFreshCampaignTask(
     const [inScopeRow] = await tx
       .select({ id: products.id, name: products.name, description: products.description })
       .from(products)
-      .where(and(eq(products.id, productId), eq(products.isActive, true), campaignScopeCondition(campaign)))
+      .where(and(eq(products.id, productId), eq(products.isActive, true), eq(products.isService, false), campaignScopeCondition(campaign)))
       .limit(1);
     if (!inScopeRow) {
       outOfScopeCount++;
@@ -1237,7 +1238,7 @@ export async function listMyStudioCampaigns(actor: ProductStudioActor) {
           complete: sql<number>`sum(case when (select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') >= ${required} then 1 else 0 end)`,
         })
         .from(products)
-        .where(and(eq(products.isActive, true), campaignScopeCondition(scope)));
+        .where(and(eq(products.isActive, true), eq(products.isService, false), campaignScopeCondition(scope)));
       const totalProducts = Number(totals?.total ?? 0);
       const campaignDone = Number(totals?.complete ?? 0);
       return {
@@ -1321,6 +1322,9 @@ function missingStudioProductConditions(requiredImages = 1) {
   const required = Math.max(1, Math.trunc(requiredImages));
   return and(
     eq(products.isActive, true),
+    // المنتج الخدميّ (طباعة/تصميم/رسوم) لا مخزونَ ماديّاً له يُصوَّر — يُستبعَد من
+    // كل حملات التصوير تلقائياً. كان يظهر في الطابور ويُتوقَّع تصويره بلا معنى.
+    eq(products.isService, false),
     sql`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') < ${required}`,
     sql`not exists (select 1 from ${productImageJobs} where ${productImageJobs.productId} = ${products.id} and ${productImageJobs.activeSlot} = 1)`,
   );
@@ -1767,7 +1771,7 @@ export async function getStudioCampaignBoard(actor: ProductStudioActor, campaign
       complete: sql<number>`sum(case when (select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') >= ${required} then 1 else 0 end)`,
     })
     .from(products)
-    .where(and(eq(products.isActive, true), campaignScopeCondition(campaign)));
+    .where(and(eq(products.isActive, true), eq(products.isService, false), campaignScopeCondition(campaign)));
   const totalProducts = Number(scopeTotals?.total ?? 0);
   const done = Number(scopeTotals?.complete ?? 0);
   const remaining = Math.max(0, totalProducts - done);
@@ -2712,7 +2716,7 @@ export async function assignStudioTask(
           description: products.description,
         })
         .from(products)
-        .where(and(eq(products.id, input.productId), eq(products.isActive, true)))
+        .where(and(eq(products.id, input.productId), eq(products.isActive, true), eq(products.isService, false)))
         .limit(1)
         .for("update")
     )[0];
@@ -2949,12 +2953,12 @@ export async function bulkAssignStudioTasks(
         description: products.description,
       })
       .from(products)
-      .where(and(inArray(products.id, productIds), eq(products.isActive, true)))
+      .where(and(inArray(products.id, productIds), eq(products.isActive, true), eq(products.isService, false)))
       .for("update");
     if (selectedProducts.length !== productIds.length) {
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "أحد المنتجات غير موجود أو معطل",
+        message: "أحد المنتجات غير موجود أو معطل أو خدميّ (لا يُصوَّر)",
       });
     }
     const active = await tx
