@@ -167,7 +167,7 @@ export default function MyDeliveries() {
           )}
 
           {Number(data!.custodyBalance) > 0 && (
-            <p className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+            <p className="rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-xs font-medium text-[var(--sem-warn)]">
               توجد عهدة COD مسجّلة بقيمة <b>{money(data!.custodyBalance)} د.ع</b> — راجع الطلبات وسلّم النقد المحصّل إلى المتجر لتسويتها.
             </p>
           )}
@@ -287,7 +287,7 @@ export default function MyDeliveries() {
               {data!.delivered.map((row) => (
                 <div key={rowKey(row)} className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
                   <span className="flex items-center gap-2 font-medium">
-                    <CheckCircle2 aria-hidden className="size-4 text-emerald-600" />
+                    <CheckCircle2 aria-hidden className="size-4 text-[var(--sem-pos)]" />
                     <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
                     <SourceTag kind={row.kind} />
                     <span className="text-muted-foreground">{row.customerName ?? ""}</span>
@@ -427,7 +427,7 @@ function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: 
             </a>
             <button
               onClick={() => openWhatsApp(phone, waMsg)}
-              className="flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-400"
+              className="flex items-center gap-1 rounded-lg border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-3 py-2 text-xs font-bold text-[var(--sem-pos)] transition hover:bg-[var(--sem-pos-bg)]/80"
             >
               <MessageCircle aria-hidden className="size-3.5" /> واتساب
             </button>

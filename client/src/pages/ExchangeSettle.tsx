@@ -271,9 +271,9 @@ export default function ExchangeSettle() {
         </div>
 
         {warn && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3">
-            <div className="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-1">تحذير: رصيد المحفظة قد يصبح سالباً</div>
-            <div className="text-xs text-amber-700 dark:text-amber-400 mb-3">{warn}</div>
+          <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3">
+            <div className="text-sm font-semibold text-[var(--sem-warn)] mb-1">تحذير: رصيد المحفظة قد يصبح سالباً</div>
+            <div className="text-xs text-[var(--sem-warn)] mb-3">{warn}</div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => setWarn(null)}>إلغاء</Button>
               <Button size="sm" onClick={() => { setWarn(null); doSettle(true); }} disabled={settle.isPending}>متابعة على أيّ حال</Button>
