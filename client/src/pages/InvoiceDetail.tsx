@@ -2,6 +2,7 @@ import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
 import { shiftTypeLabel, sourceTypeLabel } from "@/lib/labels";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/PageHeader";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -564,14 +565,19 @@ export default function InvoiceDetail() {
       {new URLSearchParams(search).get("print") === "1" && (
         <AutoPrintOnce onPrint={() => void printApprovedA4()} />
       )}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {/* ٢٤/٨ (تدقيق): رقم الفاتورة في العنوان — عند فتح تبويباتٍ متعدّدة لفواتير مختلفة كلٌّ منها
-            كان يعرض «تفاصيل الفاتورة» ذاتها. الرقم يميّز التبويبات بصرياً وفي `document.title` عبر
-            نمطٍ لاحق. */}
-        <h1 className="text-2xl font-bold">
-          تفاصيل الفاتورة <span dir="ltr" className="font-mono text-primary">#{data.invoiceNumber}</span>
-        </h1>
-        <div className="flex flex-wrap items-center gap-2">
+      {/* ٢٤/٨ (تدقيق): رقم الفاتورة في العنوان — عند فتح تبويباتٍ متعدّدة لفواتير مختلفة كلٌّ منها
+          كان يعرض «تفاصيل الفاتورة» ذاتها. الرقم يميّز التبويبات بصرياً وفي `document.title` عبر
+          نمطٍ لاحق. */}
+      <PageHeader
+        title={
+          <span>
+            تفاصيل الفاتورة <span dir="ltr" className="font-mono text-primary">#{data.invoiceNumber}</span>
+          </span>
+        }
+        backHref="/invoices"
+        backLabel="رجوع للمبيعات"
+        actionsClassName="sm:w-full sm:shrink"
+        actions={<>
           <DocumentWhatsAppDialog
             kind="INVOICE"
             documentId={invoiceId}
@@ -726,14 +732,8 @@ export default function InvoiceDetail() {
               </Link>
             </Button>
           ))}
-          <Link
-            href="/invoices"
-            className="text-sm text-muted-foreground hover:text-foreground"
-          >
-            ← رجوع للمبيعات
-          </Link>
-        </div>
-      </div>
+        </>}
+      />
 
       {/* بطاقة الترويسة: بيانات وصفية + لوحة ملخّص مالي */}
       <Card>

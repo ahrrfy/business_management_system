@@ -20,6 +20,13 @@ type PageHeaderProps = {
   description?: React.ReactNode;
   /** أزرار الإجراءات (CTA الصفحة) — تظهر في بداية السطر المقابلة للعنوان. */
   actions?: React.ReactNode;
+  /**
+   * فئات إضافيّة لحاوية `actions` — لتجاوز الافتراضيّ `sm:w-auto sm:shrink-0` حين يكون
+   * عدد الأزرار كبيراً (٧+) بحيث لا تسع سطراً واحداً على تابلت/شاشة ضيّقة.
+   * مثال: `actionsClassName="sm:w-full"` يُلغي `shrink-0` ويسمح للأزرار بأخذ سطرها الخاصّ
+   * تحت العنوان مع flex-wrap طبيعيّ.
+   */
+  actionsClassName?: string;
   /** أيقونة اختيارية بجانب العنوان. */
   icon?: React.ReactNode;
   /**
@@ -49,7 +56,7 @@ type PageHeaderProps = {
  * @example شاشة تفصيلية بمسار تنقّل:
  * <PageHeader title="كشف حساب — أحمد" breadcrumbs={[{label:"العملاء", href:"/customers"}, {label:"كشف حساب"}]} />
  */
-export function PageHeader({ title, description, actions, icon, breadcrumbs, backHref, backLabel, homeHref, className }: PageHeaderProps) {
+export function PageHeader({ title, description, actions, actionsClassName, icon, breadcrumbs, backHref, backLabel, homeHref, className }: PageHeaderProps) {
   const headerRow = (
     <div className={cn("flex items-start justify-between gap-3 flex-wrap", className)}>
       <div className="min-w-0 space-y-1">
@@ -87,7 +94,7 @@ export function PageHeader({ title, description, actions, icon, breadcrumbs, bac
         )}
       </div>
       {actions && (
-        <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">{actions}</div>
+        <div className={cn("flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:shrink-0", actionsClassName)}>{actions}</div>
       )}
     </div>
   );
