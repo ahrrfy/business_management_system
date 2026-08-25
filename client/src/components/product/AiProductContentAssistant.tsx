@@ -258,7 +258,7 @@ export function AiProductContentAssistant({
             {draftIsStale && (
               <div
                 role="alert"
-                className="rounded-md border border-amber-300/70 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300"
+                className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/70 px-3 py-2 text-xs text-[var(--sem-warn)]"
               >
                 تغيّرت حقائق المنتج بعد توليد هذه المسودة؛ أعد التوليد قبل
                 تطبيقها.
@@ -396,7 +396,7 @@ export function AiProductContentAssistant({
             )}
 
             {visibleDraft.unsupportedClaims.length > 0 && (
-              <div className="rounded-md border border-amber-300/70 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300">
+              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/70 px-3 py-2 text-xs text-[var(--sem-warn)]">
                 <p className="font-semibold">عبارات لم يعتمدها النظام</p>
                 <ul className="mt-1 list-disc space-y-1 pe-5">
                   {visibleDraft.unsupportedClaims.map((item) => (
@@ -443,7 +443,7 @@ export function AiProductContentAssistant({
               <div
                 role="status"
                 aria-live="polite"
-                className="rounded-md border border-amber-300/70 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300"
+                className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/70 px-3 py-2 text-xs text-[var(--sem-warn)]"
               >
                 <p className="font-semibold">
                   تم توليد المسودة لكن تعذر حفظ سجلها
@@ -474,7 +474,7 @@ export function AiProductContentAssistant({
             )}
 
             {(validation?.warnings.length ?? 0) > 0 && (
-              <div className="rounded-md border border-amber-300/70 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-300">
+              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/70 px-3 py-2 text-xs text-[var(--sem-warn)]">
                 <p className="font-semibold">ملاحظات المراجعة</p>
                 <ul className="mt-1 list-disc space-y-1 pe-5">
                   {(validation?.warnings ?? []).map((warning) => (
@@ -486,7 +486,7 @@ export function AiProductContentAssistant({
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <CheckCircle2 aria-hidden className="size-4 text-emerald-600" />
+                <CheckCircle2 aria-hidden className="size-4 text-[var(--sem-pos)]" />
                 الثقة:{" "}
                 {visibleDraft.confidence === "high"
                   ? "مرتفعة"

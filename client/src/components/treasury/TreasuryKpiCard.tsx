@@ -7,10 +7,10 @@ import { Area, AreaChart, ResponsiveContainer } from "recharts";
 type Accent = "green" | "red" | "blue" | "amber" | "purple";
 
 const ACCENT_BG: Record<Accent, string> = {
-  green: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
-  red: "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300",
+  green: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+  red: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
   blue: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-  amber: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+  amber: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
   purple: "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300",
 };
 
@@ -74,9 +74,9 @@ export function TreasuryKpiCard({
     deltaPct == null
       ? "text-muted-foreground"
       : deltaPct >= 5
-        ? "text-emerald-600 dark:text-emerald-400"
+        ? "text-[var(--sem-pos)]"
         : deltaPct <= -5
-          ? "text-rose-600 dark:text-rose-400"
+          ? "text-[var(--sem-neg)]"
           : "text-muted-foreground";
   const deltaTxt =
     deltaPct == null

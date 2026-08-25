@@ -50,8 +50,8 @@ interface NormalizedRow {
 }
 
 function stockBadgeColor(stock: number): string {
-  if (stock < 5) return "text-rose-600";
-  if (stock < 15) return "text-amber-600";
+  if (stock < 5) return "text-[var(--sem-neg)]";
+  if (stock < 15) return "text-[var(--sem-warn)]";
   return "text-muted-foreground";
 }
 
@@ -323,7 +323,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                   <div className="text-sm font-bold text-foreground">
                     {p.name}
                     {p.isService && (
-                      <span className="ms-2 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">خدمة</span>
+                      <span className="ms-2 rounded-full bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]">خدمة</span>
                     )}
                   </div>
                   <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
@@ -343,7 +343,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                         {p.reservedBase > 0 && (
                           <>
                             <span>•</span>
-                            <span className="text-amber-600">محجوز: {fmtNum(p.reservedBase)}</span>
+                            <span className="text-[var(--sem-warn)]">محجوز: {fmtNum(p.reservedBase)}</span>
                             {p.reservedBase > p.stockBase && (
                               <>
                                 <span>•</span>
