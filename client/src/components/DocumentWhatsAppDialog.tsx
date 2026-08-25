@@ -147,7 +147,7 @@ export function DocumentWhatsAppDialog({
           type="button"
           variant="outline"
           size="sm"
-          className="gap-1.5 border-emerald-300/60 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+          className="gap-1.5 border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] hover:bg-[var(--sem-pos-bg)]/80"
         >
           <MessageCircle aria-hidden className="size-4" />
           إرسال PDF عبر واتساب
@@ -163,7 +163,7 @@ export function DocumentWhatsAppDialog({
 
         <div className="space-y-4">
           <div className="flex items-center gap-3 rounded-xl border bg-muted/30 p-3">
-            <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-rose-50 text-rose-700">
+            <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]">
               <FileText aria-hidden className="size-5" />
             </div>
             <div className="min-w-0 flex-1">
@@ -211,8 +211,8 @@ export function DocumentWhatsAppDialog({
               readiness.isFetching
                 ? "bg-muted/30 text-muted-foreground"
                 : ready?.automaticAvailable
-                  ? "border-emerald-300/50 bg-emerald-50 text-emerald-800"
-                  : "border-amber-300/50 bg-amber-50 text-amber-800",
+                  ? "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+                  : "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
             )}
           >
             {readiness.isFetching
@@ -227,9 +227,9 @@ export function DocumentWhatsAppDialog({
               className={cn(
                 "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold",
                 statusValue === "SENT" || statusValue === "DELIVERED" || statusValue === "READ"
-                  ? "border-emerald-300/50 bg-emerald-50 text-emerald-800"
+                  ? "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
                   : statusValue === "FAILED"
-                    ? "border-rose-300/50 bg-rose-50 text-rose-800"
+                    ? "border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
                     : "bg-muted/30",
               )}
             >
@@ -260,7 +260,7 @@ export function DocumentWhatsAppDialog({
               caption: caption || null,
               clientRequestId: crypto.randomUUID(),
             })}
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
+            className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90"
           >
             {sendPdf.isPending || isSending
               ? <Loader2 aria-hidden className="size-4 animate-spin" />

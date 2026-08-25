@@ -133,7 +133,7 @@ export function CartTable({
                         : stock.isOut
                           ? "border-s-[3px] border-s-destructive bg-destructive/5"
                           : stock.isShort
-                            ? "border-s-[3px] border-s-amber-500 bg-amber-50"
+                            ? "border-s-[3px] border-s-[var(--sem-warn)] bg-[var(--sem-warn-bg)]"
                             : "border-s-[3px] border-s-emerald-500",
                       selected && "bg-primary/5",
                     )}
@@ -144,7 +144,7 @@ export function CartTable({
                         <span
                           className={cn(
                             "rounded-full px-1.5 py-0.5 text-[10px] font-bold",
-                            isCustom ? "bg-violet-100 text-violet-700" : "bg-emerald-100 text-emerald-700",
+                            isCustom ? "bg-violet-100 text-violet-700" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
                           )}
                         >
                           {isCustom ? "تخصيص" : "جاهز"}
@@ -159,7 +159,7 @@ export function CartTable({
                           </span>
                         )}
                         {!isCustom && stock.isShort && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
+                          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
                             {stock.availInUnit === 0
                               ? "لا يكفي لوحدة"
                               : `المتاح ${stock.availInUnit} فقط`}
@@ -169,7 +169,7 @@ export function CartTable({
                       {!isCustom && !l.row.isService && (
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
                           <span>فعلي {fmt(l.row.stockBase ?? 0)}</span>
-                          <span className={(l.row.reservedBase ?? 0) > 0 ? "font-bold text-amber-700 dark:text-amber-400" : ""}>
+                          <span className={(l.row.reservedBase ?? 0) > 0 ? "font-bold text-[var(--sem-warn)]" : ""}>
                             محجوز {fmt(l.row.reservedBase ?? 0)}
                           </span>
                           <span className="font-bold">متاح {fmt(l.row.availableBase ?? l.row.stockBase ?? 0)}</span>
@@ -180,7 +180,7 @@ export function CartTable({
                           {allocations.map((allocation) => (
                             <span
                               key={allocation.reservationId}
-                              className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                              className="rounded border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]"
                             >
                               حجز باسم {allocation.customerName} · {fmt(allocation.remainingBase)} وحدة أساس
                             </span>
@@ -218,7 +218,7 @@ export function CartTable({
                                 "rounded-md border px-2 py-0.5 text-[11px] font-bold",
                                 l.custom!.priority === "URGENT" && "bg-destructive/10 text-destructive border-destructive/30",
                                 l.custom!.priority === "NORMAL" && "bg-[var(--sem-info)]/10 text-[var(--sem-info)] border-[var(--sem-info)]/30",
-                                l.custom!.priority === "LOW" && "bg-emerald-500/10 text-emerald-700 border-emerald-500/30",
+                                l.custom!.priority === "LOW" && "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30",
                               )}
                             >
                               {l.custom!.priority === "URGENT" ? "عاجل" : l.custom!.priority === "NORMAL" ? "عادي" : "منخفض"}
@@ -296,7 +296,7 @@ export function CartTable({
                     <td
                       className={cn(
                         "px-1 py-2.5 text-center text-xs font-bold tabular-nums",
-                        isCustom ? "text-muted-foreground" : stock.isOut ? "text-destructive" : stock.isShort ? "text-amber-600" : "text-muted-foreground",
+                        isCustom ? "text-muted-foreground" : stock.isOut ? "text-destructive" : stock.isShort ? "text-[var(--sem-warn)]" : "text-muted-foreground",
                       )}
                       dir="ltr"
                     >
