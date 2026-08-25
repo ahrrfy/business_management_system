@@ -15,6 +15,7 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useState } from "react";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
 /* ============================ Constants & helpers ============================ */
 
@@ -58,8 +59,6 @@ const POSITIVE_TYPES = new Set<MovementType>(["IN", "RETURN", "TRANSFER_IN"]);
 const NEGATIVE_TYPES = new Set<MovementType>(["OUT", "TRANSFER_OUT"]);
 const ADJUST_TYPES = new Set<MovementType>(["ADJUST"]);
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function variantLine(r: {
   productName: string;
@@ -227,7 +226,7 @@ export default function InventoryMovements() {
             <div className="space-y-1">
               <Label>الفرع</Label>
               <select
-                className={selectCls}
+                className={selectClsFull}
                 value={pickedBranch === "" ? "" : String(pickedBranch)}
                 onChange={(e) => {
                   setPickedBranch(e.target.value ? Number(e.target.value) : "");
@@ -246,7 +245,7 @@ export default function InventoryMovements() {
           <div className="space-y-1">
             <Label>نوع الحركة</Label>
             <select
-              className={selectCls}
+              className={selectClsFull}
               value={movementType}
               onChange={(e) => {
                 setMovementType(e.target.value as MovementType | "");
@@ -300,7 +299,7 @@ export default function InventoryMovements() {
           <div className="space-y-1">
             <Label>نوع المرجع</Label>
             <select
-              className={selectCls}
+              className={selectClsFull}
               value={referenceType}
               onChange={(e) => {
                 setReferenceType(e.target.value as typeof referenceType);

@@ -273,10 +273,8 @@ export default function WorkOrderDetail() {
       <PageHeader
         title="طلب خدمة"
         backHref="/work-orders"
-        backLabel="رجوع لأوامر الشغل"
-      />
-      <div className="flex items-center justify-end">
-        <div className="flex flex-wrap items-center gap-3">
+        backLabel="رجوع للقائمة"
+        actions={<>
           <CopyAsMenu
             label="نَسخ التَفاصيل"
             plain={formatWorkOrderAsWhatsApp({
@@ -383,8 +381,8 @@ export default function WorkOrderDetail() {
             <Truck className="h-3.5 w-3.5" />
             ملصق شحن
           </Button>
-        </div>
-      </div>
+        </>}
+      />
 
       <Card>
         <CardHeader className="pb-3">

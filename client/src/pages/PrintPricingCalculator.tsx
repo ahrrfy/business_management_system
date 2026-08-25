@@ -23,9 +23,8 @@ import {
   type ColorMode,
   type PaperSizeCode,
 } from "@shared/printPricing";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 type EstimateInput = RouterInputs["printPricing"]["estimate"];
 
@@ -221,7 +220,7 @@ export default function PrintPricingCalculator() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <Label>النمط</Label>
-                    <select className={selectCls} value={colorMode} onChange={(e) => setColorMode(e.target.value as ColorMode)}>
+                    <select className={selectClsFull} value={colorMode} onChange={(e) => setColorMode(e.target.value as ColorMode)}>
                       {COLOR_MODES.map((m) => (
                         <option key={m} value={m}>{COLOR_MODE_AR[m]}</option>
                       ))}
@@ -229,7 +228,7 @@ export default function PrintPricingCalculator() {
                   </div>
                   <div className="space-y-1">
                     <Label>المقاس (ISO)</Label>
-                    <select className={selectCls} value={paperSize} onChange={(e) => setPaperSize(e.target.value as PaperSizeCode)}>
+                    <select className={selectClsFull} value={paperSize} onChange={(e) => setPaperSize(e.target.value as PaperSizeCode)}>
                       <option value="">— اختر مقاساً مُسعّراً —</option>
                       {pricedSizes.map((s) => (
                         <option key={s} value={s}>{sizeLabel(s)}</option>
@@ -241,7 +240,7 @@ export default function PrintPricingCalculator() {
                   </div>
                   <div className="space-y-1">
                     <Label>الأوجه</Label>
-                    <select className={selectCls} value={sides} onChange={(e) => setSides(Number(e.target.value) === 2 ? 2 : 1)}>
+                    <select className={selectClsFull} value={sides} onChange={(e) => setSides(Number(e.target.value) === 2 ? 2 : 1)}>
                       <option value={1}>وجه واحد</option>
                       <option value={2}>وجهان</option>
                     </select>
@@ -256,7 +255,7 @@ export default function PrintPricingCalculator() {
                   </div>
                   <div className="space-y-1">
                     <Label>ورق مميّز (اختياري)</Label>
-                    <select className={selectCls} value={paperUpchargeId} onChange={(e) => setPaperUpchargeId(e.target.value === "" ? "" : Number(e.target.value))}>
+                    <select className={selectClsFull} value={paperUpchargeId} onChange={(e) => setPaperUpchargeId(e.target.value === "" ? "" : Number(e.target.value))}>
                       <option value="">— بدون (ورق قياسيّ) —</option>
                       {activePapers.map((p) => (
                         <option key={p.id} value={p.id}>{p.name}</option>
@@ -268,7 +267,7 @@ export default function PrintPricingCalculator() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1 col-span-2">
                     <Label>الوسيط</Label>
-                    <select className={selectCls} value={mediaId} onChange={(e) => setMediaId(e.target.value === "" ? "" : Number(e.target.value))}>
+                    <select className={selectClsFull} value={mediaId} onChange={(e) => setMediaId(e.target.value === "" ? "" : Number(e.target.value))}>
                       <option value="">— اختر وسيطاً —</option>
                       {activeMedia.map((m) => (
                         <option key={m.id} value={m.id}>{m.name}</option>

@@ -9,12 +9,11 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { selectCls } from "@/lib/ui/formStyles";
 
 type CF = RouterOutputs["reports"]["cashFlow"];
 
 const NOTE = "أساس نقدي مباشر: من المقبوضات/المدفوعات المكتملة (لا أساس الاستحقاق). النقد حسب الفرع المحدّد.";
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function CashFlow() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);

@@ -11,6 +11,7 @@ import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { toExcelMoney } from "@/lib/payrollAccrual";
+import { selectCls } from "@/lib/ui/formStyles";
 
 /** اليوم YYYY-MM-DD محلياً — لا toISOString (ينزاح قرب منتصف الليل ببغداد UTC+3). */
 function todayYmd(): string {
@@ -22,8 +23,6 @@ type Pos = RouterOutputs["reports"]["financialPosition"];
 
 const NOTE =
   "ميزانية مبسّطة/مشتقّة (بانتظار دليل حسابات كامل): المقبوضات المعتمدة مصنفة حسب وسيلة الدفع ولا تُعامل البطاقات والتحويلات والصكوك والمحافظ كنقد بالصندوق، الأصول بالتكلفة (بلا إهلاك متراكم)، وحقوق الملكية = الأصول − الخصوم. الذمم على مستوى الشركة؛ وسائل الدفع والمخزون حسب الفرع.";
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function BalanceSheet() {
   const [branchId, setBranchId] = useState<number | "">("");

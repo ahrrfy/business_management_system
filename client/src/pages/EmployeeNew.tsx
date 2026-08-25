@@ -24,11 +24,11 @@ import { AlertCircle, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { ROLE_OPTIONS } from "@/lib/roles";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
 type AccountMode = "none" | "new" | "link";
 const roleLabelOf = (r: string) => ROLE_OPTIONS.find((o) => o.value === r)?.label ?? r;
 
-const selectCls = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const COLORS = ["#2563eb", "#7c3aed", "#db2777", "#0891b2", "#ea580c", "#16a34a", "#ca8a04", "#9333ea", "#0d9488", "#dc2626"];
 
 type EduRow = EmployeeEducation & { key: number };
@@ -359,11 +359,11 @@ export default function EmployeeNew() {
         <CardHeader><CardTitle className="text-base">المعلومات الشخصية</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1"><Label htmlFor="gender">الجنس</Label>
-            <select id="gender" className={selectCls} value={form.gender} onChange={(e) => set({ gender: e.target.value })}>{GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}</select>
+            <select id="gender" className={selectClsFull} value={form.gender} onChange={(e) => set({ gender: e.target.value })}>{GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}</select>
           </div>
           <div className="space-y-1"><Label htmlFor="birth">تاريخ الميلاد</Label><Input id="birth" type="date" dir="ltr" value={form.birthDate} onChange={(e) => set({ birthDate: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="marital">الحالة الاجتماعية</Label>
-            <select id="marital" className={selectCls} value={form.maritalStatus} onChange={(e) => set({ maritalStatus: e.target.value })}><option value="">—</option>{MARITAL_STATUSES.map((m) => <option key={m} value={m}>{m}</option>)}</select>
+            <select id="marital" className={selectClsFull} value={form.maritalStatus} onChange={(e) => set({ maritalStatus: e.target.value })}><option value="">—</option>{MARITAL_STATUSES.map((m) => <option key={m} value={m}>{m}</option>)}</select>
           </div>
           <div className="space-y-1"><Label htmlFor="nat">الجنسية</Label><Input id="nat" value={form.nationality} onChange={(e) => set({ nationality: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="nid">رقم الهوية الوطنية</Label><Input id="nid" dir="ltr" value={form.nationalId} onChange={(e) => set({ nationalId: e.target.value })} /></div>
@@ -387,19 +387,19 @@ export default function EmployeeNew() {
         <CardHeader><CardTitle className="text-base">الوظيفة والأجر</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1"><Label htmlFor="dept">القسم</Label>
-            <select id="dept" className={selectCls} value={form.department} onChange={(e) => set({ department: e.target.value })}>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</select>
+            <select id="dept" className={selectClsFull} value={form.department} onChange={(e) => set({ department: e.target.value })}>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</select>
           </div>
           <div className="space-y-1"><Label htmlFor="pos">المسمى الوظيفي</Label><Input id="pos" value={form.position} onChange={(e) => set({ position: e.target.value })} placeholder="مدير المبيعات" /></div>
           <div className="space-y-1"><Label htmlFor="br">الفرع</Label>
-            <select id="br" className={selectCls} value={form.branchId} onChange={(e) => set({ branchId: e.target.value })}><option value="">—</option>{(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</select>
+            <select id="br" className={selectClsFull} value={form.branchId} onChange={(e) => set({ branchId: e.target.value })}><option value="">—</option>{(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</select>
           </div>
           <div className="space-y-1"><Label htmlFor="mgr">المدير المباشر</Label>
-            <select id="mgr" className={selectCls} value={form.managerId} onChange={(e) => set({ managerId: e.target.value })}><option value="">—</option>{(opts.data?.managers ?? []).filter((m) => m.id !== editId).map((m) => <option key={m.id} value={String(m.id)}>{m.name}{m.position ? ` — ${m.position}` : ""}</option>)}</select>
+            <select id="mgr" className={selectClsFull} value={form.managerId} onChange={(e) => set({ managerId: e.target.value })}><option value="">—</option>{(opts.data?.managers ?? []).filter((m) => m.id !== editId).map((m) => <option key={m.id} value={String(m.id)}>{m.name}{m.position ? ` — ${m.position}` : ""}</option>)}</select>
           </div>
           <div className="space-y-1"><Label htmlFor="hire">تاريخ المباشرة</Label><Input id="hire" type="date" dir="ltr" value={form.hireDate} onChange={(e) => set({ hireDate: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="pt">طريقة الأجر</Label>
             {/* جزءٌ من البصمة الأجرية (يبدّل نموذج الاحتساب كلَّه) ⇒ يتبع قفل الحزمة. */}
-            <select id="pt" className={selectCls} disabled={payLocked} value={form.payType} onChange={(e) => set({ payType: e.target.value as "monthly" | "hourly" })}>{PAY_TYPES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}</select>
+            <select id="pt" className={selectClsFull} disabled={payLocked} value={form.payType} onChange={(e) => set({ payType: e.target.value as "monthly" | "hourly" })}>{PAY_TYPES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}</select>
           </div>
 
           {/*
@@ -512,7 +512,7 @@ export default function EmployeeNew() {
           {edu.map((e) => (
             <div key={e.key} className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end border-t pt-3">
               <div className="space-y-1"><Label className="text-xs">الشهادة</Label>
-                <select className={selectCls} value={e.degree} onChange={(ev) => patchEdu(e.key, { degree: ev.target.value })}>{DEGREES.map((d) => <option key={d} value={d}>{d}</option>)}</select>
+                <select className={selectClsFull} value={e.degree} onChange={(ev) => patchEdu(e.key, { degree: ev.target.value })}>{DEGREES.map((d) => <option key={d} value={d}>{d}</option>)}</select>
               </div>
               <div className="space-y-1"><Label className="text-xs">التخصص</Label><Input value={e.major ?? ""} onChange={(ev) => patchEdu(e.key, { major: ev.target.value })} /></div>
               <div className="space-y-1 md:col-span-2"><Label className="text-xs">الجهة</Label><Input value={e.school ?? ""} onChange={(ev) => patchEdu(e.key, { school: ev.target.value })} /></div>

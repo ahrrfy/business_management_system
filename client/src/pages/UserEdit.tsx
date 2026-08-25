@@ -31,9 +31,8 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@/lib/permissionsModel";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 /** يحوّل تاريخاً قادماً من الخادم (Date عبر superjson أو سلسلة) إلى yyyy-mm-dd لحقل type=date. */
 function toDateInput(d: unknown): string {
@@ -391,7 +390,7 @@ export default function UserEdit() {
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
             <select
-              id="role" className={selectCls}
+              id="role" className={selectClsFull}
               value={customRoleId ? `custom:${customRoleId}` : role}
               onChange={(e) => void handleRoleChange(e.target.value)}
             >
@@ -420,7 +419,7 @@ export default function UserEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>
-            <select id="branch" className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value)}>
+            <select id="branch" className={selectClsFull} value={branchId} onChange={(e) => setBranchId(e.target.value)}>
               <option value="">— بلا فرع —</option>
               {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>)}
             </select>

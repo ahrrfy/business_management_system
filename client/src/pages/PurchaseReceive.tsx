@@ -17,6 +17,7 @@ import { trpc } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "wouter";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -39,8 +40,6 @@ const SHIPPING_METHODS: {
   { v: "CARD", label: "بطاقة" },
   { v: "WALLET", label: "محفظة" },
 ];
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function PurchaseReceive() {
   const params = useParams();
@@ -686,7 +685,7 @@ export default function PurchaseReceive() {
               <div className="space-y-1">
                 <Label>طريقة دفع الشحن</Label>
                 <select
-                  className={selectCls}
+                  className={selectClsFull}
                   value={shipMethod}
                   onChange={(e) =>
                     setShipMethod(e.target.value as typeof shipMethod)
@@ -709,7 +708,7 @@ export default function PurchaseReceive() {
                   </span>
                 </Label>
                 <select
-                  className={selectCls}
+                  className={selectClsFull}
                   value={shipBeneficiarySupplierId}
                   onChange={(e) => setShipBeneficiarySupplierId(e.target.value)}
                 >
@@ -918,7 +917,7 @@ export default function PurchaseReceive() {
                 <div className="space-y-1">
                   <Label>المصدر</Label>
                   <select
-                    className={selectCls}
+                    className={selectClsFull}
                     value={directMethod}
                     onChange={(e) =>
                       setDirectMethod(e.target.value as typeof directMethod)

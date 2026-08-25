@@ -570,9 +570,8 @@ export default function InvoiceDetail() {
         }
         backHref="/invoices"
         backLabel="رجوع للمبيعات"
-      />
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        <div className="flex flex-wrap items-center gap-2">
+        actionsClassName="sm:w-full sm:shrink"
+        actions={<>
           <DocumentWhatsAppDialog
             kind="INVOICE"
             documentId={invoiceId}
@@ -727,8 +726,8 @@ export default function InvoiceDetail() {
               </Link>
             </Button>
           ))}
-        </div>
-      </div>
+        </>}
+      />
 
       {/* بطاقة الترويسة: بيانات وصفية + لوحة ملخّص مالي */}
       <Card>

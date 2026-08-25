@@ -18,9 +18,8 @@ import { LEAVE_STATUSES, LEAVE_TYPES, leaveStatusLabel } from "@shared/hr";
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STATUS_CLS: Record<string, string> = {
   approved: "badge-status-active",
@@ -210,19 +209,19 @@ export default function Leaves() {
                 }}
                 filters={<div className="flex items-end gap-2 flex-wrap">
                   <FilterField label="النوع">
-                    <select className={selectCls} value={type} onChange={(e) => setType(e.target.value)} aria-label="النوع">
+                    <select className={selectClsSm} value={type} onChange={(e) => setType(e.target.value)} aria-label="النوع">
                       <option value="">كل الأنواع</option>
                       {LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.key}</option>)}
                     </select>
                   </FilterField>
                   <FilterField label="الحالة">
-                    <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
+                    <select className={selectClsSm} value={status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
                       <option value="">كل الحالات</option>
                       {LEAVE_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                     </select>
                   </FilterField>
                   <FilterField label="الموظف">
-                    <select className={selectCls} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
+                    <select className={selectClsSm} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
                       <option value="">كل الموظفين</option>
                       {(empOpts.data?.managers ?? []).map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
                     </select>
@@ -393,7 +392,7 @@ export default function Leaves() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="lv-emp">الموظف</Label>
-              <select id="lv-emp" className={selectCls + " w-full h-9"} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+              <select id="lv-emp" className={selectClsSm + " w-full h-9"} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
                 <option value="">— اختر الموظف —</option>
                 {(empOpts.data?.managers ?? []).map((m) => (
                   <option key={m.id} value={String(m.id)}>{m.name}{m.position ? ` — ${m.position}` : ""}</option>
@@ -402,7 +401,7 @@ export default function Leaves() {
             </div>
             <div className="space-y-1">
               <Label htmlFor="lv-type">نوع الإجازة</Label>
-              <select id="lv-type" className={selectCls + " w-full h-9"} value={leaveType} onChange={(e) => setLeaveType(e.target.value)}>
+              <select id="lv-type" className={selectClsSm + " w-full h-9"} value={leaveType} onChange={(e) => setLeaveType(e.target.value)}>
                 {LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.key}{t.paid ? "" : " (غير مدفوعة)"}</option>)}
               </select>
             </div>

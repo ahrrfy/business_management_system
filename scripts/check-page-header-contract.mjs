@@ -47,13 +47,14 @@ const BACK_ARROW_TEXTS = [
   "← كل",         // `← كل الأصول`, `← كل الفواتير`
 ];
 
-// شاشات كاشير كامل الشاشة (مقصود بلا PageHeader)
+// شاشات كاشير كامل الشاشة (مقصود بلا PageHeader).
+// ملاحظة Codex الصائبة (PR #795): كان Reception.tsx كامله في الـallowlist — فأيّ `← رجوع`
+// جديد يُضاف لأقسام الصفحة الأخرى (٢٢٠٠+ سطر) يمرّ صامتاً. نقلناه إلى `RAW_BACK_BASELINE`
+// بعدّه الحقيقيّ (١) بحيث الحارس يمسك أيّ زيادة على تلك الحالة الواحدة المقصودة (السطر ٢٢٦٢:
+// «← الرئيسية» داخل شاشة كاشير جانبية بلا شريط جانبيّ).
 const RAW_BACK_ALLOW = new Set([
   "client/src/pages/POS.tsx",
   "client/src/pages/PrintPOS.tsx",
-  // Reception.tsx: PageHeader مطبَّق في الرأس الرئيسيّ. السطر داخل عرضٍ جانبيّ
-  // (شاشة كاشير الاستقبال). يُعالَج في دفعة توحيد Reception لاحقاً — الآن استثناء.
-  "client/src/pages/Reception.tsx",
 ]);
 
 /**
@@ -62,6 +63,10 @@ const RAW_BACK_ALLOW = new Set([
  * إلا في PR توحيد يُخفّضه. المفتاح مسار relative بشرطة مائلة (unix).
  */
 const RAW_BACK_BASELINE = {
+  // Reception.tsx (السطر ٢٢٦٢): «← الرئيسية» داخل شاشة كاشير جانبية بلا شريط جانبيّ — مقصود.
+  // تنبيه Codex: نقلناه من allowlist إلى baseline كي يمسك الحارس أيّ زيادة جديدة على الأقسام
+  // الأخرى من هذه الصفحة الضخمة (٢٢٠٠+ سطر).
+  "client/src/pages/Reception.tsx": 1,
 };
 
 /**
@@ -132,12 +137,25 @@ for (const file of walkTsx(SCAN_ROOT)) {
     if (n > 0) rawBackViolations.set(rel, n);
   }
 
-  // القاعدة ٢: `<h1` مباشر خارج PageHeader
-  // شرط: الملف ليس PageHeader نفسه، والسطر يبدأ بـ`<h1` (بعد whitespace).
-  // نتغاضى عن الأسطر داخل تعليقات JSDoc بحدود `*`.
+  // القاعدة ٢: `<h1` مباشر خارج PageHeader — أينما ظهر في السطر، ليس فقط في بدايته.
+  // ملاحظة Codex الصائبة (PR #795): كان `^\s*<h1[\s>]` يفوّت `<Card><h1>` أو
+  // `{cond && <h1>` — نفس الرأس المكرّر الذي يفرضه الحارس.
+  //
+  // نتغاضى عن الأسطر التي كلّها تعليق (`//` أو `*` من JSDoc أو بلوك `/*…*/`).
+  // ولا نمسك `<h1>` داخل template string HTML لطباعة `w.document.write(...)` — يظهر عادةً
+  // بلا شرطة مسبقة داخل backticks متعددة الأسطر. نحدّده بأنّ السطر يحوي backtick قبل `<h1>`.
   let h1Count = 0;
   for (const line of lines) {
-    if (/^\s*<h1[\s>]/.test(line)) h1Count++;
+    const trimmed = line.trim();
+    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+    // نطاق مطابقة: `<h1` أينما كان، مع حرف whitespace/`>` بعده لمنع التداخل مع مثل `<h10>`
+    if (!/<h1[\s>]/.test(line)) continue;
+    // استثناء `<h1>` داخل template literal ` `` ` (HTML طباعة). heuristic: backtick قبل `<h1>`
+    // في نفس السطر ⇒ نتغاضى. متعدّد الأسطر يبقى ثغرة صغيرة، لكنّه نمطٌ نادر في الممارسة.
+    const h1Idx = line.indexOf("<h1");
+    const backtickIdx = line.indexOf("`");
+    if (backtickIdx >= 0 && backtickIdx < h1Idx) continue;
+    h1Count++;
   }
   if (h1Count > 0) rawH1Violations.set(rel, h1Count);
 }

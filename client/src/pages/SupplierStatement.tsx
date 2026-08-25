@@ -20,9 +20,8 @@ import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
 const ymd = (d: Date) =>
@@ -285,7 +284,7 @@ export default function SupplierStatement() {
         <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="space-y-1 md:col-span-2">
             <Label className="text-xs">المورد</Label>
-            <select className={selectCls} value={supplierId} onChange={(e) => selectSupplier(Number(e.target.value))}>
+            <select className={selectClsFull} value={supplierId} onChange={(e) => selectSupplier(Number(e.target.value))}>
               <option value={0}>— اختر مورداً —</option>
               {(index.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>

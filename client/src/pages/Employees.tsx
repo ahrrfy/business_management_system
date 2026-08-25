@@ -14,9 +14,8 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { ChevronLeft, Fingerprint } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 // حسم النوع صراحةً (employees.list يُعيد {rows,total}) لتفادي فشل استدلال T في fetchAllPaged.
 type Row = RouterOutputs["employees"]["list"]["rows"][number];
@@ -109,19 +108,19 @@ export default function Employees() {
               <>
                 {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
                 <FilterField label="القسم">
-                  <select className={selectCls} value={f.department} onChange={(e) => { setF({ department: e.target.value }); }} aria-label="القسم">
+                  <select className={selectClsSm} value={f.department} onChange={(e) => { setF({ department: e.target.value }); }} aria-label="القسم">
                     <option value="">كل الأقسام</option>
                     {HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
                   </select>
                 </FilterField>
                 <FilterField label="الفرع">
-                  <select className={selectCls} value={f.branchId} onChange={(e) => { setF({ branchId: e.target.value }); }} aria-label="الفرع">
+                  <select className={selectClsSm} value={f.branchId} onChange={(e) => { setF({ branchId: e.target.value }); }} aria-label="الفرع">
                     <option value="">كل الفروع</option>
                     {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
                   </select>
                 </FilterField>
                 <FilterField label="الحالة">
-                  <select className={selectCls} value={f.status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
+                  <select className={selectClsSm} value={f.status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
                     <option value="">كل الحالات</option>
                     {EMPLOYMENT_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                   </select>

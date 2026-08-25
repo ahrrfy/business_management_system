@@ -13,6 +13,7 @@ import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState"
 import { fmtAr } from "@/lib/money";
 import { exportSheets, type SheetSpec } from "@/lib/export";
 import { cn } from "@/lib/utils";
+import { selectCls } from "@/lib/ui/formStyles";
 
 type AW = RouterOutputs["reports"]["anomalyWatch"];
 
@@ -20,8 +21,6 @@ const NOTE =
   "كواشف حتمية على بيانات النظام كما هي: «دون الكلفة» يقارن بلقطة الكلفة وقت البيع لا الكلفة الحالية؛ " +
   "«معالجو الإرجاع» من سجلّ التدقيق (قد ينقص عند تعذّر تسجيله)؛ أي فجوة تسلسل تعني حذف صفوف من قاعدة البيانات مباشرةً (مستحيلة من التطبيق).";
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 /** فترة افتراضية: آخر ٧ أيام (تقرير أسبوعي بطبيعته). */
 const WEEK_PERIOD: PeriodValue = { ...presetRange("week"), preset: "week" };

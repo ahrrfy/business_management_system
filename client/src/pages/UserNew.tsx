@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/PageHeader";
 import { CredentialsShare } from "@/components/form/CredentialsShare";
 import {
   AccountFields,
@@ -13,7 +14,6 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { ROLE_OPTIONS } from "@/lib/roles";
-import { PageHeader } from "@/components/PageHeader";
 
 export default function UserNew() {
   const [, navigate] = useLocation();
@@ -111,11 +111,7 @@ export default function UserNew() {
   if (createdInfo) {
     return (
       <div className="space-y-4 max-w-2xl">
-        <PageHeader
-          title="إضافة مستخدم"
-          backHref="/users"
-          backLabel="رجوع للمستخدمين"
-        />
+        <PageHeader title="إضافة مستخدم" backHref="/users" backLabel="رجوع للقائمة" />
         <CredentialsShare
           name={createdInfo.name}
           email={createdInfo.email}
@@ -139,11 +135,7 @@ export default function UserNew() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="إضافة مستخدم"
-        backHref="/users"
-        backLabel="رجوع للمستخدمين"
-      />
+      <PageHeader title="إضافة مستخدم" backHref="/users" backLabel="رجوع للقائمة" />
 
       {/* عنصر نموذج حقيقي يلفّ حقول الحفظ الفعلية (كان غائباً — يمنع حفظ متصفح/تعبئة تلقائية ويكسر
           دلالة Enter-to-submit، نمط UserEdit.tsx). AccountFields مكوّن مشترك خارج ملكيتي (يُستعمله
