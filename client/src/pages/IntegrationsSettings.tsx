@@ -29,7 +29,7 @@ type Integration = RouterOutputs["integrations"]["list"][number];
 type Channel = "WHATSAPP" | "INSTAGRAM" | "STORE";
 
 const CHANNEL_META: Record<Channel, { label: string; Icon: typeof MessageSquare; cls: string }> = {
-  WHATSAPP: { label: "واتساب", Icon: MessageSquare, cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30" },
+  WHATSAPP: { label: "واتساب", Icon: MessageSquare, cls: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
   INSTAGRAM: { label: "انستغرام", Icon: User, cls: "bg-pink-500/10 text-pink-700 dark:text-pink-400 border-pink-500/30" },
   STORE: { label: "المتجر", Icon: ShoppingBag, cls: "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/30" },
 };
@@ -542,7 +542,7 @@ function AiImageStudioIntegrationCard() {
       <CardContent className="space-y-3">
         <div className="rounded-md border bg-muted/30 p-2.5 text-xs text-muted-foreground space-y-1">
           <p>يعيد تصميم صورة المنتج كتصوير استوديو موحّد (خلفية بيضاء + إضاءة + ظلّ) — <b>كأنّ كل الصور من استوديو واحد</b>. برومت جاهز محصّن يأمر بحفظ المنتج وكتابته.</p>
-          <p className="flex items-start gap-1.5 text-amber-600 dark:text-amber-500">
+          <p className="flex items-start gap-1.5 text-[var(--sem-warn)] dark:text-[var(--sem-warn)]">
             <AlertTriangle aria-hidden className="size-3.5 shrink-0 mt-0.5" />
             <span>توليديّ (يعيد رسم الصورة، بخلاف remove.bg القاصّ) ⇒ قد يغيّر تفاصيل دقيقة/كتابة. لذلك النتيجة تعرض للمراجعة والاعتماد قبل استبدال الأصل، <b>والأصل يبقى دائماً</b>.</span>
           </p>
@@ -766,10 +766,10 @@ function KillSwitchCard() {
   };
 
   return (
-    <Card className={killSwitch ? "border-destructive/40 bg-destructive/5" : "border-emerald-500/30 bg-emerald-500/[0.03]"}>
+    <Card className={killSwitch ? "border-destructive/40 bg-destructive/5" : "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]/60"}>
       <CardContent className="p-4 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <div className={`size-10 rounded-lg grid place-items-center flex-shrink-0 border ${killSwitch ? "bg-destructive/10 text-destructive border-destructive/30" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30"}`}>
+          <div className={`size-10 rounded-lg grid place-items-center flex-shrink-0 border ${killSwitch ? "bg-destructive/10 text-destructive border-destructive/30" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30"}`}>
             <Power aria-hidden className="size-5" />
           </div>
           <div>
@@ -1099,7 +1099,7 @@ function WaHubAutomationSection({ branches }: { branches: { id: number; name: st
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <MessageSquare aria-hidden className="size-5 text-emerald-600 dark:text-emerald-400" />
+        <MessageSquare aria-hidden className="size-5 text-[var(--sem-pos)]" />
         <h2 className="text-base font-bold">مركز واتساب الأعمال — الإعدادات والأتمتة</h2>
       </div>
       <KillSwitchCard />
@@ -1124,10 +1124,10 @@ export default function IntegrationsSettings() {
   if (cryptoReady.data && !cryptoReady.data.ready) {
     return (
       <div className="max-w-2xl mx-auto p-6">
-        <Card className="border-amber-500/30 bg-amber-500/5">
+        <Card className="border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)]">
           <CardHeader>
             <CardTitle className="text-base inline-flex items-center gap-2">
-              <KeyRound aria-hidden className="size-5 text-amber-600" />
+              <KeyRound aria-hidden className="size-5 text-[var(--sem-warn)]" />
               مفتاح التشفير غير مضبوط
             </CardTitle>
           </CardHeader>
@@ -1145,7 +1145,7 @@ INTEGRATIONS_ENCRYPTION_KEY=<النتيجة>
 pnpm prod:deploy
 `}</code></pre>
             <div className="text-xs text-muted-foreground inline-flex items-start gap-1.5">
-              <AlertCircle aria-hidden className="size-3.5 flex-shrink-0 mt-0.5 text-amber-600" />
+              <AlertCircle aria-hidden className="size-3.5 flex-shrink-0 mt-0.5 text-[var(--sem-warn)]" />
               <span>لا تغيّر المفتاح بعد ضبطه — يكسر كل secrets المخزّنة. خذ نسخة احتياطية أوّلاً.</span>
             </div>
           </CardContent>
