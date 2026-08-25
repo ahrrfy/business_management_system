@@ -16,6 +16,7 @@ describe("financial reconciliation mobile summary", () => {
       delivery: [{ entity: "deliveryParty", id: 7, expected: "80", actual: "20", drift: "60" }],
       inventory: [],
       ledger: [],
+      onlineOrders: [],
       runAt: "2026-08-09T21:15:00.000Z",
     });
 
@@ -29,6 +30,7 @@ describe("financial reconciliation mobile summary", () => {
         delivery: { issueCount: 1, balanced: false },
         inventory: { issueCount: 0, balanced: true },
         ledger: { issueCount: 0, balanced: true },
+        onlineOrders: { issueCount: 0, balanced: true },
       },
     });
 
@@ -45,6 +47,7 @@ describe("financial reconciliation mobile summary", () => {
       delivery: [],
       inventory: [],
       ledger: [],
+      onlineOrders: [],
       runAt: "2026-08-09T21:15:00.000Z",
     });
 
