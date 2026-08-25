@@ -29,11 +29,17 @@ export interface InventoryValuationRow {
 /** بضاعة الأمانة (ش٤): إجمالي منفصل — ليست أصل المكتبة، تُعرَض سطراً إفصاحياً لا ضمن المجموع. */
 export interface ConsignmentValuationTotal { items: number; totalQty: number; totalValue: string }
 
+/** المخزون بالطريق (P1-#1، ٢٥/٨): كميّة/قيمة معلَّقة بين فروع؛ **تدخل في مجموع الأصل** (مطابقةً للميزانية). */
+export interface InTransitValuationTotal { items: number; totalQty: number; totalValue: string }
+
 export interface InventoryValuationResult {
   rows: InventoryValuationRow[];
+  /** المجموع الشامل = المستقرّ في branchStock + الحمل بالطريق (`inTransit.totalValue`). */
   totals: { items: number; totalQty: number; totalValue: string };
   /** بضاعة الأمانة لدى المكتبة (بحصص المودِعين) — إفصاح خارج مجموع الأصول. */
   consignment: ConsignmentValuationTotal;
+  /** حمل التحويلات IN_TRANSIT (بفرع المصدر) — يُعرَض سطراً منفصلاً لكنّه **جزءٌ من المجموع**. */
+  inTransit: InTransitValuationTotal;
 }
 
 /**
@@ -45,7 +51,12 @@ export async function getInventoryValuation(
   opts: { branchId?: number } = {},
 ): Promise<InventoryValuationResult> {
   const db = getDb();
-  if (!db) return { rows: [], totals: { items: 0, totalQty: 0, totalValue: "0" }, consignment: { items: 0, totalQty: 0, totalValue: "0" } };
+  if (!db) return {
+    rows: [],
+    totals: { items: 0, totalQty: 0, totalValue: "0" },
+    consignment: { items: 0, totalQty: 0, totalValue: "0" },
+    inTransit: { items: 0, totalQty: 0, totalValue: "0" },
+  };
 
   const branchCond = opts.branchId ? sql`AND bs.branchId = ${opts.branchId}` : sql``;
   // بضاعة الأمانة (ش٤): التقييم = أصول المكتبة فقط (isConsignment=false)؛ الأمانة سطرٌ منفصل أدناه.
@@ -103,17 +114,43 @@ export async function getInventoryValuation(
     `),
   )[0] ?? { items: 0, totalQty: 0, totalValue: "0" };
 
+  // P1-#1: الحمل بالطريق (IN_TRANSIT) — نفس شرط الأمانة، ونطاقُ الفرع = المصدر (البضاعةُ في عهدته
+  // حتى الاستلام). يدخل في `totals.totalValue` كي يطابق الميزانية (readInventoryValuation).
+  const inTransitBranchCond = opts.branchId ? sql`AND st.fromBranchId = ${opts.branchId}` : sql``;
+  const inTransitRow = rowsOf(
+    await db.execute(sql`
+      SELECT
+        COUNT(DISTINCT stl.variantId) AS items,
+        CAST(COALESCE(SUM(stl.quantitySent - COALESCE(stl.quantityReceived, 0)), 0) AS CHAR) AS totalQty,
+        CAST(COALESCE(SUM((stl.quantitySent - COALESCE(stl.quantityReceived, 0)) * pv.costPrice), 0) AS CHAR) AS totalValue
+      FROM stockTransfers st
+      JOIN stockTransferLines stl ON stl.transferId = st.id
+      JOIN productVariants pv ON pv.id = stl.variantId
+      JOIN products p ON p.id = pv.productId
+      WHERE st.transferStatus = 'IN_TRANSIT' AND p.isConsignment = false ${inTransitBranchCond}
+    `),
+  )[0] ?? { items: 0, totalQty: 0, totalValue: "0" };
+
+  const stockValue = money(totalsRow.totalValue ?? 0);
+  const inTransitValue = money(inTransitRow.totalValue ?? 0);
+  const totalWithInTransit = stockValue.plus(inTransitValue);
+
   return {
     rows,
     totals: {
       items: Number(totalsRow.items ?? 0),
       totalQty: Number(totalsRow.totalQty ?? 0),
-      totalValue: toDbMoney(money(totalsRow.totalValue ?? 0)),
+      totalValue: toDbMoney(totalWithInTransit),
     },
     consignment: {
       items: Number(consignRow.items ?? 0),
       totalQty: Number(consignRow.totalQty ?? 0),
       totalValue: toDbMoney(money(consignRow.totalValue ?? 0)),
+    },
+    inTransit: {
+      items: Number(inTransitRow.items ?? 0),
+      totalQty: Number(inTransitRow.totalQty ?? 0),
+      totalValue: toDbMoney(inTransitValue),
     },
   };
 }

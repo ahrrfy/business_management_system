@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { readInventoryValuation } from "../inventory/valuation";
+import { getInventoryValuation } from "../reportsInventoryService";
 import { withTx } from "../tx";
 
 const TABLES = [
@@ -212,5 +213,65 @@ describe("قيمة المخزون بالطريق تدخل في الأصل (P1-#1
     });
     const v = await withTx((tx) => readInventoryValuation(tx));
     expect(v.inTransitTotal).toBe("0.00");
+  });
+});
+
+// Codex P1 (٢٥/٨): تقرير تقييم المخزون (getInventoryValuation) كان يستثني in-transit أيضاً؛
+// شاشة التقارير تُبلّغ رقماً أقلّ من الأصل الحقيقيّ. الفحص الآن على الحقلَين الجديدَين وفلتر الفرع.
+describe("تقرير تقييم المخزون — يشمل الحمل بالطريق (Codex P1)", () => {
+  it("بلا سند بالطريق: totals = المستقرّ، inTransit صفر", async () => {
+    const r = await getInventoryValuation();
+    expect(r.totals.totalValue).toBe("1400.00");
+    expect(r.inTransit.totalValue).toBe("0.00");
+    expect(r.inTransit.totalQty).toBe(0);
+  });
+
+  it("سندٌ IN_TRANSIT: totals يشمل الحمل، inTransit سطرٌ إفصاحيّ", async () => {
+    const d = db();
+    await d.insert(s.stockTransfers).values({
+      id: 10,
+      transferNumber: "T-10",
+      fromBranchId: 1,
+      toBranchId: 2,
+      status: "IN_TRANSIT",
+      totalSentBase: 4,
+      createdBy: 1,
+    });
+    await d.insert(s.stockTransferLines).values({
+      transferId: 10,
+      variantId: 1,
+      quantitySent: 4,
+    });
+    await d.execute(sql`UPDATE branchStock SET quantity = quantity - 4 WHERE variantId = 1 AND branchId = 1`);
+    const r = await getInventoryValuation();
+    // المستقرّ: ف١ 6×100=600 + ف٢ 4×100=400 = 1000؛ بالطريق: 4×100=400؛ الإجمالي = 1400.
+    expect(r.inTransit.totalValue).toBe("400.00");
+    expect(r.inTransit.totalQty).toBe(4);
+    expect(r.totals.totalValue).toBe("1400.00");
+  });
+
+  it("فلتر الفرع = المصدر (بضاعتُه في عهدته حتى الاستلام)", async () => {
+    const d = db();
+    await d.insert(s.stockTransfers).values({
+      id: 11,
+      transferNumber: "T-11",
+      fromBranchId: 1,
+      toBranchId: 2,
+      status: "IN_TRANSIT",
+      totalSentBase: 4,
+      createdBy: 1,
+    });
+    await d.insert(s.stockTransferLines).values({
+      transferId: 11,
+      variantId: 1,
+      quantitySent: 4,
+    });
+    await d.execute(sql`UPDATE branchStock SET quantity = quantity - 4 WHERE variantId = 1 AND branchId = 1`);
+    // بفلتر الفرع المصدر: الحمل موجود.
+    const src = await getInventoryValuation({ branchId: 1 });
+    expect(src.inTransit.totalValue).toBe("400.00");
+    // بفلتر الفرع الوجهة: الحمل غير محسوب (لم يصل بعد ⇒ ليس أصل الوجهة).
+    const dst = await getInventoryValuation({ branchId: 2 });
+    expect(dst.inTransit.totalValue).toBe("0.00");
   });
 });

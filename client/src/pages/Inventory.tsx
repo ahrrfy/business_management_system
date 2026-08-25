@@ -29,7 +29,7 @@ import { groupCategoriesTree } from "@/lib/categoryTree";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "wouter";
 
 const MTYPE: Record<string, string> = {
@@ -101,8 +101,13 @@ export default function Inventory() {
   const [notes, setNotes] = useState("");
 
   // فصل مهام #٦: التسوية صارت طلباً معلَّقاً يعتمده مديرٌ آخر ⇒ لا تغيير مخزون فوريّ.
+  // مراجعة Codex P1 (٢٥/٨): مفتاحُ تكرارٍ مستقرّ لكل جلسة تحرير — نقرٌ مضاعف أو انقطاعُ شبكة يُعيد
+  // نفس المفتاح ⇒ الخادمُ يُرجع الطلب الأوّل بدل إنشاء ثانٍ (يمنع الاعتمادَ المزدوج). يُدوَّر عند
+  // بدء تحريرٍ جديد أو بعد نجاح الطلب — إعادةُ المحاولة ضمن نفس الجلسة تظلّ بالمفتاح نفسه.
+  const adjustKeyRef = useRef<string | null>(null);
   const adjust = trpc.inventory.adjust.useMutation({
     onSuccess: async () => {
+      adjustKeyRef.current = null; // rotate for next attempt
       setEditing(null);
       setTarget("");
       setNotes("");
@@ -231,6 +236,7 @@ export default function Inventory() {
 
   function startAdjust(r: { variantId: number; quantity: number }) {
     setErr("");
+    adjustKeyRef.current = null; // جلسةُ تحريرٍ جديدة ⇒ مفتاحٌ جديد عند أوّل نقرِ حفظ.
     setEditing(r.variantId);
     setTarget(String(r.quantity));
     setNotes("");
@@ -251,7 +257,20 @@ export default function Inventory() {
       }))
     )
       return;
-    adjust.mutate({ variantId, branchId, targetQuantity: t, notes: notes.trim() || undefined });
+    // نُوَلِّد المفتاح مرّةً فقط لكل جلسة تحرير؛ إعادةُ المحاولة (شبكة/نقر مضاعف) تظلّ بنفس المفتاح
+    // ⇒ الخادم يُرجع الطلب الأوّل بدل إنشاء ثانٍ. onSuccess يُصفّره لدورةٍ جديدة.
+    if (!adjustKeyRef.current) {
+      adjustKeyRef.current = typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `adj-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+    adjust.mutate({
+      variantId,
+      branchId,
+      targetQuantity: t,
+      notes: notes.trim() || undefined,
+      clientRequestId: adjustKeyRef.current,
+    });
   }
 
   const rows = onHand.data ?? [];

@@ -206,6 +206,29 @@ export async function setReorderThresholds(input: SetReorderThresholdsInput) {
         .limit(1)
     )[0];
     if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
+    // Codex P2: تغييرُ الافتراض قد يُبطِل overrides جزئيّاً (حقلُه NULL يرث من هذا الافتراض).
+    // مثال: override = { min: null, reorderPoint: 3 } + الافتراض الجديد min=20 ⇒ الفعّال 20 > 3.
+    // نرفض بدل ابتلاعه صامتاً وترك overrides غير متّسقة (نعيدُ قائمتها للمدير كي يُحرِّرها أوّلاً).
+    const partials = await tx
+      .select({
+        branchId: variantBranchThresholds.branchId,
+        overrideMin: variantBranchThresholds.minStock,
+        overrideReorder: variantBranchThresholds.reorderPoint,
+      })
+      .from(variantBranchThresholds)
+      .where(eq(variantBranchThresholds.variantId, variantId));
+    const invalidated: number[] = [];
+    for (const p of partials) {
+      const effMin = p.overrideMin == null ? minStock : Number(p.overrideMin);
+      const effReorder = p.overrideReorder == null ? reorderPoint : Number(p.overrideReorder);
+      if (effMin > effReorder) invalidated.push(Number(p.branchId));
+    }
+    if (invalidated.length) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `الافتراض الجديد يُبطِل overrides على الفروع [${invalidated.join(", ")}] (الفعّال سيصير min > reorder). حرّرها أوّلاً ثمّ أعِد المحاولة.`,
+      });
+    }
     await tx.update(productVariants).set({ minStock, reorderPoint }).where(eq(productVariants.id, variantId));
     return { variantId, minStock, reorderPoint };
   });
@@ -241,16 +264,14 @@ export async function setBranchThresholds(input: SetBranchThresholdsInput, actor
       throw new TRPCError({ code: "BAD_REQUEST", message: `${name} يجب أن تكون عدداً صحيحاً غير سالب` });
     }
   }
-  if (min != null && reorder != null && min > reorder) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "الحد الأدنى لا يصحّ أن يتجاوز حدّ إعادة الطلب",
-    });
-  }
   return withTx(async (tx) => {
     const v = (
       await tx
-        .select({ id: productVariants.id })
+        .select({
+          id: productVariants.id,
+          defaultMin: productVariants.minStock,
+          defaultReorder: productVariants.reorderPoint,
+        })
         .from(productVariants)
         .where(eq(productVariants.id, variantId))
         .limit(1)
@@ -264,6 +285,19 @@ export async function setBranchThresholds(input: SetBranchThresholdsInput, actor
         .limit(1)
     )[0];
     if (!b) throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+    // Codex P2: التحقّق على **الزوج الفعّال** لا الحقلَين المُمرَّرَين وحدهما. NULL يرث الافتراض العام،
+    // فقيمة {min: null, reorderPoint: 3} مع افتراض min=5 = فعّال 5 > 3 (خلل). كان الفحص السابق
+    // يمرّ لأنّ أحد الطرفَين null. الفحص هنا يتم قبل الكتابة كي لا نُنشئ overrides غير متّسقة.
+    const effMin = min == null ? Number(v.defaultMin ?? 0) : min;
+    const effReorder = reorder == null ? Number(v.defaultReorder ?? 0) : reorder;
+    if (min != null || reorder != null) {
+      if (effMin > effReorder) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `الزوج الفعّال ${effMin} > ${effReorder} غير صالح — الحدّ الأدنى (بعد وراثةِ الافتراض) لا يصحّ أن يتجاوز حدّ إعادة الطلب.`,
+        });
+      }
+    }
 
     // إن كان كلا الحقلَين NULL ⇒ حذف الصفّ (نظافةُ الجدول: override فارغٌ لا معنى تشغيليّ له).
     if (min == null && reorder == null) {

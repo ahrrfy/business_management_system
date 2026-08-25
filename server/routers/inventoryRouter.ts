@@ -1061,7 +1061,7 @@ export const inventoryRouter = router({
    * قرار المالك: كلّ فرعٍ يُغطّى بعتبته الخاصة عند الحاجة؛ الفرعُ سريع الدوران والبطيء لا يشتركان
    * تنبيهاً موحَّداً. النقلة تدريجية: الأعمدةُ العامّة على المتغيّر تبقى default، والـoverride اختياريّ.
    */
-  setBranchThresholds: inventoryManagerProcedure
+  setBranchThresholds: inventoryWarehouseProcedure
     .input(
       z.object({
         variantId: z.number().int().positive(),
@@ -1094,7 +1094,7 @@ export const inventoryRouter = router({
     }),
 
   /** مسحُ override للفرع — يعيده إلى وراثة الافتراض العام. API صريح للشاشة. */
-  clearBranchThresholds: inventoryManagerProcedure
+  clearBranchThresholds: inventoryWarehouseProcedure
     .input(z.object({ variantId: z.number().int().positive(), branchId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const elevated = ctx.user.role === "admin" || Boolean((ctx.user as { isOwner?: boolean }).isOwner);

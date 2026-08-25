@@ -16,6 +16,7 @@ import {
   listBranchThresholds,
   listReorderAlerts,
   setBranchThresholds,
+  setReorderThresholds,
 } from "../inventory/reorder";
 
 const TABLES = [
@@ -164,10 +165,26 @@ describe("override فرعيّ يسود على الافتراض", () => {
     expect(await listBranchThresholds({ branchId: 1 })).toHaveLength(0);
   });
 
-  it("رفض: min > reorder", async () => {
+  it("رفض: min > reorder (كلاهما مذكور)", async () => {
     await expect(
       setBranchThresholds({ variantId: 1, branchId: 1, minStock: 20, reorderPoint: 5 }, actor),
-    ).rejects.toThrow(/لا يصحّ أن يتجاوز/);
+    ).rejects.toThrow(/غير صالح/);
+  });
+
+  // Codex P2 (٢٥/٨): {min: null, reorderPoint: 3} + الافتراض min=5 ⇒ الفعّال 5 > 3.
+  // كان الفحص السابق يمرّ لأنّ أحد الطرفَين null. الفحص الآن على الزوج **الفعّال**.
+  it("رفض: override جزئيّ (reorderPoint فقط) يخلق زوجاً فعّالاً غير صالح", async () => {
+    // الافتراض: min=5, reorderPoint=10. نُمرّر reorderPoint=3 بلا min ⇒ فعّال 5 > 3.
+    await expect(
+      setBranchThresholds({ variantId: 1, branchId: 1, minStock: null, reorderPoint: 3 }, actor),
+    ).rejects.toThrow(/غير صالح/);
+  });
+
+  it("قبول: override جزئيّ يبقى صالحاً بالوراثة (min NULL، reorder=6 مع افتراض min=5)", async () => {
+    // 5 ≤ 6 ⇒ صالح.
+    const res = await setBranchThresholds({ variantId: 1, branchId: 1, minStock: null, reorderPoint: 6 }, actor);
+    expect(res.reorderPoint).toBe(6);
+    expect(res.minStock).toBeNull();
   });
 
   it("رفض: قيمة سالبة", async () => {
@@ -183,5 +200,24 @@ describe("override فرعيّ يسود على الافتراض", () => {
     await expect(
       setBranchThresholds({ variantId: 1, branchId: 999, minStock: 1, reorderPoint: 5 }, actor),
     ).rejects.toThrow(/الفرع غير موجود/);
+  });
+});
+
+describe("Codex P2: تغييرُ الافتراض العامّ يُبطِل overrides جزئيّاً", () => {
+  it("رفضٌ صريحٌ عند تحديث الافتراض بشكلٍ يجعل overrides موروثةَ الحقل غير صالحة", async () => {
+    // نُنشئ override جزئيّاً: {reorderPoint: 6, min: null} — الفعّال 5 (الافتراض) ≤ 6 ⇒ صالح.
+    await setBranchThresholds({ variantId: 1, branchId: 1, minStock: null, reorderPoint: 6 }, actor);
+    // نحاول رفع الافتراض العامّ إلى min=8 ⇒ الفعّال للـoverride يصير 8 > 6 ⇒ يُبطِله.
+    await expect(
+      setReorderThresholds({ variantId: 1, minStock: 8, reorderPoint: 10 }),
+    ).rejects.toThrow(/يُبطِل overrides|الفروع/);
+  });
+
+  it("يقبل تحديث الافتراض إن بقيت كلّ overrides صالحة", async () => {
+    await setBranchThresholds({ variantId: 1, branchId: 1, minStock: null, reorderPoint: 12 }, actor);
+    // رفع min=8، الفعّال للـoverride يصير 8 ≤ 12 ⇒ يبقى صالحاً.
+    const res = await setReorderThresholds({ variantId: 1, minStock: 8, reorderPoint: 15 });
+    expect(res.minStock).toBe(8);
+    expect(res.reorderPoint).toBe(15);
   });
 });

@@ -1174,9 +1174,25 @@ export async function getFinancialPosition(
   )[0] ?? { v: "0" };
 
   // بضاعة الأمانة (ش٤): تُستبعَد من أصول المخزون — ليست ملك المكتبة (تظهر التزاماً في AP بعد البيع فقط).
+  // P1-#1 (تقرير المراجعة ٢٥/٨، مراجعة Codex): الميزانية = المستقرّ في branchStock + الحمل بالطريق.
+  // كانت هذه القراءة تستثني in-transit فيَنخفض الأصل زوراً طوال فترة النقل ثمّ يعود عند الاستلام.
+  // نفس منطق `readInventoryValuation` — نُبقيه SQL خامّاً هنا كي يحترم فلترَ الفرع/التاريخ نفسه (bId).
+  // فلترُ الفرع على in-transit = فرعُ المصدر (البضاعةُ في عهدته حتى تسلَّمها الوجهة، نمطُ قيد «عجز النقل»).
   const inv = rowsOf(
     await db.execute(sql`
-    SELECT CAST(COALESCE(SUM(bs.quantity * pv.costPrice), 0) AS CHAR) AS v
+    SELECT CAST(
+      COALESCE(SUM(bs.quantity * pv.costPrice), 0)
+      + COALESCE((
+          SELECT SUM((stl.quantitySent - COALESCE(stl.quantityReceived, 0)) * pv2.costPrice)
+          FROM stockTransfers st
+          JOIN stockTransferLines stl ON stl.transferId = st.id
+          JOIN productVariants pv2 ON pv2.id = stl.variantId
+          JOIN products p2 ON p2.id = pv2.productId
+          WHERE st.transferStatus = 'IN_TRANSIT'
+            AND p2.isConsignment = false
+            ${bId ? sql`AND st.fromBranchId = ${bId}` : sql``}
+        ), 0)
+    AS CHAR) AS v
     FROM branchStock bs
       JOIN productVariants pv ON pv.id = bs.variantId
       JOIN products p ON p.id = pv.productId
