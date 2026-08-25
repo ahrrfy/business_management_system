@@ -95,7 +95,7 @@
   "client/src/pages/QuotationDetail.tsx": 1,
   "client/src/pages/Quotations.tsx": 1,
   "client/src/pages/Reconcile.tsx": 4,
-  "client/src/pages/ReorderAlerts.tsx": 2,
+  "client/src/pages/ReorderAlerts.tsx": 3,
   "client/src/pages/Returns.tsx": 1,
   "client/src/pages/Roles.tsx": 1,
   "client/src/pages/SalesRegister.tsx": 1,

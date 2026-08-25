@@ -75,7 +75,7 @@
     },
     "expressRoutes": 17,
     "expressMounts": 11,
-    "jobs": 21,
+    "jobs": 22,
     "routerFiles": 95,
     "proposedPermissions": 902,
     "proposedDomains": {
@@ -18707,7 +18707,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 746
+      "line": 747
     },
     {
       "kind": "interval",
@@ -18778,6 +18778,11 @@
       "kind": "cron",
       "file": "server/services/purchase/purchaseIntegrityMonitor.ts",
       "line": 108
+    },
+    {
+      "kind": "cron",
+      "file": "server/services/reconcileScheduler.ts",
+      "line": 54
     },
     {
       "kind": "cron",

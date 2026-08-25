@@ -689,6 +689,7 @@ async function startServer() {
   let stopProductStudioNotificationWorker: (() => void) | null = null;
   let stopOnlineOrderExpirySweeper: (() => void) | null = null;
   let stopPurchaseIntegrityMonitor: (() => void) | null = null;
+  let stopReconcileScheduler: (() => void) | null = null;
   if (isBackgroundJobRunner()) {
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
     // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
@@ -772,6 +773,14 @@ async function startServer() {
     stopPurchaseIntegrityMonitor =
       purchaseIntegrity.stopPurchaseIntegrityMonitor;
 
+    // Tier-2 #3 (٢٥/٨): جدولةُ التحقّق النقديّ الليليّ — قراءة فقط، تشغّل فحوصَ الاتّزان
+    // الخمسة (عملاء/مورّدون/توصيل/مخزون/دفتر) وتُصدر ملخّصاً في السجلّ (WARN إن وُجد انحراف،
+    // INFO إن لم يوجد). لا كتابةَ في جداول الأعمال ولا سنداتٍ ولا قيود.
+    const reconcileScheduler =
+      await import("./services/reconcileScheduler");
+    reconcileScheduler.startReconcileScheduler();
+    stopReconcileScheduler = reconcileScheduler.stopReconcileScheduler;
+
     logger.info(
       `الوظائف الخلفيّة بدأت على العامل ${process.env.NODE_APP_INSTANCE ?? "الوحيد"}.`,
     );
@@ -800,6 +809,7 @@ async function startServer() {
       stopProductStudioNotificationWorker?.();
       stopOnlineOrderExpirySweeper?.();
       stopPurchaseIntegrityMonitor?.();
+      stopReconcileScheduler?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
       await closeControlDb();
