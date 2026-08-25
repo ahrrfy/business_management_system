@@ -29,12 +29,12 @@ import { storefrontUrl } from "@/lib/siteHosts";
 type Status = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
 const STATUS_META: Record<Status, { label: string; pill: string }> = {
-  PENDING: { label: "وارد", pill: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300" },
+  PENDING: { label: "وارد", pill: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" },
   CONFIRMED: { label: "مثبَّت", pill: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
   PROCESSING: { label: "قيد التجهيز", pill: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
   SHIPPED: { label: "مع المندوب", pill: "bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300" },
-  DELIVERED: { label: "سُلّم", pill: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" },
-  CANCELLED: { label: "ملغى", pill: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400" },
+  DELIVERED: { label: "سُلّم", pill: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" },
+  CANCELLED: { label: "ملغى", pill: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]" },
 };
 
 /** الخطوة الأمامية بتغيير حالة بحت (بلا أثر مالي). الإرسال (SHIPPED) يتمّ عبر منتقي المندوب
@@ -477,7 +477,7 @@ function CancelModal({
       onClick={onClose}
     >
       <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold text-rose-600">
+        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-neg)]">
           <X aria-hidden className="size-5" />
           إلغاء الطلب <span dir="ltr" className="tracking-wider text-foreground">{order.orderNumber}</span>
         </div>
@@ -492,7 +492,7 @@ function CancelModal({
               type="button"
               onClick={() => setReason(r)}
               className={`rounded-full px-2.5 py-1 text-xs font-bold transition ${
-                reason === r ? "bg-rose-600 text-white" : "bg-muted text-muted-foreground hover:bg-accent"
+                reason === r ? "bg-[var(--sem-neg)] text-white" : "bg-muted text-muted-foreground hover:bg-accent"
               }`}
             >
               {r}
@@ -521,7 +521,7 @@ function CancelModal({
             type="button"
             onClick={() => onConfirm(reason.trim())}
             disabled={pending}
-            className="flex items-center gap-1 rounded-lg bg-rose-600 px-3.5 py-1.5 text-xs font-bold text-white transition hover:bg-rose-700 disabled:opacity-50"
+            className="flex items-center gap-1 rounded-lg bg-[var(--sem-neg)] px-3.5 py-1.5 text-xs font-bold text-white transition hover:opacity-90 disabled:opacity-50"
           >
             {pending ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <X aria-hidden className="size-3.5" />}
             تأكيد الإلغاء

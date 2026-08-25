@@ -196,7 +196,7 @@ export default function ProductionRecipes() {
                               {out.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{u.isBaseUnit ? " (أساس)" : ""}</option>)}
                             </select>
                           )}
-                          <button type="button" className="text-rose-600 text-sm" onClick={() => setOut(null)}>تغيير</button>
+                          <button type="button" className="text-[var(--sem-neg)] text-sm" onClick={() => setOut(null)}>تغيير</button>
                         </div>
                       </div>
                     ) : (
@@ -249,7 +249,7 @@ export default function ProductionRecipes() {
                     </div>
                     <div className="col-span-2 md:col-span-2 text-left text-sm font-semibold tabular-nums" dir="ltr">{fmt(compLineCost(c).toString())}</div>
                     <div className="col-span-1 text-start">
-                      <button type="button" className="text-rose-600 text-sm" onClick={() => setComps((p) => p.filter((x) => x.key !== c.key))}>حذف</button>
+                      <button type="button" className="text-[var(--sem-neg)] text-sm" onClick={() => setComps((p) => p.filter((x) => x.key !== c.key))}>حذف</button>
                     </div>
                   </div>
                 ))}
@@ -275,7 +275,7 @@ export default function ProductionRecipes() {
                 <div className="flex justify-between"><span className="text-muted-foreground">كلفة المواد / وحدة</span><b dir="ltr">{fmt(cost.materials.toString())}</b></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">العمالة / وحدة</span><b dir="ltr">{fmt(cost.labor.toString())}</b></div>
                 <div className="flex justify-between border-t border-dashed pt-2"><span className="font-semibold">كلفة مباشرة (بلا هدر)</span><b dir="ltr">{fmt(cost.direct.toString())}</b></div>
-                <div className="flex justify-between text-amber-600"><span>+ امتصاص الهدر الطبيعي ({pct(cost.waste.toString())})</span><b dir="ltr">{fmt(cost.absorb.toString())}</b></div>
+                <div className="flex justify-between text-[var(--sem-warn)]"><span>+ امتصاص الهدر الطبيعي ({pct(cost.waste.toString())})</span><b dir="ltr">{fmt(cost.absorb.toString())}</b></div>
                 <div className="flex justify-between items-center mt-2 px-3 py-2 rounded-md bg-[var(--sem-info-bg)]">
                   <span className="font-semibold">الكلفة المعيارية / وحدة</span>
                   <b className="text-lg text-[var(--sem-info)]" dir="ltr">{fmt(cost.stdUnit.toString())}</b>
@@ -346,11 +346,11 @@ export default function ProductionRecipes() {
                       : <Button size="sm" disabled>إنتاج بهذه الوصفة ←</Button>}
                     <button className="text-primary text-xs font-semibold" onClick={() => startEdit(Number(r.id))}>تعديل</button>
                     <button className="text-muted-foreground hover:text-primary text-xs font-semibold" onClick={() => duplicate(r)}>تكرار</button>
-                    <button className="text-amber-700 text-xs font-semibold" onClick={async () => {
+                    <button className="text-[var(--sem-warn)] text-xs font-semibold" onClick={async () => {
                       if (r.isActive && !(await confirm({ variant: "warning", title: "تعطيل الوصفة", description: `تعطيل وصفة «${r.name}»؟ الوصفات المعطَّلة لا تُستخدم للإنتاج. متابعة؟`, confirmText: "تعطيل" }))) return;
                       setActive.mutate({ id: Number(r.id), active: !r.isActive });
                     }}>{r.isActive ? "تعطيل" : "تفعيل"}</button>
-                    <button className="text-rose-600 text-xs font-semibold" onClick={async () => {
+                    <button className="text-[var(--sem-neg)] text-xs font-semibold" onClick={async () => {
                       if (!(await confirmDelete({ description: `حذف وصفة «${r.name}» نهائياً؟ الحذف نهائي ولا يُسترجَع.`, confirmText: "حذف نهائي" }))) return;
                       remove.mutate({ id: Number(r.id) });
                     }}>حذف</button>

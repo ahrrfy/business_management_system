@@ -54,7 +54,7 @@ function BranchPicker({
 /** شريط مقياس (مخزون متاح / إنتاجية). */
 function Meter({ value, max, tone, right, label }: { value: number; max: number; tone: "ok" | "warn" | "bad"; right?: string; label?: string }) {
   const ratio = max > 0 ? Math.min(1, Math.max(0, value / max)) : 0;
-  const color = tone === "bad" ? "bg-rose-500" : tone === "warn" ? "bg-amber-500" : "bg-emerald-500";
+  const color = tone === "bad" ? "bg-[var(--sem-neg)]" : tone === "warn" ? "bg-[var(--sem-warn)]" : "bg-[var(--sem-pos)]";
   return (
     <div className="w-full">
       {(label || right) && (
@@ -492,7 +492,7 @@ export default function ProductionNew() {
                     <div className="text-[11px] text-muted-foreground" dir="ltr">{fmt(pv?.unitCost ?? 0)}</div>
                   </div>
                   <div className="flex items-center text-muted-foreground">←</div>
-                  <div className="flex-1 text-center p-2 rounded-md bg-emerald-50">
+                  <div className="flex-1 text-center p-2 rounded-md bg-[var(--sem-pos-bg)]">
                     <div className="text-[10px] text-muted-foreground font-bold">بعد</div>
                     <div className="text-base font-bold" dir="ltr">{fmt(pv?.wavg.newQty ?? 0)}</div>
                     <div className="text-[11px] text-muted-foreground" dir="ltr">{fmt(pv?.wavg.newCost ?? 0)}</div>
