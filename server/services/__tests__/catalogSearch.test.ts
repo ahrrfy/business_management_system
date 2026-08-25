@@ -12,7 +12,7 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of ["branchStock", "productPrices", "productUnits", "productVariants", "products", "branches"]) {
+  for (const t of ["branchStock", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "products", "branches"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -40,6 +40,11 @@ async function seed() {
     { id: 3, variantId: 3, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
     { id: 4, variantId: 4, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
   ]);
+  await d.insert(s.productUnitBarcodes).values({
+    id: 20,
+    productUnitId: 2,
+    barcode: "ALT-NB-96",
+  });
   await d.insert(s.productPrices).values([
     { productUnitId: 1, priceTier: "RETAIL", price: "500.00" },
     { productUnitId: 2, priceTier: "RETAIL", price: "750.00" },
@@ -105,6 +110,11 @@ describe("البحث الذكي — الترتيب بالملاءمة", () => {
   it("تطابق الباركود التام يتصدّر", async () => {
     const rows = await listForPos(1, "RETAIL", "6291041500220");
     expect(rows[0]?.productName).toBe("دفتر مدرسي ٩٦ ورقة");
+  });
+
+  it("الباركود البديل يدخل عقد البحث المشترك في البيع والشراء", async () => {
+    expect(names(await listForPos(1, "RETAIL", "ALT-NB-96"))).toEqual(["دفتر مدرسي ٩٦ ورقة"]);
+    expect(names(await listForPurchase(1, "ALT-NB-96"))).toEqual(["دفتر مدرسي ٩٦ ورقة"]);
   });
 });
 

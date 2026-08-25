@@ -10,6 +10,7 @@ const TABLES = [
   "stockAdjustmentRequests",
   "inventoryMovements",
   "branchStock",
+  "productUnitBarcodes",
   "productUnits",
   "productVariants",
   "products",
@@ -44,6 +45,28 @@ async function seed() {
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "SKU-1", variantName: "عادي", minStock: 10 },
     { id: 2, productId: 1, sku: "SKU-2", variantName: "فاخر", minStock: 0 },
+  ]);
+  await d.insert(s.productUnits).values([
+    {
+      id: 10,
+      variantId: 2,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+      barcode: "6290000000200",
+    },
+    {
+      id: 12,
+      variantId: 2,
+      unitName: "حزمة",
+      conversionFactor: "10",
+      isBaseUnit: false,
+      barcode: "LOT 2026 B",
+    },
+  ]);
+  await d.insert(s.productUnitBarcodes).values([
+    { id: 11, productUnitId: 10, barcode: "6290000000299" },
+    { id: 13, productUnitId: 12, barcode: "ALT LOT 2026 B" },
   ]);
   await d.insert(s.branchStock).values([
     { variantId: 1, branchId: 1, quantity: 5 }, // تحت الحد الأدنى (10)
@@ -106,6 +129,32 @@ describe("inventory.onHand", () => {
     const bySku = await caller.inventory.onHand({ branchId: 1, q: "SKU-2" });
     expect(bySku).toHaveLength(1);
     expect(Number(bySku[0].variantId)).toBe(2);
+  });
+
+  it("يعرض الصنف القابل للتسوية عند البحث بباركوده الأساسي أو البديل", async () => {
+    await db().insert(s.products).values({
+      id: 3,
+      name: "000 6290000000200 6290000000299 LOT 2026 B ALT LOT 2026 B",
+    });
+    await db().insert(s.productVariants).values({
+      id: 3,
+      productId: 3,
+      sku: "DISTRACTOR",
+      variantName: "مطابقة نصية عَرَضية",
+    });
+
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const byPrimary = await caller.inventory.onHand({ branchId: 1, q: "6290000000200", limit: 1 });
+    const byAlias = await caller.inventory.onHand({ branchId: 1, q: "6290000000299", limit: 1 });
+    const bySpacedPrimary = await caller.inventory.onHand({ branchId: 1, q: "LOT 2026 B", limit: 1 });
+    const bySpacedAlias = await caller.inventory.onHand({ branchId: 1, q: "ALT LOT 2026 B", limit: 1 });
+
+    expect(byPrimary.map((r) => Number(r.variantId))).toEqual([2]);
+    expect(byAlias.map((r) => Number(r.variantId))).toEqual([2]);
+    expect(bySpacedPrimary.map((r) => Number(r.variantId))).toEqual([2]);
+    expect(bySpacedAlias.map((r) => Number(r.variantId))).toEqual([2]);
+    expect(byPrimary[0]?.quantity).toBe(100);
+    expect(byAlias[0]?.quantity).toBe(100);
   });
 
   it("لا يُسرّب التكلفة في المخرجات", async () => {

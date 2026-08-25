@@ -28,6 +28,7 @@ import {
 } from "./internal";
 import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
 import { computeBarcodeCoverage, type BarcodeCoverage } from "./barcodeCoverage";
+import { buildVariantCatalogSearchWhere } from "../catalog/search";
 
 const SCOPE_FALLBACK_LABEL: Record<string, string> = {
   FULL: "جرد شامل للفرع",
@@ -743,13 +744,8 @@ export async function listPickerVariants(input: PickerVariantsInput): Promise<Pi
     eq(products.isBundle, false),
   ];
 
-  const search = input.q?.trim();
-  if (search) {
-    const pat = `%${escLike(search)}%`;
-    conds.push(
-      sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!')`,
-    );
-  }
+  const search = buildVariantCatalogSearchWhere(input.q);
+  if (search) conds.push(search);
 
   const rows = await db
     .select({
@@ -772,7 +768,7 @@ export async function listPickerVariants(input: PickerVariantsInput): Promise<Pi
       and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)),
     )
     .where(and(...conds))
-    .orderBy(asc(products.name), asc(productVariants.sku))
+    .orderBy(asc(products.name), asc(productVariants.sku), asc(productVariants.id))
     .limit(limit)
     .offset(offset);
 
