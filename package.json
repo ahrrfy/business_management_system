@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "type": "module",
   "license": "MIT",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "node scripts/db-verify-schema.mjs && cross-env NODE_ENV=development TZ=UTC node --watch-path=./server --watch-path=./shared --watch-path=./drizzle --import tsx server/index.ts",
     "build": "vite build && esbuild server/index.ts --platform=node --target=node20 --packages=external --bundle --format=esm --sourcemap --outfile=dist/index.js && esbuild server/hr-bridge-worker.ts --platform=node --target=node20 --packages=bundle --bundle --format=cjs --sourcemap --alias:bufferutil=./scripts/hr-bridge-optional-module-stub.cjs --alias:utf-8-validate=./scripts/hr-bridge-optional-module-stub.cjs --alias:supports-color=./scripts/hr-bridge-optional-module-stub.cjs --alias:cardinal=./scripts/hr-bridge-optional-module-stub.cjs --metafile=dist/hr-bridge-worker.meta.json --outfile=dist/hr-bridge-worker.cjs && node scripts/verify-hr-bridge-runtime.mjs --selftest && node scripts/verify-hr-bridge-artifact.mjs && node scripts/verify-hr-bridge-deployment.mjs",

@@ -1,5 +1,5 @@
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, Package, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -54,6 +54,20 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 
   const [dispatchTarget, setDispatchTarget] = useState<QueueRow | null>(null);
   const [pickupTarget, setPickupTarget] = useState<QueueRow | null>(null);
+  // مفتاحُ تكرارِ التسليم المباشر (Tier-1 #4، ٢٥/٨) — يُولَّد مرّةً لكلّ (pickupTarget × محاولة)،
+  // فنقرٌ مضاعفٌ قبل عودة الاستجابة الأولى يُرسل نفس المفتاح ⇒ الخادم يُعيد النتيجة الأولى بدل
+  // إنشاء محاولةِ تسليمٍ ثانية. يُصفَّر في `onSuccess`/`onClose` لدورةٍ جديدة. `partialPickup`
+  // يستعيره من `vars.clientRequestId` كي تبقى محاولةُ الاعتراف الجزئيّ ضمن نفس بصمة الأصل.
+  const pickupKeyRef = useRef<string | null>(null);
+  function ensurePickupKey(): string {
+    if (!pickupKeyRef.current) {
+      pickupKeyRef.current =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `pickup-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+    return pickupKeyRef.current;
+  }
   const [partialPickup, setPartialPickup] = useState<PartialPickup | null>(null);
   const [reclassifyTarget, setReclassifyTarget] = useState<QueueRow | null>(null);
   // ردّ أمانة أجرة توصيلٍ عبر ورديةٍ غير وردية القبض ⇒ الخادم يرفض (FORBIDDEN «اعتماد مدير»):
@@ -76,13 +90,15 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   const deliver = trpc.workOrders.deliver.useMutation({
     onSuccess: (r) => {
       notify.ok("تم التسليم", `فاتورة ${r.invoiceNumber}`);
+      pickupKeyRef.current = null; // rotate for next attempt
       setPickupTarget(null);
       setPartialPickup(null);
       invalidateAll();
     },
     onError: (e, vars) => {
       if (isPartialDispatchRejection(e) && pickupTarget) {
-        setPartialPickup({ row: pickupTarget, payment: vars.payment, message: e.message, clientRequestId: vars.clientRequestId ?? crypto.randomUUID() });
+        // يعيد استخدام نفس المفتاح كي تبقى محاولةُ الاعتراف الجزئيّ داخل بصمة الأصل الواحدة.
+        setPartialPickup({ row: pickupTarget, payment: vars.payment, message: e.message, clientRequestId: vars.clientRequestId ?? ensurePickupKey() });
         return;
       }
       notify.err(e);
@@ -187,10 +203,13 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
       <MarkPickedUpDialog
         order={pickupTarget}
         pending={deliver.isPending}
-        onClose={() => setPickupTarget(null)}
+        onClose={() => {
+          pickupKeyRef.current = null; // إغلاق قبل المحاولة = دورةٌ جديدة عند فتحٍ لاحق
+          setPickupTarget(null);
+        }}
         onConfirm={(payment) => {
           const ord = pickupTarget!;
-          deliver.mutate({ workOrderId: ord.id, payment, clientRequestId: crypto.randomUUID(), partialDispatchConfirmed: false });
+          deliver.mutate({ workOrderId: ord.id, payment, clientRequestId: ensurePickupKey(), partialDispatchConfirmed: false });
         }}
       />
       <PartialPickupConfirmDialog

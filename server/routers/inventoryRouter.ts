@@ -8,7 +8,7 @@ import { alias } from "drizzle-orm/mysql-core";
 // استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode).
 const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 import { z } from "zod";
-import { branches, branchStock, inventoryMovements, productVariants, products, stockAdjustmentRequests, stockTransfers, users } from "../../drizzle/schema";
+import { branches, branchStock, inventoryMovements, productVariants, products, stockAdjustmentRequests, stockTransfers, users, variantBranchThresholds } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { createAppNotification } from "../services/appNotificationService";
 import { logAudit } from "../services/auditService";
@@ -20,14 +20,26 @@ import {
   pendingIncomingCount,
   receiveStockTransfer,
 } from "../services/transferService";
-import { countReorderAlerts, createReorderDraft, listReorderAlerts, setReorderThresholds } from "../services/inventory/reorder";
+import {
+  clearBranchThresholds,
+  countReorderAlerts,
+  createReorderDraft,
+  effectiveMinStockSql,
+  effectiveReorderPointSql,
+  listBranchThresholds,
+  listReorderAlerts,
+  setBranchThresholds,
+  setReorderThresholds,
+} from "../services/inventory/reorder";
 import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
 import { signedMoveQty } from "../services/inventoryService";
 import {
+  ADJUSTMENT_REASONS,
   requestStockAdjustment,
   approveStockAdjustment,
   rejectStockAdjustment,
   listStockAdjustmentRequests,
+  readAdjustmentAttachment,
 } from "../services/inventory/adjustmentApproval";
 import {
   requestCostRevaluation,
@@ -415,6 +427,14 @@ export const inventoryRouter = router({
         branchId: z.number().int().positive(),
         targetQuantity: z.number().int().min(0),
         notes: z.string().optional(),
+        // سببُ التسوية (P2-#3، ٢٥/٨) — اختياريٌّ للتوافق الخلفيّ مع مستدعياتٍ قديمة، لكنّ الشاشات
+        // الجديدة تُلزمه. الأسبابُ الحسّاسة (DAMAGE/LOSS/THEFT) تُلزم `attachmentUrl`.
+        reason: z.enum(ADJUSTMENT_REASONS).optional(),
+        // مرفق إثبات بصريّ (data URL لصورة). التحقّق من الصيغة/الحجم على مستوى الخدمة.
+        attachmentUrl: z.string().max(8 * 1024 * 1024).optional(),
+        // مفتاح تكرار من الشاشة (P2-#1): إعادةُ الإرسال بنفس المفتاح والحمولة تُرجع الطلب الأوّل بلا
+        // إنشاءِ ثانٍ (يمنع الاعتمادَ المضاعف الناتج عن نقرٍ مضاعف أو انقطاعِ شبكة).
+        clientRequestId: z.string().min(8).max(128).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -428,9 +448,21 @@ export const inventoryRouter = router({
         branchId = Number(ctx.user.branchId);
       }
       const res = await requestStockAdjustment(
-        { variantId: input.variantId, branchId, targetQuantity: input.targetQuantity, notes: input.notes },
+        {
+          variantId: input.variantId,
+          branchId,
+          targetQuantity: input.targetQuantity,
+          notes: input.notes,
+          reason: input.reason ?? null,
+          attachmentUrl: input.attachmentUrl ?? null,
+          clientRequestId: input.clientRequestId ?? null,
+        },
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
       );
+      if (res.idempotentReplay) {
+        // إعادةُ إرسالٍ لطلبٍ قائم — لا سجلَّ تدقيقٍ ولا إشعارَ اعتمادٍ ثانياً.
+        return { requestId: res.requestId, status: "PENDING_APPROVAL" as const, idempotentReplay: true as const };
+      }
       await logAudit(ctx, { action: "inventory.adjustRequest", entityType: "stockAdjustmentRequest", entityId: res.requestId, newValue: { variantId: input.variantId, branchId, target: input.targetQuantity } });
       const db = getDb();
       if (db) {
@@ -643,6 +675,28 @@ export const inventoryRouter = router({
     }),
 
   /**
+   * قراءةُ مرفق الإثبات لطلبِ تسوية (P2-#3، ٢٥/٨) — يُعاد data URL كاملاً لعرض الصورة في الشاشة.
+   * منفصلٌ عن `pendingAdjustments` كي لا نغرق القائمة بحمولاتٍ ضخمة. عزلُ الفرع: نُعيد فحصاً على
+   * الطلب نفسه (`branchId` عمود قائم) — غير admin لا يقرأ مرفقَ فرعٍ آخر.
+   */
+  adjustmentAttachment: inventoryReadProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+      const [row] = await db
+        .select({ branchId: stockAdjustmentRequests.branchId })
+        .from(stockAdjustmentRequests)
+        .where(eq(stockAdjustmentRequests.id, input.id))
+        .limit(1);
+      if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التسوية غير موجود" });
+      if (ctx.user.role !== "admin" && ctx.user.branchId != null && Number(row.branchId) !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة مرفق فرعٍ آخر" });
+      }
+      return readAdjustmentAttachment(input.id);
+    }),
+
+  /**
    * الأرصدة الحالية لكل متغيّر في فرع، بالأسماء + علم «تحت الحد الأدنى».
    * عزل الفرع: الكاشير/المخزن يُقيَّدان بفرعهما؛ المدير/الأدمن يختاران (افتراضي فرعهما).
    * لا تُعاد التكلفة (لا تسريب هامش الربح).
@@ -717,8 +771,12 @@ export const inventoryRouter = router({
       // «تحت الحدّ» و«سالب فقط»: مقارنةٌ على الحقل الخام دون COALESCE — المتغيّر بلا صفٍّ
       // (quantity = NULL) لا يُصنّف «تحت الحدّ» ولا «سالباً»، فلا يُفيض هذان الفلتران بمنتجاتٍ
       // كتالوجيّة صفريّة. من يريد رؤيتها يفتح القائمة بلا فلتر «تحت الحدّ».
+      // ⭐ P1-#4 (٢٥/٨): «الحدّ» = العتبةُ الفعّالة (override الفرعيّ أو الافتراض العام) عبر
+      // effectiveMinStockSql — نفسُ ما يُظهره العمود أدناه. المقارنةُ على `> 0 AND <= X` تبقى
+      // على الحقل الخام: صفرٌ (لا حدّ محدَّد) لا يُعدّ تحت الحدّ ولو كان الرصيد صفراً.
       if (input?.lowOnly) {
-        conds.push(sql`${productVariants.minStock} > 0 AND ${branchStock.quantity} <= ${productVariants.minStock}`);
+        const effMin = effectiveMinStockSql();
+        conds.push(sql`${effMin} > 0 AND ${branchStock.quantity} <= ${effMin}`);
       }
       // «وضع الافتتاح» (١٨/٧): السوالب فقط — كميات بلا تكلفة (أمين المخزن يقود بها العدّ الافتتاحي؛
       // تقرير الانكشاف بالقيمة خلف بوّابة التقارير الحمراء reports.negativeStock).
@@ -737,11 +795,14 @@ export const inventoryRouter = router({
           variantName: productVariants.variantName,
           color: productVariants.color,
           size: productVariants.size,
-          minStock: productVariants.minStock,
-          reorderPoint: productVariants.reorderPoint,
+          // العتبةُ الفعّالة (override الفرعيّ أو الافتراض العام) — نفسُ منطق فلتر lowOnly أعلاه.
+          minStock: effectiveMinStockSql(),
+          reorderPoint: effectiveReorderPointSql(),
           productName: products.name,
           // آخر جرد معتمد شمل الصنف — يبني الثقة بالأرقام ويغذّي الجرد الدوري ABC.
           lastCountedAt: branchStock.lastCountedAt,
+          // شارةُ «مخصّص لهذا الفرع» في الشاشة — تُميّز العتبةَ الموروثة عن المخصَّصة.
+          hasBranchOverride: sql<number>`CASE WHEN ${variantBranchThresholds.id} IS NOT NULL THEN 1 ELSE 0 END`,
         })
         .from(productVariants)
         .innerJoin(products, eq(products.id, productVariants.productId))
@@ -749,6 +810,14 @@ export const inventoryRouter = router({
         .leftJoin(
           branchStock,
           and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)),
+        )
+        // override الفرعيّ إن وُجد — نفس شرط الاتّحاد في ON (وضعُه في WHERE يُلغي معنى LEFT).
+        .leftJoin(
+          variantBranchThresholds,
+          and(
+            eq(variantBranchThresholds.variantId, productVariants.id),
+            eq(variantBranchThresholds.branchId, branchId),
+          ),
         )
         .where(and(...conds))
         .orderBy(asc(products.name), asc(productVariants.sku))
@@ -769,6 +838,7 @@ export const inventoryRouter = router({
           quantity,
           sku: r.sku,
           variantName: r.variantName,
+          hasBranchOverride: Number(r.hasBranchOverride) === 1,
           color: r.color,
           size: r.size,
           minStock,
@@ -919,6 +989,7 @@ export const inventoryRouter = router({
             referenceType: inventoryMovements.referenceType,
             referenceId: inventoryMovements.referenceId,
             notes: inventoryMovements.notes,
+            signedDelta: inventoryMovements.signedDelta,
             createdBy: inventoryMovements.createdBy,
             createdByName: users.name,
           })
@@ -957,9 +1028,9 @@ export const inventoryRouter = router({
           relatedBranchId: r.relatedBranchId == null ? null : Number(r.relatedBranchId),
           referenceId: r.referenceId == null ? null : Number(r.referenceId),
           createdBy: r.createdBy == null ? null : Number(r.createdBy),
-          // تدقيق ١١/٨ (S2): الكمية الموقَّعة من مصدر الحقيقة الخادميّ (signedMoveQty — نفس الكاردكس/الجرد)،
-          // تشمل اتجاه ADJUST المستنبَط من علامة «(فرق ±D)» في notes. للعرض/الطباعة/التصدير الموقَّع بلا تخمينٍ عميليّ.
-          signedQty: signedMoveQty(r.movementType, r.quantity, r.notes),
+          // تدقيق ١١/٨ (S2) + P1-#3 (٢٥/٨): الكمية الموقَّعة من العمود الجديد `signedDelta` أوّلاً
+          // (يُعبَّأ على كل كتابة)، مع fallback إلى الاشتقاق من النوع/النصّ للصفوف القديمة قبل 0265.
+          signedQty: signedMoveQty(r.movementType, r.quantity, r.notes, r.signedDelta),
         })),
         total,
         hasMore,
@@ -1021,6 +1092,77 @@ export const inventoryRouter = router({
         newValue: { minStock: input.minStock, reorderPoint: input.reorderPoint },
       });
       return res;
+    }),
+
+  /**
+   * override العتبات لفرعٍ بعينه (P1-#4، ٢٥/٨) — يحلّ محلّ الافتراض العامّ لهذا (المتغيّر × الفرع).
+   * قرار المالك: كلّ فرعٍ يُغطّى بعتبته الخاصة عند الحاجة؛ الفرعُ سريع الدوران والبطيء لا يشتركان
+   * تنبيهاً موحَّداً. النقلة تدريجية: الأعمدةُ العامّة على المتغيّر تبقى default، والـoverride اختياريّ.
+   */
+  setBranchThresholds: inventoryWarehouseProcedure
+    .input(
+      z.object({
+        variantId: z.number().int().positive(),
+        branchId: z.number().int().positive(),
+        // NULL في حقلٍ يعني ورث الافتراض العام لهذا الحقل بعينه (كلاهما NULL ⇒ إزالة الصفّ).
+        minStock: z.number().int().min(0).nullable(),
+        reorderPoint: z.number().int().min(0).nullable(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      // عزل الفرع: المدير لغير admin يُقصر التعديل على فرعه المُسنَد (نفس نمط adjust).
+      const elevated = ctx.user.role === "admin" || Boolean((ctx.user as { isOwner?: boolean }).isOwner);
+      if (!elevated) {
+        if (ctx.user.branchId == null || Number(ctx.user.branchId) !== Number(input.branchId)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن تعديل عتبات فرعٍ آخر" });
+        }
+      }
+      const res = await setBranchThresholds(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: res.cleared ? "inventory.clearBranchThresholds" : "inventory.setBranchThresholds",
+        entityType: "variant",
+        entityId: input.variantId,
+        newValue: { branchId: input.branchId, minStock: input.minStock, reorderPoint: input.reorderPoint, cleared: res.cleared },
+      });
+      return res;
+    }),
+
+  /** مسحُ override للفرع — يعيده إلى وراثة الافتراض العام. API صريح للشاشة. */
+  clearBranchThresholds: inventoryWarehouseProcedure
+    .input(z.object({ variantId: z.number().int().positive(), branchId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || Boolean((ctx.user as { isOwner?: boolean }).isOwner);
+      if (!elevated) {
+        if (ctx.user.branchId == null || Number(ctx.user.branchId) !== Number(input.branchId)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن حذف عتبات فرعٍ آخر" });
+        }
+      }
+      const res = await clearBranchThresholds(input);
+      await logAudit(ctx, {
+        action: "inventory.clearBranchThresholds",
+        entityType: "variant",
+        entityId: input.variantId,
+        newValue: { branchId: input.branchId },
+      });
+      return res;
+    }),
+
+  /** قائمةُ overrides الفرعيّة — للشاشة الإدارية. عزل الفرع لغير admin/isOwner. */
+  listBranchThresholds: inventoryReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().nullish(), variantId: z.number().int().positive().nullish() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId =
+        ctx.scopedBranchId ??
+        input?.branchId ??
+        (ctx.user.role === "admin" ? null : ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+      if (branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      return listBranchThresholds({ branchId, variantId: input?.variantId ?? null });
     }),
 
   /**

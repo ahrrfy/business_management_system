@@ -1349,6 +1349,11 @@ export const inventoryMovements = mysqlTable(
     ]).notNull(),
     // الكمية بالوحدة الأساس (موجبة دائماً؛ الاتجاه من النوع).
     quantity: int("quantity").notNull(),
+    // ⭐ P1-#3 (٢٥/٨): الدلتا الموقَّعة — يُعبَّأ على كل كتابة (applyMovement + setStock)، ويُستخدم
+    // كمصدرٍ رخيصٍ للـSQL لبناء تقارير المطابقة (`Σ signedDelta = رصيد الفرع`) بلا Parsing للنصّ.
+    // NULL مسموحٌ للتوافق مع الصفوف القائمة قبل هذه الهجرة (تُملأ backfill في 0265). القرّاء الجدد
+    // يفضّلونه على `signedMoveQty` — يبقى الأخير fallback نصّياً للـidempotency في القراءة القديمة.
+    signedDelta: int("signedDelta"),
     referenceType: varchar("referenceType", { length: 24 }),
     referenceId: bigint("referenceId", { mode: "number" }),
     relatedBranchId: bigint("relatedBranchId", { mode: "number" }),
@@ -1395,6 +1400,23 @@ export const stockAdjustmentRequests = mysqlTable(
     // وقعت في نافذة الاعتماد وترحيل ربحٍ/خسارةٍ وهميّة (المراجعة العدائية C1).
     expectedQuantity: int("expectedQuantity").notNull(),
     notes: varchar("notes", { length: 500 }),
+    // سببُ التسوية (P2-#3، ٢٥/٨) — اختياريٌّ للتوافق مع الصفوف القائمة (NULL = «غير محدَّد»).
+    // الأسباب الحسّاسة (DAMAGE/LOSS/THEFT) تُلزم `attachmentUrl` أدناه على مستوى الخدمة.
+    // ⚠️ أوّل معامل mysqlEnum = اسم العمود (لا اسم النوع) — راجع [[mysqlenum-column-name-prod-only-break-2026-08-21]].
+    reason: mysqlEnum("reason", [
+      "STOCK_TAKE",
+      "DAMAGE",
+      "LOSS",
+      "THEFT",
+      "SAMPLE",
+      "INTERNAL_USE",
+      "GIFT",
+      "CORRECTION",
+      "OTHER",
+    ]),
+    // مرفق إثبات (data URL لصورةٍ مضغوطة) — إلزاميّ للأسباب الحسّاسة، اختياريّ لغيرها. النمطُ نظير
+    // `receipts.attachmentUrl` (mediumtext ⇒ يتّسع لـ~16MB وهو كافٍ للصور المضغوطة).
+    attachmentUrl: mediumtext("attachmentUrl"),
     status: mysqlEnum("stockAdjustmentStatus", [
       "PENDING_APPROVAL",
       "APPROVED",
@@ -1422,6 +1444,43 @@ export const stockAdjustmentRequests = mysqlTable(
 
 export type StockAdjustmentRequest =
   typeof stockAdjustmentRequests.$inferSelect;
+
+/* ==================== عتبات المخزون المخصّصة للفرع (تقرير المراجعة P1-#4، ٢٥/٨) ====================
+ *
+ * `productVariants.minStock`/`reorderPoint` عالميّة على مستوى المتغيّر ⇒ الفرعُ سريع الدوران
+ * والبطيء يتلقّيان نفس التنبيه بنفس الحدّ، وهو ما يُنبِّه عليه تقرير الفحص التشغيليّ (٢٥/٨).
+ * هذا الجدول يحمل **override** لكل (متغيّر × فرع)؛ العتبةُ الفرعيّة إن وُجدت تسود، وإلّا يُستعمل
+ * الافتراض المخزَّن على المتغيّر (fallback). أعمدةُ المتغيّر تبقى كما هي (توافق ⇒ صفر أثر تحميل).
+ * الاستعلاماتُ الرئيسة (`listReorderAlerts` وشاشة الرصيد الحيّ) تقرأ عبر LEFT JOIN + COALESCE.
+ * القارئُ العامّ (dashboard/reports) يبقى على الافتراض حتى يُطلَب توسيعُه بشريحةٍ لاحقة.
+ */
+export const variantBranchThresholds = mysqlTable(
+  "variantBranchThresholds",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    variantId: bigint("variantId", { mode: "number" })
+      .notNull()
+      .references(() => productVariants.id, { onDelete: "cascade" }),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id, { onDelete: "cascade" }),
+    /** override الحدّ الأدنى؛ NULL = ورث الافتراضَ من `productVariants.minStock`. */
+    minStock: int("minStock"),
+    /** override حدّ إعادة الطلب؛ NULL = ورث الافتراضَ من `productVariants.reorderPoint`. */
+    reorderPoint: int("reorderPoint"),
+    updatedBy: int("updatedBy").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    // مفتاح الاتّحاد وحمايةٌ من التكرار: صفٌّ واحد لكل (متغيّر × فرع). القيدُ الفريد يُلتقط من الشاشة
+    // بـER_DUP_ENTRY فيتحوّل إلى upsert عبر ON DUPLICATE KEY UPDATE في الطبقة العليا.
+    vbtUq: unique("uq_vbt_variant_branch").on(table.variantId, table.branchId),
+    branchIdx: index("idx_vbt_branch").on(table.branchId),
+  }),
+);
+
+export type VariantBranchThreshold = typeof variantBranchThresholds.$inferSelect;
 
 /* ==================== إعادة تقييم تكلفة المخزون (حوكمة التكلفة — تدقيق ٢٧/٧ H3/H4) ====================
  *
@@ -7686,6 +7745,69 @@ export const financialPeriods = mysqlTable(
 export type FinancialPeriod = typeof financialPeriods.$inferSelect;
 export type InsertFinancialPeriod = typeof financialPeriods.$inferInsert;
 
+/**
+ * لقطاتُ تقييم المخزون عند إقفال الفترة (P1-#2، ٢٥/٨).
+ *
+ * أصل المخزون في الميزانية يُقرأ **حيّاً** (`SUM(quantity × costPrice)` + الحمل بالطريق) —
+ * حركةٌ واحدة بعد إقفال الشهر تُغيّر ميزانيةَ الشهر المُقفَل بأثرٍ رجعيّ، فينحرف عن الأرباح
+ * المُرحَّلة، ولا يبقى للميزانية المقفلة أصلٌ يُعاد إنتاجه.
+ *
+ * الحلّ: `readInventoryValuation` يُلتقط في نفس معاملة `approveMonthClose` (وأيضاً في
+ * `yearEnd` لاتّساقٍ زمنيّ). صفٌّ لكل (فترة × نطاق) — «COMPANY» للشركة، أو `branchId` لفرعٍ
+ * بعينه لاحقاً. الأعمدةُ الثلاثة `totalValue`/`stockValue`/`inTransitValue` تفتح تقاريرَ
+ * ميزانيةٍ مرجعيّةً حسب التاريخ بلا إعادة حساب من مخزون اليوم.
+ *
+ * ⚠️ **غيرُ قابلٍ للتعديل** بعد الكتابة: أيّ تصحيحٍ يستلزم إلغاءَ إقفال الفترة (revision جديد)
+ * ⇒ لقطةٌ جديدة تُنسَخ للفترة الجديدة. الصفّ يبقى للسجلّ التدقيقيّ.
+ */
+export const inventoryValuationSnapshots = mysqlTable(
+  "inventoryValuationSnapshots",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** الفترةُ المُقفَلة التي التُقطت اللقطةُ لها. NULL مسموحٌ للقطاتٍ ad-hoc خارج الإقفال (شريحة لاحقة). */
+    periodLockId: bigint("periodLockId", { mode: "number" }).references(
+      () => financialPeriods.id,
+    ),
+    /** تاريخُ الأصل الذي تُمثِّله اللقطة (نهاية الفترة عادةً). */
+    cutoffDate: date("cutoffDate", { mode: "string" }).notNull(),
+    /** لحظة الالتقاط الفعليّة (قد تختلف عن cutoffDate — الالتقاطُ في وقت الاعتماد). */
+    capturedAt: timestamp("capturedAt").defaultNow().notNull(),
+    /** المُعتمِد (هو الذي شغّل الالتقاط). */
+    capturedBy: int("capturedBy")
+      .notNull()
+      .references(() => users.id),
+    /** نطاقُ اللقطة: COMPANY = مجمَّع؛ BRANCH = مقيَّد بـbranchId. */
+    scopeKey: mysqlEnum("scopeKey", ["COMPANY", "BRANCH"])
+      .default("COMPANY")
+      .notNull(),
+    /** فرعٌ محدَّد للنطاق BRANCH؛ NULL للنطاق COMPANY. */
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    /** إجمالي التقييم = المستقرّ + بالطريق. الرقمُ الذي يدخل الميزانية. */
+    totalValue: decimal("totalValue", { precision: 15, scale: 2 }).notNull(),
+    /** قيمة المستقرّ في `branchStock` وحدها. */
+    stockValue: decimal("stockValue", { precision: 15, scale: 2 }).notNull(),
+    /** قيمة الحمل بالطريق (سندات IN_TRANSIT بلقطة WAVG الحاليّة). */
+    inTransitValue: decimal("inTransitValue", { precision: 15, scale: 2 }).notNull(),
+    /**
+     * تفصيلُ الفروع (JSON) — `[{branchId, value, inTransitValue?}]`. يُخزَّن نصّياً كي يبقى
+     * قابلاً للتحقّق التاريخيّ حتى لو تغيّر تعريفُ الحقول لاحقاً.
+     */
+    branchesJson: text("branchesJson"),
+  },
+  (t) => ({
+    // صفٌّ واحد لكل (فترة × نطاق) — إعادة الالتقاط تفشل بـER_DUP_ENTRY (revision جديد يعني
+    // periodLockId جديد ⇒ صفٌّ منفصل حكماً، فلا تعارض).
+    periodScopeUq: unique("uq_valuation_period_scope").on(
+      t.periodLockId,
+      t.scopeKey,
+      t.branchId,
+    ),
+    cutoffIdx: index("idx_valuation_cutoff").on(t.cutoffDate),
+    periodIdx: index("idx_valuation_period").on(t.periodLockId),
+  }),
+);
+export type InventoryValuationSnapshot = typeof inventoryValuationSnapshots.$inferSelect;
+
 /** موافقات ائتمان مُسبَقة — يُقيِّد creditApproved بـ(customer, maxAmount, expiresAt).
  * المنطق: المدير يُنشئ صفّاً بـ(customerId, maxAmount, expiresAt). الكاشير يمرّر approvalId
  * في sale؛ الخدمة تتحقّق: customer مطابق، unpaid ≤ maxAmount، now ≤ expiresAt، consumedAt IS NULL.
@@ -9017,12 +9139,22 @@ export const deliveryOutbox = mysqlTable(
     processedAt: timestamp("processedAt"),
     lastError: varchar("lastError", { length: 500 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
+    /**
+     * حالةُ الصفّ (Tier-1 #1، ٢٥/٨): PENDING = مُتاحٌ للسحب؛ DEAD_LETTER = مستنفَدٌ (attempts
+     * تجاوز الحدّ) لا يُعاد سحبه بلا إعادة تفعيلٍ إداريّة. قبل هذه الهجرة كان صفٌّ سامٌّ يُعاد
+     * كلّ ٥ دقائق للأبد بلا تصعيد — الحلقةُ صامتةٌ على الإنتاج.
+     */
+    status: mysqlEnum("status", ["PENDING", "DEAD_LETTER"]).default("PENDING").notNull(),
+    /** لحظة النقل إلى DEAD_LETTER — للتقرير + للاسترجاع الإداريّ. NULL طالما PENDING. */
+    deadLetteredAt: timestamp("deadLetteredAt"),
   },
   (table) => ({
     pendingIdx: index("idx_delivery_outbox_pending").on(
       table.processedAt,
       table.availableAt,
     ),
+    // فهرسٌ ضيّق للمسح الإداريّ للـDEAD_LETTER — أفضل من فحصٍ عبر (processedAt IS NULL).
+    statusIdx: index("idx_delivery_outbox_status").on(table.status),
   }),
 );
 export type DeliveryOutboxRow = typeof deliveryOutbox.$inferSelect;

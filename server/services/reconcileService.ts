@@ -708,9 +708,23 @@ export async function reconcileDeliveryFloat(): Promise<ReconcileResult[]> {
 }
 
 /**
- * التحقق من سلامة مخزون الفروع: لا رصيد سالب.
- * ملاحظة: setStock يسجّل ADJUST بالقيمة المطلقة (Math.abs(delta)) لا المُوقَّعة،
- * لذا لا يمكن إعادة بناء الرصيد بجمع الحركات — نتحقق من الحالة الحاضرة فقط.
+ * التحقق من سلامة مخزون الفروع — كاشفَين مستقلَّين:
+ *
+ *   1) **الرصيد السالب** (`entity: "stock"`): `branchStock.quantity < 0`. أثناء نافذة وضع الافتتاح
+ *      يُوسَم السالبُ غير المُفتتَح «متوقّع» لا يُخفى (كي لا يطمس الضجيجُ الانحرافاتِ الحقيقية).
+ *
+ *   2) **مطابقة الحركات ↔ الرصيد** (`entity: "movementDrift"` — P1-#3-ب، ٢٥/٨): لكل (متغيّر ×
+ *      فرع) يجب أن يكون `Σ signedDelta = branchStock.quantity`. هذا الثابت أصبح ممكناً بعد
+ *      P1-#3-أ (عمود `signedDelta` + backfill 0265). يكشف:
+ *        - تحديثاً مباشراً على `branchStock` بلا حركة (خرقٌ للطبقة الخدميّة).
+ *        - حركةً فُقدت (إخفاقٌ في المعاملة).
+ *        - فسادَ بياناتٍ تراكمي.
+ *
+ *      ملاحظاتٌ صريحة على الصفوف الحدّية:
+ *        - `unknownDeltas > 0` = حركاتٌ قبل الهجرة لم يُستطع اشتقاق إشارتها من نصّها (نمطُ الوسم
+ *          غير مطابق) ⇒ المجموع غيرُ حاسم، نُبلَّغ به بدل ابتلاعه.
+ *        - سالبٌ متوقّع بوسم وضع الافتتاح: يظهر مرّتَين — مرّةً كـstock ومرّة كـmovementDrift إن
+ *          كان الرصيد لا يطابق الحركات — ولا اجتزال بينهما (كاشفان مستقلَّان بنيوياً).
  */
 export async function reconcileInventory(): Promise<ReconcileResult[]> {
   const db = getDb();
@@ -730,7 +744,7 @@ export async function reconcileInventory(): Promise<ReconcileResult[]> {
     windowActive = !!om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now();
   }
 
-  return negativeRows.map((s) => ({
+  const negativeIssues: ReconcileResult[] = negativeRows.map((s) => ({
     entity: "stock",
     id: Number(s.variantId),
     expected: ">=0",
@@ -738,6 +752,52 @@ export async function reconcileInventory(): Promise<ReconcileResult[]> {
     drift: String(Math.abs(Number(s.quantity))),
     ...(windowActive && s.openedAt == null ? { note: "متوقع — وضع الافتتاح (بانتظار الجرد الافتتاحي)" } : {}),
   }));
+
+  // 2) مطابقة الحركات ↔ الرصيد. LEFT JOIN كي نلتقط (variant × branch) بلا حركات (يجب أن يكون
+  // الرصيد صفراً في هذه الحالة). GROUP BY على (variantId, branchId, quantity) — quantity في المجموعة
+  // كي يظهر مباشرةً في SELECT بلا aggregate. HAVING يُصفّي الصفوف الصحيحة (drift=0 AND unknown=0)
+  // فلا يعود التقرير بضجيج «كلّ الأصناف مطابقة».
+  const rawDrifts = await db.execute(sql`
+    SELECT
+      bs.variantId AS variantId,
+      bs.branchId AS branchId,
+      CAST(bs.quantity AS SIGNED) AS actual,
+      CAST(COALESCE(SUM(im.signedDelta), 0) AS SIGNED) AS expected,
+      CAST(SUM(CASE WHEN im.id IS NOT NULL AND im.signedDelta IS NULL THEN 1 ELSE 0 END) AS SIGNED) AS unknownDeltas
+    FROM branchStock bs
+    LEFT JOIN inventoryMovements im
+      ON im.variantId = bs.variantId AND im.branchId = bs.branchId
+    GROUP BY bs.variantId, bs.branchId, bs.quantity
+    HAVING NOT (bs.quantity = COALESCE(SUM(im.signedDelta), 0)
+      AND SUM(CASE WHEN im.id IS NOT NULL AND im.signedDelta IS NULL THEN 1 ELSE 0 END) = 0)
+  `);
+  const driftRows = (Array.isArray(rawDrifts) ? rawDrifts[0] : (rawDrifts as { rows?: unknown }).rows) as
+    | Array<{ variantId: number; branchId: number; actual: number | string; expected: number | string; unknownDeltas: number | string }>
+    | undefined;
+
+  const driftIssues: ReconcileResult[] = [];
+  for (const r of driftRows ?? []) {
+    const actual = Number(r.actual);
+    const expected = Number(r.expected);
+    const unknownDeltas = Number(r.unknownDeltas);
+    const drift = actual - expected;
+    const parts: string[] = [`فرع ${Number(r.branchId)}`];
+    if (unknownDeltas > 0) {
+      parts.push(`${unknownDeltas} حركة بلا signedDelta (قبل 0265) ⇒ المجموع غير حاسم`);
+    } else {
+      parts.push("كلّ الحركات موقَّعة ⇒ انحراف حقيقيّ");
+    }
+    driftIssues.push({
+      entity: "movementDrift",
+      id: Number(r.variantId),
+      expected: String(expected),
+      actual: String(actual),
+      drift: String(Math.abs(drift)),
+      note: parts.join(" · "),
+    });
+  }
+
+  return [...negativeIssues, ...driftIssues];
 }
 
 /** التحقق من سلامة قيد الأرباح: revenue - cost == profit لكل قيد. */

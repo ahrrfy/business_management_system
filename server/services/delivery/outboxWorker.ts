@@ -11,21 +11,37 @@ import { STALE_ESCALATED_EVENT, sweepStaleConsignments } from "./staleSweep";
 
 const BATCH_SIZE = 40;
 
+/**
+ * حدّ أعلى لمحاولات الصفّ قبل نقله إلى DEAD_LETTER (Tier-1 #1، ٢٥/٨). ١٠ محاولات × مؤخّرة ٥ دقائق
+ * = ~٥٠ دقيقة إعادة محاولة مشروعة قبل الاستنتاج بأنّ الصفّ سامّ. يخرج بعد ذلك من الطابور تلقائياً
+ * وينتظر إجراءً إدارياً صريحاً (`delivery.requeueDeadLetter`).
+ */
+const MAX_ATTEMPTS = 10;
+
 /** وجهتا الإشعار: بوّابة المندوب لمن يملكها، وشاشة «قيد التوصيل» لموظّفي المكتبة. */
 const PORTAL_ROUTE = "/my-deliveries";
 const TRANSIT_ROUTE = "/delivery?tab=transit";
 
 async function claimBatch(): Promise<number[]> {
   return withTx(async (tx) => {
+    // شرط status='PENDING' يخرج الصفوف المستنفَدة من الطابور فوراً (Tier-1 #1، ٢٥/٨).
     const rows = await tx.select({ id: deliveryOutbox.id }).from(deliveryOutbox)
-      .where(and(isNull(deliveryOutbox.processedAt), lte(deliveryOutbox.availableAt, sql`NOW()`)))
+      .where(and(
+        eq(deliveryOutbox.status, "PENDING"),
+        isNull(deliveryOutbox.processedAt),
+        lte(deliveryOutbox.availableAt, sql`NOW()`),
+      ))
       .orderBy(asc(deliveryOutbox.id)).limit(BATCH_SIZE)
       .for("update", { skipLocked: true });
     const ids = rows.map((r) => Number(r.id));
     if (ids.length) {
+      // زيادةُ العدّاد + تأجيل ٥ دقائق **مع** نقلٍ إلى DEAD_LETTER عند بلوغ الحدّ. تنفيذٌ ذرّيّ
+      // في UPDATE واحد كي لا نُبقي نافذةً بين الفحص والنقل تظلّ فيها الصفوف مسحوبةً مرّةً أخرى.
       await tx.update(deliveryOutbox).set({
         attempts: sql`${deliveryOutbox.attempts} + 1`,
         availableAt: sql`DATE_ADD(NOW(), INTERVAL 5 MINUTE)`,
+        status: sql`CASE WHEN ${deliveryOutbox.attempts} + 1 >= ${MAX_ATTEMPTS} THEN 'DEAD_LETTER' ELSE 'PENDING' END`,
+        deadLetteredAt: sql`CASE WHEN ${deliveryOutbox.attempts} + 1 >= ${MAX_ATTEMPTS} THEN NOW() ELSE NULL END`,
       }).where(inArray(deliveryOutbox.id, ids));
     }
     return ids;

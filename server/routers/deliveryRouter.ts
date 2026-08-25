@@ -1,5 +1,8 @@
 import { TRPCError } from "@trpc/server";
+import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
+import { deliveryOutbox } from "../../drizzle/schema";
+import { getDb } from "../db";
 import { cashierProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
@@ -727,6 +730,51 @@ export const deliveryRouter = router({
   // استرداد عجز مشطوب (٩/٨) — نقدٌ عاد بعد شطبه (لم يكن له أي مسار: settle يرفض تجاوز العهدة
   // الصفرية والتوريد يرفض الإرسالية المغلقة). يعكس الخسارة ويُدخل النقد الدرج. بوّابة مُبوَّبة
   // بوحدة (store FULL + manager) لا دوراً خاماً — نمط authz-guard المعتمد للنقاط الجديدة.
+  /**
+   * (Tier-1 #1، ٢٥/٨) قائمةُ رسائل outbox المستنفَدة (DEAD_LETTER) — أدمن فقط. تُعرَض في شاشة
+   * صحّة النظام كي لا تختفي محاولاتُ الإشعار السامّة صامتاً بلا اكتشاف.
+   */
+  listDeadLetterOutbox: deliveryManagerProcedure
+    .input(z.object({ limit: z.number().int().positive().max(200).default(50) }).optional())
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return [];
+      const limit = input?.limit ?? 50;
+      const rows = await db.select({
+        id: deliveryOutbox.id,
+        eventId: deliveryOutbox.eventId,
+        topic: deliveryOutbox.topic,
+        attempts: deliveryOutbox.attempts,
+        lastError: deliveryOutbox.lastError,
+        deadLetteredAt: deliveryOutbox.deadLetteredAt,
+        createdAt: deliveryOutbox.createdAt,
+      }).from(deliveryOutbox)
+        .where(eq(deliveryOutbox.status, "DEAD_LETTER"))
+        .orderBy(desc(deliveryOutbox.deadLetteredAt))
+        .limit(limit);
+      return rows;
+    }),
+
+  /**
+   * إعادةُ صفٍّ إلى الطابور بعد إصلاح السبب الجذريّ — تصفير `attempts` و`status='PENDING'`.
+   * إجراءٌ إداريّ صريح لأنّ إعادة صفٍّ سامٍّ بلا إصلاحٍ تعيده إلى DEAD_LETTER بعد ~٥٠ دقيقة.
+   */
+  requeueDeadLetter: deliveryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+      const res = await db.update(deliveryOutbox).set({
+        status: "PENDING",
+        attempts: 0,
+        deadLetteredAt: null,
+        availableAt: dsql`NOW()`,
+        lastError: null,
+      }).where(and(eq(deliveryOutbox.id, input.id), eq(deliveryOutbox.status, "DEAD_LETTER")));
+      await logAudit(ctx, { action: "delivery.requeueDeadLetter", entityType: "deliveryOutbox", entityId: input.id, newValue: null });
+      return { requeued: (res as unknown as { affectedRows?: number }).affectedRows ?? 0 };
+    }),
+
   recoverWriteOff: storeManagerProcedure
     .input(
       z.object({

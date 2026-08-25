@@ -170,15 +170,15 @@ describe("product studio governed workflow", () => {
       templateVersion: 1,
     });
     // ٢٥/٨/٢٦: كان تاريخاً ثابتاً `2026-08-25T12:00:00Z` — يوم كتابة الاختبار — فبقي يمرّ
-      // حتى بلغ الحاسوب تلك اللحظة، ومنها صار `dueAt < now()` فيرمي `createStudioCampaign`
-      // بـ«موعد الحملة يجب أن يكون بعد بدايتها» (validator). النمط الآمن: نسبيّ للحاضر.
-      //
-      // ⚠️ محاذاة الثانية إلزاميّة: MySQL DATETIME يخزّن بدقّة الثانية ويقرّب المللي إلى أقرب
-      // ثانية (`.500+` يقرّب لأعلى). بلا `setMilliseconds(0)` تُرجع القراءة قيمةً مختلفة عن
-      // قيمة الإدخال ⇒ `expect(rows).toEqual(arrayContaining({dueAt: campaign.dueAt}))` يفشل
-      // (المخزَّن `40.000Z` ≠ المُدخَل `39.634Z`). أُصلح على PR #804 بعد أوّل CI أخضر.
-      const dueAt = new Date(Date.now() + 86_400_000);
-      dueAt.setMilliseconds(0);
+    // حتى بلغ الحاسوب تلك اللحظة، ومنها صار `dueAt < now()` فيرمي `createStudioCampaign`
+    // بـ«موعد الحملة يجب أن يكون بعد بدايتها» (validator). النمط الآمن: نسبيّ للحاضر.
+    //
+    // ⚠️ محاذاة الثانية إلزاميّة: MySQL DATETIME يخزّن بدقّة الثانية ويقرّب المللي إلى أقرب
+    // ثانية (`.500+` يقرّب لأعلى). بلا `setMilliseconds(0)` تُرجع القراءة قيمةً مختلفة عن
+    // قيمة الإدخال ⇒ `expect(rows).toEqual(arrayContaining({dueAt: campaign.dueAt}))` يفشل
+    // (المخزَّن `40.000Z` ≠ المُدخَل `39.634Z`). أُصلح على PR #804 بعد أوّل CI أخضر.
+    const dueAt = new Date(Date.now() + 86_400_000);
+    dueAt.setMilliseconds(0);
     const campaign = await createStudioCampaign(manager, {
       name: "اكتمال صور الصيف",
       status: "ACTIVE",

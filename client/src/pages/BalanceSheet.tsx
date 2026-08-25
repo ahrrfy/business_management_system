@@ -34,6 +34,13 @@ export default function BalanceSheet() {
     asOf: asOf || undefined,
   });
   const p = q.data;
+  // P1-#2 (٢٥/٨): عند تحديد تاريخٍ ماضٍ، نعرض مصدر تقييم المخزون: SNAPSHOT (لقطة رسمية عند
+  // إقفال الفترة) أم LIVE (تقديريّ من مخزون اليوم — الفترة لم تُقفَل بعد أو قبل هجرة 0266).
+  // نعرضه صراحةً كي يفهم المدير أنّ الرقم قابلٌ للتغيّر رجعياً إن لم يكن SNAPSHOT.
+  const valuationSource = trpc.reports.inventoryValuationAt.useQuery(
+    { cutoffDate: asOf || todayYmd() },
+    { enabled: !!asOf },
+  );
 
   const sections = useMemo(() => {
     if (!p) return null;
@@ -169,6 +176,22 @@ export default function BalanceSheet() {
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">كما في تاريخ</label>
             <Input type="date" dir="ltr" value={asOf} max={todayYmd()} onChange={(e) => setAsOf(e.target.value)} className="h-9 w-40" />
+            {asOf && valuationSource.data && (
+              <span
+                className={`text-[10px] rounded-md px-1.5 py-0.5 font-semibold ${
+                  valuationSource.data.source === "SNAPSHOT"
+                    ? "badge-status-active"
+                    : "badge-stock-low"
+                }`}
+                title={
+                  valuationSource.data.source === "SNAPSHOT"
+                    ? "المخزون مقروءٌ من لقطة رسمية التُقطت عند إقفال الفترة — الرقم غير قابلٍ للتغيّر رجعياً."
+                    : "لا لقطةَ رسمية لهذا التاريخ — المخزون مقروءٌ حيّاً من مخزون اليوم، فالرقم قد يتغيّر بأيّ حركةٍ لاحقة."
+                }
+              >
+                المخزون: {valuationSource.data.source === "SNAPSHOT" ? "لقطة رسمية" : "تقديريّ (بلا لقطة)"}
+              </span>
+            )}
           </div>
         </div>
       }

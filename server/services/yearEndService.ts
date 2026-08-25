@@ -47,6 +47,7 @@ import { getDoubleEntryRuntime } from "./accounting/journalStore";
 import { money, round2, toDbMoney } from "./money";
 import { postEntry } from "./ledgerService";
 import { lockPeriod } from "./periodLockService";
+import { captureCompanyValuationSnapshot } from "./inventory/valuationSnapshot";
 import { baghdadToday } from "./businessDay";
 import { reconcileDoubleEntry } from "./reconcileService";
 import { lockCompanyMonthCloseGate } from "./reports/monthCloseGate";
@@ -541,7 +542,16 @@ export async function closeYear(
   // لقطة قيمة المخزون لحظة الإقفال (تدقيق ٢٧/٧، H5): أصل المخزون في الميزانية يُقرأ حيّاً بلا
   // تاريخ، فبلا هذه اللقطة تكون ميزانيةُ السنة المقفلة **غير قابلةٍ لإعادة الإنتاج** — تُحسب من
   // مخزون اليوم لا من مخزون تاريخ الإقفال. تُخزَّن في `snapshotData` (عمود قائم ⇒ بلا هجرة).
+  //
+  // P1-#2 (٢٥/٨): نُضيف نظيرَها في `inventoryValuationSnapshots` كي يتوحّد قارئُ «التقييم عند
+  // تاريخ X» بين الإقفال الشهريّ والسنويّ. الصفّ في `yearEndSnapshots.snapshotData` يبقى للسياق
+  // المحاسبيّ الكامل (retainedEarnings/cycleId/method) — الجديدُ للتقييم البحت.
   const inventoryValuation = await readInventoryValuation(tx);
+  await captureCompanyValuationSnapshot(tx, {
+    periodLockId: periodLock.id,
+    cutoffDate,
+    capturedBy: closedBy,
+  });
   const snapshotData = JSON.stringify({
     closedAt: closedAt.toISOString(),
     inventoryValue: inventoryValuation.total,

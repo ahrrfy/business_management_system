@@ -127,16 +127,18 @@ describe("reconcileInventory — وسم «متوقع» أثناء نافذة ا�
       { variantId: 2, branchId: 1, quantity: -1, openedAt: new Date() }, // مُفتتَح — عجز حقيقي
     ]);
 
-    // بلا نافذة: صفّان بلا أي وسم.
+    // بلا نافذة: صفّان في «السوالب» بلا أيّ وسم. (P1-#3-ب أضاف كاشف movementDrift أيضاً —
+    // نُصفّي إلى entity="stock" كي يظلّ هذا الاختبار على غرضه الأصليّ: وسم السوالب فقط.)
     let issues = await reconcileInventory();
-    expect(issues.length).toBe(2);
-    expect(issues.every((i) => i.note == null)).toBe(true);
+    const negatives = () => issues.filter((i) => i.entity === "stock");
+    expect(negatives().length).toBe(2);
+    expect(negatives().every((i) => i.note == null)).toBe(true);
 
     // نافذة فعّالة: غير المُفتتَح يُوسَم فقط.
     await d.insert(s.openingModeSettings).values({ id: 1, enabled: true, endsAt: new Date(Date.now() + DAY_MS) });
     issues = await reconcileInventory();
-    const v1 = issues.find((i) => i.id === 1)!;
-    const v2 = issues.find((i) => i.id === 2)!;
+    const v1 = negatives().find((i) => i.id === 1)!;
+    const v2 = negatives().find((i) => i.id === 2)!;
     expect(v1.note).toMatch(/متوقع/);
     expect(v2.note).toBeUndefined();
 
@@ -146,7 +148,7 @@ describe("reconcileInventory — وسم «متوقع» أثناء نافذة ا�
       .set({ endsAt: new Date(Date.now() - DAY_MS) })
       .where(eq(s.openingModeSettings.id, 1));
     issues = await reconcileInventory();
-    expect(issues.every((i) => i.note == null)).toBe(true);
+    expect(negatives().every((i) => i.note == null)).toBe(true);
   });
 });
 

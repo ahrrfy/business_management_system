@@ -28,6 +28,7 @@ import { money, round2, toDbMoney } from "../money";
 import { getActiveLock, lockPeriod } from "../periodLockService";
 import { reconcileDoubleEntry } from "../reconcileService";
 import { createMonthCloseCertificate } from "./monthCloseCertificate";
+import { captureCompanyValuationSnapshot } from "../inventory/valuationSnapshot";
 import { lockCompanyMonthCloseGate } from "./monthCloseGate";
 import { getMonthCloseReadiness } from "./monthCloseReadiness";
 import {
@@ -291,6 +292,15 @@ export async function approveMonthClose(
     closeRevision: Number(req.closeRevision),
     predecessorPeriodId: sequence.activePeriodId,
     notes: input.notes ?? `إقفال شهر ${req.month} — اعتماد الطلب #${req.id}`,
+  });
+
+  // P1-#2 (٢٥/٨): لقطةُ تقييم المخزون داخل نفس المعاملة ⇒ أصلُ الميزانية عند لحظة الإقفال
+  // يبقى قابلاً للاستنساخ لاحقاً حتى لو تحرّكت الأرصدة/التكاليف. أيّ فشلٍ في القراءة أو الكتابة
+  // يُلغي الإقفال كاملاً (لا لقطةَ بلا قفل ولا العكس).
+  await captureCompanyValuationSnapshot(tx, {
+    periodLockId: periodId,
+    cutoffDate,
+    capturedBy: input.decidedBy,
   });
 
   const certificate = await createMonthCloseCertificate(tx, {

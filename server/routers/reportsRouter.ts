@@ -45,6 +45,8 @@ import {
   getInventoryValuation,
   getStockStatus,
 } from "../services/reportsInventoryService";
+import { readValuationAt } from "../services/inventory/valuationSnapshot";
+import { withTx } from "../services/tx";
 import {
   getItemLedger,
   getAbcAnalysis,
@@ -755,6 +757,18 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
       return getFinancialPosition({ branchId, asOf: input?.asOf });
+    }),
+
+  /**
+   * تقييمُ المخزون كما كان في تاريخٍ معيّن (P1-#2، ٢٥/٨). يفضّل لقطةً محفوظة في
+   * `inventoryValuationSnapshots` إن وُجدت للفترة المُقفَلة (source=SNAPSHOT)، وإلّا يعود
+   * إلى الحالة الحيّة موسومةً بـLIVE (fallback للفترات ما قبل هجرة 0266). المستدعي يرى
+   * المصدر صراحةً كي لا يُعرَض LIVE بوصفه تاريخياً.
+   */
+  inventoryValuationAt: reportsBranchScoped
+    .input(z.object({ cutoffDate: ymdStr }))
+    .query(async ({ input }) => {
+      return withTx((tx) => readValuationAt(tx, input.cutoffDate));
     }),
 
   /** التدفّق النقدي (أساس نقدي مباشر) — صافي المقبوضات حسب اتّجاه/طريقة الدفع. manager + عزل الفرع. */

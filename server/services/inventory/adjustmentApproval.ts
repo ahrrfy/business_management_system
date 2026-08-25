@@ -5,7 +5,7 @@
 // معلَّقاً في `stockAdjustmentRequests` **بلا تغيير مخزون**، ويعتمده مديرٌ آخر (SOD-04: المُعتمِد ≠ المُنشئ
 // إلا admin) فيُطبَّق `setStock` + قيد ADJUST (نفس منطق المسار المباشر السابق). الرفض بلا أثر.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   branchStock,
   openingModeSettings,
@@ -19,9 +19,58 @@ import { setStock, isBundleVariant, isServiceVariant } from "../inventoryService
 import { loadOpeningPurchaseLinkedVariantIds } from "../stocktake/openingEligibility";
 import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { money } from "../money";
 import { requireDb } from "../tx";
 import { type Actor, withTx } from "../tx";
+
+const ADJUSTMENT_REQUEST_OPERATION = "inventory.adjustRequest";
+
+/**
+ * أسبابُ تسوية المخزون (P2-#3، ٢٥/٨) — مصدرُ الحقيقة الوحيد. الأسبابُ الحسّاسة أدناه تُلزم مرفقَ
+ * إثبات (صورة). قرارُ المالك: التالف/الفقد/السرقة قصصٌ ماليّة قابلةٌ للتحقيق، وبلا دليلٍ بصريّ
+ * تُوقّع الشركة على النصّ وحده — فهذه الأسباب تُغلق دون مرفق.
+ */
+export const ADJUSTMENT_REASONS = [
+  "STOCK_TAKE",
+  "DAMAGE",
+  "LOSS",
+  "THEFT",
+  "SAMPLE",
+  "INTERNAL_USE",
+  "GIFT",
+  "CORRECTION",
+  "OTHER",
+] as const;
+export type AdjustmentReason = (typeof ADJUSTMENT_REASONS)[number];
+
+/** الأسبابُ التي تُلزم مرفقاً بصرياً (صورة) — للتحقيق المستقلّ. */
+export const ATTACHMENT_REQUIRED_REASONS: ReadonlySet<AdjustmentReason> = new Set<AdjustmentReason>([
+  "DAMAGE",
+  "LOSS",
+  "THEFT",
+]);
+
+/** حجم data URL الأقصى المقبول (~5MB بعد base64 encoding — يحمي المخطّط من الضخامة العشوائية). */
+const MAX_ATTACHMENT_BYTES = 7 * 1024 * 1024; // ~5MB binary → ~7MB base64
+
+function validateAttachmentUrl(url: string): void {
+  const trimmed = url.trim();
+  // نمطُ data URL لصورة: `data:image/<type>;base64,<payload>`. غيرُه مرفوض (لا URL خارجيّ يُستضاف
+  // ثمّ يختفي، ولا نوع ملفٍ غير مدعوم في العرض داخل الشاشة).
+  if (!/^data:image\/(jpeg|jpg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "مرفق الإثبات يجب أن يكون صورةً مضغوطةً (JPEG/PNG/WebP/GIF) بصيغة data URL.",
+    });
+  }
+  if (trimmed.length > MAX_ATTACHMENT_BYTES) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `حجم المرفق يتجاوز الحدّ الأقصى (${Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024))}MB بعد الترميز). اضغط الصورة أو التقطها بدقّة أقلّ.`,
+    });
+  }
+}
 
 const COST_SNAPSHOT_RE = /^\[COST_SNAPSHOT:([0-9]+(?:\.[0-9]{1,2})?)\](?:\n|$)/;
 
@@ -45,6 +94,18 @@ export interface RequestAdjustmentInput {
   branchId: number;
   targetQuantity: number;
   notes?: string | null;
+  /**
+   * سببُ التسوية. اختياريٌّ للتوافق مع مستدعياتٍ قديمة، لكنّ الشاشات الجديدة تُلزمه.
+   * الأسبابُ الحسّاسة (DAMAGE/LOSS/THEFT) تُلزم `attachmentUrl` — P2-#3.
+   */
+  reason?: AdjustmentReason | null;
+  /** مرفقُ إثبات بصريّ (data URL لصورةٍ مضغوطة). إلزاميّ للأسباب الحسّاسة أعلاه. */
+  attachmentUrl?: string | null;
+  /**
+   * مفتاح تكرار من العميل. إعادةُ الإرسال بنفس المفتاح والحمولة تُرجع الطلب الأوّل بدل إنشاء
+   * ثانٍ (اقتراح تقرير المراجعة P2-#1، ٢٥/٨). الحمولةُ المختلفة على نفس المفتاح تُرفَض CONFLICT.
+   */
+  clientRequestId?: string | null;
 }
 
 function assertRequesterBranch(branchId: number, actor: Actor): void {
@@ -55,12 +116,46 @@ function assertRequesterBranch(branchId: number, actor: Actor): void {
 }
 
 /** يُنشئ طلب تسوية مخزونٍ معلَّقاً — **بلا تغيير مخزون** حتى الاعتماد. */
-export async function requestStockAdjustment(input: RequestAdjustmentInput, actor: Actor): Promise<{ requestId: number }> {
+export async function requestStockAdjustment(input: RequestAdjustmentInput, actor: Actor): Promise<{ requestId: number; idempotentReplay?: true }> {
   // حارس خدمة لا يعتمد على الراوتر: لا يجوز للمستدعي تزوير actor.branchId=target.
   assertRequesterBranch(input.branchId, actor);
+  // P2-#3: التحقّق من السبب/المرفق قبل أيّ عملٍ في القاعدة (لا صفٌّ نصف صالحٍ يُتَراجَع عنه).
+  const reason = input.reason ?? null;
+  const attachmentUrl = input.attachmentUrl?.trim() || null;
+  if (reason != null && !ADJUSTMENT_REASONS.includes(reason)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "سببُ التسوية غير معروف." });
+  }
+  if (attachmentUrl) validateAttachmentUrl(attachmentUrl);
+  if (reason != null && ATTACHMENT_REQUIRED_REASONS.has(reason) && !attachmentUrl) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `السبب «${reason}» يستلزم مرفقَ إثبات بصريّ (صورة) — أضِفه ثمّ أعد الإرسال.`,
+    });
+  }
+  // ⭐ Idempotency على مستوى الطلب (P2-#1): إعادةُ الشاشة إرسالَ نفس العملية (نقر مضاعف، انقطاعُ شبكة)
+  // كانت تُنشئ طلبَين معلَّقَين متطابقَين. اعتمادُهما لاحقاً بالخطأ = **مضاعفةُ تسوية**. الحلّ: نفس مفتاح
+  // العميل + نفس الحمولة ⇒ إعادةُ الطلب الأوّل بلا إنشاء. نفس المفتاح بحمولةٍ مختلفة ⇒ CONFLICT (بصمة).
+  // السبب/المرفق جزءان من البصمة كي لا يُبتلع تغييرٌ فيهما صامتاً كـreplay.
+  const clientRequestId = input.clientRequestId?.trim() || null;
+  const payloadHash = clientRequestId
+    ? idempotencyHash({
+        variantId: Number(input.variantId),
+        branchId: Number(input.branchId),
+        targetQuantity: Number(input.targetQuantity),
+        notes: input.notes?.trim() || null,
+        reason,
+        attachmentUrl,
+      })
+    : null;
   return withTx(async (tx) => {
     if (!Number.isInteger(input.targetQuantity) || input.targetQuantity < 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
+    }
+    if (clientRequestId) {
+      const existing = await checkIdempotency(tx, ADJUSTMENT_REQUEST_OPERATION, clientRequestId, payloadHash);
+      if (existing != null) {
+        return { requestId: existing, idempotentReplay: true as const };
+      }
     }
     const v = (
       await tx
@@ -102,10 +197,18 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
       // لقطة تكلفة داخل الحقل الموجود (لا تغيير schema): الاعتماد يرفض إن تغيّرت WAVG منذ الطلب،
       // كي لا تتبدّل قيمة الربح/الخسارة بينما كمية الفرع بقيت كما هي.
       notes: encodeAdjustmentNotes(v.costPrice ?? "0", input.notes),
+      reason,
+      attachmentUrl,
       status: "PENDING_APPROVAL",
       createdBy: actor.userId,
     });
-    return { requestId: extractInsertId(res) };
+    const requestId = extractInsertId(res);
+    if (clientRequestId) {
+      // نسجّل المفتاح **بعد** نجاح الإدراج ⇒ فشلٌ داخل المعاملة يعمل ROLLBACK فيُلغى المفتاح مع الطلب،
+      // وسباقُ طلبَين بنفس المفتاح يتلقّى ER_DUP_ENTRY على القيد الفريد فيراه المستدعي.
+      await recordIdempotencyKey(tx, ADJUSTMENT_REQUEST_OPERATION, clientRequestId, requestId, payloadHash);
+    }
+    return { requestId };
   });
 }
 
@@ -302,6 +405,10 @@ export async function listStockAdjustmentRequests(scope: {
       expectedQuantity: stockAdjustmentRequests.expectedQuantity,
       currentQuantity: branchStock.quantity,
       notes: stockAdjustmentRequests.notes,
+      reason: stockAdjustmentRequests.reason,
+      // شارةُ «مرفقٌ موجود» فقط — لا نُرسل الـdata URL في القوائم (حجمٌ ضخم، وأمان: يُقرأ عبر
+      // إجراءٍ منفصلٍ عند فتح الطلب).
+      hasAttachment: sql<number>`CASE WHEN ${stockAdjustmentRequests.attachmentUrl} IS NOT NULL THEN 1 ELSE 0 END`,
       status: stockAdjustmentRequests.status,
       createdBy: stockAdjustmentRequests.createdBy,
       createdByName: creator.name,
@@ -324,5 +431,24 @@ export async function listStockAdjustmentRequests(scope: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(stockAdjustmentRequests.id))
     .limit(500);
-  return rows.map((row) => ({ ...row, notes: decodeAdjustmentNotes(row.notes).human }));
+  return rows.map((row) => ({
+    ...row,
+    notes: decodeAdjustmentNotes(row.notes).human,
+    hasAttachment: Number(row.hasAttachment) === 1,
+  }));
+}
+
+/**
+ * قراءةُ data URL للمرفق بشكلٍ مستقلّ — نبقيه خارج قائمة `listStockAdjustmentRequests` كي لا نغرق
+ * القائمة بحمولات ~7MB لكل صفّ. الشاشة تفتح المرفق عند الطلب. عزلُ الفرع مطبَّقٌ على الاستدعاء
+ * (الراوتر يُمرّر actor.branchId لغير admin) — هنا نُعيد بلا فحصٍ إضافيّ لأنّ الاستدعاء داخليّ.
+ */
+export async function readAdjustmentAttachment(id: number): Promise<{ attachmentUrl: string | null }> {
+  const db = requireDb();
+  const rows = await db
+    .select({ attachmentUrl: stockAdjustmentRequests.attachmentUrl })
+    .from(stockAdjustmentRequests)
+    .where(eq(stockAdjustmentRequests.id, id))
+    .limit(1);
+  return { attachmentUrl: rows[0]?.attachmentUrl ?? null };
 }

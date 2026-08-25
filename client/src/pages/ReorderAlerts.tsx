@@ -72,24 +72,55 @@ export default function ReorderAlerts() {
   }, [loadedRows, search]);
 
   // ── تحرير العتبتين المباشر (لكل صف) ─────────────────────────────────────
+  // النطاق: "variant" ⇒ يُحدّث الافتراض العامّ للمتغيّر (يمسّ كل الفروع).
+  //         "branch"  ⇒ يُضيف/يُحدّث override لهذا (المتغيّر × الفرع) وحده (P1-#4).
   const [editing, setEditing] = useState<string | null>(null);
   const [minVal, setMinVal] = useState("");
   const [reorderVal, setReorderVal] = useState("");
+  const [scope, setScope] = useState<"variant" | "branch">("branch");
   const setThresholds = trpc.inventory.setReorderThresholds.useMutation({
     onSuccess: async () => {
       setEditing(null);
-      notify.ok("حُدِّثت عتبتا إعادة الطلب");
+      notify.ok("حُدِّثت عتبتا إعادة الطلب — الافتراض العامّ");
       await utils.inventory.reorderAlerts.invalidate();
+      await utils.inventory.listBranchThresholds.invalidate();
     },
     onError: (e) => notify.err(e),
   });
+  const setBranchOverride = trpc.inventory.setBranchThresholds.useMutation({
+    onSuccess: async () => {
+      setEditing(null);
+      notify.ok("حُدِّثت عتبات الفرع (override)");
+      await utils.inventory.reorderAlerts.invalidate();
+      await utils.inventory.listBranchThresholds.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const clearBranchOverride = trpc.inventory.clearBranchThresholds.useMutation({
+    onSuccess: async () => {
+      setEditing(null);
+      notify.ok("استُعيد الافتراض العامّ لهذا الفرع");
+      await utils.inventory.reorderAlerts.invalidate();
+      await utils.inventory.listBranchThresholds.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  // عدّاد overrides المخصّصة لعرضه في رأس البطاقة — يفتحه listBranchThresholds لتوصيل الإجراء
+  // بالواجهة (DoD §٤: إجراءٌ خادميٌّ بلا مستهلك = وهمُ اكتمال).
+  const overridesList = trpc.inventory.listBranchThresholds.useQuery(
+    { branchId: branchId ?? undefined },
+    { enabled: canWrite && me.data != null },
+  );
+  const overridesCount = overridesList.data?.length ?? 0;
 
-  function startEdit(r: { variantId: number; branchId: number; minStock: number; reorderPoint: number }) {
+  function startEdit(r: { variantId: number; branchId: number; minStock: number; reorderPoint: number; overrideActive: boolean }) {
     setEditing(rowKey(r));
     setMinVal(String(r.minStock));
     setReorderVal(String(r.reorderPoint));
+    // إن كان الصفّ يحمل override افتراضياً نبدأ على «هذا الفرع» — للحفاظ على المعنى الظاهر للقيمة.
+    setScope(r.overrideActive ? "branch" : "branch");
   }
-  function saveEdit(variantId: number) {
+  function saveEdit(variantId: number, branchIdOfRow: number) {
     const minStock = Number(minVal);
     const reorderPoint = Number(reorderVal);
     if (!Number.isInteger(minStock) || minStock < 0 || !Number.isInteger(reorderPoint) || reorderPoint < 0) {
@@ -100,8 +131,16 @@ export default function ReorderAlerts() {
       notify.err("الحد الأدنى لا يصحّ أن يتجاوز حدّ إعادة الطلب");
       return;
     }
-    setThresholds.mutate({ variantId, minStock, reorderPoint });
+    if (scope === "variant") {
+      setThresholds.mutate({ variantId, minStock, reorderPoint });
+    } else {
+      setBranchOverride.mutate({ variantId, branchId: branchIdOfRow, minStock, reorderPoint });
+    }
   }
+  function restoreDefault(variantId: number, branchIdOfRow: number) {
+    clearBranchOverride.mutate({ variantId, branchId: branchIdOfRow });
+  }
+  const editSaving = setThresholds.isPending || setBranchOverride.isPending || clearBranchOverride.isPending;
 
   // ── تحديد الصفوف + حوار المسوّدة ─────────────────────────────────────────
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -252,6 +291,14 @@ export default function ReorderAlerts() {
             <span className="text-xs text-muted-foreground">
               {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} من ${fmtInt(total)} صنف`}
             </span>
+            {canWrite && overridesCount > 0 && (
+              <span
+                className="text-xs rounded-md border border-primary/40 bg-primary/10 px-2 py-0.5 text-primary"
+                title="عتبات مخصّصة لهذا الفرع (override) — تسود على الافتراض العام"
+              >
+                overrides: {fmtInt(overridesCount)}
+              </span>
+            )}
             {total > PAGE_SIZE && (
               <div className="flex items-center gap-1">
                 <Button variant="outline" size="sm" disabled={page === 0 || alerts.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>السابق →</Button>
@@ -312,7 +359,17 @@ export default function ReorderAlerts() {
                       <td className="p-2 text-xs">
                         {variantLabel(r)} <span className="text-muted-foreground font-mono" dir="ltr">({r.sku})</span>
                       </td>
-                      <td className="p-2 text-xs">{r.branchName}</td>
+                      <td className="p-2 text-xs">
+                        {r.branchName}
+                        {r.overrideActive && (
+                          <span
+                            className="mx-1 text-[10px] rounded border border-primary/40 bg-primary/10 px-1 py-0.5 text-primary"
+                            title="عتبتان مخصّصتان لهذا الفرع — تسودان على الافتراض العام"
+                          >
+                            مخصّص
+                          </span>
+                        )}
+                      </td>
                       <td className="p-2 text-left tabular-nums font-semibold">{fmtInt(r.quantity)}</td>
                       <td className="p-2 text-left tabular-nums">
                         {isEditing ? (
@@ -347,13 +404,49 @@ export default function ReorderAlerts() {
                       {canWrite && (
                         <td className="p-2 text-center">
                           {isEditing ? (
-                            <div className="flex gap-1 justify-center">
-                              <Button size="sm" onClick={() => saveEdit(r.variantId)} disabled={setThresholds.isPending}>
-                                {setThresholds.isPending ? "…" : "حفظ"}
-                              </Button>
-                              <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={setThresholds.isPending}>
-                                إلغاء
-                              </Button>
+                            <div className="flex flex-col items-center gap-1">
+                              <div className="flex items-center gap-1 text-[11px]">
+                                <label className={`px-2 py-0.5 rounded border cursor-pointer ${scope === "branch" ? "bg-primary/10 border-primary text-primary" : "border-input"}`}>
+                                  <input
+                                    type="radio"
+                                    name={`scope-${key}`}
+                                    className="hidden"
+                                    checked={scope === "branch"}
+                                    onChange={() => setScope("branch")}
+                                  />
+                                  هذا الفرع
+                                </label>
+                                <label className={`px-2 py-0.5 rounded border cursor-pointer ${scope === "variant" ? "bg-primary/10 border-primary text-primary" : "border-input"}`}>
+                                  <input
+                                    type="radio"
+                                    name={`scope-${key}`}
+                                    className="hidden"
+                                    checked={scope === "variant"}
+                                    onChange={() => setScope("variant")}
+                                  />
+                                  الافتراض العام
+                                </label>
+                              </div>
+                              <div className="flex gap-1 justify-center">
+                                <Button size="sm" onClick={() => saveEdit(r.variantId, r.branchId)} disabled={editSaving}>
+                                  {editSaving ? "…" : "حفظ"}
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={editSaving}>
+                                  إلغاء
+                                </Button>
+                              </div>
+                              {r.overrideActive && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-xs text-muted-foreground"
+                                  onClick={() => restoreDefault(r.variantId, r.branchId)}
+                                  disabled={editSaving}
+                                  title="مسح الـoverrides لهذا الفرع — يعود إلى الافتراض العام"
+                                >
+                                  استعادة الافتراض
+                                </Button>
+                              )}
                             </div>
                           ) : (
                             <Button size="sm" variant="outline" onClick={() => startEdit(r)}>
@@ -377,6 +470,24 @@ export default function ReorderAlerts() {
           </ScrollTableShell>
         </CardContent>
       </Card>
+
+      {canWrite && (
+        <BranchOverridesPanel
+          branchId={branchId}
+          overrides={overridesList.data ?? []}
+          isLoading={overridesList.isLoading}
+          onEdit={(o) => {
+            // نُعِيد استعمال setBranchOverride/clearBranchOverride مباشرةً — لا يُشترط أن يكون الصفّ
+            // موجوداً في alerts (يعالج ملاحظة Codex P2: override يُخرج الصفّ من alerts فيختفي الزرّ).
+          }}
+          onSave={(o, min, reorder) => setBranchOverride.mutate({ variantId: o.variantId, branchId: o.branchId, minStock: min, reorderPoint: reorder })}
+          onClear={(o) => clearBranchOverride.mutate({ variantId: o.variantId, branchId: o.branchId })}
+          onAddNew={(variantId, branchIdNew, min, reorder) =>
+            setBranchOverride.mutate({ variantId, branchId: branchIdNew, minStock: min, reorderPoint: reorder })
+          }
+          saving={editSaving}
+        />
+      )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-2xl">
@@ -449,5 +560,234 @@ export default function ReorderAlerts() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/* ==================== لوحة إدارة overrides العتبات الفرعيّة ==================== */
+
+type OverrideRow = {
+  variantId: number;
+  branchId: number;
+  branchName: string;
+  productName: string;
+  sku: string;
+  variantName: string | null;
+  minStock: number | null;
+  reorderPoint: number | null;
+  defaultMinStock: number | null;
+  defaultReorderPoint: number | null;
+};
+
+/**
+ * لوحةٌ منفصلة عن جدول التنبيهات — تعرض كلّ overrides المخصّصة (بما فيها الصفوف التي لا تظهر في
+ * alerts لأنّ رصيدها فوق العتبة). ملاحظةُ مراجعة Codex P2 (٢٥/٨): زرّ «استعادة الافتراض» كان يعيش
+ * داخل صفّ التنبيه، فإذا حفظت override يُخرج الصفّ من alerts ⇒ يختفي الزرّ نفسه. هذه اللوحة تحلّه.
+ *
+ * وتحلّ الفجوة الثانية: variant بـ`reorderPoint = 0` (الافتراض الشائع) لا يظهر في alerts أبداً
+ * ⇒ لا يمكن إسناد أوّل override له من الشاشة القديمة. زرّ «أضف override» يفتح حواراً بـSKU/فرع/قيم.
+ */
+function BranchOverridesPanel(props: {
+  branchId: number | null;
+  overrides: OverrideRow[];
+  isLoading: boolean;
+  onEdit: (o: OverrideRow) => void;
+  onSave: (o: OverrideRow, min: number | null, reorder: number | null) => void;
+  onClear: (o: OverrideRow) => void;
+  onAddNew: (variantId: number, branchId: number, min: number | null, reorder: number | null) => void;
+  saving: boolean;
+}) {
+  const [openPanel, setOpenPanel] = useState(false);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editMin, setEditMin] = useState("");
+  const [editReorder, setEditReorder] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addSku, setAddSku] = useState("");
+  const [addBranchId, setAddBranchId] = useState<number | null>(props.branchId);
+  const [addMin, setAddMin] = useState("");
+  const [addReorder, setAddReorder] = useState("");
+  const branches = trpc.branches.list.useQuery();
+  // بحث المتغيّر بـSKU/اسم عبر inventory.onHand (مقيَّدٌ بالفرع كي يعكس التوفّر الحاليّ).
+  const skuLookup = trpc.inventory.onHand.useQuery(
+    { branchId: addBranchId ?? 0, q: addSku.trim() || undefined, limit: 20 },
+    { enabled: addOpen && addBranchId != null && addSku.trim().length >= 2 },
+  );
+
+  function keyOf(o: OverrideRow) { return `${o.variantId}:${o.branchId}`; }
+
+  function startInlineEdit(o: OverrideRow) {
+    setEditingKey(keyOf(o));
+    setEditMin(o.minStock == null ? "" : String(o.minStock));
+    setEditReorder(o.reorderPoint == null ? "" : String(o.reorderPoint));
+    props.onEdit(o);
+  }
+  function saveInline(o: OverrideRow) {
+    const min = editMin.trim() === "" ? null : Number(editMin);
+    const reorder = editReorder.trim() === "" ? null : Number(editReorder);
+    if (min != null && (!Number.isInteger(min) || min < 0)) return notify.err("الحد الأدنى يجب أن يكون عدداً صحيحاً غير سالب");
+    if (reorder != null && (!Number.isInteger(reorder) || reorder < 0)) return notify.err("حدّ إعادة الطلب يجب أن يكون عدداً صحيحاً غير سالب");
+    props.onSave(o, min, reorder);
+    setEditingKey(null);
+  }
+  function submitAddNew() {
+    if (addBranchId == null) return notify.err("اختر الفرع أوّلاً");
+    // نبحث عن المتغيّر بمطابقة SKU حرفياً في نتائج البحث.
+    const match = (skuLookup.data ?? []).find((r: { sku: string }) => r.sku === addSku.trim());
+    if (!match) return notify.err(`لا متغيّر بـSKU يطابق «${addSku.trim()}» في هذا الفرع — تحقّق من SKU أو ابحث بالاسم`);
+    const min = addMin.trim() === "" ? null : Number(addMin);
+    const reorder = addReorder.trim() === "" ? null : Number(addReorder);
+    if (min == null && reorder == null) return notify.err("أدخل قيمةً واحدةً على الأقل (وإلّا لا override يُنشأ)");
+    props.onAddNew(match.variantId, addBranchId, min, reorder);
+    setAddOpen(false);
+    setAddSku("");
+    setAddMin("");
+    setAddReorder("");
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between gap-3">
+        <CardTitle className="text-base">overrides العتبات الفرعيّة ({fmtInt(props.overrides.length)})</CardTitle>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setAddOpen(true)}>أضف override جديد</Button>
+          <Button size="sm" variant="ghost" onClick={() => setOpenPanel((v) => !v)}>
+            {openPanel ? "إخفاء" : "إظهار"}
+          </Button>
+        </div>
+      </CardHeader>
+      {openPanel && (
+        <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="p-2 text-start">المنتج</th>
+                  <th className="p-2 text-start">المتغيّر / SKU</th>
+                  <th className="p-2 text-start">الفرع</th>
+                  <th className="p-2 text-left">الحدّ الأدنى (override / افتراض)</th>
+                  <th className="p-2 text-left">حدّ إعادة الطلب (override / افتراض)</th>
+                  <th className="p-2 text-center">إجراءات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {props.overrides.map((o) => {
+                  const key = keyOf(o);
+                  const isEditing = editingKey === key;
+                  return (
+                    <tr key={key} className="border-t">
+                      <td className="p-2 font-medium">{o.productName}</td>
+                      <td className="p-2 text-xs">
+                        {o.variantName ?? "—"} <span className="text-muted-foreground font-mono" dir="ltr">({o.sku})</span>
+                      </td>
+                      <td className="p-2 text-xs">{o.branchName}</td>
+                      <td className="p-2 text-left tabular-nums">
+                        {isEditing ? (
+                          <Input dir="ltr" inputMode="numeric" value={editMin}
+                            onChange={(e) => setEditMin(e.target.value.replace(/[^\d]/g, ""))}
+                            placeholder={o.defaultMinStock == null ? "افتراض" : String(o.defaultMinStock)}
+                            className="h-8 w-20 text-center" aria-label="override للحد الأدنى" />
+                        ) : (
+                          <>
+                            <b>{o.minStock == null ? "—" : fmtInt(o.minStock)}</b>
+                            <span className="text-muted-foreground text-xs mx-1">/ {o.defaultMinStock == null ? "—" : fmtInt(o.defaultMinStock)}</span>
+                          </>
+                        )}
+                      </td>
+                      <td className="p-2 text-left tabular-nums">
+                        {isEditing ? (
+                          <Input dir="ltr" inputMode="numeric" value={editReorder}
+                            onChange={(e) => setEditReorder(e.target.value.replace(/[^\d]/g, ""))}
+                            placeholder={o.defaultReorderPoint == null ? "افتراض" : String(o.defaultReorderPoint)}
+                            className="h-8 w-20 text-center" aria-label="override لحدّ إعادة الطلب" />
+                        ) : (
+                          <>
+                            <b>{o.reorderPoint == null ? "—" : fmtInt(o.reorderPoint)}</b>
+                            <span className="text-muted-foreground text-xs mx-1">/ {o.defaultReorderPoint == null ? "—" : fmtInt(o.defaultReorderPoint)}</span>
+                          </>
+                        )}
+                      </td>
+                      <td className="p-2 text-center">
+                        {isEditing ? (
+                          <div className="flex gap-1 justify-center">
+                            <Button size="sm" onClick={() => saveInline(o)} disabled={props.saving}>حفظ</Button>
+                            <Button size="sm" variant="ghost" onClick={() => setEditingKey(null)} disabled={props.saving}>إلغاء</Button>
+                          </div>
+                        ) : (
+                          <div className="flex gap-1 justify-center">
+                            <Button size="sm" variant="outline" onClick={() => startInlineEdit(o)}>تعديل</Button>
+                            <Button size="sm" variant="ghost" onClick={() => props.onClear(o)} disabled={props.saving}>مسح</Button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!props.isLoading && props.overrides.length === 0 && (
+                  <TableEmptyRow colSpan={6} message="لا overrides مخصّصة — كلّ الفروع تستعمل الافتراض العام." />
+                )}
+              </tbody>
+            </table>
+          </ScrollTableShell>
+        </CardContent>
+      )}
+
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>أضف override جديد لفرعٍ بعينه</DialogTitle>
+            <DialogDescription>
+              يعمل حتى لو كان المتغيّر لا يظهر في alerts (رصيدُه فوق الافتراض أو reorderPoint=0).
+              حقلٌ واحدٌ على الأقلّ مطلوب؛ ما تتركه فارغاً يرث الافتراض العام.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label>الفرع</Label>
+              <select className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                value={addBranchId ?? ""}
+                onChange={(e) => setAddBranchId(e.target.value === "" ? null : Number(e.target.value))}>
+                <option value="">— اختر الفرع —</option>
+                {(branches.data ?? []).map((b) => (
+                  <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label>SKU المتغيّر (طابق حرفياً)</Label>
+              <Input dir="ltr" value={addSku} onChange={(e) => setAddSku(e.target.value)} placeholder="PEN-1"
+                aria-describedby="sku-help" />
+              <p id="sku-help" className="text-xs text-muted-foreground">
+                اكتب ≥ ٢ محارف لبدء البحث في الفرع المختار. النتائج المطابقة SKU حرفياً وحدها تُقبَل.
+              </p>
+              {addSku.trim().length >= 2 && (skuLookup.data ?? []).length > 0 && (
+                <div className="text-xs text-muted-foreground mt-1">
+                  {(skuLookup.data ?? []).slice(0, 5).map((r: { variantId: number; sku: string; productName: string }) => (
+                    <div key={r.variantId} className="flex items-center justify-between">
+                      <span className="font-mono" dir="ltr">{r.sku}</span>
+                      <span>{r.productName}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>الحدّ الأدنى (اختياري)</Label>
+                <Input dir="ltr" inputMode="numeric" value={addMin}
+                  onChange={(e) => setAddMin(e.target.value.replace(/[^\d]/g, ""))} />
+              </div>
+              <div className="space-y-1">
+                <Label>حدّ إعادة الطلب (اختياري)</Label>
+                <Input dir="ltr" inputMode="numeric" value={addReorder}
+                  onChange={(e) => setAddReorder(e.target.value.replace(/[^\d]/g, ""))} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setAddOpen(false)} disabled={props.saving}>إلغاء</Button>
+            <Button onClick={submitAddNew} disabled={props.saving}>حفظ override</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
   );
 }
