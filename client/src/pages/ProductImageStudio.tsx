@@ -1,6 +1,7 @@
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
 import { StudioImageExportPanel } from "@/components/product-studio/StudioImageExportPanel";
+import { ProductImageGallery } from "@/components/product-studio/ProductImageGallery";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
@@ -2423,6 +2424,13 @@ export default function ProductImageStudio() {
                         )}
                       </CardContent>
                     </Card>
+                  )}
+
+                  {/* معرض صور المنتج القائمة — للمدير فقط. يظهر تحت المهمّة المختارة كي
+                      يرى المدير كل صور المنتج (شاملة البدائل)، ويمسّها: يحذف، يعيّن رئيسيّة،
+                      يعيد ترتيب. طلب المالك ٢٦/٨: التحكم الكامل بالصور الموجودة. */}
+                  {dashboard.data?.canManage && selected.productId != null && (
+                    <ProductImageGallery productId={Number(selected.productId)} />
                   )}
                 </div>
               )}
