@@ -863,7 +863,7 @@ export default function ProductImageStudio() {
                 <div className="min-w-0 text-sm">
                   <p className="font-medium">{draft.proposedName || `مهمة الاستوديو #${draft.taskId}`}</p>
                   <p className="text-xs text-muted-foreground">
-                    مهمة #{draft.taskId} · محفوظة محلياً حتى {new Date(draft.expiresAt).toLocaleString("ar-IQ")}
+                    مهمة #{draft.taskId} · محفوظة محلياً حتى {new Date(draft.expiresAt).toLocaleString("ar-IQ-u-nu-latn")}
                   </p>
                 </div>
                 <Button
@@ -1383,7 +1383,7 @@ export default function ProductImageStudio() {
                       <p>
                         الرمز: <span className="font-mono text-base">{issuedAccess.code}</span>
                       </p>
-                      <p className="text-xs text-muted-foreground">ينتهي: {new Date(issuedAccess.expiresAt).toLocaleString("ar-IQ")}</p>
+                      <p className="text-xs text-muted-foreground">ينتهي: {new Date(issuedAccess.expiresAt).toLocaleString("ar-IQ-u-nu-latn")}</p>
                       <Button type="button" variant="outline" size="sm" className="min-h-11" onClick={() => setIssuedAccess(null)}>
                         سلّمتُه — أخفِ الرمز
                       </Button>
@@ -1713,7 +1713,7 @@ export default function ProductImageStudio() {
                       <div className="mt-1 text-xs text-muted-foreground">المسؤول: {task.assigneeName ?? "غير مسند"}</div>
                       <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
                         <span>الأولوية: {task.priority === "URGENT" ? "عاجلة" : task.priority === "HIGH" ? "عالية" : task.priority === "LOW" ? "منخفضة" : "عادية"}</span>
-                        {task.dueAt && <span>الموعد: {new Date(task.dueAt).toLocaleString("ar-IQ")}</span>}
+                        {task.dueAt && <span>الموعد: {new Date(task.dueAt).toLocaleString("ar-IQ-u-nu-latn")}</span>}
                         {task.overdue && <Badge variant="danger">متأخرة</Badge>}
                       </div>
                       {task.rejectionReason && <div className="mt-2 text-xs text-destructive">سبب الإعادة: {task.rejectionReason}</div>}

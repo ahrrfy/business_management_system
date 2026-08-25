@@ -85,7 +85,7 @@ export default function DepositDialog({
       onCollected(String(r.collectedTotal));
       void printDepositReceipt({
         draftNumber,
-        date: new Date().toLocaleString("ar-IQ"),
+        date: new Date().toLocaleString("ar-IQ-u-nu-latn"),
         contactName,
         amount: round2(D(amount)).toFixed(2),
         methodLabel: METHOD_LABEL[method],

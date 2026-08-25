@@ -81,7 +81,7 @@ function fmtTime(v: string | Date | null | undefined): string {
   if (!v) return "—";
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return String(v);
-  return d.toLocaleString("ar-IQ", {
+  return d.toLocaleString("ar-IQ-u-nu-latn", {
     dateStyle: "short",
     timeStyle: "short",
     timeZone: "Asia/Baghdad",
