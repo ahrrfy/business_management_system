@@ -1,6 +1,7 @@
 import { useRef, useState, type ChangeEvent, type FocusEvent } from "react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { digitsArabicToLatin } from "@shared/numberNormalize";
 
 /**
  * حقل عددٍ (كميّة/معامل/عدد قطع) — بلا فواصل ألوف وبلا أصفار عشرية زائدة.
@@ -28,8 +29,10 @@ export interface NumberInputProps {
 }
 
 function sanitizeRaw(input: string, allowNegative: boolean, decimals: number): string {
-  const neg = allowNegative && input.trim().startsWith("-");
-  let s = input.replace(/[^0-9.]/g, "");
+  // تطبيع الأرقام العربية-الهندية أوّلاً — بلا هذا كان `[^0-9.]` يبتلع «١٢» صامتاً (S5).
+  const normalized = digitsArabicToLatin(input);
+  const neg = allowNegative && normalized.trim().startsWith("-");
+  let s = normalized.replace(/[^0-9.]/g, "");
   const firstDot = s.indexOf(".");
   if (firstDot !== -1) {
     s = s.slice(0, firstDot + 1) + s.slice(firstDot + 1).replace(/\./g, "");

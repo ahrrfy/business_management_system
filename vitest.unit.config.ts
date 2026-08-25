@@ -76,6 +76,7 @@ export default defineConfig({
       "shared/partialDispatch.test.ts",
       "shared/stocktakeCountMethod.test.ts",
       "shared/variantDisplay.test.ts",
+      "client/src/lib/__tests__/intlPhone.test.ts",
       "client/src/lib/__tests__/invoiceNavGate.test.ts",
       "client/src/lib/__tests__/cashierNavReachability.test.ts",
       "shared/priceWaveRule.test.ts",
