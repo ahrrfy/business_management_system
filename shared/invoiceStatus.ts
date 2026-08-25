@@ -77,3 +77,45 @@ export function invoiceStatusLabel(s: string | null | undefined): string {
   if (!s) return "—";
   return INVOICE_STATUS_AR[s] ?? s;
 }
+
+/**
+ * variant Badge (`@/components/ui/badge`) لحالة الفاتورة — **مصدرٌ وحيد** يمنع خرائط منجرفة.
+ *
+ * قبله كانت ٣ خرائط محلّية متباينة تُترجم نفس الحالة إلى variants مختلفة:
+ *   • Invoices.tsx: PAID=success · PARTIALLY_PAID=warning · CANCELLED/RETURNED=destructive
+ *   • ReceptionInvoiceQueue.tsx: PAID=default · PARTIALLY_PAID=secondary · else=outline
+ *   • InvoiceDetail.tsx: قاموس classes مباشر (`bg-emerald-100 text-emerald-700`) يتجاوز variants كلياً
+ *
+ * ⇒ الشاشات الثلاث كانت تعرض حالة `PAID` بصورةٍ مختلفة بصرياً (أخضر/أزرق/سِمن). دُلالة الحالة
+ * الواحدة تنكسر عبر الشاشات.
+ *
+ * المجموعة الثابتة (لا variants جديدة بلا تحديث Badge component + tokens):
+ *   • PAID          → success   (badge-status-active — أخضر دلاليّ)
+ *   • PARTIALLY_PAID→ warning   (badge-stock-low — كهرمانيّ دلاليّ)
+ *   • PENDING       → secondary (محايد رماديّ؛ «غير مدفوعة» حالة قائمة لا خطأ)
+ *   • CONFIRMED     → secondary (مؤكّدة قبل الدفع)
+ *   • CANCELLED     → outline   (مستند ميت — يُخفَّض بصرياً، لا يُصعَّق بلونٍ ناريّ)
+ *   • RETURNED      → outline   (مستند ميت — بيعٌ وقع ثمّ أُرجع)
+ *   • SUPERSEDED    → outline   (مستند ميت — البديلة تحمل الالتزام)
+ *
+ * فارغ/مجهول ⇒ "outline" (لا يتسرّب rendering مكسور).
+ *
+ * ملاحظة: القيم الأربع مدعومة **عالمياً** عبر مستهلكي variant — Badge وMobileDataCard كلاهما.
+ * تجنّبنا `info` عمداً: MobileDataCard لا يعرفه، فيصير عقدُنا هشّاً أمام الاستهلاك المتعدّد.
+ */
+export type InvoiceStatusBadgeVariant = "success" | "warning" | "secondary" | "outline";
+
+const INVOICE_STATUS_BADGE_VARIANT: Record<InvoiceStatus, InvoiceStatusBadgeVariant> = {
+  PAID: "success",
+  PARTIALLY_PAID: "warning",
+  PENDING: "secondary",
+  CONFIRMED: "secondary",
+  CANCELLED: "outline",
+  RETURNED: "outline",
+  SUPERSEDED: "outline",
+};
+
+export function invoiceStatusBadgeVariant(s: string | null | undefined): InvoiceStatusBadgeVariant {
+  if (!s) return "outline";
+  return INVOICE_STATUS_BADGE_VARIANT[s as InvoiceStatus] ?? "outline";
+}
