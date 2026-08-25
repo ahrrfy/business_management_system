@@ -69,12 +69,11 @@ import {
   validAccrualReissueReason,
   voucherApprovalLabel,
 } from "@/components/vouchers/voucherUiPolicy";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
 type VoucherRow = RouterOutputs["vouchers"]["list"][number];
 
 /** سجلّ السندات المستقلّة (قبض + صرف) — vouchers-pro: تَصنيف + اعتماد + بَصمة + مُرفق. */
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const TYPE_LABEL: Record<string, string> = { IN: "قبض", OUT: "صرف" };
 const PARTY_LABEL: Record<string, string> = {
@@ -706,7 +705,7 @@ export default function Vouchers() {
         <CardContent className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
           <FilterField label="النوع">
             <select
-              className={selectCls}
+              className={selectClsFull}
               value={f.type}
               onChange={(e) => applyFilter({ type: e.target.value })}
             >
@@ -717,7 +716,7 @@ export default function Vouchers() {
           </FilterField>
           <FilterField label="الطرف">
             <select
-              className={selectCls}
+              className={selectClsFull}
               value={f.party}
               onChange={(e) => applyFilter({ party: e.target.value })}
             >
@@ -729,7 +728,7 @@ export default function Vouchers() {
           </FilterField>
           <FilterField label="طريقة الدفع">
             <select
-              className={selectCls}
+              className={selectClsFull}
               value={f.method}
               onChange={(e) => applyFilter({ method: e.target.value })}
             >
@@ -745,7 +744,7 @@ export default function Vouchers() {
           </FilterField>
           <FilterField label="الاعتماد">
             <select
-              className={selectCls}
+              className={selectClsFull}
               value={f.approval}
               onChange={(e) => applyFilter({ approval: e.target.value })}
             >
@@ -800,7 +799,7 @@ export default function Vouchers() {
           )}
           <FilterField label="الفئة">
             <select
-              className={selectCls}
+              className={selectClsFull}
               value={f.cat}
               onChange={(e) => applyFilter({ cat: e.target.value })}
             >

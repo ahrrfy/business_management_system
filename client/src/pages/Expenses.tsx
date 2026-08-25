@@ -64,9 +64,8 @@ import {
   expenseStatusFromSearch,
   isExpenseFinanciallyPrintable,
 } from "./expenseUiPolicy";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 // الدلو المحاسبيّ وتسميته من المصدر المشترك (كانت نسخةً محلّية رابعة تنجرف عن الباقي).
 const CATEGORY_LABEL: Record<string, string> = EXPENSE_BUCKET_LABEL;
@@ -1599,7 +1598,7 @@ export default function Expenses() {
               </Label>
               <select
                 id="expense-branch"
-                className={selectCls}
+                className={selectClsFull}
                 value={branchId}
                 onChange={(event) =>
                   setBranchId(
@@ -1621,7 +1620,7 @@ export default function Expenses() {
               </Label>
               <select
                 id="expense-status"
-                className={selectCls}
+                className={selectClsFull}
                 value={status}
                 onChange={(event) => setStatus(event.target.value)}
               >
@@ -1666,7 +1665,7 @@ export default function Expenses() {
                 </Label>
                 <select
                   id="expense-category"
-                  className={selectCls}
+                  className={selectClsFull}
                   value={category}
                   onChange={(event) => {
                     setCategory(event.target.value);
@@ -1689,7 +1688,7 @@ export default function Expenses() {
                 </Label>
                 <select
                   id="expense-managed-category"
-                  className={selectCls}
+                  className={selectClsFull}
                   value={expenseCategoryId}
                   onChange={(event) => setExpenseCategoryId(event.target.value)}
                 >
@@ -2626,7 +2625,7 @@ export default function Expenses() {
                         <div className="space-y-1">
                           <Label>الطريقة</Label>
                           <select
-                            className={selectCls}
+                            className={selectClsFull}
                             value={correctionRefundMethod}
                             onChange={(event) =>
                               setCorrectionRefundMethod(
@@ -2646,7 +2645,7 @@ export default function Expenses() {
                           <div className="space-y-1">
                             <Label>وجهة النقد</Label>
                             <select
-                              className={selectCls}
+                              className={selectClsFull}
                               value={correctionRefundBucket}
                               onChange={(event) =>
                                 setCorrectionRefundBucket(

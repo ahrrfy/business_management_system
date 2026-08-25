@@ -18,6 +18,7 @@ import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
+import { selectClsFull } from "@/lib/ui/formStyles";
 
 /**
  * تعديل عميل — موحَّد على نمط شاشة الإضافة (CustomerNew v3).
@@ -57,8 +58,6 @@ function suggestedTier(t: CustomerType): PriceTier {
   return "RETAIL";
 }
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function CustomerEdit() {
   const [, params] = useRoute<{ id: string }>("/customers/:id/edit");
@@ -313,7 +312,7 @@ export default function CustomerEdit() {
               <Label htmlFor="type">النوع</Label>
               <select
                 id="type"
-                className={selectCls}
+                className={selectClsFull}
                 value={customerType}
                 onChange={(e) => onTypeChange(e.target.value as CustomerType)}
               >
@@ -399,7 +398,7 @@ export default function CustomerEdit() {
               <Label htmlFor="tier">فئة السعر الافتراضية</Label>
               <select
                 id="tier"
-                className={selectCls}
+                className={selectClsFull}
                 value={defaultPriceTier}
                 onChange={(e) => {
                   setTierTouched(true);
@@ -423,7 +422,7 @@ export default function CustomerEdit() {
                 <Label htmlFor="creditMode">سقف الائتمان (البيع الآجل)</Label>
                 <select
                   id="creditMode"
-                  className={selectCls}
+                  className={selectClsFull}
                   value={creditMode}
                   onChange={(e) => setCreditMode(e.target.value as CreditMode)}
                 >
@@ -472,7 +471,7 @@ export default function CustomerEdit() {
                 <Label htmlFor="openDir">اتجاه الرصيد</Label>
                 <select
                   id="openDir"
-                  className={selectCls}
+                  className={selectClsFull}
                   value={openingDir}
                   onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
                 >
