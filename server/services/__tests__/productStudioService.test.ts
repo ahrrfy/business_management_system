@@ -171,11 +171,13 @@ describe("product studio governed workflow", () => {
     });
     // dueAt نسبيّ (اليوم + ٣٠ يوماً) بدل تاريخٍ ثابت — الثابت `"2026-08-25T12:00:00Z"` كان يفشل
     // بعد ذلك التاريخ لأنّ `createStudioCampaign` يرفض `dueAt <= startsAt` (الافتراضيّ `new Date()`).
-    // انحدار زمنيّ ظهر في CI بتاريخ ٢٥/٨/٢٦ بعد 12:00 UTC. النسبيّ يبقى دائماً في المستقبل.
+    // التقريب إلى ثانية كاملة (`Math.floor(_/1000)*1000`) ضروريّ: MySQL DATETIME يقتطع ms،
+    // فمقارنة `campaign.dueAt` (كائن ذاكرة بـms) مع `rows[].dueAt` (كائن قراءةٍ من DB بلا ms)
+    // كانت تفشل في `.toEqual` deep-check.
     const campaign = await createStudioCampaign(manager, {
       name: "اكتمال صور الصيف",
       status: "ACTIVE",
-      dueAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      dueAt: new Date(Math.floor(Date.now() / 1000) * 1000 + 30 * 24 * 60 * 60 * 1000),
     });
     expect(campaign.startsAt).toEqual(expect.any(Date));
 
@@ -250,10 +252,11 @@ describe("product studio governed workflow", () => {
       status: "ACTIVE",
     })).rejects.toMatchObject({ code: "FORBIDDEN" });
     // dueAt نسبيّ (اليوم + ٣٠ يوماً) — لا انفجار زمنيّ حين يمرّ التاريخ الثابت.
+    // ms=0 عمداً لتفادي انحراف dueAt المخزَّن مقابل المرسَل (MySQL DATETIME بلا ms).
     await expect(transitionStudioCampaign(manager, {
       campaignId: draft.campaignId,
       status: "ACTIVE",
-      dueAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      dueAt: new Date(Math.floor(Date.now() / 1000) * 1000 + 30 * 24 * 60 * 60 * 1000),
     })).resolves.toMatchObject({ status: "ACTIVE", startsAt: expect.any(Date) });
     await expect(transitionStudioCampaign(manager, {
       campaignId: draft.campaignId,
