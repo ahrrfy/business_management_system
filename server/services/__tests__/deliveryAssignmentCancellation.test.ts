@@ -303,7 +303,7 @@ describe("cancelDeliveryAssignment — عقد الإلغاء التشغيلي", 
           )
       )[0];
       expect(cancelledEvent).toBeTruthy();
-      expect(await listConsignmentsForParty(1, true)).toHaveLength(0);
+      expect((await listConsignmentsForParty(1, true)).rows).toHaveLength(0);
 
       expect(
         (await db().select().from(s.invoices).where(eq(s.invoices.id, 100)))[0],

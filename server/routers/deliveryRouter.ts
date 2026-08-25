@@ -96,10 +96,23 @@ export const deliveryRouter = router({
     }),
 
   partyFinancials: deliveryReadProcedure
-    .input(z.object({ partyId: z.number().int().positive() }))
+    .input(z.object({
+      partyId: z.number().int().positive(),
+      // Tier-2 #1 (٢٥/٨): ترقيمُ الأقسام الفرعيّة الثلاثة كي لا تُقطَع صامتاً عند ٣٠٠ صفٍّ.
+      ledgerLimit: z.number().int().positive().max(500).optional(),
+      ledgerCursor: z.number().int().positive().optional(),
+      allocationsLimit: z.number().int().positive().max(500).optional(),
+      allocationsCursor: z.number().int().positive().optional(),
+      eventsLimit: z.number().int().positive().max(500).optional(),
+      eventsCursor: z.number().int().positive().optional(),
+    }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
-      return getDeliveryPartyFinancials(input.partyId);
+      return getDeliveryPartyFinancials(input.partyId, {
+        ledger: { limit: input.ledgerLimit, cursor: input.ledgerCursor },
+        allocations: { limit: input.allocationsLimit, cursor: input.allocationsCursor },
+        events: { limit: input.eventsLimit, cursor: input.eventsCursor },
+      });
     }),
 
   // حسابات المناديب (دور courier) لربطها بجهة — لمنتقي الربط في نموذج الجهة (مدير).
@@ -243,22 +256,36 @@ export const deliveryRouter = router({
    * ١٨/٨). هي الشاشة المفقودة بين «جاهز للإرسال» و«تسوية المناديب»: الطرد الذي قبله المندوب
    * أو خرج به كان يختفي من كليهما فلا يعرف أحدٌ أين هو ولا كم على المندوب أن يُحاسَب عنه.
    */
+  // Tier-2 #1 (٢٥/٨): ترقيمُ keyset — الاستجابةُ الآن `{ rows, hasMore, nextCursor }` بحدٍّ ٢٠٠ افتراضياً.
   inTransit: deliveryReadProcedure
-    .input(z.object({ partyId: z.number().int().positive().optional() }).optional())
-    .query(({ input, ctx }) => listInTransitConsignments(ctx.scopedBranchId, input?.partyId ?? null)),
+    .input(z.object({
+      partyId: z.number().int().positive().optional(),
+      limit: z.number().int().positive().max(500).optional(),
+      cursor: z.number().int().positive().optional(),
+    }).optional())
+    .query(({ input, ctx }) => listInTransitConsignments(ctx.scopedBranchId, input?.partyId ?? null, { limit: input?.limit, cursor: input?.cursor })),
 
   openConsignments: deliveryReadProcedure
-    .input(z.object({ partyId: z.number().int().positive() }))
+    .input(z.object({
+      partyId: z.number().int().positive(),
+      limit: z.number().int().positive().max(500).optional(),
+      cursor: z.number().int().positive().optional(),
+    }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
-      return listOpenConsignments(input.partyId, ctx.user.role === "admin" ? null : ctx.user.branchId);
+      return listOpenConsignments(input.partyId, ctx.user.role === "admin" ? null : ctx.user.branchId, { limit: input.limit, cursor: input.cursor });
     }),
 
   consignments: deliveryReadProcedure
-    .input(z.object({ partyId: z.number().int().positive(), openOnly: z.boolean().optional() }))
+    .input(z.object({
+      partyId: z.number().int().positive(),
+      openOnly: z.boolean().optional(),
+      limit: z.number().int().positive().max(500).optional(),
+      cursor: z.number().int().positive().optional(),
+    }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
-      return listConsignmentsForParty(input.partyId, input.openOnly ?? false);
+      return listConsignmentsForParty(input.partyId, input.openOnly ?? false, { limit: input.limit, cursor: input.cursor });
     }),
 
   partyStatement: deliveryReadProcedure
