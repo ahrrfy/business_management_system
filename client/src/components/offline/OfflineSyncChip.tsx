@@ -130,11 +130,11 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
 
   const offline = connState !== "online";
   const chipTone = summary.parked > 0 || summary.needsLogin
-    ? "bg-[var(--sem-neg)] text-white"
+    ? "bg-[var(--sem-neg)] text-background"
     : summary.flushing
       ? "bg-sky-600 text-white"
       : offline
-        ? "bg-[var(--sem-warn)] text-white"
+        ? "bg-[var(--sem-warn)] text-background"
         : busy
           ? "bg-sky-600 text-white"
           : "border bg-background/90 text-muted-foreground";

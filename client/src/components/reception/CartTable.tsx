@@ -159,7 +159,7 @@ export function CartTable({
                           </span>
                         )}
                         {!isCustom && stock.isShort && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-white">
+                          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
                             {stock.availInUnit === 0
                               ? "لا يكفي لوحدة"
                               : `المتاح ${stock.availInUnit} فقط`}

@@ -547,7 +547,7 @@ export function PaymentPanel({
                 !hasShift ? "افتح وردية استقبال أوّلاً" :
                 "تحصيل المطلوب الآن وطباعة (F4)"
               }
-              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 text-sm font-black text-white shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 text-sm font-black text-background shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
               <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
             </button>

@@ -391,7 +391,7 @@ export function ProductTable({
                         </span>
                       )}
                       {!isPurchase && stock.isKnown && !stock.isOut && stock.isShort && (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-white">
+                        <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
                           {stock.availableInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${stock.availableInUnit} فقط`}
                         </span>
                       )}
