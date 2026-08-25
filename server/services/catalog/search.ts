@@ -49,12 +49,16 @@ function posVisibility(mode: "default" | "reception" | "advancedSale") {
  * الجهتان (العمود + الاستعلام) تُطبَّعان بنفس القواعد فتتم المطابقة في فضاء موحَّد:
  * «ازرق» يجد «أزرق»، و«مكتبه» تجد «مكتبة».
  */
-function foldedCol(col: MySqlColumn): SQL {
-  let expr = sql`lower(coalesce(${col}, ''))`;
+function foldedExpr(value: SQL): SQL {
+  let expr = sql`lower(coalesce(${value}, ''))`;
   for (const [from, to] of ARABIC_FOLD_PAIRS) {
     expr = sql`replace(${expr}, ${from}, ${to})`;
   }
   return expr;
+}
+
+function foldedCol(col: MySqlColumn): SQL {
+  return foldedExpr(sql`${col}`);
 }
 
 /** الأعمدة القابلة للبحث في الكتالوج — مصدر واحد لبُنية الشرط والترتيب.
@@ -82,6 +86,17 @@ function unitAliasMatches(pattern: string): SQL {
     FROM ${productUnitBarcodes} AS catalog_search_alias
     WHERE catalog_search_alias.productUnitId = ${productUnits.id}
       AND lower(coalesce(catalog_search_alias.barcode, '')) LIKE ${pattern} ESCAPE '!'
+  )`;
+}
+
+/** تطابق بديل تام للوحدة الحالية، لا لكل المتغيّر، كي يبقى ترتيب صفوف POS/الشراء صحيحاً. */
+function unitAliasEquals(normalizedCode: string): SQL {
+  const foldedAlias = foldedExpr(sql`catalog_order_alias.barcode`);
+  return sql`EXISTS (
+    SELECT 1
+    FROM ${productUnitBarcodes} AS catalog_order_alias
+    WHERE catalog_order_alias.productUnitId = ${productUnits.id}
+      AND ${foldedAlias} = ${normalizedCode}
   )`;
 }
 
@@ -200,7 +215,7 @@ function buildCatalogSearchOrder(query: string | undefined): SQL[] {
   // D2 (٣٠/٦): products.searchNorm المُولَّد ⇒ LIKE 'prefix%' يَستفيد من فهرس B-tree O(log n).
   const name = sql`coalesce(${products.searchNorm}, '')`;
   const rank = sql`case
-    when ${foldedCol(productUnits.barcode)} = ${whole} then 0
+    when ${foldedCol(productUnits.barcode)} = ${whole} OR ${unitAliasEquals(whole)} then 0
     when ${foldedCol(productVariants.sku)} = ${whole} then 1
     when ${name} LIKE ${wholePrefix} ESCAPE '!' then 2
     else 3

@@ -112,9 +112,20 @@ describe("البحث الذكي — الترتيب بالملاءمة", () => {
     expect(rows[0]?.productName).toBe("دفتر مدرسي ٩٦ ورقة");
   });
 
-  it("الباركود البديل يدخل عقد البحث المشترك في البيع والشراء", async () => {
-    expect(names(await listForPos(1, "RETAIL", "ALT-NB-96"))).toEqual(["دفتر مدرسي ٩٦ ورقة"]);
-    expect(names(await listForPurchase(1, "ALT-NB-96"))).toEqual(["دفتر مدرسي ٩٦ ورقة"]);
+  it("الباركود البديل يتصدّر أي تطابق نصّي عَرَضي في البيع والشراء", async () => {
+    await db().insert(s.products).values({ id: 6, name: "ALT-NB-96 منتج مشتّت" });
+    await db().insert(s.productVariants).values({ id: 6, productId: 6, sku: "DISTRACTOR", costPrice: "0.00" });
+    await db().insert(s.productUnits).values({
+      id: 6,
+      variantId: 6,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    });
+    await db().insert(s.productPrices).values({ productUnitId: 6, priceTier: "RETAIL", price: "1.00" });
+
+    expect((await listForPos(1, "RETAIL", "ALT-NB-96"))[0]?.productName).toBe("دفتر مدرسي ٩٦ ورقة");
+    expect((await listForPurchase(1, "ALT-NB-96"))[0]?.productName).toBe("دفتر مدرسي ٩٦ ورقة");
   });
 });
 
