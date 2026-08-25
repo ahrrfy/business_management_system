@@ -7745,6 +7745,69 @@ export const financialPeriods = mysqlTable(
 export type FinancialPeriod = typeof financialPeriods.$inferSelect;
 export type InsertFinancialPeriod = typeof financialPeriods.$inferInsert;
 
+/**
+ * لقطاتُ تقييم المخزون عند إقفال الفترة (P1-#2، ٢٥/٨).
+ *
+ * أصل المخزون في الميزانية يُقرأ **حيّاً** (`SUM(quantity × costPrice)` + الحمل بالطريق) —
+ * حركةٌ واحدة بعد إقفال الشهر تُغيّر ميزانيةَ الشهر المُقفَل بأثرٍ رجعيّ، فينحرف عن الأرباح
+ * المُرحَّلة، ولا يبقى للميزانية المقفلة أصلٌ يُعاد إنتاجه.
+ *
+ * الحلّ: `readInventoryValuation` يُلتقط في نفس معاملة `approveMonthClose` (وأيضاً في
+ * `yearEnd` لاتّساقٍ زمنيّ). صفٌّ لكل (فترة × نطاق) — «COMPANY» للشركة، أو `branchId` لفرعٍ
+ * بعينه لاحقاً. الأعمدةُ الثلاثة `totalValue`/`stockValue`/`inTransitValue` تفتح تقاريرَ
+ * ميزانيةٍ مرجعيّةً حسب التاريخ بلا إعادة حساب من مخزون اليوم.
+ *
+ * ⚠️ **غيرُ قابلٍ للتعديل** بعد الكتابة: أيّ تصحيحٍ يستلزم إلغاءَ إقفال الفترة (revision جديد)
+ * ⇒ لقطةٌ جديدة تُنسَخ للفترة الجديدة. الصفّ يبقى للسجلّ التدقيقيّ.
+ */
+export const inventoryValuationSnapshots = mysqlTable(
+  "inventoryValuationSnapshots",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** الفترةُ المُقفَلة التي التُقطت اللقطةُ لها. NULL مسموحٌ للقطاتٍ ad-hoc خارج الإقفال (شريحة لاحقة). */
+    periodLockId: bigint("periodLockId", { mode: "number" }).references(
+      () => financialPeriods.id,
+    ),
+    /** تاريخُ الأصل الذي تُمثِّله اللقطة (نهاية الفترة عادةً). */
+    cutoffDate: date("cutoffDate", { mode: "string" }).notNull(),
+    /** لحظة الالتقاط الفعليّة (قد تختلف عن cutoffDate — الالتقاطُ في وقت الاعتماد). */
+    capturedAt: timestamp("capturedAt").defaultNow().notNull(),
+    /** المُعتمِد (هو الذي شغّل الالتقاط). */
+    capturedBy: int("capturedBy")
+      .notNull()
+      .references(() => users.id),
+    /** نطاقُ اللقطة: COMPANY = مجمَّع؛ BRANCH = مقيَّد بـbranchId. */
+    scopeKey: mysqlEnum("scopeKey", ["COMPANY", "BRANCH"])
+      .default("COMPANY")
+      .notNull(),
+    /** فرعٌ محدَّد للنطاق BRANCH؛ NULL للنطاق COMPANY. */
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    /** إجمالي التقييم = المستقرّ + بالطريق. الرقمُ الذي يدخل الميزانية. */
+    totalValue: decimal("totalValue", { precision: 15, scale: 2 }).notNull(),
+    /** قيمة المستقرّ في `branchStock` وحدها. */
+    stockValue: decimal("stockValue", { precision: 15, scale: 2 }).notNull(),
+    /** قيمة الحمل بالطريق (سندات IN_TRANSIT بلقطة WAVG الحاليّة). */
+    inTransitValue: decimal("inTransitValue", { precision: 15, scale: 2 }).notNull(),
+    /**
+     * تفصيلُ الفروع (JSON) — `[{branchId, value, inTransitValue?}]`. يُخزَّن نصّياً كي يبقى
+     * قابلاً للتحقّق التاريخيّ حتى لو تغيّر تعريفُ الحقول لاحقاً.
+     */
+    branchesJson: text("branchesJson"),
+  },
+  (t) => ({
+    // صفٌّ واحد لكل (فترة × نطاق) — إعادة الالتقاط تفشل بـER_DUP_ENTRY (revision جديد يعني
+    // periodLockId جديد ⇒ صفٌّ منفصل حكماً، فلا تعارض).
+    periodScopeUq: unique("uq_valuation_period_scope").on(
+      t.periodLockId,
+      t.scopeKey,
+      t.branchId,
+    ),
+    cutoffIdx: index("idx_valuation_cutoff").on(t.cutoffDate),
+    periodIdx: index("idx_valuation_period").on(t.periodLockId),
+  }),
+);
+export type InventoryValuationSnapshot = typeof inventoryValuationSnapshots.$inferSelect;
+
 /** موافقات ائتمان مُسبَقة — يُقيِّد creditApproved بـ(customer, maxAmount, expiresAt).
  * المنطق: المدير يُنشئ صفّاً بـ(customerId, maxAmount, expiresAt). الكاشير يمرّر approvalId
  * في sale؛ الخدمة تتحقّق: customer مطابق، unpaid ≤ maxAmount، now ≤ expiresAt، consumedAt IS NULL.

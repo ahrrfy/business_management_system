@@ -1758,6 +1758,13 @@
 			"when": 1788052316000,
 			"tag": "0265_inventory_movements_signed_delta",
 			"breakpoints": true
+		},
+		{
+			"idx": 266,
+			"version": "5",
+			"when": 1788052317000,
+			"tag": "0266_inventory_valuation_snapshots",
+			"breakpoints": true
 		}
 	]
 }
