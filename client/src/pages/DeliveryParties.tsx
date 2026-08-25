@@ -310,7 +310,7 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
   // للعجوزات غير المرتبطة بإرسالية (الخادم يحرس الحالتين).
   const [consignmentId, setConsignmentId] = useState<string>("");
   const open = trpc.delivery.openConsignments.useQuery({ partyId: party.id });
-  const chosen = (open.data ?? []).find((c) => String(c.id) === consignmentId) ?? null;
+  const chosen = (open.data?.rows ?? []).find((c) => String(c.id) === consignmentId) ?? null;
   const chosenRemaining = chosen ? Math.max(0, Number(chosen.codAmount) - Number(chosen.collectedAmount)) : null;
   // IDEMPOTENCY (تدقيق ٢/٧): مفتاح ثابت لكل جلسة حوار — النقر المزدوج لا يشطب العجز مرّتين.
   const [reqId] = useState(() => crypto.randomUUID());
@@ -338,7 +338,7 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
         onChange={(e) => setConsignmentId(e.target.value)}
       >
         <option value="">عهدة سائبة (غير مرتبطة بإرسالية مفتوحة)</option>
-        {(open.data ?? []).map((c) => (
+        {(open.data?.rows ?? []).map((c) => (
           <option key={c.id} value={String(c.id)}>
             إرسالية {c.consignmentNumber} — {c.invoiceNumber ?? ""} — متبقٍّ {fmt(String(Math.max(0, Number(c.codAmount) - Number(c.collectedAmount))))} د.ع
           </option>

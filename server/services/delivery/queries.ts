@@ -3,11 +3,41 @@
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
 // لذلك قائمة «المفتوح للتوريد» تقبل branchId وتعرض فقط طرود ذلك الفرع. أما السجل الإداري العام
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
-import { and, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money } from "../money";
 import { getDeliveryFinancialSummary } from "./lifecycle";
+
+/**
+ * ⭐ Tier-2 #1 (٢٥/٨): ترقيمُ الصفحات لقوائم التوصيل — كانت الدوال أدناه تُحمّل الصفوف كلّها
+ * بلا حدٍّ ⇒ عند ~١٠ آلاف صفٍّ يتجمّد الرأس (Dashboard/شاشة الجهة). الآن كلّ قائمةٍ تُعيد
+ * `{ rows, hasMore, nextCursor }` بحدٍّ افتراضيّ ٢٠٠، مع مؤشرِ id لصفحاتٍ لاحقة.
+ *
+ * الاتّجاه: كل الدوال تُرتِّب DESC (الأحدث أوّلاً) ⇒ cursor = id الأصغر في الصفحة السابقة،
+ * و`WHERE id < cursor` يجلب ما هو أقدم. عدّ الصفوف الكامل يُتجاوَز لأنّ hasMore يُشتقّ من
+ * limit+1 حين يوجد cursor، ومن جلب دفعة واحدة حين لا يوجد.
+ */
+export interface DeliveryListPage { limit?: number; cursor?: number }
+export interface DeliveryPagedResult<T> { rows: T[]; hasMore: boolean; nextCursor: number | null }
+
+const DEFAULT_DELIVERY_LIST_LIMIT = 200;
+const MAX_DELIVERY_LIST_LIMIT = 500;
+
+function resolvePageLimit(limit?: number): number {
+  const eff = limit ?? DEFAULT_DELIVERY_LIST_LIMIT;
+  return Math.max(1, Math.min(MAX_DELIVERY_LIST_LIMIT, eff));
+}
+
+function buildPageResult<T extends { id: number | string }>(
+  rows: T[],
+  effLimit: number,
+): DeliveryPagedResult<T> {
+  const hasMore = rows.length > effLimit;
+  const page = hasMore ? rows.slice(0, effLimit) : rows;
+  const nextCursor = hasMore ? Number(page[page.length - 1]!.id) : null;
+  return { rows: page, hasMore, nextCursor };
+}
 
 /**
  * هل للجهة بوّابة؟ عضويةٌ نشطة في deliveryPartyMembers أو ربطُ الحساب القديم
@@ -71,9 +101,10 @@ export async function listReadyForDispatch(branchId: number | null) {
 
 /** التزامات الجهة القابلة لإجراء موظف: COD مُسلّم للتوريد، طرد غير محصّل للإرجاع، أو أجرة مستحقة للدفع.
  * أهلية كل إجراء مستقلة؛ ظهور الطرد هنا لا يجعله قابلاً للتوريد قبل DELIVERED. */
-export async function listOpenConsignments(partyId: number, branchId?: number | null) {
+export async function listOpenConsignments(partyId: number, branchId?: number | null, page: DeliveryListPage = {}) {
   const db = getDb();
-  if (!db) return [];
+  if (!db) return { rows: [], hasMore: false, nextCursor: null };
+  const effLimit = resolvePageLimit(page.limit);
   const feeDue = sql<string>`GREATEST(COALESCE((
     SELECT SUM(CASE
       WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount}
@@ -97,7 +128,9 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     eq(deliveryConsignments.parcelStatus, "DELIVERED"),
     sql`${feeDue} > 0`,
   );
-  return db
+  // Keyset ↓ يعتمد id (فريد ورتب DESC = الأحدث أوّلاً كما كان الترتيب الأصليّ dispatchedAt DESC
+  // implicitly عبر id — دُفعت الطرود بترتيبٍ زمنيّ فـid يوازي dispatchedAt).
+  const rows = await db
     .select({
       id: deliveryConsignments.id,
       consignmentNumber: deliveryConsignments.consignmentNumber,
@@ -129,8 +162,11 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       eq(deliveryConsignments.partyId, partyId),
       or(remittable, returnable, unpaidFee),
       branchId == null ? undefined : eq(deliveryConsignments.branchId, branchId),
+      page.cursor != null ? lt(deliveryConsignments.id, page.cursor) : undefined,
     ))
-    .orderBy(deliveryConsignments.dispatchedAt);
+    .orderBy(desc(deliveryConsignments.id))
+    .limit(effLimit + 1);
+  return buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit);
 }
 
 /**
@@ -145,13 +181,15 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
  * الشرط هنا **حالة الإغلاق وحدها** (`consignmentStatus = 'DISPATCHED'`) لا أهليّةُ إجراءٍ ماليّ:
  * هذه شاشة «أين طردي» لا شاشة «ماذا أستطيع أن أفعل به».
  */
-export async function listInTransitConsignments(branchId: number | null, partyId?: number | null) {
+export async function listInTransitConsignments(branchId: number | null, partyId?: number | null, page: DeliveryListPage = {}) {
   const db = getDb();
-  if (!db) return [];
+  if (!db) return { rows: [], hasMore: false, nextCursor: null };
+  const effLimit = resolvePageLimit(page.limit);
   const conds = [eq(deliveryConsignments.status, "DISPATCHED")];
   if (branchId != null) conds.push(eq(deliveryConsignments.branchId, branchId));
   if (partyId != null) conds.push(eq(deliveryConsignments.partyId, partyId));
-  return db
+  if (page.cursor != null) conds.push(lt(deliveryConsignments.id, page.cursor));
+  const rows = await db
     .select({
       id: deliveryConsignments.id,
       consignmentNumber: deliveryConsignments.consignmentNumber,
@@ -219,16 +257,20 @@ export async function listInTransitConsignments(branchId: number | null, partyId
     .leftJoin(users, eq(users.id, deliveryConsignments.assignedUserId))
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .where(and(...conds))
-    .orderBy(deliveryConsignments.dispatchedAt);
+    .orderBy(desc(deliveryConsignments.id))
+    .limit(effLimit + 1);
+  return buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit);
 }
 
 /** كل إرساليات جهة (تبويب «إرساليات الجهة» في شاشة التفاصيل) — بأرقام فواتيرها وتوريداتها. */
-export async function listConsignmentsForParty(partyId: number, openOnly = false) {
+export async function listConsignmentsForParty(partyId: number, openOnly = false, page: DeliveryListPage = {}) {
   const db = getDb();
-  if (!db) return [];
+  if (!db) return { rows: [], hasMore: false, nextCursor: null };
+  const effLimit = resolvePageLimit(page.limit);
   const conds = [eq(deliveryConsignments.partyId, partyId)];
-  if (openOnly) conds.push(sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`);
-  return db
+  if (openOnly) conds.push(sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`);
+  if (page.cursor != null) conds.push(lt(deliveryConsignments.id, page.cursor));
+  const rows = await db
     .select({
       id: deliveryConsignments.id,
       consignmentNumber: deliveryConsignments.consignmentNumber,
@@ -260,7 +302,9 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
     .leftJoin(deliveryRemittances, eq(deliveryConsignments.remittanceId, deliveryRemittances.id))
     .leftJoin(users, eq(deliveryConsignments.assignedUserId, users.id))
     .where(and(...conds))
-    .orderBy(desc(deliveryConsignments.id));
+    .orderBy(desc(deliveryConsignments.id))
+    .limit(effLimit + 1);
+  return buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit);
 }
 
 /** سجل توريدات جهة (٩/٨): كان أثر التوريد الوحيد إيصالاً حرارياً يُطبع مرة واحدة — سلسلة
@@ -368,12 +412,18 @@ export async function getDeliveryPartyStatement(partyId: number, from?: string, 
   };
 }
 
-export async function getDeliveryPartyFinancials(partyId: number) {
+export async function getDeliveryPartyFinancials(partyId: number, pages: { ledger?: DeliveryListPage; allocations?: DeliveryListPage; events?: DeliveryListPage } = {}) {
   const db = getDb();
   if (!db) return null;
   const party = (await db.select({ id: deliveryParties.id, name: deliveryParties.name }).from(deliveryParties).where(eq(deliveryParties.id, partyId)).limit(1))[0];
   if (!party) return null;
-  const [summary, ledger, allocations, events] = await Promise.all([
+  const ledgerLimit = resolvePageLimit(pages.ledger?.limit ?? 300);
+  const allocationsLimit = resolvePageLimit(pages.allocations?.limit ?? 300);
+  const eventsLimit = resolvePageLimit(pages.events?.limit ?? 300);
+  const ledgerCursor = pages.ledger?.cursor;
+  const allocationsCursor = pages.allocations?.cursor;
+  const eventsCursor = pages.events?.cursor;
+  const [summary, ledgerRows, allocationsRows, eventsRows] = await Promise.all([
     getDeliveryFinancialSummary(partyId),
     db.select({
       id: deliveryLedgerEntries.id,
@@ -385,7 +435,9 @@ export async function getDeliveryPartyFinancials(partyId: number) {
       amount: deliveryLedgerEntries.amount,
       notes: deliveryLedgerEntries.notes,
       occurredAt: deliveryLedgerEntries.occurredAt,
-    }).from(deliveryLedgerEntries).where(eq(deliveryLedgerEntries.partyId, partyId)).orderBy(desc(deliveryLedgerEntries.id)).limit(300),
+    }).from(deliveryLedgerEntries)
+      .where(and(eq(deliveryLedgerEntries.partyId, partyId), ledgerCursor != null ? lt(deliveryLedgerEntries.id, ledgerCursor) : undefined))
+      .orderBy(desc(deliveryLedgerEntries.id)).limit(ledgerLimit + 1),
     db.select({
       id: deliveryRemittanceLines.id,
       remittanceId: deliveryRemittanceLines.remittanceId,
@@ -400,8 +452,8 @@ export async function getDeliveryPartyFinancials(partyId: number) {
     }).from(deliveryRemittanceLines)
       .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryRemittanceLines.consignmentId))
       .innerJoin(deliveryRemittances, eq(deliveryRemittances.id, deliveryRemittanceLines.remittanceId))
-      .where(eq(deliveryConsignments.partyId, partyId))
-      .orderBy(desc(deliveryRemittanceLines.id)).limit(300),
+      .where(and(eq(deliveryConsignments.partyId, partyId), allocationsCursor != null ? lt(deliveryRemittanceLines.id, allocationsCursor) : undefined))
+      .orderBy(desc(deliveryRemittanceLines.id)).limit(allocationsLimit + 1),
     db.select({
       id: deliveryEvents.id,
       consignmentId: deliveryEvents.consignmentId,
@@ -413,9 +465,12 @@ export async function getDeliveryPartyFinancials(partyId: number) {
       occurredAt: deliveryEvents.occurredAt,
     }).from(deliveryEvents)
       .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryEvents.consignmentId))
-      .where(eq(deliveryConsignments.partyId, partyId))
-      .orderBy(desc(deliveryEvents.id)).limit(300),
+      .where(and(eq(deliveryConsignments.partyId, partyId), eventsCursor != null ? lt(deliveryEvents.id, eventsCursor) : undefined))
+      .orderBy(desc(deliveryEvents.id)).limit(eventsLimit + 1),
   ]);
+  const ledger = buildPageResult(ledgerRows.map((r) => ({ ...r, id: Number(r.id) })), ledgerLimit);
+  const allocations = buildPageResult(allocationsRows.map((r) => ({ ...r, id: Number(r.id) })), allocationsLimit);
+  const events = buildPageResult(eventsRows.map((r) => ({ ...r, id: Number(r.id) })), eventsLimit);
   return { party, summary, ledger, allocations, events };
 }
 

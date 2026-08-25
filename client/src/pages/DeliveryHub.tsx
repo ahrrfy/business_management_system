@@ -68,8 +68,8 @@ import {
  */
 
 type ReadyOrder = RouterOutputs["delivery"]["readyForDispatch"][number];
-type OpenConsignment = RouterOutputs["delivery"]["openConsignments"][number];
-type InTransitRow = RouterOutputs["delivery"]["inTransit"][number];
+type OpenConsignment = RouterOutputs["delivery"]["openConsignments"]["rows"][number];
+type InTransitRow = RouterOutputs["delivery"]["inTransit"]["rows"][number];
 type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 
 /** إيصال تسوية توصيل حراري عند التوريد. */
@@ -114,7 +114,7 @@ export default function DeliveryHub() {
   useEffect(() => {
     setTab(readTabFromSearch(search));
   }, [search]);
-  const transitCount = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 30_000 }).data?.length ?? 0;
+  const transitCount = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 30_000 }).data?.rows.length ?? 0;
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
       <PageHeader
@@ -394,7 +394,7 @@ function InTransitTab() {
   // ── Filtering ──
   const [stateFilter, setStateFilter] = useState<ConsignmentViewKey | "ALL">("ALL");
   const rowsWithView = useMemo(() => {
-    return (rows.data ?? []).map((r) => ({
+    return (rows.data?.rows ?? []).map((r) => ({
       ...r,
       viewKey: deriveConsignmentView({
         parcelStatus: r.parcelStatus,
@@ -1087,7 +1087,8 @@ function SettleTab() {
     onError: (e) => notify.err(e),
   });
 
-  const list = cons.data ?? [];
+  const list = cons.data?.rows ?? [];
+  const listHasMore = cons.data?.hasMore ?? false;
   const partyName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "";
   const partyRow = obligations.data?.find((p) => String(p.partyId) === partyId);
 

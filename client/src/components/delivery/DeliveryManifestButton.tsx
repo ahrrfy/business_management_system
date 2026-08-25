@@ -40,7 +40,7 @@ export function DeliveryManifestButton({
    * (`ASSIGNED`/`ACCEPTED`/`PICKED_UP`/`OUT_FOR_DELIVERY`) ونستثني ما أُعلن رجوعُه.
    */
   const HANDOVER_ELIGIBLE = new Set(["ASSIGNED", "ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"]);
-  const handoverRows = (q.data ?? []).filter((r) =>
+  const handoverRows = (q.data?.rows ?? []).filter((r) =>
     HANDOVER_ELIGIBLE.has(r.parcelStatus ?? "") && r.returnDeclaredAt == null,
   );
   const rows = onlyConsignmentIds && onlyConsignmentIds.length > 0

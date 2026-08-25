@@ -260,7 +260,8 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
     onSuccess: () => { notify.ok("تم تحديث إسناد الطرد"); void utils.delivery.consignments.invalidate({ partyId }); },
     onError: (e) => notify.err(e),
   });
-  const list = q.data ?? [];
+  const list = q.data?.rows ?? [];
+  const listHasMore = q.data?.hasMore ?? false;
   const drivers = (members.data ?? []).filter((m) => m.isActive && m.memberRole === "DRIVER");
   return (
     <div className="space-y-3">
