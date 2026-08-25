@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
 import type { InvoiceLine, InvoiceType, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
-import { barcodeSearchVisualClass } from "@/components/scan/BarcodeSearchCue";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
@@ -254,7 +254,12 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
     <div ref={wrapRef} className="relative">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
-          <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+          {/* توحيد بصريّ (٢٥/٨): استعمال `barcodeSearchInputClass` + `<BarcodeSearchCue />` كنمطٍ موحَّد
+              عبر كلّ الشاشات (Reception/PrintPOS/POS/Bundle/Studio/Production/WorkOrders). كانت هذه
+              الشاشة تستعمل `barcodeSearchVisualClass` الاستيلائيّ وحده (بلا شارةٍ داخلية) فتظهر
+              مختلفةً بصرياً عن نظيراتها. أيقونة البحث + زرّ المسح انتقلا للجهة الأخرى (المسار
+              المُلائم لـRTL) لتفسحا للشارة موقعها القياسي على `right-2`. */}
+          <span aria-hidden className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-muted-foreground">
             <Search aria-hidden className="size-4" />
           </span>
           <Input
@@ -266,7 +271,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
               if (results.length > 0) setShowDrop(true);
             }}
             placeholder="ابحث بالاسم أو SKU أو امسح الباركود..."
-            className={`h-11 pe-10 ps-4 text-sm ${barcodeSearchVisualClass}`}
+            className={`h-11 ps-10 text-sm ${barcodeSearchInputClass}`}
             aria-label="بحث المنتجات"
           />
           {query && (
@@ -277,11 +282,12 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                 setQuery("");
                 inputRef.current?.focus();
               }}
-              className="absolute start-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-sm text-muted-foreground hover:bg-muted"
+              className="absolute start-9 top-1/2 -translate-y-1/2 rounded-md p-1 text-sm text-muted-foreground hover:bg-muted"
             >
               <X aria-hidden className="size-4" />
             </button>
           )}
+          <BarcodeSearchCue />
         </div>
         <div className="flex w-full shrink-0 gap-2 sm:w-auto">
           <div className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-primary/50 bg-primary/10 px-3 text-xs font-bold text-primary sm:flex-none">
