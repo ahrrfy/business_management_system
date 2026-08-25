@@ -112,7 +112,7 @@ describe("إعادة الإسناد بعد الإلغاء — تبديل الم�
     expect(await balanceOf()).toBe(20000);
 
     // والطرد يظهر بالطريق باسم الجهة الجديدة.
-    const inTransit = await listInTransitConsignments(1);
+    const { rows: inTransit } = await listInTransitConsignments(1);
     expect(inTransit).toHaveLength(1);
     expect(inTransit[0].partyName).toBe("مندوب ثانٍ");
 

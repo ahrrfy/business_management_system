@@ -281,10 +281,10 @@ describe("delivery COD — money path", () => {
     expect(await partyBalance(partyId)).toBe("0.00");
     const stockBefore = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))).limit(1))[0];
 
-    const returnQueue = await listOpenConsignments(partyId, 1);
+    const { rows: returnQueue } = await listOpenConsignments(partyId, 1);
     expect(returnQueue.find((c) => Number(c.id) === disp.consignmentId)?.parcelStatus).toBe("ASSIGNED");
     await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-1" });
-    expect((await listOpenConsignments(partyId, 1)).some((c) => Number(c.id) === disp.consignmentId)).toBe(false);
+    expect((await listOpenConsignments(partyId, 1)).rows.some((c) => Number(c.id) === disp.consignmentId)).toBe(false);
     expect(await partyBalance(partyId)).toBe("0.00"); // العهدة عُكِست
     const inv = await invoice(disp.invoiceId);
     expect(inv.status).toBe("RETURNED");
