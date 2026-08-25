@@ -5,7 +5,7 @@ import { hashPassword, verifyPassword } from "../../auth/password";
 import { getDb } from "../../db";
 import {
   changePassword,
-  createUser,
+  createUser as createUserService,
   getUser,
   listUsers,
   resetUserPassword,
@@ -17,6 +17,14 @@ import {
 const actor = { userId: 1, branchId: 1 };
 /** فاعل بديل (مدير آخر) لاختبار حارس آخر مدير دون أن يصطدم بحارس «الذات». */
 const otherActor = { userId: 999, branchId: 1 };
+
+/** بيانات الاختبار القديمة لا تهتم بالفرع؛ اربطها بفرع صالح بدل تعطيل حارس الإنتاج. */
+async function createUser(
+  input: Parameters<typeof createUserService>[0],
+  acting: Parameters<typeof createUserService>[1] = actor,
+) {
+  return createUserService({ ...input, branchId: input.branchId ?? 1 }, acting);
+}
 
 const TABLES = ["auditLogs", "users", "branches"];
 

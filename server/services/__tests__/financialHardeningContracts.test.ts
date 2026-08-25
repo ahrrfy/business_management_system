@@ -31,8 +31,10 @@ describe("financial hardening source contracts", () => {
       "import {",
       "branches,",
       "async function assertUserBranchAssignmentTx(",
-      "await assertUserBranchAssignmentTx(tx, input.branchId, roleValue);",
-      "await assertUserBranchAssignmentTx(tx, input.branchId, (nextRole ?? existing.role) as Role);",
+      "const assignedBranchId = input.branchId ?? _actor.branchId ?? null;",
+      "await assertUserBranchAssignmentTx(tx, assignedBranchId, roleValue);",
+      "const assignedBranchId = input.branchId !== undefined ? input.branchId : existing.branchId;",
+      "await assertUserBranchAssignmentTx(tx, assignedBranchId, (nextRole ?? existing.role) as Role);",
       "لا يمكن",
     ]);
   });
@@ -52,7 +54,7 @@ describe("financial hardening source contracts", () => {
     expect(payrollRouter).toContain("attachmentUrl: z.string().max(3_000_000).nullish()");
   });
 
-  it("keeps dependency security overrides active under pnpm 11", () => {
+  it("keeps dependency security overrides active under CI pnpm", () => {
     const workspace = read("pnpm-workspace.yaml");
     const packageJson = read("package.json");
     expect(packageJson).toContain('"uuid@<11.1.1": ">=11.1.1"');

@@ -271,7 +271,9 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Actor
       roleValue = r.baseRole as Role;
       customRoleId = Number(r.id);
     }
-    await assertUserBranchAssignmentTx(tx, input.branchId, roleValue);
+    // عند غياب branchId صراحةً، يرث الحساب فرع الفاعل الموثق؛ الفاعل العالمي لا يمنح فرعاً ضمنياً.
+    const assignedBranchId = input.branchId ?? _actor.branchId ?? null;
+    await assertUserBranchAssignmentTx(tx, assignedBranchId, roleValue);
     try {
       const res = await tx.insert(users).values({
         openId: `local_${nanoid()}`,
@@ -282,7 +284,7 @@ export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Actor
         role: roleValue,
         customRoleId,
         loginMethod: "local",
-        branchId: input.branchId ?? null,
+        branchId: assignedBranchId,
         isActive: true,
         phone: input.phone?.trim() || null,
         jobTitle: input.jobTitle?.trim() || null,
@@ -382,9 +384,11 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
         patch.sessionsValidFrom = new Date();
       }
     }
-    if (input.branchId !== undefined) {
-      await assertUserBranchAssignmentTx(tx, input.branchId, (nextRole ?? existing.role) as Role);
-      patch.branchId = input.branchId ?? null;
+    if (input.branchId !== undefined || nextRole !== undefined) {
+      // تغيير الدور إلى غير إداري لا يجوز أن يترك الحساب بلا فرع؛ نتحقق من الفرع الفعلي النهائي.
+      const assignedBranchId = input.branchId !== undefined ? input.branchId : existing.branchId;
+      await assertUserBranchAssignmentTx(tx, assignedBranchId, (nextRole ?? existing.role) as Role);
+      if (input.branchId !== undefined) patch.branchId = input.branchId ?? null;
     }
     const requestedOverride = input.permissionsOverride === undefined
       ? undefined
