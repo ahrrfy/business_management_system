@@ -294,6 +294,7 @@ async function loadReviewCore(
     variantId: number;
     movementType: string;
     quantity: number;
+    signedDelta: number | null;
     referenceType: string | null;
     referenceId: number | null;
     notes: string | null;
@@ -307,6 +308,7 @@ async function loadReviewCore(
           variantId: inventoryMovements.variantId,
           movementType: inventoryMovements.movementType,
           quantity: inventoryMovements.quantity,
+          signedDelta: inventoryMovements.signedDelta,
           referenceType: inventoryMovements.referenceType,
           referenceId: inventoryMovements.referenceId,
           notes: inventoryMovements.notes,
@@ -440,7 +442,7 @@ async function loadReviewCore(
       : [];
     const movesAfter = allMoves.map((m) => ({
       type: MOVE_LABEL[m.movementType] ?? m.movementType,
-      qty: signedMoveQty(m.movementType, m.quantity, m.notes),
+      qty: signedMoveQty(m.movementType, m.quantity, m.notes, m.signedDelta),
       ref: m.referenceType
         ? `${m.referenceType}${m.referenceId != null ? `#${m.referenceId}` : ""}`
         : "—",

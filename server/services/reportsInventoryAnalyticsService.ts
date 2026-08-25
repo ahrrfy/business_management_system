@@ -61,13 +61,18 @@ async function netSignedOver(db: NonNullable<ReturnType<typeof getDb>>, scope: R
 
   const adjustRows = rowsOf(
     await db.execute(sql`
-      SELECT im.movementType AS movementType, im.quantity AS quantity, im.notes AS notes
+      SELECT im.movementType AS movementType, im.quantity AS quantity, im.notes AS notes, im.signedDelta AS signedDelta
       FROM ${scope}
       WHERE im.movementType = 'ADJUST'
     `),
   );
   for (const r of adjustRows) {
-    net += signedMoveQty(String(r.movementType), Number(r.quantity ?? 0), r.notes != null ? String(r.notes) : null);
+    net += signedMoveQty(
+      String(r.movementType),
+      Number(r.quantity ?? 0),
+      r.notes != null ? String(r.notes) : null,
+      r.signedDelta != null ? Number(r.signedDelta) : null,
+    );
   }
   return net;
 }
@@ -130,7 +135,7 @@ export async function getItemLedger(opts: {
   const dateTo = opts.to ? sql`AND DATE(im0.createdAt) <= ${opts.to}` : sql``;
 
   /** الحقول التي يحتاجها الجمع المُوقَّع فقط — حمولة صغيرة مهما كبر النطاق. */
-  const signFields = sql`im0.movementType AS movementType, im0.quantity AS quantity, im0.notes AS notes`;
+  const signFields = sql`im0.movementType AS movementType, im0.quantity AS quantity, im0.notes AS notes, im0.signedDelta AS signedDelta`;
 
   // الرصيد الافتتاحي: صافي كل الحركات قبل from (DATE(createdAt) < from). بلا from ⇒ صفر.
   // REP-09: الجمع هجين (موجَّه بـSQL + ADJUST بـJS) عبر netSignedOver — انظر تعليقه.
@@ -178,6 +183,7 @@ export async function getItemLedger(opts: {
         im0.movementType AS movementType,
         im0.quantity AS quantity,
         im0.notes AS notes,
+        im0.signedDelta AS signedDelta,
         im0.referenceType AS referenceType,
         im0.referenceId AS referenceId
       FROM inventoryMovements im0
@@ -189,7 +195,12 @@ export async function getItemLedger(opts: {
 
   let running = pageOpening;
   const rows: ItemLedgerRow[] = moveRows.map((r) => {
-    const signed = signedMoveQty(String(r.movementType), Number(r.quantity ?? 0), r.notes != null ? String(r.notes) : null);
+    const signed = signedMoveQty(
+      String(r.movementType),
+      Number(r.quantity ?? 0),
+      r.notes != null ? String(r.notes) : null,
+      r.signedDelta != null ? Number(r.signedDelta) : null,
+    );
     running += signed;
     const refType = r.referenceType ? String(r.referenceType) : null;
     const refId = r.referenceId == null ? null : Number(r.referenceId);

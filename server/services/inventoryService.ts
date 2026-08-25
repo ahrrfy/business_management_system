@@ -56,8 +56,20 @@ export function adjustSignedDelta(notes: string | null): number | null {
 }
 
 /** المصدر الوحيد لإشارة حركات المخزون (الكاردكس + الجرد يَستعملانه ⇒ لا تَباعُد). الكمية مخزَّنة
- *  موجبةً والاتجاه من النوع: IN/RETURN/TRANSFER_IN=+، OUT/TRANSFER_OUT=−، وADJUST من علامة النص. */
-export function signedMoveQty(movementType: string, quantity: number, notes: string | null): number {
+ *  موجبةً والاتجاه من النوع: IN/RETURN/TRANSFER_IN=+، OUT/TRANSFER_OUT=−، وADJUST من علامة النص.
+ *
+ *  ⭐ P1-#3 (٢٥/٨): يفضّل الآن `signedDelta` المخزَّن على العمود إن تُوفَّر (writers جدد يعبّئونه؛
+ *  Backfill 0265 عبّأ القديم). الاشتقاقُ من النوع/النصّ يبقى fallback للحالة القصوى (صفٌّ قديم جداً
+ *  بلا notes مطابق للpattern). القرّاء الجدد الذين يبنون تقارير SQL يستعملون `signedDelta` مباشرةً
+ *  (`SUM(signedDelta)`) بلا JS، ثمّ يتحقّقون من الصفوف NULL على حدة.
+ */
+export function signedMoveQty(
+  movementType: string,
+  quantity: number,
+  notes: string | null,
+  signedDelta?: number | null,
+): number {
+  if (signedDelta != null) return signedDelta;
   if (movementType === "ADJUST") return adjustSignedDelta(notes) ?? 0;
   const s = SIGN[movementType as DirectionalType];
   return s === undefined ? 0 : s * quantity;
@@ -272,6 +284,9 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     branchId: a.branchId,
     movementType: a.movementType,
     quantity: a.baseQuantity,
+    // ⭐ P1-#3: `signedDelta` = نفس `signedDelta` المطبَّق على `branchStock` أعلاه. يجعل تقارير
+    // المطابقة SQL خامّاً ممكنة (`SUM(signedDelta)` بلا JS). الاتّساقُ محفوظ: كلاهما مصدرٌ واحد.
+    signedDelta: signedDelta,
     referenceType: a.referenceType,
     referenceId: a.referenceId,
     relatedBranchId: a.relatedBranchId,
@@ -395,6 +410,10 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
     branchId: a.branchId,
     movementType: "ADJUST",
     quantity: Math.abs(delta),
+    // ⭐ P1-#3: نُخزّن الدلتا الموقَّعة مباشرةً — تُطابق `signMarker` النصّيّ (يبقى لأنّه يظهر للمستخدم)
+    // لكنّها الآن مستقلّةٌ عن Parsing النصّ في القرّاء الجدد. لو تعطّل نمطُ الوسم مستقبلاً، القارئُ
+    // يعتمد على العمود لا النصّ.
+    signedDelta: delta,
     referenceType: a.referenceType ?? "ADJUST",
     referenceId: a.referenceId,
     notes: a.notes

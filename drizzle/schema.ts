@@ -1349,6 +1349,11 @@ export const inventoryMovements = mysqlTable(
     ]).notNull(),
     // الكمية بالوحدة الأساس (موجبة دائماً؛ الاتجاه من النوع).
     quantity: int("quantity").notNull(),
+    // ⭐ P1-#3 (٢٥/٨): الدلتا الموقَّعة — يُعبَّأ على كل كتابة (applyMovement + setStock)، ويُستخدم
+    // كمصدرٍ رخيصٍ للـSQL لبناء تقارير المطابقة (`Σ signedDelta = رصيد الفرع`) بلا Parsing للنصّ.
+    // NULL مسموحٌ للتوافق مع الصفوف القائمة قبل هذه الهجرة (تُملأ backfill في 0265). القرّاء الجدد
+    // يفضّلونه على `signedMoveQty` — يبقى الأخير fallback نصّياً للـidempotency في القراءة القديمة.
+    signedDelta: int("signedDelta"),
     referenceType: varchar("referenceType", { length: 24 }),
     referenceId: bigint("referenceId", { mode: "number" }),
     relatedBranchId: bigint("relatedBranchId", { mode: "number" }),

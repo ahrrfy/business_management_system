@@ -1751,6 +1751,13 @@
 			"when": 1788052315000,
 			"tag": "0264_adjustment_reason_and_attachment",
 			"breakpoints": true
+		},
+		{
+			"idx": 265,
+			"version": "5",
+			"when": 1788052316000,
+			"tag": "0265_inventory_movements_signed_delta",
+			"breakpoints": true
 		}
 	]
 }

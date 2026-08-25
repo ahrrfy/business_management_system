@@ -989,6 +989,7 @@ export const inventoryRouter = router({
             referenceType: inventoryMovements.referenceType,
             referenceId: inventoryMovements.referenceId,
             notes: inventoryMovements.notes,
+            signedDelta: inventoryMovements.signedDelta,
             createdBy: inventoryMovements.createdBy,
             createdByName: users.name,
           })
@@ -1027,9 +1028,9 @@ export const inventoryRouter = router({
           relatedBranchId: r.relatedBranchId == null ? null : Number(r.relatedBranchId),
           referenceId: r.referenceId == null ? null : Number(r.referenceId),
           createdBy: r.createdBy == null ? null : Number(r.createdBy),
-          // تدقيق ١١/٨ (S2): الكمية الموقَّعة من مصدر الحقيقة الخادميّ (signedMoveQty — نفس الكاردكس/الجرد)،
-          // تشمل اتجاه ADJUST المستنبَط من علامة «(فرق ±D)» في notes. للعرض/الطباعة/التصدير الموقَّع بلا تخمينٍ عميليّ.
-          signedQty: signedMoveQty(r.movementType, r.quantity, r.notes),
+          // تدقيق ١١/٨ (S2) + P1-#3 (٢٥/٨): الكمية الموقَّعة من العمود الجديد `signedDelta` أوّلاً
+          // (يُعبَّأ على كل كتابة)، مع fallback إلى الاشتقاق من النوع/النصّ للصفوف القديمة قبل 0265.
+          signedQty: signedMoveQty(r.movementType, r.quantity, r.notes, r.signedDelta),
         })),
         total,
         hasMore,
