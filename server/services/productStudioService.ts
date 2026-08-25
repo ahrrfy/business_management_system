@@ -617,8 +617,15 @@ async function studioImageProgress(tx: StudioTx, productId: number, campaignId: 
  * المنتج خارج نطاق الحملة · اكتملت صور المنتج) — كانت رسالةً واحدة ملبّسة الأسباب،
  * فيقف المصوّر أمام «المنتج ليس ضمن حملة» بلا معرفة أيّها العلّة ولا كيف يعالجها.
  */
-async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, resolved: { productId: number; productName: string }) {
+async function claimFreshCampaignTask(
+  tx: StudioTx,
+  actor: ProductStudioActor,
+  resolved: { productId: number; productName: string; variantId: number | null; variantName: string | null },
+) {
   const productId = Number(resolved.productId);
+  const variantId = resolved.variantId == null ? null : Number(resolved.variantId);
+  // اسمُ العرض للمصوّر يجمع المنتج والبديل (إن وُجد) — الرسائل والأثر يستعملانه بلا تغييرِ عقد.
+  const displayName = resolved.variantName ? `${resolved.productName} — ${resolved.variantName}` : resolved.productName;
   const campaigns = await tx
     .select({
       id: productStudioCampaigns.id,
@@ -636,7 +643,10 @@ async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, r
     // بلا ترتيبٍ كان الاختيار يتبع ما تُرجعه MySQL أوّلاً — فيُنسَب العمل لحملةٍ عشوائية.
     .orderBy(asc(productStudioCampaigns.dueAt), asc(productStudioCampaigns.id));
   if (campaigns.length === 0) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "لست ضمن مصوّري أيّ حملةٍ نشطة — راجع المدير لإضافتك" });
+    // FORBIDDEN لا NOT_FOUND: عدم العضويّة قرارُ صلاحيةٍ (لا يخصّه الطابور) — والاختبار
+    // السابق كان يعتمد على هذا الرمز حين كان المسار السابق (backlog-based lookup) يرفض
+    // المصوّرَ غير العضو قبل الفحص. الحفاظ على FORBIDDEN يُبقي عقد الرمز متسقاً.
+    throw new TRPCError({ code: "FORBIDDEN", message: "لست ضمن مصوّري أيّ حملةٍ نشطة — راجع المدير لإضافتك" });
   }
   let branchMismatchCount = 0;
   let outOfScopeCount = 0;
@@ -649,29 +659,38 @@ async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, r
       branchMismatchCount++;
       continue;
     }
-    // «المنتج مكتمل الصور» = صفٌّ **موجود** خارج شرط الناقص، لكن ضمن نطاق الحملة.
-    // نُميّزه عن «خارج النطاق» بفحصٍ صريح: نطاقٌ مطابق أوّلاً ثمّ اكتمالٌ ثانياً.
-    const [inScopeAndMissing] = await tx
+    // بعد هجرة 0268 صار المفتاح الفريد يعزل كلّ (productId, variantScope)، فالفحص هنا
+    // يقيس شيئين: نطاقُ الحملة، وعددُ الصور المعتمدة للمنتج مقارنةً بـ`requiredImages`.
+    // وجودُ مهمّةٍ نشطةٍ **لبديلٍ آخر** لا يمنع إنشاءَ مهمّةٍ للبديل الحاليّ (المفتاحُ مختلف).
+    // فحصُ «هذا البديل بلا مهمّة نشطة» يقع في `claimStudioProductByBarcode` أعلاه —
+    // إن وصلنا إلى هنا فالمهمّةُ غير موجودة لهذا البديل بعد.
+    const requiredImages = Math.max(1, Number(campaign.requiredImages ?? 1));
+    const [inScopeRow] = await tx
       .select({ id: products.id, name: products.name, description: products.description })
       .from(products)
-      .where(and(eq(products.id, productId), missingStudioProductConditions(Number(campaign.requiredImages ?? 1)), campaignScopeCondition(campaign)))
+      .where(and(eq(products.id, productId), eq(products.isActive, true), campaignScopeCondition(campaign)))
       .limit(1);
-    if (!inScopeAndMissing) {
-      // فرّق بين خارج النطاق واكتمال الصور — اكتمالٌ حين يقع المنتج داخل النطاق فقط.
-      const [inScopeIgnoringMissing] = await tx
-        .select({ id: products.id })
-        .from(products)
-        .where(and(eq(products.id, productId), eq(products.isActive, true), campaignScopeCondition(campaign)))
-        .limit(1);
-      if (inScopeIgnoringMissing) completedCount++;
-      else outOfScopeCount++;
+    if (!inScopeRow) {
+      outOfScopeCount++;
       continue;
     }
-    const inScope = inScopeAndMissing;
+    const [approvedCount] = await tx
+      .select({ n: sql<number>`count(*)` })
+      .from(productImages)
+      .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")));
+    if (Number(approvedCount?.n ?? 0) >= requiredImages) {
+      completedCount++;
+      continue;
+    }
+    const inScope = inScopeRow;
     const [created] = await tx
       .insert(productImageJobs)
       .values({
         productId,
+        // البديلُ يُحفَظ على المهمّة فتذهب الصورةُ إليه على approve (`task.variantId` يمرَّر
+        // إلى `productImages.variantId`). المفتاح الفريد الجديد (0268) يعزل كل بديلٍ عن
+        // زميله بلا تصادم — راجع تعليق `oneActivePerProduct` في schema.
+        variantId,
         campaignId: Number(campaign.id),
         branchId: Number(campaign.branchId),
         sourceProductHash: productContentHash(inScope),
@@ -689,30 +708,30 @@ async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, r
       })
       .$returningId()
       .catch((error: unknown) => {
-        // ماسحان متزامنان على منتجٍ بلا مهمة: القيد الفريد (productId, activeSlot) يمنع
-        // التكرار، لكنّ الخطأ الخام كان يصل الخاسرَ عطلاً داخلياً بدل «بيد زميل».
+        // ماسحان متزامنان على البديل نفسه: القيد الفريد (productId, variantScope, activeSlot)
+        // يمنع التكرار، لكنّ الخطأ الخام كان يصل الخاسرَ عطلاً داخلياً بدل «بيد زميل».
         if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
-          throw new TRPCError({ code: "CONFLICT", message: `«${resolved.productName}» فتحه زميلٌ قبلك للتوّ` });
+          throw new TRPCError({ code: "CONFLICT", message: `«${displayName}» فتحه زميلٌ قبلك للتوّ` });
         }
         throw error;
       });
     const taskId = Number(created.id);
-    await tx.insert(auditLogs).values(auditValues(actor, "productStudio.claimByBarcode.created", taskId, { productId, campaignId: Number(campaign.id) }));
-    return { taskId, productName: resolved.productName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id))) };
+    await tx.insert(auditLogs).values(auditValues(actor, "productStudio.claimByBarcode.created", taskId, { productId, variantId, campaignId: Number(campaign.id) }));
+    return { taskId, productName: displayName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id))) };
   }
   // ترتيبُ التشخيص من الأخصّ إلى الأعمّ: «اكتملت» يسبق «خارج النطاق» يسبق «فرعٌ آخر»،
   // فالمصوّر يقرأ سبباً واحداً محدَّداً بدل عدّة سببٍ عامّ محتمل.
   if (completedCount > 0) {
-    throw new TRPCError({ code: "NOT_FOUND", message: `«${resolved.productName}» اكتملت صوره المعتمَدة في حملتك` });
+    throw new TRPCError({ code: "NOT_FOUND", message: `«${displayName}» اكتملت صوره المعتمَدة في حملتك` });
   }
   if (outOfScopeCount > 0) {
-    throw new TRPCError({ code: "NOT_FOUND", message: `«${resolved.productName}» خارج نطاق حملاتك النشطة — تحقّق من فئة المنتج مع المدير` });
+    throw new TRPCError({ code: "NOT_FOUND", message: `«${displayName}» خارج نطاق حملاتك النشطة — تحقّق من فئة المنتج مع المدير` });
   }
   if (branchMismatchCount > 0) {
-    throw new TRPCError({ code: "FORBIDDEN", message: `«${resolved.productName}»: حملاتك في فرعٍ آخر — راجع المدير` });
+    throw new TRPCError({ code: "FORBIDDEN", message: `«${displayName}»: حملاتك في فرعٍ آخر — راجع المدير` });
   }
   // احتياط: لا حملات مطابقة لأيّ سبب — يحدث حين تتغيّر الحملات بين استعلامَين.
-  throw new TRPCError({ code: "NOT_FOUND", message: `«${resolved.productName}» ليس ضمن حملة تصوير نشطة مُسنَدة إليك` });
+  throw new TRPCError({ code: "NOT_FOUND", message: `«${displayName}» ليس ضمن حملة تصوير نشطة مُسنَدة إليك` });
 }
 
 /**
@@ -726,26 +745,50 @@ async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, r
 export async function claimStudioProductByBarcode(actor: ProductStudioActor, barcode: string) {
   const resolved = await resolveStudioBarcode(actor, barcode);
   const productId = Number(resolved.productId);
+  const variantId = resolved.variantId == null ? null : Number(resolved.variantId);
+  // اسمُ العرض للرسائل يجمع المنتج والبديل (إن وُجد).
+  const displayName = resolved.variantName ? `${resolved.productName} — ${resolved.variantName}` : resolved.productName;
   return withStudioTx(async (tx) => {
-    const active = (
-      await tx
-        .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision })
-        .from(productImageJobs)
-        .where(and(eq(productImageJobs.productId, productId), eq(productImageJobs.activeSlot, 1)))
-        .limit(1)
-        .for("update")
-    )[0];
+    // البحثُ عن مهمّةٍ نشطة يُقيَّد بـ **البديل نفسه**، مع سماحٍ باستهداف مهمّة الطابور
+    // المستوى-الأمّ (`variantId IS NULL`) إن كان الماسحُ يمسح بديلاً ولا مهمّةَ خاصّةً بذلك
+    // البديل بعد. حتى صدور هجرة 0268 كان (productId, activeSlot) وحده يُطابق ⇒ مسحُ بديلٍ
+    // آخر من المنتج نفسه يقع على مهمّة الزميل ويصله CONFLICT. الآن كل (منتج، متغيّر)
+    // مستقلٌّ بمفتاحه الفريد، ومهمّةُ الطابور تظلّ «قابلةً للترقية» إلى بديلٍ محدَّد.
+    //
+    // الأولويّة: مهمّةٌ خاصّةٌ بالبديل (variantId=Y) تُقدَّم على مهمّة الأمّ (NULL)،
+    // فالمصوّر يعمل على عمله المُسنَد قبل أن يسحب من الطابور.
+    const specificMatch = variantId == null
+      ? null
+      : (
+          await tx
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .from(productImageJobs)
+            .where(and(eq(productImageJobs.productId, productId), eq(productImageJobs.activeSlot, 1), eq(productImageJobs.variantId, variantId)))
+            .limit(1)
+            .for("update")
+        )[0];
+    const parentMatch = specificMatch
+      ? undefined
+      : (
+          await tx
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .from(productImageJobs)
+            .where(and(eq(productImageJobs.productId, productId), eq(productImageJobs.activeSlot, 1), isNull(productImageJobs.variantId)))
+            .limit(1)
+            .for("update")
+        )[0];
+    const active = specificMatch ?? parentMatch;
     if (!active) {
-      // لا مهمّة نشطة ⇒ نُنشئها فوراً إن كان المنتج داخل نطاق حملةٍ نشطة والماسحُ أحد
+      // لا مهمّة نشطة لهذا البديل ⇒ نُنشئها فوراً إن كان المنتج داخل نطاق حملةٍ نشطة والماسحُ أحد
       // مصوّريها ولم يبلغ المنتج عدد الصور المطلوب. بدون هذا كان المصوّر يقف عاجزاً حتى
       // يُولّد المدير الطابور يدوياً — وهو ما يكسر انسيابية «امسح ثم صوّر».
       return claimFreshCampaignTask(tx, actor, resolved);
     }
     if (Number(active.assignedTo) === actor.userId) {
-      return { taskId: Number(active.id), productName: resolved.productName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId))) };
+      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId))) };
     }
     if (active.assignedTo != null) {
-      throw new TRPCError({ code: "CONFLICT", message: `«${resolved.productName}» بيد زميلٍ آخر الآن` });
+      throw new TRPCError({ code: "CONFLICT", message: `«${displayName}» بيد زميلٍ آخر الآن` });
     }
     // فحصُ الفرع وحده هنا: `assertTaskAccess` تفشل مغلقةً على صفٍّ **بلا منفّذ**
     // (`Number(null) === 0` لا يساوي معرّف أحد) — وهو بالضبط ما يعنيه السحب.
@@ -767,14 +810,25 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     if (!member && !isManager(actor)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لستَ ضمن مصوّري هذه الحملة" });
     }
+    // ترقيةُ variantId إن كانت المهمّةُ في الطابور الأمّ (NULL) والماسحُ يمسح بديلاً محدَّداً:
+    // الصورةُ ستذهب لهذا البديل بالتحديد (approve يمرّرها إلى productImages.variantId).
+    // بلا الترقية كانت مهمّةُ الطابور تظلّ بلا variantId فتُنشَر الصورةُ على مستوى الأمّ
+    // فتُعرض لكل البدائل — نقيض «صورةٌ لكل بديل».
+    const upgradeVariant = variantId != null && active.variantId == null;
     await tx
       .update(productImageJobs)
-      .set({ assignedTo: actor.userId, assignedBy: actor.userId, assignedAt: new Date(), revision: sql`${productImageJobs.revision} + 1` })
+      .set({
+        assignedTo: actor.userId,
+        assignedBy: actor.userId,
+        assignedAt: new Date(),
+        ...(upgradeVariant ? { variantId } : {}),
+        revision: sql`${productImageJobs.revision} + 1`,
+      })
       .where(eq(productImageJobs.id, active.id));
     await tx.insert(auditLogs).values(
-      auditValues(actor, "productStudio.claimByBarcode", Number(active.id), { productId, barcode: barcode.slice(0, 64), campaignId: Number(active.campaignId) }),
+      auditValues(actor, "productStudio.claimByBarcode", Number(active.id), { productId, variantId, upgradedFromParent: upgradeVariant, barcode: barcode.slice(0, 64), campaignId: Number(active.campaignId) }),
     );
-    return { taskId: Number(active.id), productName: resolved.productName, claimed: true as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, Number(active.campaignId))) };
+    return { taskId: Number(active.id), productName: displayName, claimed: true as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, Number(active.campaignId))) };
   });
 }
 

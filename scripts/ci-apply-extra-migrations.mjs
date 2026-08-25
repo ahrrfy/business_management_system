@@ -148,6 +148,12 @@ const EXTRA_MIGRATIONS = [
   //      CI/الاختبار القيدَ القديم فيسقط كل تراجعٍ بـER_CHECK_CONSTRAINT_VIOLATED بينما الإنتاج
   //      (مسار migrator) يعمل. **يجب أن يبقى بعد 0057_0060 في الترتيب.** idempotent وآمن للتكرار.
   "drizzle/migrations/0226_price_wave_revert.sql",
+  // ٢٥/٨/٢٦: صور مستقلّة لكل بديل/متغيّر — يُبدّل مفتاحاً فريداً على `productImageJobs`
+  // بمفتاحٍ مركَّبٍ يستعمل عموداً مولَّداً STORED (`variantScope = COALESCE(variantId, 0)`).
+  // `db:push` لا يُمثّل GENERATED columns، فيبني الجدول بعمودٍ عاديّ نصّياً ⇒ صراعُ نمطٍ
+  // بين المخطط والقيد الفريد. هذه الهجرة idempotent (تسقط المفتاح القديم بعد التحقّق
+  // من وجوده، وتضيف العمود المولّد والمفتاح الجديد بحرّاس INFORMATION_SCHEMA).
+  "drizzle/migrations/0268_studio_variant_scoped_jobs.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
