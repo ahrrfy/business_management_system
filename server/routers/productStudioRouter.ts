@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
 
 function actor(ctx: {
   user: {
@@ -84,6 +84,22 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => createStudioCampaign(actor(ctx), input)),
+  /**
+   * تعديلُ بيانات حملةٍ نشطة أو مسوَّدة: الاسم، عدد الصور المطلوبة، والمواعيد.
+   * كلّ الحقول اختياريّة (مسار PATCH)؛ الحمولةُ الفارغة مرفوضة. الحالة والفرع والنطاق
+   * مسائل مستقلّة لها مساراتها.
+   */
+  updateCampaignDetails: productStudioManagerProcedure
+    .input(
+      z.object({
+        campaignId,
+        name: z.string().trim().min(3).max(180).optional(),
+        requiredImages: z.number().int().min(1).max(10).optional(),
+        startsAt: z.coerce.date().nullable().optional(),
+        dueAt: z.coerce.date().nullable().optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => updateStudioCampaignDetails(actor(ctx), input)),
   transitionCampaign: productStudioManagerProcedure
     .input(z.object({
       campaignId,

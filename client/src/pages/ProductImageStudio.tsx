@@ -274,6 +274,14 @@ export default function ProductImageStudio() {
   const [offlineProfile, setOfflineProfile] = useState<OfflineProfile | null | undefined>(undefined);
   const [inlineAssigneeId, setInlineAssigneeId] = useState("");
   const [cancelReason, setCancelReason] = useState("");
+  // نموذجُ تعديل بيانات الحملة (اسم/عدد صور/مواعيد) — يفتحه المدير بحاجةٍ عمليّة
+  // (اكتشاف أنّ منتجاتٍ تحتاج أكثر من صورة بعد بدء الحملة). حالةٌ محلّية بلا مسودةٍ
+  // خادمية: يعبّئها زرّ «تعديل» من الحملة المحمّلة، ويُصفّرها الحفظ.
+  const [campaignEditOpen, setCampaignEditOpen] = useState(false);
+  const [editCampaignName, setEditCampaignName] = useState("");
+  const [editCampaignRequired, setEditCampaignRequired] = useState("");
+  const [editCampaignStartsAt, setEditCampaignStartsAt] = useState("");
+  const [editCampaignDueAt, setEditCampaignDueAt] = useState("");
   // إعادةُ إسنادٍ لمهمّةٍ عالقة — القيمة الفارغة تعني «إلى الطابور المفتوح».
   const [reassignAssigneeId, setReassignAssigneeId] = useState("");
   const [reassignReason, setReassignReason] = useState("");
@@ -661,6 +669,14 @@ export default function ProductImageStudio() {
     onSuccess: async (result) => {
       // «تبقّى» صريحٌ لأنّ التوليد يجري على دفعات: بدونه يظنّ المدير أنّ الطابور اكتمل.
       notify.ok(result.createdCount > 0 ? `أُنشئت ${result.createdCount} مهمة غير مسندة${result.remaining > 0 ? ` — تبقّى ${result.remaining} منتجاً، أعد التوليد` : ""}` : "لا توجد منتجات ناقصة جديدة");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const updateCampaignDetails = trpc.productStudio.updateCampaignDetails.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(`حُدّثت الحملة: ${result.updated.join("، ")}`);
+      setCampaignEditOpen(false);
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -1392,41 +1408,120 @@ export default function ProductImageStudio() {
             </div>
 
             {selectedCampaign && (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border p-3">
-                <span className="text-sm font-medium">الحالة: {selectedCampaign.status}</span>
-                {selectedCampaign.status === "DRAFT" && (
-                  <Button
-                    className="min-h-11"
-                    disabled={offline || transitionCampaign.isPending}
-                    onClick={() => transitionCampaign.mutate({
-                      campaignId: Number(selectedCampaign.id),
-                      status: "ACTIVE",
-                      startsAt: campaignStartAt ? new Date(campaignStartAt) : null,
-                      dueAt: campaignDueAt ? new Date(campaignDueAt) : selectedCampaign.dueAt,
-                    })}
-                  >
-                    تفعيل الحملة
-                  </Button>
-                )}
-                {selectedCampaign.status === "ACTIVE" && (
-                  <Button
-                    className="min-h-11"
-                    disabled={offline || transitionCampaign.isPending}
-                    onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "COMPLETED" })}
-                  >
-                    إكمال الحملة
-                  </Button>
-                )}
-                {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
-                  <Button
-                    variant="outline"
-                    className="min-h-11"
-                    disabled={offline || transitionCampaign.isPending || backlogCancelReason.trim().length < 5}
-                    title={backlogCancelReason.trim().length < 5 ? "اكتب سبب الإلغاء في الحقل أدناه أولاً" : undefined}
-                    onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "CANCELLED", reason: backlogCancelReason })}
-                  >
-                    إلغاء الحملة ومهام طابورها
-                  </Button>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2 rounded-md border p-3">
+                  <span className="text-sm font-medium">الحالة: {selectedCampaign.status}</span>
+                  {selectedCampaign.status === "DRAFT" && (
+                    <Button
+                      className="min-h-11"
+                      disabled={offline || transitionCampaign.isPending}
+                      onClick={() => transitionCampaign.mutate({
+                        campaignId: Number(selectedCampaign.id),
+                        status: "ACTIVE",
+                        startsAt: campaignStartAt ? new Date(campaignStartAt) : null,
+                        dueAt: campaignDueAt ? new Date(campaignDueAt) : selectedCampaign.dueAt,
+                      })}
+                    >
+                      تفعيل الحملة
+                    </Button>
+                  )}
+                  {selectedCampaign.status === "ACTIVE" && (
+                    <Button
+                      className="min-h-11"
+                      disabled={offline || transitionCampaign.isPending}
+                      onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "COMPLETED" })}
+                    >
+                      إكمال الحملة
+                    </Button>
+                  )}
+                  {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                    <Button
+                      variant="outline"
+                      className="min-h-11"
+                      disabled={offline || transitionCampaign.isPending || backlogCancelReason.trim().length < 5}
+                      title={backlogCancelReason.trim().length < 5 ? "اكتب سبب الإلغاء في الحقل أدناه أولاً" : undefined}
+                      onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "CANCELLED", reason: backlogCancelReason })}
+                    >
+                      إلغاء الحملة ومهام طابورها
+                    </Button>
+                  )}
+                  {/* تعديلُ بيانات الحملة الجارية: اسم، عدد صور مطلوبة، مواعيد. مسموحٌ على
+                      DRAFT وACTIVE فقط — المُغلقة (COMPLETED/CANCELLED) لا تُعدَّل. رفعُ عدد
+                      الصور يُعيد منتجاتٍ كانت مكتملةً إلى الطابور — سلوكٌ مطلوب حين يكتشف
+                      المدير أنّ منتجاتٍ تحتاج أكثر من صورة بعد بدء العمل. */}
+                  {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                    <Button
+                      variant="outline"
+                      className="min-h-11"
+                      onClick={() => {
+                        setEditCampaignName(selectedCampaign.name);
+                        setEditCampaignRequired(String(selectedCampaign.requiredImages ?? 1));
+                        setEditCampaignStartsAt(studioDatetimeLocal(selectedCampaign.startsAt));
+                        setEditCampaignDueAt(studioDatetimeLocal(selectedCampaign.dueAt));
+                        setCampaignEditOpen((open) => !open);
+                      }}
+                    >
+                      {campaignEditOpen ? "إخفاء التعديل" : "تعديل بيانات الحملة"}
+                    </Button>
+                  )}
+                </div>
+                {campaignEditOpen && (selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                  <div className="grid gap-3 rounded-md border bg-muted/20 p-3 md:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="studio-edit-campaign-name">اسم الحملة</Label>
+                      <Input id="studio-edit-campaign-name" value={editCampaignName} onChange={(event) => setEditCampaignName(event.target.value)} maxLength={180} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="studio-edit-campaign-required">عدد الصور المطلوبة لكل منتج</Label>
+                      <Input id="studio-edit-campaign-required" type="number" min={1} max={10} value={editCampaignRequired} onChange={(event) => setEditCampaignRequired(event.target.value)} />
+                      <p className="text-xs text-muted-foreground">
+                        رفعُه يُعيد منتجاتٍ اعتُمدت صورةٌ واحدةٌ فقط إلى الطابور — استعمله حين تكتشف الحاجة لأكثر من صورة بعد بدء العمل. تخفيضُه يُغلق مهامّاً كانت تنقص المنتج الذي بلغ العدد الجديد.
+                      </p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="studio-edit-campaign-start">بدء الحملة</Label>
+                      <Input id="studio-edit-campaign-start" type="datetime-local" value={editCampaignStartsAt} onChange={(event) => setEditCampaignStartsAt(event.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="studio-edit-campaign-due">موعد الإنجاز</Label>
+                      <Input id="studio-edit-campaign-due" type="datetime-local" value={editCampaignDueAt} onChange={(event) => setEditCampaignDueAt(event.target.value)} />
+                    </div>
+                    <div className="md:col-span-2 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        className="min-h-11"
+                        disabled={offline || updateCampaignDetails.isPending || editCampaignName.trim().length < 3}
+                        onClick={() => {
+                          // نبني الحمولة الفارقيّة فقط — الحقول غير المتغيّرة تُترك.
+                          const payload: {
+                            campaignId: number;
+                            name?: string;
+                            requiredImages?: number;
+                            startsAt?: Date | null;
+                            dueAt?: Date | null;
+                          } = { campaignId: Number(selectedCampaign.id) };
+                          const nameTrimmed = editCampaignName.trim();
+                          if (nameTrimmed !== selectedCampaign.name) payload.name = nameTrimmed;
+                          const required = Number(editCampaignRequired);
+                          if (Number.isFinite(required) && required !== Number(selectedCampaign.requiredImages ?? 1)) payload.requiredImages = required;
+                          const nextStartsAt = editCampaignStartsAt ? new Date(editCampaignStartsAt) : null;
+                          if (studioDatetimeLocal(nextStartsAt) !== studioDatetimeLocal(selectedCampaign.startsAt)) payload.startsAt = nextStartsAt;
+                          const nextDueAt = editCampaignDueAt ? new Date(editCampaignDueAt) : null;
+                          if (studioDatetimeLocal(nextDueAt) !== studioDatetimeLocal(selectedCampaign.dueAt)) payload.dueAt = nextDueAt;
+                          if (Object.keys(payload).length === 1) {
+                            notify.err("لا حقلَ للتعديل");
+                            return;
+                          }
+                          updateCampaignDetails.mutate(payload);
+                        }}
+                      >
+                        احفظ التعديلات
+                      </Button>
+                      <Button type="button" variant="ghost" className="min-h-11" onClick={() => setCampaignEditOpen(false)}>
+                        إلغاء
+                      </Button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}

@@ -1094,6 +1094,8 @@ export async function listStudioCampaigns(actor: ProductStudioActor) {
       status: productStudioCampaigns.status,
       startsAt: productStudioCampaigns.startsAt,
       dueAt: productStudioCampaigns.dueAt,
+      // `requiredImages` تُعاد كي يُحرِّرها المدير بلا استعلامٍ ثانٍ للحصول عليها.
+      requiredImages: productStudioCampaigns.requiredImages,
       createdAt: productStudioCampaigns.createdAt,
     })
     .from(productStudioCampaigns)
@@ -1387,6 +1389,95 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
  * «المتبقّي» ليس رقماً واحداً بل ثلاثة أرقامٍ مختلفة المعنى — لم تُصوَّر بعد، وقيد
  * التصوير، وتنتظر اعتمادك. جمعُها في رقمٍ واحد يُخفي أين يقف العمل فعلاً.
  */
+/**
+ * تعديلُ بيانات الحملة الجارية — الاسم، عدد الصور المطلوب لكل منتج، والمواعيد.
+ *
+ * قبل هذه الدالة: بعد إنشاء الحملة كان الوحيد إلغاؤها وإعادة إنشائها. الحاجة العمليّة:
+ * المدير يكتشف بعد بدء العمل أنّ بعض المنتجات تحتاج أكثر من صورة، أو أنّ التاريخ الموعود
+ * تغيّر — لا معنى لخسارة تدقيق الحملة كاملةً لأجل تصحيحٍ صغير.
+ *
+ * ما يُقبَل:
+ *   • `name` — تجميليّ، آمنٌ في كل الحالات.
+ *   • `requiredImages` — يُغيّر تعريف «ناقص» في `missingStudioProductConditions`؛
+ *     رفعُه يُعيد منتجاتٍ كانت مكتملةً إلى الطابور (السلوك المطلوب حين اكتُشفت الحاجة
+ *     لأكثر من صورة)، وتخفيضُه قد يُغلق مهمّاتٍ قائمةً بلا مساس. لا نمنع كليهما.
+ *   • `startsAt` — تعديلٌ يسبق البدء أو يُصحّح الوقت المُعلَن؛ لا يُعاد كتابة الماضي.
+ *   • `dueAt` — أهمّ حقلٍ عمليّاً؛ إشعارات المتأخّرات تعتمده مباشرةً.
+ *
+ * ما لا يُقبَل هنا:
+ *   • `branchId` — لقطة موضعٍ لا تُنقَل (يُخالف قفل الفرع في المهام المُولَّدة).
+ *   • `status` — له مسارٌ خاصّ (`transitionStudioCampaign`) يجرّ الطابور.
+ *   • `scopeKind`/`scopeCategoryId`/`scopeProductIds` — تغييرٌ يُطلّق المهام القائمة
+ *     على منتجاتٍ خارج النطاق الجديد بلا مسارِ استرداد. إن لزم فتوجّه إلى الإلغاء.
+ *
+ * الحرّاس: على حملةٍ نشطةٍ أو مسوَّدة فقط (لا COMPLETED/CANCELLED)، وعلى فرعها،
+ * وعلى مدير `productStudio`. رفضٌ لطلبٍ فارغ (بلا حقلٍ مُصرَّح).
+ */
+export async function updateStudioCampaignDetails(
+  actor: ProductStudioActor,
+  input: {
+    campaignId: number;
+    name?: string;
+    requiredImages?: number;
+    startsAt?: Date | null;
+    dueAt?: Date | null;
+  },
+) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const patch: Record<string, unknown> = {};
+  if (input.name !== undefined) {
+    const name = input.name.trim();
+    if (name.length < 3 || name.length > 180) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الحملة من ٣ إلى ١٨٠ حرفاً" });
+    }
+    patch.name = name;
+  }
+  if (input.requiredImages !== undefined) {
+    const required = Math.trunc(Number(input.requiredImages));
+    if (!Number.isSafeInteger(required) || required < 1 || required > 10) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "عدد الصور المطلوبة من ١ إلى ١٠" });
+    }
+    patch.requiredImages = required;
+  }
+  if (input.startsAt !== undefined) patch.startsAt = input.startsAt;
+  if (input.dueAt !== undefined) patch.dueAt = input.dueAt;
+  if (Object.keys(patch).length === 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا حقلَ للتعديل" });
+  }
+  return withStudioTx(async (tx) => {
+    const [campaign] = await tx.select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, input.campaignId)).limit(1).for("update");
+    if (!campaign) throw new TRPCError({ code: "NOT_FOUND", message: "حملة الاستوديو غير موجودة" });
+    assertCampaignAccess(actor, campaign);
+    if (campaign.status === "COMPLETED" || campaign.status === "CANCELLED") {
+      throw new TRPCError({ code: "CONFLICT", message: "لا يمكن تعديل حملةٍ مُغلقة" });
+    }
+    // تحقّقُ ترتيبٍ زمنيّ: يُقاس على القيم الجديدة إن قُدِّمت، وإلّا القائمة.
+    const effectiveStartsAt = patch.startsAt === undefined ? campaign.startsAt : (patch.startsAt as Date | null);
+    const effectiveDueAt = patch.dueAt === undefined ? campaign.dueAt : (patch.dueAt as Date | null);
+    if (effectiveStartsAt && effectiveDueAt && effectiveDueAt <= effectiveStartsAt) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "موعد الحملة يجب أن يكون بعد بدايتها" });
+    }
+    await tx.update(productStudioCampaigns).set(patch).where(eq(productStudioCampaigns.id, input.campaignId));
+    const oldSnapshot: Record<string, unknown> = {};
+    const newSnapshot: Record<string, unknown> = {};
+    for (const key of Object.keys(patch)) {
+      oldSnapshot[key] = (campaign as unknown as Record<string, unknown>)[key];
+      const value = patch[key];
+      newSnapshot[key] = value instanceof Date ? value.toISOString() : value;
+    }
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId: Number(campaign.branchId),
+      action: "productStudio.campaign.updateDetails",
+      entityType: "productStudioCampaign",
+      entityId: String(input.campaignId),
+      oldValue: oldSnapshot,
+      newValue: newSnapshot,
+    });
+    return { campaignId: input.campaignId, updated: Object.keys(patch) };
+  });
+}
+
 /**
  * تعديلُ عضويّة الحملة بعد إنشائها — إضافة/إزالة مصوّرين على حملةٍ قائمة.
  *
