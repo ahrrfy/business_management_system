@@ -987,7 +987,7 @@ export default function SalesInvoiceNew() {
                 inputId="sales-invoice-payment-reference"
                 colors={{
                   border: "var(--border)", muted: "var(--muted)", mutedFg: "var(--muted-foreground)",
-                  fg: "var(--foreground)", amber: "var(--sem-warn)", success: "var(--sem-ok)",
+                  fg: "var(--foreground)", amber: "var(--sem-warn)", success: "var(--sem-pos)",
                 }}
               />
             </div>
