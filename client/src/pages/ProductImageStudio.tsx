@@ -297,7 +297,9 @@ export default function ProductImageStudio() {
   /** المنتج الذي بيد المصوّر الآن (من مسح الباركود) — يقود محطّة التصوير. */
   const [captured, setCaptured] = useState<ClaimedStudioProduct | null>(null);
   /** نطاق الحملة وفريقها وتوجيهها — يُرسَلان مع الإنشاء. */
-  const [campaignScope, setCampaignScope] = useState<"ALL" | "CATEGORY" | "PRODUCTS">("ALL");
+  const [campaignScope, setCampaignScope] = useState<"ALL" | "CATEGORY" | "CATEGORIES" | "PRODUCTS">("ALL");
+  const [campaignCategoryIds, setCampaignCategoryIds] = useState<number[]>([]);
+  const [campaignImagesPolicy, setCampaignImagesPolicy] = useState<"ONLY_MISSING" | "ANY_REGARDLESS">("ONLY_MISSING");
   const [campaignCategoryId, setCampaignCategoryId] = useState("");
   /** تحديدٌ مستقلّ لنطاق الحملة — كان يتشارك `bulkProductIds` مع إسناد المهام، فتتسرّب منتجات حملةٍ إلى إسنادٍ لاحق. */
   const [campaignProductIds, setCampaignProductIds] = useState<number[]>([]);
@@ -658,6 +660,8 @@ export default function ProductImageStudio() {
       setCampaignStartAt("");
       setCampaignDueAt("");
       setCampaignScope("ALL");
+      setCampaignCategoryIds([]);
+      setCampaignImagesPolicy("ONLY_MISSING");
       setCampaignCategoryId("");
       setCampaignRequiredImages("1");
       setCampaignAssigneeIds([]);
@@ -1315,8 +1319,9 @@ export default function ProductImageStudio() {
               <div className="space-y-1.5">
                 <Label htmlFor="studio-campaign-scope">نطاق الحملة</Label>
                 <AppSelect id="studio-campaign-scope" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={campaignScope} onValueChange={(value) => setCampaignScope(value as typeof campaignScope)}>
-                  <option value="ALL">كل المنتجات الناقصة</option>
-                  <option value="CATEGORY">فئة (وفئاتها الفرعية)</option>
+                  <option value="ALL">كل المنتجات</option>
+                  <option value="CATEGORY">فئة واحدة (بشجرتها)</option>
+                  <option value="CATEGORIES">عدّة فئات (بأشجارها)</option>
                   <option value="PRODUCTS">منتجات مختارة</option>
                 </AppSelect>
               </div>
@@ -1335,6 +1340,51 @@ export default function ProductImageStudio() {
                   {categoryOptions.isError && <p className="text-xs text-destructive">تعذّر جلب الفئات.</p>}
                 </div>
               )}
+              {campaignScope === "CATEGORIES" && (
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label>الفئات (عدّة — كلٌّ بشجرتها)</Label>
+                  <div className="flex flex-wrap gap-2 rounded-md border p-2">
+                    {(categoryOptions.data ?? []).length === 0 && <span className="text-xs text-muted-foreground">لا فئات متاحة.</span>}
+                    {(categoryOptions.data ?? []).map((category) => {
+                      const id = Number(category.id);
+                      const picked = campaignCategoryIds.includes(id);
+                      return (
+                        <Button
+                          key={id}
+                          type="button"
+                          size="sm"
+                          variant={picked ? "default" : "outline"}
+                          className="min-h-11"
+                          onClick={() =>
+                            setCampaignCategoryIds((current) =>
+                              picked ? current.filter((x) => x !== id) : [...current, id],
+                            )
+                          }
+                        >
+                          {category.parentId ? "— " : ""}
+                          {category.name}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {campaignCategoryIds.length > 0 ? `${campaignCategoryIds.length} فئةً مُختارة — كلٌّ تشمل أحفادها` : "اختر فئةً واحدةً على الأقلّ"}
+                  </p>
+                </div>
+              )}
+              {/* سياسةُ الصور — طلب المالك (٢٦/٨): «حملة تشمل حتى التي تحمل صور». */}
+              <div className="space-y-1.5 md:col-span-2">
+                <Label htmlFor="studio-campaign-policy">سياسة الصور</Label>
+                <AppSelect id="studio-campaign-policy" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={campaignImagesPolicy} onValueChange={(value) => setCampaignImagesPolicy(value as typeof campaignImagesPolicy)}>
+                  <option value="ONLY_MISSING">الناقصة فقط (استبعاد المكتمل تلقائياً)</option>
+                  <option value="ANY_REGARDLESS">كل المنتجات (حتى المكتمل — لإضافة صور جديدة)</option>
+                </AppSelect>
+                <p className="text-xs text-muted-foreground">
+                  {campaignImagesPolicy === "ANY_REGARDLESS"
+                    ? "المنتجات التي بلغَت `صور مطلوبة` ستدخل الطابور أيضاً — استعمله لإضافة صورةٍ ثالثة لمنتجٍ بصورتين مثلاً."
+                    : "المنتجات التي بلغَت `صور مطلوبة` مستبعَدةٌ من الطابور — السلوك القياسيّ."}
+                </p>
+              </div>
               {campaignScope === "PRODUCTS" && (
                 <div className="space-y-1.5">
                   <Label>المنتجات المختارة</Label>
@@ -1394,7 +1444,7 @@ export default function ProductImageStudio() {
               <div className="flex items-end">
                 <Button
                   className="min-h-11 w-full"
-                  disabled={offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || me.data?.branchId) || (campaignScope === "CATEGORY" && !campaignCategoryId) || (campaignScope === "PRODUCTS" && campaignProductIds.length === 0)}
+                  disabled={offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || me.data?.branchId) || (campaignScope === "CATEGORY" && !campaignCategoryId) || (campaignScope === "CATEGORIES" && campaignCategoryIds.length === 0) || (campaignScope === "PRODUCTS" && campaignProductIds.length === 0)}
                   onClick={() =>
                     createCampaign.mutate({
                       name: campaignName.trim(),
@@ -1404,8 +1454,10 @@ export default function ProductImageStudio() {
                       dueAt: campaignDueAt ? new Date(campaignDueAt) : null,
                       scopeKind: campaignScope,
                       scopeCategoryId: campaignScope === "CATEGORY" ? Number(campaignCategoryId) : null,
+                      scopeCategoryIds: campaignScope === "CATEGORIES" ? campaignCategoryIds : undefined,
                       scopeProductIds: campaignScope === "PRODUCTS" ? campaignProductIds : undefined,
                       requiredImages: Math.max(1, Math.min(10, Number(campaignRequiredImages) || 1)),
+                      imagesPolicy: campaignImagesPolicy,
                       assigneeIds: campaignAssigneeIds,
                     })
                   }
