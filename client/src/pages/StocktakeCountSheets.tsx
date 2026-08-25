@@ -5,6 +5,7 @@
  */
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/PageHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fmtDate } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
@@ -93,29 +94,20 @@ export default function StocktakeCountSheets() {
 
   return (
     <div className="space-y-4 max-w-5xl">
-      {/* شريط الإجراءات */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-bold">قوائم العدّ الورقية</h1>
-          <Badge variant="secondary" className="font-mono" dir="ltr">{code}</Badge>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Link href={`/stocktakes/${sessionId}`}>
-            <Button variant="outline">← متابعة العدّ</Button>
-          </Link>
+      <PageHeader
+        title={<span className="flex items-center gap-2">قوائم العدّ الورقية <Badge variant="secondary" className="font-mono" dir="ltr">{code}</Badge></span>}
+        description="قائمة مستقلة لكل عامل بمنتجات منطقته — بلا أرصدة دفترية (جرد أعمى). تُطبع وتُسلَّم ورقياً عند تعذّر استخدام الهاتف، ثم تُدخل الكميات في النظام. رمز الدخول (PIN) لا يُطبع على الورقة."
+        backHref={`/stocktakes/${sessionId}`}
+        backLabel="متابعة العدّ"
+        actions={<>
           <Link href="/stocktakes">
             <Button variant="outline">قائمة الجلسات</Button>
           </Link>
           <Button onClick={doPrint} disabled={!sheets.length}>
             <Printer aria-hidden className="size-4" /> طباعة القوائم
           </Button>
-        </div>
-      </div>
-
-      <p className="text-sm text-muted-foreground">
-        قائمة مستقلة لكل عامل بمنتجات منطقته — بلا أرصدة دفترية (جرد أعمى). تُطبع وتُسلَّم ورقياً عند
-        تعذّر استخدام الهاتف، ثم تُدخل الكميات في النظام. رمز الدخول (PIN) لا يُطبع على الورقة.
-      </p>
+        </>}
+      />
 
       {sheets.length === 0 ? (
         <div className="rounded-xl border bg-card p-10 text-center text-muted-foreground">
