@@ -36,11 +36,11 @@ const REASON_LABELS: Record<string, string> = {
 };
 
 function StatusBadge({ status, sent, received }: { status: string; sent: number; received: number | null }) {
-  if (status === "IN_TRANSIT") return <Badge className="bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30">بالطريق</Badge>;
+  if (status === "IN_TRANSIT") return <Badge className="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30">بالطريق</Badge>;
   if (status === "CANCELLED") return <Badge variant="secondary">ملغى</Badge>;
   if (received != null && received < sent)
-    return <Badge className="bg-orange-500/15 text-orange-700 dark:text-orange-400 border-orange-500/30">مستلَم بعجز {fmtInt(sent - received)}</Badge>;
-  return <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30">مستلَم مطابق</Badge>;
+    return <Badge className="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30">مستلَم بعجز {fmtInt(sent - received)}</Badge>;
+  return <Badge className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30">مستلَم مطابق</Badge>;
 }
 
 export default function TransfersLog() {
@@ -415,7 +415,7 @@ export default function TransfersLog() {
                             )}
                           </td>
                           <td className="p-2 text-center tabular-nums" dir="ltr">
-                            {diff == null ? "—" : diff === 0 ? <CheckCheck aria-hidden className="size-4 inline text-emerald-600" /> : <span className="text-destructive font-semibold">-{fmtInt(diff)}</span>}
+                            {diff == null ? "—" : diff === 0 ? <CheckCheck aria-hidden className="size-4 inline text-[var(--sem-pos)]" /> : <span className="text-destructive font-semibold">-{fmtInt(diff)}</span>}
                           </td>
                           <td className="p-2">
                             {canReceive ? (
