@@ -14,9 +14,8 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { ChevronLeft } from "lucide-react";
 import { useMemo } from "react";
 import { useLocation } from "wouter";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function initials(name?: string | null): string {
   if (!name) return "؟";
@@ -81,19 +80,19 @@ export default function AssetRegister() {
                 {/* FilterField يُظهر التسمية دائماً بصرياً — aria-label وحده لا يُرى إلا في قارئ الشاشة
                     فيضيع معنى الحقل للمستخدم البصريّ عند الاختيار (نمط PR #559/#566). */}
                 <FilterField label="الفئة">
-                  <select className={selectCls} value={f.category} onChange={(e) => setF({ category: e.target.value })} aria-label="الفئة">
+                  <select className={selectClsSm} value={f.category} onChange={(e) => setF({ category: e.target.value })} aria-label="الفئة">
                     <option value="">كل الفئات</option>
                     {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
                   </select>
                 </FilterField>
                 <FilterField label="الفرع">
-                  <select className={selectCls} value={f.branchId} onChange={(e) => setF({ branchId: e.target.value })} aria-label="الفرع">
+                  <select className={selectClsSm} value={f.branchId} onChange={(e) => setF({ branchId: e.target.value })} aria-label="الفرع">
                     <option value="">كل الفروع</option>
                     {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
                   </select>
                 </FilterField>
                 <FilterField label="الحالة">
-                  <select className={selectCls} value={f.status} onChange={(e) => setF({ status: e.target.value })} aria-label="الحالة">
+                  <select className={selectClsSm} value={f.status} onChange={(e) => setF({ status: e.target.value })} aria-label="الحالة">
                     <option value="">كل الحالات</option>
                     {ASSET_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                   </select>

@@ -25,9 +25,8 @@ import { printCommissionStatementV2 } from "@/lib/printing/printCommissionV2";
 import { Calculator, Check, FileDown, Link2, Printer, RotateCcw, Trash2, TrendingUp, Undo2, Wallet } from "lucide-react";
 import { Link } from "wouter";
 import { useMemo, useState } from "react";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STATUS_LABEL: Record<string, string> = { draft: "مسوّدة", approved: "معتمدة" };
 const STATUS_CLS: Record<string, string> = { draft: "badge-stock-low", approved: "badge-status-active" };
@@ -217,7 +216,7 @@ export default function CommissionRuns() {
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <select
-              className={selectCls}
+              className={selectClsSm}
               value={effectiveId != null ? String(effectiveId) : ""}
               onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
               aria-label="كشف الشهر"

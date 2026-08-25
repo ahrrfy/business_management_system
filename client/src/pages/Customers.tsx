@@ -29,6 +29,7 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { selectClsSm } from "@/lib/ui/formStyles";
 
 // صفّ نتيجة البحث — صريح لأنّ الإجراء يُعيد اتحاداً (تقنيع التكلفة) يُفشل استدلال T في fetchAllPaged.
 type CustomerRow = RouterOutputs["customers"]["search"]["rows"][number];
@@ -42,8 +43,6 @@ const TIER_LABEL: Record<string, string> = {
   GOVERNMENT: "حكومي",
 };
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const COLLECTION_STATUS: Record<string, { label: string; variant: "neutral" | "success" | "danger" | "warning" | "info" | "secondary" }> = {
   CREDIT: { label: "رصيد دائن", variant: "success" },
@@ -484,7 +483,7 @@ export default function Customers() {
                     شكوى المالك الأصلية «الفلاتر مبعثرة» تسبب رئيسيّ لها هو غياب التسميات. */}
                 <FilterField label="النوع">
                   <select
-                    className={selectCls}
+                    className={selectClsSm}
                     value={customerType}
                     onChange={(e) => { setCustomerType(e.target.value as any); setPage(0); }}
                   >
@@ -494,7 +493,7 @@ export default function Customers() {
                 </FilterField>
                 <FilterField label="فئة السعر">
                   <select
-                    className={selectCls}
+                    className={selectClsSm}
                     value={priceTier}
                     onChange={(e) => { setPriceTier(e.target.value as any); setPage(0); }}
                   >
@@ -519,7 +518,7 @@ export default function Customers() {
                 {isElevated && (
                   <>
                     <FilterField label="حالة الرصيد">
-                      <select className={selectCls} value={balanceFilter} onChange={(e) => { setBalanceFilter(e.target.value as typeof balanceFilter); setPage(0); }}>
+                      <select className={selectClsSm} value={balanceFilter} onChange={(e) => { setBalanceFilter(e.target.value as typeof balanceFilter); setPage(0); }}>
                         <option value="">كل الأرصدة</option>
                         <option value="RECEIVABLE">لنا عليهم</option>
                         <option value="CREDIT">لهم علينا</option>
@@ -527,7 +526,7 @@ export default function Customers() {
                       </select>
                     </FilterField>
                     <FilterField label="حالة التحصيل">
-                      <select className={selectCls} value={collectionFilter} onChange={(e) => { setCollectionFilter(e.target.value as typeof collectionFilter); setPage(0); }}>
+                      <select className={selectClsSm} value={collectionFilter} onChange={(e) => { setCollectionFilter(e.target.value as typeof collectionFilter); setPage(0); }}>
                         <option value="">كل حالات التحصيل</option>
                         <option value="OVERDUE">فواتير متأخرة</option>
                         <option value="PROMISE_DUE">وعد مستحق/متأخر</option>
@@ -536,7 +535,7 @@ export default function Customers() {
                       </select>
                     </FilterField>
                     <FilterField label="الحالة الائتمانية">
-                      <select className={selectCls} value={creditFilter} onChange={(e) => { setCreditFilter(e.target.value as typeof creditFilter); setPage(0); }}>
+                      <select className={selectClsSm} value={creditFilter} onChange={(e) => { setCreditFilter(e.target.value as typeof creditFilter); setPage(0); }}>
                         <option value="">كل الحالات الائتمانية</option>
                         <option value="CASH_ONLY">نقدي فقط</option>
                         <option value="NEAR_LIMIT">بلغ 80% من الحد</option>
@@ -545,7 +544,7 @@ export default function Customers() {
                       </select>
                     </FilterField>
                     <FilterField label="نشاط الشراء">
-                      <select className={selectCls} value={inactivityDays} onChange={(e) => { setInactivityDays(e.target.value ? Number(e.target.value) as 30 | 60 | 90 : ""); setPage(0); }}>
+                      <select className={selectClsSm} value={inactivityDays} onChange={(e) => { setInactivityDays(e.target.value ? Number(e.target.value) as 30 | 60 | 90 : ""); setPage(0); }}>
                         <option value="">كل نشاطات الشراء</option>
                         <option value="30">لم يشترِ منذ 30 يوماً</option>
                         <option value="60">لم يشترِ منذ 60 يوماً</option>
@@ -553,7 +552,7 @@ export default function Customers() {
                       </select>
                     </FilterField>
                     <FilterField label="الترتيب">
-                      <select className={selectCls} value={sort} onChange={(e) => { setSort(e.target.value as typeof sort); setPage(0); }}>
+                      <select className={selectClsSm} value={sort} onChange={(e) => { setSort(e.target.value as typeof sort); setPage(0); }}>
                         <option value="NAME">ترتيب بالاسم</option>
                         <option value="BALANCE_DESC">أعلى مديونية</option>
                         <option value="OLDEST_DUE">أقدم استحقاق</option>
