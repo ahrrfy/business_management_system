@@ -344,11 +344,8 @@ export default function ExpenseNew() {
     <div className="space-y-4">
       <PageHeader
         title="مصروف جديد"
-        actions={
-          <Link href="/expenses" className="text-sm text-muted-foreground">
-            ← رجوع للمصروفات
-          </Link>
-        }
+        backHref="/expenses"
+        backLabel="رجوع للمصروفات"
       />
 
       {/* مصدر الصرف: نقدي أو صرف من المخزون (نثرية/تلف) */}

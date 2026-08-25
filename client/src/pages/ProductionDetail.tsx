@@ -77,12 +77,8 @@ export default function ProductionDetail() {
     <div className="space-y-4 max-w-4xl" dir="rtl">
       <PageHeader
         title={<>مستند إنتاج <span className="font-mono text-lg" dir="ltr">{doc.docNumber}</span></>}
-        actions={
-          <div className="flex items-center gap-3">
-            <Button variant="outline" size="sm" onClick={printDocument}><Printer aria-hidden className="size-4" /> طباعة المستند</Button>
-            <Link href="/production" className="text-sm text-muted-foreground">← رجوع</Link>
-          </div>
-        }
+        backHref="/production"
+        actions={<Button variant="outline" size="sm" onClick={printDocument}><Printer aria-hidden className="size-4" /> طباعة المستند</Button>}
       />
 
       <Card>
