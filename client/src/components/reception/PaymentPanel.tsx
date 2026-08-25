@@ -259,15 +259,15 @@ export function PaymentPanel({
         )}
 
         {isChange && paid > 0 && (
-          <span className="inline-flex items-baseline gap-1.5 rounded-md bg-emerald-500/10 px-2 py-0.5">
-            <span className="text-xs font-bold text-emerald-700">الفكّة:</span>
-            <span className="text-lg font-black tabular-nums text-emerald-700" dir="ltr">{fmt(change)}</span>
+          <span className="inline-flex items-baseline gap-1.5 rounded-md bg-[var(--sem-pos-bg)] px-2 py-0.5">
+            <span className="text-xs font-bold text-[var(--sem-pos)]">الفكّة:</span>
+            <span className="text-lg font-black tabular-nums text-[var(--sem-pos)]" dir="ltr">{fmt(change)}</span>
           </span>
         )}
         {isOwing && (
-          <span className="inline-flex items-baseline gap-1.5 rounded-md bg-amber-500/10 px-2 py-0.5">
-            <span className="text-xs font-bold text-amber-700">متبقّي:</span>
-            <span className="text-lg font-black tabular-nums text-amber-700" dir="ltr">{fmt(remaining)}</span>
+          <span className="inline-flex items-baseline gap-1.5 rounded-md bg-[var(--sem-warn-bg)] px-2 py-0.5">
+            <span className="text-xs font-bold text-[var(--sem-warn)]">متبقّي:</span>
+            <span className="text-lg font-black tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(remaining)}</span>
           </span>
         )}
         <span className={cn(
@@ -370,8 +370,8 @@ export function PaymentPanel({
             aria-label="المبلغ المدفوع"
             className={cn(
               "w-28 min-w-0 bg-transparent text-end text-lg font-black tabular-nums outline-none",
-              isOwing && "text-amber-600",
-              isChange && "text-emerald-600",
+              isOwing && "text-[var(--sem-warn)]",
+              isChange && "text-[var(--sem-pos)]",
             )}
           />
         </div>
@@ -525,7 +525,7 @@ export function PaymentPanel({
             الزبون يدفع عند الاستلام. الكاشير كان يظنّ زرّ «بدون عربون» المعطَّل يمنعه أصلاً، بينما
             زرّ «إتمام الطلب» الرئيس يعمل مباشرةً. إفصاحٌ صريحٌ يقطع الحيرة. */}
         {!deferred && !cartEmpty && sumDirect === 0 && sumCustom > 0 && paid === 0 && (
-          <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]">
             <Check aria-hidden className="size-3" /> طلبٌ مخصّصٌ — لا حاجة لعربون · اضغط «إتمام الطلب» مباشرةً
           </span>
         )}
@@ -547,7 +547,7 @@ export function PaymentPanel({
                 !hasShift ? "افتح وردية استقبال أوّلاً" :
                 "تحصيل المطلوب الآن وطباعة (F4)"
               }
-              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-4 text-sm font-black text-white shadow-md transition-colors hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 text-sm font-black text-background shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
               <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
             </button>

@@ -402,7 +402,7 @@ export default function StocktakeNew() {
               <span
                 className={`grid size-7 place-items-center rounded-full text-xs font-bold ${
                   i < step
-                    ? "bg-[var(--sem-pos)] text-white"
+                    ? "bg-[var(--sem-pos)] text-background"
                     : i === step
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted text-muted-foreground"

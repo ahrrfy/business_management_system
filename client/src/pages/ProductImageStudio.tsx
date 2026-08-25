@@ -1,5 +1,6 @@
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
+import { StudioImageExportPanel } from "@/components/product-studio/StudioImageExportPanel";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
@@ -1165,6 +1166,12 @@ export default function ProductImageStudio() {
           </CardContent>
         </Card>
       )}
+
+      {/* تصدير الصور المنشورة — للمدير فقط. يجمع صور المنتجات المعتمدة (المعدَّلة
+          والمرتَّبة) في ZIP واحد لتحميلها محلياً — للسوشيال ميديا أو الأرشيف. المصدر:
+          `productImages.reviewStatus='APPROVED'` (لا الأصل غير المُعدَّل). التسمية: اسم
+          المنتج (وبديله إن وُجد). الخدمات مستبعَدةٌ تلقائياً. */}
+      {!offline && dashboard.data?.canManage && <StudioImageExportPanel categories={categoryOptions.data ?? []} />}
 
       {/* تجهيزٌ اختياريّ لاستعادة المسودة عند الانقطاع. كان بطاقةً كاملة فوق المؤشرات
           تُعرَض لكل مستخدمٍ متصل بلا مسودات ولا مخرجَ منها؛ صار شريطاً مؤجَّلاً أسفلها. */}

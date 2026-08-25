@@ -19,18 +19,23 @@ const buttonVariants = cva(
         ghost:
           "hover:bg-accent dark:hover:bg-accent/50",
         link: "text-primary underline-offset-4 hover:underline",
-        /* — variants دلاليّة (٢٥/٨) —
-           استعمل كلٌّ منها بدل نمط `className="bg-[var(--sem-*)] hover:opacity-90"` — الأخير
-           **لا يُلغي** `hover:bg-primary/90` من متغيّر default فيصير الزرّ أزرق عند التمرير
-           (أمسكها Codex على PR #801 ثلاث مرّات). و`text-white` وحدها بلا `dark:` تسقط تحت
-           2.18:1 على الوضع الليليّ (Codex #800). التوكن `--sem-*-fg` غير معرَّف بعد؛ إلى
-           حينه: `text-background` أفضل تكيّفٍ متاح (كريميّ فاتح في الفاتح، شبه أسود في الغامق). */
+        /* — variants دلاليّة (٢٥/٨/٢٦) —
+           استعمل كلٌّ منها بدل نمط `className="bg-[var(--sem-*)] hover:opacity-90"` أو
+           `hover:bg-[var(--sem-*)]/90` — الأوّل **لا يُلغي** `hover:bg-primary/90` من variant
+           default (Codex #801 ×3)، والثاني يقصر اللون بألفا فيُسقط التباين إلى ~3.5:1 على
+           cream background (Codex #814 P2). و`text-white` وحدها تسقط تحت 2.18:1 في الغامق
+           (Codex #800/#812/#813).
+           الحلّ الثلاثيّ:
+             (١) `bg-[var(--sem-*)]` = التعبئة (تُقلَب حسب الوضع)
+             (٢) `text-background` = النصّ يعكس الوضع دائماً ⇒ تباين WCAG صحيح
+             (٣) `hover:bg-[var(--sem-*-hover)]` = تعبئة opaque مختلفة (أغمق في الفاتح، أفتح
+                  في الغامق) — بلا ألفا يقصر التباين. */
         success:
-          "bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90",
+          "bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]",
         warning:
-          "bg-[var(--sem-warn)] text-background hover:bg-[var(--sem-warn)]/90",
+          "bg-[var(--sem-warn)] text-background hover:bg-[var(--sem-warn-hover)]",
         info:
-          "bg-[var(--sem-info)] text-background hover:bg-[var(--sem-info)]/90",
+          "bg-[var(--sem-info)] text-background hover:bg-[var(--sem-info-hover)]",
       },
       size: {
         default: "h-[var(--ui-control)] px-4 py-2 has-[>svg]:px-3",
