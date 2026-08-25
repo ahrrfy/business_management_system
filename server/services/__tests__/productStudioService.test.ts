@@ -169,10 +169,16 @@ describe("product studio governed workflow", () => {
       revision: 1,
       templateVersion: 1,
     });
+    // ٢٥/٨/٢٦: كان تاريخاً ثابتاً `2026-08-25T12:00:00Z` — يوم كتابة الاختبار — فبقي يمرّ
+      // حتى بلغ الحاسوب تلك اللحظة، ومنها صار `dueAt < now()` فيرمي `createStudioCampaign`
+      // بـ«موعد الحملة يجب أن يكون بعد بدايتها» (`billing`/campaigns validator). النمط الآمن:
+      // نسبيّ للحاضر (كسطر 2358). لا `Date.now()` مباشرة في state (لا CLAUDE.md §Resume هنا،
+      // فهذا اختبارٌ لا workflow) — يقاس مرّةً وقت إنشاء الحمولة.
+      const dueAt = new Date(Date.now() + 86_400_000);
     const campaign = await createStudioCampaign(manager, {
       name: "اكتمال صور الصيف",
       status: "ACTIVE",
-      dueAt: new Date("2026-08-25T12:00:00.000Z"),
+      dueAt,
     });
     expect(campaign.startsAt).toEqual(expect.any(Date));
 
@@ -246,10 +252,11 @@ describe("product studio governed workflow", () => {
       campaignId: draft.campaignId,
       status: "ACTIVE",
     })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // كان `2026-08-29` ثابتاً — يمرّ اليوم لكن سينكسر تلقائياً بعد ٤ أيام (٢٩/٨/٢٦). دفاعياً: نسبيّ.
     await expect(transitionStudioCampaign(manager, {
       campaignId: draft.campaignId,
       status: "ACTIVE",
-      dueAt: new Date("2026-08-29T12:00:00.000Z"),
+      dueAt: new Date(Date.now() + 4 * 86_400_000),
     })).resolves.toMatchObject({ status: "ACTIVE", startsAt: expect.any(Date) });
     await expect(transitionStudioCampaign(manager, {
       campaignId: draft.campaignId,
