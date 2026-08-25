@@ -135,7 +135,7 @@ export default function DeliveryHub() {
         <button className={tabBtn(tab === "transit")} onClick={() => setTab("transit")}>
           قيد التوصيل
           {transitCount > 0 && (
-            <span className="ms-1.5 rounded-full bg-[var(--sem-warn)] px-1.5 text-[10px] font-black text-white tabular-nums">
+            <span className="ms-1.5 rounded-full bg-[var(--sem-warn)] px-1.5 text-[10px] font-black text-background tabular-nums">
               {transitCount}
             </span>
           )}
@@ -847,7 +847,7 @@ function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTran
           {QUICK_NOTES.map((n) => (
             <button key={n} type="button" onClick={() => setNote(n)} className={cn(
               "rounded-full px-2.5 py-1 text-xs font-medium transition",
-              note === n ? "bg-[var(--sem-pos)] text-white" : "bg-muted text-muted-foreground hover:bg-accent",
+              note === n ? "bg-[var(--sem-pos)] text-background" : "bg-muted text-muted-foreground hover:bg-accent",
             )}>{n}</button>
           ))}
         </div>
@@ -889,7 +889,7 @@ function FailReasonDialog({ count, pending, onCancel, onConfirm }: { count: numb
           {FAIL_REASONS.map((r) => (
             <button key={r} type="button" onClick={() => setReason(r)} className={cn(
               "rounded-full px-2.5 py-1 text-xs font-medium transition",
-              reason === r ? "bg-[var(--sem-danger)] text-white" : "bg-muted text-muted-foreground hover:bg-accent",
+              reason === r ? "bg-[var(--sem-danger)] text-background" : "bg-muted text-muted-foreground hover:bg-accent",
             )}>{r}</button>
           ))}
         </div>
@@ -938,7 +938,7 @@ function DeclareReturnDialog({ row, pending, onCancel, onConfirm }: { row: InTra
           {DECLARE_REASONS.map((r) => (
             <button key={r} type="button" onClick={() => setReason(r)} className={cn(
               "rounded-full px-2.5 py-1 text-xs font-medium transition",
-              reason === r ? "bg-[var(--sem-warn)] text-white" : "bg-muted text-muted-foreground hover:bg-accent",
+              reason === r ? "bg-[var(--sem-warn)] text-background" : "bg-muted text-muted-foreground hover:bg-accent",
             )}>{r}</button>
           ))}
         </div>

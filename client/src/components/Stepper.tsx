@@ -54,7 +54,7 @@ export function Stepper({
               <span
                 className={cn(
                   "flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
-                  done && "bg-[var(--sem-pos)] text-white",
+                  done && "bg-[var(--sem-pos)] text-background",
                   active && "bg-primary text-primary-foreground",
                   !done && !active && "bg-muted text-muted-foreground",
                 )}
