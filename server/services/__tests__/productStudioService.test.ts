@@ -169,10 +169,12 @@ describe("product studio governed workflow", () => {
       revision: 1,
       templateVersion: 1,
     });
+    // تاريخٌ ثابتٌ آمن مستقبلاً — كان `2026-08-25T12:00:00Z` وتجاوزه الوقت الفعليّ ⇒ فشلٌ
+    // حتميّ بعد ظهر ٢٠٢٦-٨-٢٥ (dueAt ≤ startsAt=now). الآن ٢٠٣٠ يحمي الاختبار من انفجارٍ زمنيّ.
     const campaign = await createStudioCampaign(manager, {
       name: "اكتمال صور الصيف",
       status: "ACTIVE",
-      dueAt: new Date("2026-08-25T12:00:00.000Z"),
+      dueAt: new Date("2030-01-01T12:00:00.000Z"),
     });
     expect(campaign.startsAt).toEqual(expect.any(Date));
 
