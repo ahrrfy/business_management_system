@@ -1,6 +1,7 @@
 import { EntityPicker } from "@/components/invoice/EntityPicker";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { ErrorState } from "@/components/PageState";
+import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -106,13 +107,15 @@ export default function SalesReturns() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">سجلّ مرتجعات البيع</h1>
-        <Link href="/purchase-returns" className="text-sm text-muted-foreground">مرتجعات الشراء ←</Link>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        البضاعة المُرتجَعة من العملاء (قيود إرجاع مرتبطة بفواتير البيع). لإنشاء مرتجع جديد استعمل زرّ «مرتجع بيع جديد».
-      </p>
+      <PageHeader
+        title="سجلّ مرتجعات البيع"
+        description="البضاعة المُرتجَعة من العملاء (قيود إرجاع مرتبطة بفواتير البيع). لإنشاء مرتجع جديد استعمل زرّ «مرتجع بيع جديد»."
+        actions={
+          <Link href="/purchase-returns">
+            <Button variant="outline" size="sm">مرتجعات الشراء ←</Button>
+          </Link>
+        }
+      />
 
       <Card>
         <CardHeader>

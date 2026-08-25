@@ -1,6 +1,7 @@
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { ListToolbar, RowActions } from "@/components/list";
 import { ErrorState } from "@/components/PageState";
+import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -119,13 +120,15 @@ export default function PurchaseReturns() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">سجلّ مرتجعات المشتريات</h1>
-        <Link href="/returns" className="text-sm text-muted-foreground">مرتجعات البيع ←</Link>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        البضاعة المُرتجَعة للموردين (قيود إرجاع ذات مورد). لإنشاء مرتجع جديد استعمل زرّ «مرتجع شراء جديد».
-      </p>
+      <PageHeader
+        title="سجلّ مرتجعات المشتريات"
+        description="البضاعة المُرتجَعة للموردين (قيود إرجاع ذات مورد). لإنشاء مرتجع جديد استعمل زرّ «مرتجع شراء جديد»."
+        actions={
+          <Link href="/returns">
+            <Button variant="outline" size="sm">مرتجعات البيع ←</Button>
+          </Link>
+        }
+      />
 
       <Card>
         <CardHeader>
