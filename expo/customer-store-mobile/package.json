@@ -70,7 +70,17 @@
     "qrcode": "^1.5.4",
     "tailwindcss": "^3.4.17",
     "typescript": "~5.9.3",
-    "vitest": "^2.1.9"
+    "vitest": "^3.2.7"
+  },
+  "pnpm": {
+    "overrides": {
+      "shell-quote": "^1.10.0",
+      "flatted": "^3.4.4",
+      "tar": "^7.5.22",
+      "rollup": "^4.63.0",
+      "@xmldom/xmldom": "^0.9.12",
+      "postcss": "^8.5.26"
+    }
   },
   "packageManager": "pnpm@9.12.0"
 }
