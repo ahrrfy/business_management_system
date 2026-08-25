@@ -492,7 +492,7 @@ function CancelModal({
               type="button"
               onClick={() => setReason(r)}
               className={`rounded-full px-2.5 py-1 text-xs font-bold transition ${
-                reason === r ? "bg-[var(--sem-neg)] text-white" : "bg-muted text-muted-foreground hover:bg-accent"
+                reason === r ? "bg-[var(--sem-neg)] text-background hover:bg-[var(--sem-neg)]/90" : "bg-muted text-muted-foreground hover:bg-accent"
               }`}
             >
               {r}
@@ -521,7 +521,7 @@ function CancelModal({
             type="button"
             onClick={() => onConfirm(reason.trim())}
             disabled={pending}
-            className="flex items-center gap-1 rounded-lg bg-[var(--sem-neg)] px-3.5 py-1.5 text-xs font-bold text-white transition hover:opacity-90 disabled:opacity-50"
+            className="flex items-center gap-1 rounded-lg bg-[var(--sem-neg)] px-3.5 py-1.5 text-xs font-bold text-background transition hover:bg-[var(--sem-neg)]/90 disabled:opacity-50"
           >
             {pending ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <X aria-hidden className="size-3.5" />}
             تأكيد الإلغاء
