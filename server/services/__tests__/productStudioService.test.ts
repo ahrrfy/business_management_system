@@ -2277,6 +2277,50 @@ describe("product studio governed workflow", () => {
     await expect(claimStudioProductByBarcode(otherWorker, "6001000000772")).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
+  it("⭐ بديلان في المنتج نفسه — كلٌّ يُصوَّر مستقلاً بلا تصادم (هجرة 0268)", async () => {
+    // ALTERNATIVE = منتجٌ حقيقيٌّ مستقل (ماركة/منشأ مختلف) يُباع تحت الاسم الجامع نفسه.
+    // كان القيد الفريد `uq_pijob_product_active` يُقفل المنتج كلّه خلف مصوّرٍ واحد.
+    // الآن المفتاح (productId, variantScope=IFNULL(variantId,0), activeSlot) يعزل كلاًّ.
+    await db().insert(s.productVariants).values([
+      { id: 910, productId: 1, sku: "ALT-BRAND-A", variantName: "ماركة A", variantKind: "ALTERNATIVE", costPrice: "1" },
+      { id: 911, productId: 1, sku: "ALT-BRAND-B", variantName: "ماركة B", variantKind: "ALTERNATIVE", costPrice: "1" },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 910, variantId: 910, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6001000000910" },
+      { id: 911, variantId: 911, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6001000000911" },
+    ]);
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة البدائل",
+      status: "ACTIVE",
+      scopeKind: "PRODUCTS",
+      scopeProductIds: [1],
+      requiredImages: 2,
+      assigneeIds: [worker.userId, otherWorker.userId],
+    });
+    // مصوّرٌ يصوّر البديل A، وزميلٌ يصوّر البديل B على المنتج نفسه — لا تصادم.
+    const claimA = await claimStudioProductByBarcode(worker, "6001000000910");
+    const claimB = await claimStudioProductByBarcode(otherWorker, "6001000000911");
+    expect(claimA.claimed).toBe(true);
+    expect(claimB.claimed).toBe(true);
+    expect(claimA.taskId).not.toBe(claimB.taskId);
+    const rows = await db().select({ id: s.productImageJobs.id, variantId: s.productImageJobs.variantId, assignedTo: s.productImageJobs.assignedTo })
+      .from(s.productImageJobs)
+      .where(and(eq(s.productImageJobs.campaignId, campaign.campaignId), eq(s.productImageJobs.activeSlot, 1)));
+    expect(rows).toHaveLength(2);
+    const byVariant = new Map(rows.map((r) => [Number(r.variantId), Number(r.assignedTo)]));
+    expect(byVariant.get(910)).toBe(worker.userId);
+    expect(byVariant.get(911)).toBe(otherWorker.userId);
+    // مسحٌ ثانٍ للبديل A من زميلٍ ثالث ⇒ CONFLICT على البديل نفسه (لا يمسّ البديل الآخر).
+    await expect(claimStudioProductByBarcode(otherWorker, "6001000000910")).rejects.toMatchObject({ code: "CONFLICT" });
+    // بعد الاعتماد الصورةُ تذهب للبديل: productImages.variantId = 910.
+    await submitStudioCandidate(worker, { taskId: claimA.taskId, originalDataUrl: PNG_1X1_ALT, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+    await approveStudioTask(manager, claimA.taskId);
+    const [image] = await db().select({ variantId: s.productImages.variantId, productId: s.productImages.productId })
+      .from(s.productImages)
+      .where(and(eq(s.productImages.productId, 1), eq(s.productImages.variantId, 910)));
+    expect(image).toMatchObject({ productId: 1, variantId: 910 });
+  });
+
   it("توجيه عدد الصور نافذٌ: المنتج يبقى ناقصاً حتى يبلغ العدد المطلوب", async () => {
     const campaign = await createStudioCampaign(manager, { name: "حملة ثلاث صور", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3 });
     await createStudioCampaignBacklog(manager, campaign.campaignId);

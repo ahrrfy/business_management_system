@@ -2078,7 +2078,12 @@ export default function ProductImageStudio() {
                       )}
                     <button type="button" onClick={() => selectTask(task)} className={`min-h-11 w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 active:bg-muted ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}>
                       <div className="flex items-start justify-between gap-2">
-                        <span className="text-sm font-medium">{task.productName}</span>
+                        {/* اسمُ المهمّة يجمع المنتج والبديل (إن وُجد) — بدونه بطاقتا بديلَين
+                            من المنتج نفسه تظهران باسمٍ متطابق فيرفع المصوّرُ صورةً للبديل الخطأ. */}
+                        <span className="text-sm font-medium">
+                          {task.productName}
+                          {task.variantName ? <span className="text-muted-foreground"> — {task.variantName}</span> : null}
+                        </span>
                         {/* ASSIGNED بلا منفّذ = «في الطابور»، لا «مسندة». الوسم القديم كان يناقض
                             السطر التالي مباشرةً («المسؤول: غير مسند»). */}
                         <Badge variant={isQueuedStudioTask(task) ? "warning" : STATUS_VARIANT[task.status]}>{isQueuedStudioTask(task) ? "في الطابور" : STATUS_LABEL[task.status]}</Badge>
@@ -2114,7 +2119,10 @@ export default function ProductImageStudio() {
                         <ChevronRight aria-hidden className="size-4" /> عودة إلى المهام
                       </Button>
                       <CardTitle className="flex items-center justify-between gap-2 text-base">
-                        <span>{selected.productName}</span>
+                        <span>
+                          {selected.productName}
+                          {selected.variantName ? <span className="text-muted-foreground"> — {selected.variantName}</span> : null}
+                        </span>
                         <Badge variant={STATUS_VARIANT[selected.status]}>{STATUS_LABEL[selected.status]}</Badge>
                       </CardTitle>
                     </CardHeader>

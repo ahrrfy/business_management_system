@@ -1772,6 +1772,13 @@
 			"when": 1788052318000,
 			"tag": "0267_delivery_outbox_dead_letter",
 			"breakpoints": true
+		},
+		{
+			"idx": 268,
+			"version": "5",
+			"when": 1788052319000,
+			"tag": "0268_studio_variant_scoped_jobs",
+			"breakpoints": true
 		}
 	]
 }

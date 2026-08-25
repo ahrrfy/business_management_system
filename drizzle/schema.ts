@@ -4052,10 +4052,12 @@ export const productImageJobs = mysqlTable(
       table.submittedBy,
       table.status,
     ),
-    oneActivePerProduct: unique("uq_pijob_product_active").on(
-      table.productId,
-      table.activeSlot,
-    ),
+    // مفتاحُ التفرّد: (productId, variantScope, activeSlot) حيث `variantScope` عمودٌ
+    // مولَّدٌ VIRTUAL بـ IFNULL(variantId, 0). يُبنى ويُطبَّق بهجرة 0268 (لا يعبّر
+    // عنه drizzle-kit مباشرةً)، ويُثبَّت في CI عبر `ci-apply-extra-migrations.mjs`.
+    // مصوّرٌ يمسح بديل A ⇒ مهمّة (X, id(A))، وزميلُه يمسح بديل B ⇒ (X, id(B))
+    // — لا تصادم. مسحُ الأمّ مباشرةً (variantId=NULL) ⇒ (X, 0). راجع
+    // `drizzle/migrations/0268_studio_variant_scoped_jobs.sql`.
     // كنس المخزن يسأل «هل ما زال لهذا المفتاح مرجع؟» لكل مرشّح تحت قفل؛ بلا فهرسٍ
     // كان كلّ سؤالٍ مسحاً كاملاً للجدول.
     originalKeyIdx: index("idx_pijob_original_key").on(table.originalObjectKey),
