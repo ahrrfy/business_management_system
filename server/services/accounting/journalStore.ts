@@ -7,8 +7,8 @@
 // **حدٌّ مقصود:** هذا المخزن **يرمي** عند الخلل (قيدٌ غير متوازن، ازدواج). ابتلاعُ الرمية مسؤوليةُ
 // الخطّاف وحده — فهو الذي يعرف أنّه في وضع الظلّ وأنّ سلامة عملية الأعمال تسبق سلامة القيد.
 // لو ابتلع المخزنُ الأخطاءَ لصار الخللُ غيرَ مرئيٍّ في وضع ACTIVE أيضاً، وهو ما لا يُقبَل.
-import { eq } from "drizzle-orm";
-import { doubleEntrySettings, journalEntries, journalLines } from "../../../drizzle/schema";
+import { eq, isNotNull } from "drizzle-orm";
+import { accounts, doubleEntrySettings, journalEntries, journalLines } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, round2 } from "../money";
@@ -22,6 +22,25 @@ import {
 } from "./postingEngine";
 
 const accountRoleSet: ReadonlySet<string> = new Set(ACCOUNT_ROLES);
+
+/**
+ * Tier-2 #5 (٢٦/٨): يبني خريطة `role → accountId` من `accounts.systemRole`.
+ * استعلامٌ واحد لكل استدعاء كتابةِ يومية — رخيصٌ (جدولٌ صغير مفهرَس). صفوفٌ بلا
+ * `systemRole` لا تدخل الخريطة (حسابٌ مخصّص) — الأسطر التي لا تُطابق تبقى بـ`accountId=null`
+ * (الحقل nullable في المخطّط، والـFK يقبل NULL) وتُطبَع لاحقاً بحدثِ backfill عند تعديل
+ * الحساب. لا انحدار على الكتابة القائمة.
+ */
+async function loadAccountIdByRole(tx: Tx): Promise<Map<string, number>> {
+  const rows = await tx
+    .select({ id: accounts.id, systemRole: accounts.systemRole })
+    .from(accounts)
+    .where(isNotNull(accounts.systemRole));
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    if (row.systemRole) map.set(row.systemRole, Number(row.id));
+  }
+  return map;
+}
 
 function assertValidLines(
   lines: readonly JournalLine[],
@@ -180,8 +199,15 @@ export async function writeJournal(
   });
   const journalId = extractInsertId(res);
 
+  const accountIdByRole = await loadAccountIdByRole(tx);
   await tx.insert(journalLines).values(
-    lines.map((l) => ({ journalId, role: l.role, debit: l.debit, credit: l.credit })),
+    lines.map((l) => ({
+      journalId,
+      role: l.role,
+      accountId: accountIdByRole.get(l.role) ?? null,
+      debit: l.debit,
+      credit: l.credit,
+    })),
   );
 }
 
@@ -231,10 +257,12 @@ export async function writeShadowOpeningJournal(
     status: "POSTED",
   });
   const journalId = extractInsertId(result);
+  const accountIdByRole = await loadAccountIdByRole(tx);
   await tx.insert(journalLines).values(
     input.lines.map((line) => ({
       journalId,
       role: line.role,
+      accountId: accountIdByRole.get(line.role) ?? null,
       debit: line.debit,
       credit: line.credit,
     })),

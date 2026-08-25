@@ -1779,6 +1779,13 @@
 			"when": 1788052319000,
 			"tag": "0268_studio_variant_scoped_jobs",
 			"breakpoints": true
+		},
+		{
+			"idx": 270,
+			"version": "5",
+			"when": 1788052321000,
+			"tag": "0270_journal_lines_account_id",
+			"breakpoints": true
 		}
 	]
 }
