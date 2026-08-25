@@ -166,6 +166,7 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_pssq_user_day: { msg: "سجلّ سقف إرسال الاستوديو لهذا الموظف اليوم موجود مسبقاً." },
   uq_pscp_campaign_product: { msg: "هذا المنتج مُدرَجٌ في نطاق الحملة بالفعل." },
   uq_psca_campaign_user: { msg: "هذا الموظف من مصوّري الحملة بالفعل." },
+  uq_pscc_campaign_category: { msg: "هذه الفئة مُدرَجةٌ في نطاق الحملة بالفعل." },
   // ── الرواتب/الإقفال/الاستحقاقات (0185–0194) ──
   uq_payroll_obligation_source: { msg: "التزام الرواتب لهذا المصدر مسجّل مسبقاً." },
   uq_payroll_obligation_revision: { msg: "مراجعة التزام الرواتب مسجّلة مسبقاً." },

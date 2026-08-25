@@ -154,6 +154,11 @@ const EXTRA_MIGRATIONS = [
   // بين المخطط والقيد الفريد. هذه الهجرة idempotent (تسقط المفتاح القديم بعد التحقّق
   // من وجوده، وتضيف العمود المولّد والمفتاح الجديد بحرّاس INFORMATION_SCHEMA).
   "drizzle/migrations/0268_studio_variant_scoped_jobs.sql",
+  // ٢٦/٨/٢٦: توسيعُ الحملة — سياسة الصور (ONLY_MISSING/ANY_REGARDLESS) + تعدّد الفئات.
+  // `db:push` لا يُوسّع enum موثوقاً على MySQL 8 (قيم `CATEGORIES`/`ANY_REGARDLESS`)،
+  // فنُعيد التطبيق idempotently. الجدول الجانبيّ `productStudioCampaignCategories`
+  // يُبنيه db:push من schema.ts؛ الهجرة تتحقّق من وجوده لا تُعيد إنشاءه.
+  "drizzle/migrations/0269_studio_multi_category_and_any_policy.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
