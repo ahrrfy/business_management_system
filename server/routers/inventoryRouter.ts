@@ -34,10 +34,12 @@ import {
 import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
 import { signedMoveQty } from "../services/inventoryService";
 import {
+  ADJUSTMENT_REASONS,
   requestStockAdjustment,
   approveStockAdjustment,
   rejectStockAdjustment,
   listStockAdjustmentRequests,
+  readAdjustmentAttachment,
 } from "../services/inventory/adjustmentApproval";
 import {
   requestCostRevaluation,
@@ -425,6 +427,11 @@ export const inventoryRouter = router({
         branchId: z.number().int().positive(),
         targetQuantity: z.number().int().min(0),
         notes: z.string().optional(),
+        // سببُ التسوية (P2-#3، ٢٥/٨) — اختياريٌّ للتوافق الخلفيّ مع مستدعياتٍ قديمة، لكنّ الشاشات
+        // الجديدة تُلزمه. الأسبابُ الحسّاسة (DAMAGE/LOSS/THEFT) تُلزم `attachmentUrl`.
+        reason: z.enum(ADJUSTMENT_REASONS).optional(),
+        // مرفق إثبات بصريّ (data URL لصورة). التحقّق من الصيغة/الحجم على مستوى الخدمة.
+        attachmentUrl: z.string().max(8 * 1024 * 1024).optional(),
         // مفتاح تكرار من الشاشة (P2-#1): إعادةُ الإرسال بنفس المفتاح والحمولة تُرجع الطلب الأوّل بلا
         // إنشاءِ ثانٍ (يمنع الاعتمادَ المضاعف الناتج عن نقرٍ مضاعف أو انقطاعِ شبكة).
         clientRequestId: z.string().min(8).max(128).optional(),
@@ -441,7 +448,15 @@ export const inventoryRouter = router({
         branchId = Number(ctx.user.branchId);
       }
       const res = await requestStockAdjustment(
-        { variantId: input.variantId, branchId, targetQuantity: input.targetQuantity, notes: input.notes, clientRequestId: input.clientRequestId ?? null },
+        {
+          variantId: input.variantId,
+          branchId,
+          targetQuantity: input.targetQuantity,
+          notes: input.notes,
+          reason: input.reason ?? null,
+          attachmentUrl: input.attachmentUrl ?? null,
+          clientRequestId: input.clientRequestId ?? null,
+        },
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
       );
       if (res.idempotentReplay) {
@@ -657,6 +672,28 @@ export const inventoryRouter = router({
       }
       const branchId = ctx.user.role === "admin" ? null : Number(ctx.user.branchId);
       return listStockAdjustmentRequests({ branchId, status: input?.status ?? "PENDING_APPROVAL" });
+    }),
+
+  /**
+   * قراءةُ مرفق الإثبات لطلبِ تسوية (P2-#3، ٢٥/٨) — يُعاد data URL كاملاً لعرض الصورة في الشاشة.
+   * منفصلٌ عن `pendingAdjustments` كي لا نغرق القائمة بحمولاتٍ ضخمة. عزلُ الفرع: نُعيد فحصاً على
+   * الطلب نفسه (`branchId` عمود قائم) — غير admin لا يقرأ مرفقَ فرعٍ آخر.
+   */
+  adjustmentAttachment: inventoryReadProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+      const [row] = await db
+        .select({ branchId: stockAdjustmentRequests.branchId })
+        .from(stockAdjustmentRequests)
+        .where(eq(stockAdjustmentRequests.id, input.id))
+        .limit(1);
+      if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التسوية غير موجود" });
+      if (ctx.user.role !== "admin" && ctx.user.branchId != null && Number(row.branchId) !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة مرفق فرعٍ آخر" });
+      }
+      return readAdjustmentAttachment(input.id);
     }),
 
   /**

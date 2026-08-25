@@ -133,3 +133,81 @@ describe("Idempotency طلب التسوية (P2-#1)", () => {
     expect(await countRequests()).toBe(2);
   });
 });
+
+describe("P2-#3: سببُ التسوية ومرفق الإثبات", () => {
+  const SAMPLE_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgAAIAAAUAAeImBZsAAAAASUVORK5CYII=";
+
+  it("قبولٌ بلا سبب/مرفق (توافقٌ خلفيّ — مسار الاختبار القائم)", async () => {
+    const r = await requestStockAdjustment(
+      { variantId: 1, branchId: 1, targetQuantity: 12 },
+      actor,
+    );
+    expect(r.requestId).toBeGreaterThan(0);
+  });
+
+  it("رفضٌ صريح لسببٍ حسّاس بلا مرفق: DAMAGE", async () => {
+    await expect(
+      requestStockAdjustment(
+        { variantId: 1, branchId: 1, targetQuantity: 12, reason: "DAMAGE" },
+        actor,
+      ),
+    ).rejects.toThrow(/مرفقَ إثبات/);
+  });
+
+  it("رفضٌ لسببٍ حسّاس بلا مرفق: LOSS", async () => {
+    await expect(
+      requestStockAdjustment(
+        { variantId: 1, branchId: 1, targetQuantity: 12, reason: "LOSS" },
+        actor,
+      ),
+    ).rejects.toThrow(/مرفقَ إثبات/);
+  });
+
+  it("قبول DAMAGE مع مرفق صالح — يحفظ الاثنين", async () => {
+    const r = await requestStockAdjustment(
+      { variantId: 1, branchId: 1, targetQuantity: 12, reason: "DAMAGE", attachmentUrl: SAMPLE_PNG },
+      actor,
+    );
+    expect(r.requestId).toBeGreaterThan(0);
+  });
+
+  it("قبول CORRECTION بلا مرفق (غير حسّاس)", async () => {
+    const r = await requestStockAdjustment(
+      { variantId: 1, branchId: 1, targetQuantity: 12, reason: "CORRECTION" },
+      actor,
+    );
+    expect(r.requestId).toBeGreaterThan(0);
+  });
+
+  it("رفض مرفق غير صالح (نصّ خامّ لا data URL)", async () => {
+    await expect(
+      requestStockAdjustment(
+        { variantId: 1, branchId: 1, targetQuantity: 12, reason: "DAMAGE", attachmentUrl: "not-a-data-url" },
+        actor,
+      ),
+    ).rejects.toThrow(/data URL/);
+  });
+
+  it("رفض مرفق بصيغة PDF (نوعٌ غير مدعوم بالعرض)", async () => {
+    await expect(
+      requestStockAdjustment(
+        { variantId: 1, branchId: 1, targetQuantity: 12, reason: "DAMAGE", attachmentUrl: "data:application/pdf;base64,AAAA" },
+        actor,
+      ),
+    ).rejects.toThrow(/JPEG|PNG|WebP|GIF|data URL/);
+  });
+
+  it("Idempotency: تغيير السبب على نفس المفتاح ⇒ CONFLICT (السبب جزءٌ من البصمة)", async () => {
+    const key = "adj-key-reason-1";
+    await requestStockAdjustment(
+      { variantId: 1, branchId: 1, targetQuantity: 12, reason: "CORRECTION", clientRequestId: key },
+      actor,
+    );
+    await expect(
+      requestStockAdjustment(
+        { variantId: 1, branchId: 1, targetQuantity: 12, reason: "STOCK_TAKE", clientRequestId: key },
+        actor,
+      ),
+    ).rejects.toThrow(/بحمولةٍ مختلفة/);
+  });
+});

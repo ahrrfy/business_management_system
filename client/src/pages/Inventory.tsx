@@ -99,6 +99,51 @@ export default function Inventory() {
   const [editing, setEditing] = useState<number | null>(null);
   const [target, setTarget] = useState("");
   const [notes, setNotes] = useState("");
+  // P2-#3 (٢٥/٨): سبب التسوية + مرفق إثبات. الأسبابُ الحسّاسة (DAMAGE/LOSS/THEFT) تُلزم المرفق
+  // خادمياً؛ الشاشة تُظهر البادج توضيحاً وتضغط الصورة إلى ~600px قبل الإرسال (يوفّر ~90%).
+  const ADJUSTMENT_REASONS = [
+    { key: "STOCK_TAKE", label: "جرد" },
+    { key: "DAMAGE", label: "تالف", requiresProof: true },
+    { key: "LOSS", label: "فقد", requiresProof: true },
+    { key: "THEFT", label: "سرقة", requiresProof: true },
+    { key: "SAMPLE", label: "عيّنة" },
+    { key: "INTERNAL_USE", label: "استخدام داخليّ" },
+    { key: "GIFT", label: "إهداء" },
+    { key: "CORRECTION", label: "تصحيح" },
+    { key: "OTHER", label: "أخرى" },
+  ] as const;
+  type AdjReason = typeof ADJUSTMENT_REASONS[number]["key"];
+  const [reason, setReason] = useState<AdjReason | "">("");
+  const [attachmentUrl, setAttachmentUrl] = useState<string | null>(null);
+  // معاينةُ مرفق الإثبات لطلبٍ معلَّق — يُقرأ عند الفتح (data URL خارج القائمة تخفيفاً).
+  const [attachmentPreviewId, setAttachmentPreviewId] = useState<number | null>(null);
+  const attachmentPreview = trpc.inventory.adjustmentAttachment.useQuery(
+    { id: attachmentPreviewId ?? 0 },
+    { enabled: attachmentPreviewId != null },
+  );
+  const reasonMeta = ADJUSTMENT_REASONS.find((r) => r.key === reason);
+  const attachmentRequired = Boolean(reasonMeta && "requiresProof" in reasonMeta && reasonMeta.requiresProof);
+
+  async function handleAttachmentChange(file: File | null) {
+    if (!file) { setAttachmentUrl(null); return; }
+    if (!/^image\/(jpeg|jpg|png|webp|gif)$/.test(file.type)) {
+      setErr("المرفق يجب أن يكون صورة (JPEG/PNG/WebP/GIF)");
+      return;
+    }
+    // ضغطُ الصورة إلى ≤600px عرضاً/طولاً بـcanvas قبل ترميزها base64 — يُخفض الحمولة ~10× ويبقى
+    // الدليلُ البصريّ واضحاً. لا نُرسل الصورة الأصلية إذ يحتقن المخطّطُ بلا حاجة.
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 600 / Math.max(bitmap.width, bitmap.height));
+    const w = Math.round(bitmap.width * scale);
+    const h = Math.round(bitmap.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) { setErr("تعذّر ضغط الصورة (canvas غير متاح)"); return; }
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    setAttachmentUrl(canvas.toDataURL("image/jpeg", 0.72));
+    setErr("");
+  }
 
   // فصل مهام #٦: التسوية صارت طلباً معلَّقاً يعتمده مديرٌ آخر ⇒ لا تغيير مخزون فوريّ.
   // مراجعة Codex P1 (٢٥/٨): مفتاحُ تكرارٍ مستقرّ لكل جلسة تحرير — نقرٌ مضاعف أو انقطاعُ شبكة يُعيد
@@ -111,6 +156,8 @@ export default function Inventory() {
       setEditing(null);
       setTarget("");
       setNotes("");
+      setReason("");
+      setAttachmentUrl(null);
       notify.ok("سُجِّل طلب تسوية معلَّق — يعتمده مديرٌ آخر (فصل مهام).");
       await utils.inventory.pendingAdjustments.invalidate();
     },
@@ -240,12 +287,23 @@ export default function Inventory() {
     setEditing(r.variantId);
     setTarget(String(r.quantity));
     setNotes("");
+    setReason("");
+    setAttachmentUrl(null);
   }
   async function saveAdjust(variantId: number) {
     setErr("");
     const t = Number(target);
     if (!Number.isInteger(t) || t < 0) {
       setErr("الرصيد المستهدف يجب أن يكون عدداً صحيحاً غير سالب.");
+      return;
+    }
+    // ⭐ P2-#3: السببُ إلزاميّ على الشاشات الجديدة (الخادم يقبل NULL للتوافق الخلفيّ فقط).
+    if (!reason) {
+      setErr("اختر سببَ التسوية.");
+      return;
+    }
+    if (attachmentRequired && !attachmentUrl) {
+      setErr(`السبب «${reasonMeta?.label}» يستلزم مرفقَ إثبات بصريّ — التقط أو ارفع صورة.`);
       return;
     }
     if (
@@ -269,6 +327,8 @@ export default function Inventory() {
       branchId,
       targetQuantity: t,
       notes: notes.trim() || undefined,
+      reason,
+      attachmentUrl: attachmentUrl ?? undefined,
       clientRequestId: adjustKeyRef.current,
     });
   }
@@ -371,7 +431,8 @@ export default function Inventory() {
                   <tr>
                     <th className="p-2 text-start">المنتج</th>
                     <th className="p-2 text-center">التغيير</th>
-                    <th className="p-2 text-start">ملاحظات</th>
+                    <th className="p-2 text-start">السبب</th>
+                    <th className="p-2 text-start">ملاحظات + إثبات</th>
                     <th className="p-2 text-start">طلبها</th>
                     <th className="p-2 text-center">إجراء</th>
                   </tr>
@@ -379,11 +440,24 @@ export default function Inventory() {
                 <tbody>
                   {pendingRows.map((r) => {
                     const mine = r.createdBy != null && Number(r.createdBy) === Number(me.data?.id);
+                    const reasonLabel = ADJUSTMENT_REASONS.find((x) => x.key === r.reason)?.label;
                     return (
                       <tr key={r.id} className="border-t">
                         <td className="p-2">{r.productName} — {r.variantName ?? r.sku}</td>
                         <td className="p-2 text-center">من {fmtInt(Number(r.currentQuantity ?? 0))} إلى {fmtInt(r.targetQuantity)}</td>
-                        <td className="p-2 text-muted-foreground">{r.notes || "—"}</td>
+                        <td className="p-2 text-xs">{reasonLabel ?? <span className="text-muted-foreground">—</span>}</td>
+                        <td className="p-2 text-muted-foreground text-xs">
+                          {r.notes || <span>—</span>}
+                          {r.hasAttachment && (
+                            <button
+                              type="button"
+                              className="ms-2 text-primary underline underline-offset-2"
+                              onClick={() => setAttachmentPreviewId(r.id)}
+                            >
+                              عرض الإثبات
+                            </button>
+                          )}
+                        </td>
                         <td className="p-2">{r.createdByName ?? "—"}</td>
                         <td className="p-2 text-center">
                           {r.status !== "PENDING_APPROVAL" ? (
@@ -410,6 +484,32 @@ export default function Inventory() {
           </CardContent>
         </Card>
       )}
+
+      {/* P2-#3: معاينةُ مرفق الإثبات — يُقرأ data URL بشكلٍ مستقلٍّ عن قائمة الطلبات. */}
+      <Dialog open={attachmentPreviewId != null} onOpenChange={(v) => !v && setAttachmentPreviewId(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>مرفق إثبات — طلب #{attachmentPreviewId}</DialogTitle>
+            <DialogDescription>
+              الصورة مُقدَّمة من مُنشئ الطلب لتوثيق سببٍ حسّاس (تالف/فقد/سرقة). يعتمدها المُعتمِد ضمن الأدلّة.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-40 flex items-center justify-center">
+            {attachmentPreview.isLoading ? (
+              <span className="text-sm text-muted-foreground">جارٍ تحميل الصورة…</span>
+            ) : attachmentPreview.data?.attachmentUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={attachmentPreview.data.attachmentUrl}
+                alt="مرفق إثبات التسوية"
+                className="max-h-[60vh] max-w-full rounded-md"
+              />
+            ) : (
+              <span className="text-sm text-muted-foreground">لا مرفق مسجّل لهذا الطلب.</span>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {canApprove && (revalRows.length > 0 || revalTab !== "PENDING_APPROVAL") && (
         <Card>
@@ -576,13 +676,39 @@ export default function Inventory() {
                     </td>
                     <td className="p-2 text-center">
                       {canInlineAdjust && isEditing ? (
-                        <div className="flex flex-col gap-1 items-stretch min-w-[180px]">
+                        <div className="flex flex-col gap-1 items-stretch min-w-[220px]">
+                          <AppSelect
+                            value={reason}
+                            onValueChange={(v) => setReason(v as AdjReason | "")}
+                            placeholder="السبب (إلزاميّ)"
+                            size="sm"
+                          >
+                            {ADJUSTMENT_REASONS.map((rr) => (
+                              <option key={rr.key} value={rr.key}>
+                                {"requiresProof" in rr && rr.requiresProof ? `${rr.label} · يستلزم مرفقاً` : rr.label}
+                              </option>
+                            ))}
+                          </AppSelect>
                           <Input
                             value={notes}
                             onChange={(e) => setNotes(e.target.value)}
-                            placeholder="سبب التسوية (جرد/تلف…)"
+                            placeholder="ملاحظة اختيارية"
                             className="h-8 text-xs"
                           />
+                          <label className="text-[11px] flex items-center gap-1 justify-center cursor-pointer text-muted-foreground hover:text-primary">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              className="hidden"
+                              onChange={(e) => handleAttachmentChange(e.target.files?.[0] ?? null)}
+                            />
+                            {attachmentUrl
+                              ? "صورة مرفقة — اضغط للتغيير"
+                              : attachmentRequired
+                              ? "التقط/ارفع صورة إثبات (إلزاميّ)"
+                              : "إرفاق صورة (اختياريّ)"}
+                          </label>
                           <div className="flex gap-1 justify-center">
                             <Button size="sm" onClick={() => saveAdjust(r.variantId)} disabled={adjust.isPending}>
                               {adjust.isPending ? "…" : "حفظ"}

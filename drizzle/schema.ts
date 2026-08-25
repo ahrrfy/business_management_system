@@ -1395,6 +1395,23 @@ export const stockAdjustmentRequests = mysqlTable(
     // وقعت في نافذة الاعتماد وترحيل ربحٍ/خسارةٍ وهميّة (المراجعة العدائية C1).
     expectedQuantity: int("expectedQuantity").notNull(),
     notes: varchar("notes", { length: 500 }),
+    // سببُ التسوية (P2-#3، ٢٥/٨) — اختياريٌّ للتوافق مع الصفوف القائمة (NULL = «غير محدَّد»).
+    // الأسباب الحسّاسة (DAMAGE/LOSS/THEFT) تُلزم `attachmentUrl` أدناه على مستوى الخدمة.
+    // ⚠️ أوّل معامل mysqlEnum = اسم العمود (لا اسم النوع) — راجع [[mysqlenum-column-name-prod-only-break-2026-08-21]].
+    reason: mysqlEnum("reason", [
+      "STOCK_TAKE",
+      "DAMAGE",
+      "LOSS",
+      "THEFT",
+      "SAMPLE",
+      "INTERNAL_USE",
+      "GIFT",
+      "CORRECTION",
+      "OTHER",
+    ]),
+    // مرفق إثبات (data URL لصورةٍ مضغوطة) — إلزاميّ للأسباب الحسّاسة، اختياريّ لغيرها. النمطُ نظير
+    // `receipts.attachmentUrl` (mediumtext ⇒ يتّسع لـ~16MB وهو كافٍ للصور المضغوطة).
+    attachmentUrl: mediumtext("attachmentUrl"),
     status: mysqlEnum("stockAdjustmentStatus", [
       "PENDING_APPROVAL",
       "APPROVED",

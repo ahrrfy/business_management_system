@@ -1744,6 +1744,13 @@
 			"when": 1788052314000,
 			"tag": "0263_variant_branch_thresholds",
 			"breakpoints": true
+		},
+		{
+			"idx": 264,
+			"version": "5",
+			"when": 1788052315000,
+			"tag": "0264_adjustment_reason_and_attachment",
+			"breakpoints": true
 		}
 	]
 }
