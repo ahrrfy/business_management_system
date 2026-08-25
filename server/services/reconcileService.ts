@@ -852,53 +852,71 @@ export async function reconcileLedgerProfit(): Promise<ReconcileResult[]> {
  * Tier-2 #4 (٢٦/٨) — **سلامة الربط بين طلب المتجر والإرسالية.**
  *
  * `deliveryConsignments.sourceType='ONLINE_ORDER'` + `sourceId=onlineOrders.id` رابطُ
- * منشئي الطرد الأصليّ. الحالات الأربع الحاكمة التي يجب أن تظلّ متّسقة، وأيّ انحراف بينها
- * يعني عرضاً مكذوباً للعميل والموظّف معاً (يظهر «شُحن» بلا إرسالية، أو «مُسلَّم» بلا تسليم):
+ * منشئي الطرد الأصليّ. الحالات الحاكمة التي يجب أن تظلّ متّسقة، وأيّ انحراف بينها يعني
+ * عرضاً مكذوباً للعميل والموظّف معاً (يظهر «شُحن» بلا إرسالية، أو «مُسلَّم» بلا تسليم):
  *
- *   1) **طلبٌ SHIPPED/DELIVERED بلا إرسالية** — الحالة تدّعي حركةً لم تُنشأ لها إرسالية.
- *   2) **طلبٌ DELIVERED وإرساليتُه ≠ DELIVERED** — لا نعدّ الطلب مُسلَّماً حتى تختم الإرسالية.
- *   3) **طلبٌ CANCELLED وإرساليتُه حيّة** (ليست CANCELLED ولا RETURNED) — تسريبُ عهدةٍ للمندوب.
- *   4) **تعارض جهة التوصيل**: `onlineOrders.deliveryPartyId ≠ deliveryConsignments.partyId` —
- *      كشفٌ لخطأ إسنادٍ يُخفي المسؤولية.
+ *   1) **طلبٌ SHIPPED/DELIVERED بلا إرسالية** — إن كان في نطاق العقد الحديث فقط:
+ *      يشترط env `ONLINE_ORDER_CONSIGNMENT_REQUIRED_FROM` (ISO date). قبل هذا التاريخ
+ *      كان `setOnlineOrderStatus` يسمح بشحنةٍ مباشرةً بلا إرسالية (مسار قديم مدعوم في
+ *      `courier.ts:147-170` و`courierPerformance.ts:178-206`). غياب المتغيّر ⇒ نُعطّل
+ *      هذا الكاشف بالكامل (fail-open) لأنّ الكشفَ الكاذب على تاريخٍ كامل أسوأ من عدم
+ *      الفحص. الجذر: Codex P2 #3 على PR #823.
  *
- * صياغةُ الاستعلامات تستبعد الطلبات التي لم تصل إلى مرحلة الإرسال (PENDING/CONFIRMED/PROCESSING
- * بلا إرسالية) — تلك حالةٌ طبيعية وليست انحرافاً.
+ *   2) **حالتان طرفيّتان (Terminal)**: DELIVERED و RETURNED و CANCELLED (مطابقٌ لـ
+ *      `delivery/guards.ts:37-39`). كلٌّ من الحدَّين قد يصير طرفيّاً بمعزل عن الآخر:
+ *      إلغاءُ بيعٍ بعد التسليم يترك الإرسالية DELIVERED والطلب CANCELLED — هذا مسارٌ
+ *      مدعوم (`sale/cancel.ts:710-722`) لا تحذير. الجذر: Codex P2 #4 على PR #823.
+ *
+ *   3) **الاتّجاهان معاً**: نفحص عدم التطابق من طرف الطلب **ومن طرف الإرسالية**. كان
+ *      الفحص من طرف الطلب وحده يترك «الإرسالية DELIVERED والطلب لا يزال SHIPPED» بلا
+ *      كشف — الزبون يرى في المتجر «قيد التوصيل» بينما المندوب أثبت التسليم. الجذر:
+ *      Codex P2 #5 على PR #823.
+ *
+ *   4) **تعارض جهة التوصيل**: `onlineOrders.deliveryPartyId ≠ deliveryConsignments.partyId`.
  *
  * القراءةُ فقط، دون كتابةٍ في جداول الأعمال — الإصلاح يدويٌّ (المدير يفتح الطلب ويصحّح).
- * الغرض: منع تراكم الانحراف صامتاً بين تشغيلَي المطابقة اليدويّة.
  */
+
+/** الحالات الطرفيّة للإرسالية — مطابقة لـ`delivery/guards.ts:37-39`. */
+const TERMINAL_PARCEL_STATUSES = new Set(["DELIVERED", "RETURNED", "CANCELLED"]);
+
 export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileResult[]> {
   const db = getDb();
   if (!db) return [];
   const issues: ReconcileResult[] = [];
 
-  // 1) طلبٌ SHIPPED/DELIVERED بلا إرسالية: LEFT JOIN + IS NULL.
-  const orphanShipped = await db
-    .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber, status: onlineOrders.status })
-    .from(onlineOrders)
-    .leftJoin(
-      deliveryConsignments,
-      and(
-        eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
-        eq(deliveryConsignments.sourceId, onlineOrders.id),
-      ),
-    )
-    .where(and(
-      inArray(onlineOrders.status, ["SHIPPED", "DELIVERED"]),
-      sql`${deliveryConsignments.id} IS NULL`,
-    ));
-  for (const row of orphanShipped) {
-    issues.push({
-      entity: "orderShippedWithoutConsignment",
-      id: Number(row.id),
-      expected: "consignment-exists",
-      actual: "none",
-      drift: "1",
-      note: `طلب ${row.orderNumber} حالته ${row.status} بلا إرسالية مُنشَأة`,
-    });
+  // 1) طلبٌ SHIPPED/DELIVERED بلا إرسالية — يحكمه cutover env: بلا cutover لا كاشف.
+  const cutoverRaw = process.env.ONLINE_ORDER_CONSIGNMENT_REQUIRED_FROM;
+  const cutover = cutoverRaw ? new Date(cutoverRaw) : null;
+  if (cutover && !isNaN(cutover.getTime())) {
+    const orphanShipped = await db
+      .select({ id: onlineOrders.id, orderNumber: onlineOrders.orderNumber, status: onlineOrders.status })
+      .from(onlineOrders)
+      .leftJoin(
+        deliveryConsignments,
+        and(
+          eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
+          eq(deliveryConsignments.sourceId, onlineOrders.id),
+        ),
+      )
+      .where(and(
+        inArray(onlineOrders.status, ["SHIPPED", "DELIVERED"]),
+        gte(onlineOrders.createdAt, cutover),
+        sql`${deliveryConsignments.id} IS NULL`,
+      ));
+    for (const row of orphanShipped) {
+      issues.push({
+        entity: "orderShippedWithoutConsignment",
+        id: Number(row.id),
+        expected: "consignment-exists",
+        actual: "none",
+        drift: "1",
+        note: `طلب ${row.orderNumber} حالته ${row.status} بلا إرسالية مُنشَأة`,
+      });
+    }
   }
 
-  // 2/3/4) الحالات الثلاث التي تتطلّب زوجاً موجوداً — نجلبها بـINNER JOIN وحدها.
+  // 2/3/4) الحالات المزدوجة — INNER JOIN.
   const linked = await db
     .select({
       orderId: onlineOrders.id,
@@ -919,9 +937,8 @@ export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileRe
       ),
     );
 
-  const CANCEL_OR_RETURN = new Set(["CANCELLED", "RETURNED"]);
   for (const row of linked) {
-    // 2) طلب DELIVERED × إرسالية ≠ DELIVERED
+    // 2) طلب DELIVERED × إرسالية ≠ DELIVERED (باقٍ حرفياً — لا تسليمَ يُعدّ مُنجَزاً حتى تُختم الإرسالية).
     if (row.orderStatus === "DELIVERED" && row.parcelStatus !== "DELIVERED") {
       issues.push({
         entity: "orderDeliveredConsignmentNotDelivered",
@@ -933,19 +950,46 @@ export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileRe
       });
     }
 
-    // 3) طلب CANCELLED × إرسالية حيّة (لا مُلغاة ولا مُرتَجعة) ⇒ عهدةٌ خارج المتجر
-    if (row.orderStatus === "CANCELLED" && !CANCEL_OR_RETURN.has(row.parcelStatus)) {
+    // 3) طلب CANCELLED × إرسالية غير طرفيّة (Codex P2 #4: DELIVERED مقبولٌ إذا أُلغيَ البيع لاحقاً).
+    if (row.orderStatus === "CANCELLED" && !TERMINAL_PARCEL_STATUSES.has(row.parcelStatus)) {
       issues.push({
         entity: "orderCancelledConsignmentLive",
         id: Number(row.orderId),
-        expected: "parcelStatus∈{CANCELLED,RETURNED}",
+        expected: "parcelStatus∈{DELIVERED,CANCELLED,RETURNED}",
         actual: `parcelStatus=${row.parcelStatus}`,
         drift: "1",
         note: `طلب ${row.orderNumber} مُلغى لكن الإرسالية ${row.consignmentNumber} حيّة بحالة ${row.parcelStatus}`,
       });
     }
 
-    // 4) تعارض جهة التوصيل: إذا كان الطلب يحمل party صراحةً وخالف الإرسالية.
+    // 3-عكسي) إرسالية DELIVERED × طلب لا يذكر أنه مُسلَّم أو مُلغى (Codex P2 #5).
+    if (row.parcelStatus === "DELIVERED" && row.orderStatus !== "DELIVERED" && row.orderStatus !== "CANCELLED") {
+      issues.push({
+        entity: "consignmentDeliveredOrderNotDelivered",
+        id: Number(row.orderId),
+        expected: "orderStatus∈{DELIVERED,CANCELLED}",
+        actual: `orderStatus=${row.orderStatus}`,
+        drift: "1",
+        note: `الإرسالية ${row.consignmentNumber} مُسلَّمة لكن الطلب ${row.orderNumber} حالته ${row.orderStatus}`,
+      });
+    }
+
+    // 3-عكسي ب) إرسالية CANCELLED/RETURNED × طلب لا يزال قبل-طرفيّ.
+    if (
+      (row.parcelStatus === "CANCELLED" || row.parcelStatus === "RETURNED") &&
+      row.orderStatus !== "CANCELLED" && row.orderStatus !== "DELIVERED"
+    ) {
+      issues.push({
+        entity: "consignmentTerminalOrderPreTerminal",
+        id: Number(row.orderId),
+        expected: "orderStatus∈{CANCELLED,DELIVERED}",
+        actual: `orderStatus=${row.orderStatus}`,
+        drift: "1",
+        note: `الإرسالية ${row.consignmentNumber} حالتها ${row.parcelStatus} لكن الطلب ${row.orderNumber} حالته ${row.orderStatus}`,
+      });
+    }
+
+    // 4) تعارض جهة التوصيل.
     if (
       row.orderPartyId != null &&
       Number(row.orderPartyId) !== Number(row.consignmentPartyId)
