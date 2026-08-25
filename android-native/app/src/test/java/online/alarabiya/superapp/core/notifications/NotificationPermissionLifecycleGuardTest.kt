@@ -3,6 +3,7 @@ package online.alarabiya.superapp.core.notifications
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.TimeUnit
 
 class NotificationPermissionLifecycleGuardTest {
     @Test
@@ -50,6 +51,68 @@ class NotificationPermissionLifecycleGuardTest {
         guard.requestStarting()
         guard.requestDidNotStart()
 
+        assertFalse(guard.onActivityStopping())
+        assertFalse(guard.consumeResumeBypass())
+    }
+
+    @Test
+    fun requestExpiresAfterMaxAgeSoStaleFlagCannotBypassLockForever() {
+        // OEM quirk on Xiaomi/Vivo/Huawei: onRequestPermissionsResult may never fire. Without a
+        // cap, requestInFlight stays true indefinitely and every activity-stop skips the lock.
+        var clock = 0L
+        val guard = NotificationPermissionLifecycleGuard(
+            maxRequestAgeNanos = TimeUnit.SECONDS.toNanos(30),
+            nowNanos = { clock },
+        )
+
+        guard.requestStarting()
+
+        clock = TimeUnit.SECONDS.toNanos(29)
+        assertTrue("within window still bypasses", guard.onActivityStopping())
+
+        // Reset bypass state before crossing the boundary.
+        assertTrue(guard.consumeResumeBypass())
+
+        guard.requestStarting()
+        clock += TimeUnit.SECONDS.toNanos(31)
+
+        assertFalse("expired request must not bypass lock", guard.onActivityStopping())
+        assertFalse("no pending bypass remains after expiry", guard.consumeResumeBypass())
+    }
+
+    @Test
+    fun consumingResumeBypassAfterExpiryRejectsIt() {
+        // Codex P1 (٢٥/٨) — لولا هذا الفحص، مستخدمٌ ضغط زرّ الإشعارات ثم ذهب لساعاتٍ وعاد
+        // كان يجد الجلسة مفتوحةً بلا بصمة: onStop لم يقع ثانيةً (لا فرصة لـ EXPIRED فرع onStop)،
+        // فبقي resumeBypassPending=true من التصريح الأصليّ ولم يفحص consumeResumeBypass عمره.
+        var clock = 0L
+        val guard = NotificationPermissionLifecycleGuard(
+            maxRequestAgeNanos = TimeUnit.SECONDS.toNanos(30),
+            nowNanos = { clock },
+        )
+
+        guard.requestStarting()
+        assertTrue(guard.onActivityStopping())
+
+        clock += TimeUnit.SECONDS.toNanos(120)
+        assertFalse("stale bypass beyond max age must NOT be consumed", guard.consumeResumeBypass())
+    }
+
+    @Test
+    fun expiredRequestClearsStaleBypassOnNextStop() {
+        // User taps the permission action, the OEM shows the dialog, then the user leaves for
+        // hours. Once the request has expired, the next stop must NOT re-arm the bypass so a
+        // late resume cannot skip the session lock.
+        var clock = 0L
+        val guard = NotificationPermissionLifecycleGuard(
+            maxRequestAgeNanos = TimeUnit.SECONDS.toNanos(30),
+            nowNanos = { clock },
+        )
+
+        guard.requestStarting()
+        assertTrue(guard.onActivityStopping())
+
+        clock += TimeUnit.SECONDS.toNanos(60)
         assertFalse(guard.onActivityStopping())
         assertFalse(guard.consumeResumeBypass())
     }

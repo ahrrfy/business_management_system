@@ -24,21 +24,24 @@
 
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|density|uiMode|locale|layoutDirection|fontScale"
             android:exported="true"
             android:launchMode="singleTop"
+            android:taskAffinity=""
             android:theme="@style/Theme.AlrueyaSuperApp.Starting">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:host="app"
-                    android:scheme="${notificationDeepLinkScheme}" />
-            </intent-filter>
+            <!--
+                 Codex P1 (٢٥/٨) — حُذف intent-filter لـalrueya:// كلياً بعد أن أظهر Codex أنّ
+                 حذف BROWSABLE وحده لا يمنع تطبيقاً آخر من صنع Intent(ACTION_VIEW) صريحاً
+                 (setComponent على MainActivity المُصدَّرة) وإرساله. NativeNotificationRenderer
+                 يستعمل intent بمكوّنٍ صريح `Intent(context, MainActivity::class.java)` +
+                 PendingIntent.FLAG_IMMUTABLE ⇒ لا يحتاج intent-filter مطلقاً؛ الحذف يُسقط
+                 مسارَ الاستدعاء الضمنيّ نهائياً. الحرس الثاني في NativeNotificationNavigationInbox
+                 يفحص referrer.host مقابل packageName ليردَع الاستدعاء الصريح المتبقّي أيضاً.
+            -->
         </activity>
 
         <service

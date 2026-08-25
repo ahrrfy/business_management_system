@@ -438,7 +438,14 @@ class SuperAppViewModel(
 
     private fun handleUnauthorized(error: Throwable) {
         resetExecutiveState()
-        repository.clearLocalSession()
+        // M6 (٢٤/٨) — الخادم أنهى الجلسة (terminateSessions إداريّ أو TTL): يجب فكّ ربط FCM
+        // قبل مسح المحلّي، وإلّا بقيت nativePushDevices على الخادم `revokedAt IS NULL` وتصل
+        // إشعاراتٌ لجهازٍ لا يملك الصلاحية. viewModelScope.launch لا يحبس المستخدم — الحالة
+        // تنتقل إلى SignedOut فوراً؛ إبطال الخادم يقع في الخلفية.
+        viewModelScope.launch {
+            runCatching { repository.revokeAndClearLocalSession() }
+                .onFailure { repository.clearLocalSession() }
+        }
         pendingUser = null
         selectedModule = null
         sessionState = AppSessionState.SignedOut(error = userMessage(error))

@@ -41,6 +41,8 @@ import { extractInsertId } from "../lib/insertId";
 import { getUserUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 import { logAuditTx } from "./auditService";
 import { assertCanAdministerUser } from "./userAdminPolicy";
+import { notifyAdminsOfSessionEvent } from "./sessionEventNotifier";
+import { revokeAllNativePushDevicesForUser } from "./nativePushService";
 
 export type Role = typeof ALL_ROLES[number];
 
@@ -550,15 +552,40 @@ export async function changePassword(userId: number, oldPassword: string, newPas
  * يُستعمَل عند الشكّ بتسريب جلسة (جهاز مفقود/موظف مطرود) بلا الحاجة لتوليد كلمة مرور جديدة.
  */
 export async function revokeUserSessions(userId: number, _actor: Actor) {
-  return withTx(async (tx) => {
-    const u = (await tx.select({ id: users.id, role: users.role, isOwner: users.isOwner }).from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
+  const outcome = await withTx(async (tx) => {
+    const u = (await tx
+      .select({ id: users.id, role: users.role, isOwner: users.isOwner, name: users.name, branchId: users.branchId })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for("update")
+      .limit(1))[0];
     if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
     assertCanAdministerUser(_actor, u);
     const revokedAt = new Date();
     await tx.update(users).set({ sessionsValidFrom: revokedAt }).where(eq(users.id, userId));
     await tx.update(userSessions).set({ revokedAt }).where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
-    return { userId, revokedAt };
+    return { userId, revokedAt, subject: u };
   });
+  // Codex P1 (٢٥/٨) — الإبطالُ يجب أن يُقفل قناةَ push الأصيلة أيضاً، وإلّا استمرّ الجهاز
+  // المطرود يتلقّى إشعارات حسّاسة. `nativePush.revokeDevice` من العميل عاجزٌ الآن (401)،
+  // فالخادم مسؤولٌ عن ذلك بنفسه. خارج المعاملة لأنّ nativePushService يستعمل pool مباشرةً؛
+  // fail-open كي لا يُلغى الإبطالُ الرئيسيّ لعطلٍ في قناةٍ ثانوية.
+  try {
+    await revokeAllNativePushDevicesForUser(outcome.userId);
+  } catch {
+    /* ignore — تسجيلُ الأثر يتكفّل به مسار المخارج */
+  }
+  // ن-٢-د (٢٤/٨) — إشعارٌ إداريّ: مديرٌ أنهى جلسة موظّف ⇒ يُخطَر بقيّة الإداريّين. يقع بعد
+  // نجاح المعاملة كي لا يُنشأ إشعارٌ لعملٍ لم يحدث. fail-open داخل الخدمة.
+  void notifyAdminsOfSessionEvent({
+    userId: outcome.subject.id,
+    userBranchId: outcome.subject.branchId ?? null,
+    userDisplayName: outcome.subject.name ?? "موظّف",
+    kind: "SESSION_REVOKED",
+    actorUserId: _actor.userId,
+    occurredAt: outcome.revokedAt,
+  });
+  return { userId: outcome.userId, revokedAt: outcome.revokedAt };
 }
 
 /** Owner-safe, atomic 2FA break-glass reset with session revocation and audit. */

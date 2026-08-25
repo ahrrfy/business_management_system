@@ -185,6 +185,7 @@ class SelfServiceMappersTest {
         assertEquals(1, center.unreadCount)
         assertTrue(center.rows.single().isUnread)
         assertEquals("attendance", center.rows.single().entityType)
+        assertEquals("/mobile#attendance", center.rows.single().route)
         assertFalse(preferences.leaveStatus)
         assertEquals("22:00", preferences.quietHoursStart)
     }

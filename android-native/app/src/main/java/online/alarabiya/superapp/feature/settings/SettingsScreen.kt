@@ -32,9 +32,12 @@ import androidx.compose.material.icons.rounded.Badge
 import androidx.compose.material.icons.rounded.Business
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.Fingerprint
+import androidx.compose.material.icons.rounded.Gavel
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.MailOutline
 import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.NoAccounts
 import androidx.compose.material.icons.rounded.Payments
 import androidx.compose.material.icons.rounded.PrivacyTip
 import androidx.compose.material.icons.rounded.Refresh
@@ -95,6 +98,7 @@ private enum class SettingsSection(
     Notifications("الإشعارات", Icons.Rounded.Notifications),
     Security("الأمان والجلسة", Icons.Rounded.VerifiedUser),
     Privacy("الخصوصية", Icons.Rounded.PrivacyTip),
+    Deletion("حذف الحساب", Icons.Rounded.NoAccounts),
     About("عن التطبيق", Icons.Rounded.Info),
 }
 
@@ -167,6 +171,7 @@ private fun PhoneSettings(
         }
         item { SecuritySection(state, onBiometricChange, onSignOut, twoFactorVisible, onOpenTwoFactor) }
         item { PrivacySection(state.legal, onRetryLegal, onOpenPrivacyLink) }
+        item { AccountDeletionSection(state.legal, onOpenPrivacyLink) }
         item { AboutSection(state.appVersion) }
     }
 }
@@ -221,6 +226,7 @@ private fun TabletSettings(
                     )
                     SettingsSection.Security -> SecuritySection(state, onBiometricChange, onSignOut, twoFactorVisible, onOpenTwoFactor)
                     SettingsSection.Privacy -> PrivacySection(state.legal, onRetryLegal, onOpenPrivacyLink)
+                    SettingsSection.Deletion -> AccountDeletionSection(state.legal, onOpenPrivacyLink)
                     SettingsSection.About -> AboutSection(state.appVersion)
                 }
             }
@@ -426,6 +432,73 @@ private fun PrivacySection(
         }
     }
 }
+
+/**
+ * Account deletion discoverability card (G6 / Play policy 2023-05-31).
+ * The Super Alarabiya app runs on employer-managed accounts (HR provisions and revokes) so the
+ * in-app affordance surfaces the correct path: contact the branch admin, and — when the tenant
+ * publishes a privacy contact email — a mailto: shortcut that pre-fills the request.
+ */
+@Composable
+private fun AccountDeletionSection(
+    legal: LegalUiState,
+    onOpenLink: (String) -> Unit,
+) {
+    val email = (legal as? LegalUiState.Content)?.document?.config?.privacyContactEmail
+    SettingsCard("طلب حذف/تعطيل الحساب", Icons.Rounded.NoAccounts) {
+        Text(
+            "حسابك في التطبيق ينشئه فرعك أو الإدارة، وتديره وفق علاقة العمل. لتعطيل الحساب أو حذف " +
+                "بياناتك، تواصل مع مدير الفرع أو المسؤول الإداريّ المخوَّل، أو أرسل طلباً كتابياً إلى " +
+                "قسم حماية البيانات.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MutedInk,
+        )
+        if (email != null) {
+            val subject = "طلب حذف حساب سوبر العربية"
+            val body = "أرغب بطلب حذف/تعطيل حسابي على تطبيق سوبر العربية. الرجاء تأكيد الاستلام."
+            val mailto = buildMailtoLink(email = email, subject = subject, body = body)
+            OutlinedButton(
+                onClick = { onOpenLink(mailto) },
+                modifier = Modifier.fillMaxWidth().height(52.dp).testTag("request_account_deletion"),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Rounded.MailOutline, null)
+                Spacer(Modifier.width(8.dp))
+                Text("مراسلة الإدارة لطلب الحذف", style = MaterialTheme.typography.labelLarge)
+            }
+            Text(
+                email,
+                style = MaterialTheme.typography.bodySmall,
+                color = MutedInk,
+                textAlign = TextAlign.End,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(Icons.Rounded.Gavel, null, tint = Orange)
+            Text(
+                "لا يجوز حذف السجلّات المحاسبيّة المطلوبة نظاماً (فواتير، رواتب، مخزون). سيُحفظ الأثر " +
+                    "التاريخيّ للحساب مع تعطيله وفق سياسة الحفظ المعلَنة.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MutedInk,
+            )
+        }
+    }
+}
+
+private fun buildMailtoLink(email: String, subject: String, body: String): String {
+    val encodedSubject = urlEncodeForMailto(subject)
+    val encodedBody = urlEncodeForMailto(body)
+    return "mailto:$email?subject=$encodedSubject&body=$encodedBody"
+}
+
+/**
+ * Minimal RFC 6068 escaping for mailto: query — full form encoding is not required because
+ * the payload is well-known Arabic text bounded by this file, and android's Uri parser handles
+ * percent-encoding at the intent boundary.
+ */
+private fun urlEncodeForMailto(value: String): String =
+    java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
 @Composable
 private fun LegalDocumentContent(document: LegalDocument, onOpenPrivacyLink: (String) -> Unit) {

@@ -120,6 +120,7 @@ object SelfServiceMappers {
                 requiresAction = row.bool("requiresAction"),
                 entityType = row.nullableText("entityType"),
                 entityId = row.nullableLong("entityId"),
+                route = row.nullableText("route"),
             )
         },
         unreadCount = root.long("unreadCount").toInt(),
