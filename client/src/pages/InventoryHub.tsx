@@ -57,8 +57,8 @@ function PlanningIndicator() {
   if (reorderCount === 0 && seasonBelowTargetCount === 0) return null;
 
   const chip =
-    "inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 " +
-    "text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-100";
+    "inline-flex items-center gap-1 rounded-full border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-1 " +
+    "text-xs font-semibold text-[var(--sem-warn)] transition-colors hover:bg-[var(--sem-warn-bg)]/80";
   return (
     <div className="flex items-center gap-2">
       {reorderCount > 0 && (
