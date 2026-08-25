@@ -1433,7 +1433,7 @@ export const superAppRouter = router({
         title: task.title,
         body: `${task.taskNumber} · ${task.priority}`,
         createdAt: task.dueAt ?? new Date(),
-        route: "/mobile#tasks",
+        route: "/tasks",
         requiresAction: task.priority === "HIGH" || task.priority === "URGENT",
       })),
       ...(todayAttendance?.checkIn
@@ -1448,7 +1448,7 @@ export const superAppRouter = router({
                 ? "تمت مزامنة وقتَي الدخول والخروج من جهاز الشركة"
                 : "تمت مزامنة بصمة الدخول من جهاز الشركة",
               createdAt: todayAttendance.checkOut ?? todayAttendance.checkIn,
-              route: "/mobile#attendance",
+              route: "/hr?tab=attendance",
               requiresAction: Boolean(todayAttendance.needsReview),
             },
           ]
@@ -1466,7 +1466,7 @@ export const superAppRouter = router({
               createdAt:
                 latestPayroll.paidAt ??
                 new Date(`${latestPayroll.period}-01T00:00:00Z`),
-              route: "/mobile#payroll",
+              route: "/hr?tab=payroll",
               requiresAction: false,
             },
           ]
@@ -2211,7 +2211,7 @@ export const superAppRouter = router({
           kind: "LEAVE_STATUS",
           title: "تم إرسال طلب الإجازة",
           body: `${input.leaveType} · ${input.fromDate} — ${input.toDate}`,
-          route: "/mobile#leave",
+          route: "/hr?tab=leaves",
           eventKey: `leave:${leave.id}:requested`,
           entityType: "leaveRequest",
           entityId: leave.id,

@@ -414,10 +414,8 @@ export default function App() {
           المزدحمة. استعادت شاشتَها (المكوّن يدعم الوضعين: `embedded` وغير المضمَّن). */}
       <Route path="/reservations"><Shell><ReservationsHub /></Shell></Route>
       {/* شاشتا المحطّة المفقودتان — كانتا لوحتين داخل السلّة بلا مسارٍ خاصّ بهما. */}
-      {/* ش٦ — «مطلوب منّي الآن». **على مسارٍ مسمّى لا على `/mobile`** (نقطةُ نقدٍ مُعتمَدة):
-          `safeInternalRoute` يُرجع `"/mobile"` **سقوطاً احتياطياً** لأيّ مسارٍ فاسد، فتسجيلُ
-          شاشةٍ عليه يجعل كلّ إشعارٍ بوجهةٍ مكسورة يهبط على شاشةٍ تبدو صحيحة ⇒ خطأُ الوجهة
-          **غير قابلٍ للاكتشاف**. */}
+      {/* ش٦ — «مطلوب منّي الآن» على مسارٍ مسمّى. الوجهات القديمة نُقلت إلى مسارات الويب الفعلية،
+          والوجهة الفاسدة تسقط إلى مسار غير معرّف حتى يبقى خلل الربط مرئيًا. */}
       <Route path="/my-work"><Shell><MyWork /></Shell></Route>
       <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
       <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>

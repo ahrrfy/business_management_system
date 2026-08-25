@@ -1,11 +1,9 @@
 /**
  * **مطلوب منّي الآن** (ش٦ من المرحلة ٢، ١٩/٨).
  *
- * خرقُ DoD قائمٌ تحقّقتُ منه: `superApp.approvalInbox` و`myWorkspace` و`notifications`
- * و`announcements.mine` **مبنيّةٌ ومختبَرةٌ كلّها** — و`trpc.superApp`/`trpc.announcements`
- * **صفرُ نتيجةٍ في `client/src`**. مستهلكُها الوحيد تطبيقُ أندرويد، وهو على اختبارٍ داخليّ
- * بقرار المالك. أي: **خلفيةٌ كاملة بلا شاشة** لموظّف الويب — وهو الاستعمال الأساسيّ على
- * أجهزة المكتبة.
+ * يستهلك هذا السطح الآن `superApp.approvalInbox` و`myWorkspace` و`notifications` و
+ * `announcements.mine` من الويب نفسه، مع إبقاء كل قرار في شاشته الأصلية وقراءة الإعلانات
+ * وإقرارها من هذا السطح دون نسخ منطق الصلاحيات.
  *
  * **قراءةٌ محضة**: صفر كتابةٍ وصفر أثرٍ ماليّ. وكلُّ مصدرٍ يحتفظ ببوّابته الأصلية (صلاحية
  * وحدته ونطاق فرعه وفصل المهام داخل خدمة المجال) — فلا فحصَ صلاحيةٍ جديدٌ هنا.
@@ -16,7 +14,7 @@
  * فعل** — وإلّا طالبت الشاشةُ بعملٍ منتهٍ.
  */
 import { useState } from "react";
-import { AlertCircle, Bell, CheckCircle2, ClipboardList, ExternalLink, Inbox as InboxIcon } from "lucide-react";
+import { AlertCircle, Bell, CheckCircle2, ClipboardList, ExternalLink, Inbox as InboxIcon, Megaphone } from "lucide-react";
 import { Link } from "wouter";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -37,9 +35,16 @@ export default function MyWork() {
     { staleTime: 30_000 },
   );
   const workspace = trpc.superApp.myWorkspace.useQuery(undefined, { staleTime: 60_000 });
+  const announcements = trpc.announcements.mine.useQuery({ limit: 20 }, { staleTime: 30_000 });
   // فتحُ الإشعار يَسِمه مقروءاً: الوسمُ أثرُ الفتح لا زرٌّ منفصل، وإلّا بقي العدّاد يكذب.
   const markRead = trpc.superApp.markNotificationRead.useMutation({
     onSuccess: () => void notifications.refetch(),
+  });
+  const markAnnouncementRead = trpc.announcements.markRead.useMutation({
+    onSuccess: () => void announcements.refetch(),
+  });
+  const acknowledgeAnnouncement = trpc.announcements.acknowledge.useMutation({
+    onSuccess: () => void announcements.refetch(),
   });
 
   const items = approvals.data ?? [];
@@ -47,6 +52,8 @@ export default function MyWork() {
   const notesData = notifications.data;
   const notes = Array.isArray(notesData) ? notesData : (notesData?.rows ?? []);
   const unread = Array.isArray(notesData) ? 0 : (notesData?.unreadCount ?? 0);
+  const announcementRows = announcements.data?.rows ?? [];
+  const unreadAnnouncements = announcements.data?.unreadCount ?? 0;
 
   return (
     <div className="mx-auto w-full max-w-[1180px] px-4 py-5">
@@ -136,6 +143,38 @@ export default function MyWork() {
               </CardContent>
             </Card>
           )}
+
+          <Card id="announcements">
+            <CardContent className="py-4">
+              <h2 className="mb-3 flex items-center gap-2 text-sm font-extrabold">
+                <Megaphone aria-hidden className="size-4" /> الإعلانات
+                {unreadAnnouncements > 0 && <span className="rounded-full bg-[var(--sem-info-bg)] px-2 py-0.5 text-2xs font-extrabold text-[var(--sem-info)]">{unreadAnnouncements} غير مقروء</span>}
+              </h2>
+              {announcementRows.length === 0 ? (
+                <p className="py-3 text-center text-2xs text-muted-foreground">لا توجد إعلانات موجهة إليك</p>
+              ) : (
+                <ul className="space-y-2">
+                  {announcementRows.map((a) => (
+                    <li key={a.id} className="rounded-md border p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold">{a.title}</p>
+                          <p className="mt-1 whitespace-pre-wrap text-2xs leading-relaxed text-muted-foreground">{a.body}</p>
+                          <p className="mt-1 text-2xs text-muted-foreground">{fmtDateTime(a.createdAt)}{a.expiresAt ? ` · ينتهي ${fmtDateTime(a.expiresAt)}` : ""}</p>
+                        </div>
+                        {!a.readAt && <Button size="sm" variant="ghost" onClick={() => markAnnouncementRead.mutate({ id: a.id })}>تعيين كمقروء</Button>}
+                      </div>
+                      {a.requiresAck && !a.acknowledgedAt && (
+                        <Button size="sm" className="mt-2" disabled={acknowledgeAnnouncement.isPending} onClick={() => acknowledgeAnnouncement.mutate({ id: a.id })}>
+                          {acknowledgeAnnouncement.isPending ? "جارٍ…" : "أقرّ بالاطلاع"}
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
 
           <Card>
             <CardContent className="py-4">

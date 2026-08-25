@@ -63,7 +63,7 @@ async function notifyPayrollUsers(runId: number, periodValue: string, stage: "ap
       kind: "PAYROLL_READY",
       title: stage === "paid" ? "تم صرف الراتب" : "كشف الراتب جاهز",
       body: `الفترة ${periodValue}`,
-      route: "/mobile#payroll",
+      route: "/hr?tab=payroll",
       eventKey: `payroll:${runId}:${row.employeeId}:${stage}`,
       entityType: "payrollRun",
       entityId: runId,

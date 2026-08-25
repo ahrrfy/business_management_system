@@ -446,7 +446,7 @@ export const inventoryRouter = router({
           kind: "APPROVAL_REQUIRED",
           title: "تسوية مخزون بانتظار قرار",
           body: `طلب #${res.requestId} · الفرع ${branchId}`,
-          route: "/mobile#approvals",
+          route: "/inventory?tab=stocktakes",
           eventKey: `stock-adjustment:${res.requestId}:approval:${user.id}`,
           entityType: "stockAdjustmentRequest",
           entityId: res.requestId,

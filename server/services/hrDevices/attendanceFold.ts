@@ -295,7 +295,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
             kind: "ATTENDANCE",
             title: notification.title,
             body: notification.body,
-            route: "/mobile#attendance",
+            route: "/hr?tab=attendance",
             eventKey: notification.eventKey,
             entityType: "attendance",
             entityId: savedAttendance.id,

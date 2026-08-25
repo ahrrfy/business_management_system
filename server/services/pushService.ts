@@ -55,7 +55,7 @@ export interface AttendancePushPayload {
   kind: "ATTENDANCE_CHECK_IN" | "ATTENDANCE_CHECK_OUT";
   title: string;
   body: string;
-  url: "/mobile#attendance";
+  url: "/hr?tab=attendance";
 }
 
 export interface OperationalPushPayload {

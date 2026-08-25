@@ -88,9 +88,10 @@ function preferencesFromRow(
 }
 
 function safeInternalRoute(route: string): string {
+  // لا تُخفِ الوجهة الفاسدة خلف شاشة حقيقية؛ مسار غير معرّف يجعل خلل الربط قابلاً للاكتشاف.
   return route.startsWith("/") && !route.startsWith("//")
     ? route.slice(0, 255)
-    : "/mobile";
+    : "/__invalid_notification_route__";
 }
 
 function pushKindFor(
@@ -125,7 +126,7 @@ function webPushPayloadFor(
           kind,
           title: input.title.trim().slice(0, 90),
           body: "تم تحديث سجل دوامك.",
-          url: "/mobile#attendance",
+          url: "/hr?tab=attendance",
         }
       : null;
   }
