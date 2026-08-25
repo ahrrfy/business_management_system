@@ -5,14 +5,15 @@
 // في `tokens.css` هو `--sem-warn`. المتصفّح يُبقي القيمة الافتراضية بلا خطأ ⇒ **العنصر
 // غير مرئيّ حرفياً**. الاستمرار في «تحذيرٍ غير مرئيّ» بلا رصدٍ آليّ ممكنٌ لأشهر.
 //
-// النطاق: يمسح كلّ استعمالٍ `var(--tokenName)` في `client/src/**/*.{tsx,ts,css,scss}`،
-// ويطابقه مع التعريفات في:
-//   - `client/src/lib/theme/tokens.css` (التوكنز الدلاليّة الموحّدة)
-//   - `client/src/lib/theme/comfort.css` (مسافات وسلالم الراحة)
-//   - `client/src/index.css` (متغيّرات shadcn/root — --primary/--foreground/…)
+// **الحلّ في هذا الملف:**
+//   ١) نستخرج **بادئات التوكنز الحاكمة تلقائياً** من `tokens.css` (كلُّ ما يُعرَّف تحت `:root`
+//      و`@media (prefers-color-scheme: dark)` و`:root[data-theme…]`) — لا قائمةٌ يدويّة تنجرف.
+//   ٢) نتحقّق حتى من `var(--x, fallback)` — الـfallback مقصودٌ للتراجع لا لتغطية typo.
+//   ٣) نُصنّف تعريفات CSS إلى **عامّة** (تحت `:root` وأخواتها) و**سياقيّة** (تحت `.class`/id
+//      محدَّد كـ`.kioskpc-root` في PriceChecker.css) — لا نُدخل السياقيّة في المجموعة العامّة
+//      حتى لا يمرّ استعمالٌ خارج نطاق تعريفه.
 //
-// ما يُتجاهَل: الاستعمالات داخل `var(--x, fallback)` تُقبل حتى لو `--x` غير معرَّف — لأنّ
-// الـfallback مقصود. والمتغيّرات الديناميكيّة (مبنيّة بـtemplate literal) تفلت بلا false-positive.
+// النطاق: يمسح `client/src/**/*.{tsx,ts,css,scss}` (يستثني __tests__ و dist و node_modules).
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -25,82 +26,182 @@ const SCAN_ROOTS = [path.join(REPO_ROOT, "client", "src")];
 const SCAN_EXT = new Set([".ts", ".tsx", ".css", ".scss"]);
 const IGNORE_DIRS = new Set(["node_modules", "dist", "__tests__", "build"]);
 
+// المصدر الرسميّ للنطاق المُحرَّس: `tokens.css` — كلّ ما فيه من عائلاتٍ يُعتبر ذا نطاقٍ عامّ
+// يجب أن يكون مُعرَّفاً. نستخرج البادئات تلقائياً كي لا ننسى عائلةً (Codex #3 على PR #775: كنت
+// أغفلتُ `--pos-*` و`--sec1-*` … `--sec5-*` — الآن تُلتقط تلقائياً من نفس tokens.css).
+const TOKENS_CSS = path.join(REPO_ROOT, "client", "src", "lib", "theme", "tokens.css");
+
 // بادئاتٌ يُحقنها المُكوّن (Radix/Tailwind/shadcn sidebar) عند التركيب — ليست تعريفاً في CSS
 // ثابت. نتجاهلها كي لا نُنذر كذباً على المستهلكين المشروعين لبيئتها الخاصّة.
 const RUNTIME_PROVIDED_PREFIXES = [
-  "--radix-", // Radix UI: قياساتٌ للعناصر (popover trigger, select trigger, navigation-menu viewport…)
+  "--radix-", // Radix UI: قياساتٌ للعناصر (popover/select/navigation-menu…)
   "--sidebar-width", // shadcn sidebar: عرضٌ يُحقن ديناميكياً
 ];
-
-// أسماءُ توكنز تولّدها Tailwind v4 كأدواتٍ زوداً (utility tokens) بلا تعريفٍ في our tokens.css.
 const TAILWIND_UTILITY_TOKENS = new Set([
-  "--spacing", // spacing utility unit
+  "--spacing", // Tailwind v4: spacing utility unit
 ]);
-
 function isRuntimeProvided(token) {
   if (TAILWIND_UTILITY_TOKENS.has(token)) return true;
   return RUNTIME_PROVIDED_PREFIXES.some((p) => token.startsWith(p));
 }
 
-// النطاقُ المُحرَّس: بادئاتٌ تخصّ نظامَ توكنز التصميم في هذا المستودع (tokens.css/comfort.css).
-// أيّ متغيّر بهذه البادئات **يجب** أن يكون معرَّفاً؛ غيرها (متغيّرات محلّية/دايناميكية على العناصر
-// مثل `--paper`/`--ink`/`--secN-ink` على JobApply أو Dashboard) خارج النطاق كي لا نُنذر كذباً.
-// النمط الذي أوقعنا فيه بلاغ PR #771 (`--sem-warning` بدل `--sem-warn`) يقع ضمن `--sem-*` تحديداً.
-const GUARDED_PREFIXES = [
-  "--sem-",     // الدلالية الموحّدة (pos/neg/warn/info + ‎-bg)
-  "--money-",   // ألوان المال (positive/negative/neutral)
-  "--status-",  // شارات الحالة (pending/active/done/cancelled)
-  "--stock-",   // مؤشرات المخزون (ok/low/out)
-  "--brand-",   // العلامات (whatsapp/…)
-  "--chart-",   // ألوان الرسوم (cash/card/…)
-  "--dash-",    // خلفيات لوحة القيادة
-];
-function isGuarded(token) {
-  return GUARDED_PREFIXES.some((p) => token.startsWith(p));
+/** بادئة الاسم (كلّ ما قبل الشرطة الأولى بعد `--`)، أو الاسم كاملاً إن بلا شرطة. */
+function tokenPrefix(name) {
+  // "--sem-warn" → "--sem-", "--sec1-ink" → "--sec1-", "--money-positive" → "--money-"
+  const m = name.match(/^(--[a-zA-Z][a-zA-Z0-9]*-)/);
+  return m ? m[1] : name;
 }
 
-// جمع كلّ التوكنز المعرَّفة من كلّ ملفّات CSS تحت client/src/** (يشمل tokens.css/comfort.css/
-// index.css وأيّ CSS مخصّصة لصفحة/مكوّن — مثل PriceChecker.css التي تُعرّف --brand-weak محلّياً).
-// نُلحق أيضاً تعريفاتٍ داخل نصوصٍ style في ملفات TSX (نمط `--var: value` داخل style={{}}).
-const definedTokens = new Set();
-function collectDefinitionsFrom(file) {
-  const src = readFileSync(file, "utf8");
+// اشتقاق البادئات المُحرَّسة من tokens.css نفسها. أيّ عائلةٍ معرَّفةٌ هناك تصبح مُلزَمة.
+const GUARDED_PREFIXES = new Set();
+try {
+  const src = readFileSync(TOKENS_CSS, "utf8");
   for (const m of src.matchAll(/(?<![a-zA-Z0-9-])(--[a-zA-Z][a-zA-Z0-9-]*)\s*:/g)) {
-    definedTokens.add(m[1]);
+    const prefix = tokenPrefix(m[1]);
+    GUARDED_PREFIXES.add(prefix);
+  }
+} catch (e) {
+  console.error(`⛔ تعذّرت قراءة tokens.css: ${e.message}`);
+  process.exit(2);
+}
+function isGuarded(token) {
+  for (const p of GUARDED_PREFIXES) {
+    if (token.startsWith(p)) return true;
+  }
+  return false;
+}
+
+// ============================ جمع التعريفات (مع تمييز النطاق) ============================
+//
+// نمسك كلّ بلوك CSS `selector { ... --var: … }` ونصنّف:
+//   - انتماء **عامّ** إن كان selector = `:root` / `:root:not(...)` / `:root[...]` / بلا selector في
+//     `@theme` أو داخل `@media prefers-color-scheme`.
+//   - انتماء **سياقيّ** غير ذلك (`.kioskpc-root`, `[data-mobile]`, …) ⇒ لا تُضاف للـglobal.
+
+const globalDefinedTokens = new Set();
+const contextuallyDefinedTokens = new Map(); // token → Array<{ selector, file }>
+// تعريفاتٌ ذاتُ نطاقٍ في نفس الملفّ (لتفادي false-positive على CSS nesting: تعريفٌ داخل
+// `.parent { --x: … }` واستعمالٌ ضمن `.parent .child { … var(--x) … }` — الاستعمال صحيح
+// لأن الوراثة سياقيّة، لكن الـselector في الحلقة لا يشمل `.parent`).
+const tokensByFile = new Map(); // absoluteFile → Set<token>
+
+function isGlobalSelector(sel) {
+  if (!sel) return true; // بلوك بلا selector = @theme/@layer وأخواته
+  const s = sel.trim();
+  if (s === ":root") return true;
+  if (s.startsWith(":root:")) return true;
+  if (s.startsWith(":root[")) return true;
+  return false;
+}
+
+function stripCssComments(src) {
+  // نُصفّر تعليقات `/* … */` (كثيرة قبل `:root`) كي لا تُغلب استخراج selector.
+  return src.replace(/\/\*[\s\S]*?\*\//g, (m) => " ".repeat(m.length));
+}
+
+// معالجٌ عودةٌ للكتل: يمرّ على المحتوى العامّ ويستدعي نفسه داخل `@media`/`@supports` — كي يُعامل
+// `:root` داخل `@media (prefers-color-scheme: dark)` معاملةَ `:root` العامّ (وهو كذلك سلوكياً
+// في المتصفح). الاسم الفرديّ للـat-rule مثل `@keyframes` نتخطّاه (لا يعرّف متغيّراتٍ عامّة).
+function parseCssBlock(file, src, isTopLevel) {
+  let i = 0;
+  while (i < src.length) {
+    const brace = src.indexOf("{", i);
+    if (brace === -1) break;
+    let selStart = brace - 1;
+    while (selStart >= 0) {
+      const ch = src[selStart];
+      if (ch === "}" || ch === "{" || ch === ";") break;
+      selStart--;
+    }
+    const selector = src.substring(selStart + 1, brace).trim();
+    let depth = 1;
+    let j = brace + 1;
+    while (j < src.length && depth > 0) {
+      if (src[j] === "{") depth++;
+      else if (src[j] === "}") depth--;
+      j++;
+    }
+    const body = src.substring(brace + 1, j - 1);
+
+    // at-rules تحوي بلوكاتٍ فرعيّة (@media/@supports/@theme/@layer): كرّر داخلها. النطاق الفعليّ
+    // للتعريف هو selector الابن (`:root` مثلاً)، لا at-rule نفسه.
+    if (/^@(media|supports|layer|theme)\b/.test(selector)) {
+      parseCssBlock(file, body, isTopLevel);
+    } else {
+      // بلوكٌ عاديّ: التقط تعريفات المتغيّرات مباشرةً.
+      for (const m of body.matchAll(/(?<![a-zA-Z0-9-])(--[a-zA-Z][a-zA-Z0-9-]*)\s*:/g)) {
+        const token = m[1];
+        if (isGlobalSelector(selector)) {
+          globalDefinedTokens.add(token);
+        } else {
+          const list = contextuallyDefinedTokens.get(token) ?? [];
+          list.push({ selector, file: path.relative(REPO_ROOT, file).replace(/\\/g, "/") });
+          contextuallyDefinedTokens.set(token, list);
+        }
+        // تتبّع per-file بلا اعتبار للـselector — يغطّي CSS nesting المشروع.
+        const fileSet = tokensByFile.get(file) ?? new Set();
+        fileSet.add(token);
+        tokensByFile.set(file, fileSet);
+      }
+      // تعرّف على أيّ nesting داخل هذا البلوك أيضاً (‎`.parent { .child { … } }`).
+      // نستعمل نفس المعالج على body (يتعامل مع الـchild كأنه بلوكٌ فرعيّ سياقيّ).
+      parseCssBlock(file, body, false);
+    }
+    i = j;
   }
 }
 
-const violations = [];
+function collectFromCss(file, rawSrc) {
+  const src = stripCssComments(rawSrc);
+  parseCssBlock(file, src, true);
+}
 
-// المرور الأوّل: جمعُ التعريفات من كلّ ملفات CSS/TSX/TS. TSX/TS تحوي أحياناً تعريفاتٍ inline
-// عبر `style={{ "--x": v }}` أو strings CSS معلَّقة.
-function collectDefsWalk(dir) {
+function collectFromTsxLike(src) {
+  // TSX/TS: تعريفاتٌ inline في `style={{ "--x": v }}` — نعدّها عامّة (أعلى الرأس، لا selector).
+  // لا نصنّفها سياقياً؛ الغالب أنها معرَّفة بعنصر فقط لكن يستهلكها CSS أبناءٌ داخله بلا false-positive
+  // (لأنّ استهلاكها في نفس عنصر الـstyle أو أبنائه).
+  for (const m of src.matchAll(/(?<![a-zA-Z0-9-])(--[a-zA-Z][a-zA-Z0-9-]*)\s*:/g)) {
+    globalDefinedTokens.add(m[1]);
+  }
+}
+
+function walkAndCollect(dir) {
   for (const entry of readdirSync(dir)) {
     if (IGNORE_DIRS.has(entry)) continue;
     const full = path.join(dir, entry);
     const s = statSync(full);
-    if (s.isDirectory()) { collectDefsWalk(full); continue; }
-    if (!SCAN_EXT.has(path.extname(entry))) continue;
-    collectDefinitionsFrom(full);
+    if (s.isDirectory()) { walkAndCollect(full); continue; }
+    const ext = path.extname(entry);
+    if (!SCAN_EXT.has(ext)) continue;
+    const src = readFileSync(full, "utf8");
+    if (ext === ".css" || ext === ".scss") {
+      collectFromCss(full, src);
+    } else {
+      collectFromTsxLike(src);
+    }
   }
 }
-for (const root of SCAN_ROOTS) collectDefsWalk(root);
 
-if (definedTokens.size === 0) {
-  console.error("⛔ لم يُعثر على أيّ توكن CSS معرَّف — تحقّق من مصادر التوكنز.");
+for (const root of SCAN_ROOTS) walkAndCollect(root);
+
+if (globalDefinedTokens.size === 0) {
+  console.error("⛔ لم يُعثر على أيّ توكن CSS عامّ — تحقّق من مصادر التوكنز.");
   process.exit(2);
 }
 
-// المرور الثاني: البحث عن استعمالاتٍ لتوكنٍ غير معرَّف.
+// ============================ فحص الاستعمالات ============================
+//
+// Codex #1 على PR #775: نتحقّق حتى من `var(--x, fallback)` — الـfallback مقصودٌ للتراجع
+// إن غاب المتغيّر لأنّ الأصل لم يُوقَد بعد، لا لتغطية typo.
+
+const violations = [];
+
 function walk(dir) {
   for (const entry of readdirSync(dir)) {
     if (IGNORE_DIRS.has(entry)) continue;
     const full = path.join(dir, entry);
     const s = statSync(full);
-    if (s.isDirectory()) {
-      walk(full);
-      continue;
-    }
+    if (s.isDirectory()) { walk(full); continue; }
     if (!SCAN_EXT.has(path.extname(entry))) continue;
     if (entry.endsWith(".test.ts") || entry.endsWith(".test.tsx")) continue;
 
@@ -109,15 +210,21 @@ function walk(dir) {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      for (const m of line.matchAll(/var\(\s*(--[a-zA-Z][a-zA-Z0-9-]*)\s*\)/g)) {
+      // نلتقط اسم المتغيّر (المعامل الأوّل لـvar) سواء كان بلا fallback أو معه.
+      // نمط: `var(  --name  ` — نتوقّف عند أوّل `)` أو `,` بعد الاسم.
+      for (const m of line.matchAll(/var\(\s*(--[a-zA-Z][a-zA-Z0-9-]*)\s*[,)]/g)) {
         const token = m[1];
-        if (definedTokens.has(token)) continue;
+        if (globalDefinedTokens.has(token)) continue;
         if (isRuntimeProvided(token)) continue;
         if (!isGuarded(token)) continue;
+        // تسامُحُ نفس الملفّ: إذا كان معرّفاً في مكانٍ ما داخله (nesting مشروع)، لا تُنذر.
+        const inSameFile = tokensByFile.get(full);
+        if (inSameFile && inSameFile.has(token)) continue;
         violations.push({
           file: path.relative(REPO_ROOT, full).replace(/\\/g, "/"),
           line: i + 1,
           token,
+          scoped: contextuallyDefinedTokens.get(token) ?? null,
         });
       }
     }
@@ -127,12 +234,11 @@ function walk(dir) {
 for (const root of SCAN_ROOTS) walk(root);
 
 if (violations.length === 0) {
-  console.log(`✓ فحص متغيّرات CSS: كلّ استعمالات var(--x) بلا fallback مطابقةٌ لتعريفٍ موجود (${definedTokens.size} توكن معرَّف).`);
+  console.log(`✓ فحص متغيّرات CSS: كلّ استعمالات var(--x) بلا typo (${globalDefinedTokens.size} توكن عامّ معرَّف).`);
   process.exit(0);
 }
 
-console.error(`⛔ حارس check:css-vars — ${violations.length} استعمال لمتغيّر CSS غير معرَّف:\n`);
-// نجمّع لكلّ توكن غير معرَّف لوصفٍ نظيف.
+console.error(`⛔ حارس check:css-vars — ${violations.length} استعمال لمتغيّر CSS غير معرَّف عامّاً:\n`);
 const byToken = new Map();
 for (const v of violations) {
   if (!byToken.has(v.token)) byToken.set(v.token, []);
@@ -146,14 +252,19 @@ for (const [token, occ] of byToken) {
   if (occ.length > 10) {
     console.error(`    … (${occ.length - 10} أخرى)`);
   }
-  // اقتراحُ الاسم الأقرب من المعرَّفات (Levenshtein بسيط) لتسهيل الإصلاح.
-  const suggestion = closestToken(token, definedTokens);
-  if (suggestion) console.error(`    ↳ هل تقصد: ${suggestion}؟`);
+  const scoped = occ[0].scoped;
+  if (scoped && scoped.length > 0) {
+    console.error(`    ↳ معرَّفٌ سياقيّاً في: ${scoped.map((s) => `${s.file} (${s.selector})`).join(", ")}`);
+    console.error(`      إن كنتَ تستعمله خارج ذلك النطاق، فسيُقرأ **غير معرَّف** في المتصفّح.`);
+  } else {
+    const suggestion = closestToken(token, globalDefinedTokens);
+    if (suggestion) console.error(`    ↳ هل تقصد: ${suggestion}؟`);
+  }
   console.error("");
 }
 console.error(
   "الأثر: متصفّحُ العميل يُبقي القيمة الافتراضية (شفاف/أبيض) بلا خطأ ⇒ العنصر قد يكون غير مرئيّ.\n" +
-  "الحلّ: صحّح الاسم إلى التوكن المعرَّف، أو أضف تعريفاً في client/src/lib/theme/tokens.css.",
+  "الحلّ: صحّح الاسم إلى التوكن المعرَّف، أو أضف تعريفاً عاماً في client/src/lib/theme/tokens.css.",
 );
 process.exit(1);
 
@@ -167,7 +278,6 @@ function closestToken(needle, pool) {
       best = t;
     }
   }
-  // نقبل الاقتراح فقط إن كان قريباً معنويّاً (≤٤ محرف اختلاف)
   return bestDist <= 4 ? best : null;
 }
 
