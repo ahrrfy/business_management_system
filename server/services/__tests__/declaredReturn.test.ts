@@ -234,7 +234,7 @@ describe("المرتجع المُعلَن ≠ المستلَم", () => {
     await declareConsignmentReturn(
       { consignmentId: a.consignmentId, reason: "عنوان خاطئ" }, CASHIER as never,
     );
-    const rows = await listInTransitConsignments(1);
+    const { rows } = await listInTransitConsignments(1);
     const row = rows.find((r) => Number(r.id) === a.consignmentId)!;
     // `codAmount` يبقى كما هو (تاريخُ المستند)، لكنّ **المتبقّي المعروض** صفرٌ لأنّه حُرِّر.
     expect(Number(row.codDue)).toBe(0);

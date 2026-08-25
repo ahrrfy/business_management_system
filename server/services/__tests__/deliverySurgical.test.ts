@@ -303,7 +303,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
       .where(eq(s.deliveryConsignments.id, disp.consignmentId));
 
     // الشاشة: codDue يطرح الكاونتر، والأعمدة الجديدة (invoiceTotal/partyHasPortal) حاضرة.
-    const rows = await listInTransitConsignments(1);
+    const { rows } = await listInTransitConsignments(1);
     const row = rows.find((r) => Number(r.id) === disp.consignmentId);
     expect(row?.codDue).toBe("5000.00");
     expect(String(row?.counterSettledAmount)).toBe("3000.00");
@@ -387,7 +387,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
       ],
     }, CASHIER);
     // قبل الصرف: أجرتان مستحقّتان في طابور «أجرة غير مدفوعة».
-    const openBefore = await listOpenConsignments(partyId, 1);
+    const { rows: openBefore } = await listOpenConsignments(partyId, 1);
     expect(openBefore.map((c) => String(c.feeDue)).sort()).toEqual(["1500.00", "2000.00"]);
 
     const res = await payPartyDeliveryFees(
@@ -413,7 +413,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     expect((await consignment(d1.consignmentId)).feeSettledAt).not.toBeNull();
     expect((await consignment(d2.consignmentId)).feeSettledAt).not.toBeNull();
     // الطابور فرغ من الأجور.
-    expect((await listOpenConsignments(partyId, 1)).length).toBe(0);
+    expect((await listOpenConsignments(partyId, 1)).rows).toHaveLength(0);
 
     // التكرار بنفس المفتاح = نفس السند بنتيجته، بلا قيدٍ أو إيصالٍ ثانٍ.
     const replay = await payPartyDeliveryFees(

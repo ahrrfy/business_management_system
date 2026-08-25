@@ -89,7 +89,7 @@ describe("قيد التوصيل — الطرد بالطريق لا يختفي", 
     const { workOrderId } = await readyDeliveryOrder("t-1");
     await dispatch(workOrderId, "d-1");
 
-    const rows = await listInTransitConsignments(1);
+    const { rows } = await listInTransitConsignments(1);
     expect(rows).toHaveLength(1);
     expect(rows[0].parcelStatus).toBe("ASSIGNED");
     expect(Number(rows[0].codDue)).toBe(20000);
@@ -103,13 +103,13 @@ describe("قيد التوصيل — الطرد بالطريق لا يختفي", 
 
     for (const p of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
       await db().update(s.deliveryConsignments).set({ parcelStatus: p });
-      const inTransit = await listInTransitConsignments(1);
+      const { rows: inTransit } = await listInTransitConsignments(1);
       expect(inTransit, `parcelStatus=${p} يجب أن يبقى مرئياً`).toHaveLength(1);
       expect(inTransit[0].parcelStatus).toBe(p);
 
       // إثباتُ الثقب القديم: هاتان القائمتان لا تريانه — ولذلك وُجد التبويب الجديد.
       expect(await listReadyForDispatch(1)).toHaveLength(0);
-      expect(await listOpenConsignments(1, 1)).toHaveLength(0);
+      expect((await listOpenConsignments(1, 1)).rows).toHaveLength(0);
     }
   });
 
@@ -119,7 +119,7 @@ describe("قيد التوصيل — الطرد بالطريق لا يختفي", 
     await db().update(s.deliveryConsignments)
       .set({ parcelStatus: "FAILED", failureReason: "العميل رفض الاستلام" });
 
-    const rows = await listInTransitConsignments(1);
+    const { rows } = await listInTransitConsignments(1);
     expect(rows[0].parcelStatus).toBe("FAILED");
     expect(rows[0].failureReason).toBe("العميل رفض الاستلام");
   });
@@ -127,8 +127,8 @@ describe("قيد التوصيل — الطرد بالطريق لا يختفي", 
   it("عزل الفرع: لا يظهر طردُ فرعٍ آخر", async () => {
     const { workOrderId } = await readyDeliveryOrder("t-4");
     await dispatch(workOrderId, "d-4");
-    expect(await listInTransitConsignments(2)).toHaveLength(0);
-    expect(await listInTransitConsignments(null)).toHaveLength(1); // الأدمن يرى الكل
+    expect((await listInTransitConsignments(2)).rows).toHaveLength(0);
+    expect((await listInTransitConsignments(null)).rows).toHaveLength(1); // الأدمن يرى الكل
   });
 });
 
@@ -148,6 +148,6 @@ describe("طابور «جاهز للإرسال» — إلغاء الإسناد �
     const ready = await listReadyForDispatch(1);
     expect(ready.map((r) => Number(r.id))).toContain(workOrderId);
     // ولا يبقى شيءٌ في «قيد التوصيل» (لم يعد طرداً خارجاً).
-    expect(await listInTransitConsignments(1)).toHaveLength(0);
+    expect((await listInTransitConsignments(1)).rows).toHaveLength(0);
   });
 });

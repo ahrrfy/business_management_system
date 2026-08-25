@@ -347,6 +347,11 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
               })}
             </tbody>
           </table>
+          {listHasMore && (
+            <div className="border-t border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] p-2 text-center text-xs font-bold text-[var(--sem-warn)]">
+              تعرض {list.length} إرسالية — هناك المزيد. استعمل «المالية المفتوحة فقط» للتصفية.
+            </div>
+          )}
         </ScrollTableShell>
       )}
     </div>

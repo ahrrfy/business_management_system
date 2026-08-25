@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Banknote, PackageOpen, Truck, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
@@ -309,8 +309,19 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
   // تبقى «زومبي» في شاشة التوريد تقبل توريداً لاحقاً يقلب الرصيد سالباً. «عهدة سائبة» تبقى
   // للعجوزات غير المرتبطة بإرسالية (الخادم يحرس الحالتين).
   const [consignmentId, setConsignmentId] = useState<string>("");
-  const open = trpc.delivery.openConsignments.useQuery({ partyId: party.id });
-  const chosen = (open.data?.rows ?? []).find((c) => String(c.id) === consignmentId) ?? null;
+  /**
+   * Codex P1 (٢٥/٨): قائمةُ الشطب لا نقبل أن تُخفي الترقيمُ إرساليةً — الموظّف يحتاج أن يجدها
+   * ليختارها. نجلب كلّ الصفحات تلقائياً (٥٠٠ لكل نداء).
+   */
+  const open = trpc.delivery.openConsignments.useInfiniteQuery(
+    { partyId: party.id, limit: 500 },
+    { getNextPageParam: (last) => last.nextCursor ?? undefined },
+  );
+  useEffect(() => {
+    if (open.hasNextPage && !open.isFetchingNextPage) void open.fetchNextPage();
+  }, [open.hasNextPage, open.isFetchingNextPage, open.fetchNextPage]);
+  const openRows = (open.data?.pages ?? []).flatMap((p) => p.rows);
+  const chosen = openRows.find((c) => String(c.id) === consignmentId) ?? null;
   const chosenRemaining = chosen ? Math.max(0, Number(chosen.codAmount) - Number(chosen.collectedAmount)) : null;
   // IDEMPOTENCY (تدقيق ٢/٧): مفتاح ثابت لكل جلسة حوار — النقر المزدوج لا يشطب العجز مرّتين.
   const [reqId] = useState(() => crypto.randomUUID());
@@ -338,7 +349,7 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
         onChange={(e) => setConsignmentId(e.target.value)}
       >
         <option value="">عهدة سائبة (غير مرتبطة بإرسالية مفتوحة)</option>
-        {(open.data?.rows ?? []).map((c) => (
+        {openRows.map((c) => (
           <option key={c.id} value={String(c.id)}>
             إرسالية {c.consignmentNumber} — {c.invoiceNumber ?? ""} — متبقٍّ {fmt(String(Math.max(0, Number(c.codAmount) - Number(c.collectedAmount))))} د.ع
           </option>

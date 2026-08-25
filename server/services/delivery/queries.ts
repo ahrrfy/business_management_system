@@ -128,8 +128,8 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
     eq(deliveryConsignments.parcelStatus, "DELIVERED"),
     sql`${feeDue} > 0`,
   );
-  // Keyset ↓ يعتمد id (فريد ورتب DESC = الأحدث أوّلاً كما كان الترتيب الأصليّ dispatchedAt DESC
-  // implicitly عبر id — دُفعت الطرود بترتيبٍ زمنيّ فـid يوازي dispatchedAt).
+  // ⚠️ Codex P1 (٢٥/٨): الترتيبُ ASC (الأقدم أوّلاً) للحفاظ على منهج «سدّ الالتزامات المتأخّرة
+  // أوّلاً» — الأصل كان `ORDER BY dispatchedAt` ASC. Keyset ASC ⇒ `WHERE id > cursor` + `ORDER BY id ASC`.
   const rows = await db
     .select({
       id: deliveryConsignments.id,
@@ -162,9 +162,9 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       eq(deliveryConsignments.partyId, partyId),
       or(remittable, returnable, unpaidFee),
       branchId == null ? undefined : eq(deliveryConsignments.branchId, branchId),
-      page.cursor != null ? lt(deliveryConsignments.id, page.cursor) : undefined,
+      page.cursor != null ? gt(deliveryConsignments.id, page.cursor) : undefined,
     ))
-    .orderBy(desc(deliveryConsignments.id))
+    .orderBy(asc(deliveryConsignments.id))
     .limit(effLimit + 1);
   return buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit);
 }
@@ -188,7 +188,9 @@ export async function listInTransitConsignments(branchId: number | null, partyId
   const conds = [eq(deliveryConsignments.status, "DISPATCHED")];
   if (branchId != null) conds.push(eq(deliveryConsignments.branchId, branchId));
   if (partyId != null) conds.push(eq(deliveryConsignments.partyId, partyId));
-  if (page.cursor != null) conds.push(lt(deliveryConsignments.id, page.cursor));
+  // ⚠️ Codex P1 (٢٥/٨): «قيد التوصيل» ASC (الأقدم أوّلاً) — الأصل كان `ORDER BY dispatchedAt` ASC
+  // (تنبيهُ الطرود المتأخّرة قبل الحديثة). Keyset ASC ⇒ cursor بـ`id > cursor`.
+  if (page.cursor != null) conds.push(gt(deliveryConsignments.id, page.cursor));
   const rows = await db
     .select({
       id: deliveryConsignments.id,
@@ -257,7 +259,7 @@ export async function listInTransitConsignments(branchId: number | null, partyId
     .leftJoin(users, eq(users.id, deliveryConsignments.assignedUserId))
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .where(and(...conds))
-    .orderBy(desc(deliveryConsignments.id))
+    .orderBy(asc(deliveryConsignments.id))
     .limit(effLimit + 1);
   return buildPageResult(rows.map((r) => ({ ...r, id: Number(r.id) })), effLimit);
 }

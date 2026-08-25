@@ -114,7 +114,13 @@ export default function DeliveryHub() {
   useEffect(() => {
     setTab(readTabFromSearch(search));
   }, [search]);
-  const transitCount = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 30_000 }).data?.rows.length ?? 0;
+  /**
+   * شارةُ العدّاد: صفحةٌ واحدة (٢٠٠) تكفي عرفاً، ونضع «+» عندما يتجاوز العدد الصفحةَ الأولى
+   * حتى لا يقرأ الكاشير رقماً كاذباً بعد الترقيم. الأعداد الدقيقة تحصل في التبويب نفسه.
+   */
+  const transitFirstPage = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 30_000 });
+  const transitCount = transitFirstPage.data?.rows.length ?? 0;
+  const transitMore = transitFirstPage.data?.hasMore ?? false;
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
       <PageHeader
@@ -136,7 +142,7 @@ export default function DeliveryHub() {
           قيد التوصيل
           {transitCount > 0 && (
             <span className="ms-1.5 rounded-full bg-[var(--sem-warn)] px-1.5 text-[10px] font-black text-white tabular-nums">
-              {transitCount}
+              {transitCount}{transitMore ? "+" : ""}
             </span>
           )}
         </button>
@@ -317,7 +323,22 @@ function DispatchTab() {
 function InTransitTab() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const rows = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
+  /**
+   * Codex P1 #1 (٢٥/٨): تبويبُ «قيد التوصيل» طاولةُ عملٍ يفلتر عليها الكاشير ويأخذ إجراءاتٍ
+   * جماعية — إخفاءُ صفوفٍ بالترقيم يعني إجراءً على «الكلّ» ينسى الطرود المُخفاة. نجمع كلّ
+   * الصفحات (٥٠٠ لكل نداء) قبل السماح بأيّ فعلٍ يعتمد على القائمة.
+   */
+  const rows = trpc.delivery.inTransit.useInfiniteQuery(
+    { limit: 500 },
+    {
+      refetchInterval: 20_000,
+      refetchOnWindowFocus: true,
+      getNextPageParam: (last) => last.nextCursor ?? undefined,
+    },
+  );
+  useEffect(() => {
+    if (rows.hasNextPage && !rows.isFetchingNextPage) void rows.fetchNextPage();
+  }, [rows.hasNextPage, rows.isFetchingNextPage, rows.fetchNextPage]);
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [drawerId, setDrawerId] = useState<number | null>(null);
@@ -394,7 +415,8 @@ function InTransitTab() {
   // ── Filtering ──
   const [stateFilter, setStateFilter] = useState<ConsignmentViewKey | "ALL">("ALL");
   const rowsWithView = useMemo(() => {
-    return (rows.data?.rows ?? []).map((r) => ({
+    const flat = (rows.data?.pages ?? []).flatMap((p) => p.rows);
+    return flat.map((r) => ({
       ...r,
       viewKey: deriveConsignmentView({
         parcelStatus: r.parcelStatus,
@@ -1017,7 +1039,23 @@ function SettleTab() {
   const settleSearch = useSearch();
   const [partyId, setPartyId] = useState<string>(() => new URLSearchParams(settleSearch).get("party") ?? "");
   const obligations = trpc.delivery.obligations.useQuery(undefined, { refetchInterval: 30_000 });
-  const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });
+  /**
+   * Codex P1 #1 (٢٥/٨): تسويةُ المندوب مستندٌ ماليّ — لا نقبل أن تُخفي الترقيمُ (٢٠٠ صفٍّ افتراضياً)
+   * إرسالياتٍ عن الكاشير فيوقّع سنداً ينقص عن العهدة. نستعمل `useInfiniteQuery` **بحدٍّ أقصى ٥٠٠
+   * لكل نداء** ونجلب كلّ الصفحات تلقائياً قبل حساب الإجماليّات — رأسُ الجدول يبقى مفتوحاً حتى
+   * `hasNextPage=false` (بشارة «جارٍ تحميل الباقي…»). زرُّ التوريد معطَّلٌ حتى انتهاء الجلب.
+   */
+  const cons = trpc.delivery.openConsignments.useInfiniteQuery(
+    { partyId: Number(partyId), limit: 500 },
+    {
+      enabled: !!partyId,
+      getNextPageParam: (last) => last.nextCursor ?? undefined,
+    },
+  );
+  // تحميلُ الصفحات المتبقّية تلقائياً — القرار بيدنا لا بيد المستخدم (تسويةٌ تحرّك مالاً).
+  useEffect(() => {
+    if (cons.hasNextPage && !cons.isFetchingNextPage) void cons.fetchNextPage();
+  }, [cons.hasNextPage, cons.isFetchingNextPage, cons.fetchNextPage]);
   const remittances = trpc.delivery.remittances.useQuery({ partyId: Number(partyId), limit: 20 }, { enabled: !!partyId });
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "NONE"; collected: string }>>({});
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
@@ -1087,8 +1125,11 @@ function SettleTab() {
     onError: (e) => notify.err(e),
   });
 
-  const list = cons.data?.rows ?? [];
-  const listHasMore = cons.data?.hasMore ?? false;
+  const list = useMemo(
+    () => (cons.data?.pages ?? []).flatMap((p) => p.rows),
+    [cons.data],
+  );
+  const listStillLoading = cons.hasNextPage || cons.isFetchingNextPage;
   const partyName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "";
   const partyRow = obligations.data?.find((p) => String(p.partyId) === partyId);
 
@@ -1459,13 +1500,16 @@ function SettleTab() {
                 <Button
                   className="mt-3 w-full"
                   onClick={submit}
-                  disabled={remit.isPending || companyStatement.isPending || Math.abs(countedCash - totals.net) > 0.01}
+                  disabled={remit.isPending || companyStatement.isPending || listStillLoading || Math.abs(countedCash - totals.net) > 0.01}
+                  title={listStillLoading ? "جارٍ تحميل باقي الإرساليات — التوريد بعد اكتمال العدّ" : undefined}
                 >
                   {remit.isPending || companyStatement.isPending
                     ? "جارٍ…"
-                    : statementMode
-                      ? `تسجيل كشف الشركة ${statementNumber.trim()} وتوريد الصافي`
-                      : "تأكيد التسوية وتوريد الصافي"}
+                    : listStillLoading
+                      ? "جارٍ تحميل باقي الإرساليات…"
+                      : statementMode
+                        ? `تسجيل كشف الشركة ${statementNumber.trim()} وتوريد الصافي`
+                        : "تأكيد التسوية وتوريد الصافي"}
                 </Button>
               )}
             </div>
