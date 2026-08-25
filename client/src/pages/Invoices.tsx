@@ -31,7 +31,7 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { paymentMethodLabel, paymentMethodClass, POS_METHODS, type InvoiceFilterMethod } from "@/lib/paymentMethod";
 import { sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
-import { INVOICE_STATUSES, invoiceStatusLabel } from "@shared/invoiceStatus";
+import { INVOICE_STATUSES, invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import { Calendar, CreditCard, FileWarning, Printer, Truck, User, X } from "lucide-react";
@@ -918,13 +918,10 @@ export default function Invoices() {
         serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
         mobileCardRenderer={(r) => {
           const stLabel = invoiceStatusLabel(r.status);
-          const badgeVariant = r.status === "PAID"
-            ? "success"
-            : r.status === "PARTIALLY_PAID"
-              ? "warning"
-              : r.status === "CANCELLED" || r.status === "RETURNED"
-                ? "destructive"
-                : "secondary";
+          // خريطة variant من المصدر الوحيد (shared/invoiceStatus) — كانت محلّية هنا بـdestructive/secondary
+          // بينما ReceptionInvoiceQueue.tsx كانت default/secondary/outline والحاصل: PAID بلونٍ مختلف
+          // بصرياً على شاشتَي «الفواتير» و«طابور الاستقبال» رغم أنّها الحالة نفسها.
+          const badgeVariant = invoiceStatusBadgeVariant(r.status);
 
           const due = D(r.total).minus(D(r.paidAmount)).minus(D(r.returnedTotal ?? "0"));
           const hasDue = due.gt(0) && r.status !== "CANCELLED" && r.status !== "RETURNED";

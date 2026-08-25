@@ -94,7 +94,15 @@ export function PageHeader({ title, description, actions, actionsClassName, icon
         )}
       </div>
       {actions && (
-        <div className={cn("flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:shrink-0", actionsClassName)}>{actions}</div>
+        // data-page-header-actions يُخفى أثناء الطباعة عبر `@media print` في index.css.
+        // أزرار «تصدير/طباعة/إضافة» لا معنى لظهورها على الورق ⇒ إخفاؤها مركزياً بدل تعليقٍ
+        // بصريٍّ يدويٍّ في كل شاشة.
+        <div
+          data-page-header-actions
+          className={cn("flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:shrink-0", actionsClassName)}
+        >
+          {actions}
+        </div>
       )}
     </div>
   );

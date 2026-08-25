@@ -42,6 +42,7 @@ import {
   subtotalForInvoiceTotal,
   type InvoiceActionKind,
 } from "@/components/invoice";
+import { PageHeader } from "@/components/PageHeader";
 
 const INVOICE_TYPE = "PURCHASE" as const;
 
@@ -494,28 +495,20 @@ export default function PurchaseNew() {
     // صفّان فقط وتُقتَطع بطاقةُ الشحن/الإجراءات أسفل الشريط الجانبي. الآن تنمو الصفحة بمحتواها
     // ويُمرِّرها `<main overflow-auto>` — فيَظهر الجدولُ كبيراً وكلُّ حقول الشريط الجانبي كاملةً.
     <div ref={containerRef} dir="rtl" className="flex flex-col gap-3">
-      {/* Title bar */}
-      <div className="flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-xl font-extrabold">
-          {(() => { const MIcon = meta.icon; return <MIcon aria-hidden className="size-6 text-primary" />; })()}
-          {meta.label} جديد
-        </h1>
-        <div className="flex items-center gap-3 text-xs">
-          <span className="hidden font-semibold text-muted-foreground sm:inline">
+      {/* رأس صفحة موحّد + الإجمالي الديناميكيّ كإجراء (بجانب الأزرار) */}
+      <PageHeader
+        title={`${meta.label} جديد`}
+        icon={(() => { const MIcon = meta.icon; return <MIcon aria-hidden className="size-5 text-primary" />; })()}
+        backHref="/purchases"
+        backLabel="رجوع للمشتريات"
+        actions={
+          <span className="hidden text-xs font-semibold text-muted-foreground sm:inline">
             الإجمالي:{" "}
-            <span className="font-extrabold text-foreground" dir="ltr">
-              {landed.grand.toFixed(2)}
-            </span>{" "}
+            <span className="font-extrabold text-foreground" dir="ltr">{landed.grand.toFixed(2)}</span>{" "}
             د.ع
           </span>
-          <Link
-            href="/purchases"
-            className="text-sm font-semibold text-muted-foreground hover:text-foreground"
-          >
-            ← رجوع للمشتريات
-          </Link>
-        </div>
-      </div>
+        }
+      />
 
       {/* Header card (document metadata + supplier + terms + PO reference) */}
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />

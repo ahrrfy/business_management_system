@@ -253,7 +253,7 @@ export default function PayrollLegalSettings() {
 
       {settingsQ.data?.updatedAt && (
         <p className="text-[11px] text-muted-foreground">
-          آخر تحديث: {new Date(settingsQ.data.updatedAt).toLocaleString("ar-IQ")}
+          آخر تحديث: {new Date(settingsQ.data.updatedAt).toLocaleString("ar-IQ-u-nu-latn")}
         </p>
       )}
     </div>

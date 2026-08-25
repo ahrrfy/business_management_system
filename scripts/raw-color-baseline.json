@@ -4,7 +4,7 @@
   "client/src/pages/APReminders.tsx": 10,
   "client/src/pages/ARReminders.tsx": 10,
   "client/src/pages/BalanceSheet.tsx": 2,
-  "client/src/pages/CardAccount.tsx": 20,
+  "client/src/pages/CardAccount.tsx": 3,
   "client/src/pages/CashOrphanReport.tsx": 1,
   "client/src/pages/ConsignmentNotes.tsx": 22,
   "client/src/pages/ConsignmentSettlements.tsx": 6,

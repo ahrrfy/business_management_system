@@ -1,9 +1,10 @@
 import * as React from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Inbox, FilterX } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { pickEmptyMessage, type EmptyStateReason } from "@shared/emptyStateMessages";
 
 /**
  * حالة تحميل موحّدة — تستبدل «جارٍ التحميل…» المتفرّقة بأنماط مختلفة عبر الشاشات.
@@ -68,6 +69,57 @@ export function TableEmptyRow({
         {message}
       </td>
     </tr>
+  );
+}
+
+/**
+ * حالة فراغ لصفحة كاملة (لا داخل جدول) — تُميّز بصرياً بين:
+ *   • **NO_ROWS_YET**: أيقونة `Inbox` + CTA اختياريّة للإنشاء
+ *   • **NO_MATCH_FILTER**: أيقونة `FilterX` + CTA اختياريّة لمسح الفلاتر
+ *
+ * الرسائل مشتقّة من `@shared/emptyStateMessages` بحسب `resourceKey`. أيّ رسالة مخصّصة تُمرَّر
+ * تتجاوز الاشتقاق (للحالات النادرة). أُعلنها للقارئ الشاشيّ عبر `role="status"`.
+ *
+ * ⚠️ استعملها للحالات التي تملأ الصفحة (قوائم رئيسية) — للصفوف داخل جدول قائم استعمل
+ * `TableEmptyRow`.
+ */
+export function EmptyState({
+  resourceKey = "generic",
+  reason,
+  title,
+  description,
+  action,
+  className,
+}: {
+  /** مفتاح domain (invoices/customers/…) — انظر `emptyStateMessages`. */
+  resourceKey?: string;
+  /** سبب الفراغ — يحدّد الأيقونة والنصّ الافتراضيّ. */
+  reason: EmptyStateReason;
+  /** تجاوز عنوان الرسالة المشتقّة. */
+  title?: React.ReactNode;
+  /** تجاوز وصف الرسالة المشتقّة. */
+  description?: React.ReactNode;
+  /** زرّ عمل رئيسيّ (مثل «أنشئ الأوّل» أو «امسح الفلاتر»). */
+  action?: React.ReactNode;
+  className?: string;
+}) {
+  const defaultMsg = pickEmptyMessage(resourceKey, reason === "NO_MATCH_FILTER");
+  const Icon = reason === "NO_MATCH_FILTER" ? FilterX : Inbox;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={cn("flex flex-col items-center justify-center gap-3 p-10 text-center", className)}
+    >
+      <Icon aria-hidden className="size-8 text-muted-foreground" />
+      <div className="space-y-1">
+        <p className="text-sm font-semibold">{title ?? defaultMsg.title}</p>
+        {(description ?? defaultMsg.description) && (
+          <p className="text-xs text-muted-foreground max-w-md">{description ?? defaultMsg.description}</p>
+        )}
+      </div>
+      {action}
+    </div>
   );
 }
 

@@ -347,11 +347,10 @@ export default function StocktakeReport() {
             </Badge>
           </span>
         }
+        backHref={`/stocktakes/${sessionId}/review`}
+        backLabel="رجوع للمراجعة"
         actions={
           <>
-            <Link href={`/stocktakes/${sessionId}/review`}>
-              <Button variant="outline">← رجوع للمراجعة</Button>
-            </Link>
             <Link href="/stocktakes">
               <Button variant="outline">قائمة الجلسات</Button>
             </Link>

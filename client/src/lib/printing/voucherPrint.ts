@@ -62,7 +62,7 @@ function printRequestedAtLabel(value?: string | null): string | null {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime())
     ? value
-    : parsed.toLocaleString("ar-IQ", {
+    : parsed.toLocaleString("ar-IQ-u-nu-latn", {
         dateStyle: "medium",
         timeStyle: "medium",
       });

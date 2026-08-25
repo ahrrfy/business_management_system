@@ -408,23 +408,20 @@ export default function PurchaseReturnNew() {
           return <TIcon aria-hidden className="size-5 text-primary" />;
         })()}
         actions={
-          <>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void tryLoadFromReference()}
-              disabled={!state.branchId}
-              title="جلب بنود أمر الشراء المرجعي"
-            >
-              <Download aria-hidden className="size-4" />
-              استيراد من أمر الشراء
-            </Button>
-            <Link href="/purchases" className="text-sm text-muted-foreground hover:underline">
-              ← رجوع للمشتريات
-            </Link>
-          </>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void tryLoadFromReference()}
+            disabled={!state.branchId}
+            title="جلب بنود أمر الشراء المرجعي"
+          >
+            <Download aria-hidden className="size-4" />
+            استيراد من أمر الشراء
+          </Button>
         }
+        backHref="/purchases"
+        backLabel="رجوع للمشتريات"
       />
 
       {refLookupError && (

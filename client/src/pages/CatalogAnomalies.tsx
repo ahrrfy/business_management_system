@@ -355,7 +355,7 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
                   const ratio = oldV > 0 ? newV / oldV : 0;
                   return (
                     <tr key={row.id} className="border-b hover:bg-muted/30">
-                      <td className="p-2 text-xs tabular-nums" dir="ltr">{new Date(row.createdAt).toLocaleString("ar-IQ")}</td>
+                      <td className="p-2 text-xs tabular-nums" dir="ltr">{new Date(row.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
                       <td className="p-2 max-w-xs truncate" title={row.productName ?? ""}>{row.productName ?? `رقم المتغيّر ${row.variantId}`} <span className="text-[10px] text-muted-foreground">{row.sku ?? ""}</span></td>
                       <td className="p-2 text-xs tabular-nums" dir="ltr">
                         {oldV.toLocaleString("en-US")} → {newV.toLocaleString("en-US")} <span className="text-muted-foreground">({ratio.toFixed(2)}×)</span>

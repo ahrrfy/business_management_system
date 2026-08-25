@@ -448,14 +448,8 @@ export default function QuotationNew() {
       <PageHeader
         icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
         title={isEdit ? `تعديل ${typeInfo.label}` : `${typeInfo.label} جديد`}
-        actions={
-          <Link
-            href="/quotations"
-            className="rounded-md border bg-card px-3 py-1.5 text-sm font-semibold text-muted-foreground hover:bg-muted"
-          >
-            ← رجوع للعروض
-          </Link>
-        }
+        backHref="/quotations"
+        backLabel="رجوع للعروض"
       />
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط + «صالح حتى» يظهر تلقائياً للنوع QUOTATION) */}

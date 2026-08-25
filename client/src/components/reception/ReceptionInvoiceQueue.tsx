@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/date";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
-import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
 
 type QueueOut = RouterOutputs["reception"]["invoiceQueue"];
 type Row = QueueOut["rows"][number];
@@ -306,9 +306,9 @@ export function ReceptionInvoiceQueue({
                       {fmt(remaining)}
                     </td>
                     <td className="px-2 py-2 text-center">
-                      <Badge variant={r.status === "PAID" ? "default" : r.status === "PARTIALLY_PAID" ? "secondary" : "outline"} className="text-[10px]">
-                        {/* التعريب من المصدر المشترك — السلسلة الشرطية كانت تُسقِط CONFIRMED/CANCELLED/SUPERSEDED
-                            إلى `r.status` رمزاً إنجليزياً خاماً في طابور الاستقبال. */}
+                      <Badge variant={invoiceStatusBadgeVariant(r.status)} className="text-[10px]">
+                        {/* التعريب و variant من المصدر المشترك — كانت السلسلة الشرطية تُترجم PAID→default
+                            بينما الشاشة الأخرى (Invoices.tsx) تُترجمها success. الآن حالة واحدة، شكل واحد. */}
                         {invoiceStatusLabel(r.status)}
                       </Badge>
                     </td>

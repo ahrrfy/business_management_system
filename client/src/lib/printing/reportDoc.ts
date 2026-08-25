@@ -13,6 +13,7 @@
 //   });
 import { openPrintWindow } from "./brand";
 import { fmtDate } from "../date";
+import { notify } from "@/lib/notify";
 import {
   wrapA4Doc,
   docHeader,
@@ -51,6 +52,12 @@ export interface ReportDocInput {
   emptyText?: string;
   /** أفقي للجداول العريضة كي تبقى التفاصيل مقروءة على A4. */
   orientation?: "portrait" | "landscape";
+  /**
+   * عند حجب النافذة المنبثقة (المتصفّح يمنع popup)، هل نعرض `notify.err` مركزياً؟
+   * الافتراضي true — قبل هذا كان كل مستدعٍ يكتب المعالجة يدوياً (`if (!res.ok) notify.err(...)`)
+   * أو ينسى فتُطبع الرسالة صامتة على console وحده. مرّر false إذا أردت التعامل يدوياً.
+   */
+  notifyOnBlock?: boolean;
 }
 
 /** تنويه احترافي (شريط خفيف) — يُستعمل للافتراضات/حدود التقرير. */
@@ -82,5 +89,11 @@ export function printReportDoc(input: ReportDocInput): boolean {
   const summary = input.summary && input.summary.length ? docSummary(input.summary) : "";
 
   const body = `${head}${note}${meta}${table}${summary}${docFooter()}`;
-  return openPrintWindow(wrapA4Doc(input.title, body, { orientation: input.orientation }));
+  const ok = openPrintWindow(wrapA4Doc(input.title, body, { orientation: input.orientation }));
+  if (!ok && input.notifyOnBlock !== false) {
+    // رسالة عربية موحّدة عبر كل الشاشات — قبل هذا كان بعضها يعرض alert("popup blocked")،
+    // وبعضها يخذل صامتاً، والمستخدم يحتار: هل تمّت الطباعة؟ الأمانة تقتضي إبلاغاً واضحاً.
+    notify.err("لم تُفتح نافذة الطباعة — افسح مانع النوافذ المنبثقة في متصفّحك وأعد المحاولة.");
+  }
+  return ok;
 }

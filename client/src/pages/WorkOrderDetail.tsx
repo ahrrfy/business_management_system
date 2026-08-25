@@ -1,4 +1,5 @@
 import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
+import { PageHeader } from "@/components/PageHeader";
 import CancelWorkOrderDialog from "@/components/workorder/CancelWorkOrderDialog";
 import DesignFileCard from "@/components/workorder/DesignFileCard";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
@@ -28,7 +29,6 @@ import { canSeeCost, moduleAccessAllowed, type PermissionMap, type RoleKey } fro
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
-import { PageHeader } from "@/components/PageHeader";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";

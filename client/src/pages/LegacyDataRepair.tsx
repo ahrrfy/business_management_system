@@ -60,7 +60,7 @@ function fmtMoney(value: string | number | null | undefined) {
 
 function fmtDate(value: Date | string | null | undefined) {
   if (!value) return "—";
-  return new Date(value).toLocaleString("ar-IQ");
+  return new Date(value).toLocaleString("ar-IQ-u-nu-latn");
 }
 
 function CountCard({ label, count, tone = "neutral" }: { label: string; count: number; tone?: "neutral" | "warn" }) {
@@ -69,7 +69,7 @@ function CountCard({ label, count, tone = "neutral" }: { label: string; count: n
       <CardContent className="p-3">
         <div className="text-xs text-muted-foreground">{label}</div>
         <div className={tone === "warn" ? "text-2xl font-bold tabular-nums text-[var(--sem-warn)]" : "text-2xl font-bold tabular-nums"}>
-          {count.toLocaleString("ar-IQ")}
+          {count.toLocaleString("ar-IQ-u-nu-latn")}
         </div>
       </CardContent>
     </Card>
@@ -95,7 +95,7 @@ function FindingSection({
             <CardTitle className="text-base">{title}</CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">{description}</p>
           </div>
-          <Badge variant={count ? "destructive" : "secondary"}>{count.toLocaleString("ar-IQ")}</Badge>
+          <Badge variant={count ? "destructive" : "secondary"}>{count.toLocaleString("ar-IQ-u-nu-latn")}</Badge>
         </div>
       </CardHeader>
       <CardContent className="p-0">
@@ -344,7 +344,7 @@ export default function LegacyDataRepair() {
                 <tr key={row.id}>
                   <td className={cell}><div className="font-medium">{row.name}</div><div className="text-xs text-muted-foreground">#{row.id}</div></td>
                   <td className={cell}>{row.partyType === "COMPANY" ? "شركة" : "مندوب فرد"}</td>
-                  <td className={cell}>{row.openCount.toLocaleString("ar-IQ")}</td>
+                  <td className={cell}>{row.openCount.toLocaleString("ar-IQ-u-nu-latn")}</td>
                   <td className={cell}>{fmtDate(row.oldestOpenAt)}</td>
                   <td className={`${cell} space-x-2 space-x-reverse`}>
                     <RowActions mode="inline" actions={[

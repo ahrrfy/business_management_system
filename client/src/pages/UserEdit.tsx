@@ -310,7 +310,8 @@ export default function UserEdit() {
     <div className="space-y-4">
       <PageHeader
         title="تعديل مستخدم"
-        actions={<Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
+        backHref="/users"
+        backLabel="رجوع للمستخدمين"
       />
 
       <Card>

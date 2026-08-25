@@ -6,9 +6,10 @@ import { useMemo, useState } from "react";
 import { FileSignature, Plus, Printer, Search, X } from "lucide-react";
 import CustomerPicker from "@/components/CustomerPicker";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { EmptyState } from "@/components/PageState";
 import { RowActions } from "@/components/list";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine, PriceTier } from "@/components/invoice/types";
@@ -117,6 +118,52 @@ export default function ContractPrices() {
       note: note.trim() || null,
     });
   }
+
+  // أعمدة الجدول التعاقديّ — تُعرَّف داخل المكوّن لأنّها تلتقط setActive/onRemove.
+  // useMemo لتفادي إعادة البناء مع كل رسم (يُبطئ تحديد الأعمدة الظاهرة في DataTable).
+  const columns = useMemo<ColumnDef<ContractRow>[]>(() => [
+    { id: "product", header: "المنتج", accessorFn: (r) => variantLabel(r), cell: ({ row }) => variantLabel(row.original) },
+    { id: "sku", header: "SKU", accessorKey: "sku", cell: ({ row }) => <span dir="ltr" className="text-muted-foreground">{row.original.sku}</span> },
+    { id: "unit", header: "الوحدة", accessorKey: "unitName" },
+    { id: "price", header: "السعر التعاقدي", cell: ({ row }) => <span dir="ltr" className="font-bold tabular-nums">{fmtMoney(row.original.price)}</span> },
+    {
+      id: "status",
+      header: "الحالة",
+      cell: ({ row }) => (
+        <span className={`rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}>
+          {row.original.isActive ? "نشط" : "معطَّل"}
+        </span>
+      ),
+    },
+    { id: "note", header: "ملاحظة", cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.note ?? "—"}</span> },
+    { id: "updatedAt", header: "آخر تحديث", cell: ({ row }) => <span dir="ltr" className="text-xs text-muted-foreground">{fmtDateTime(row.original.updatedAt)}</span> },
+    {
+      id: "actions",
+      header: "إجراءات",
+      cell: ({ row }) => (
+        <RowActions
+          actions={[
+            {
+              key: "toggle",
+              kind: "approve",
+              label: row.original.isActive ? "تعطيل" : "تفعيل",
+              onSelect: () => setActive.mutate({ id: row.original.id, isActive: !row.original.isActive }),
+              gate: { roles: ["manager"], module: "crm", level: "FULL" },
+            },
+            {
+              key: "remove",
+              kind: "delete",
+              label: "حذف",
+              variant: "destructive",
+              onSelect: () => void onRemove(row.original),
+              gate: { roles: ["manager"], module: "crm", level: "FULL" },
+            },
+          ]}
+        />
+      ),
+    },
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [setActive]);
 
   async function onRemove(r: ContractRow) {
     if (
@@ -286,74 +333,25 @@ export default function ContractPrices() {
                 <Input className="ps-9" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث بالمنتج/SKU/ملاحظة…" dir="auto" />
               </div>
             )}
-            {list.isLoading ? (
-              <LoadingState />
-            ) : (
-              <ScrollTableShell>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-right">
-                      <th className="px-3 py-2 font-semibold">المنتج</th>
-                      <th className="px-3 py-2 font-semibold">SKU</th>
-                      <th className="px-3 py-2 font-semibold">الوحدة</th>
-                      <th className="px-3 py-2 font-semibold text-left">السعر التعاقدي</th>
-                      <th className="px-3 py-2 font-semibold">الحالة</th>
-                      <th className="px-3 py-2 font-semibold">ملاحظة</th>
-                      <th className="px-3 py-2 font-semibold">آخر تحديث</th>
-                      <th className="px-3 py-2 font-semibold">إجراءات</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.length === 0 && (
-                      <TableEmptyRow colSpan={8} message="لا أسعار تعاقدية لهذا العميل — أضِف أول سطر أعلاه." />
-                    )}
-                    {rows.length > 0 && filteredRows.length === 0 && (
-                      <TableEmptyRow colSpan={8} message="لا نتائج مطابقة للبحث." />
-                    )}
-                    {filteredRows.map((r) => (
-                      <tr key={r.id} className={`border-t ${r.isActive ? "" : "opacity-60"}`}>
-                        <td className="px-3 py-2">{variantLabel(r)}</td>
-                        <td className="px-3 py-2 text-muted-foreground" dir="ltr">{r.sku}</td>
-                        <td className="px-3 py-2">{r.unitName}</td>
-                        <td className="px-3 py-2 text-left font-bold" dir="ltr">{fmtMoney(r.price)}</td>
-                        <td className="px-3 py-2">
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-xs ${
-                              r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"
-                            }`}
-                          >
-                            {r.isActive ? "نشط" : "معطَّل"}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground">{r.note ?? "—"}</td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground" dir="ltr">{fmtDateTime(r.updatedAt)}</td>
-                        <td className="px-3 py-2">
-                          <RowActions
-                            actions={[
-                              {
-                                key: "toggle",
-                                kind: "approve",
-                                label: r.isActive ? "تعطيل" : "تفعيل",
-                                onSelect: () => setActive.mutate({ id: r.id, isActive: !r.isActive }),
-                                gate: { roles: ["manager"], module: "crm", level: "FULL" },
-                              },
-                              {
-                                key: "remove",
-                                kind: "delete",
-                                label: "حذف",
-                                variant: "destructive",
-                                onSelect: () => void onRemove(r),
-                                gate: { roles: ["manager"], module: "crm", level: "FULL" },
-                              },
-                            ]}
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </ScrollTableShell>
-            )}
+            <DataTable
+              columns={columns}
+              data={filteredRows}
+              searchable={false}
+              loading={list.isLoading}
+              resourceKey="contractPrices"
+              // البحث الخارجيّ في `q` نشط ⇒ نمرّر emptyFilteredState صراحةً حتى يعرف DataTable
+              // أنّ الفراغ سببه الفلتر لا القائمة الأصلية (لا سبيل له معرفة ذلك من `q` الخارجيّ).
+              emptyFilteredState={q.trim() !== "" ? (
+                <EmptyState
+                  resourceKey="contractPrices"
+                  reason="NO_MATCH_FILTER"
+                  action={<Button size="sm" variant="outline" onClick={() => setQ("")}>مسح البحث</Button>}
+                />
+              ) : undefined}
+              getRowClassName={(r) => (r.isActive ? undefined : "opacity-60")}
+              pageSize={100}
+              bounded
+            />
           </CardContent>
         )}
       </Card>

@@ -659,6 +659,12 @@ option:disabled {
     display: none !important;
   }
 
+  /* أزرار PageHeader.actions (تصدير/طباعة/إضافة/…) لا تُطبع مع محتوى الصفحة — تصبح Ink
+     على الورق بلا فائدة، ومربكة للقارئ. تُوسم بـdata-page-header-actions من المكوّن. */
+  [data-page-header-actions] {
+    display: none !important;
+  }
+
   /* لا نطبع فقط الصفوف المرئية داخل جدول قابل للتمرير. */
   .print-table-shell {
     max-height: none !important;

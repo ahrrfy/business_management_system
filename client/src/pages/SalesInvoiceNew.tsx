@@ -888,19 +888,13 @@ export default function SalesInvoiceNew() {
             : `${typeInfo.label} متقدّمة`
         }
         icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-6 text-primary" />; })()}
+        backHref="/invoices"
+        backLabel="رجوع للفواتير"
         actions={
-          <div className="flex items-center gap-3 text-xs">
-            <span className="hidden font-semibold text-muted-foreground sm:inline">
-              الإجمالي:{" "}
-              <span className="font-extrabold text-foreground" dir="ltr">{totals.grandTotal}</span> د.ع
-            </span>
-            <Link
-              href="/invoices"
-              className="rounded-md border bg-card px-3 py-1.5 text-sm font-semibold text-muted-foreground hover:bg-muted"
-            >
-              ← رجوع للفواتير
-            </Link>
-          </div>
+          <span className="hidden text-xs font-semibold text-muted-foreground sm:inline">
+            الإجمالي:{" "}
+            <span className="font-extrabold text-foreground" dir="ltr">{totals.grandTotal}</span> د.ع
+          </span>
         }
       />
 

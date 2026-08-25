@@ -1,8 +1,8 @@
 import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
+import { PageHeader } from "@/components/PageHeader";
 import { shiftTypeLabel, sourceTypeLabel } from "@/lib/labels";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { PageHeader } from "@/components/PageHeader";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -70,20 +70,16 @@ import {
   paymentMethodLabel,
 } from "@/lib/paymentMethod";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
-import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
+import { Badge } from "@/components/ui/badge";
 
 const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v));
 
-// التعريب من `@shared/invoiceStatus` وحده (مصدر الحقيقة) — كانت نسخةً محلّية سابعة تنجرف
-// عن الـenum عند كل قيمةٍ جديدة. خريطة الأصناف اللونية تبقى محلّية: نطاقها العرض لا التعريب.
-const STATUS_CLS: Record<string, string> = {
-  PAID: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
-  PARTIALLY_PAID: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
-  PENDING: "bg-muted text-foreground/70",
-  RETURNED: "bg-rose-100 text-rose-700",
-  CANCELLED: "bg-rose-100 text-rose-700",
-  SUPERSEDED: "badge-status-cancelled",
-};
+// التعريب و variant من `@shared/invoiceStatus` وحده — كانت خريطة `STATUS_CLS` محلّية بألوان
+// Tailwind خامّة (`bg-emerald-100 text-emerald-700`) تتجاوز التوكنز الدلالية للحالة، ولا مقابل
+// لها في dark mode، وتنحرف عن Invoices.tsx و ReceptionInvoiceQueue.tsx بصرياً على نفس الحالة.
+// origin/main #799 حاول تسكينها بتوكنز sem لكنّ الخريطة المحلّية تبقى انحرافاً — الحلّ الجذريّ
+// هو الحذف الكامل والتحويل إلى `<Badge variant={invoiceStatusBadgeVariant(status)} />`.
 // METHOD_LABEL / METHODS → مستوردة من lib/paymentMethod.ts (مصدر واحد مع POS + Invoices + حوار الوردية).
 const PAY_STATUS: Record<string, string> = {
   COMPLETED: "مكتملة",
@@ -771,11 +767,9 @@ export default function InvoiceDetail() {
                   مُعدَّلة
                 </Link>
               )}
-              <span
-                className={`text-xs rounded-full px-2.5 py-0.5 font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}
-              >
+              <Badge variant={invoiceStatusBadgeVariant(data.status)} className="text-xs">
                 {invoiceStatusLabel(data.status)}
-              </span>
+              </Badge>
             </div>
           </CardTitle>
         </CardHeader>

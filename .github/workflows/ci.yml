@@ -226,6 +226,19 @@ jobs:
       # PR #775 (٢٥/٨): حارسٌ يمنع typos في التوكنز المُوحَّدة، حتى داخل `var(--x, fallback)`.
       - name: حارِس متغيّرات CSS غير المعرَّفة (typos في التوكنز)
         run: pnpm check:css-vars
+      # PR #795 (٢٥/٨): حرّاس شريحة UX S1-S3 — يجب استدعاؤها **بالاسم** لا عبر aggregate.
+      # ملاحظة Codex الصائبة: `check-test-build` يستدعي كلّ حارس صراحةً، ولا يشغّل `pnpm check:guards`
+      # ⇒ حارس مُدرَج فقط في aggregate لا يعمل في CI ويسمح للـPR بتخطّي pre-commit.
+      - name: حارِس عقد PageHeader (يمنع h1 خامّ + ← رجوع يدويّ)
+        run: pnpm check:page-header
+      - name: حارِس variants حالة الفاتورة (يمنع خرائط محلّية منجرفة)
+        run: pnpm check:invoice-status-variants
+      - name: حارِس اعتماد DataTable (يمنع <table> جديدة في pages)
+        run: pnpm check:raw-tables
+      - name: حارِس اعتماد printReportDoc (يمنع window.print() جديدة في pages)
+        run: pnpm check:window-print
+      - name: حارِس قاعدة الأرقام اللاتينية (قرار المالك ٢٥/٨/٢٦)
+        run: pnpm check:locale-numbers
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: بناء الإنتاج

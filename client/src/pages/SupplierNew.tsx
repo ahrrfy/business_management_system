@@ -178,7 +178,8 @@ export default function SupplierNew() {
       <PageHeader
         title="إضافة مورّد"
         description="سجّل مورّداً جديداً ببياناته وشروط تعامله وتقييمه."
-        actions={<Link href="/suppliers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
+        backHref="/suppliers"
+        backLabel="رجوع للمورّدين"
       />
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
