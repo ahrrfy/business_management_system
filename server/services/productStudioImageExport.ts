@@ -226,7 +226,7 @@ export async function streamStudioImageExport(
   archive.append(
     Buffer.from(
       [
-        `تصدير صور استوديو المنتجات — ${new Date().toLocaleString("ar-IQ")}`,
+        `تصدير صور استوديو المنتجات — ${new Date().toLocaleString("ar-IQ-u-nu-latn")}`,
         `النطاق: ${scope.kind === "ALL" ? "كل الكتالوج" : scope.kind === "CATEGORY" ? `فئة ${scope.categoryId}` : `منتجات ${scope.productIds.length}`}`,
         `مؤهَّلات: ${rows.length}${truncated ? ` (مقصوصة إلى ${MAX_EXPORT_IMAGES})` : ""}`,
         `أُضيفت للأرشيف: ${added}`,
