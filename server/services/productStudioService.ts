@@ -675,10 +675,20 @@ async function claimFreshCampaignTask(
       outOfScopeCount++;
       continue;
     }
+    // عدّ الاعتمادات **لكل بديلٍ مسحوب**، لا للمنتج ككل: بعد هجرة 0268 صار كلّ (منتج،
+    // متغيّر) مستقلٌّ بمهمّته ومفتاحه الفريد، فحصرُ العدّ بالمنتج يجعل مسحَ البديل B
+    // يرتدّ بـ«اكتملت الصورة» بمجرّد اعتماد البديل A (الجذر: مراجعة Codex P1 على PR #807).
+    // صور legacy على مستوى الأمّ (variantId=NULL) لا تحتسب لبديلٍ محدَّد.
     const [approvedCount] = await tx
       .select({ n: sql<number>`count(*)` })
       .from(productImages)
-      .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")));
+      .where(
+        and(
+          eq(productImages.productId, productId),
+          eq(productImages.reviewStatus, "APPROVED"),
+          variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
+        ),
+      );
     if (Number(approvedCount?.n ?? 0) >= requiredImages) {
       completedCount++;
       continue;
@@ -784,6 +794,20 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       // مصوّريها ولم يبلغ المنتج عدد الصور المطلوب. بدون هذا كان المصوّر يقف عاجزاً حتى
       // يُولّد المدير الطابور يدوياً — وهو ما يكسر انسيابية «امسح ثم صوّر».
       return claimFreshCampaignTask(tx, actor, resolved);
+    }
+    // ترقيةُ variantId قبل الرجوع «لصاحبها»: إن كان المدير أسنَد مهمّةً مستوى-أمّ
+    // (variantId=NULL) إلى المصوّر ثمّ مسح المصوّرُ باركود بديلٍ محدَّد، الصورةُ يجب أن
+    // تذهب لذاك البديل. بلا هذه الترقية كانت المهمّةُ تُغلَق مبكّراً بـ«صاحبها» ثمّ الاعتماد
+    // ينشر `productImages.variantId=NULL` فتظهر لكل البدائل (الجذر: مراجعة Codex P1 على PR #807).
+    if (variantId != null && active.variantId == null && Number(active.assignedTo) === actor.userId) {
+      await tx
+        .update(productImageJobs)
+        .set({ variantId, revision: sql`${productImageJobs.revision} + 1` })
+        .where(eq(productImageJobs.id, active.id));
+      await tx.insert(auditLogs).values(
+        auditValues(actor, "productStudio.claimByBarcode.upgradeVariant", Number(active.id), { productId, variantId, barcode: barcode.slice(0, 64) }),
+      );
+      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId))) };
     }
     if (Number(active.assignedTo) === actor.userId) {
       return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId))) };
@@ -2335,6 +2359,11 @@ export async function listStudioTasks(
       campaignId: productImageJobs.campaignId,
       branchId: productImageJobs.branchId,
       productName: products.name,
+      // بديل المهمّة (`variantId`+`variantName`) يُعاد كي تُميّز الشاشة بطاقتَي بديلَين
+      // من المنتج نفسه. بلا هذا كانتا ظاهرتَين باسمٍ متطابق فيرفع المصوّرُ صورةً للبديل
+      // الخطأ (الجذر: مراجعة Codex P1 على PR #807).
+      variantId: productImageJobs.variantId,
+      variantName: productVariants.variantName,
       currentDescription: products.description,
       status: productImageJobs.status,
       mode: productImageJobs.mode,
@@ -2360,6 +2389,7 @@ export async function listStudioTasks(
     })
     .from(productImageJobs)
     .innerJoin(products, eq(products.id, productImageJobs.productId))
+    .leftJoin(productVariants, eq(productVariants.id, productImageJobs.variantId))
     .leftJoin(users, eq(users.id, productImageJobs.assignedTo))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(productImageJobs.updatedAt), desc(productImageJobs.id))
@@ -2786,7 +2816,9 @@ export async function assignStudioTask(
           revision: productImageJobs.revision,
         })
         .from(productImageJobs)
-        .where(and(eq(productImageJobs.productId, input.productId), eq(productImageJobs.activeSlot, 1)))
+        // إسنادُ المدير الفرديّ **مستوى-الأمّ فقط** (`variantId IS NULL`): مهامّ البدائل
+        // من مسح المصوّر لها دورتها ولا يُسنِدها المدير هنا (الجذر: مراجعة Codex P2 على PR #807).
+        .where(and(eq(productImageJobs.productId, input.productId), eq(productImageJobs.activeSlot, 1), isNull(productImageJobs.variantId)))
         .limit(1)
         .for("update")
     )[0];
@@ -2961,15 +2993,27 @@ export async function bulkAssignStudioTasks(
         message: "أحد المنتجات غير موجود أو معطل أو خدميّ (لا يُصوَّر)",
       });
     }
+    // الإسنادُ الجماعيّ **مستوى-الأمّ فقط**: يعمل على المهام بـ`variantId=NULL` — لا
+    // يلمس المهام الخاصّة ببديل (تلك تأتي من مسح المصوّر ولها دورتها). بعد هجرة 0268
+    // صار كل (منتج، متغيّر) مستقلاً بمهمّته، فقراءةُ كل النشطات ودمجُها في
+    // Map<productId, jobId> تُخفي المهام الخاصّة بالبدائل صامتاً — لذا نُصفّي هنا
+    // على variantId=NULL (الجذر: مراجعة Codex P2 على PR #807).
     const active = await tx
       .select({
         id: productImageJobs.id,
         productId: productImageJobs.productId,
         branchId: productImageJobs.branchId,
         assignedTo: productImageJobs.assignedTo,
+        variantId: productImageJobs.variantId,
       })
       .from(productImageJobs)
-      .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.activeSlot, 1)))
+      .where(
+        and(
+          inArray(productImageJobs.productId, productIds),
+          eq(productImageJobs.activeSlot, 1),
+          isNull(productImageJobs.variantId),
+        ),
+      )
       .for("update");
     if (
       active.some(
@@ -3860,10 +3904,20 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       imageId = Number(image.id);
       existingOriginalKey = image.originalKey;
     } else {
+      // العزلُ لكل بديل: تخفيضُ الصور الرئيسيّة يُقيَّد بنفس `variantId` (أو نفس مستوى-الأمّ
+      // إن كانت المهمّة variantId=NULL). بلا هذا القيد كانت الصورة الأخيرة لأيّ بديلٍ
+      // تُعزَّز رئيسيّةً وتُخفَّض جميع البدائل الأخرى — فيقرأ الكشك/المتجر صورةً واحدة
+      // لكل البدائل (الجذر: مراجعة Codex P1 على PR #807).
       await tx
         .update(productImages)
         .set({ isPrimary: false })
-        .where(and(eq(productImages.productId, task.productId), eq(productImages.isPrimary, true)));
+        .where(
+          and(
+            eq(productImages.productId, task.productId),
+            eq(productImages.isPrimary, true),
+            task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
+          ),
+        );
       const [created] = await tx
         .insert(productImages)
         .values({
