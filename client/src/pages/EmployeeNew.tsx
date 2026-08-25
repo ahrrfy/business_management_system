@@ -6,6 +6,7 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Label } from "@/components/ui/label";
 import { WagePackageFields, defaultWageSchedule, wageValueFromEmployee, type WageDayValue } from "@/components/form/WagePackageFields";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { PageHeader } from "@/components/PageHeader";
 import {
   AccountFields, accountPermsPayload, emptyAccountValue, validateAccount, type AccountFieldsValue,
 } from "@/components/form/AccountFields";
@@ -284,10 +285,11 @@ export default function EmployeeNew() {
     const dest = createdInfo.employeeId ? `/hr/employees/${createdInfo.employeeId}` : "/hr/employees";
     return (
       <div className="space-y-4 max-w-2xl">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">{isEdit ? "تعديل موظف" : "إضافة موظف"}</h1>
-          <Link href="/hr/employees" className="text-sm text-muted-foreground">← رجوع للموظفين</Link>
-        </div>
+        <PageHeader
+          title={isEdit ? "تعديل موظف" : "إضافة موظف"}
+          backHref="/hr/employees"
+          backLabel="رجوع للموظفين"
+        />
         <CredentialsShare
           name={createdInfo.name}
           email={createdInfo.email}
