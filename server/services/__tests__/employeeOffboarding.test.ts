@@ -36,7 +36,7 @@ async function reset() {
   await d.insert(s.employees).values({
     id: 10, userId: 2, branchId: 1, firstName: "علي", lastName: "حسن", isActive: true,
   });
-  await d.insert(s.branches).values({ id: 2, name: "الفرع الثاني", code: "BR2", type: "BRANCH" });
+  await d.insert(s.branches).values({ id: 2, name: "الفرع الثاني", code: "BR2", type: "SALES" });
   await d.insert(s.employees).values({
     id: 20, userId: null, branchId: 2, firstName: "ليلى", lastName: "سالم", isActive: true,
   });
