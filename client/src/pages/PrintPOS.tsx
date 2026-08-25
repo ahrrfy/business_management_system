@@ -13,7 +13,6 @@ import {
 } from "@/lib/printing/print";
 import { categoryIcon, isCustomPriceSku, serviceIcon } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
 import { cachePrintServices, readCachedPrintServices } from "@/lib/offline/printServicesCache";
@@ -29,7 +28,7 @@ import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, ChevronDown, ChevronUp, Calculator } from "lucide-react";
+import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, Flame } from "lucide-react";
 import { normalizeNumberInput } from "@shared/numberNormalize";
 import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
@@ -122,7 +121,6 @@ type C = typeof LIGHT;
 const SHOP = "الرؤية العربية";
 const DEPT = "قسم الطباعة والاستنساخ";
 const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: "نقدي", CARD: "بطاقة", TRANSFER: "تحويل" };
-const QUICK = [5000, 10000, 25000, 50000];
 const fmt = (n: number) => Number(n || 0).toLocaleString("en-US");
 const riqd = (n: number) => roundCashIQD(n).toNumber();
 
@@ -325,10 +323,41 @@ export default function PrintPOS() {
     setTabs((p) => { const n = p.filter((t) => t.id !== id); if (activeId === id) setActiveId(n[n.length - 1].id); return n; });
   }
 
+  // ٢٥/٨ (بلاغ المالك «ميّز الخدمات الأكثر استعمالاً»): تتبّعُ آخر ١٠ خدماتٍ فريدة أُضيفت — بمفتاحٍ
+  // لكاشير+فرع (`printpos.recentSKUs.<userId>.<branchId>`)، وتُعرض في شريطٍ لونيٍّ أعلى شبكة الخدمات
+  // مع بروزٍ بصريّ (لون + أيقونة لهب). محلّية لا خادميّة (بيانات استعمال ⇒ لا معنى لمزامنتها).
+  //
+  // المفتاح يُبنى فقط حين تتوفّر الهوّية كاملةً (userId + branchId) — بلا `?? 0` (حارس check:branch)،
+  // وفي غيابها يبقى `null` فيتخطّى الحفظ/القراءة (لا معنى لسجلّ استعمالٍ عائمٍ بلا كاشيرٍ محدَّد).
+  const recentKey = useMemo(() => {
+    const uid = me.data?.id;
+    if (uid == null || !Number.isFinite(branchId)) return null;
+    return `printpos.recentSKUs.${uid}.${branchId}`;
+  }, [me.data?.id, branchId]);
+  const [recentIds, setRecentIds] = useState<number[]>([]);
+  useEffect(() => {
+    if (!recentKey) { setRecentIds([]); return; }
+    try {
+      if (typeof window === "undefined") return;
+      const stored = window.localStorage.getItem(recentKey);
+      const parsed = stored ? JSON.parse(stored) : [];
+      setRecentIds(Array.isArray(parsed) ? parsed.filter((n) => Number.isFinite(n)).slice(0, 10) : []);
+    } catch { /* ignore */ }
+  }, [recentKey]);
+  function bumpRecent(productUnitId: number) {
+    if (!recentKey) return;
+    setRecentIds((prev) => {
+      const next = [productUnitId, ...prev.filter((id) => id !== productUnitId)].slice(0, 10);
+      try { window.localStorage.setItem(recentKey, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }
+
   // ── عمليات السلة ──
   function addService(svc: Svc) {
     if (receipt) setReceipt(null);
     setMessage(null);
+    bumpRecent(svc.productUnitId);
     const custom = isCustomPriceSku(svc.sku);
     setCart((prev) => {
       const i = prev.findIndex((c) => c.svc.productUnitId === svc.productUnitId);
@@ -794,7 +823,7 @@ export default function PrintPOS() {
           numPress={numPress} onPay={() => submit(false)} onQuickPay={() => submit(true)} isPending={sale.isPending}
           addTick={addTick}
         />
-        <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} />
+        <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
 
       {/* شارة المزامنة — تعرض حالة الاتصال وطابور الالتقاط، وتُفرّغ كلّ الأنواع. */}
@@ -903,9 +932,50 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
 }
 
 // ─── ServiceGrid ─────────────────────────────────────────────────────────────
-function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAdd }: {
+/** بطاقة خدمة موحّدة — مستعملة في الشبكة الرئيسية وشريط «الأكثر استعمالاً» (نفس التصميم بحواف
+ *  ملوّنة إن كانت «أكثر استعمالاً»). كبيرة (‎١٢٠px‎) بأيقونةٍ بارزة وسعرٍ ملوّن. */
+function ServiceCard({ C, s, onAdd, hot }: { C: C; s: Svc; onAdd: (s: Svc) => void; hot?: boolean }) {
+  const custom = isCustomPriceSku(s.sku);
+  const accent = hot ? C.amber : C.primary;
+  const accentSoft = hot ? `color-mix(in oklch, ${C.amber} 12%, transparent)` : C.primarySoft;
+  return (
+    <button onClick={() => onAdd(s)}
+      title={`${s.productName} — ${s.unitName}${s.price == null ? "" : ` — ${fmt(Number(s.price))} د.ع`}`}
+      style={{
+        height: 120, display: "flex", flexDirection: "column", alignItems: "flex-start", justifyContent: "space-between",
+        padding: "10px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", textAlign: "right",
+        background: hot ? `linear-gradient(180deg, ${accentSoft} 0%, ${C.card} 60%)` : C.card,
+        border: `${hot ? 2 : 1.5}px solid ${hot ? accent : C.border}`,
+        transition: "transform .07s, border-color .1s, box-shadow .1s",
+        boxShadow: hot ? `0 2px 10px ${accentSoft}` : "none",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.boxShadow = `0 6px 18px ${accentSoft}`; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = hot ? accent : C.border; e.currentTarget.style.boxShadow = hot ? `0 2px 10px ${accentSoft}` : "none"; }}
+      onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.96)")}
+      onMouseUp={(e) => (e.currentTarget.style.transform = "")}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+        <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, borderRadius: 8, background: accentSoft, color: accent, flexShrink: 0 }}>
+          {(() => { const SIcon = serviceIcon(s.sku); return <SIcon aria-hidden size={20} strokeWidth={1.8} />; })()}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-end" }}>
+          {hot && <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "2px 6px", borderRadius: 20 }}><Flame aria-hidden size={10} />الأكثر</span>}
+          {custom && <span style={{ fontSize: 9.5, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "1px 6px", borderRadius: 20 }}>يدوي</span>}
+        </div>
+      </div>
+      <div style={{ width: "100%" }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.fg, lineHeight: 1.25, marginBottom: 3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-word" }}>{s.productName}</div>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 10, color: C.mutedFg }}>/ {s.unitName}</span>
+          <span style={{ fontSize: 16, fontWeight: 900, color: accent, direction: "ltr" }}>{s.price == null ? "—" : fmt(Number(s.price))}<span style={{ fontSize: 9.5, color: C.mutedFg, fontWeight: 600 }}> د.ع</span></span>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAdd, recentIds }: {
   C: C; services: Svc[]; loading: boolean; cats: { id: number; name: string }[]; catId: number | null;
-  setCatId: (id: number) => void; search: string; onAdd: (s: Svc) => void;
+  setCatId: (id: number) => void; search: string; onAdd: (s: Svc) => void; recentIds: number[];
 }) {
   const q = search.trim();
   const list = useMemo(() => {
@@ -918,6 +988,20 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
     // print-catalog: catId=0 هو تبويب «أخرى» (الخدمات بلا فئة، categoryId == null).
     return services.filter((s) => (catId === 0 ? s.categoryId == null : s.categoryId === catId));
   }, [services, q, catId]);
+
+  // ٢٥/٨ (بلاغ المالك): «الأكثر استعمالاً» — يعرض حتى ٦ خدمات بترتيب الاستعمال الأخير للكاشير+فرع
+  // في شريطٍ بارزٍ بحواف كهرمانية وأيقونة لهب، أعلى شبكة الفئة. تختفي إن لم يكن هناك سجلّ.
+  const recentSvcs = useMemo(() => {
+    if (q || !recentIds.length) return [];
+    const byId = new Map(services.map((s) => [s.productUnitId, s] as const));
+    const out: Svc[] = [];
+    for (const id of recentIds) {
+      const s = byId.get(id);
+      if (s && !out.includes(s)) out.push(s);
+      if (out.length >= 6) break;
+    }
+    return out;
+  }, [q, recentIds, services]);
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
@@ -945,37 +1029,22 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
             <div style={{ fontSize: 14, fontWeight: 600 }}>{q ? "لا توجد خدمة بهذا الاسم" : "لا خدمات في هذه الفئة"}</div>
           </div>
         ) : (
-          // ٢٤/٨ (بلاغ المالك «شاشة البطاقات كبيرة»): نمط Odoo — بلاطاتٌ أضيق (١٤٤px) وأقصر (١٠٤px)
-          // فيظهر ٤-٦ بلاطاتٍ في الصفّ بدل ٢-٣، والسلّةُ تحصلُ على مساحةٍ أكبر بلا تكديس.
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(144px, 1fr))", gap: 8 }}>
-            {list.map((s) => {
-              const custom = isCustomPriceSku(s.sku);
-              return (
-                <button key={s.productUnitId} onClick={() => onAdd(s)}
-                  // ٢٤/٨ (Codex P2 على PR #741): `title` يعرض الاسم الكامل عند التمرير — أسماء
-                  // الخدمات المتقاربة أطولُ من ١٤٤px تُخفي المُميِّز بلا هذا التلميح.
-                  title={`${s.productName} — ${s.unitName}${s.price == null ? "" : ` — ${fmt(Number(s.price))} د.ع`}`}
-                  style={{ height: 104, display: "flex", flexDirection: "column", alignItems: "flex-start", justifyContent: "space-between", padding: "10px 11px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", textAlign: "right", background: C.card, border: `1.5px solid ${C.border}`, transition: "transform .07s, border-color .1s, box-shadow .1s" }}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.primary; e.currentTarget.style.boxShadow = `0 4px 14px ${C.primarySoft}`; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.boxShadow = "none"; }}
-                  onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.96)")}
-                  onMouseUp={(e) => (e.currentTarget.style.transform = "")}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-                    {(() => { const SIcon = serviceIcon(s.sku); return <SIcon aria-hidden size={22} strokeWidth={1.6} />; })()}
-                    {custom && <span style={{ fontSize: 9.5, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "1px 6px", borderRadius: 20 }}>يدوي</span>}
-                  </div>
-                  <div style={{ width: "100%" }}>
-                    {/* ٢٤/٨: سطران بدل قصٍّ صامت — الاسم قد يحمل مُميِّزاً بعد أوّل ١٤٤px. لو زاد
-                        نبقى على قصٍّ للسطر الثاني كي لا يفيض التصميم. */}
-                    <div style={{ fontSize: 12.5, fontWeight: 800, color: C.fg, lineHeight: 1.2, marginBottom: 2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-word" }}>{s.productName}</div>
-                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: 10, color: C.mutedFg }}>/ {s.unitName}</span>
-                      <span style={{ fontSize: 15, fontWeight: 900, color: C.primary, direction: "ltr" }}>{s.price == null ? "—" : fmt(Number(s.price))}<span style={{ fontSize: 9, color: C.mutedFg, fontWeight: 600 }}> د.ع</span></span>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {recentSvcs.length > 0 && (
+              <div style={{ borderRadius: 12, border: `1.5px dashed ${C.amber}`, background: `color-mix(in oklch, ${C.amber} 4%, transparent)`, padding: "10px 12px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, color: C.amber, fontSize: 12, fontWeight: 800 }}>
+                  <Flame aria-hidden size={14} />
+                  الأكثر استعمالاً <span style={{ color: C.mutedFg, fontWeight: 600 }}>({recentSvcs.length})</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(158px, 1fr))", gap: 8 }}>
+                  {recentSvcs.map((s) => <ServiceCard key={`hot-${s.productUnitId}`} C={C} s={s} onAdd={onAdd} hot />)}
+                </div>
+              </div>
+            )}
+            {/* الشبكة الرئيسية — بلاطات كبيرة (١٥٨px) لبروزٍ أوضح بعد توسّع عمود السلّة. */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(158px, 1fr))", gap: 8 }}>
+              {list.map((s) => <ServiceCard key={s.productUnitId} C={C} s={s} onAdd={onAdd} />)}
+            </div>
           </div>
         )}
       </div>
@@ -1096,11 +1165,12 @@ const fluid = (min: number, ratio: number, max: number) => `clamp(${min}px, ${ra
 
 function CheckoutColumn(props: CheckoutProps) {
   const { C } = props;
-  // ٢٤/٨ (نمط Odoo): تقليل عرض العمود من ٤٦٦ إلى ٤٠٠px — تُعطى شبكةُ الخدمات مساحةً أكبر
-  // (شكوى «شاشة البطاقات كبيرة» = فعلياً كانت مضغوطة على النصف اليساريّ فبدت مكدَّسة). السلّة
-  // في هذا العرض تبقى قابلةً للقراءة (٤٠٠px كافٍ لأسطرٍ من ٣ عناصر: أيقونة، اسم، سعر × كمية).
+  // ٢٥/٨ (بلاغ المالك «مساحة أكبر للسلة طولاً وعرضاً»): توسيع العمود من ٤٠٠ إلى ٤٨٠px + إزالة
+  // الحاسبة كاملةً (numpad + رقائق المبالغ + زرّ التبديل) — الحقلُ نصّيٌّ يقبل الكتابة المباشرة
+  // فلا حاجة للنمباد على أجهزة الديسك، والقبول اللمسيّ عبر الكيبورد الافتراضي (inputMode="decimal").
+  // الفضاءُ المُحرَّر يقسَّم بين السلّة (ارتفاعاً) وأزرار الدفع/التحصيل/الطباعة (بروزاً).
   return (
-    <div style={{ width: 400, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+    <div style={{ width: 480, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
       <CartList {...props} />
       <PaymentBlock {...props} />
     </div>
@@ -1174,9 +1244,30 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
                       )}
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty - 1); }} style={{ width: 44, height: 44, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, cursor: "pointer", fontSize: 24, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>−</button>
-                      <span style={{ minWidth: 34, textAlign: "center", fontWeight: 900, fontSize: 18, direction: "ltr", color: C.fg }}>{c.qty}</span>
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty + 1); }} style={{ width: 44, height: 44, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, cursor: "pointer", fontSize: 24, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>+</button>
+                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty - 1); }} style={{ width: 40, height: 40, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>−</button>
+                      {/* ٢٥/٨ (بلاغ المالك): الكمية حقلٌ قابل للكتابة (الافتراضي ١ من addService).
+                          الكاشير يكتب مباشرةً «5»/«12»/إلخ بدل ضغط + خمس مرّات. onFocus يحدّد النصّ
+                          ⇒ أوّل ضغطة رقم تستبدل القيمة الحاليّة. onChange يقبل فقط الأرقام ويطبّع
+                          الأصفار البادئة. onBlur يُصلح الفراغ إلى ١ (السطر يُحذف على 0 عبر changeQty). */}
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={String(c.qty)}
+                        onClick={(e) => e.stopPropagation()}
+                        onFocus={(e) => { e.stopPropagation(); e.currentTarget.select(); }}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          const raw = e.target.value.replace(/[^\d]/g, "");
+                          if (raw === "") return;
+                          const n = parseInt(raw, 10);
+                          if (!Number.isFinite(n) || n < 0) return;
+                          changeQty(c.uid, n);
+                        }}
+                        onBlur={(e) => { if (e.currentTarget.value === "" || Number(e.currentTarget.value) < 1) changeQty(c.uid, 1); }}
+                        aria-label="الكمية"
+                        style={{ width: 56, height: 40, textAlign: "center", fontWeight: 900, fontSize: 18, direction: "ltr", color: C.fg, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 10, outline: "none", fontFamily: "inherit" }}
+                      />
+                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty + 1); }} style={{ width: 40, height: 40, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>+</button>
                     </div>
                     <span style={{ direction: "ltr", fontWeight: 900, fontSize: 16, color: C.fg, minWidth: 64, textAlign: "left" }}>{fmt(c.price * c.qty)}</span>
                   </div>
@@ -1190,24 +1281,11 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
   );
 }
 
-function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalFullPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, numPress, onPay, onQuickPay, cart, customerId, isPending }: CheckoutProps) {
-  // عند ضيق الارتفاع تُحذف رقائق المبالغ الجاهزة (لوحة الأرقام تُغنِي عنها) لتبقى
-  // المفاتيح وأزرار الدفع كبيرة — حذفُ الثانويّ قبل تصغير الأساسيّ.
-  const dense = useMediaQuery("(max-height: 820px)");
-  // ٢٤/٨ (بلاغ المالك «الحاسبة قابلة للطي»): طيّ لوحة الأرقام يُعيد ~١٥٠px عمودياً للسلّة. تفضيل
-  // الكاشير محفوظٌ في localStorage، والافتراضي مطويّة (تصميم Odoo: البلاطات والفاتورة قبل النمباد).
-  const [numpadOpen, setNumpadOpen] = useState<boolean>(() => {
-    try {
-      const stored = typeof window !== "undefined" ? window.localStorage.getItem("printpos.numpadOpen") : null;
-      if (stored === "1") return true;
-      if (stored === "0") return false;
-    } catch { /* localStorage may be blocked */ }
-    return false;
-  });
-  const persistNumpad = (open: boolean) => {
-    setNumpadOpen(open);
-    try { window.localStorage.setItem("printpos.numpadOpen", open ? "1" : "0"); } catch { /* ignore */ }
-  };
+function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalFullPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, onPay, onQuickPay, cart, customerId, isPending }: CheckoutProps) {
+  // ٢٥/٨ (بلاغ المالك): أُزيلت الحاسبة (numpad + QUICK + Calculator toggle) كلّياً — الحقلُ نصّيٌّ
+  // يقبل الكتابة المباشرة من لوحة المفاتيح، والقبول اللمسيّ عبر الكيبورد الافتراضي
+  // (inputMode="decimal"). الفضاء المُحرَّر يصعد إلى السلّة وأزرار الدفع الأساسية.
+  //
   // ٢٤/٨ (Codex P1 v2 على PR #741): حقلُ المبلغ يفصل «العرض» عن «القيمة الملتزمة» — نفس نمط
   // POS/Reception. أثناء الكتابة الوسيطة (`1,` قبل `1,5`) الحرفُ يبقى في الحقل والقيمةُ الملتزمة
   // (`payInput` المُرسَلة إلى الحساب) لا تتغيّر إلّا حين تكون غير ملتبسة. لولا هذا: `1` ثمّ `,` ثمّ
@@ -1234,10 +1312,6 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
   const canPay = cartLen > 0 && !hasZeroLine && (payInput === "" || paid >= cashTotal) && (!isOwing || customerId != null) && externalPaymentConfirmed;
   const canQuickPay = cartLen > 0 && !hasZeroLine && externalFullPaymentConfirmed;
 
-  const Key = ({ k, del }: { k: string; del?: boolean }) => (
-    <button onClick={() => numPress(k)} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.95)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")} onMouseLeave={(e) => (e.currentTarget.style.transform = "")}
-      style={{ height: fluid(42, 5.4, 48), fontSize: fluid(18, 2.5, 22), fontWeight: 800, background: del ? C.delKey : C.numKey, color: del ? C.delFg : C.fg, border: `1.5px solid ${C.border}`, borderRadius: 10, cursor: "pointer", fontFamily: "inherit", direction: "ltr", userSelect: "none", touchAction: "manipulation" }}>{k}</button>
-  );
   const Method = ({ m, Icon, label, disabled = false }: { m: PaymentMethod; Icon: React.ComponentType<{ "aria-hidden"?: boolean; size?: number }>; label: string; disabled?: boolean }) => (
     <button onClick={disabled ? undefined : () => setMethod(m)} disabled={disabled}
       aria-describedby={disabled ? "print-pos-external-payment-proof" : undefined}
@@ -1247,13 +1321,11 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
     </button>
   );
 
-  // ٢٤/٨ (نمط Odoo + Codex P2): تقليل سقف PaymentBlock إلى نصف العمود، لكن مع `minHeight` يضمن
-  // ظهور الإجمالي + طرق الدفع + أزرار الإتمام على الشاشات القصيرة/زوم المتصفح. الأرقام هنا:
-  //   الإجمالي ~44px + حقل المبلغ ~40px + طرق الدفع ~44px + منطقة الفعل ~90px = ~218px حدٌّ أدنى.
-  //   السقف النسبيّ يبقى مقيَّداً على الشاشات الطويلة كي تحصل السلّة على مساحتها. `min` بين النسبيّ
-  //   والحدّ الأدنى يمنع القصّ الذي كان يخفي الأزرار عند الزوم العالي.
+  // ٢٥/٨: بعد إزالة الحاسبة، PaymentBlock صار مضغوطاً — يكفيه ~٢٤٠px (إجمالي + حقل + طرق دفع +
+  // مرجع + أزرار الإتمام). السقفُ ٣٥٪ يترك ٦٥٪ للسلّة (كانت ٥٦-٤٢٪ سابقاً) ⇒ السلّة تحصل على
+  // ~٤٠-٥٠٪ زيادة في الارتفاع، وأزرار الدفع/التحصيل/الطباعة تبقى بارزة لا مضغوطة.
   return (
-    <div style={{ flexShrink: 0, minHeight: 260, maxHeight: numpadOpen ? (dense ? "62%" : "58%") : (dense ? "50%" : "44%"), display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+    <div style={{ flexShrink: 0, minHeight: 240, maxHeight: "38%", display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
       <div style={{ padding: "7px 16px", background: C.primary, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
         <span style={{ fontSize: 13.5, color: C.primaryFg, fontWeight: 700, opacity: 0.92 }}>الإجمالي</span>
         <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
@@ -1262,21 +1334,26 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
         </div>
       </div>
       {/* منطقة الإدخال — الوحيدة القابلة للتمرير؛ الإجمالي فوقها وأزرار الدفع تحتها ثابتان. */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "7px 10px 0" }}>
-        {/* ٢٤/٨: عرض المبلغ صار `<input>` حقيقياً + زرّ طيّ اللوحة إلى جواره. يقبل الكتابة المباشرة
-            من لوحة المفاتيح (بلا حاجة للنمباد على أجهزة الديسك)، والفواصلُ العربيّة `،/٫` تُطبَّع عبر
-            `normalizeNumberInput` نفسه المستعمل في POS/Reception. */}
-        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "3px 8px 3px 13px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, minHeight: fluid(30, 4, 38), marginBottom: 6 }}>
-          <span style={{ fontSize: 12, color: C.mutedFg, flexShrink: 0 }}>المبلغ المستلم</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 4, flex: 1, justifyContent: "flex-end" }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: "8px 12px 0" }}>
+        {/* ٢٥/٨: أُزيلت الحاسبة كاملةً — الحقل نصّيٌّ مباشر يقبل الكتابة من الكيبورد أو اللمس
+            عبر inputMode="decimal". زرّ «=الكل» يبقى أعلى الحقل لتعبئة المبلغ الإجمالي بضغطة. */}
+        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "5px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minHeight: fluid(38, 5, 46), marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: C.mutedFg, flexShrink: 0, fontWeight: 700 }}>المبلغ المستلم</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={() => setPayInput(String(cashTotal))}
+              disabled={!cartLen}
+              title="عبّئ المبلغ الإجماليّ"
+              style={{ height: 30, padding: "0 10px", border: `1.5px solid ${C.primary}`, borderRadius: 8, background: C.primarySoft, color: C.primary, fontFamily: "inherit", fontSize: 12, fontWeight: 800, cursor: cartLen ? "pointer" : "not-allowed", opacity: cartLen ? 1 : 0.5, flexShrink: 0, touchAction: "manipulation" }}
+            >
+              = الكل
+            </button>
             <input
               type="text"
               inputMode="decimal"
               value={displayPay}
               onChange={(e) => {
-                // ٢٤/٨ (Codex P1 v2): العرض يعكس ما يكتبه الكاشير حرفياً (حالات وسطى `1,` تظهر
-                // ولا تُلتزم كي لا يبتلعها React عند إعادة الرسم بـpayInput السابق). القيمة تُلتزم
-                // فقط حين `normalizeNumberInput` تُرجع نتيجةً غير ملتبسة.
                 const src = e.target.value;
                 setDisplayPay(src);
                 if (src === "") { setPayInput(""); return; }
@@ -1292,32 +1369,10 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
               onFocus={(e) => e.currentTarget.select()}
               placeholder="0"
               aria-label="المبلغ المستلم"
-              style={{ flex: 1, minWidth: 0, maxWidth: 180, border: "none", outline: "none", background: "transparent", fontSize: fluid(17, 2.4, 22), fontWeight: 900, direction: "ltr", textAlign: "left", fontFamily: "inherit", color: payInput ? (isOwing ? C.amber : C.primary) : C.fg }}
+              style={{ flex: 1, minWidth: 0, maxWidth: 200, border: "none", outline: "none", background: "transparent", fontSize: fluid(19, 2.6, 24), fontWeight: 900, direction: "ltr", textAlign: "left", fontFamily: "inherit", color: payInput ? (isOwing ? C.amber : C.primary) : C.fg }}
             />
-            <button
-              type="button"
-              onClick={() => persistNumpad(!numpadOpen)}
-              aria-label={numpadOpen ? "إخفاء لوحة الأرقام" : "إظهار لوحة الأرقام"}
-              title={numpadOpen ? "إخفاء لوحة الأرقام" : "إظهار لوحة الأرقام"}
-              style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 3, height: 28, padding: "0 7px", border: `1.5px solid ${numpadOpen ? C.primary : C.border}`, borderRadius: 7, background: numpadOpen ? C.primary : C.card, color: numpadOpen ? C.primaryFg : C.mutedFg, fontFamily: "inherit", fontSize: 11, fontWeight: 800, cursor: "pointer", flexShrink: 0 }}
-            >
-              <Calculator aria-hidden size={12} />
-              {numpadOpen ? <ChevronUp aria-hidden size={12} /> : <ChevronDown aria-hidden size={12} />}
-            </button>
           </div>
         </div>
-        {!dense && numpadOpen && (
-        <div style={{ display: "flex", gap: 5, marginBottom: 6 }}>
-          {QUICK.map((a) => <button key={a} onClick={() => setPayInput(String(a))} style={{ flex: 1, height: fluid(26, 3.6, 34), background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 800, color: C.fg, fontFamily: "inherit", touchAction: "manipulation" }}>{fmt(a)}</button>)}
-          <button onClick={() => setPayInput(String(cashTotal))} disabled={!cartLen} style={{ flex: 0.7, height: fluid(26, 3.6, 34), background: C.primarySoft, border: `1.5px solid ${C.primary}`, borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 800, color: C.primary, fontFamily: "inherit", touchAction: "manipulation" }}>= الكل</button>
-        </div>
-        )}
-        {numpadOpen && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4, direction: "ltr", marginBottom: 6 }}>
-          {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((k) => <Key key={k} k={k} />)}
-          <Key k="00" /><Key k="0" /><Key k="⌫" del />
-        </div>
-        )}
         <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
           <Method m="CASH" Icon={Banknote} label="نقدي" />
           <Method m="CARD" Icon={CreditCard} label="بطاقة" />
