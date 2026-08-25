@@ -5,6 +5,7 @@ import { allocateLineTax } from "@/components/invoice";
 import { PurchaseIntegrityPanel } from "@/components/purchases/PurchaseIntegrityPanel";
 import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
 import { Input } from "@/components/ui/input";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
@@ -271,11 +272,10 @@ export default function Purchases() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">المشتريات</h1>
-      <p className="text-sm text-muted-foreground">
-        أوامر الشراء وحالتها. أنشئ أمراً ثم استلمه ليُضاف للمخزون وتُسجَّل
-        الذمم.
-      </p>
+      <PageHeader
+        title="المشتريات"
+        description="أوامر الشراء وحالتها. أنشئ أمراً ثم استلمه ليُضاف للمخزون وتُسجَّل الذمم."
+      />
       {canViewIntegrity && (
         <PurchaseIntegrityPanel
           branchId={integrityBranchId}

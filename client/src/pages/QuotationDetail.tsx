@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { notify } from "@/lib/notify";
@@ -144,10 +145,11 @@ export default function QuotationDetail() {
   return (
     <div className="space-y-4 max-w-4xl">
       {new URLSearchParams(search).get("print") === "1" && <AutoPrintOnce onPrint={printQuote} />}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">عرض سعر</h1>
-        <Link href="/quotations" className="text-sm text-muted-foreground">← رجوع للعروض</Link>
-      </div>
+      <PageHeader
+        title="عرض سعر"
+        backHref="/quotations"
+        backLabel="رجوع للعروض"
+      />
 
       <Card>
         <CardHeader className="pb-3">
