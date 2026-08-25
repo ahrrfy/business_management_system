@@ -110,7 +110,8 @@ class AccountingControlsMappersTest {
                 .put("suppliers", JSONObject().put("issueCount", 0).put("balanced", true))
                 .put("delivery", JSONObject().put("issueCount", 1).put("balanced", false))
                 .put("inventory", JSONObject().put("issueCount", 0).put("balanced", true))
-                .put("ledger", JSONObject().put("issueCount", 0).put("balanced", true)))
+                .put("ledger", JSONObject().put("issueCount", 0).put("balanced", true))
+                .put("onlineOrders", JSONObject().put("issueCount", 0).put("balanced", true)))
             .toFinancialReconciliationReport()
 
         assertEquals(2, report.totalIssueCount)

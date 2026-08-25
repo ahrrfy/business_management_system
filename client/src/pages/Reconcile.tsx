@@ -176,6 +176,9 @@ export default function Reconcile() {
       data.delivery.length +
       data.inventory.length +
       data.ledger.length +
+      // Codex P1 #2 (٢٦/٨): محور طلبات المتجر — لو نُسي هنا لَعرض الملخصُ «صفر انحراف»
+      // بينما الليل يُصدر WARN، ولحُرم المدير من الصفوف اللازمة للتصحيح اليدويّ.
+      (data.onlineOrders?.length ?? 0) +
       doubleEntryIssues
     : 0;
   const loading = me.isLoading || (isAdmin && recon.isLoading);
@@ -230,6 +233,8 @@ export default function Reconcile() {
       sheet("عهدة التوصيل", data.delivery, partyNames),
       sheet("أرصدة المخزون", data.inventory),
       sheet("قيود الدفتر", data.ledger),
+      // Tier-2 #4 (٢٦/٨): محور طلبات المتجر — الصفوف تحمل `note` عربياً مصنَّفاً بالمخالفة.
+      sheet("طلبات المتجر × الإرساليات", data.onlineOrders ?? []),
       {
         sheetName: "الدفتر المزدوج",
         title: `مطابقة الدفتر المزدوج — ${data.doubleEntry.scope.month ?? "نافذة الظل"}`,
@@ -788,6 +793,20 @@ export default function Reconcile() {
             idLabel="رقم القيد"
             money
             rows={data.ledger}
+          />
+
+          {/*
+            Tier-2 #4 (٢٦/٨): سلامة الربط بين طلب المتجر والإرسالية — أربع حالاتٍ حاكمة
+            (يحسبها `reconcileOnlineOrderConsignmentSync`). العمود «الانحراف» رقمٌ رمزيّ
+            (١ لكل صفّ)، والمحتوى الحاكم في `note` الذي يسمّي الطلب والإرسالية والحالة.
+          */}
+          <DriftSection
+            title="طلبات المتجر × الإرساليات"
+            desc="فروق حالة/إسناد بين onlineOrders وdeliveryConsignments — الإصلاح يدويّ بفتح الطلب."
+            idLabel="رقم الطلب"
+            rows={data.onlineOrders ?? []}
+            link={(id) => `/store-admin/orders/${id}`}
+            linkLabel="فتح الطلب"
           />
         </>
       )}

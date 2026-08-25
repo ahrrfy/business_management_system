@@ -3,6 +3,7 @@ import {
   reconcileDeliveryFloat,
   reconcileInventory,
   reconcileLedgerProfit,
+  reconcileOnlineOrderConsignmentSync,
   reconcileSupplierBalances,
   type ReconcileResult,
 } from "../reconcileService";
@@ -13,6 +14,8 @@ export interface FinancialReconciliationDetails {
   delivery: ReconcileResult[];
   inventory: ReconcileResult[];
   ledger: ReconcileResult[];
+  /** Tier-2 #4 (٢٦/٨): سلامة الربط بين طلب المتجر والإرسالية — أربع حالاتٍ حاكمة. */
+  onlineOrders: ReconcileResult[];
   runAt: string;
 }
 
@@ -21,7 +24,8 @@ export type FinancialReconciliationSectionKey =
   | "suppliers"
   | "delivery"
   | "inventory"
-  | "ledger";
+  | "ledger"
+  | "onlineOrders";
 
 export interface FinancialReconciliationSummarySection {
   issueCount: number;
@@ -35,16 +39,17 @@ export interface FinancialReconciliationSummary {
   sections: Record<FinancialReconciliationSectionKey, FinancialReconciliationSummarySection>;
 }
 
-/** Runs the same five authoritative checks used by the detailed desktop reconciliation screen. */
+/** Runs the same six authoritative checks used by the detailed desktop reconciliation screen. */
 export async function getFinancialReconciliationDetails(): Promise<FinancialReconciliationDetails> {
-  const [customers, suppliers, delivery, inventory, ledger] = await Promise.all([
+  const [customers, suppliers, delivery, inventory, ledger, onlineOrders] = await Promise.all([
     reconcileCustomerBalances(),
     reconcileSupplierBalances(),
     reconcileDeliveryFloat(),
     reconcileInventory(),
     reconcileLedgerProfit(),
+    reconcileOnlineOrderConsignmentSync(),
   ]);
-  return { customers, suppliers, delivery, inventory, ledger, runAt: new Date().toISOString() };
+  return { customers, suppliers, delivery, inventory, ledger, onlineOrders, runAt: new Date().toISOString() };
 }
 
 /**
@@ -60,6 +65,7 @@ export function toFinancialReconciliationSummary(
     delivery: section(details.delivery),
     inventory: section(details.inventory),
     ledger: section(details.ledger),
+    onlineOrders: section(details.onlineOrders),
   } satisfies FinancialReconciliationSummary["sections"];
   const totalIssueCount = Object.values(sections).reduce((sum, value) => sum + value.issueCount, 0);
   return {
