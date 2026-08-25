@@ -36,10 +36,10 @@ const TIER: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة"
 const STATUS_CLS: Record<string, string> = {
   DRAFT: "bg-muted text-foreground/70",
   SENT: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-  ACCEPTED: "bg-emerald-100 text-emerald-700",
+  ACCEPTED: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
   REJECTED: "bg-rose-100 text-rose-700",
   CONVERTED: "bg-violet-100 text-violet-700",
-  EXPIRED: "bg-amber-100 text-amber-700",
+  EXPIRED: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
 };
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
   { v: "CASH", label: "نقدي" },
@@ -297,7 +297,7 @@ export default function QuotationDetail() {
       )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-emerald-600">{done}</p>}
+      {done && <p className="text-sm text-[var(--sem-pos)]">{done}</p>}
 
       <div className="flex gap-2 flex-wrap">
         {data.status === "DRAFT" && canManage && (

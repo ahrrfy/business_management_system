@@ -235,7 +235,7 @@ export default function PrintPricingCalculator() {
                       ))}
                     </select>
                     {pricedSizes.length === 0 && (
-                      <p className="text-xs text-amber-600">لا مقاسات مُسعّرة لهذا النمط — أضِفها في الإعدادات.</p>
+                      <p className="text-xs text-[var(--sem-warn)]">لا مقاسات مُسعّرة لهذا النمط — أضِفها في الإعدادات.</p>
                     )}
                   </div>
                   <div className="space-y-1">
@@ -274,7 +274,7 @@ export default function PrintPricingCalculator() {
                       ))}
                     </select>
                     {activeMedia.length === 0 && (
-                      <p className="text-xs text-amber-600">لا وسائط عريضة مُعرّفة — أضِفها في الإعدادات.</p>
+                      <p className="text-xs text-[var(--sem-warn)]">لا وسائط عريضة مُعرّفة — أضِفها في الإعدادات.</p>
                     )}
                   </div>
                   <div className="space-y-1">
@@ -355,7 +355,7 @@ export default function PrintPricingCalculator() {
               {!debounced ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">أكمل تفاصيل الطلب لعرض التقدير.</p>
               ) : estimate.isError ? (
-                <p className="py-8 text-center text-sm text-amber-600">{estimate.error?.message}</p>
+                <p className="py-8 text-center text-sm text-[var(--sem-warn)]">{estimate.error?.message}</p>
               ) : !result ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">جارٍ الحساب…</p>
               ) : (
