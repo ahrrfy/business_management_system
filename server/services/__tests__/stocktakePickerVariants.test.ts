@@ -19,6 +19,7 @@ const TABLES = [
   "stocktakeAssignments",
   "stocktakeSessions",
   "branchStock",
+  "productUnitBarcodes",
   "productUnits",
   "productVariants",
   "products",
@@ -86,6 +87,28 @@ async function seedBase() {
     // متغيّر غير نشط لمنتج نشط ⇒ يُستبعَد
     { id: 201, productId: 2, sku: "PEN-BLU-OLD", costPrice: "250.00", isActive: false },
   ]);
+  await d.insert(s.productUnits).values([
+    {
+      id: 1000,
+      variantId: 100,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+      barcode: "6290000000100",
+    },
+    {
+      id: 1002,
+      variantId: 100,
+      unitName: "حزمة",
+      conversionFactor: "10",
+      isBaseUnit: false,
+      barcode: "LOT 2026 A",
+    },
+  ]);
+  await d.insert(s.productUnitBarcodes).values([
+    { id: 1001, productUnitId: 1000, barcode: "6290000000199" },
+    { id: 1003, productUnitId: 1002, barcode: "ALT LOT 2026 A" },
+  ]);
 
   // صفّ رصيدٍ للقلم في الفرع ١ فقط. الظرف بلا صفٍّ في أيّ فرع.
   await d.insert(s.branchStock).values([{ branchId: 1, variantId: 200, quantity: 12 }]);
@@ -137,6 +160,68 @@ describe("listPickerVariants — بلاغ المالك ٢٤/٨: المنتج ب�
     expect(noMatch).toEqual([]);
   });
 
+  it("يعثر على الصنف بأي باركود أساسي أو بديل حتى مع حدّ صفحة ضيّق", async () => {
+    // مشتّت يطابق LIKE في الاسم ويرتّب قبل المالك: التطابق التام للباركود يجب أن يحصر النتيجة
+    // في مالكه، لا أن يدفنه ترتيب الاسم خلف صفٍّ عَرَضيّ.
+    await db().insert(s.products).values({
+      id: 6,
+      name: "000 6290000000100 6290000000199 LOT 2026 A ALT LOT 2026 A",
+      categoryId: 10,
+      isActive: true,
+      isBundle: false,
+      isConsignment: false,
+    });
+    await db().insert(s.productVariants).values({
+      id: 600,
+      productId: 6,
+      sku: "DISTRACTOR",
+      costPrice: "0.00",
+      isActive: true,
+    });
+
+    const byPrimary = await listPickerVariants({ branchId: 1, q: "6290000000100", limit: 1 });
+    const byAlias = await listPickerVariants({ branchId: 1, q: "6290000000199", limit: 1 });
+    const bySpacedPrimary = await listPickerVariants({ branchId: 1, q: "LOT 2026 A", limit: 1 });
+    const bySpacedAlias = await listPickerVariants({ branchId: 1, q: "ALT LOT 2026 A", limit: 1 });
+
+    expect(byPrimary.map((r) => r.variantId)).toEqual([100]);
+    expect(byAlias.map((r) => r.variantId)).toEqual([100]);
+    expect(bySpacedPrimary.map((r) => r.variantId)).toEqual([100]);
+    expect(bySpacedAlias.map((r) => r.variantId)).toEqual([100]);
+    expect(byPrimary[0]?.quantity).toBe(0);
+    expect(byAlias[0]?.quantity).toBe(0);
+  });
+
+  it("يعطي الشكل الخام أولوية ذرّية عند تصادم التطبيع في الأساسي والبديل", async () => {
+    await db().insert(s.products).values([
+      { id: 9, name: "مالك الأساسي العربي", categoryId: 10 },
+      { id: 10, name: "مالك البديل اللاتيني", categoryId: 10 },
+      { id: 11, name: "مالك البديل العربي", categoryId: 10 },
+      { id: 12, name: "مالك الأساسي اللاتيني", categoryId: 10 },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 900, productId: 9, sku: "RAW-PRIMARY", costPrice: "0.00" },
+      { id: 901, productId: 10, sku: "NORMALIZED-ALIAS", costPrice: "0.00" },
+      { id: 902, productId: 11, sku: "RAW-ALIAS", costPrice: "0.00" },
+      { id: 903, productId: 12, sku: "NORMALIZED-PRIMARY", costPrice: "0.00" },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 9000, variantId: 900, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "١٢٣٤٥٦٧٨" },
+      { id: 9001, variantId: 901, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "NORMALIZED-ALIAS-UNIT" },
+      { id: 9002, variantId: 902, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "RAW-ALIAS-UNIT" },
+      { id: 9003, variantId: 903, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "87654321" },
+    ]);
+    await db().insert(s.productUnitBarcodes).values([
+      { id: 9000, productUnitId: 9001, barcode: "12345678" },
+      { id: 9001, productUnitId: 9002, barcode: "٨٧٦٥٤٣٢١" },
+    ]);
+
+    expect((await listPickerVariants({ branchId: 1, q: "١٢٣٤٥٦٧٨" })).map((r) => r.variantId)).toEqual([900]);
+    expect((await listPickerVariants({ branchId: 1, q: "12345678" })).map((r) => r.variantId)).toEqual([901]);
+    expect((await listPickerVariants({ branchId: 1, q: "٨٧٦٥٤٣٢١" })).map((r) => r.variantId)).toEqual([902]);
+    expect((await listPickerVariants({ branchId: 1, q: "87654321" })).map((r) => r.variantId)).toEqual([903]);
+  });
+
   it("رصيد فرعٍ آخر لا يُفسِد عدّ الفرع ١", async () => {
     // نضيف صفّ رصيدٍ للظرف في الفرع ٢ فقط — الفرع ١ يجب أن يبقى يعرض 0
     await db().insert(s.branchStock).values([{ branchId: 2, variantId: 100, quantity: 99 }]);
@@ -151,5 +236,20 @@ describe("listPickerVariants — بلاغ المالك ٢٤/٨: المنتج ب�
     expect(page1).toHaveLength(1);
     expect(page2).toHaveLength(1);
     expect(page1[0].sku).not.toBe(page2[0].sku);
+  });
+
+  it("الترقيم يملك فاصلاً حتمياً عند تساوي الاسم وSKU", async () => {
+    await db().insert(s.products).values([
+      { id: 7, name: "منتج متعادل", categoryId: 10 },
+      { id: 8, name: "منتج متعادل", categoryId: 10 },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 700, productId: 7, sku: "SAME-SKU", costPrice: "0.00" },
+      { id: 701, productId: 8, sku: "SAME-SKU", costPrice: "0.00" },
+    ]);
+
+    const first = await listPickerVariants({ branchId: 1, q: "منتج متعادل", limit: 1, offset: 0 });
+    const second = await listPickerVariants({ branchId: 1, q: "منتج متعادل", limit: 1, offset: 1 });
+    expect([first[0]?.variantId, second[0]?.variantId]).toEqual([700, 701]);
   });
 });

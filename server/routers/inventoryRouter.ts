@@ -33,6 +33,7 @@ import {
 } from "../services/inventory/reorder";
 import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
 import { signedMoveQty } from "../services/inventoryService";
+import { buildVariantCatalogSearchWhere } from "../services/catalog/search";
 import {
   ADJUSTMENT_REASONS,
   requestStockAdjustment,
@@ -761,13 +762,8 @@ export const inventoryRouter = router({
       const conds: any[] = [
         sql`(${branchStock.variantId} IS NOT NULL OR (${productVariants.isActive} = true AND ${products.isActive} = true AND ${products.isService} = false AND ${products.isBundle} = false))`,
       ];
-      const search = input?.q?.trim();
-      if (search) {
-        const pat = `%${escLike(search)}%`;
-        conds.push(
-          sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!')`
-        );
-      }
+      const search = buildVariantCatalogSearchWhere(input?.q);
+      if (search) conds.push(search);
       // «تحت الحدّ» و«سالب فقط»: مقارنةٌ على الحقل الخام دون COALESCE — المتغيّر بلا صفٍّ
       // (quantity = NULL) لا يُصنّف «تحت الحدّ» ولا «سالباً»، فلا يُفيض هذان الفلتران بمنتجاتٍ
       // كتالوجيّة صفريّة. من يريد رؤيتها يفتح القائمة بلا فلتر «تحت الحدّ».
@@ -820,7 +816,7 @@ export const inventoryRouter = router({
           ),
         )
         .where(and(...conds))
-        .orderBy(asc(products.name), asc(productVariants.sku))
+        .orderBy(asc(products.name), asc(productVariants.sku), asc(productVariants.id))
         .limit(input?.limit ?? 300)
         .offset(input?.offset ?? 0);
 

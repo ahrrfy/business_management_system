@@ -379,8 +379,12 @@ export default function Inventory() {
             </div>
           )}
           <div className="space-y-1">
-            <Label>بحث (اسم/SKU/متغيّر)</Label>
-            <Input value={f.q} onChange={(e) => patchF({ q: e.target.value })} placeholder="مثال: ورق A4" />
+            <Label>بحث (اسم/SKU/متغيّر/باركود)</Label>
+            <Input
+              value={f.q}
+              onChange={(e) => patchF({ q: e.target.value })}
+              placeholder="اكتب الاسم أو SKU أو أي باركود أساسي/بديل"
+            />
           </div>
           <div className="space-y-1">
             <Label htmlFor="inv-category">الفئة</Label>

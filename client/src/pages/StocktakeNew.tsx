@@ -39,7 +39,7 @@ import { trpc } from "@/lib/trpc";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Check, AlertTriangle, Printer, ScanBarcode, CheckCircle2 } from "lucide-react";
 
@@ -68,6 +68,7 @@ const USER_ROLE_LABEL: Record<string, string> = {
 const DEFAULT_THRESHOLD_PCT = "5";
 const DEFAULT_THRESHOLD_VALUE = "25000";
 const DEFAULT_DUAL_THRESHOLD = "150000";
+const PICKER_PAGE_SIZE = 200;
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -164,6 +165,7 @@ export default function StocktakeNew() {
   const [manualIds, setManualIds] = useState<number[]>(prefill.variantIds);
   const [categoryIds, setCategoryIds] = useState<number[]>([]);
   const [pickQ, setPickQ] = useState("");
+  const [pickPage, setPickPage] = useState(0);
 
   const [workers, setWorkers] = useState<WorkerRow[]>([
     { key: "w1", name: "", method: "USER", userId: "", zone: "" },
@@ -211,16 +213,22 @@ export default function StocktakeNew() {
     (branches[0]?.id ?? 0);
   const branchName = branches.find((b) => b.id === effectiveBranchId)?.name ?? "—";
 
-  /* منتجات الفرع — لمنتقي MANUAL فقط. بحثٌ خادميّ (لا حدّ ١٠٠٠ محليّ يُخفي صامتاً ما وراءه في فروعٍ
-     كبيرة). بلا نصّ بحث نعرض أوّل صفحة (٢٠٠) كنقطة انطلاق؛ اكتب للبحث عن أيّ صنفٍ آخر.
+  /* منتجات الفرع — لمنتقي MANUAL فقط. بحثٌ خادميّ + صفحات حقيقية؛ نطلب صفاً إضافياً
+     لاكتشاف الصفحة التالية بلا COUNT كامل، ونُظهر ٢٠٠ صف في كل صفحة.
      `stocktakes.pickerVariants` يبدأ من الكتالوج بـLEFT JOIN على branchStock ⇒ يُظهر حتى
      المنتجات بلا صفّ رصيدٍ للفرع (يعرضها الكاشير «مخزون 0» بنفس النمط). الاستخدام السابق
      `inventory.onHand` يبدأ من branchStock بـINNER JOIN ⇒ كان يُخفيها فيختفي الصنف من اختيار
      الجرد فلا يستطيع المستخدم تصحيح رصيده (بلاغ المالك ٢٤/٨).
      عدّاد النطاق يُحسب خادمياً عبر `stocktakes.previewScopeCount` بنفس منطق resolveScope حرفياً. */
   const debouncedPickQ = useDebouncedValue(pickQ, 250);
+  useEffect(() => setPickPage(0), [effectiveBranchId, scopeType]);
   const onHandQ = trpc.stocktakes.pickerVariants.useQuery(
-    { branchId: effectiveBranchId, q: debouncedPickQ.trim() || undefined, limit: 200 },
+    {
+      branchId: effectiveBranchId,
+      q: debouncedPickQ.trim() || undefined,
+      limit: PICKER_PAGE_SIZE + 1,
+      offset: pickPage * PICKER_PAGE_SIZE,
+    },
     { enabled: effectiveBranchId > 0 && scopeType === "MANUAL" }
   );
   const onHand = onHandQ.data ?? [];
@@ -275,13 +283,14 @@ export default function StocktakeNew() {
           : (previewCount?.variantCount ?? null);
 
   /* قائمة المنتقي (MANUAL) — البحث خادميّ الآن (onHandQ أعلاه)، فالنتيجة جاهزة بلا فلترة محلية. */
-  const pickList = onHand;
+  const pickList = onHand.slice(0, PICKER_PAGE_SIZE);
+  const hasNextPickPage = onHand.length > PICKER_PAGE_SIZE;
 
-  /* منتجات مختارة غير ظاهرة في قائمة الفرع الحالي (prefill من شاشة أخرى مثلاً). */
-  const unknownSelected = useMemo(() => {
-    const known = new Set(onHand.map((r) => Number(r.variantId)));
+  /* منتجات مختارة خارج الصفحة/البحث الحالي (اختيار سابق أو prefill من شاشة أخرى). */
+  const selectedOutsidePage = useMemo(() => {
+    const known = new Set(pickList.map((r) => Number(r.variantId)));
     return manualIds.filter((id) => !known.has(id));
-  }, [onHand, manualIds]);
+  }, [pickList, manualIds]);
 
   const validWorkers = workers.filter((w) => w.name.trim() !== "");
 
@@ -559,8 +568,11 @@ export default function StocktakeNew() {
                 <div className="flex flex-wrap items-center gap-2">
                   <Input
                     value={pickQ}
-                    onChange={(e) => setPickQ(e.target.value)}
-                    placeholder="بحث بالاسم أو SKU…"
+                    onChange={(e) => {
+                      setPickQ(e.target.value);
+                      setPickPage(0);
+                    }}
+                    placeholder="بحث بالاسم أو SKU أو أي باركود…"
                     className="max-w-sm"
                   />
                   <Button
@@ -618,10 +630,35 @@ export default function StocktakeNew() {
                     <p className="p-4 text-center text-sm text-muted-foreground">لا منتجات مطابقة للبحث.</p>
                   )}
                 </div>
-                {unknownSelected.length > 0 && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    الصفحة {nf(pickPage + 1)} · {nf(pickList.length)} منتج معروض
+                  </span>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={pickPage === 0 || onHandQ.isFetching}
+                      onClick={() => setPickPage((page) => Math.max(0, page - 1))}
+                    >
+                      السابق
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!hasNextPickPage || onHandQ.isFetching}
+                      onClick={() => setPickPage((page) => page + 1)}
+                    >
+                      التالي
+                    </Button>
+                  </div>
+                </div>
+                {selectedOutsidePage.length > 0 && (
                   <p className="rounded-md px-3 py-2 text-xs badge-stock-low">
-                    {nf(unknownSelected.length)} من المنتجات المختارة (إحالة مسبقة) غير ظاهرة في قائمة هذا الفرع —
-                    تبقى ضمن النطاق ويتحقق الخادم منها عند الإنشاء.
+                    {nf(selectedOutsidePage.length)} من المنتجات المختارة خارج الصفحة أو البحث الحالي — تبقى
+                    محددة ضمن النطاق ويتحقق الخادم منها عند الإنشاء.
                   </p>
                 )}
               </div>
