@@ -1786,6 +1786,13 @@
 			"when": 1788052321000,
 			"tag": "0270_journal_lines_account_id",
 			"breakpoints": true
+		},
+		{
+			"idx": 271,
+			"version": "5",
+			"when": 1788052322000,
+			"tag": "0271_journal_lines_branch_dim",
+			"breakpoints": true
 		}
 	]
 }

@@ -11872,6 +11872,16 @@ export const journalLines = mysqlTable(
       () => accounts.id,
       { onDelete: "restrict" },
     ),
+    /**
+     * Tier-2 #6 (٢٦/٨، هجرة 0271): بعدٌ تحليليّ على مستوى السطر — `branchId`.
+     * `journalEntries.branchId` قائمٌ على مستوى الرأس، لكنّ قيداً واحداً قد يشمل حركاتٍ
+     * من فروعٍ مختلفة (تحويلٌ بين فروع، تسويةٌ متعدّدة). البعد على السطر يُمكّن ميزان
+     * مراجعةٍ بالفرع، وP&L أدقّ، وحصّةً لكل فرعٍ من مصروفٍ مشترك دون تفكيك الرأس.
+     * Nullable — الأسطر التاريخية بلا بيانات فرعية على السطر تبقى صحيحة. Backfill من الرأس.
+     * **بلا FK** مطابقةً لنمط `journalEntries.branchId` (بعد تحليليّ يُقبل حتى في اختبارات
+     * بلا صفّ فرعٍ صالح — إضافة FK تحتاج backfill منسّق على المستويَين معاً في PR منفصل).
+     */
+    branchId: bigint("branchId", { mode: "number" }),
     debit: decimal("debit", { precision: 15, scale: 2 }).default("0").notNull(),
     credit: decimal("credit", { precision: 15, scale: 2 })
       .default("0")
@@ -11880,6 +11890,7 @@ export const journalLines = mysqlTable(
   (t) => ({
     roleIdx: index("idx_journal_line_role").on(t.role),
     accountIdx: index("idx_journal_line_account").on(t.accountId),
+    branchIdx: index("idx_journal_line_branch").on(t.branchId),
   }),
 );
 export type JournalLineRow = typeof journalLines.$inferSelect;
