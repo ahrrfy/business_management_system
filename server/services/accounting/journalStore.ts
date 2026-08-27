@@ -8,7 +8,7 @@
 // الخطّاف وحده — فهو الذي يعرف أنّه في وضع الظلّ وأنّ سلامة عملية الأعمال تسبق سلامة القيد.
 // لو ابتلع المخزنُ الأخطاءَ لصار الخللُ غيرَ مرئيٍّ في وضع ACTIVE أيضاً، وهو ما لا يُقبَل.
 import { eq, isNotNull } from "drizzle-orm";
-import { accounts, doubleEntrySettings, journalEntries, journalLines } from "../../../drizzle/schema";
+import { accountingEntries, accounts, doubleEntrySettings, journalEntries, journalLines } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, round2 } from "../money";
@@ -200,6 +200,21 @@ export async function writeJournal(
   const journalId = extractInsertId(res);
 
   const accountIdByRole = await loadAccountIdByRole(tx);
+  // Tier-3 #2 (٢٧/٨): أبعاد الطرف من رأس القيد المصدريّ `accountingEntries`. استعلامٌ
+  // مفردٌ لكل كتابة — رخيصٌ (PK lookup). كل سطر يرث الأبعاد نفسها لأنّ الرأس هو المصدر.
+  const [srcRow] = await tx
+    .select({
+      customerId: accountingEntries.customerId,
+      supplierId: accountingEntries.supplierId,
+      deliveryPartyId: accountingEntries.deliveryPartyId,
+    })
+    .from(accountingEntries)
+    .where(eq(accountingEntries.id, entryId));
+  const dims = {
+    customerId: srcRow?.customerId ?? null,
+    supplierId: srcRow?.supplierId ?? null,
+    deliveryPartyId: srcRow?.deliveryPartyId ?? null,
+  };
   await tx.insert(journalLines).values(
     lines.map((l) => ({
       journalId,
@@ -208,6 +223,7 @@ export async function writeJournal(
       // Tier-2 #6: البعد التحليليّ على السطر يأخذ فرع الرأس افتراضياً — أدوات المستقبل
       // (تقسيمُ قيدٍ على فروع) قد تمرّر فرعاً لكل سطر إن دُعم في `JournalLine`.
       branchId,
+      ...dims,
       debit: l.debit,
       credit: l.credit,
     })),

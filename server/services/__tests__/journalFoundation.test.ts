@@ -44,6 +44,8 @@ async function reset() {
     "accountingEntries",
     "doubleEntrySettings",
     "users",
+    "customers",
+    "suppliers",
     "branches",
   ]);
   // Tier-3 #1 (٢٧/٨، هجرة 0272): FK على journalEntries.branchId + journalLines.branchId
@@ -173,6 +175,42 @@ describe("journalStore — وعاء الدفتر المزدوج (ش٠)", () => {
     const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, heads[0].id));
     expect(lines).toHaveLength(2);
     expect(lines.every((l) => l.branchId === null)).toBe(true);
+  });
+
+  it("Tier-3 #2: أبعاد الطرف (customer/supplier/deliveryParty) تُنسخ من رأس القيد", async () => {
+    // نبذر عميلاً ومورّداً — الرأس يذكرهما ⇒ الأسطر ترثهما جميعاً.
+    await db().insert(s.customers).values({ id: 7, name: "عميل تحليليّ", phone: "+9647701234567" });
+    await db().insert(s.suppliers).values({ id: 9, name: "مورّد تحليليّ" });
+    const res = await db().insert(s.accountingEntries).values({
+      entryType: "SALE", revenue: "150.00", cost: "0.00", profit: "150.00",
+      taxAmount: "0.00", amount: "150.00", entryDate: new Date("2026-08-11"),
+      customerId: 7, supplierId: 9, deliveryPartyId: 42,
+    });
+    const entryId = extractInsertId(res);
+    await withTx(async (tx) => {
+      await writeJournal(tx, entryId, new Date("2026-08-11"), 1, BALANCED);
+    });
+    const heads = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, entryId));
+    const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, heads[0].id));
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(line.customerId).toBe(7);
+      expect(line.supplierId).toBe(9);
+      expect(line.deliveryPartyId).toBe(42);
+    }
+  });
+
+  it("Tier-3 #2: رأسٌ بلا أطراف ⇒ الأسطر تحمل NULL (لا افتراضٍ ضمنيّ)", async () => {
+    const entryId = await seedEntry(); // seedEntry بلا customerId/supplierId/deliveryPartyId
+    await withTx(async (tx) => {
+      await writeJournal(tx, entryId, new Date("2026-08-11"), 1, BALANCED);
+    });
+    const heads = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, entryId));
+    const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, heads[0].id));
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => l.customerId === null)).toBe(true);
+    expect(lines.every((l) => l.supplierId === null)).toBe(true);
+    expect(lines.every((l) => l.deliveryPartyId === null)).toBe(true);
   });
 
   it("ج) قيدٌ غير متوازن ⇒ يرمي ولا يكتب صفّاً واحداً (س٦)", async () => {
