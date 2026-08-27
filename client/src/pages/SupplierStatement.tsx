@@ -378,7 +378,7 @@ export default function SupplierStatement() {
                 <tbody>
                   {/* الرصيد المُرحَّل = افتتاحي مستورد + مشتريات ملتزمة − دفعات قبل from — صف أول يجعل رصيد الفترة قابلاً للتتبّع. */}
                   {from && (
-                    <tr className="border-t bg-amber-50/60 font-medium">
+                    <tr className="border-t bg-[var(--sem-warn-bg)]/60 font-medium">
                       <td className="p-2 text-xs">رصيد مُرحَّل</td>
                       <td className="p-2 text-xs" dir="ltr">{fmtDate(from)}</td>
                       <td className="p-2 text-xs text-muted-foreground" colSpan={3}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>

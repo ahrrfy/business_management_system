@@ -303,7 +303,7 @@ export default function OfflineSalesReport() {
                   <td className="p-2 font-semibold">{fmtIQD(r.total)} د.ع</td>
                   <td className="p-2">
                     {r.lateSynced ? (
-                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900">
+                      <span className="rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]">
                         <AlertTriangle aria-hidden className="ms-1 inline size-3" />
                         مُزامنة بعد الإغلاق
                       </span>

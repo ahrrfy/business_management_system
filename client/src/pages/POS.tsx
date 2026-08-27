@@ -2093,7 +2093,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
       {/* Shift badge */}
       {shift && (
         <div style={{ background: C.muted, borderRadius: 8, padding: "4px 11px", fontSize: 12, color: C.mutedFg, fontWeight: 700, flexShrink: 0, border: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
-          <span aria-hidden className="inline-block size-2 rounded-full bg-emerald-500" style={{ marginLeft: 6 }} />وردية #{shift.id}
+          <span aria-hidden className="inline-block size-2 rounded-full bg-[var(--sem-pos)]" style={{ marginLeft: 6 }} />وردية #{shift.id}
         </div>
       )}
 

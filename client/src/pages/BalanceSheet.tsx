@@ -222,7 +222,7 @@ function SectionCard({ title, rows, total, totalLabel, tone }: {
   return (
     <Card>
       <CardContent className="p-0">
-        <div className={`px-4 py-2.5 font-semibold border-b ${tone === "emerald" ? "text-emerald-700" : "text-amber-700"}`}>{title}</div>
+        <div className={`px-4 py-2.5 font-semibold border-b ${tone === "emerald" ? "text-[var(--sem-pos)]" : "text-[var(--sem-warn)]"}`}>{title}</div>
         <table className="w-full text-sm">
           <tbody>
             {rows.length === 0 ? (

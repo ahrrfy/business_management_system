@@ -411,7 +411,7 @@ export default function CustomerEdit() {
                 ))}
               </select>
               {tierMismatch && (
-                <p className="text-[11px] text-amber-700">
+                <p className="text-[11px] text-[var(--sem-warn)]">
                   النوع «{customerType}» يُسعَّر عادةً «{PRICE_OPTIONS.find((o) => o.v === suggestedTier(customerType))?.l}».
                   هذه الفئة تُطبَّق تلقائياً في الكاشير.
                 </p>

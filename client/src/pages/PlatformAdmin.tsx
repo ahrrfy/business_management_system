@@ -103,7 +103,7 @@ function TempPasswordReveal({
         <div>{adminUsername}</div>
         <div className="font-bold tracking-wider">{tempPassword}</div>
       </div>
-      <p className="text-xs text-amber-600 inline-flex items-center gap-1">
+      <p className="text-xs text-[var(--sem-warn)] inline-flex items-center gap-1">
         <AlertTriangle aria-hidden className="size-3.5" /> لن تُعرَض هذه الكلمة مجدداً — سيُطلب من مدير الشركة تغييرها عند أول دخول.
       </p>
       <Button

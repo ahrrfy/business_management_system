@@ -208,7 +208,7 @@ export default function SeasonPlanning() {
                   const isEditing = editing === r.variantId;
                   const needs = r.gap > 0;
                   return (
-                    <tr key={r.variantId} className={`border-t ${needs ? "bg-amber-50/50" : ""}`}>
+                    <tr key={r.variantId} className={`border-t ${needs ? "bg-[var(--sem-warn-bg)]/50" : ""}`}>
                       <td className="p-2 font-medium">{r.productName}</td>
                       <td className="p-2 text-xs">
                         {variantLabel(r)} <span className="text-muted-foreground font-mono" dir="ltr">({r.sku})</span>

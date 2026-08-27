@@ -29,7 +29,7 @@ function ageDays(iso: string | null): number | null {
 }
 function ageBadge(days: number | null) {
   if (days == null) return <span className="text-muted-foreground">—</span>;
-  const cls = days <= 7 ? "bg-emerald-100 text-emerald-700" : days <= 14 ? "bg-amber-100 text-amber-700" : days <= 30 ? "bg-orange-100 text-orange-700" : "bg-red-100 text-red-700";
+  const cls = days <= 7 ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : days <= 14 ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : days <= 30 ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]";
   return <span className={cn("rounded px-2 py-0.5 text-xs font-bold", cls)}>{days} يوم</span>;
 }
 
