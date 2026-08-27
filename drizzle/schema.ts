@@ -11910,6 +11910,16 @@ export const journalLines = mysqlTable(
     ),
     /** بلا FK — نظير `accountingEntries.deliveryPartyId`: قد يكون طرفٌ خارجيّ. */
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
+    /**
+     * Tier-3 #4 (٢٧/٨، هجرة 0274): إكمالُ الأبعاد الثانويّة.
+     * `exchangeHouseId` FK إلى exchangeHouses (RESTRICT) — لقيود EXCHANGE_*.
+     * `digitalWalletId` بلا FK — مرآةٌ لـaccountingEntries: قد يكون خارجياً.
+     */
+    exchangeHouseId: bigint("exchangeHouseId", { mode: "number" }).references(
+      () => exchangeHouses.id,
+      { onDelete: "restrict" },
+    ),
+    digitalWalletId: bigint("digitalWalletId", { mode: "number" }),
     debit: decimal("debit", { precision: 15, scale: 2 }).default("0").notNull(),
     credit: decimal("credit", { precision: 15, scale: 2 })
       .default("0")
@@ -11922,6 +11932,8 @@ export const journalLines = mysqlTable(
     customerIdx: index("idx_journal_line_customer").on(t.customerId),
     supplierIdx: index("idx_journal_line_supplier").on(t.supplierId),
     deliveryPartyIdx: index("idx_journal_line_delivery_party").on(t.deliveryPartyId),
+    exchangeHouseIdx: index("idx_journal_line_exchange_house").on(t.exchangeHouseId),
+    digitalWalletIdx: index("idx_journal_line_digital_wallet").on(t.digitalWalletId),
   }),
 );
 export type JournalLineRow = typeof journalLines.$inferSelect;
