@@ -483,7 +483,7 @@ export default function Settings() {
               <div
                 className={`rounded-lg border p-3 text-sm font-bold ${
                   openingMode.data?.active
-                    ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                    ? "border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
                     : "border-border text-muted-foreground"
                 }`}
               >

@@ -37,7 +37,7 @@ const STATUS_CLS: Record<string, string> = {
   DRAFT: "bg-muted text-foreground/70",
   SENT: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
   ACCEPTED: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
-  REJECTED: "bg-rose-100 text-rose-700",
+  REJECTED: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
   CONVERTED: "bg-violet-100 text-violet-700",
   EXPIRED: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
 };

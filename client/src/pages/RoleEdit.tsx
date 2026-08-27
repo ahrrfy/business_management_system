@@ -179,7 +179,7 @@ export default function RoleEdit() {
             </select>
           </div>
           {isEdit && assignedCount > 0 && (
-            <p className="text-[11px] text-amber-600 md:col-span-3">مُسنَد حالياً لـ{assignedCount} حساباً — أي تعديل يسري عليهم فوراً.</p>
+            <p className="text-[11px] text-[var(--sem-warn)] md:col-span-3">مُسنَد حالياً لـ{assignedCount} حساباً — أي تعديل يسري عليهم فوراً.</p>
           )}
         </CardContent>
       </Card>

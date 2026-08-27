@@ -891,7 +891,7 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
         </div>
       )}
       <div style={{ background: C.muted, borderRadius: 8, padding: "5px 11px", fontSize: 12, color: C.mutedFg, fontWeight: 700, flexShrink: 0, border: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
-        <span aria-hidden className="inline-block size-2 rounded-full bg-emerald-500" style={{ marginLeft: 6 }} />وردية #{shiftId}
+        <span aria-hidden className="inline-block size-2 rounded-full bg-[var(--sem-pos)]" style={{ marginLeft: 6 }} />وردية #{shiftId}
       </div>
       <button onClick={toggleDark} title="تبديل الوضع الليلي" aria-label="تبديل الوضع الليلي" style={{ width: 42, height: 42, borderRadius: 9, background: "none", border: `1.5px solid ${C.border}`, cursor: "pointer", color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
         {dark ? <Sun size={18} aria-hidden /> : <Moon size={18} aria-hidden />}

@@ -455,7 +455,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
             معاينة الاستوديو — خلفية بيضاء موحّدة بإطار وظلّ (الأصل يمينًا):
           </p>
           {aiInPreview && (
-            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5 text-xs text-amber-700 dark:text-amber-400">
+            <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs text-[var(--sem-warn)]">
               <Info aria-hidden className="size-4 shrink-0 mt-0.5" />
               <span>
                 صورة مُولَّدة بالذكاء الاصطناعي. راجِع تطابق تفاصيل المنتج
@@ -466,7 +466,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
             </div>
           )}
           {notice && (
-            <p className="text-xs text-amber-600 dark:text-amber-500">
+            <p className="text-xs text-[var(--sem-warn)]">
               {notice}
             </p>
           )}

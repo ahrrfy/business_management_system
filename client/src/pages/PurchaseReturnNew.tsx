@@ -546,7 +546,7 @@ export default function PurchaseReturnNew() {
               </button>
             </div>
             {settlement === "CASH" && (
-              <div className="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-amber-600">
+              <div className="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-[var(--sem-warn)]">
                 <AlertTriangle aria-hidden className="size-3" />
                 يُقبض بقدر الدفع النقدي المثبت سابقاً فقط، والباقي يُخصم من ذمة المورد ويظهر في المستند.
               </div>

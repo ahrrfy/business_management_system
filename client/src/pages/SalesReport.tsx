@@ -467,7 +467,7 @@ function InvoicesTab({
   return (
     <>
       {truncated && (
-        <div role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+        <div role="status" className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">
           النتائج تتجاوز حدّ العرض — البطاقات أعلاه تشمل <strong>كامل النطاق</strong>، أمّا الجدول والطباعة فيعرضان أحدث ١٠٠٠ فاتورة فقط.
           زرّ «تصدير Excel» يجمع <strong>كلّ</strong> الفواتير المطابقة، أو ضيّق النطاق الزمني لعرضٍ كامل على الشاشة.
         </div>

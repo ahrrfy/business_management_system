@@ -343,7 +343,7 @@ export default function ReorderAlerts() {
                   const isEditing = editing === key;
                   const severe = r.quantity <= r.minStock;
                   return (
-                    <tr key={key} className={`border-t ${severe ? "bg-destructive/5" : "bg-amber-50/50"}`}>
+                    <tr key={key} className={`border-t ${severe ? "bg-destructive/5" : "bg-[var(--sem-warn-bg)]/50"}`}>
                       {canWrite && (
                         <td className="p-2 text-center">
                           <input

@@ -392,7 +392,7 @@ export default function Stocktakes() {
                         <p className="font-bold">
                           {s.name}
                           {s.sessionType === "OPENING" && (
-                            <span className="mr-2 inline-block rounded-md border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-bold text-amber-700 dark:text-amber-400">
+                            <span className="mr-2 inline-block rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
                               افتتاحي
                             </span>
                           )}
