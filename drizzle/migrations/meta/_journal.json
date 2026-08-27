@@ -1814,6 +1814,13 @@
 			"when": 1788052325000,
 			"tag": "0269_studio_multi_category_and_any_policy",
 			"breakpoints": true
+		},
+		{
+			"idx": 274,
+			"version": "5",
+			"when": 1788052326000,
+			"tag": "0274_journal_lines_secondary_dims",
+			"breakpoints": true
 		}
 	]
 }

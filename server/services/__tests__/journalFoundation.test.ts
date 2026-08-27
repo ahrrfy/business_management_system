@@ -46,6 +46,7 @@ async function reset() {
     "users",
     "customers",
     "suppliers",
+    "exchangeHouses",
     "branches",
   ]);
   // Tier-3 #1 (٢٧/٨، هجرة 0272): FK على journalEntries.branchId + journalLines.branchId
@@ -211,6 +212,27 @@ describe("journalStore — وعاء الدفتر المزدوج (ش٠)", () => {
     expect(lines.every((l) => l.customerId === null)).toBe(true);
     expect(lines.every((l) => l.supplierId === null)).toBe(true);
     expect(lines.every((l) => l.deliveryPartyId === null)).toBe(true);
+  });
+
+  it("Tier-3 #4: الأبعاد الثانويّة (exchangeHouse/digitalWallet) تُنسخ من رأس القيد", async () => {
+    // نبذر صيرفةً — الرأس يذكرها ⇒ الأسطر ترثها.
+    await db().insert(s.exchangeHouses).values({ id: 3, name: "صيرفة تحليليّة", accountKind: "STANDARD" });
+    const res = await db().insert(s.accountingEntries).values({
+      entryType: "EXCHANGE_DEPOSIT", revenue: "0.00", cost: "0.00", profit: "0.00",
+      taxAmount: "0.00", amount: "150.00", entryDate: new Date("2026-08-11"),
+      exchangeHouseId: 3, digitalWalletId: 88,
+    });
+    const entryId = extractInsertId(res);
+    await withTx(async (tx) => {
+      await writeJournal(tx, entryId, new Date("2026-08-11"), 1, BALANCED);
+    });
+    const heads = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, entryId));
+    const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, heads[0].id));
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(line.exchangeHouseId).toBe(3);
+      expect(line.digitalWalletId).toBe(88);
+    }
   });
 
   it("ج) قيدٌ غير متوازن ⇒ يرمي ولا يكتب صفّاً واحداً (س٦)", async () => {

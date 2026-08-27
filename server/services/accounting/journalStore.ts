@@ -200,13 +200,15 @@ export async function writeJournal(
   const journalId = extractInsertId(res);
 
   const accountIdByRole = await loadAccountIdByRole(tx);
-  // Tier-3 #2 (٢٧/٨): أبعاد الطرف من رأس القيد المصدريّ `accountingEntries`. استعلامٌ
+  // Tier-3 #2/#4 (٢٧/٨): أبعاد الطرف من رأس القيد المصدريّ `accountingEntries`. استعلامٌ
   // مفردٌ لكل كتابة — رخيصٌ (PK lookup). كل سطر يرث الأبعاد نفسها لأنّ الرأس هو المصدر.
   const [srcRow] = await tx
     .select({
       customerId: accountingEntries.customerId,
       supplierId: accountingEntries.supplierId,
       deliveryPartyId: accountingEntries.deliveryPartyId,
+      exchangeHouseId: accountingEntries.exchangeHouseId,
+      digitalWalletId: accountingEntries.digitalWalletId,
     })
     .from(accountingEntries)
     .where(eq(accountingEntries.id, entryId));
@@ -214,6 +216,8 @@ export async function writeJournal(
     customerId: srcRow?.customerId ?? null,
     supplierId: srcRow?.supplierId ?? null,
     deliveryPartyId: srcRow?.deliveryPartyId ?? null,
+    exchangeHouseId: srcRow?.exchangeHouseId ?? null,
+    digitalWalletId: srcRow?.digitalWalletId ?? null,
   };
   await tx.insert(journalLines).values(
     lines.map((l) => ({
