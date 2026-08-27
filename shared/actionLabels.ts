@@ -1,0 +1,73 @@
+/**
+ * قاموس تسميات الإجراءات — **مصدر الحقيقة الوحيد** للنصوص العربية المشتركة عبر الأزرار والحالات.
+ *
+ * السبب: مسحٌ في ٢٧/٨/٢٦ كشف **١٠٢ استعمال** لسلاسل التحميل اليدوية في `client/src/pages/**`:
+ *   • «جارٍ التحميل…» بأشكال مختلفة (بعضها بمسافةٍ زائدة، بعضها بحرف مختلف)
+ *   • «جارٍ الحفظ…» / «جار الحفظ…» / «يجري الحفظ…» — نفس المعنى بثلاث صياغات
+ *   • «جار الإرسال» / «جاري الإرسال» / «جارٍ الإرسال»
+ *
+ * النتيجة: النصّ لا يتّسق بين الشاشات، ومطابقة الاختبارات هشّة، والترجمة (لو أُضيفت) تحتاج
+ * تعديل ١٠٢ موضع.
+ *
+ * الحلّ: كل نصّ يمرّ عبر هذا القاموس. الإضافة تحدث هنا فقط.
+ *
+ * موقع `shared/`: نستهلكه على العميل (SubmitButton + PageState) وعلى الخادم إن لزم لبناء رسائل.
+ */
+
+/** حالات فعل الحفظ العامّة. */
+export const ACTION_LABELS = {
+  // حالات الانتظار (pending / in-progress) — الأشيع.
+  loading: "جارٍ التحميل…",
+  saving: "جارٍ الحفظ…",
+  sending: "جارٍ الإرسال…",
+  deleting: "جارٍ الحذف…",
+  submitting: "جارٍ الإرسال…",
+  processing: "جارٍ المعالجة…",
+  uploading: "جارٍ الرفع…",
+  downloading: "جارٍ التنزيل…",
+  exporting: "جارٍ التصدير…",
+  printing: "جارٍ التحضير للطباعة…",
+  refreshing: "جارٍ التحديث…",
+  fetching: "جارٍ الجلب…",
+  verifying: "جارٍ التحقّق…",
+
+  // حالات الأفعال الجاهزة (idle) — للأزرار قبل الضغط.
+  save: "حفظ",
+  send: "إرسال",
+  delete: "حذف",
+  cancel: "إلغاء",
+  submit: "إرسال",
+  confirm: "تأكيد",
+  edit: "تعديل",
+  add: "إضافة",
+  refresh: "تحديث",
+  retry: "إعادة المحاولة",
+  export: "تصدير",
+  print: "طباعة",
+  download: "تنزيل",
+  upload: "رفع",
+  approve: "اعتماد",
+  reject: "رفض",
+  close: "إغلاق",
+
+  // حالات النجاح (toast).
+  saved: "تمّ الحفظ",
+  sent: "تمّ الإرسال",
+  deleted: "تمّ الحذف",
+  updated: "تمّ التحديث",
+  created: "أُنشئ بنجاح",
+  cancelled: "أُلغي",
+  approved: "تمّ الاعتماد",
+  rejected: "تمّ الرفض",
+  exported: "تمّ التصدير",
+} as const;
+
+export type ActionLabelKey = keyof typeof ACTION_LABELS;
+
+/** يُرجع النصّ العربيّ لمفتاح — أنسب لـ`{isPending ? L.saving : L.save}`. */
+export function actionLabel(key: ActionLabelKey): string {
+  return ACTION_LABELS[key];
+}
+
+/** كل المفاتيح المسجَّلة — للاختبار النصّيّ. */
+export const ACTION_LABEL_KEYS: readonly ActionLabelKey[] = Object.keys(ACTION_LABELS) as ActionLabelKey[];

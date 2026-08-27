@@ -1,10 +1,14 @@
 // نَتيجة Suspense للمسارات المُحمَّلة بـlazy(): شاشة مركزة بنفس نَصّ `Protected`
 // كي يَبدو تَتابع التَحميل (chunk → auth check → الصفحة) سَلِساً بصرياً بلا قَفز.
 // تَقصد أن تَكون خَفيفة جداً (تَدخل في الحزمة الأساسية).
+//
+// S8 (٢٧/٨): النصّ يُشتقّ من `ACTION_LABELS.loading` — مصدر الحقيقة الوحيد للتحميل.
+import { ACTION_LABELS } from "@shared/actionLabels";
+
 export function RouteFallback() {
   return (
     <div className="min-h-screen flex items-center justify-center text-muted-foreground">
-      جارٍ التحميل…
+      {ACTION_LABELS.loading}
     </div>
   );
 }
