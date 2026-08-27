@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
+import { discoverImageGaps, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
 
 function actor(ctx: {
   user: {
@@ -38,6 +40,36 @@ export const productStudioRouter = router({
     .query(({ ctx, input }) => listStudioProducts(actor(ctx), input)),
   resolveBarcode: productStudioReadProcedure.input(z.object({ barcode: z.string().trim().min(1).max(64) })).query(({ ctx, input }) => resolveStudioBarcode(actor(ctx), input.barcode)),
   productImages: productStudioReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ ctx, input }) => listStudioProductImages(actor(ctx), input.productId)),
+  // إدارةُ صور المنتج القائمة — للمدير (طلب المالك ٢٦/٨: التحكم الكامل بالصور).
+  managerImages: productStudioManagerProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ ctx, input }) => listProductImagesForManager(actor(ctx), input.productId)),
+  deleteImage: productStudioManagerProcedure
+    .input(z.object({ imageId: z.number().int().positive(), reason: z.string().trim().max(500).optional() }))
+    .mutation(({ ctx, input }) => deleteProductImage(actor(ctx), input)),
+  setImagePrimary: productStudioManagerProcedure
+    .input(z.object({ imageId: z.number().int().positive() }))
+    .mutation(({ ctx, input }) => setPrimaryProductImage(actor(ctx), input.imageId)),
+  reorderImages: productStudioManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), orderedImageIds: z.array(z.number().int().positive()).min(1).max(200) }))
+    .mutation(({ ctx, input }) => reorderProductImages(actor(ctx), input)),
+  // كاشفُ فجوات الصور (طلب المالك ٢٦/٨): تصنيفٌ ذكيّ يُبرِز الأولويّات لتوفير الوقت.
+  imageHealthCounts: productStudioManagerProcedure.query(({ ctx }) => getImageHealthCounts(actor(ctx))),
+  discoverImageGaps: productStudioManagerProcedure
+    .input(
+      z.object({
+        states: z.array(z.enum(IMAGE_HEALTH_STATES)).max(6).optional(),
+        categoryIds: z.array(z.number().int().positive()).max(200).optional(),
+        isBundle: z.boolean().optional(),
+        search: z.string().trim().max(80).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        cursor: z.number().int().nonnegative().optional(),
+      }),
+    )
+    .query(({ ctx, input }) => discoverImageGaps(actor(ctx), input)),
+  topGapCategories: productStudioManagerProcedure
+    .input(z.object({ limit: z.number().int().min(1).max(50).optional() }))
+    .query(({ ctx, input }) => getTopGapCategories(actor(ctx), input.limit)),
   assignees: productStudioManagerProcedure.query(({ ctx }) => listStudioAssignees(actor(ctx))),
   grantStudioAccess: productStudioManagerProcedure
     .input(z.object({ userId: z.number().int().positive() }))
@@ -76,10 +108,15 @@ export const productStudioRouter = router({
         status: z.enum(["DRAFT", "ACTIVE"]).default("DRAFT"),
         startsAt: z.coerce.date().nullable().optional(),
         dueAt: z.coerce.date().nullable().optional(),
-        scopeKind: z.enum(["ALL", "CATEGORY", "PRODUCTS"]).default("ALL"),
+        // `CATEGORIES` (متعدّد) جديد — هجرة 0269. القديم `CATEGORY` (واحد) يبقى متاحاً.
+        scopeKind: z.enum(["ALL", "CATEGORY", "CATEGORIES", "PRODUCTS"]).default("ALL"),
         scopeCategoryId: z.number().int().positive().nullable().optional(),
+        scopeCategoryIds: z.array(z.number().int().positive()).max(200).optional(),
         scopeProductIds: z.array(z.number().int().positive()).max(5_000).optional(),
         requiredImages: z.number().int().min(1).max(10).optional(),
+        // سياسة الصور (هجرة 0269): افتراضياً ONLY_MISSING (السلوك القديم). ANY_REGARDLESS
+        // يشمل المنتجات المكتملة لإضافة صور جديدة — طلب المالك ٢٦/٨.
+        imagesPolicy: z.enum(["ONLY_MISSING", "ANY_REGARDLESS"]).optional(),
         assigneeIds: z.array(z.number().int().positive()).max(50).optional(),
       }),
     )

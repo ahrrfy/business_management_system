@@ -531,7 +531,7 @@ export default function AnomalyWatch() {
                   <TableEmptyRow colSpan={5} message="لا سحوبات بضاعة أمانة في الفترة." />
                 ) : (
                   aw.consignWithdrawals.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-amber-500/10")}>
+                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
                       <td className={tdCls}>{r.userName}</td>
                       <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.noteCount}</td>
                       <td className={numCls} dir="ltr">{fmtAr(r.totalQty)}</td>

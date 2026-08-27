@@ -3828,14 +3828,25 @@ export const productStudioCampaigns = mysqlTable(
       .notNull(),
     startsAt: timestamp("startsAt"),
     dueAt: timestamp("dueAt"),
-    /** نطاق الحملة: كل المنتجات الناقصة · فئةٌ بعينها · مجموعةٌ مختارة صراحةً. */
-    scopeKind: mysqlEnum("scopeKind", ["ALL", "CATEGORY", "PRODUCTS"])
+    /** نطاق الحملة: كل المنتجات · فئةٌ · **عدّة فئات** · مجموعةٌ مختارة صراحةً. */
+    scopeKind: mysqlEnum("scopeKind", ["ALL", "CATEGORY", "CATEGORIES", "PRODUCTS"])
       .default("ALL")
       .notNull(),
-    /** الفئة حين يكون النطاق CATEGORY — تشمل فئاتها الفرعية (مستويان). */
+    /** الفئة حين يكون النطاق CATEGORY (فئةٌ واحدة، إرثيّ) — تشمل شجرتَها الفرعيّة. */
     scopeCategoryId: bigint("scopeCategoryId", { mode: "number" }),
     /** التوجيه الإداريّ: كم صورةً مطلوبة لكل منتج في هذه الحملة. */
     requiredImages: int("requiredImages").default(1).notNull(),
+    /**
+     * سياسةُ الصور — تحدّد ما يدخل الطابور من المنتجات ضمن النطاق:
+     *   • ONLY_MISSING (افتراضيّ) — منتجاتٌ لم تبلغ `requiredImages` صور معتمَدة.
+     *   • ANY_REGARDLESS — كل المنتجات ضمن النطاق، حتى المكتملة (لإضافة صور جديدة).
+     *
+     * الحاجة (المالك ٢٦/٨): «حملة تصوير تشمل حتى التي تحمل صور» — دون هذا الوضع
+     * تُصفّى المنتجات المُصوَّرة تلقائياً، فلا مسارَ لإضافة صورةٍ ثالثة لمنتجٍ بصورتين.
+     */
+    imagesPolicy: mysqlEnum("imagesPolicy", ["ONLY_MISSING", "ANY_REGARDLESS"])
+      .default("ONLY_MISSING")
+      .notNull(),
     createdBy: int("createdBy")
       .notNull()
       .references(() => users.id),
@@ -3882,6 +3893,34 @@ export const productStudioCampaignProducts = mysqlTable(
       columns: [table.productId],
       foreignColumns: [products.id],
       name: "fk_pscp_product",
+    }).onDelete("cascade"),
+  }),
+);
+
+/**
+ * فئاتُ الحملة حين يكون نطاقها CATEGORIES — اختيارٌ متعدّد صريح. كلّ فئةٍ فيها تشمل
+ * شجرتَها الفرعيّة (نفس منطق CATEGORY المُفرَد). هجرة 0269.
+ */
+export const productStudioCampaignCategories = mysqlTable(
+  "productStudioCampaignCategories",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    campaignId: bigint("campaignId", { mode: "number" }).notNull(),
+    categoryId: bigint("categoryId", { mode: "number" }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    uq: unique("uq_pscc_campaign_category").on(table.campaignId, table.categoryId),
+    categoryIdx: index("idx_pscc_category").on(table.categoryId),
+    campaignFk: foreignKey({
+      columns: [table.campaignId],
+      foreignColumns: [productStudioCampaigns.id],
+      name: "fk_pscc_campaign",
+    }).onDelete("cascade"),
+    categoryFk: foreignKey({
+      columns: [table.categoryId],
+      foreignColumns: [categories.id],
+      name: "fk_pscc_category",
     }).onDelete("cascade"),
   }),
 );

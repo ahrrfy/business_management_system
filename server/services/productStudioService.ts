@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
-import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
+import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignCategories, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
 import type { PermissionMap } from "@shared/permissions";
 import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
@@ -636,6 +636,7 @@ async function claimFreshCampaignTask(
       scopeKind: productStudioCampaigns.scopeKind,
       scopeCategoryId: productStudioCampaigns.scopeCategoryId,
       requiredImages: productStudioCampaigns.requiredImages,
+      imagesPolicy: productStudioCampaigns.imagesPolicy,
     })
     .from(productStudioCampaigns)
     .innerJoin(productStudioCampaignAssignees, and(eq(productStudioCampaignAssignees.campaignId, productStudioCampaigns.id), eq(productStudioCampaignAssignees.userId, actor.userId)))
@@ -679,19 +680,23 @@ async function claimFreshCampaignTask(
     // متغيّر) مستقلٌّ بمهمّته ومفتاحه الفريد، فحصرُ العدّ بالمنتج يجعل مسحَ البديل B
     // يرتدّ بـ«اكتملت الصورة» بمجرّد اعتماد البديل A (الجذر: مراجعة Codex P1 على PR #807).
     // صور legacy على مستوى الأمّ (variantId=NULL) لا تحتسب لبديلٍ محدَّد.
-    const [approvedCount] = await tx
-      .select({ n: sql<number>`count(*)` })
-      .from(productImages)
-      .where(
-        and(
-          eq(productImages.productId, productId),
-          eq(productImages.reviewStatus, "APPROVED"),
-          variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
-        ),
-      );
-    if (Number(approvedCount?.n ?? 0) >= requiredImages) {
-      completedCount++;
-      continue;
+    // في وضع ANY_REGARDLESS يُتجاوَز فحصُ الاكتمال — المصوّر يضيف صورةً جديدةً حتى
+    // للمنتج المكتمل (طلب المالك ٢٦/٨). في ONLY_MISSING (السلوك القائم) يُفلتَر.
+    if ((campaign.imagesPolicy ?? "ONLY_MISSING") === "ONLY_MISSING") {
+      const [approvedCount] = await tx
+        .select({ n: sql<number>`count(*)` })
+        .from(productImages)
+        .where(
+          and(
+            eq(productImages.productId, productId),
+            eq(productImages.reviewStatus, "APPROVED"),
+            variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
+          ),
+        );
+      if (Number(approvedCount?.n ?? 0) >= requiredImages) {
+        completedCount++;
+        continue;
+      }
     }
     const inScope = inScopeRow;
     const [created] = await tx
@@ -998,12 +1003,25 @@ export async function createStudioCampaign(
     status?: "DRAFT" | "ACTIVE";
     startsAt?: Date | null;
     dueAt?: Date | null;
-    /** نطاق الحملة: الكتالوج كلّه · فئةٌ (بفئاتها الفرعية) · مجموعةٌ مختارة صراحةً. */
-    scopeKind?: "ALL" | "CATEGORY" | "PRODUCTS";
+    /**
+     * نطاق الحملة:
+     *   • ALL — الكتالوج كلّه.
+     *   • CATEGORY — فئةٌ واحدة (بشجرتها الفرعيّة) — إرثيّ، متوافق.
+     *   • CATEGORIES — عدّة فئات (كلٌّ بشجرتها الفرعيّة) — جديد.
+     *   • PRODUCTS — مجموعةٌ من المنتجات صراحةً.
+     */
+    scopeKind?: "ALL" | "CATEGORY" | "CATEGORIES" | "PRODUCTS";
     scopeCategoryId?: number | null;
+    /** الفئات حين يكون النطاق CATEGORIES — واحدة أو أكثر. */
+    scopeCategoryIds?: number[];
     scopeProductIds?: number[];
     /** التوجيه الإداريّ لعدد الصور المطلوبة لكل منتج. */
     requiredImages?: number;
+    /**
+     * سياسة الصور: `ONLY_MISSING` (المنتجات الناقصة فقط) أو `ANY_REGARDLESS`
+     * (كل منتجات النطاق، حتى المكتمل — لإضافة صور جديدة).
+     */
+    imagesPolicy?: "ONLY_MISSING" | "ANY_REGARDLESS";
     /** مصوّرو الحملة — تُسنَد إلى عدّة موظفين، ومنها يسحب كلٌّ منهم ما يمسح باركوده. */
     assigneeIds?: number[];
   },
@@ -1026,12 +1044,17 @@ export async function createStudioCampaign(
   }
   const branchId = campaignBranchId(actor, input.branchId);
   const scopeKind = input.scopeKind ?? "ALL";
+  const imagesPolicy = input.imagesPolicy ?? "ONLY_MISSING";
   const requiredImages = Math.max(1, Math.min(Math.trunc(input.requiredImages ?? 1), MAX_REQUIRED_IMAGES));
   const scopeProductIds = Array.from(new Set((input.scopeProductIds ?? []).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)));
+  const scopeCategoryIds = Array.from(new Set((input.scopeCategoryIds ?? []).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)));
   const assigneeIds = Array.from(new Set((input.assigneeIds ?? []).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)));
   // النطاق يجب أن يحمل ما يصفه، وإلّا كانت الحملة فارغةً بلا أن يدري منشئها.
   if (scopeKind === "CATEGORY" && !input.scopeCategoryId) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "اختر الفئة قبل حفظ حملةٍ بنطاق فئة" });
+  }
+  if (scopeKind === "CATEGORIES" && scopeCategoryIds.length === 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر فئةً واحدةً على الأقل قبل حفظ حملةٍ بنطاق فئات متعدّدة" });
   }
   if (scopeKind === "PRODUCTS" && scopeProductIds.length === 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "اختر منتجاً واحداً على الأقل قبل حفظ حملةٍ بنطاق منتجات" });
@@ -1051,12 +1074,16 @@ export async function createStudioCampaign(
         scopeKind,
         scopeCategoryId: scopeKind === "CATEGORY" ? Number(input.scopeCategoryId) : null,
         requiredImages,
+        imagesPolicy,
         createdBy: actor.userId,
       })
       .$returningId();
     const campaignId = Number(created.id);
     if (scopeKind === "PRODUCTS") {
       await tx.insert(productStudioCampaignProducts).values(scopeProductIds.map((productId) => ({ campaignId, productId })));
+    }
+    if (scopeKind === "CATEGORIES") {
+      await tx.insert(productStudioCampaignCategories).values(scopeCategoryIds.map((categoryId) => ({ campaignId, categoryId })));
     }
     if (assigneeIds.length > 0) {
       await assertCampaignAssignees(tx, actor, branchId, assigneeIds);
@@ -1068,7 +1095,7 @@ export async function createStudioCampaign(
       action: "productStudio.campaign.create",
       entityType: "productStudioCampaign",
       entityId: String(campaignId),
-      newValue: { name, status, scopeKind, scopeCategoryId: input.scopeCategoryId ?? null, productCount: scopeProductIds.length, requiredImages, assigneeIds },
+      newValue: { name, status, scopeKind, scopeCategoryId: input.scopeCategoryId ?? null, scopeCategoryIds, productCount: scopeProductIds.length, requiredImages, imagesPolicy, assigneeIds },
     });
     return {
       campaignId,
@@ -1165,7 +1192,8 @@ export async function transitionStudioCampaign(
 export async function listStudioCampaigns(actor: ProductStudioActor) {
   if (!isManager(actor) && actor.role !== "auditor") throw new TRPCError({ code: "FORBIDDEN" });
   const conditions = canCrossBranches(actor) ? undefined : eq(productStudioCampaigns.branchId, Number(actor.branchId));
-  return requireDb()
+  const db = requireDb();
+  const rows = await db
     .select({
       id: productStudioCampaigns.id,
       name: productStudioCampaigns.name,
@@ -1173,13 +1201,36 @@ export async function listStudioCampaigns(actor: ProductStudioActor) {
       status: productStudioCampaigns.status,
       startsAt: productStudioCampaigns.startsAt,
       dueAt: productStudioCampaigns.dueAt,
-      // `requiredImages` تُعاد كي يُحرِّرها المدير بلا استعلامٍ ثانٍ للحصول عليها.
+      // `requiredImages` + `imagesPolicy` + `scopeKind`/`scopeCategoryId` تُعاد كي يُحرِّرها
+      // المدير بلا استعلامٍ ثانٍ، والشاشة تُميّز الحملات ONLY_MISSING عن ANY_REGARDLESS.
+      // فئات النطاق CATEGORIES تُلحق أدناه من الجدول الجانبيّ (طلب Codex P2 على PR #825).
       requiredImages: productStudioCampaigns.requiredImages,
+      imagesPolicy: productStudioCampaigns.imagesPolicy,
+      scopeKind: productStudioCampaigns.scopeKind,
+      scopeCategoryId: productStudioCampaigns.scopeCategoryId,
       createdAt: productStudioCampaigns.createdAt,
     })
     .from(productStudioCampaigns)
     .where(conditions)
     .orderBy(desc(productStudioCampaigns.createdAt), desc(productStudioCampaigns.id));
+  if (rows.length === 0) return [];
+  const campaignsWithCategoriesScope = rows.filter((r) => r.scopeKind === "CATEGORIES").map((r) => Number(r.id));
+  const categoryLinks = campaignsWithCategoriesScope.length === 0
+    ? []
+    : await db
+        .select({
+          campaignId: productStudioCampaignCategories.campaignId,
+          categoryId: productStudioCampaignCategories.categoryId,
+        })
+        .from(productStudioCampaignCategories)
+        .where(inArray(productStudioCampaignCategories.campaignId, campaignsWithCategoriesScope));
+  const categoriesByCampaign = new Map<number, number[]>();
+  for (const link of categoryLinks) {
+    const cid = Number(link.campaignId);
+    if (!categoriesByCampaign.has(cid)) categoriesByCampaign.set(cid, []);
+    categoriesByCampaign.get(cid)!.push(Number(link.categoryId));
+  }
+  return rows.map((r) => ({ ...r, scopeCategoryIds: categoriesByCampaign.get(Number(r.id)) ?? [] }));
 }
 
 /**
@@ -1316,12 +1367,26 @@ async function loadCampaign(actor: ProductStudioActor, campaignId: number): Prom
  * إلى كل الأحفاد. كلفة الحساب على شجرةٍ عمقها N هي N جولات صغيرة بحجم عرضِ الشجرة —
  * أسرع من N استعلاماً منفصلاً في Node، وأدقّ من التقطيع بالعمق.
  */
-function campaignScopeCondition(campaign: { id: number | string; scopeKind: "ALL" | "CATEGORY" | "PRODUCTS"; scopeCategoryId: number | null }) {
+function campaignScopeCondition(campaign: { id: number | string; scopeKind: "ALL" | "CATEGORY" | "CATEGORIES" | "PRODUCTS"; scopeCategoryId: number | null }) {
   if (campaign.scopeKind === "CATEGORY") {
     const categoryId = Number(campaign.scopeCategoryId);
     return sql`${products.categoryId} in (
       with recursive category_tree (id) as (
         select ${categoryId}
+        union all
+        select ${categories.id} from ${categories}
+        inner join category_tree on ${categories.parentId} = category_tree.id
+      )
+      select id from category_tree
+    )`;
+  }
+  if (campaign.scopeKind === "CATEGORIES") {
+    // فئاتٌ متعدّدة، كلٌّ بشجرتها الفرعيّة. CTE عوديّ يبدأ من كل الفئات المختارة معاً
+    // ويتوسّع نزولاً. هجرة 0269.
+    return sql`${products.categoryId} in (
+      with recursive category_tree (id) as (
+        select ${productStudioCampaignCategories.categoryId} from ${productStudioCampaignCategories}
+        where ${productStudioCampaignCategories.campaignId} = ${Number(campaign.id)}
         union all
         select ${categories.id} from ${categories}
         inner join category_tree on ${categories.parentId} = category_tree.id
@@ -1336,31 +1401,46 @@ function campaignScopeCondition(campaign: { id: number | string; scopeKind: "ALL
 }
 
 /**
- * «ناقص» = منتج نشط لم يبلغ **عدد الصور الذي تطلبه الحملة** وبلا مهمة نشطة.
+ * «ناقص» بحسب سياسة الحملة:
+ *   • ONLY_MISSING — منتج نشط لم يبلغ `requiredImages` صور معتمَدة، ولا مهمّة نشطة له.
+ *   • ANY_REGARDLESS — كل منتج نشط ضمن النطاق، بلا فحص الاكتمال (السياسة الجديدة — هجرة
+ *     0269). المالك يريد إضافة صور جديدة لمنتجاتٍ مكتملة بلا إعادة إنشاء الحملة.
  *
- * كان التعريف «بلا أيّ صورة معتمدة» — أي أنّ المنتج يخرج من الطابور بعد أوّل صورة.
- * فتوجيهُ «ثلاث صور» كان سيبقى زينةً: لا شيء يُطالب بالثانية والثالثة. العدّ يجعل
- * التوجيه نافذاً بلا تغيير عقد الإرسال: دورةٌ لكل صورة على المسار المُثبَت نفسه.
+ * كان التعريف السابق «< requiredImages صور» ⇒ منتجٌ مكتملٌ يختفي أبداً. الآن السياسة تختار.
+ * فحصُ «مهمّة نشطة» يبقى دائماً — منعُ ازدواج المهام بغضّ النظر عن السياسة.
  */
-function missingStudioProductConditions(requiredImages = 1) {
+function missingStudioProductConditions(requiredImages = 1, imagesPolicy: "ONLY_MISSING" | "ANY_REGARDLESS" = "ONLY_MISSING", campaignId?: number | string | null) {
   const required = Math.max(1, Math.trunc(requiredImages));
+  const missingCountCondition = imagesPolicy === "ANY_REGARDLESS"
+    ? undefined
+    : sql`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') < ${required}`;
+  // في ONLY_MISSING الفحصُ activeSlot=1 يكفي — بمجرد اعتماد الصورة يخرج المنتج بشرط
+  // العدّ. في ANY_REGARDLESS المنتج المكتمل مسموحٌ ⇒ إن اقتصر الفحص على activeSlot=1
+  // فإنّ approve يفرّغه فيصير المنتج «ناقصاً» فوراً ⇒ باكلوغ لا نهائيّ (الجذر:
+  // مراجعة Codex P1 على PR #825). الحلّ: في ANY_REGARDLESS نستبعد أيضاً كل منتجٍ
+  // له مهمّةٌ **في هذه الحملة تحديداً** بأيّ حالة — فتظلّ المهمّة الواحدة كافيةً حتى
+  // يتّخذ المدير قرار «زيادة» صريحاً (بحذف قديمةٍ أو تجديد الحملة).
+  const anyJobInThisCampaign = imagesPolicy === "ANY_REGARDLESS" && campaignId != null
+    ? sql`not exists (select 1 from ${productImageJobs} where ${productImageJobs.productId} = ${products.id} and ${productImageJobs.campaignId} = ${Number(campaignId)})`
+    : undefined;
   return and(
     eq(products.isActive, true),
     // المنتج الخدميّ (طباعة/تصميم/رسوم) لا مخزونَ ماديّاً له يُصوَّر — يُستبعَد من
     // كل حملات التصوير تلقائياً. كان يظهر في الطابور ويُتوقَّع تصويره بلا معنى.
     eq(products.isService, false),
-    sql`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') < ${required}`,
+    missingCountCondition,
+    anyJobInThisCampaign,
     sql`not exists (select 1 from ${productImageJobs} where ${productImageJobs.productId} = ${products.id} and ${productImageJobs.activeSlot} = 1)`,
   );
 }
 
-type CampaignScope = { id: number | string; scopeKind: "ALL" | "CATEGORY" | "PRODUCTS"; scopeCategoryId: number | null; requiredImages?: number | null };
+type CampaignScope = { id: number | string; scopeKind: "ALL" | "CATEGORY" | "CATEGORIES" | "PRODUCTS"; scopeCategoryId: number | null; requiredImages?: number | null; imagesPolicy?: "ONLY_MISSING" | "ANY_REGARDLESS" | null };
 
 async function countMissingStudioProducts(db: ReturnType<typeof requireDb> | StudioTx, campaign?: CampaignScope) {
   const [row] = await db
     .select({ count: sql<number>`count(*)` })
     .from(products)
-    .where(and(missingStudioProductConditions(campaign?.requiredImages ?? 1), campaign ? campaignScopeCondition(campaign) : undefined));
+    .where(and(missingStudioProductConditions(campaign?.requiredImages ?? 1, campaign?.imagesPolicy ?? "ONLY_MISSING", campaign?.id), campaign ? campaignScopeCondition(campaign) : undefined));
   return Number(row?.count ?? 0);
 }
 
@@ -1372,7 +1452,7 @@ async function missingStudioProducts(db: ReturnType<typeof requireDb> | StudioTx
       description: products.description,
     })
     .from(products)
-    .where(and(missingStudioProductConditions(campaign?.requiredImages ?? 1), campaign ? campaignScopeCondition(campaign) : undefined))
+    .where(and(missingStudioProductConditions(campaign?.requiredImages ?? 1, campaign?.imagesPolicy ?? "ONLY_MISSING", campaign?.id), campaign ? campaignScopeCondition(campaign) : undefined))
     .orderBy(asc(products.id))
     .limit(limit);
 }
