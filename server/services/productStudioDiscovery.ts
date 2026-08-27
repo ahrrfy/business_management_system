@@ -1,0 +1,274 @@
+/**
+ * كاشفُ فجوات الصور — يُصنِّف كل منتجٍ نشطٍ في حالةٍ صحيّة، ويُعيد عدّاداتٍ وقوائم
+ * قابلةً للتصفية والفعل.
+ *
+ * الحاجة (المالك ٢٦/٨): «منظومة ذكيّة تقترح وتبحث عن المنتجات التي لا تحتوي على صور، أو
+ * بدائل لم يُضَف لها صور، أو بكج، أو نحو ذلك — لتقليل هدر الوقت والجهد».
+ *
+ * التصميم: بدلاً من «مسحٍ عامّ» يُنتج قائمةً بلا معنًى، نُصنّف كل منتجٍ في **حالةٍ محدّدة**
+ * لها إجراءٌ واضح. ستّ حالات (٥ فعليّة + HEALTHY):
+ *
+ *   NO_IMAGES              — لا صورةٌ معتمَدةٌ إطلاقاً. أولويّةٌ قصوى.
+ *   BUNDLE_NO_IMAGE         — مثل NO_IMAGES لكن `isBundle=1`. يُبرَز لأنّ البكج يظهر
+ *                             في الفواتير/الكاشير بلا صورة ⇒ ضربةٌ مباشرة للعرض.
+ *   SINGLE_IMAGE           — صورةٌ واحدة فقط. مرشّحٌ لإضافة زوايا/بدائل.
+ *   PARENT_ONLY_HAS_VARIANTS — صور مستوى-الأمّ موجودة لكن للمنتج بدائل بلا صور خاصّة.
+ *                             (يعني: البدائل تعرض صورة الأمّ المشتركة، ليس صورتها.)
+ *   VARIANTS_INCOMPLETE     — للمنتج بدائل، بعضها لا صور له. أوسع من السابق.
+ *   HEALTHY                — كل شيء مغطًّى (يُستَبعد من القوائم الافتراضيّة).
+ *
+ * الاستعلامات مصمَّمة لتعمل على كتالوجٍ بآلاف المنتجات: subqueries scalar تُحسَب مرّةً في
+ * SQL بدل جولاتٍ متعدّدة، والفلاتر تُطبَّق قبل التصنيف — لا نمسح الكتالوج ثمّ نُصفّي.
+ *
+ * الأمان: manager فقط + `productStudio: READ`. تُطبَّق الحدود الفرعية عبر categoryIds
+ * وحقولٍ صريحة — لا لقطاتٍ مالية ولا تكلفة ولا مخزون.
+ */
+import { TRPCError } from "@trpc/server";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { categories, productImages, productVariants, products } from "../../drizzle/schema";
+import { requireDb } from "./tx";
+import type { ProductStudioActor } from "./productStudioService";
+
+/** كل الحالات الممكنة لصحّة صور المنتج. */
+export const IMAGE_HEALTH_STATES = [
+  "NO_IMAGES",
+  "BUNDLE_NO_IMAGE",
+  "SINGLE_IMAGE",
+  "PARENT_ONLY_HAS_VARIANTS",
+  "VARIANTS_INCOMPLETE",
+  "HEALTHY",
+] as const;
+export type ImageHealthState = (typeof IMAGE_HEALTH_STATES)[number];
+
+function isManager(actor: ProductStudioActor): boolean {
+  return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
+}
+
+/**
+ * تعبيرُ SQL يحسب حالةَ صحّة الصور لكل منتج داخل الاستعلام مباشرةً. يُغني عن جولةٍ في
+ * Node لتصنيف الصفوف. ترتيبُ CASE مهمّ: الأكثرُ خطورةً أوّلاً.
+ */
+function healthCaseSql() {
+  return sql<ImageHealthState>`(
+    case
+      when (
+        (select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') = 0
+      ) then (
+        case when ${products.isBundle} = 1 then 'BUNDLE_NO_IMAGE' else 'NO_IMAGES' end
+      )
+      when (
+        (select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') = 1
+      ) then 'SINGLE_IMAGE'
+      when (
+        (select count(*) from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1) > 0
+        and (
+          select count(distinct ${productVariants.id})
+          from ${productVariants}
+          where ${productVariants.productId} = ${products.id}
+            and ${productVariants.isActive} = 1
+            and not exists (
+              select 1 from ${productImages}
+              where ${productImages.productId} = ${products.id}
+                and ${productImages.variantId} = ${productVariants.id}
+                and ${productImages.reviewStatus} = 'APPROVED'
+            )
+        ) > 0
+        and (
+          select count(*) from ${productImages}
+          where ${productImages.productId} = ${products.id}
+            and ${productImages.variantId} is null
+            and ${productImages.reviewStatus} = 'APPROVED'
+        ) > 0
+      ) then 'PARENT_ONLY_HAS_VARIANTS'
+      when (
+        (select count(*) from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1) > 0
+        and (
+          select count(distinct ${productVariants.id})
+          from ${productVariants}
+          where ${productVariants.productId} = ${products.id}
+            and ${productVariants.isActive} = 1
+            and not exists (
+              select 1 from ${productImages}
+              where ${productImages.productId} = ${products.id}
+                and ${productImages.variantId} = ${productVariants.id}
+                and ${productImages.reviewStatus} = 'APPROVED'
+            )
+        ) > 0
+      ) then 'VARIANTS_INCOMPLETE'
+      else 'HEALTHY'
+    end
+  )`;
+}
+
+/**
+ * عدّاداتُ الحالات لكامل الكتالوج المرئيّ للفاعل — أساسٌ لبطاقات KPI في اللوحة.
+ * استعلامٌ واحد يُنتج كل الأعداد دفعةً بلا جولاتٍ متعدّدة.
+ */
+export async function getImageHealthCounts(actor: ProductStudioActor) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const db = requireDb();
+  const health = healthCaseSql();
+  const rows = await db
+    .select({
+      health,
+      n: sql<number>`count(*)`,
+    })
+    .from(products)
+    .where(and(eq(products.isActive, true), eq(products.isService, false)))
+    .groupBy(health);
+  const counts: Record<ImageHealthState, number> = {
+    NO_IMAGES: 0,
+    BUNDLE_NO_IMAGE: 0,
+    SINGLE_IMAGE: 0,
+    PARENT_ONLY_HAS_VARIANTS: 0,
+    VARIANTS_INCOMPLETE: 0,
+    HEALTHY: 0,
+  };
+  for (const row of rows) {
+    const state = row.health as ImageHealthState;
+    if (state in counts) counts[state] = Number(row.n ?? 0);
+  }
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  return {
+    total,
+    counts,
+    // نسبةُ الصحّة العامّة — للوحةٍ رئيسيّة يفهمها المدير في لحظة.
+    healthyPercent: total > 0 ? Math.round((counts.HEALTHY / total) * 100) : 0,
+  };
+}
+
+/** فلاترُ اكتشاف الفجوات. */
+export interface DiscoveryFilters {
+  states?: ImageHealthState[];
+  categoryIds?: number[];
+  isBundle?: boolean;
+  search?: string;
+  limit?: number;
+  cursor?: number;
+}
+
+/**
+ * قائمةُ منتجاتٍ مصنَّفةٍ بحالتها، قابلة للتصفية والاختيار الجماعيّ. الترتيب افتراضياً
+ * بالحالة الأخطر أوّلاً ثمّ باسم المنتج — كي يبدأ المدير من «الحرِج» طبيعياً.
+ */
+export async function discoverImageGaps(actor: ProductStudioActor, input: DiscoveryFilters) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const db = requireDb();
+  const health = healthCaseSql();
+  const limit = Math.max(1, Math.min(input.limit ?? 50, 200));
+  const cursor = input.cursor && Number.isSafeInteger(input.cursor) ? Number(input.cursor) : null;
+
+  const conditions = [eq(products.isActive, true), eq(products.isService, false)];
+  if (input.categoryIds && input.categoryIds.length > 0) {
+    // فئاتٌ متعدّدة، كلٌّ بشجرتها الفرعيّة — نفس منطق CAMPAIGN CATEGORIES.
+    conditions.push(
+      sql`${products.categoryId} in (
+        with recursive category_tree (id) as (
+          select unnested.id from (select id from ${categories} where id in (${sql.join(input.categoryIds.map((n) => sql`${Number(n)}`), sql`, `)})) as unnested
+          union all
+          select ${categories.id} from ${categories}
+          inner join category_tree on ${categories.parentId} = category_tree.id
+        )
+        select id from category_tree
+      )`,
+    );
+  }
+  if (input.isBundle === true) conditions.push(eq(products.isBundle, true));
+  if (input.isBundle === false) conditions.push(eq(products.isBundle, false));
+  if (input.search && input.search.trim()) {
+    const like = `%${input.search.trim()}%`;
+    conditions.push(sql`(${products.name} like ${like} or ${products.searchNorm} like ${like})`);
+  }
+
+  // حسبَ الحالة: نجرِّبُ إخفاء HEALTHY افتراضياً — لا فائدةَ من إظهار السليم في «كشف الفجوات».
+  const stateFilter = input.states && input.states.length > 0
+    ? input.states
+    : (["NO_IMAGES", "BUNDLE_NO_IMAGE", "SINGLE_IMAGE", "PARENT_ONLY_HAS_VARIANTS", "VARIANTS_INCOMPLETE"] as ImageHealthState[]);
+  // نُنفّذ التصفية بالحالة على subquery الخارجيّ كي لا نضيف CASE في WHERE (يتكرّر
+  // الحساب في MySQL). النمط: SELECT ... FROM (SELECT ..., CASE ... FROM products WHERE ...)
+  // AS x WHERE x.health IN (...)
+  const inner = db
+    .select({
+      id: products.id,
+      name: products.name,
+      categoryId: products.categoryId,
+      isBundle: products.isBundle,
+      approvedImages: sql<number>`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED')`,
+      variantCount: sql<number>`(select count(*) from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1)`,
+      variantsWithImages: sql<number>`(
+        select count(distinct ${productVariants.id})
+        from ${productVariants}
+        where ${productVariants.productId} = ${products.id}
+          and ${productVariants.isActive} = 1
+          and exists (
+            select 1 from ${productImages}
+            where ${productImages.productId} = ${products.id}
+              and ${productImages.variantId} = ${productVariants.id}
+              and ${productImages.reviewStatus} = 'APPROVED'
+          )
+      )`,
+      health,
+    })
+    .from(products)
+    .where(and(...conditions, cursor != null ? sql`${products.id} > ${cursor}` : undefined))
+    .orderBy(asc(products.id))
+    .limit(limit + 1)
+    .as("d");
+  const rows = await db
+    .select()
+    .from(inner)
+    .where(inArray(inner.health, stateFilter));
+
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  return {
+    items: items.map((r) => ({
+      productId: Number(r.id),
+      name: r.name,
+      categoryId: r.categoryId == null ? null : Number(r.categoryId),
+      isBundle: Boolean(r.isBundle),
+      approvedImages: Number(r.approvedImages ?? 0),
+      variantCount: Number(r.variantCount ?? 0),
+      variantsWithImages: Number(r.variantsWithImages ?? 0),
+      variantsMissing: Math.max(0, Number(r.variantCount ?? 0) - Number(r.variantsWithImages ?? 0)),
+      state: r.health as ImageHealthState,
+    })),
+    nextCursor: hasMore ? Number(items[items.length - 1]?.id ?? 0) : null,
+  };
+}
+
+/**
+ * أعلى الفئات فيها فجوات — أساسٌ لاقتراحاتٍ استباقيّة («٣٥ منتج في «قرطاسية» بلا صور»).
+ * التصنيف بمتوسّط سوء الحالة لكل فئة.
+ */
+export async function getTopGapCategories(actor: ProductStudioActor, limit = 10) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const db = requireDb();
+  const health = healthCaseSql();
+  const rows = await db
+    .select({
+      categoryId: products.categoryId,
+      categoryName: categories.name,
+      total: sql<number>`count(*)`,
+      noImages: sql<number>`sum(case when (${health}) in ('NO_IMAGES','BUNDLE_NO_IMAGE') then 1 else 0 end)`,
+      singleImage: sql<number>`sum(case when (${health}) = 'SINGLE_IMAGE' then 1 else 0 end)`,
+      variantsIncomplete: sql<number>`sum(case when (${health}) in ('PARENT_ONLY_HAS_VARIANTS','VARIANTS_INCOMPLETE') then 1 else 0 end)`,
+    })
+    .from(products)
+    .leftJoin(categories, eq(categories.id, products.categoryId))
+    .where(and(eq(products.isActive, true), eq(products.isService, false)))
+    .groupBy(products.categoryId, categories.name)
+    .having(sql`sum(case when (${health}) in ('NO_IMAGES','BUNDLE_NO_IMAGE','SINGLE_IMAGE','PARENT_ONLY_HAS_VARIANTS','VARIANTS_INCOMPLETE') then 1 else 0 end) > 0`)
+    .orderBy(desc(sql`sum(case when (${health}) in ('NO_IMAGES','BUNDLE_NO_IMAGE') then 1 else 0 end)`))
+    .limit(Math.max(1, Math.min(limit, 50)));
+  void isNull; // silence unused-import warning; kept for future filters
+  return rows.map((r) => ({
+    categoryId: r.categoryId == null ? null : Number(r.categoryId),
+    categoryName: r.categoryName ?? "(بلا فئة)",
+    total: Number(r.total ?? 0),
+    noImages: Number(r.noImages ?? 0),
+    singleImage: Number(r.singleImage ?? 0),
+    variantsIncomplete: Number(r.variantsIncomplete ?? 0),
+    gapTotal: Number(r.noImages ?? 0) + Number(r.singleImage ?? 0) + Number(r.variantsIncomplete ?? 0),
+  }));
+}
