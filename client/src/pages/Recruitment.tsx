@@ -98,7 +98,7 @@ function Stars({ rating }: { rating: number | null }) {
   const r = rating ?? 0;
   if (r <= 0) return <span className="text-muted-foreground text-[11px]">—</span>;
   return (
-    <span className="inline-flex items-center text-amber-500" aria-label={`${r} نجوم`}>
+    <span className="inline-flex items-center text-[var(--sem-warn)]" aria-label={`${r} نجوم`}>
       {Array.from({ length: r }, (_, k) => (
         <Star key={k} className="size-3" style={{ fill: "currentColor" }} />
       ))}
@@ -622,7 +622,7 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
                   key={n}
                   type="button"
                   onClick={() => setRating(rating === n ? 0 : n)}
-                  className="p-0.5 text-amber-500"
+                  className="p-0.5 text-[var(--sem-warn)]"
                   aria-label={`${n} نجوم`}
                 >
                   <Star className="size-5" style={{ fill: n <= rating ? "currentColor" : "transparent" }} />

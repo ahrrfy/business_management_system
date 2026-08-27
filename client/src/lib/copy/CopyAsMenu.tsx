@@ -109,7 +109,7 @@ export function CopyAsMenu({
         aria-label={label}
         title={label}
       >
-        {copied ? <Check className="text-emerald-600" /> : <Copy />}
+        {copied ? <Check className="text-[var(--sem-pos)]" /> : <Copy />}
         {!isIconSize(size) && <span>{label}</span>}
       </Button>
     );
@@ -127,7 +127,7 @@ export function CopyAsMenu({
           aria-label={`${label} — اختر الصيغة`}
           title={label}
         >
-          {copied ? <Check className="text-emerald-600" /> : <Copy />}
+          {copied ? <Check className="text-[var(--sem-pos)]" /> : <Copy />}
           {!isIconSize(size) && <span>{label}</span>}
           <ChevronDown className="opacity-70" />
         </Button>

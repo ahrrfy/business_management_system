@@ -326,7 +326,7 @@ export default function ServiceForm() {
               </span>
             </span>
           </label>
-          <div className="rounded-md border border-emerald-300/40 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
+          <div className="rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-3 py-2 text-[11px] text-[var(--sem-pos)]">
             {isStockedOutput
               ? "في البيع المتقدّم يُخصم الناتج المخزني نفسه وتُحتسب كلفته بالمتوسط المرجّح."
               : "في البيع المتقدّم يمكن جمع الخدمة مع السلع، وتُستهلك مواد الوصفة ذرّياً عند البيع."}
@@ -449,7 +449,7 @@ export default function ServiceForm() {
           {isStockedOutput && <Badge variant="secondary">مخزني: شراء أو إنتاج</Badge>}
           {showInPrintPos && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">نقطة الطباعة</Badge>}
           {consumesMaterials && anyMaterialPicked && (
-            <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700">
+            <Badge variant="secondary" className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">
               {toArabicDigits(lines.filter((l) => l.variantId !== "").length)} مادة
             </Badge>
           )}
