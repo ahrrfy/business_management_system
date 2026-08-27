@@ -13,6 +13,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { ArrowDown, ArrowUp, Image as ImageIcon, Star, Trash2 } from "lucide-react";
@@ -152,10 +153,16 @@ export function ProductImageGallery({ productId, onClose }: { productId: number;
                       variant="destructive"
                       className="min-h-10"
                       disabled={deleteImg.isPending}
-                      onClick={() => {
-                        const reason = window.prompt("سبب الحذف (اختياريّ)")?.trim() || undefined;
-                        if (!window.confirm("هل تريد حذف هذه الصورة نهائياً؟")) return;
-                        deleteImg.mutate({ imageId: img.id, reason });
+                      onClick={async () => {
+                        // مربّع تأكيد التطبيق (بدل window.confirm) — الحرّاس تفرضه.
+                        const ok = await confirm({
+                          variant: "danger",
+                          title: "حذف صورة نهائياً",
+                          description: "لن تظهر بعد الآن في المتجر أو الفواتير. أضِف بديلاً قبل حذف الصورة الرئيسيّة.",
+                          confirmText: "حذف",
+                        });
+                        if (!ok) return;
+                        deleteImg.mutate({ imageId: img.id });
                       }}
                     >
                       <Trash2 aria-hidden className="size-4" /> حذف
