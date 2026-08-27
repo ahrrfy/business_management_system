@@ -1237,6 +1237,22 @@ function classifyExpress(file, path, method) {
     };
   }
   if (f.endsWith("imageRoute.ts")) {
+    // صور تعريف المخزون ليست من سطح المتجر العام: الأولى تتطلب جلسة نظام، والثانية
+    // هوية عامل صالحة لنفس جلسة الجرد (كوكي PIN أو مستخدم مُكلّف) وتتحقق من نطاق المادة.
+    if (path.includes("inventory-product"))
+      return {
+        authority: "none",
+        roles: "session",
+        sensitivity: "MEDIUM",
+        note: "جلسة مستخدم — صورة كتالوج داخلية محمية",
+      };
+    if (path.includes("count-product"))
+      return {
+        authority: "token",
+        roles: "count-session|assigned-user",
+        sensitivity: "MEDIUM",
+        note: "هوية جرد + نطاق الجلسة — صورة مادة مكلّفة",
+      };
     // A5: /kiosk-product محروسٌ بجهاز الكشك ويكشف كتالوجاً مخفيّاً عن المتجر (showInStore) ⇒ حساسية أعلى.
     if (path.includes("kiosk"))
       return {

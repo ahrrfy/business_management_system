@@ -21,7 +21,13 @@
 import { Router } from "express";
 import { createHash } from "node:crypto";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
-import { productImages, products, storeBanners } from "../drizzle/schema";
+import {
+  productImages,
+  products,
+  productVariants,
+  stocktakeItems,
+  storeBanners,
+} from "../drizzle/schema";
 import { getSessionContext } from "./auth/session";
 import { getDb, isMultiTenantModeActive } from "./db";
 import {
@@ -41,6 +47,7 @@ import type { Request, Response } from "express";
 import type { Readable } from "node:stream";
 import { companyCodeTenancyMiddleware } from "./tenancy/expressMiddleware";
 import { getCurrentCompanyId } from "./tenancy/context";
+import { resolvePortalIdentity, type PortalIdentity } from "./services/countPortal/identity";
 
 /** سنة كاملة — آمنة لأن الرابط يحمل بصمة المحتوى (تغيّر المحتوى ⇒ تغيّر الرابط). */
 const ONE_YEAR = 60 * 60 * 24 * 365;
@@ -126,6 +133,49 @@ export function productImageUrl(imageId: number, dataUrl: string): string {
  */
 export function kioskProductImageUrl(imageId: number, dataUrl: string): string {
   return `/api/img/kiosk-product/${imageId}?v=${imageHash(dataUrl)}`;
+}
+
+export type ProtectedProductImageSource = {
+  url: string;
+  objectKey: string | null;
+  contentHash: string | null;
+};
+
+/** يبني رابطاً خاصاً خفيفاً لصورة منتج من دون شحن base64 داخل ردّ tRPC. */
+function protectedProductImageUrl(
+  pathname: string,
+  imageId: number,
+  source: ProtectedProductImageSource,
+): string | null {
+  const version = source.objectKey
+    ? source.contentHash && /^[0-9a-f]{64}$/i.test(source.contentHash)
+      ? shortHash(source.contentHash)
+      : null
+    : decodeDataUrl(source.url)
+      ? imageHash(source.url)
+      : null;
+  return version ? `/api/img/${pathname}/${imageId}?v=${version}` : null;
+}
+
+/** صورة شاشة المخزون/التسوية — تتطلب جلسة مستخدم نظام. */
+export function inventoryProductImageUrl(
+  imageId: number,
+  source: ProtectedProductImageSource,
+): string | null {
+  return protectedProductImageUrl("inventory-product", imageId, source);
+}
+
+/** صورة عامل الجرد — تتطلب هوية صالحة لنفس جلسة الجرد وتتحقق من وجود المادة في نطاقها. */
+export function countProductImageUrl(
+  sessionCode: string,
+  imageId: number,
+  source: ProtectedProductImageSource,
+): string | null {
+  return protectedProductImageUrl(
+    `count-product/${encodeURIComponent(sessionCode)}`,
+    imageId,
+    source,
+  );
 }
 
 /**
@@ -553,6 +603,117 @@ export function imageRouter(): Router {
   r.get("/company/:companyCode/product/:id", companyCodeTenancyMiddleware(), servePublicProduct);
   // توافق أحادي الشركة وروابط الإرث؛ في multi-tenant يفشل getDb مغلقاً بلا سياق ولا يتسرب مستأجر آخر.
   r.get("/product/:id", servePublicProduct);
+
+  /**
+   * صورة تعريف المادة في شاشة المخزون/التسوية. تختلف عن `/product` العلنية: المنتج قد يكون
+   * مخفياً من المتجر أو معطلاً لكنه يحمل رصيداً يحتاج تسوية، لذلك البوابة هنا جلسة نظام
+   * صالحة لا `showInStore`. الرد private لأن حق الرؤية مستمد من الكوكي.
+   */
+  r.get("/inventory-product/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
+    const db = getDb();
+    if (!db) return res.status(503).end();
+
+    try {
+      const { user } = await getSessionContext(req);
+      if (!user) return res.status(401).end();
+      const row = (
+        await db
+          .select({
+            url: productImages.url,
+            objectKey: productImages.objectKey,
+            contentHash: productImages.contentHash,
+            mime: productImages.mime,
+            bytes: productImages.bytes,
+            thumbDataUrl: productImages.thumbDataUrl,
+          })
+          .from(productImages)
+          .where(
+            and(
+              eq(productImages.id, id),
+              eq(productImages.reviewStatus, "APPROVED"),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (!row) return res.status(404).end();
+      if (row.objectKey) return await sendStoredProductImage(req, res, row, "private");
+      return sendImage(req, res, row.url, "private");
+    } catch (e) {
+      logger.error({ err: e, productImageId: id }, "img: inventory product image fetch failed");
+      return res.status(500).end();
+    }
+  });
+
+  /**
+   * صورة تعريف المادة لعامل الجرد الخارجي/الداخلي. `resolvePortalIdentity` يثبت الكوكي أو
+   * تكليف USER، والاستعلام الثاني يثبت أن الصورة تخص متغيّراً داخل **نفس** الجلسة؛ تخمين
+   * imageId من عامل PIN لا يكشف صور الكتالوج الخارجة عن نطاقه.
+   */
+  r.get("/count-product/:sessionCode/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
+    const db = getDb();
+    if (!db) return res.status(503).end();
+
+    try {
+      const { user } = await getSessionContext(req);
+      let identity: PortalIdentity;
+      try {
+        identity = await resolvePortalIdentity(
+          { req, user },
+          String(req.params.sessionCode ?? ""),
+        );
+      } catch {
+        return res.status(401).end();
+      }
+
+      const row = (
+        await db
+          .select({
+            url: productImages.url,
+            objectKey: productImages.objectKey,
+            contentHash: productImages.contentHash,
+            mime: productImages.mime,
+            bytes: productImages.bytes,
+            thumbDataUrl: productImages.thumbDataUrl,
+          })
+          .from(productImages)
+          .innerJoin(
+            productVariants,
+            eq(productVariants.productId, productImages.productId),
+          )
+          .innerJoin(
+            stocktakeItems,
+            and(
+              eq(stocktakeItems.variantId, productVariants.id),
+              eq(stocktakeItems.sessionId, identity.session.id),
+            ),
+          )
+          .where(
+            and(
+              eq(productImages.id, id),
+              eq(productImages.reviewStatus, "APPROVED"),
+              or(
+                isNull(productImages.variantId),
+                eq(productImages.variantId, stocktakeItems.variantId),
+              )!,
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (!row) return res.status(404).end();
+      if (row.objectKey) return await sendStoredProductImage(req, res, row, "private");
+      return sendImage(req, res, row.url, "private");
+    } catch (e) {
+      logger.error(
+        { err: e, productImageId: id, sessionCode: req.params.sessionCode },
+        "img: stocktake product image fetch failed",
+      );
+      return res.status(500).end();
+    }
+  });
 
   /**
    * صورة منتجٍ لكشك المعرض — **خلف مصادقة** (مستخدم نظام أو كوكي جهاز)، بخلاف النقطة العلنية.

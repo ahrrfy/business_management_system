@@ -21,6 +21,7 @@ import {
 } from "../../../shared/countPortalMerge";
 import { requireDb } from "../tx";
 import type { PortalIdentity } from "./identity";
+import { loadProductIdentificationImages } from "../catalog/productIdentification";
 
 /**
  * مفتاح توقيع وسم النسخة. `JWT_SECRET` في الإنتاج، ومفتاحٌ عشوائيّ لكل عملية عند غيابه
@@ -210,6 +211,7 @@ export async function getPortalCatalog(
     .select({
       id: stocktakeItems.id,
       variantId: stocktakeItems.variantId,
+      productId: products.id,
       productName: products.name,
       variantName: productVariants.variantName,
       sku: productVariants.sku,
@@ -229,20 +231,30 @@ export async function getPortalCatalog(
     .orderBy(asc(stocktakeItems.id));
 
   const variantIds = itemRows.map((r) => Number(r.variantId));
-  const unitRows = variantIds.length
-    ? await db
-        .select({
-          id: productUnits.id,
-          variantId: productUnits.variantId,
-          unitName: productUnits.unitName,
-          conversionFactor: productUnits.conversionFactor,
-          barcode: productUnits.barcode,
-          isActive: productUnits.isActive,
-        })
-        .from(productUnits)
-        .where(inArray(productUnits.variantId, variantIds))
-        .orderBy(asc(productUnits.id))
-    : [];
+  const [unitRows, imageUrls] = await Promise.all([
+    variantIds.length
+      ? db
+          .select({
+            id: productUnits.id,
+            variantId: productUnits.variantId,
+            unitName: productUnits.unitName,
+            conversionFactor: productUnits.conversionFactor,
+            barcode: productUnits.barcode,
+            isActive: productUnits.isActive,
+          })
+          .from(productUnits)
+          .where(inArray(productUnits.variantId, variantIds))
+          .orderBy(asc(productUnits.id))
+      : Promise.resolve([]),
+    loadProductIdentificationImages(
+      db,
+      itemRows.map((row) => ({
+        productId: Number(row.productId),
+        variantId: Number(row.variantId),
+      })),
+      { kind: "stocktake", sessionCode: session.code },
+    ),
+  ]);
   const activeUnits = unitRows.filter((u) => u.isActive !== false);
   // الباركودات البديلة للوحدات النشطة — العدّاد يمسح أيّ باركود ملصوق (أساسيّاً أو بديلاً).
   const activeUnitIds = activeUnits.map((u) => Number(u.id));
@@ -284,6 +296,7 @@ export async function getPortalCatalog(
     productName: it.productName,
     variantName: it.variantName,
     sku: it.sku,
+    imageUrl: imageUrls.get(Number(it.variantId)) ?? null,
     units: unitsByVariant.get(Number(it.variantId)) ?? [],
   }));
 

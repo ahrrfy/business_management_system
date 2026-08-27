@@ -34,6 +34,7 @@ import {
 import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
 import { signedMoveQty } from "../services/inventoryService";
 import { buildVariantCatalogSearchWhere } from "../services/catalog/search";
+import { loadProductIdentificationImages } from "../services/catalog/productIdentification";
 import {
   ADJUSTMENT_REASONS,
   requestStockAdjustment,
@@ -786,6 +787,7 @@ export const inventoryRouter = router({
       const rows = await db
         .select({
           variantId: productVariants.id,
+          productId: products.id,
           quantity: branchStock.quantity,
           sku: productVariants.sku,
           variantName: productVariants.variantName,
@@ -795,6 +797,20 @@ export const inventoryRouter = router({
           minStock: effectiveMinStockSql(),
           reorderPoint: effectiveReorderPointSql(),
           productName: products.name,
+          // باركود العرض في بطاقة التحقق: وحدة الأساس النشطة أولاً، ثم أصغر وحدة لها باركود.
+          // الباركود الذي مسحه العامل نفسه يأتي من الواجهة ويظلّ أولوية العرض فوق هذه القيمة.
+          primaryBarcode: sql<string | null>`(
+            SELECT inventory_identity_unit.barcode
+            FROM productUnits AS inventory_identity_unit
+            WHERE inventory_identity_unit.variantId = ${productVariants.id}
+              AND inventory_identity_unit.isActive = true
+              AND inventory_identity_unit.barcode IS NOT NULL
+              AND TRIM(inventory_identity_unit.barcode) <> ''
+            ORDER BY inventory_identity_unit.isBaseUnit DESC,
+                     inventory_identity_unit.conversionFactor ASC,
+                     inventory_identity_unit.id ASC
+            LIMIT 1
+          )`,
           // آخر جرد معتمد شمل الصنف — يبني الثقة بالأرقام ويغذّي الجرد الدوري ABC.
           lastCountedAt: branchStock.lastCountedAt,
           // شارةُ «مخصّص لهذا الفرع» في الشاشة — تُميّز العتبةَ الموروثة عن المخصَّصة.
@@ -820,6 +836,15 @@ export const inventoryRouter = router({
         .limit(input?.limit ?? 300)
         .offset(input?.offset ?? 0);
 
+      const imageUrls = await loadProductIdentificationImages(
+        db,
+        rows.map((row) => ({
+          productId: Number(row.productId),
+          variantId: Number(row.variantId),
+        })),
+        { kind: "inventory" },
+      );
+
       return rows.map((r) => {
         // hasStockRow = صفٌّ فعليّ في branchStock (LEFT JOIN التقط الرصيد). المتغيّرات
         // الكتالوجيّة الصفريّة (لا صفَّ) تخرج بـ`quantity = 0` لكنّ isLow=false — كي يتطابق
@@ -840,6 +865,8 @@ export const inventoryRouter = router({
           minStock,
           reorderPoint: r.reorderPoint == null ? null : Number(r.reorderPoint),
           productName: r.productName,
+          primaryBarcode: r.primaryBarcode ?? null,
+          imageUrl: imageUrls.get(Number(r.variantId)) ?? null,
           lastCountedAt: r.lastCountedAt ?? null,
           isLow: hasStockRow && (minStock ?? 0) > 0 && quantity <= (minStock ?? 0),
         };

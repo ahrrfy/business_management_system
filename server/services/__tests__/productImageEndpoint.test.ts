@@ -21,7 +21,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
+import { COOKIE_NAME } from "@shared/const";
 import * as s from "../../../drizzle/schema";
+import { signSession } from "../../auth/session";
 import { getDb } from "../../db";
 import { imageRouter } from "../../imageRoute";
 import {
@@ -35,6 +37,7 @@ import {
 } from "../../lib/imageStore";
 import { storefrontProduct } from "../storefrontService";
 import { approveStudioTask, assignStudioTask, submitStudioCandidate } from "../productStudioService";
+import { COUNT_COOKIE_NAME, signCountToken } from "../countPortal/token";
 import { truncateTables } from "./__testUtils__";
 
 function db() {
@@ -67,6 +70,7 @@ const THUMB_DATA_URL = `data:image/png;base64,${THUMB_BYTES.toString("base64")}`
 const WEBP_1X1 =
   "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
 let imageStoreDir = "";
+const previousJwtSecret = process.env.JWT_SECRET;
 
 /** يزرع منتجاً كامل السلسلة (منتج→متغيّر→وحدة→سعر) + صورةً رئيسية، ويعيد معرّف الصورة. */
 async function seedProduct(opts: {
@@ -110,11 +114,23 @@ async function seedProduct(opts: {
 }
 
 beforeEach(async () => {
+  process.env.JWT_SECRET = "product-image-endpoint-test-secret-at-least-32-characters";
   imageStoreDir = await mkdtemp(path.join(tmpdir(), "erp-product-image-route-"));
   process.env.IMAGE_STORE_DRIVER = "fs";
   process.env.IMAGE_STORE_DIR = imageStoreDir;
   __resetImageStoreForTest();
-  await truncateTables(["productImages", "productPrices", "productUnits", "productVariants", "products", "branches", "users"]);
+  await truncateTables([
+    "stocktakeItems",
+    "stocktakeAssignments",
+    "stocktakeSessions",
+    "productImages",
+    "productPrices",
+    "productUnits",
+    "productVariants",
+    "products",
+    "branches",
+    "users",
+  ]);
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
@@ -125,7 +141,81 @@ afterEach(async () => {
   __resetImageStoreForTest();
   delete process.env.IMAGE_STORE_DRIVER;
   delete process.env.IMAGE_STORE_DIR;
+  if (previousJwtSecret == null) delete process.env.JWT_SECRET;
+  else process.env.JWT_SECRET = previousJwtSecret;
   if (imageStoreDir) await rm(imageStoreDir, { recursive: true, force: true });
+});
+
+describe("GET /api/img/inventory-product/:id — صورة داخلية محمية", () => {
+  it("تخدم المادة المخفية لمستخدم النظام فقط ولا تخدم صورة غير معتمدة", async () => {
+    const hiddenImage = await seedProduct({ productId: 41, showInStore: false, isActive: false });
+    const pendingImage = await seedProduct({ productId: 42, reviewStatus: "PENDING_REVIEW" });
+    const userAgent = "inventory-image-route-test";
+    const sessionToken = await signSession(
+      1,
+      undefined,
+      { headers: { "user-agent": userAgent } },
+      Math.floor(Date.now() / 1000) + 1,
+    );
+
+    await withServer(async (base) => {
+      expect((await fetch(`${base}/api/img/inventory-product/${hiddenImage}`)).status).toBe(401);
+
+      const headers = {
+        Cookie: `${COOKIE_NAME}=${sessionToken}`,
+        "User-Agent": userAgent,
+      };
+      const allowed = await fetch(`${base}/api/img/inventory-product/${hiddenImage}`, { headers });
+      expect(allowed.status).toBe(200);
+      expect(allowed.headers.get("cache-control")).toContain("private");
+      expect(Buffer.from(await allowed.arrayBuffer())).toEqual(JPEG_BYTES);
+      expect((await fetch(`${base}/api/img/inventory-product/${pendingImage}`, { headers })).status).toBe(404);
+    });
+  });
+});
+
+describe("GET /api/img/count-product/:sessionCode/:id — صورة ضمن نطاق الجلسة", () => {
+  it("تقبل هوية PIN للجلسة نفسها وتمنع تخمين صورة منتج خارج نطاقها", async () => {
+    const inScopeImage = await seedProduct({ productId: 51, showInStore: false });
+    const outsideImage = await seedProduct({ productId: 52, showInStore: false });
+    await db().insert(s.stocktakeSessions).values({
+      id: 501,
+      code: "CNT-IMG-501",
+      name: "جرد الصور",
+      branchId: 1,
+      scopeType: "MANUAL",
+      status: "COUNTING",
+    });
+    await db().insert(s.stocktakeAssignments).values({
+      id: 502,
+      sessionId: 501,
+      name: "عامل الصور",
+      method: "PIN",
+      status: "ACTIVE",
+    });
+    await db().insert(s.stocktakeItems).values({
+      id: 503,
+      sessionId: 501,
+      assignmentId: 502,
+      variantId: 51,
+      branchId: 1,
+      expectedQty: 0,
+      unitCost: "0",
+    });
+    const countToken = await signCountToken(501, 502);
+
+    await withServer(async (base) => {
+      const path = `${base}/api/img/count-product/CNT-IMG-501`;
+      expect((await fetch(`${path}/${inScopeImage}`)).status).toBe(401);
+
+      const headers = { Cookie: `${COUNT_COOKIE_NAME}=${countToken}` };
+      const allowed = await fetch(`${path}/${inScopeImage}`, { headers });
+      expect(allowed.status).toBe(200);
+      expect(allowed.headers.get("cache-control")).toContain("private");
+      expect(Buffer.from(await allowed.arrayBuffer())).toEqual(JPEG_BYTES);
+      expect((await fetch(`${path}/${outsideImage}`, { headers })).status).toBe(404);
+    });
+  });
 });
 
 describe("GET /api/img/product/:id — البوّابة (علنية مجهولة الهوية)", () => {

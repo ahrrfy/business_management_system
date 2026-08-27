@@ -29,6 +29,10 @@ export function useUrlFilters<T extends Record<string, string>>(
   }, []);
 
   const [state, setState] = useState<T>(initial);
+  // مرجعٌ فوريّ يمنع وضع `history.replaceState` داخل دالة تحديث React. هذا مهم عند مسح
+  // الباركود: تحديث الرابط يوقظ مستمعي التنقّل فوراً، ولو حدث داخل updater ظهر تحذير
+  // «Cannot update PageTabs while rendering Inventory» وقد تتقطّع واجهة المسح.
+  const stateRef = useRef<T>(initial);
 
   const write = useCallback((next: T) => {
     if (typeof window === "undefined") return;
@@ -44,18 +48,21 @@ export function useUrlFilters<T extends Record<string, string>>(
 
   const setFilters = useCallback(
     (patch: Partial<T>) => {
-      setState((prev) => {
-        const next = { ...prev, ...patch };
-        write(next);
-        return next;
-      });
+      // المرجع يحفظ أيضاً سلامة تحديثين متزامنين في الحدث نفسه؛ كل تحديث يبني على أحدث
+      // قيمة فوراً، بينما تحديث React نفسه قد يبقى مجمّعاً حتى نهاية الحدث.
+      const next = { ...stateRef.current, ...patch };
+      stateRef.current = next;
+      setState(next);
+      write(next);
     },
     [write],
   );
 
   const reset = useCallback(() => {
-    setState(defaultsRef.current);
-    write(defaultsRef.current);
+    const next = defaultsRef.current;
+    stateRef.current = next;
+    setState(next);
+    write(next);
   }, [write]);
 
   return [state, setFilters, reset];

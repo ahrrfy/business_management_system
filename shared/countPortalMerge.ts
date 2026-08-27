@@ -25,6 +25,8 @@ export type PortalCatalogItem = {
   productName: string;
   variantName: string | null;
   sku: string;
+  /** رابط صورة خاص وخفيف؛ البايتات لا تدخل كتالوج الجرد الكبير. */
+  imageUrl: string | null;
   units: PortalUnit[];
 };
 

@@ -49,6 +49,7 @@ const TABLES = [
   "inventoryMovements",
   "branchStock",
   "productPrices",
+  "productImages",
   "productUnitBarcodes",
   "productUnits",
   "productVariants",
@@ -452,6 +453,7 @@ describe("الجرد الأعمى (state)", () => {
     expect(Object.keys(item1).sort()).toEqual([
       "colleagueCounted",
       "counted",
+      "imageUrl",
       "isMine",
       "myCount",
       "productName",
@@ -1211,6 +1213,26 @@ describe("نبضة النسخة (pulse)", () => {
     expect(pulse2.cv).toBe(cat2.cv);
     expect(pulse2.cv).toBe(pulse.cv);
     expect(pulse2.v).not.toBe(pulse.v);
+  });
+
+  it("كتالوج العامل يحمل رابط صورة محمياً وخفيفاً ولا يشحن base64 مع آلاف الأصناف", async () => {
+    await db().insert(s.productImages).values({
+      id: 701,
+      productId: 1,
+      variantId: 1,
+      url: "data:image/png;base64,iVBORw0KGgo=",
+      isPrimary: true,
+    });
+    const r = await mkPortalSession();
+    const idA = await loginPin(r.code, r.assignments[0].pin!);
+
+    const cat = await getPortalCatalog(idA);
+    const pen = cat.items.find((item) => item.variantId === 1)!;
+
+    expect(pen.imageUrl).toMatch(
+      new RegExp(`^/api/img/count-product/${r.code}/701\\?v=[0-9a-f]{16}$`),
+    );
+    expect(pen.imageUrl).not.toContain("base64");
   });
 
   it("التركيب المشترك يعيد إنتاج getPortalState حرفياً (لا انحراف بين الخادم والعميل)", async () => {
