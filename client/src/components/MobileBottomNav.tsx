@@ -19,7 +19,7 @@ import {
 import type { PermissionMap } from "@shared/permissions";
 import { INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
 
-interface BottomNavItem {
+export interface BottomNavItem {
   href?: string;
   label: string;
   icon: LucideIcon;
@@ -35,6 +35,149 @@ interface MobileBottomNavProps {
   onOpenMenu: () => void;
 }
 
+const TASKS_GATE = {
+  roles: [
+    "admin",
+    "manager",
+    "accountant",
+    "cashier",
+    "warehouse",
+    "print_operator",
+    "sales_rep",
+    "auditor",
+    "user",
+  ],
+  module: "tasks",
+  level: "READ",
+} satisfies RoleGate;
+
+const DELIVERY_GATE = {
+  roles: ["admin", "manager", "accountant", "cashier", "auditor"],
+} satisfies RoleGate;
+
+const MENU_ITEM: BottomNavItem = {
+  label: "المزيد",
+  icon: Menu,
+  isAction: true,
+  actionType: "menu",
+};
+
+function visibleItems(
+  candidates: BottomNavItem[],
+  role: string | null | undefined,
+  permsOverride?: PermissionMap | null,
+) {
+  return candidates.filter((item) =>
+    canSeeGate(item.gate, role, permsOverride),
+  );
+}
+
+/**
+ * يبني اختصارات الهاتف من الصلاحيات المحلولة نفسها التي تحكم بقية التنقّل.
+ * الروابط العامة/الذاتية وحدها بلا بوابة وحدة؛ أما كل رابط وحدة فيُصفّى قبل حدّ
+ * العناصر الأربعة كي لا يزيح رابطٌ محجوب اختصاراً صالحاً.
+ */
+export function getMobileBottomNavItems(
+  role: string | null | undefined,
+  permsOverride?: PermissionMap | null,
+): BottomNavItem[] {
+  if (role === "courier") {
+    const candidates: BottomNavItem[] = [
+      {
+        href: "/my-deliveries",
+        label: "توصيلاتي",
+        icon: PackageCheck,
+        gate: { roles: ["courier"], module: "courier", level: "READ" },
+      },
+      { href: "/tasks", label: "المهام", icon: ListChecks, gate: TASKS_GATE },
+    ];
+    return [
+      ...visibleItems(candidates, role, permsOverride),
+      { ...MENU_ITEM, label: "القائمة" },
+    ];
+  }
+
+  if (role === "cashier") {
+    const candidates: BottomNavItem[] = [
+      {
+        href: "/pos",
+        label: "نقطة البيع",
+        icon: ShoppingCart,
+        gate: { module: "pos", level: "FULL" },
+      },
+      {
+        href: "/invoices",
+        label: "فواتيري",
+        icon: Receipt,
+        gate: INVOICE_LIST_GATE,
+      },
+      {
+        href: "/work-orders",
+        label: "المطبعة",
+        icon: Printer,
+        gate: { module: "workorders" },
+      },
+      { href: "/delivery", label: "التوصيل", icon: Truck, gate: DELIVERY_GATE },
+      { href: "/price-checker", label: "الماسح", icon: ScanLine },
+      { href: "/tasks", label: "المهام", icon: ListChecks, gate: TASKS_GATE },
+    ];
+    return [
+      ...visibleItems(candidates, role, permsOverride).slice(0, 4),
+      MENU_ITEM,
+    ];
+  }
+
+  if (role === "warehouse") {
+    const candidates: BottomNavItem[] = [
+      // مدخل ذاتي محميّ بالتكليف للمستخدم، لا بوحدة المخزون (count.mine = stocktakeAssignmentProcedure).
+      { href: "/my-stocktake", label: "جردي", icon: ClipboardCheck },
+      {
+        href: "/inventory",
+        label: "المخزون",
+        icon: Boxes,
+        gate: { module: "inventory" },
+      },
+      {
+        href: "/purchases",
+        label: "المشتريات",
+        icon: Package,
+        gate: { module: "purchases" },
+      },
+      { href: "/tasks", label: "المهام", icon: ListChecks, gate: TASKS_GATE },
+    ];
+    return [
+      ...visibleItems(candidates, role, permsOverride).slice(0, 4),
+      MENU_ITEM,
+    ];
+  }
+
+  const candidates: BottomNavItem[] = [
+    { href: "/", label: "الرئيسية", icon: Home },
+    {
+      href: "/invoices",
+      label: "المبيعات",
+      icon: Receipt,
+      gate: INVOICE_LIST_GATE,
+    },
+    {
+      href: "/treasury",
+      label: "الخزينة",
+      icon: Wallet,
+      gate: {
+        roles: ["manager", "accountant", "cashier", "auditor"],
+        module: "treasury",
+      },
+    },
+    {
+      href: "/work-orders",
+      label: "المطبعة",
+      icon: Printer,
+      gate: { module: "workorders" },
+    },
+  ];
+  return [...visibleItems(candidates, role, permsOverride), MENU_ITEM];
+}
+
 function triggerHaptic() {
   try {
     if (typeof window !== "undefined" && "vibrate" in navigator) {
@@ -47,54 +190,7 @@ function triggerHaptic() {
 
 export function MobileBottomNav({ role, permsOverride, onOpenMenu }: MobileBottomNavProps) {
   const [loc] = useLocation();
-
-  const isCourier = role === "courier";
-  const isCashier = role === "cashier";
-  const isWarehouse = role === "warehouse";
-
-  let items: BottomNavItem[] = [];
-
-  if (isCourier) {
-    items = [
-      { href: "/my-deliveries", label: "توصيلاتي", icon: PackageCheck },
-      { href: "/tasks", label: "المهام", icon: ListChecks },
-      { label: "القائمة", icon: Menu, isAction: true, actionType: "menu" },
-    ];
-  } else if (isCashier) {
-    // ١٩/٨ — `permsOverride` كان يُستقبَل ويُهمَل، فكان شريط الهاتف واحداً لكل أدوار الكاشير
-    // مهما اختلفت صلاحياتها. الآن يُرشَّح بنفس بوّابات الشريط الجانبي: موظّف الاستقبال يرى
-    // «فواتيري» و«المطبعة»، وكاشير التجزئة يرى فواتيره بلا المطبعة — كلٌّ حسب نطاقه الفعليّ.
-    // أربعةٌ بالأولوية ثمّ «المزيد» (مساحة الهاتف)، والباقي يبقى في القائمة الكاملة.
-    const candidates: BottomNavItem[] = [
-      { href: "/pos", label: "نقطة البيع", icon: ShoppingCart },
-      { href: "/invoices", label: "فواتيري", icon: Receipt, gate: INVOICE_LIST_GATE },
-      { href: "/work-orders", label: "المطبعة", icon: Printer, gate: { module: "workorders" } },
-      { href: "/delivery", label: "التوصيل", icon: Truck },
-      { href: "/price-checker", label: "الماسح", icon: ScanLine },
-      { href: "/tasks", label: "المهام", icon: ListChecks },
-    ];
-    items = [
-      ...candidates.filter((it) => canSeeGate(it.gate, role, permsOverride)).slice(0, 4),
-      { label: "المزيد", icon: Menu, isAction: true, actionType: "menu" },
-    ];
-  } else if (isWarehouse) {
-    items = [
-      { href: "/my-stocktake", label: "جردي", icon: ClipboardCheck },
-      { href: "/inventory", label: "المخزون", icon: Boxes },
-      { href: "/purchases", label: "المشتريات", icon: Package },
-      { href: "/tasks", label: "المهام", icon: ListChecks },
-      { label: "المزيد", icon: Menu, isAction: true, actionType: "menu" },
-    ];
-  } else {
-    // الأدوار الإدارية والمحاسبية والعامة
-    items = [
-      { href: "/", label: "الرئيسية", icon: Home },
-      { href: "/invoices", label: "المبيعات", icon: Receipt },
-      { href: "/treasury", label: "الخزينة", icon: Wallet },
-      { href: "/work-orders", label: "المطبعة", icon: Printer },
-      { label: "المزيد", icon: Menu, isAction: true, actionType: "menu" },
-    ];
-  }
+  const items = getMobileBottomNavItems(role, permsOverride);
 
   // لا تعرض الشريط السفلي داخل شاشة نقطة البيع أو قارئ الأسعار كاملة الشاشة
   if (loc === "/price-checker" || loc === "/pos") {
