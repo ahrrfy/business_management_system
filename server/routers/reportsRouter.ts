@@ -22,6 +22,7 @@ import {
   getFinancialReconciliationDetails,
   toFinancialReconciliationSummary,
 } from "../services/reports/reconcileSummary";
+import { getCustomerJournalBreakdown } from "../services/reports/customerJournalBreakdown";
 import {
   getCashFlow,
   getFinancialPosition,
@@ -289,6 +290,29 @@ export const reportsRouter = router({
       // غير متّزن بنيوياً (الدفعات/المُرحَّل عالميّة) — قرار العزل عبر الفروع بيد المالك.
       const branchId = scopedBranchId(ctx);
       return getCustomerStatement(input.customerId, {
+        from: input.from,
+        to: input.to,
+        branchId,
+      });
+    }),
+
+  /**
+   * Tier-3 #6 (٢٧/٨): تفصيل حساب العميل بالحسابات المحاسبيّة من الدفتر المزدوج.
+   * يستهلك أبعاد Tier-3 #2 (`journalLines.customerId + accountId`). في وضع OFF
+   * الافتراضيّ يعود فارغاً — لا كذبٌ. نفس عزل الفرع كـcustomerStatement.
+   */
+  customerJournalBreakdown: reportsBranchScoped
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        from: ymdStr.optional(),
+        to: ymdStr.optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx);
+      return getCustomerJournalBreakdown({
+        customerId: input.customerId,
         from: input.from,
         to: input.to,
         branchId,

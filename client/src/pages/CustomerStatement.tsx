@@ -7,6 +7,7 @@ import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { fmtDate, fmtDateTime } from "@/lib/date";
@@ -98,6 +99,15 @@ export default function CustomerStatement() {
 
   const index = trpc.reports.customersIndex.useQuery();
   const stmt = trpc.reports.customerStatement.useQuery(
+    { customerId: customerId || 0, from: from || undefined, to: to || undefined },
+    { enabled: !!customerId }
+  );
+  /**
+   * Tier-3 #6 (٢٧/٨): تفصيلٌ محاسبيٌّ إضافيّ من `journalLines` (يحتاج SHADOW/ACTIVE
+   * ليعود بصفوف). في وضع OFF الافتراضيّ الاستعلامُ يُرجع صفوفاً صفراً — الشاشة لا تعرض
+   * القسم أصلاً، فلا رأسٌ فارغٌ يُشوّش المستخدم.
+   */
+  const journal = trpc.reports.customerJournalBreakdown.useQuery(
     { customerId: customerId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!customerId }
   );
@@ -505,6 +515,54 @@ export default function CustomerStatement() {
               </ScrollTableShell>
             </CardContent>
           </Card>
+
+          {/*
+            Tier-3 #6 (٢٧/٨): تفصيلٌ محاسبيٌّ للحركات من journalLines — حسابٌ بحساب،
+            بمدين وائتمان وصافٍ. يظهر فقط في وضع SHADOW/ACTIVE (وضع OFF ⇒ الجدول فارغ
+            ⇒ القسم يبقى مطويّاً). يستهلك أبعاد Tier-3 #2 (customerId + accountId).
+          */}
+          {(journal.data?.rows.length ?? 0) > 0 && (
+            <Card>
+              <CardContent className="p-0">
+                <div className="p-3 border-b bg-muted/30 text-sm font-medium">
+                  التفصيل المحاسبيّ (الدفتر المزدوج) — {journal.data?.rows.length} حسابٌ
+                </div>
+                <ScrollTableShell bordered={false}>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-start">الكود</TableHead>
+                        <TableHead className="text-start">الحساب</TableHead>
+                        <TableHead className="text-start">النوع</TableHead>
+                        <TableHead className="text-right">مدين</TableHead>
+                        <TableHead className="text-right">دائن</TableHead>
+                        <TableHead className="text-right">الصافي</TableHead>
+                        <TableHead className="text-center">أسطر</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {journal.data?.rows.map((r) => (
+                        <TableRow key={r.accountId}>
+                          <TableCell className="font-mono text-xs" dir="ltr">{r.code}</TableCell>
+                          <TableCell>{r.name}</TableCell>
+                          <TableCell className="text-xs">{r.type}</TableCell>
+                          <TableCell className="text-right tabular-nums" dir="ltr">{fmt(r.debitTotal)}</TableCell>
+                          <TableCell className="text-right tabular-nums" dir="ltr">{fmt(r.creditTotal)}</TableCell>
+                          <TableCell className="text-right tabular-nums font-semibold" dir="ltr">{fmt(r.net)}</TableCell>
+                          <TableCell className="text-center tabular-nums">{r.lineCount}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </ScrollTableShell>
+                <div className="p-3 border-t bg-muted/30 text-xs text-muted-foreground flex justify-between">
+                  <span>مجموع المدين: <b dir="ltr">{fmt(journal.data?.totalDebit ?? "0")}</b></span>
+                  <span>مجموع الدائن: <b dir="ltr">{fmt(journal.data?.totalCredit ?? "0")}</b></span>
+                  <span>الصافي: <b dir="ltr">{fmt(journal.data?.totalNet ?? "0")}</b></span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </>
       )}
     </div>
