@@ -244,7 +244,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                     <div className="truncate text-sm font-semibold">
                       {p.name}
                       {p.isService && (
-                        <span className="me-2 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">خدمة</span>
+                        <span className="me-2 rounded-full bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]">خدمة</span>
                       )}
                     </div>
                     <div className="mt-0.5 flex gap-2 text-[11px] text-muted-foreground">
@@ -259,8 +259,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                       ) : (
                         <>
                           <span>فعلي: {fmtNum(p.stockBase)}</span>
-                          {p.reservedBase > 0 && <span className="text-amber-600">محجوز: {fmtNum(p.reservedBase)}</span>}
-                          <span className={p.availableBase < 5 ? "text-rose-600" : ""}>متاح للبيع: {fmtNum(p.availableBase)}</span>
+                          {p.reservedBase > 0 && <span className="text-[var(--sem-warn)]">محجوز: {fmtNum(p.reservedBase)}</span>}
+                          <span className={p.availableBase < 5 ? "text-[var(--sem-neg)]" : ""}>متاح للبيع: {fmtNum(p.availableBase)}</span>
                         </>
                       )}
                     </div>

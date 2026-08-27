@@ -103,8 +103,8 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
       </CardHeader>
       <CardContent className="space-y-3">
         {editing && affected > 0 && (
-          <div className="rounded-md border border-amber-500/40 bg-amber-50 dark:bg-amber-950/40 p-3 text-sm flex items-start gap-2">
-            <AlertTriangle aria-hidden className="size-4 mt-0.5 shrink-0 text-amber-600" />
+          <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm flex items-start gap-2">
+            <AlertTriangle aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-warn)]" />
             <div>
               <strong>تنبيه:</strong> يوجد <Badge variant="secondary">{affected}</Badge> بند فاتورة قابل للإرجاع يستعمل هذا البكج.
               الفواتير التي بيعت قبل ٧/٧/٢٦ (بلا لقطة) لن تُرجَع آلياً بعد التعديل — أرجع مكوّناتها فرادى.
@@ -185,7 +185,7 @@ export default function BundleRecipeCard({ bundleVariantId }: { bundleVariantId:
           </div>
         )}
         {error && (
-          <div className="rounded-md border border-red-500/40 bg-red-50 dark:bg-red-950/40 p-2 text-sm">
+          <div className="rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-2 text-sm">
             {error}
           </div>
         )}

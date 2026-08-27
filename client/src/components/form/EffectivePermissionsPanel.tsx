@@ -13,11 +13,11 @@ import { EffectiveAccessPreview } from "./EffectiveAccessPreview";
 const SOURCE_LABEL: Record<string, { label: string; cls: string }> = {
   template: { label: "قالب الفئة", cls: "bg-muted text-muted-foreground" },
   customRole: { label: "دور مخصّص", cls: "bg-indigo-100 text-indigo-700" },
-  individual: { label: "تخصيص فرديّ", cls: "bg-amber-100 text-amber-700" },
-  admin: { label: "مدير النظام", cls: "bg-red-100 text-red-700" },
+  individual: { label: "تخصيص فرديّ", cls: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" },
+  admin: { label: "مدير النظام", cls: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]" },
 };
 const LEVEL_CLS: Record<string, string> = {
-  FULL: "text-emerald-700 font-semibold",
+  FULL: "text-[var(--sem-pos)] font-semibold",
   READ: "text-[var(--sem-info)]",
   NONE: "text-muted-foreground",
 };

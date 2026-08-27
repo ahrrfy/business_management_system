@@ -22,8 +22,8 @@ interface BranchBalanceCardProps {
 }
 
 const SEVERITY_CLS = {
-  warning: "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-900",
-  danger: "bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-950/30 dark:text-rose-300 dark:border-rose-900",
+  warning: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] border-[var(--sem-warn)]/30",
+  danger: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] border-[var(--sem-neg)]/30",
   info: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]",
 };
 
@@ -54,7 +54,7 @@ export function BranchBalanceCard({
         {/* DRAWER */}
         <div className="rounded-lg border bg-muted/30 p-3">
           <div className="flex items-center gap-1.5 mb-1.5">
-            <Wallet className="h-3.5 w-3.5 text-emerald-600" />
+            <Wallet className="h-3.5 w-3.5 text-[var(--sem-pos)]" />
             <span className="text-xs text-muted-foreground">نقد الدرج</span>
           </div>
           <div className="text-xl font-bold tabular-nums mb-1" dir="ltr">
