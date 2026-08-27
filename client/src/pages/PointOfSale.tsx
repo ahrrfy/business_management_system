@@ -54,7 +54,7 @@ const MODES: {
     label: "تجزئة",
     subtitle: "كاشير القرطاسية والمبيعات",
     Icon: ShoppingCart,
-    activeCls: "border-emerald-500 bg-emerald-50 text-emerald-700",
+    activeCls: "border-[var(--sem-pos)] bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
   },
   {
     v: "PRINT_SERVICES",

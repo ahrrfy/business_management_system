@@ -436,7 +436,7 @@ export default function UserEdit() {
                   onChange={(e) => setIsOwner(e.target.checked)}
                   disabled={userId === (me.data?.id as number | undefined) && isOwner}
                 />
-                <span>مالك النظام <span className="text-[11px] text-amber-800 bg-amber-100 rounded px-1.5 py-0.5 mr-1">صلاحيات خاصة</span></span>
+                <span>مالك النظام <span className="text-[11px] text-[var(--sem-warn)] bg-[var(--sem-warn-bg)] rounded px-1.5 py-0.5 mr-1">صلاحيات خاصة</span></span>
               </Label>
               <p className="text-[11px] text-muted-foreground">
                 يتجاوز كل اعتماد ثنائي على السندات (Maker-Checker + العتبات). لا يمكنك سحب الصفة عن نفسك.

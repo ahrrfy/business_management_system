@@ -608,7 +608,7 @@ export default function PurchaseNew() {
                 </div>
               )}
               {landed.hasLanded && !landed.hasBase && (
-                <p className="text-[11px] font-semibold text-amber-600">
+                <p className="text-[11px] font-semibold text-[var(--sem-warn)]">
                   أضِف منتجات بقيمة موجبة لتوزيع الشحن/الكمرك عليها.
                 </p>
               )}

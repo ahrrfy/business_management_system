@@ -162,7 +162,7 @@ export default function TreasuryTransfers() {
         accessorKey: "fromBranchName",
         cell: ({ row }) => (
           <span className="text-xs">
-            <ArrowUpRight className="inline h-3 w-3 ml-1 text-rose-600" />
+            <ArrowUpRight className="inline h-3 w-3 ml-1 text-[var(--sem-neg)]" />
             {row.original.fromBranchName}
           </span>
         ),

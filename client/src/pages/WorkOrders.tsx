@@ -444,7 +444,7 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
         <div className="grid gap-3 py-1">
           <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
             <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmtAr(order.salePrice)} د.ع</span></div>
-            {hasDep && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmtAr(order.deposit)} د.ع</span></div>}
+            {hasDep && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmtAr(order.deposit)} د.ع</span></div>}
             <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmtAr(due.toFixed(2))} د.ع</span></div>
           </div>
           <div className="space-y-1">

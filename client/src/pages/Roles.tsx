@@ -190,7 +190,7 @@ export default function Roles() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {builtin.map((r) => (
               <div key={r.key} className="rounded-md border p-3">
-                <div className="font-medium text-sm">{r.label}{r.canSeeCost ? <span className="text-[10px] text-emerald-600 mr-1">· يرى التكلفة</span> : null}</div>
+                <div className="font-medium text-sm">{r.label}{r.canSeeCost ? <span className="text-[10px] text-[var(--sem-pos)] mr-1">· يرى التكلفة</span> : null}</div>
                 <div className="text-[11px] text-muted-foreground mt-0.5">{r.description}</div>
               </div>
             ))}

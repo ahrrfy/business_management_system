@@ -902,7 +902,7 @@ export default function SalesInvoiceNew() {
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
 
       {openingModeQuery.data?.active === true && (
-        <div className="flex items-center gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+        <div className="flex items-center gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-semibold text-[var(--sem-warn)]">
           <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
           <span>
             وضع الافتتاح فعّال حتى نهاية يوم {openingModeQuery.data.endsAtYmd} — منتجٌ غير مجرود افتتاحياً يُسجَّل ولو نفد

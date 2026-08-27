@@ -559,7 +559,7 @@ export default function WorkOrderDetail() {
           <CardContent className="space-y-4">
             <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1">
               <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(data.salePrice)} د.ع</span></div>
-              {D(data.deposit ?? 0).gt(0) && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(data.deposit)} د.ع</span></div>}
+              {D(data.deposit ?? 0).gt(0) && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmt(data.deposit)} د.ع</span></div>}
               <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmt(remainingDue.toFixed(2))} د.ع</span></div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">

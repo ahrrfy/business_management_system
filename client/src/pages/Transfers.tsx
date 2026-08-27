@@ -190,7 +190,7 @@ export default function Transfers() {
         >
           <Inbox aria-hidden className="size-4" /> سجلّ التحويلات
           {(pending.data ?? 0) > 0 && (
-            <span className="rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5 tabular-nums">
+            <span className="rounded-full bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] text-xs px-2 py-0.5 tabular-nums">
               {fmtInt(pending.data ?? 0)} بانتظار الاستلام
             </span>
           )}
