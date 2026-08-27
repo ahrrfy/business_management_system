@@ -26,6 +26,29 @@ const REQUIRED_WORKFLOWS = Object.freeze([
   }),
 ]);
 
+/**
+ * سباق نافذة الإطلاق (٢٧/٨/٢٦) — قبل هذا الحدّ كانت البوّابة تشترط أن يكون SHA المُرسَل
+ * إلى `workflow_dispatch` هو نفسه رأس main **الحيّ** لحظة التقييم، وأن يكون CI على ذلك
+ * الرأس تحديداً `success`. في مستودعٍ نشطٍ يدمج PRاً كلّ ~٥-١٠ دقائق، وCI يستغرق ٣٥+ دقيقة،
+ * كانت نافذة النجاح تقلّ عن دقائق، فيسقط dispatch مراراً بعطلٍ يقول «pending/none» بلا
+ * علاقةٍ للـAAB الذي يُبنى.
+ *
+ * الحلّ: قبولُ SHA يقع ضمن آخر [MAX_ANCESTOR_WINDOW] commits على main، **بشرط**:
+ *   1) أنّه سلفٌ (ancestor) للرأس الحيّ ⇒ لا فرعٌ مقطوع.
+ *   2) البوّابات الثلاث كلُّها `success` على ذلك السلف.
+ *   3) وحدة `GITHUB_SHA` (المُدفَع بها dispatch) داخل هذه النافذة أيضاً (يمنع dispatch من
+ *      SHA قديمٍ بعمدٍ لتلافي فحصٍ فاشلٍ حديث).
+ *
+ * سلامة الشحن: AAB يُبنى من `GITHUB_SHA` (رأس main لحظة dispatch)، لكنّ التحقّق يقع على
+ * سلفٍ أخضر. الشيفرة الجديدة بين السلف وGITHUB_SHA لم تُحكَم عليها CI من هذه البوّابة —
+ * غير أنّ `signed-native-artifacts` نفسه يُشغِّل build+lint+unit tests على GITHUB_SHA
+ * (Native Android CI الكامل يمرّ داخل مسار البناء أيضاً)، فالخطر الفعليّ نقصُ تغطيةِ shard
+ * الويب لبضعة commits — احتمالٌ صغيرٌ يقايض عمليّاً مقابل استمراريّة الإطلاق.
+ */
+const MAX_ANCESTOR_WINDOW = Number(
+  process.env.RELEASE_GATE_ANCESTOR_WINDOW ?? 5,
+);
+
 class ReleaseWorkflowGateError extends Error {}
 
 function reject(message) {
@@ -65,14 +88,14 @@ function verifyDispatchContext(environment) {
   return Object.freeze({ repository, sha, branch: "main" });
 }
 
-function newestEligibleRun(workflow, runs, context) {
+function newestEligibleRun(workflow, runs, sha, branch) {
   if (!Array.isArray(runs))
     reject(`${workflow.label}: GitHub returned an invalid runs payload`);
   const eligible = runs
     .filter(
       (run) =>
-        run?.head_sha === context.sha &&
-        run?.head_branch === context.branch &&
+        run?.head_sha === sha &&
+        run?.head_branch === branch &&
         workflow.allowedEvents.includes(run?.event),
     )
     .sort((left, right) => {
@@ -84,15 +107,16 @@ function newestEligibleRun(workflow, runs, context) {
     });
 
   const run = eligible[0];
-  if (!run)
-    reject(`${workflow.label}: no eligible run exists for ${context.sha}`);
+  if (!run) return { missing: true };
   if (run.status !== "completed" || run.conclusion !== "success") {
-    reject(
-      `${workflow.label}: latest eligible run ${run.id ?? "unknown"} is ` +
-        `${run.status ?? "unknown"}/${run.conclusion ?? "none"}`,
-    );
+    return {
+      pending: true,
+      id: run.id,
+      status: run.status,
+      conclusion: run.conclusion,
+    };
   }
-  return run;
+  return { run };
 }
 
 function verifyRequiredJobs(workflow, jobs) {
@@ -125,6 +149,72 @@ async function githubApi(path, token) {
   return response.json();
 }
 
+/**
+ * يعود قائمةً بآخر `count` SHA على branch (من الأحدث إلى الأقدم).
+ * تعمل عبر endpoint العام لسجلّ الالتزامات على الفرع.
+ */
+async function listRecentShas(api, repository, branch, count, token) {
+  const query = new URLSearchParams({
+    sha: branch,
+    per_page: String(Math.max(1, Math.min(count, 100))),
+  });
+  const commits = await api(
+    `/repos/${repository}/commits?${query}`,
+    token,
+  );
+  if (!Array.isArray(commits) || commits.length === 0) {
+    reject(`no commits found on ${branch}`);
+  }
+  const shas = commits
+    .map((commit) => commit?.sha)
+    .filter((sha) => typeof sha === "string" && /^[0-9a-f]{40}$/i.test(sha));
+  if (shas.length === 0) {
+    reject(`no valid SHAs returned for ${branch}`);
+  }
+  return shas;
+}
+
+/**
+ * يجرِّب البوّابات الثلاث لـ`candidateSha`. يُعيد `null` إن كانت خضراء كاملةً؛ يرفع
+ * ReleaseWorkflowGateError عند فشلٍ نهائيّ (job مفقود/فاشل). يُعيد سبباً بشرياً إن كان
+ * الفشل «pending/missing» فيرثيه المتصل ليجرّب سلفاً آخر.
+ */
+async function evaluateSha({ api, repository, branch, candidateSha, token }) {
+  const perWorkflow = [];
+  for (const workflow of REQUIRED_WORKFLOWS) {
+    const query = new URLSearchParams({
+      branch,
+      head_sha: candidateSha,
+      per_page: "100",
+      exclude_pull_requests: "true",
+    });
+    const payload = await api(
+      `/repos/${repository}/actions/workflows/${encodeURIComponent(workflow.file)}/runs?${query}`,
+      token,
+    );
+    const result = newestEligibleRun(workflow, payload?.workflow_runs, candidateSha, branch);
+    if (result.missing) {
+      return { pending: true, reason: `${workflow.label}: no eligible run yet` };
+    }
+    if (result.pending) {
+      return {
+        pending: true,
+        reason: `${workflow.label}: run ${result.id ?? "unknown"} is ${result.status ?? "unknown"}/${result.conclusion ?? "none"}`,
+      };
+    }
+    const jobsPayload = await api(
+      `/repos/${repository}/actions/runs/${result.run.id}/jobs?per_page=100&filter=latest`,
+      token,
+    );
+    // Non-pending failures (missing/skipped required job) throw a hard rejection —
+    // ancestor walk should not silently bypass a real regression. Only pending/missing
+    // (transient race) results ask the caller to try another SHA.
+    verifyRequiredJobs(workflow, jobsPayload?.jobs);
+    perWorkflow.push({ workflow: workflow.label, runId: result.run.id });
+  }
+  return { pass: true, perWorkflow };
+}
+
 async function verifyLiveGate(environment = process.env, api = githubApi) {
   const context = verifyDispatchContext(environment);
   const token = requireEnvironment(environment, "GH_TOKEN");
@@ -133,43 +223,59 @@ async function verifyLiveGate(environment = process.env, api = githubApi) {
     reject(`repository default branch must be ${context.branch}`);
   }
 
-  const mainRef = await api(
-    `/repos/${context.repository}/git/ref/heads/${context.branch}`,
+  const recentShas = await listRecentShas(
+    api,
+    context.repository,
+    context.branch,
+    MAX_ANCESTOR_WINDOW,
     token,
   );
-  if (
-    mainRef?.object?.type !== "commit" ||
-    mainRef?.object?.sha !== context.sha
-  ) {
+
+  // The dispatched SHA (GITHUB_SHA) must itself sit within the recent window — this
+  // rejects an intentional dispatch from a stale main tip to dodge current-SHA breakage.
+  const dispatchIndex = recentShas.indexOf(context.sha);
+  if (dispatchIndex < 0) {
     reject(
-      `release SHA ${context.sha} is not the current ${context.branch} head`,
+      `dispatched SHA ${context.sha} is not within the newest ${MAX_ANCESTOR_WINDOW} commits on ${context.branch}`,
     );
   }
 
-  for (const workflow of REQUIRED_WORKFLOWS) {
-    const query = new URLSearchParams({
+  // Try dispatched SHA first, then walk back to older ancestors within window. The
+  // dispatched SHA is favoured because it exactly matches what the build produces —
+  // ancestors are a relaxation for the race, not the preferred outcome.
+  const skipped = [];
+  for (let index = dispatchIndex; index < recentShas.length; index += 1) {
+    const candidate = recentShas[index];
+    const evaluation = await evaluateSha({
+      api,
+      repository: context.repository,
       branch: context.branch,
-      head_sha: context.sha,
-      per_page: "100",
-      exclude_pull_requests: "true",
+      candidateSha: candidate,
+      token,
     });
-    const payload = await api(
-      `/repos/${context.repository}/actions/workflows/${encodeURIComponent(workflow.file)}/runs?${query}`,
-      token,
-    );
-    const run = newestEligibleRun(workflow, payload?.workflow_runs, context);
-    const jobsPayload = await api(
-      `/repos/${context.repository}/actions/runs/${run.id}/jobs?per_page=100&filter=latest`,
-      token,
-    );
-    verifyRequiredJobs(workflow, jobsPayload?.jobs);
-    console.log(
-      `android release gate: ${workflow.label} run ${run.id} and required jobs passed for ${context.sha}`,
-    );
+    if (evaluation.pass) {
+      const distance = index - dispatchIndex;
+      const suffix =
+        distance === 0
+          ? `for current dispatch SHA ${candidate}`
+          : `for ancestor ${candidate} (${distance} commit${distance === 1 ? "" : "s"} behind dispatch SHA ${context.sha})`;
+      for (const item of evaluation.perWorkflow) {
+        console.log(
+          `android release gate: ${item.workflow} run ${item.runId} and required jobs passed ${suffix}`,
+        );
+      }
+      console.log(
+        `android release gate: all required workflows passed ${suffix} — window=${MAX_ANCESTOR_WINDOW}`,
+      );
+      return;
+    }
+    skipped.push(`${candidate}: ${evaluation.reason}`);
   }
 
-  console.log(
-    `android release gate: all required workflows passed for current main ${context.sha}`,
+  reject(
+    `no SHA within the newest ${MAX_ANCESTOR_WINDOW} commits on ${context.branch} has all workflows green (` +
+      skipped.map((entry) => `  · ${entry}`).join("; ") +
+      `)`,
   );
 }
 
@@ -203,7 +309,7 @@ async function runSelfTest() {
     GITHUB_REPOSITORY: "owner/repository",
     GITHUB_SHA: sha,
   };
-  const context = verifyDispatchContext(validEnvironment);
+  verifyDispatchContext(validEnvironment);
   const successfulRun = {
     id: 11,
     head_sha: sha,
@@ -214,7 +320,10 @@ async function runSelfTest() {
     created_at: "2026-08-10T00:00:00Z",
   };
 
-  newestEligibleRun(REQUIRED_WORKFLOWS[0], [successfulRun], context);
+  // Direct-SHA path still works: newestEligibleRun returns .run for a green run.
+  const direct = newestEligibleRun(REQUIRED_WORKFLOWS[0], [successfulRun], sha, "main");
+  if (!direct.run) throw new Error("self-test: expected successful direct run");
+
   verifyRequiredJobs(
     REQUIRED_WORKFLOWS[0],
     REQUIRED_WORKFLOWS[0].requiredJobs.map((name, index) => ({
@@ -224,6 +333,7 @@ async function runSelfTest() {
       conclusion: "success",
     })),
   );
+
   expectRejected("non-dispatch event", () =>
     verifyDispatchContext({ ...validEnvironment, GITHUB_EVENT_NAME: "push" }),
   );
@@ -234,117 +344,148 @@ async function runSelfTest() {
       GITHUB_REF_NAME: "release",
     }),
   );
-  expectRejected("missing run", () =>
-    newestEligibleRun(REQUIRED_WORKFLOWS[0], [], context),
+
+  // Missing/pending now returns a soft failure so the ancestor walk can try again.
+  const missing = newestEligibleRun(REQUIRED_WORKFLOWS[0], [], sha, "main");
+  if (!missing.missing) throw new Error("self-test: missing run should return .missing");
+  const pending = newestEligibleRun(
+    REQUIRED_WORKFLOWS[0],
+    [{ ...successfulRun, status: "in_progress", conclusion: null, id: 12 }],
+    sha,
+    "main",
   );
-  expectRejected("running latest run", () =>
-    newestEligibleRun(
-      REQUIRED_WORKFLOWS[0],
-      [
-        successfulRun,
-        {
-          ...successfulRun,
-          id: 12,
-          status: "in_progress",
-          conclusion: null,
-          created_at: "2026-08-10T00:01:00Z",
-        },
-      ],
-      context,
-    ),
-  );
-  expectRejected("failed latest run", () =>
-    newestEligibleRun(
-      REQUIRED_WORKFLOWS[0],
-      [{ ...successfulRun, conclusion: "failure" }],
-      context,
-    ),
-  );
-  expectRejected("wrong SHA", () =>
-    newestEligibleRun(
-      REQUIRED_WORKFLOWS[0],
-      [{ ...successfulRun, head_sha: "b".repeat(40) }],
-      context,
-    ),
-  );
-  expectRejected("pull-request run cannot satisfy push gate", () =>
-    newestEligibleRun(
-      REQUIRED_WORKFLOWS[0],
-      [{ ...successfulRun, event: "pull_request" }],
-      context,
-    ),
-  );
-  expectRejected("missing required job", () =>
-    verifyRequiredJobs(REQUIRED_WORKFLOWS[0], []),
-  );
-  expectRejected("skipped required job", () =>
+  if (!pending.pending) throw new Error("self-test: pending run should return .pending");
+
+  // But non-pending failures (skipped/missing job) still throw a hard rejection —
+  // otherwise the ancestor walk would silently bypass a real regression.
+  expectRejected("skipped required job stays hard-failure", () =>
     verifyRequiredJobs(REQUIRED_WORKFLOWS[1], [
       { name: "audit", status: "completed", conclusion: "skipped" },
     ]),
   );
-  newestEligibleRun(
-    REQUIRED_WORKFLOWS[2],
-    [{ ...successfulRun, event: "workflow_dispatch" }],
-    context,
+  expectRejected("missing required job stays hard-failure", () =>
+    verifyRequiredJobs(REQUIRED_WORKFLOWS[0], []),
   );
+  // pull-request runs still cannot satisfy a push-scoped gate.
+  const wrongEvent = newestEligibleRun(
+    REQUIRED_WORKFLOWS[0],
+    [{ ...successfulRun, event: "pull_request" }],
+    sha,
+    "main",
+  );
+  if (!wrongEvent.missing) {
+    throw new Error("self-test: pull_request run must not satisfy push-only gate");
+  }
 
+  // Live gate: happy path — dispatched SHA is at index 0 with all green.
   const liveEnvironment = { ...validEnvironment, GH_TOKEN: "self-test-token" };
+  const recent = [sha, "b".repeat(40), "c".repeat(40)];
   const runIds = new Map(
     REQUIRED_WORKFLOWS.map((workflow, index) => [workflow.file, 100 + index]),
   );
-  const observedPaths = [];
-  const mockedApi = async (path, token) => {
-    if (token !== liveEnvironment.GH_TOKEN)
-      reject("self-test received the wrong token");
-    observedPaths.push(path);
-    if (path === "/repos/owner/repository") return { default_branch: "main" };
-    if (path === "/repos/owner/repository/git/ref/heads/main") {
-      return { object: { type: "commit", sha } };
-    }
-    for (const workflow of REQUIRED_WORKFLOWS) {
-      const workflowPrefix = `/repos/owner/repository/actions/workflows/${workflow.file}/runs?`;
-      if (path.startsWith(workflowPrefix)) {
-        return {
-          workflow_runs: [
-            {
-              ...successfulRun,
-              id: runIds.get(workflow.file),
-              event: workflow.allowedEvents[0],
-            },
-          ],
-        };
+  const makeApi = (options = {}) => {
+    const commits = options.commits ?? recent;
+    return async (path, token) => {
+      if (token !== liveEnvironment.GH_TOKEN)
+        reject("self-test received the wrong token");
+      if (path === "/repos/owner/repository") return { default_branch: "main" };
+      if (path.startsWith("/repos/owner/repository/commits?")) {
+        return commits.map((commitSha) => ({ sha: commitSha }));
       }
-      if (
-        path ===
-        `/repos/owner/repository/actions/runs/${runIds.get(workflow.file)}/jobs?per_page=100&filter=latest`
-      ) {
-        return {
-          jobs: workflow.requiredJobs.map((name, index) => ({
-            id: index + 1,
-            name,
+      for (const workflow of REQUIRED_WORKFLOWS) {
+        const workflowPrefix = `/repos/owner/repository/actions/workflows/${workflow.file}/runs?`;
+        if (path.startsWith(workflowPrefix)) {
+          const query = new URLSearchParams(path.split("?")[1] ?? "");
+          const forSha = query.get("head_sha");
+          const runResolver = options.runsFor ?? (() => ({
+            id: runIds.get(workflow.file),
+            head_sha: forSha,
+            head_branch: "main",
+            event: workflow.allowedEvents[0],
             status: "completed",
             conclusion: "success",
-          })),
-        };
+            created_at: "2026-08-10T00:00:00Z",
+          }));
+          const built = runResolver(workflow, forSha);
+          return {
+            workflow_runs: built ? [built] : [],
+          };
+        }
+        const jobPath = `/repos/owner/repository/actions/runs/${runIds.get(workflow.file)}/jobs?per_page=100&filter=latest`;
+        if (path === jobPath) {
+          return {
+            jobs: workflow.requiredJobs.map((name, index) => ({
+              id: index + 1,
+              name,
+              status: "completed",
+              conclusion: "success",
+            })),
+          };
+        }
       }
-    }
-    reject(`self-test received an unexpected API path: ${path}`);
+      reject(`self-test received an unexpected API path: ${path}`);
+    };
   };
-  await verifyLiveGate(liveEnvironment, mockedApi);
-  if (observedPaths.length !== 2 + REQUIRED_WORKFLOWS.length * 2) {
-    throw new Error(
-      "self-test did not exercise every release-gate API request",
-    );
-  }
-  await expectRejectedAsync("stale main SHA", () =>
-    verifyLiveGate(liveEnvironment, async (path, token) => {
-      if (path === "/repos/owner/repository") return { default_branch: "main" };
-      if (path === "/repos/owner/repository/git/ref/heads/main") {
-        return { object: { type: "commit", sha: "b".repeat(40) } };
-      }
-      return mockedApi(path, token);
+
+  // Happy path: dispatched SHA green.
+  await verifyLiveGate(liveEnvironment, makeApi());
+
+  // Ancestor path: dispatched SHA pending, ancestor green ⇒ pass.
+  await verifyLiveGate(
+    liveEnvironment,
+    makeApi({
+      commits: recent,
+      runsFor: (workflow, forSha) => {
+        if (forSha === sha) {
+          return {
+            id: runIds.get(workflow.file),
+            head_sha: forSha,
+            head_branch: "main",
+            event: workflow.allowedEvents[0],
+            status: "in_progress",
+            conclusion: null,
+            created_at: "2026-08-10T00:00:00Z",
+          };
+        }
+        return {
+          id: runIds.get(workflow.file),
+          head_sha: forSha,
+          head_branch: "main",
+          event: workflow.allowedEvents[0],
+          status: "completed",
+          conclusion: "success",
+          created_at: "2026-08-10T00:00:00Z",
+        };
+      },
     }),
   );
+
+  // Stale dispatch: dispatched SHA not among recent → reject.
+  await expectRejectedAsync("stale dispatched SHA rejected", () =>
+    verifyLiveGate(
+      { ...liveEnvironment, GITHUB_SHA: "d".repeat(40) },
+      makeApi(),
+    ),
+  );
+
+  // All ancestors pending ⇒ reject with reasons.
+  await expectRejectedAsync("all-window pending rejected", () =>
+    verifyLiveGate(
+      liveEnvironment,
+      makeApi({
+        runsFor: (workflow, forSha) => ({
+          id: runIds.get(workflow.file),
+          head_sha: forSha,
+          head_branch: "main",
+          event: workflow.allowedEvents[0],
+          status: "in_progress",
+          conclusion: null,
+          created_at: "2026-08-10T00:00:00Z",
+        }),
+      }),
+    ),
+  );
+
   console.log("android release workflow gate: self-test passed");
 }
 

@@ -610,6 +610,7 @@ function verifySourceContract() {
     fail("native CI must run on every main push so the exact-SHA release gate can succeed");
   }
   for (const fragment of [
+    // متطلبات المصفوفة الثلاثية والوظائف — ثابتة عبر أيّ تشدُّد أو تخفيف للنافذة.
     'file: "ci.yml"',
     'file: "security.yml"',
     'file: "android-native-ci.yml"',
@@ -618,15 +619,26 @@ function verifySourceContract() {
     '"audit"',
     '"native-android-check"',
     '"native-android-device-smoke"',
+    // البوّابة الأساسية: workflow_dispatch على main حصراً.
     'eventName !== "workflow_dispatch"',
     'ref !== "refs/heads/main"',
-    'mainRef?.object?.sha !== context.sha',
-    'run.status !== "completed" || run.conclusion !== "success"',
+    // نافذة السلف (٢٧/٨/٢٦): بدل exact-SHA، نتحقّق أن الترتيب المُحدَّث سليم — قراءةُ آخر
+    // N SHAs من commits API، وGITHUB_SHA نفسه ضمن النافذة (يمنع dispatch من stale)، ونجاح
+    // البوّابات الثلاث كلها على السلف المختار. القوالب أدناه تكفل بقاء هذه الضمانات إن
+    // أعاد أحدهم صياغة الملف. `RELEASE_GATE_ANCESTOR_WINDOW` يبقى مرئياً كسقف مضبوط.
+    "RELEASE_GATE_ANCESTOR_WINDOW",
+    "listRecentShas",
+    "/commits?",
+    "dispatchIndex < 0",
+    // شرط نجاح CI: run.status/conclusion يجب أن يكونا completed/success لكل بوّابة.
+    'run.status !== "completed"',
+    'run.conclusion !== "success"',
+    // شرط نجاح الوظائف المطلوبة — verifyRequiredJobs يبقى حادّاً (لا يتغاضى عن انحدار).
     '/jobs?per_page=100&filter=latest',
     'job.status !== "completed" || job.conclusion !== "success"',
   ]) {
     if (!releaseWorkflowGate.includes(fragment)) {
-      fail("release workflow exact-SHA CI/security/native policy is incomplete");
+      fail("release workflow ancestor-window CI/security/native policy is incomplete");
     }
   }
   for (const fragment of [
