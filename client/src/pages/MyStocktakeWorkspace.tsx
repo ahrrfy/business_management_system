@@ -21,6 +21,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
@@ -960,25 +961,38 @@ export default function MyStocktakeWorkspace() {
       >
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="text-right">
-              {selected ? productLabel(selected) : ""}
-            </DialogTitle>
+            <DialogTitle className="text-right">تسجيل الكمية المعدودة</DialogTitle>
           </DialogHeader>
           {selected && (
-            <QtyEditor
-              key={`${selected.variantId}-${selectedMode}`}
-              item={selected}
-              mode={selectedMode}
-              recountReason={recountReasonByVariant.get(selected.variantId)}
-              queued={queuedByVariant.get(selected.variantId)}
-              focusUnit={scannedUnit}
-              saving={submit.isPending}
-              onCancel={() => {
-                setSelected(null);
-                setScannedUnit(null);
-              }}
-              onSave={save}
-            />
+            <div className="space-y-4">
+              <ProductScanIdentityCard
+                productName={selected.productName}
+                variantName={selected.variantName}
+                sku={selected.sku}
+                barcode={
+                  selectedEntry.scannedBarcode ??
+                  selected.units.find((unit) => unit.factor === 1 && unit.barcode)?.barcode ??
+                  selected.units.find((unit) => unit.barcode)?.barcode ??
+                  null
+                }
+                imageUrl={selected.imageUrl}
+                scanned={selectedEntry.scannedBarcode != null}
+              />
+              <QtyEditor
+                key={`${selected.variantId}-${selectedMode}`}
+                item={selected}
+                mode={selectedMode}
+                recountReason={recountReasonByVariant.get(selected.variantId)}
+                queued={queuedByVariant.get(selected.variantId)}
+                focusUnit={scannedUnit}
+                saving={submit.isPending}
+                onCancel={() => {
+                  setSelected(null);
+                  setScannedUnit(null);
+                }}
+                onSave={save}
+              />
+            </div>
           )}
         </DialogContent>
       </Dialog>
@@ -1110,10 +1124,7 @@ function QtyEditor({
         </p>
       )}
       <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-        <p className="font-mono text-xs text-muted-foreground" dir="ltr">
-          {item.sku || item.units.find((u) => u.barcode)?.barcode || "—"}
-        </p>
-        <p className="mt-2 text-muted-foreground">
+        <p className="text-muted-foreground">
           أدخل الكمية الفعلية على الرف — لكل وحدة حقلها، والإجمالي يُحتسب
           بـ«{baseUnit}».
         </p>

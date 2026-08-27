@@ -1,6 +1,8 @@
 import { RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { Button } from "@/components/ui/button";
@@ -27,9 +29,11 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { groupCategoriesTree } from "@/lib/categoryTree";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 
 const MTYPE: Record<string, string> = {
@@ -68,7 +72,12 @@ export default function Inventory() {
   // cat: "all" = الكل، "0" = بلا فئة، "<id>" = فئة محدّدة (sentinel لأن AppSelect يعامل "" كـplaceholder).
   const [f, setF, resetF] = useUrlFilters({ q: "", cat: "all", low: "", neg: "", branch: "" });
   const [page, setPage] = useState(0);
-  const patchF = (patch: Partial<typeof f>) => { setF(patch); setPage(0); };
+  const [lastScannedBarcode, setLastScannedBarcode] = useState<string | null>(null);
+  const patchF = (patch: Partial<typeof f>) => {
+    setLastScannedBarcode(null);
+    setF(patch);
+    setPage(0);
+  };
 
   const branchId = canPickBranch && f.branch ? Number(f.branch) : myBranch;
   const lowOnly = f.low === "1";
@@ -77,6 +86,8 @@ export default function Inventory() {
   const dq = useDebouncedValue(f.q, 200);
 
   const [err, setErr] = useState("");
+  const stockTableRef = useRef<HTMLDivElement>(null);
+  const scanIdentityRef = useRef<HTMLDivElement>(null);
 
   const onHandInput = {
     branchId,
@@ -333,7 +344,46 @@ export default function Inventory() {
     });
   }
 
+  /**
+   * المسح بحثٌ قاطع لا فلترٌ تراكميّ: نزيل فلاتر الفئة/الحالة التي قد تُخفي مالك الباركود،
+   * ونُبقي الفرع فقط لأنه نطاق الرصيد والتسوية الفعلي. الخادم يحل الأساسي والبديل بنفس العقد.
+   */
+  const handleInventoryBarcode = useCallback((code: string) => {
+    setLastScannedBarcode(code);
+    setF({ q: code, cat: "all", low: "", neg: "" });
+    setPage(0);
+  }, [setF]);
+  const barcodeInput = useBarcodeInput(handleInventoryBarcode, {
+    enabled: editing == null,
+  });
+  useBarcodeScanner(handleInventoryBarcode, {
+    enabled:
+      editing == null &&
+      rejectTarget == null &&
+      revalFor == null &&
+      revalRejectTarget == null &&
+      attachmentPreviewId == null,
+  });
+
   const rows = onHand.data ?? [];
+  const scannedSearchActive =
+    lastScannedBarcode != null && f.q.trim() === lastScannedBarcode;
+  const scannedLookupLoading =
+    scannedSearchActive &&
+    (dq.trim() !== lastScannedBarcode || onHand.isLoading || onHand.isFetching);
+  const scannedRow =
+    scannedSearchActive && !scannedLookupLoading ? rows[0] ?? null : null;
+  useEffect(() => {
+    if (!scannedSearchActive) return;
+    const frame = window.requestAnimationFrame(() => {
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      scanIdentityRef.current?.scrollIntoView({
+        behavior: reduceMotion ? "auto" : "smooth",
+        block: "center",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [lastScannedBarcode, scannedSearchActive]);
   // مصفوفة صرفة بلا COUNT — صفحة مكتملة تعني غالباً وجود المزيد (تقريب paginateKeyset في وضع offset).
   const hasMore = rows.length === PAGE_SIZE;
   const lowCount = rows.filter((r) => r.isLow).length;
@@ -380,11 +430,24 @@ export default function Inventory() {
           )}
           <div className="space-y-1">
             <Label>بحث (اسم/SKU/متغيّر/باركود)</Label>
-            <Input
-              value={f.q}
-              onChange={(e) => patchF({ q: e.target.value })}
-              placeholder="اكتب الاسم أو SKU أو أي باركود أساسي/بديل"
-            />
+            <div className="relative">
+              <Input
+                value={f.q}
+                onChange={(e) => {
+                  setLastScannedBarcode(null);
+                  patchF({ q: e.target.value });
+                }}
+                onKeyDown={(event) =>
+                  barcodeInput.handleKeyDown(event, (value) => {
+                    setLastScannedBarcode(null);
+                    patchF({ q: value });
+                  })
+                }
+                className={barcodeSearchInputClass}
+                placeholder="اكتب الاسم أو SKU أو امسح أي باركود"
+              />
+              <BarcodeSearchCue />
+            </div>
           </div>
           <div className="space-y-1">
             <Label htmlFor="inv-category">الفئة</Label>
@@ -415,13 +478,69 @@ export default function Inventory() {
           </label>
           {anyFilter && (
             <div className="flex items-center h-9">
-              <Button variant="ghost" size="sm" onClick={() => { resetF(); setPage(0); }}>
+              <Button variant="ghost" size="sm" onClick={() => {
+                setLastScannedBarcode(null);
+                resetF();
+                setPage(0);
+              }}>
                 <XCircle aria-hidden className="size-4 ml-1" /> مسح الفلاتر
               </Button>
             </div>
           )}
         </CardContent>
       </Card>
+
+      {scannedSearchActive && scannedLookupLoading && (
+        <div ref={scanIdentityRef}>
+          <ProductScanIdentityCard
+            productName="المادة"
+            sku={lastScannedBarcode}
+            barcode={lastScannedBarcode}
+            scanned
+            loading
+          />
+        </div>
+      )}
+
+      {scannedSearchActive && !scannedLookupLoading && scannedRow && (
+        <div ref={scanIdentityRef}>
+          <ProductScanIdentityCard
+            productName={scannedRow.productName}
+            variantName={variantLabel(scannedRow)}
+            sku={scannedRow.sku}
+            barcode={lastScannedBarcode}
+            imageUrl={scannedRow.imageUrl}
+            scanned
+            actionLabel={canInlineAdjust ? "تأكيد المادة وفتح التسوية" : undefined}
+            onAction={
+              canInlineAdjust
+                ? () => {
+                    startAdjust(scannedRow);
+                    window.requestAnimationFrame(() =>
+                      stockTableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                    );
+                  }
+                : undefined
+            }
+          />
+        </div>
+      )}
+
+      {scannedSearchActive && !scannedLookupLoading && !scannedRow && (
+        <div ref={scanIdentityRef}>
+          <Card className="border-destructive/40 bg-destructive/[0.04] py-4" role="alert">
+            <CardContent className="flex items-start gap-3">
+              <XCircle aria-hidden className="mt-0.5 size-5 shrink-0 text-destructive" />
+              <div>
+                <p className="font-bold text-destructive">الباركود غير مرتبط بأي مادة</p>
+                <p className="mt-1 text-sm text-muted-foreground" dir="auto">
+                  لم يُعثر على باركود أساسي أو بديل مطابق: {lastScannedBarcode}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {err && <p className="text-sm text-destructive">{err}</p>}
 
@@ -597,7 +716,7 @@ export default function Inventory() {
         </Card>
       )}
 
-      <Card>
+      <Card ref={stockTableRef}>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle className="text-base">الأرصدة الحالية</CardTitle>
           <div className="flex items-center gap-3">

@@ -12,6 +12,7 @@ const TABLES = [
   "branchStock",
   "productUnitBarcodes",
   "productUnits",
+  "productImages",
   "productVariants",
   "products",
   "users",
@@ -155,6 +156,25 @@ describe("inventory.onHand", () => {
     expect(bySpacedAlias.map((r) => Number(r.variantId))).toEqual([2]);
     expect(byPrimary[0]?.quantity).toBe(100);
     expect(byAlias[0]?.quantity).toBe(100);
+  });
+
+  it("يعيد هوية بصرية خفيفة للتسوية: صورة المتغيّر أولاً وباركود الوحدة الأساس", async () => {
+    const image = "data:image/png;base64,iVBORw0KGgo=";
+    await db().insert(s.productImages).values([
+      { id: 80, productId: 1, url: image, isPrimary: true },
+      { id: 81, productId: 1, variantId: 2, url: image, isPrimary: false },
+    ]);
+
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const rows = await caller.inventory.onHand({ branchId: 1 });
+    const plain = rows.find((r) => Number(r.variantId) === 1)!;
+    const luxury = rows.find((r) => Number(r.variantId) === 2)!;
+
+    expect(plain.imageUrl).toMatch(/^\/api\/img\/inventory-product\/80\?v=[0-9a-f]{16}$/);
+    expect(luxury.imageUrl).toMatch(/^\/api\/img\/inventory-product\/81\?v=[0-9a-f]{16}$/);
+    expect(plain.primaryBarcode).toBeNull();
+    expect(luxury.primaryBarcode).toBe("6290000000200");
+    expect(luxury.imageUrl).not.toContain("base64");
   });
 
   it("لا يُسرّب التكلفة في المخرجات", async () => {

@@ -23,6 +23,7 @@ import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
@@ -1216,6 +1217,15 @@ export default function CountPortal() {
           />
           <div className="absolute inset-x-0 bottom-0 max-h-[88%] overflow-y-auto rounded-t-2xl bg-background p-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl">
             <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-border" />
+            <ProductScanIdentityCard
+              className="mb-4"
+              productName={openItem.productName}
+              variantName={openItem.variantName}
+              sku={openItem.sku}
+              barcode={openEntry.scannedBarcode ?? displayBarcode(openItem)}
+              imageUrl={openItem.imageUrl}
+              scanned={openEntry.scannedBarcode != null}
+            />
             <QtySheet
               key={`${openItem.variantId}-${openMode}`}
               item={openItem}
@@ -1378,15 +1388,7 @@ function QtySheet({
         </div>
       )}
 
-      <div className="rounded-xl border border-border bg-card p-4">
-        <p className="text-lg font-bold">{item.productName}</p>
-        {item.variantName ? <p className="text-sm text-muted-foreground">{item.variantName}</p> : null}
-        <p className="mt-1 font-mono text-xs text-muted-foreground" dir="ltr">
-          {[displayBarcode(item), item.sku].filter(Boolean).join(" · ") || "—"}
-        </p>
-      </div>
-
-      <p className="mb-2 mt-4 text-sm font-bold">الكمية المعدودة فعلياً على الرف:</p>
+      <p className="mb-2 mt-3 text-sm font-bold">الكمية المعدودة فعلياً على الرف:</p>
       <div className="space-y-2">
         {units.map((u) => {
           const cur = vals[u.unitName] ?? "";

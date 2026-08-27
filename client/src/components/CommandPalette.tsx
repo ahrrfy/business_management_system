@@ -29,15 +29,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
 /**
- * المسارات التي تملك ماسح باركود محلياً (POS/الاستقبال/بوابة العدّ/الكشك/تبويب الملصقات)
+ * المسارات التي تملك ماسح باركود محلياً (POS/الاستقبال/بوابة العدّ/الكشك/الأرصدة/الملصقات)
  * — يُعطَّل الماسح العالمي فيها كي لا يُلتقَط المسح مرّتين (تعارض). يطابق أماكن
  * useBarcodeScanner المحلية: POS.tsx، Reception.tsx (كلاهما /pos)، CountPortal.tsx (/count)،
- * BarcodeLabels (تبويب /inventory?tab=barcodes).
+ * Inventory (تبويب stock) وBarcodeLabels (تبويب barcodes ضمن /inventory).
  */
-function hasLocalScanner(pathname: string): boolean {
+export function hasLocalScanner(
+  pathname: string,
+  search = typeof window !== "undefined" ? window.location.search : "",
+): boolean {
   if (/^\/(pos|count|kiosk|price-checker|login|stocktakes)(\/|$)/.test(pathname)) return true;
   if (pathname.startsWith("/inventory")) {
-    if (new URLSearchParams(window.location.search).get("tab") === "barcodes") return true;
+    const tab = new URLSearchParams(search).get("tab") ?? "stock";
+    if (tab === "stock" || tab === "barcodes") return true;
   }
   return false;
 }
