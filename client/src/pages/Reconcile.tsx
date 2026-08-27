@@ -1646,7 +1646,7 @@ function DriftSection({
                       {r.note && (
                         <span
                           dir="rtl"
-                          className="mr-2 inline-block rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-bold text-amber-800"
+                          className="mr-2 inline-block rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]"
                         >
                           {r.note}
                         </span>

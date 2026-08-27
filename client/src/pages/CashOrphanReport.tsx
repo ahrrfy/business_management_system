@@ -226,7 +226,7 @@ export default function CashOrphanReport() {
               </thead>
               <tbody>
                 {co.rows.map((r) => {
-                  const rowBg = r.category === "TREASURY" ? "bg-[var(--sem-info-bg)]" : "bg-amber-50/40";
+                  const rowBg = r.category === "TREASURY" ? "bg-[var(--sem-info-bg)]" : "bg-[var(--sem-warn-bg)]/40";
                   const roleInfo = r.createdByRole ? ROLE_LABEL[r.createdByRole] : null;
                   return (
                     <tr key={r.receiptId} className={`border-b last:border-0 ${rowBg}`}>
