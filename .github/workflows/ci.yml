@@ -241,6 +241,8 @@ jobs:
         run: pnpm check:locale-numbers
       - name: حارِس اعتماد AppSelect (يمنع <select> خامّ جديد في pages)
         run: pnpm check:raw-select
+      - name: حارِس منع حوارات المتصفّح (window.confirm/prompt/alert)
+        run: pnpm check:no-window-dialogs
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: بناء الإنتاج
