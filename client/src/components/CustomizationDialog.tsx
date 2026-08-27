@@ -87,7 +87,7 @@ export function composeCustomizationText(d: CustomizationData): string {
 const SIZE_CHIPS = ["A4", "A3", "A5", "1×3 م", "2×3 م", "1×2 م", "50×70 سم"];
 const MATERIAL_CHIPS = ["فينيل لامع 340غ", "ستيكر شفاف 500", "كرتون لامع 300غ", "فلكس 510غ", "أكريليك"];
 const PRIORITIES: { v: CustomizationData["priority"]; label: string; cls: string }[] = [
-  { v: "LOW", label: "منخفض", cls: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30 hover:bg-emerald-500/20" },
+  { v: "LOW", label: "منخفض", cls: "bg-[var(--sem-pos-bg)]0/10 text-[var(--sem-pos)] border-[var(--sem-pos)]/30 hover:bg-[var(--sem-pos-bg)]0/20" },
   { v: "NORMAL", label: "عادي", cls: "bg-[var(--sem-info)]/10 text-[var(--sem-info)] border-[var(--sem-info)]/30 hover:bg-[var(--sem-info)]/20" },
   { v: "URGENT", label: "عاجل", cls: "bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20" },
 ];

@@ -38,7 +38,7 @@ const VARIANT_META: Record<ConfirmVariant, VariantMeta> = {
   },
   warning: {
     icon: AlertTriangle,
-    iconClass: "text-amber-600",
+    iconClass: "text-[var(--sem-warn)]",
     confirmClass: cn(buttonVariants()),
     defaultTitle: "تأكيد العملية",
   },

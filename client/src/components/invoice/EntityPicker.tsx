@@ -178,7 +178,7 @@ export function EntityPicker({ type, selectedId, onSelect, id, disabled = false,
                         dir="ltr"
                         className={cn(
                           "shrink-0 text-xs font-bold",
-                          dir?.colorCls === "emerald" ? "text-emerald-700" : "text-rose-700"
+                          dir?.colorCls === "emerald" ? "text-[var(--sem-pos)]" : "text-[var(--sem-neg)]"
                         )}
                       >
                         {fmtNum(Math.abs(bal))}
@@ -195,7 +195,7 @@ export function EntityPicker({ type, selectedId, onSelect, id, disabled = false,
                 type="button"
                 variant="outline"
                 size="sm"
-                className="w-full border-rose-300/40 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                className="w-full border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"
                 onClick={() => {
                   onSelect(null);
                   setOpen(false);

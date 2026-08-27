@@ -26,7 +26,7 @@ export function OfflineBanner() {
       aria-live="polite"
       className={cn(
         "fixed inset-x-0 top-0 z-[150] flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-semibold shadow-sm",
-        syncing ? "bg-sky-600 text-white" : "bg-amber-500 text-amber-950",
+        syncing ? "bg-sky-600 text-white" : "bg-[var(--sem-warn)] text-background",
       )}
     >
       {syncing || reconnecting ? (

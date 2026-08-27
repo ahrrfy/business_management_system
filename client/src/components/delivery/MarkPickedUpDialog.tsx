@@ -92,7 +92,7 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
         <p className="mb-4 text-xs text-muted-foreground">{order.orderNumber}</p>
         <div className="mb-3 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(order.salePrice)} د.ع</span></div>
-          {D(order.deposit ?? 0).gt(0) && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(order.deposit ?? "0")} د.ع</span></div>}
+          {D(order.deposit ?? 0).gt(0) && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmt(order.deposit ?? "0")} د.ع</span></div>}
           <div className="flex justify-between border-t pt-1 font-bold"><span>المتبقّي</span><span dir="ltr" className="tabular-nums">{fmt(remainingDue.toFixed(2))} د.ع</span></div>
         </div>
         <div className="mb-3 grid gap-3 sm:grid-cols-2">

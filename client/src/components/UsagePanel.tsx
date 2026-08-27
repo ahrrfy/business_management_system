@@ -21,7 +21,7 @@ export function UsagePanel({
 }) {
   if (!usage) return <p className="text-xs text-muted-foreground">جارٍ حساب النشاط…</p>;
   if (usage.clean) return (
-    <p className="text-sm text-emerald-600 flex items-center gap-1.5">
+    <p className="text-sm text-[var(--sem-pos)] flex items-center gap-1.5">
       <Check aria-hidden className="size-4" />
       <span>{cleanText}</span>
     </p>
@@ -29,7 +29,7 @@ export function UsagePanel({
   const active = usage.categories.filter((c) => c.count > 0);
   return (
     <div className="space-y-1">
-      <p className="text-sm text-amber-600">مرتبط بسجلّات في النظام (لا يمكن الحذف النهائي):</p>
+      <p className="text-sm text-[var(--sem-warn)]">مرتبط بسجلّات في النظام (لا يمكن الحذف النهائي):</p>
       <div className="flex flex-wrap gap-1">
         {active.map((c) => (
           <span key={c.key} className="text-[11px] rounded bg-muted px-1.5 py-0.5">

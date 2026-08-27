@@ -38,8 +38,8 @@ interface Branch {
 function cellStyle(info: BarcodeInfo): { cls: string; title: string } {
   const cls =
     info.severity === "blocker" ? "border-destructive ring-1 ring-destructive"
-    : info.severity === "warn"    ? "border-amber-500 ring-1 ring-amber-500"
-    : info.severity === "ok"      ? "border-emerald-500/60"
+    : info.severity === "warn"    ? "border-[var(--sem-warn)] ring-1 ring-amber-500"
+    : info.severity === "ok"      ? "border-[var(--sem-pos)]/60"
     : info.severity === "info"    ? "border-blue-500/40"
     : "";
   // التلميح: نوع الترميز + الرسالة (يظهر عند التحويم على خلية صغيرة لا تسع بادج).
@@ -321,7 +321,7 @@ function VariantRow({
             onClick={() => patch({ isActive: !v.isActive })}
             title={v.isActive ? "مفعّل — انقر للتعطيل" : "معطّل — انقر للتفعيل"}
             aria-label={v.isActive ? "تعطيل المتغيّر" : "تفعيل المتغيّر"}
-            className={cn("h-3.5 w-3.5 rounded-full inline-block transition-colors", v.isActive ? "bg-emerald-500" : "bg-muted-foreground/40")}
+            className={cn("h-3.5 w-3.5 rounded-full inline-block transition-colors", v.isActive ? "bg-[var(--sem-pos-bg)]0" : "bg-muted-foreground/40")}
           />
         </td>
         <td className="px-2 py-2">

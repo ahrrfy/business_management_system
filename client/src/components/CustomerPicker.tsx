@@ -117,7 +117,7 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
           <span
             className={`text-xs rounded-full px-2 py-0.5 ${
               // §٥: مقارنة Decimal لا Number (يتفادى دقّة float على 0.1+0.2 ≠ 0.3).
-              D(balance).gt(0) ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
+              D(balance).gt(0) ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
             }`}
             title="رصيد ذمة العميل"
           >
