@@ -1800,6 +1800,13 @@
 			"when": 1788052323000,
 			"tag": "0272_journal_branch_fk_governance",
 			"breakpoints": true
+		},
+		{
+			"idx": 273,
+			"version": "5",
+			"when": 1788052324000,
+			"tag": "0273_journal_lines_party_dims",
+			"breakpoints": true
 		}
 	]
 }

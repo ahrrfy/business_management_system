@@ -11894,6 +11894,22 @@ export const journalLines = mysqlTable(
       () => branches.id,
       { onDelete: "restrict" },
     ),
+    /**
+     * Tier-3 #2 (٢٧/٨، هجرة 0273): أبعادُ الطرف على السطر — مرآةٌ لنمط `accountingEntries`
+     * (customerId FK + supplierId FK + deliveryPartyId بلا FK). تُمكّن ميزان حساب العميل،
+     * تحليل مصروف المورّد، وتعرّض عهدة المندوب دون مطابقةٍ يدويّة بالفواتير/الإيصالات.
+     * كلها nullable — سطرٌ واحد يحمل بعداً واحداً في معظم الحالات (AR للعميل، AP للمورّد).
+     */
+    customerId: bigint("customerId", { mode: "number" }).references(
+      () => customers.id,
+      { onDelete: "restrict" },
+    ),
+    supplierId: bigint("supplierId", { mode: "number" }).references(
+      () => suppliers.id,
+      { onDelete: "restrict" },
+    ),
+    /** بلا FK — نظير `accountingEntries.deliveryPartyId`: قد يكون طرفٌ خارجيّ. */
+    deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
     debit: decimal("debit", { precision: 15, scale: 2 }).default("0").notNull(),
     credit: decimal("credit", { precision: 15, scale: 2 })
       .default("0")
@@ -11903,6 +11919,9 @@ export const journalLines = mysqlTable(
     roleIdx: index("idx_journal_line_role").on(t.role),
     accountIdx: index("idx_journal_line_account").on(t.accountId),
     branchIdx: index("idx_journal_line_branch").on(t.branchId),
+    customerIdx: index("idx_journal_line_customer").on(t.customerId),
+    supplierIdx: index("idx_journal_line_supplier").on(t.supplierId),
+    deliveryPartyIdx: index("idx_journal_line_delivery_party").on(t.deliveryPartyId),
   }),
 );
 export type JournalLineRow = typeof journalLines.$inferSelect;
