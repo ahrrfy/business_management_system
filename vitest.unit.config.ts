@@ -70,6 +70,7 @@ export default defineConfig({
       "shared/__tests__/documentNumber.test.ts",
       "shared/receptionChannel.test.ts",
       "shared/actionLabels.test.ts",
+      "shared/keyboardShortcuts.test.ts",
       "shared/emptyStateMessages.test.ts",
       "shared/invoiceChannel.test.ts",
       "shared/invoiceStatus.test.ts",
