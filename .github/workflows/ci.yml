@@ -247,6 +247,8 @@ jobs:
         run: pnpm check:sem-fill-contrast
       - name: حارِس سلاسل التحميل الموحّدة (يمنع «جارٍ …» يدوياً في pages)
         run: pnpm check:loading-strings
+      - name: حارِس تغطية useSaveShortcuts (Ctrl+S في نماذج New/Edit)
+        run: pnpm check:save-shortcut-coverage
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: بناء الإنتاج
