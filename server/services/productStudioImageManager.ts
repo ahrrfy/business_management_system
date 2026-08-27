@@ -93,22 +93,39 @@ export async function deleteProductImage(
       .for("update");
     if (!image) throw new TRPCError({ code: "NOT_FOUND", message: "الصورة غير موجودة" });
     if (image.isPrimary) {
-      // منعُ حذف الرئيسيّة إن كانت الوحيدة — يُبقي المنتج ظاهراً بلا صورةٍ في الشبكة.
+      // منعُ حذف الرئيسيّة إن لم يوجد بديلٌ **معتمَدٌ في نفس النطاق** (variant-scoped)
+      // يمكن ترقيتُه. عدُّ الصفوف بلا فلترةٍ كان يقبل صوراً مرفوضةً/انتظارَ مراجعةٍ أو
+      // صور بديلٍ آخر، فيمرّ الحذفُ ثمّ لا يجد المرقّى ما يرقّيه فيبقى النطاق بلا رئيسيّة
+      // (الجذر: مراجعة Codex P2 على PR #825).
       const [siblings] = await tx
         .select({ n: sql<number>`count(*)` })
         .from(productImages)
-        .where(and(eq(productImages.productId, image.productId), sql`${productImages.id} <> ${image.id}`));
+        .where(
+          and(
+            eq(productImages.productId, image.productId),
+            eq(productImages.reviewStatus, "APPROVED"),
+            image.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, image.variantId),
+            sql`${productImages.id} <> ${image.id}`,
+          ),
+        );
       if (Number(siblings?.n ?? 0) === 0) {
-        throw new TRPCError({ code: "CONFLICT", message: "لا يمكن حذف الصورة الوحيدة للمنتج — أضِف صورةً أخرى أوّلاً" });
+        throw new TRPCError({ code: "CONFLICT", message: "لا يمكن حذف الصورة الوحيدة لهذا البديل — أضِف صورةً أخرى أوّلاً" });
       }
     }
     await tx.delete(productImages).where(eq(productImages.id, input.imageId));
-    // إن كانت الرئيسيّة: عيّن التاليةَ رئيسيّةً تلقائياً — كي لا يظلّ المنتج بلا primary.
+    // إن كانت الرئيسيّة: عيّن التاليةَ رئيسيّةً — **في نفس النطاق** (variant-scoped)
+    // كي لا نُرقّي صورةَ بديلٍ آخر إلى رئيسيّةٍ لهذا النطاق (خلطٌ يمرّ في الكشك/المتجر).
     if (image.isPrimary) {
       const [next] = await tx
         .select({ id: productImages.id })
         .from(productImages)
-        .where(and(eq(productImages.productId, image.productId), eq(productImages.reviewStatus, "APPROVED")))
+        .where(
+          and(
+            eq(productImages.productId, image.productId),
+            eq(productImages.reviewStatus, "APPROVED"),
+            image.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, image.variantId),
+          ),
+        )
         .orderBy(productImages.sortOrder, productImages.id)
         .limit(1);
       if (next) {

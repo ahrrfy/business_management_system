@@ -2,6 +2,7 @@ import { ProductMediaContentSection } from "@/components/product/ProductMediaCon
 import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
 import { StudioImageExportPanel } from "@/components/product-studio/StudioImageExportPanel";
 import { ProductImageGallery } from "@/components/product-studio/ProductImageGallery";
+import { StudioStandaloneImageManagerCard } from "@/components/product-studio/StudioStandaloneImageManagerCard";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
@@ -1177,6 +1178,10 @@ export default function ProductImageStudio() {
           `productImages.reviewStatus='APPROVED'` (لا الأصل غير المُعدَّل). التسمية: اسم
           المنتج (وبديله إن وُجد). الخدمات مستبعَدةٌ تلقائياً. */}
       {!offline && dashboard.data?.canManage && <StudioImageExportPanel categories={categoryOptions.data ?? []} />}
+      {/* لوحةُ إدارة صور منتجٍ مباشرةً — بلا مهمّةٍ في القائمة. يمسح المدير باركوداً أو
+          يكتب معرّف منتج، فيفتح المعرض. طلب Codex P2 (٢٦/٨): مدير بمنتجٍ إرثيّ لا يستطيع
+          الوصول إلى الأدوات دون إنشاء مهمّةٍ مصطنعة. */}
+      {!offline && dashboard.data?.canManage && <StudioStandaloneImageManagerCard />}
 
       {/* تجهيزٌ اختياريّ لاستعادة المسودة عند الانقطاع. كان بطاقةً كاملة فوق المؤشرات
           تُعرَض لكل مستخدمٍ متصل بلا مسودات ولا مخرجَ منها؛ صار شريطاً مؤجَّلاً أسفلها. */}

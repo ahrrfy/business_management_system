@@ -36,7 +36,12 @@ export function ProductImageGallery({ productId, onClose }: { productId: number;
   const setPrimary = trpc.productStudio.setImagePrimary.useMutation({
     onSuccess: async () => {
       notify.ok("عُيِّنت الصورة رئيسيّةً");
-      await utils.productStudio.managerImages.invalidate({ productId });
+      // نُبطِل استعلامَي الصور معاً: `managerImages` لهذا المعرض، و`productImages` لواجهة
+      // الإسناد التي تستعمل نفس الصور كمصدر «إضافة/استبدال» (الجذر: مراجعة Codex P2 على PR #825).
+      await Promise.all([
+        utils.productStudio.managerImages.invalidate({ productId }),
+        utils.productStudio.productImages.invalidate({ productId }),
+      ]);
     },
     onError: (e) => notify.err(e),
   });
@@ -44,7 +49,12 @@ export function ProductImageGallery({ productId, onClose }: { productId: number;
     onSuccess: async (r) => {
       notify.ok(r.promotedNewPrimary ? "حُذفت الصورة ورُقّيت الصورةُ التالية رئيسيّةً" : "حُذفت الصورة");
       setLocalOrder(null);
-      await utils.productStudio.managerImages.invalidate({ productId });
+      // نُبطِل استعلامَي الصور معاً: `managerImages` لهذا المعرض، و`productImages` لواجهة
+      // الإسناد التي تستعمل نفس الصور كمصدر «إضافة/استبدال» (الجذر: مراجعة Codex P2 على PR #825).
+      await Promise.all([
+        utils.productStudio.managerImages.invalidate({ productId }),
+        utils.productStudio.productImages.invalidate({ productId }),
+      ]);
     },
     onError: (e) => notify.err(e),
   });
@@ -52,7 +62,12 @@ export function ProductImageGallery({ productId, onClose }: { productId: number;
     onSuccess: async () => {
       notify.ok("حُفظ الترتيب");
       setLocalOrder(null);
-      await utils.productStudio.managerImages.invalidate({ productId });
+      // نُبطِل استعلامَي الصور معاً: `managerImages` لهذا المعرض، و`productImages` لواجهة
+      // الإسناد التي تستعمل نفس الصور كمصدر «إضافة/استبدال» (الجذر: مراجعة Codex P2 على PR #825).
+      await Promise.all([
+        utils.productStudio.managerImages.invalidate({ productId }),
+        utils.productStudio.productImages.invalidate({ productId }),
+      ]);
     },
     onError: (e) => notify.err(e),
   });

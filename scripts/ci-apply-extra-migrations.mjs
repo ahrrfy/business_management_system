@@ -158,7 +158,7 @@ const EXTRA_MIGRATIONS = [
   // `db:push` لا يُوسّع enum موثوقاً على MySQL 8 (قيم `CATEGORIES`/`ANY_REGARDLESS`)،
   // فنُعيد التطبيق idempotently. الجدول الجانبيّ `productStudioCampaignCategories`
   // يُبنيه db:push من schema.ts؛ الهجرة تتحقّق من وجوده لا تُعيد إنشاءه.
-  "drizzle/migrations/0269_studio_multi_category_and_any_policy.sql",
+  "drizzle/migrations/0274_studio_multi_category_and_any_policy.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
