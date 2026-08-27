@@ -179,6 +179,9 @@ export default function Reconcile() {
       // Codex P1 #2 (٢٦/٨): محور طلبات المتجر — لو نُسي هنا لَعرض الملخصُ «صفر انحراف»
       // بينما الليل يُصدر WARN، ولحُرم المدير من الصفوف اللازمة للتصحيح اليدويّ.
       (data.onlineOrders?.length ?? 0) +
+      // Tier-3 #5 (٢٧/٨): محور أيتام journalLines — نفس السبب: لو نُسي هنا لصار WARN
+      // الليلة صامتاً عن المدير.
+      (data.journalOrphans?.length ?? 0) +
       doubleEntryIssues
     : 0;
   const loading = me.isLoading || (isAdmin && recon.isLoading);
@@ -235,6 +238,8 @@ export default function Reconcile() {
       sheet("قيود الدفتر", data.ledger),
       // Tier-2 #4 (٢٦/٨): محور طلبات المتجر — الصفوف تحمل `note` عربياً مصنَّفاً بالمخالفة.
       sheet("طلبات المتجر × الإرساليات", data.onlineOrders ?? []),
+      // Tier-3 #5 (٢٧/٨): محور أيتام journalLines — role/accountId + note شارحٌ للخيار المُقترَح.
+      sheet("أيتام قيود الدفتر", data.journalOrphans ?? []),
       {
         sheetName: "الدفتر المزدوج",
         title: `مطابقة الدفتر المزدوج — ${data.doubleEntry.scope.month ?? "نافذة الظل"}`,
@@ -807,6 +812,18 @@ export default function Reconcile() {
             rows={data.onlineOrders ?? []}
             link={(id) => `/store-admin/orders/${id}`}
             linkLabel="فتح الطلب"
+          />
+
+          {/*
+            Tier-3 #5 (٢٧/٨): أيتام journalLines بلا accountId. الحالة الطبيعية «صفر»: كل
+            سطرٍ POSTED جديد يحمل accountId بعد Tier-3 #2/#4. أيّ صفٍّ هنا يعني إمّا خرقاً
+            من backfill أو drift في `accounts.systemRole` — الإصلاح في السجلاّت التاريخيّة.
+          */}
+          <DriftSection
+            title="أيتام قيود الدفتر"
+            desc="أسطرٌ في journalLines بلا accountId — خرقُ عقد الكاتب بعد أن أصبح الحقل يُملأ تلقائياً من الرأس."
+            idLabel="رقم السطر"
+            rows={data.journalOrphans ?? []}
           />
         </>
       )}
