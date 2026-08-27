@@ -29,15 +29,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, Columns3, Rows3, RotateCcw, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { CopyContextMenu } from "@/lib/copy/CopyContextMenu";
 import { TableSkeleton, EmptyState } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -46,6 +38,7 @@ import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/Bar
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { cn } from "@/lib/utils";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
+import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
 function columnHeaderText(col: { columnDef: { header?: unknown }; id: string }): string {
@@ -145,10 +138,17 @@ type DataTableProps<T, K = string> = {
   };
 };
 
-type StoredTableView = { columnVisibility?: VisibilityState; compact?: boolean };
+type StoredTableView = {
+  columnVisibility?: VisibilityState;
+  compact?: boolean;
+};
 
 function columnIdentity(column: ColumnDef<unknown, unknown>, index: number): string {
-  const candidate = column as { id?: string; accessorKey?: string; header?: unknown };
+  const candidate = column as {
+    id?: string;
+    accessorKey?: string;
+    header?: unknown;
+  };
   if (candidate.id) return candidate.id;
   if (candidate.accessorKey) return candidate.accessorKey;
   if (typeof candidate.header === "string") return candidate.header;
@@ -178,16 +178,13 @@ function writeTableView(key: string, value: StoredTableView): void {
 }
 
 /** يَختار حاوية الجَدول: محبوسة بِحَجم الشاشة (ترويسة لاصقة) أَو تَمرير أُفُقي بَسيط. */
-function TableShell({
-  bounded,
-  maxHeightClass,
-  children,
-}: {
-  bounded: boolean;
-  maxHeightClass?: string;
-  children: React.ReactNode;
-}) {
-  if (bounded) return <ScrollTableShell maxHeightClass={maxHeightClass} showColumnVisibility={false}>{children}</ScrollTableShell>;
+function TableShell({ bounded, maxHeightClass, children }: { bounded: boolean; maxHeightClass?: string; children: React.ReactNode }) {
+  if (bounded)
+    return (
+      <ScrollTableShell maxHeightClass={maxHeightClass} showColumnVisibility={false}>
+        {children}
+      </ScrollTableShell>
+    );
   return <div className="rounded-md border overflow-x-auto">{children}</div>;
 }
 
@@ -231,10 +228,7 @@ export function DataTable<T, K = string>({
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialView.columnVisibility ?? {});
   const [compact, setCompact] = useState(initialView.compact === true);
   const [lastIndex, setLastIndex] = useState<number | null>(null);
-  const barcodeInput = useBarcodeInput(
-    (code) => serverSearch ? serverSearch.onChange(code) : setGlobalFilter(code),
-    { enabled: barcodeSearch },
-  );
+  const barcodeInput = useBarcodeInput((code) => (serverSearch ? serverSearch.onChange(code) : setGlobalFilter(code)), { enabled: barcodeSearch });
 
   useEffect(() => {
     writeTableView(storageKey, { columnVisibility, compact });
@@ -249,9 +243,7 @@ export function DataTable<T, K = string>({
     data,
     columns,
     state: serverMode ? { sorting: effectiveSorting, columnVisibility } : { sorting, globalFilter, columnVisibility },
-    onSortingChange: serverMode && serverSorting
-      ? (updater) => serverSorting.onChange(typeof updater === "function" ? updater(serverSorting.value) : updater)
-      : setSorting,
+    onSortingChange: serverMode && serverSorting ? (updater) => serverSorting.onChange(typeof updater === "function" ? updater(serverSorting.value) : updater) : setSorting,
     onColumnVisibilityChange: setColumnVisibility,
     enableSorting: !serverMode || !!serverSorting,
     manualSorting: serverMode,
@@ -266,9 +258,7 @@ export function DataTable<T, K = string>({
   // حِراسة تَطوير: ترقيم خادميّ + بحث محلّيّ = بحثٌ يرى الصفحة وحدها (أسوأ من لا بحث).
   if (serverMode && searchable && !serverSearch) {
     // eslint-disable-next-line no-console
-    console.warn(
-      "DataTable: serverPagination بلا serverSearch — حقل البحث مُخفى (البحث المحلّي كان سيرى الصفحة وحدها). مرِّر serverSearch أو searchable={false}.",
-    );
+    console.warn("DataTable: serverPagination بلا serverSearch — حقل البحث مُخفى (البحث المحلّي كان سيرى الصفحة وحدها). مرِّر serverSearch أو searchable={false}.");
   }
 
   // البحث يظهر إن طُلب — ومع الترقيم الخادميّ **فقط** إن كان خادمياً (لا بحثَ يرى الصفحة وحدها).
@@ -290,9 +280,7 @@ export function DataTable<T, K = string>({
   // تمييز صريح: بحث/فلتر نشط ⇒ NO_MATCH_FILTER، وإلا NO_ROWS_YET. البحث المحلّيّ يقاس بـglobalFilter،
   // والخادميّ بـserverSearch.value. حالة الفلاتر الأخرى (شارة/تاريخ/…) تُمرَّر يدوياً عبر
   // emptyFilteredState (المستدعي يعلم متى تكون فلاتره نشطة).
-  const anySearchActive =
-    (serverSearch?.value?.trim() ?? "") !== "" ||
-    (globalFilter?.trim() ?? "") !== "";
+  const anySearchActive = (serverSearch?.value?.trim() ?? "") !== "" || (globalFilter?.trim() ?? "") !== "";
   const emptyOrError = errorState?.isError ? (
     <div className="flex flex-col items-center gap-2 text-sm">
       <span className="inline-flex items-center gap-1.5 font-bold text-[var(--sem-danger)]">
@@ -307,18 +295,10 @@ export function DataTable<T, K = string>({
     </div>
   ) : anySearchActive ? (
     // فلتر/بحث نشط — رسالة NO_MATCH_FILTER
-    emptyFilteredState ?? (
-      resourceKey
-        ? <EmptyState resourceKey={resourceKey} reason="NO_MATCH_FILTER" />
-        : emptyText
-    )
+    (emptyFilteredState ?? (resourceKey ? <EmptyState resourceKey={resourceKey} reason="NO_MATCH_FILTER" /> : emptyText))
   ) : (
     // لا صفوف أصلاً — رسالة NO_ROWS_YET
-    emptyState ?? (
-      resourceKey
-        ? <EmptyState resourceKey={resourceKey} reason="NO_ROWS_YET" />
-        : emptyText
-    )
+    (emptyState ?? (resourceKey ? <EmptyState resourceKey={resourceKey} reason="NO_ROWS_YET" /> : emptyText))
   );
 
   // مُعَرِّفات الصُفوف المَرئية (للأَزرار الكُلِّية + شِفت‑range).
@@ -341,11 +321,8 @@ export function DataTable<T, K = string>({
     return out;
   }, [leafCols, visibleRows]);
 
-  const allVisibleSelected = selectionEnabled && visibleIds.length > 0
-    && visibleIds.every((id) => selection!.isSelected(id));
-  const someVisibleSelected = selectionEnabled
-    && visibleIds.some((id) => selection!.isSelected(id))
-    && !allVisibleSelected;
+  const allVisibleSelected = selectionEnabled && visibleIds.length > 0 && visibleIds.every((id) => selection!.isSelected(id));
+  const someVisibleSelected = selectionEnabled && visibleIds.some((id) => selection!.isSelected(id)) && !allVisibleSelected;
 
   const toggleAllVisible = () => {
     if (!selectionEnabled) return;
@@ -381,12 +358,53 @@ export function DataTable<T, K = string>({
     setLastIndex(rowIndex);
   };
 
+  const columnControls =
+    table.getAllLeafColumns().length > 5 ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant="outline" size="sm" className="h-8 gap-2">
+            <Columns3 aria-hidden className="size-4" />
+            الأعمدة {visibleColumnCount}/{leafCols.length}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="max-h-80 min-w-52 overflow-y-auto text-right">
+          <DropdownMenuLabel>إظهار تفاصيل الجدول</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {table.getAllLeafColumns().map((column) => (
+            <DropdownMenuCheckboxItem
+              key={column.id}
+              checked={column.getIsVisible()}
+              disabled={!column.getCanHide() || (column.getIsVisible() && visibleColumnCount === 1)}
+              onCheckedChange={(value) => column.toggleVisibility(Boolean(value))}
+              onSelect={(event) => event.preventDefault()}
+            >
+              {columnHeaderText(column)}
+            </DropdownMenuCheckboxItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuCheckboxItem checked={compact} onCheckedChange={(value) => setCompact(Boolean(value))} onSelect={(event) => event.preventDefault()}>
+            <Rows3 aria-hidden className="size-4" />
+            عرض مدمج
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              setColumnVisibility({});
+              setCompact(false);
+            }}
+          >
+            <RotateCcw aria-hidden className="size-4" />
+            إعادة ضبط العرض
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : null;
+
   return (
-    <div className={compact ? "space-y-3 [&_th]:!p-1.5 [&_td]:!p-1.5 [&_tbody_tr]:text-xs" : "space-y-3"} data-table-density={compact ? "compact" : "comfortable"}>
-      {(showSearch || toolbar || table.getAllLeafColumns().length > 5) && (
-        <div className="flex items-center gap-2 justify-between flex-wrap">
+    <div className={compact ? "space-y-2 [&_th]:!p-1.5 [&_td]:!p-1.5 [&_tbody_tr]:text-xs" : "space-y-2"} data-table-density={compact ? "compact" : "comfortable"}>
+      {(showSearch || toolbar) && (
+        <WorkspaceBar variant="filters" label="بحث وأدوات الجدول" className="justify-between overflow-hidden">
           {showSearch ? (
-            <div className={cn("relative w-full", barcodeSearch ? "max-w-sm" : "max-w-xs")}>
+            <div className={cn("relative min-w-40 flex-1", barcodeSearch ? "max-w-sm" : "max-w-xs")}>
               <Input
                 autoFocus={autoFocusSearch}
                 className={cn(barcodeSearch && barcodeSearchInputClass)}
@@ -396,80 +414,24 @@ export function DataTable<T, K = string>({
                   const value = barcodeSearch ? normalizeKnownSystemBarcode(e.target.value) : e.target.value;
                   serverSearch ? serverSearch.onChange(value) : setGlobalFilter(value);
                 }}
-                onKeyDown={(e) => barcodeInput.handleKeyDown(
-                  e,
-                  serverSearch ? serverSearch.onChange : setGlobalFilter,
-                )}
+                onKeyDown={(e) => barcodeInput.handleKeyDown(e, serverSearch ? serverSearch.onChange : setGlobalFilter)}
                 aria-label={searchPlaceholder}
               />
               {barcodeSearch && <BarcodeSearchCue />}
             </div>
-          ) : <span />}
-          <div className="flex flex-wrap items-center gap-2">
-            {table.getAllLeafColumns().length > 5 && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="outline" size="sm" className="gap-2">
-                    <Columns3 aria-hidden className="size-4" />
-                    الأعمدة {visibleColumnCount}/{leafCols.length}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="max-h-80 min-w-52 overflow-y-auto text-right">
-                  <DropdownMenuLabel>إظهار تفاصيل الجدول</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {table.getAllLeafColumns().map((column) => (
-                    <DropdownMenuCheckboxItem
-                      key={column.id}
-                      checked={column.getIsVisible()}
-                      disabled={!column.getCanHide() || (column.getIsVisible() && visibleColumnCount === 1)}
-                      onCheckedChange={(value) => column.toggleVisibility(Boolean(value))}
-                      onSelect={(event) => event.preventDefault()}
-                    >
-                      {columnHeaderText(column)}
-                    </DropdownMenuCheckboxItem>
-                  ))}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuCheckboxItem
-                    checked={compact}
-                    onCheckedChange={(value) => setCompact(Boolean(value))}
-                    onSelect={(event) => event.preventDefault()}
-                  >
-                    <Rows3 aria-hidden className="size-4" />
-                    عرض مدمج
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      setColumnVisibility({});
-                      setCompact(false);
-                    }}
-                  >
-                    <RotateCcw aria-hidden className="size-4" />
-                    إعادة ضبط العرض
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-            {toolbar}
-          </div>
-        </div>
+          ) : (
+            <span />
+          )}
+          <div className="flex min-w-0 shrink-0 items-center gap-1.5 overflow-x-auto whitespace-nowrap [&>*]:shrink-0">{toolbar}</div>
+        </WorkspaceBar>
       )}
       {mobileCardRenderer ? (
         <>
           {/* عرض الكروت الذكية على شاشات الهاتف (<md) */}
           <div className="md:hidden space-y-2.5">
-            {loading && (
-              <TableSkeleton rows={4} cols={1} />
-            )}
-            {!loading && visibleRows.map((row, idx) => (
-              <div key={row.id}>
-                {mobileCardRenderer(row.original, idx)}
-              </div>
-            ))}
-            {!loading && visibleRows.length === 0 && (
-              <div className="p-8 text-center text-muted-foreground text-sm bg-card border border-border/60 rounded-xl">
-                {emptyOrError}
-              </div>
-            )}
+            {loading && <TableSkeleton rows={4} cols={1} />}
+            {!loading && visibleRows.map((row, idx) => <div key={row.id}>{mobileCardRenderer(row.original, idx)}</div>)}
+            {!loading && visibleRows.length === 0 && <div className="p-8 text-center text-muted-foreground text-sm bg-card border border-border/60 rounded-xl">{emptyOrError}</div>}
           </div>
 
           {/* الجدول الكامل للشاشات المتوسطة والأكبر (>=md) */}
@@ -503,12 +465,27 @@ export function DataTable<T, K = string>({
                             aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
                             {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
                             onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
-                            onKeyDown={sortable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h.column.getToggleSortingHandler()?.(e); } } : undefined}
+                            onKeyDown={
+                              sortable
+                                ? (e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault();
+                                      h.column.getToggleSortingHandler()?.(e);
+                                    }
+                                  }
+                                : undefined
+                            }
                           >
                             {h.isPlaceholder ? null : (
                               <span className="inline-flex items-center gap-1">
                                 {flexRender(h.column.columnDef.header, h.getContext())}
-                                {dir === "asc" ? <ChevronUp aria-hidden className="size-3.5" /> : dir === "desc" ? <ChevronDown aria-hidden className="size-3.5" /> : sortable ? <ArrowUpDown aria-hidden className="size-3.5 opacity-30" /> : null}
+                                {dir === "asc" ? (
+                                  <ChevronUp aria-hidden className="size-3.5" />
+                                ) : dir === "desc" ? (
+                                  <ChevronDown aria-hidden className="size-3.5" />
+                                ) : sortable ? (
+                                  <ArrowUpDown aria-hidden className="size-3.5 opacity-30" />
+                                ) : null}
                               </span>
                             )}
                           </th>
@@ -518,64 +495,63 @@ export function DataTable<T, K = string>({
                   ))}
                 </thead>
                 <tbody>
-                  {loading && (
-                    <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />
-                  )}
-                  {!loading && visibleRows.map((row, rowIndex) => {
-                    const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
-                    const isSelected = selectionEnabled && selection!.isSelected(id as K);
-                    return (
-                      <tr
-                        key={row.id}
-                        data-selected={isSelected || undefined}
-                        className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
-                        onClick={(e) => {
-                          if (!selectionEnabled) return;
-                          const target = e.target as HTMLElement;
-                          if (target.closest("button, a, input, select, textarea, [role=button]")) return;
-                          if (e.shiftKey || rowClickSelects) {
-                            handleRowToggle(rowIndex, e);
-                          }
-                        }}
-                      >
-                        {selectionEnabled && (
-                          <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
-                            <input
-                              type="checkbox"
-                              aria-label="تَحديد الصَفّ"
-                              className="size-4 cursor-pointer accent-primary"
-                              checked={isSelected}
-                              onClick={(e) => {
-                                handleRowToggle(rowIndex, e);
-                                e.preventDefault();
-                              }}
-                              onChange={() => { /* noop — التَغيير عَبر onClick */ }}
-                            />
-                          </td>
-                        )}
-                        {row.getVisibleCells().map((cell) => {
-                          const colId = cell.column.id;
-                          const cellVal = cellPrimitive(cell.getValue());
-                          const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
-                          return (
-                            <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
-                              <CopyContextMenu
-                                value={cellVal}
-                                rowHeaders={copyHeaders}
-                                rowValues={rowValues}
-                                columnHeader={columnHeaderText(cell.column)}
-                                columnValues={columnValuesByColId[colId]}
-                              >
-                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                              </CopyContextMenu>
+                  {loading && <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />}
+                  {!loading &&
+                    visibleRows.map((row, rowIndex) => {
+                      const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
+                      const isSelected = selectionEnabled && selection!.isSelected(id as K);
+                      return (
+                        <tr
+                          key={row.id}
+                          data-selected={isSelected || undefined}
+                          className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                          onClick={(e) => {
+                            if (!selectionEnabled) return;
+                            const target = e.target as HTMLElement;
+                            if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                            if (e.shiftKey || rowClickSelects) {
+                              handleRowToggle(rowIndex, e);
+                            }
+                          }}
+                        >
+                          {selectionEnabled && (
+                            <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                aria-label="تَحديد الصَفّ"
+                                className="size-4 cursor-pointer accent-primary"
+                                checked={isSelected}
+                                onClick={(e) => {
+                                  handleRowToggle(rowIndex, e);
+                                  e.preventDefault();
+                                }}
+                                onChange={() => {
+                                  /* noop — التَغيير عَبر onClick */
+                                }}
+                              />
                             </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
+                          )}
+                          {row.getVisibleCells().map((cell) => {
+                            const colId = cell.column.id;
+                            const cellVal = cellPrimitive(cell.getValue());
+                            const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
+                            return (
+                              <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
+                                <CopyContextMenu value={cellVal} rowHeaders={copyHeaders} rowValues={rowValues} columnHeader={columnHeaderText(cell.column)} columnValues={columnValuesByColId[colId]}>
+                                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                </CopyContextMenu>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
                   {!loading && visibleRows.length === 0 && (
-                    <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyOrError}</td></tr>
+                    <tr>
+                      <td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">
+                        {emptyOrError}
+                      </td>
+                    </tr>
                   )}
                 </tbody>
               </table>
@@ -612,12 +588,27 @@ export function DataTable<T, K = string>({
                         aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
                         {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
                         onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
-                        onKeyDown={sortable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h.column.getToggleSortingHandler()?.(e); } } : undefined}
+                        onKeyDown={
+                          sortable
+                            ? (e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  h.column.getToggleSortingHandler()?.(e);
+                                }
+                              }
+                            : undefined
+                        }
                       >
                         {h.isPlaceholder ? null : (
                           <span className="inline-flex items-center gap-1">
                             {flexRender(h.column.columnDef.header, h.getContext())}
-                            {dir === "asc" ? <ChevronUp aria-hidden className="size-3.5" /> : dir === "desc" ? <ChevronDown aria-hidden className="size-3.5" /> : sortable ? <ArrowUpDown aria-hidden className="size-3.5 opacity-30" /> : null}
+                            {dir === "asc" ? (
+                              <ChevronUp aria-hidden className="size-3.5" />
+                            ) : dir === "desc" ? (
+                              <ChevronDown aria-hidden className="size-3.5" />
+                            ) : sortable ? (
+                              <ArrowUpDown aria-hidden className="size-3.5 opacity-30" />
+                            ) : null}
                           </span>
                         )}
                       </th>
@@ -627,127 +618,107 @@ export function DataTable<T, K = string>({
               ))}
             </thead>
             <tbody>
-              {loading && (
-                <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />
-              )}
-              {!loading && visibleRows.map((row, rowIndex) => {
-                const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
-                const isSelected = selectionEnabled && selection!.isSelected(id as K);
-                return (
-                  <tr
-                    key={row.id}
-                    data-selected={isSelected || undefined}
-                    className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
-                    onClick={(e) => {
-                      if (!selectionEnabled) return;
-                      const target = e.target as HTMLElement;
-                      if (target.closest("button, a, input, select, textarea, [role=button]")) return;
-                      if (e.shiftKey || rowClickSelects) {
-                        handleRowToggle(rowIndex, e);
-                      }
-                    }}
-                  >
-                    {selectionEnabled && (
-                      <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          aria-label="تَحديد الصَفّ"
-                          className="size-4 cursor-pointer accent-primary"
-                          checked={isSelected}
-                          onClick={(e) => {
-                            handleRowToggle(rowIndex, e);
-                            e.preventDefault();
-                          }}
-                          onChange={() => { /* noop — التَغيير عَبر onClick */ }}
-                        />
-                      </td>
-                    )}
-                    {row.getVisibleCells().map((cell) => {
-                      const colId = cell.column.id;
-                      const cellVal = cellPrimitive(cell.getValue());
-                      const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
-                      return (
-                        <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
-                          <CopyContextMenu
-                            value={cellVal}
-                            rowHeaders={copyHeaders}
-                            rowValues={rowValues}
-                            columnHeader={columnHeaderText(cell.column)}
-                            columnValues={columnValuesByColId[colId]}
-                          >
-                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                          </CopyContextMenu>
+              {loading && <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />}
+              {!loading &&
+                visibleRows.map((row, rowIndex) => {
+                  const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
+                  const isSelected = selectionEnabled && selection!.isSelected(id as K);
+                  return (
+                    <tr
+                      key={row.id}
+                      data-selected={isSelected || undefined}
+                      className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                      onClick={(e) => {
+                        if (!selectionEnabled) return;
+                        const target = e.target as HTMLElement;
+                        if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                        if (e.shiftKey || rowClickSelects) {
+                          handleRowToggle(rowIndex, e);
+                        }
+                      }}
+                    >
+                      {selectionEnabled && (
+                        <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            aria-label="تَحديد الصَفّ"
+                            className="size-4 cursor-pointer accent-primary"
+                            checked={isSelected}
+                            onClick={(e) => {
+                              handleRowToggle(rowIndex, e);
+                              e.preventDefault();
+                            }}
+                            onChange={() => {
+                              /* noop — التَغيير عَبر onClick */
+                            }}
+                          />
                         </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
+                      )}
+                      {row.getVisibleCells().map((cell) => {
+                        const colId = cell.column.id;
+                        const cellVal = cellPrimitive(cell.getValue());
+                        const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
+                        return (
+                          <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
+                            <CopyContextMenu value={cellVal} rowHeaders={copyHeaders} rowValues={rowValues} columnHeader={columnHeaderText(cell.column)} columnValues={columnValuesByColId[colId]}>
+                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                            </CopyContextMenu>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
               {!loading && visibleRows.length === 0 && (
-                <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyOrError}</td></tr>
+                <tr>
+                  <td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">
+                    {emptyOrError}
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
         </TableShell>
       )}
       {serverMode ? (
-        <>
-          {selectionEnabled && selection!.count > 0 && (
-            <div className="text-xs text-muted-foreground">
-              مُحَدَّد: {selection!.count.toLocaleString("ar-IQ-u-nu-latn")}
-            </div>
-          )}
-          {/* شريط الترقيم الموحّد — نفس الصيغة والاتجاه في كل جداول النظام. */}
-          <TablePager
-            page={serverPagination!.page}
-            onPageChange={serverPagination!.onPageChange}
-            pageSize={serverPagination!.pageSize}
-            rowsOnPage={data.length}
-            total={serverPagination!.total}
-            hasMore={serverPagination!.hasMore}
-            isLoading={loading}
-            className="border-t-0 p-0 pt-1"
-          />
-        </>
-      ) : data.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-          <span>
-            {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ-u-nu-latn")} من {data.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ
-            {selectionEnabled && selection!.count > 0 && (
-              <> · مُحَدَّد: {selection!.count.toLocaleString("ar-IQ-u-nu-latn")}</>
-            )}
-          </span>
-          {paginated && table.getPageCount() > 1 && (
-            <div className="flex items-center gap-2">
-              <span>
-                صفحة {(table.getState().pagination.pageIndex + 1).toLocaleString("ar-IQ-u-nu-latn")} من{" "}
-                {table.getPageCount().toLocaleString("ar-IQ-u-nu-latn")}
-              </span>
-              <div className="flex gap-1">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7"
-                  onClick={() => table.previousPage()}
-                  disabled={!table.getCanPreviousPage()}
-                  aria-label="الصفحة السابقة"
-                >
-                  <ChevronRight aria-hidden className="size-4" />
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7"
-                  onClick={() => table.nextPage()}
-                  disabled={!table.getCanNextPage()}
-                  aria-label="الصفحة التالية"
-                >
-                  <ChevronLeft aria-hidden className="size-4" />
-                </Button>
+        /* شريط الترقيم الموحّد — نفس الصيغة والاتجاه في كل جداول النظام. */
+        <TablePager
+          page={serverPagination!.page}
+          onPageChange={serverPagination!.onPageChange}
+          pageSize={serverPagination!.pageSize}
+          rowsOnPage={data.length}
+          total={serverPagination!.total}
+          hasMore={serverPagination!.hasMore}
+          isLoading={loading}
+          status={selectionEnabled && selection!.count > 0 ? `محدّد: ${selection!.count.toLocaleString("ar-IQ-u-nu-latn")}` : undefined}
+          actions={columnControls}
+        />
+      ) : (
+        data.length > 0 && (
+          <WorkspaceStatusBar>
+            <span>
+              {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ-u-nu-latn")} من {data.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ
+              {selectionEnabled && selection!.count > 0 && <> · مُحَدَّد: {selection!.count.toLocaleString("ar-IQ-u-nu-latn")}</>}
+            </span>
+            {paginated && table.getPageCount() > 1 && (
+              <div className="flex items-center gap-2">
+                {columnControls}
+                <span>
+                  صفحة {(table.getState().pagination.pageIndex + 1).toLocaleString("ar-IQ-u-nu-latn")} من {table.getPageCount().toLocaleString("ar-IQ-u-nu-latn")}
+                </span>
+                <div className="flex gap-1">
+                  <Button size="sm" variant="outline" className="h-7" onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()} aria-label="الصفحة السابقة">
+                    <ChevronRight aria-hidden className="size-4" />
+                  </Button>
+                  <Button size="sm" variant="outline" className="h-7" onClick={() => table.nextPage()} disabled={!table.getCanNextPage()} aria-label="الصفحة التالية">
+                    <ChevronLeft aria-hidden className="size-4" />
+                  </Button>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+            {(!paginated || table.getPageCount() <= 1) && columnControls}
+          </WorkspaceStatusBar>
+        )
       )}
     </div>
   );

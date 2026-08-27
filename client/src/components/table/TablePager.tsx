@@ -12,9 +12,11 @@
 //   • وضع الإجمالي (total معلوم) ⇒ «عرض ١–٥٠ من ١٢٣» + تعطيل «التالي» عند آخر صفحة.
 //   • وضع hasMore (بلا COUNT — keyset) ⇒ «عرض ١–٥٠» + «التالي» يعتمد hasMore.
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { fmtInt } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
 
 export function TablePager({
   page,
@@ -24,6 +26,8 @@ export function TablePager({
   total,
   hasMore,
   isLoading = false,
+  status,
+  actions,
   className,
 }: {
   /** رقم الصفحة الحالية بدءاً من ٠. */
@@ -37,6 +41,10 @@ export function TablePager({
   /** هل بعد هذه الصفحة المزيد — يُستعمل حين لا إجمالي (keyset). */
   hasMore?: boolean;
   isLoading?: boolean;
+  /** حالة تشغيلية إضافية (مثل عدد الصفوف المحددة). */
+  status?: ReactNode;
+  /** أدوات مرتبطة بالجدول تُوضَع في شريط الحالة (الأعمدة/الكثافة مثلاً). */
+  actions?: ReactNode;
   className?: string;
 }) {
   const offset = page * pageSize;
@@ -54,36 +62,29 @@ export function TablePager({
   const last = offset + rowsOnPage;
 
   return (
-    <div
-      className={cn("flex flex-wrap items-center justify-between gap-2 border-t p-3", className)}
-      role="navigation"
-      aria-label="ترقيم الصفحات"
-    >
+    <WorkspaceStatusBar className={cn("flex-nowrap", className)} role="navigation" aria-label="ترقيم الصفحات">
       <span className="text-xs text-muted-foreground" aria-live="polite">
         عرض {fmtInt(first)}–{fmtInt(last)}
         {knownTotal ? <> من {fmtInt(total)}</> : null}
-        {pages && pages > 1 ? <> · صفحة {fmtInt(page + 1)} من {fmtInt(pages)}</> : null}
+        {pages && pages > 1 ? (
+          <>
+            {" "}
+            · صفحة {fmtInt(page + 1)} من {fmtInt(pages)}
+          </>
+        ) : null}
+        {status ? <> · {status}</> : null}
       </span>
       <div className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!canPrev || isLoading}
-          onClick={() => onPageChange(Math.max(0, page - 1))}
-        >
+        {actions}
+        <Button variant="outline" size="sm" disabled={!canPrev || isLoading} onClick={() => onPageChange(Math.max(0, page - 1))}>
           السابق
           <ChevronRight aria-hidden className="size-4" />
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!canNext || isLoading}
-          onClick={() => onPageChange(page + 1)}
-        >
+        <Button variant="outline" size="sm" disabled={!canNext || isLoading} onClick={() => onPageChange(page + 1)}>
           <ChevronLeft aria-hidden className="size-4" />
           التالي
         </Button>
       </div>
-    </div>
+    </WorkspaceStatusBar>
   );
 }

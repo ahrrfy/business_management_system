@@ -36,6 +36,7 @@ export default defineConfig({
       "client/src/lib/workOrderRefundPolicy.test.ts",
       "client/src/lib/voucherCategoryAccounting.test.ts",
       "client/src/components/vouchers/voucherUiPolicy.test.ts",
+      "client/src/components/workspace/OperationalWorkspace.test.ts",
       "client/src/components/storefront/TurnstileWidget.test.ts",
       "client/src/components/storefront/ConsentChoice.test.ts",
       "client/src/pages/Storefront.test.ts",
