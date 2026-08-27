@@ -1781,13 +1781,6 @@
 			"breakpoints": true
 		},
 		{
-			"idx": 269,
-			"version": "5",
-			"when": 1788052320000,
-			"tag": "0269_studio_multi_category_and_any_policy",
-			"breakpoints": true
-		},
-		{
 			"idx": 270,
 			"version": "5",
 			"when": 1788052321000,
@@ -1813,6 +1806,13 @@
 			"version": "5",
 			"when": 1788052324000,
 			"tag": "0273_journal_lines_party_dims",
+			"breakpoints": true
+		},
+		{
+			"idx": 269,
+			"version": "5",
+			"when": 1788052325000,
+			"tag": "0269_studio_multi_category_and_any_policy",
 			"breakpoints": true
 		}
 	]
