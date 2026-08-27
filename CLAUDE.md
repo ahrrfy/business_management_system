@@ -79,8 +79,14 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 | `check:authz` | انحراف جرد الصلاحيات عن خطّ الأساس |
 | `check:nginx-abuse` | انحراف إعداد nginx عن عقد الحماية |
 | `check:compose` | تعذّر تحليل `docker-compose.yml` بقيم اختبار آمنة |
+| `check:page-header` | (S1، PR #795) `<h1>` مباشر خارج `PageHeader` أو رابط «← رجوع» يدويّ في `client/src/pages/**`. المحرف `←` في RTL يشير للأمام لا للخلف. البديل: `<PageHeader backHref backLabel />`. خطّ أساسٍ مجمَّد يُخفَّض دفعةً دفعة |
+| `check:invoice-status-variants` | (S2، PR #795) خرائط `variant` محلّية لِـ`PAID/PENDING/…` — كانت الشاشات الثلاث تعرض PAID بلونٍ مختلف. المصدر الوحيد: `invoiceStatusBadgeVariant` من `@shared/invoiceStatus` |
+| `check:raw-tables` | (S3، PR #795) `<table>` HTML خامّ جديد في `client/src/pages/**`. البديل: `<DataTable>` من `@/components/data-table/DataTable` — يوحّد الترقيم/البحث/الفارغ/الخطأ/التحميل. خطّ الأساس: ١٢٤ ملف · ٢٠٥ استعمال |
+| `check:window-print` | (S4، PR #795) `window.print()` مباشر جديد في `client/src/pages/**`. البديل: `printReportDoc` من `@/lib/printing/reportDoc` — يوحّد هويّة المستند + رسالة عربية عند حجب popup + إخفاء أزرار الأدوات. خطّ الأساس: ١٩ ملف · ٢٣ استعمال |
+| `check:locale-numbers` | (i18n مالك ٢٥/٨/٢٦، PR #795) `toLocaleString("ar-…")` أو `Intl.NumberFormat("ar-…")` بلا `-u-nu-latn` — يُنتج أرقاماً هندية (١٢٣) بدل لاتينية (123). **صفر تسامح** — لا خطّ أساس. البديل: `"ar-IQ-u-nu-latn"` أو مساعدو `client/src/lib/money.ts` (`fmt`/`fmtAr`/`formatIqd`) |
+| `check:raw-select` | (S6، PR #819) `<select>` HTML خامّ جديد في `client/src/pages/**`. البديل: `AppSelect` من `@/components/ui/AppSelect` — popup غير مقتطع + Type-ahead + RTL + dark. خطّ الأساس: ٧٥ ملف · ١٧٧ استعمال |
 
-- CI يشغّل هذه الأحد عشر **عدا `check:authz`**؛ يحرسها بدلاً منه وظيفةٌ منفصلة `authz-guard` عبر `authz-guard-diff.mjs` (فرقُ قاعدة الدمج: ترفض ما **يُدخِله الـPR** من `raw-role` أو إجراءٍ بلا بوّابة وحدة، ولا تُحاسب على انحراف `main` القائم). ويشغّل CI أيضاً `check:mobile-release` و`db:verify` و`verify-digital-cards-integrity --selftest`.
+- CI يشغّل هذه **جميعها** ما عدا `check:authz`؛ يحرسه بدلاً منه وظيفةٌ منفصلة `authz-guard` عبر `authz-guard-diff.mjs` (فرقُ قاعدة الدمج: ترفض ما **يُدخِله الـPR** من `raw-role` أو إجراءٍ بلا بوّابة وحدة، ولا تُحاسب على انحراف `main` القائم). ويشغّل CI أيضاً `check:mobile-release` و`db:verify` و`verify-digital-cards-integrity --selftest`.
 - ⇒ **`pnpm check:guards` محلياً أوسع من خطوات CI الفردية** — شغّله قبل الدفع.
 
 ## ٤. القاعدة الحاكمة (Definition of Done) — لا تُكسَر

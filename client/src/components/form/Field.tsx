@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useFormContext } from "react-hook-form";
+import { FieldError } from "./FieldError";
 
 const selectCls =
   "h-[var(--ui-control)] w-full rounded-[var(--ui-radius-control)] border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]";
@@ -70,9 +71,8 @@ export function Field({
       )}
 
       {hint && !error && <p className="text-xs text-muted-foreground">{hint}</p>}
-      {error && (
-        <p id={errorId} className="text-xs text-destructive">{String(error.message)}</p>
-      )}
+      {/* S6: FieldError مركزيّ — role="alert" + aria-live + أيقونة + توكن دلاليّ (بدل text-destructive عارٍ). */}
+      <FieldError id={errorId} message={error ? String(error.message) : undefined} />
     </div>
   );
 }

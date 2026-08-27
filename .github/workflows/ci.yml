@@ -239,6 +239,8 @@ jobs:
         run: pnpm check:window-print
       - name: حارِس قاعدة الأرقام اللاتينية (قرار المالك ٢٥/٨/٢٦)
         run: pnpm check:locale-numbers
+      - name: حارِس اعتماد AppSelect (يمنع <select> خامّ جديد في pages)
+        run: pnpm check:raw-select
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: بناء الإنتاج
