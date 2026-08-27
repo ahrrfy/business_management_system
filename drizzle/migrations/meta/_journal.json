@@ -1793,6 +1793,13 @@
 			"when": 1788052322000,
 			"tag": "0271_journal_lines_branch_dim",
 			"breakpoints": true
+		},
+		{
+			"idx": 272,
+			"version": "5",
+			"when": 1788052323000,
+			"tag": "0272_journal_branch_fk_governance",
+			"breakpoints": true
 		}
 	]
 }

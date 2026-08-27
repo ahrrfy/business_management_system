@@ -11832,7 +11832,16 @@ export const journalEntries = mysqlTable(
     /** يعزل دورات SHADOW المتعاقبة؛ لا يجوز أن تدخل يوميات دورة موقوفة في أرصدة الدورة الحالية. */
     cycleId: varchar("cycleId", { length: 36 }),
     entryDate: date("entryDate").notNull(),
-    branchId: bigint("branchId", { mode: "number" }),
+    /**
+     * Tier-3 #1 (٢٧/٨، هجرة 0272): FK صريحة إلى `branches.id` `ON DELETE RESTRICT`.
+     * الحوكمة: سلسلة الاشتقاق `accountingEntries.branchId` (FK'd) → `journalEntries.branchId`
+     * (كان بلا FK) → `journalLines.branchId` (كان بلا FK حتى Tier-2 #6). أُضيفت FK للطرفَين معاً
+     * دفاعاً في العمق يمسك أيّ writeJournal بـbranchId خاطئ لحظة الإدراج.
+     */
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+      { onDelete: "restrict" },
+    ),
     status: mysqlEnum("status", ["POSTED", "UNMAPPED", "MEMO"])
       .default("POSTED")
       .notNull(),
@@ -11877,11 +11886,14 @@ export const journalLines = mysqlTable(
      * `journalEntries.branchId` قائمٌ على مستوى الرأس، لكنّ قيداً واحداً قد يشمل حركاتٍ
      * من فروعٍ مختلفة (تحويلٌ بين فروع، تسويةٌ متعدّدة). البعد على السطر يُمكّن ميزان
      * مراجعةٍ بالفرع، وP&L أدقّ، وحصّةً لكل فرعٍ من مصروفٍ مشترك دون تفكيك الرأس.
-     * Nullable — الأسطر التاريخية بلا بيانات فرعية على السطر تبقى صحيحة. Backfill من الرأس.
-     * **بلا FK** مطابقةً لنمط `journalEntries.branchId` (بعد تحليليّ يُقبل حتى في اختبارات
-     * بلا صفّ فرعٍ صالح — إضافة FK تحتاج backfill منسّق على المستويَين معاً في PR منفصل).
+     * Tier-3 #1 (٢٧/٨، هجرة 0272): FK حوكميّة إلى `branches.id` أُضيفت بالتنسيق مع
+     * FK على `journalEntries.branchId` (كانتا بلا FK في وقت 0271 حتى نُنسّق البذر
+     * في اختبارات الدفتر المزدوج). النمط الآن مطابقٌ لـ`accountingEntries.branchId`.
      */
-    branchId: bigint("branchId", { mode: "number" }),
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+      { onDelete: "restrict" },
+    ),
     debit: decimal("debit", { precision: 15, scale: 2 }).default("0").notNull(),
     credit: decimal("credit", { precision: 15, scale: 2 })
       .default("0")
