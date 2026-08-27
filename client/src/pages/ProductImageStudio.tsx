@@ -3,6 +3,7 @@ import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/pr
 import { StudioImageExportPanel } from "@/components/product-studio/StudioImageExportPanel";
 import { ProductImageGallery } from "@/components/product-studio/ProductImageGallery";
 import { StudioStandaloneImageManagerCard } from "@/components/product-studio/StudioStandaloneImageManagerCard";
+import { StudioImageDiscoveryPanel } from "@/components/product-studio/StudioImageDiscoveryPanel";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
@@ -1182,6 +1183,25 @@ export default function ProductImageStudio() {
           يكتب معرّف منتج، فيفتح المعرض. طلب Codex P2 (٢٦/٨): مدير بمنتجٍ إرثيّ لا يستطيع
           الوصول إلى الأدوات دون إنشاء مهمّةٍ مصطنعة. */}
       {!offline && dashboard.data?.canManage && <StudioStandaloneImageManagerCard />}
+      {/* كاشفُ فجوات الصور — لوحةٌ ذكيّة تُصنّف المنتجات بحالتها وتقترح إجراءاتٍ فوريّة.
+          طلب المالك ٢٦/٨: «منظومة ذكيّة تكشف المنتجات بلا صور، بكج، بدائل ناقصة …». */}
+      {!offline && dashboard.data?.canManage && (
+        <StudioImageDiscoveryPanel
+          onCreateCampaignFromProducts={(productIds) => {
+            setCampaignScope("PRODUCTS");
+            setCampaignProductIds(productIds);
+            // مرِّر التركيز إلى منشئ الحملة كي يبدأ المدير الإدخال مباشرةً.
+            window.setTimeout(() => document.getElementById("studio-campaign-name")?.focus(), 0);
+            notify.ok(`عُبِّئ منشئ الحملة بـ${productIds.length} منتجاً — أكمِل الاسم والمصوّرين ثمّ اضغط «إنشاء وتفعيل»`);
+          }}
+          onCreateCampaignFromCategory={(categoryId) => {
+            setCampaignScope("CATEGORY");
+            setCampaignCategoryId(String(categoryId));
+            window.setTimeout(() => document.getElementById("studio-campaign-name")?.focus(), 0);
+            notify.ok("عُبِّئ منشئ الحملة بالفئة المختارة — أكمِل الاسم والمصوّرين ثمّ اضغط «إنشاء وتفعيل»");
+          }}
+        />
+      )}
 
       {/* تجهيزٌ اختياريّ لاستعادة المسودة عند الانقطاع. كان بطاقةً كاملة فوق المؤشرات
           تُعرَض لكل مستخدمٍ متصل بلا مسودات ولا مخرجَ منها؛ صار شريطاً مؤجَّلاً أسفلها. */}

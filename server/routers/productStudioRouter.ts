@@ -2,6 +2,7 @@ import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
 import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
+import { discoverImageGaps, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
 
 function actor(ctx: {
   user: {
@@ -52,6 +53,23 @@ export const productStudioRouter = router({
   reorderImages: productStudioManagerProcedure
     .input(z.object({ productId: z.number().int().positive(), orderedImageIds: z.array(z.number().int().positive()).min(1).max(200) }))
     .mutation(({ ctx, input }) => reorderProductImages(actor(ctx), input)),
+  // كاشفُ فجوات الصور (طلب المالك ٢٦/٨): تصنيفٌ ذكيّ يُبرِز الأولويّات لتوفير الوقت.
+  imageHealthCounts: productStudioManagerProcedure.query(({ ctx }) => getImageHealthCounts(actor(ctx))),
+  discoverImageGaps: productStudioManagerProcedure
+    .input(
+      z.object({
+        states: z.array(z.enum(IMAGE_HEALTH_STATES)).max(6).optional(),
+        categoryIds: z.array(z.number().int().positive()).max(200).optional(),
+        isBundle: z.boolean().optional(),
+        search: z.string().trim().max(80).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        cursor: z.number().int().nonnegative().optional(),
+      }),
+    )
+    .query(({ ctx, input }) => discoverImageGaps(actor(ctx), input)),
+  topGapCategories: productStudioManagerProcedure
+    .input(z.object({ limit: z.number().int().min(1).max(50).optional() }))
+    .query(({ ctx, input }) => getTopGapCategories(actor(ctx), input.limit)),
   assignees: productStudioManagerProcedure.query(({ ctx }) => listStudioAssignees(actor(ctx))),
   grantStudioAccess: productStudioManagerProcedure
     .input(z.object({ userId: z.number().int().positive() }))
