@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
 import {
   accountingEntries,
+  accounts,
   branchStock,
   customers,
   deliveryConsignments,
@@ -1003,6 +1004,73 @@ export async function reconcileOnlineOrderConsignmentSync(): Promise<ReconcileRe
         note: `طلب ${row.orderNumber}: الطلب يذكر جهة ${row.orderPartyId} والإرسالية ${row.consignmentNumber} مُسنَدةٌ للجهة ${row.consignmentPartyId}`,
       });
     }
+  }
+
+  return issues;
+}
+
+/**
+ * Tier-3 #5 (٢٧/٨) — **حارس أيتام journalLines**: يمسك خرقَ عقد الكاتب بعد Tier-3 #2/#4.
+ *
+ * بعد أن أصبحت `journalLines.accountId` و`journalLines.customerId`/`supplierId`/… تُملأ
+ * تلقائياً من رأس القيد (`writeJournal` يجلب الأبعاد قبل الإدراج)، أيُّ سطرٍ يظهر بـ
+ * `accountId=NULL` رغم أنّ الرأس `POSTED` يعني واحداً من:
+ *   • كتابةٌ قديمة سبقت الهجرات ولم يمسّها backfill (تسريبٌ من `_legacy/`).
+ *   • كتابةٌ جديدة بـ`role` لا يُطابق أيّ `accounts.systemRole` (drift مُنشأ خدمياً).
+ *   • تعديلٌ يدويّ صامت على الجدول (خرقُ الطبقة).
+ * الحارس يعمل شهرياً في `reconcileScheduler` — رصدٌ مبكّرٌ يمنع تراكم الفجوة.
+ *
+ * **الحالات الطرفيّة المُستَبعَدة عمداً:**
+ *   - `journalEntries.status='UNMAPPED'` أو `'MEMO'`: هذه رؤوسٌ بلا أسطر أو بأسطرٍ لا
+ *     تدخل ميزان المراجعة — لا يُطبَّق عليها العقد ولا نحاسبها هنا.
+ *   - `sourceType='SHADOW_OPENING'`: قد تحمل روِلاً بلا حسابٍ مطابق (بيانات استيراد
+ *     تاريخية) — نستثنيها لأنّ backfill هجرة 0270 يُغطّي ما يمكن تغطيته.
+ *
+ * القراءةُ فقط، دون كتابةٍ — الإصلاحُ يدويّ (إضافة الحساب في `accounts` أو تصحيح الرأس).
+ */
+export async function reconcileOrphanJournalLines(): Promise<ReconcileResult[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const orphans = await db
+    .select({
+      lineId: journalLines.id,
+      role: journalLines.role,
+      journalId: journalLines.journalId,
+      entryId: journalEntries.entryId,
+      sourceType: journalEntries.sourceType,
+    })
+    .from(journalLines)
+    .innerJoin(journalEntries, eq(journalEntries.id, journalLines.journalId))
+    .where(and(
+      sql`${journalLines.accountId} IS NULL`,
+      eq(journalEntries.status, "POSTED"),
+      sql`${journalEntries.sourceType} = 'ACCOUNTING_ENTRY'`,
+    ));
+
+  const issues: ReconcileResult[] = [];
+  // نجمعُ روِلاً غير معروف مرّةً واحدة (قد يظهر آلاف الأسطر بنفس role الشاذّ ⇒ ضجيج).
+  const rolesWithoutAccount = new Set<string>();
+  for (const row of orphans) {
+    if (!rolesWithoutAccount.has(row.role)) {
+      const [accountMatch] = await db
+        .select({ id: accounts.id })
+        .from(accounts)
+        .where(eq(accounts.systemRole, row.role))
+        .limit(1);
+      if (!accountMatch) rolesWithoutAccount.add(row.role);
+    }
+    const roleHasAccount = !rolesWithoutAccount.has(row.role);
+    issues.push({
+      entity: roleHasAccount ? "journalLineMissingBackfill" : "journalLineUnknownRole",
+      id: Number(row.lineId),
+      expected: "accountId=<accounts.id>",
+      actual: "NULL",
+      drift: "1",
+      note: roleHasAccount
+        ? `سطرٌ في القيد ${row.entryId} بـrole=${row.role} — الحساب موجود لكنّ backfill لم يشمله (يُصلَح بإعادة كتابة).`
+        : `سطرٌ في القيد ${row.entryId} بـrole=${row.role} — لا حسابَ بهذا systemRole (drift في الخريطة).`,
+    });
   }
 
   return issues;

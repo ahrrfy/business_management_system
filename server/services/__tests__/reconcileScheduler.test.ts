@@ -24,8 +24,8 @@ describe("runReconcileScanOnce — دورةُ قراءةٍ ليليّة", () => 
     expect(summary).toHaveProperty("totalIssueCount");
     expect(summary).toHaveProperty("balanced");
     expect(summary).toHaveProperty("sections");
-    // الأقسام الستّة الحاكمة — لو نقص أحدها، تنكسر الشاشة والسكربت معاً.
-    for (const key of ["customers", "suppliers", "delivery", "inventory", "ledger", "onlineOrders"] as const) {
+    // الأقسام السبعة الحاكمة — لو نقص أحدها، تنكسر الشاشة والسكربت معاً.
+    for (const key of ["customers", "suppliers", "delivery", "inventory", "ledger", "onlineOrders", "journalOrphans"] as const) {
       expect(summary.sections[key]).toEqual({ issueCount: 0, balanced: true });
     }
     expect(summary.totalIssueCount).toBe(0);

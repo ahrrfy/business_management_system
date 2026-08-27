@@ -17,6 +17,7 @@ describe("financial reconciliation mobile summary", () => {
       inventory: [],
       ledger: [],
       onlineOrders: [],
+      journalOrphans: [],
       runAt: "2026-08-09T21:15:00.000Z",
     });
 
@@ -31,6 +32,7 @@ describe("financial reconciliation mobile summary", () => {
         inventory: { issueCount: 0, balanced: true },
         ledger: { issueCount: 0, balanced: true },
         onlineOrders: { issueCount: 0, balanced: true },
+        journalOrphans: { issueCount: 0, balanced: true },
       },
     });
 
@@ -48,6 +50,7 @@ describe("financial reconciliation mobile summary", () => {
       inventory: [],
       ledger: [],
       onlineOrders: [],
+      journalOrphans: [],
       runAt: "2026-08-09T21:15:00.000Z",
     });
 

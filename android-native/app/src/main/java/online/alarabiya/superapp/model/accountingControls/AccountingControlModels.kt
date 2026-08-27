@@ -52,7 +52,7 @@ enum class AccountingControlsSection { ACCOUNTS, FINANCIAL_RECONCILIATION, EXCHA
  * The five independent integrity checks returned by reports.reconcile. This is deliberately
  * distinct from [ExchangeReconciliation], which compares one exchange-house statement.
  */
-enum class FinancialReconciliationAxis { CUSTOMERS, SUPPLIERS, DELIVERY, INVENTORY, LEDGER, ONLINE_ORDERS }
+enum class FinancialReconciliationAxis { CUSTOMERS, SUPPLIERS, DELIVERY, INVENTORY, LEDGER, ONLINE_ORDERS, JOURNAL_ORPHANS }
 
 data class FinancialReconciliationSection(
     val axis: FinancialReconciliationAxis,

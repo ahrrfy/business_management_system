@@ -4,6 +4,7 @@ import {
   reconcileInventory,
   reconcileLedgerProfit,
   reconcileOnlineOrderConsignmentSync,
+  reconcileOrphanJournalLines,
   reconcileSupplierBalances,
   type ReconcileResult,
 } from "../reconcileService";
@@ -16,6 +17,8 @@ export interface FinancialReconciliationDetails {
   ledger: ReconcileResult[];
   /** Tier-2 #4 (٢٦/٨): سلامة الربط بين طلب المتجر والإرسالية — أربع حالاتٍ حاكمة. */
   onlineOrders: ReconcileResult[];
+  /** Tier-3 #5 (٢٧/٨): أيتام journalLines بلا accountId — خرقُ عقد الكاتب بعد Tier-3 #2/#4. */
+  journalOrphans: ReconcileResult[];
   runAt: string;
 }
 
@@ -25,7 +28,8 @@ export type FinancialReconciliationSectionKey =
   | "delivery"
   | "inventory"
   | "ledger"
-  | "onlineOrders";
+  | "onlineOrders"
+  | "journalOrphans";
 
 export interface FinancialReconciliationSummarySection {
   issueCount: number;
@@ -39,17 +43,18 @@ export interface FinancialReconciliationSummary {
   sections: Record<FinancialReconciliationSectionKey, FinancialReconciliationSummarySection>;
 }
 
-/** Runs the same six authoritative checks used by the detailed desktop reconciliation screen. */
+/** Runs the same seven authoritative checks used by the detailed desktop reconciliation screen. */
 export async function getFinancialReconciliationDetails(): Promise<FinancialReconciliationDetails> {
-  const [customers, suppliers, delivery, inventory, ledger, onlineOrders] = await Promise.all([
+  const [customers, suppliers, delivery, inventory, ledger, onlineOrders, journalOrphans] = await Promise.all([
     reconcileCustomerBalances(),
     reconcileSupplierBalances(),
     reconcileDeliveryFloat(),
     reconcileInventory(),
     reconcileLedgerProfit(),
     reconcileOnlineOrderConsignmentSync(),
+    reconcileOrphanJournalLines(),
   ]);
-  return { customers, suppliers, delivery, inventory, ledger, onlineOrders, runAt: new Date().toISOString() };
+  return { customers, suppliers, delivery, inventory, ledger, onlineOrders, journalOrphans, runAt: new Date().toISOString() };
 }
 
 /**
@@ -66,6 +71,7 @@ export function toFinancialReconciliationSummary(
     inventory: section(details.inventory),
     ledger: section(details.ledger),
     onlineOrders: section(details.onlineOrders),
+    journalOrphans: section(details.journalOrphans),
   } satisfies FinancialReconciliationSummary["sections"];
   const totalIssueCount = Object.values(sections).reduce((sum, value) => sum + value.issueCount, 0);
   return {
