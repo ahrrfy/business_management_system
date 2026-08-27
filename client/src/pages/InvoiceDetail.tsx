@@ -1096,7 +1096,7 @@ export default function InvoiceDetail() {
                           "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
                           p.direction === "IN"
                             ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
-                            : "bg-rose-100 text-rose-700",
+                            : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
                         )}
                       >
                         {p.direction === "IN" ? "وارد" : "صادر"}

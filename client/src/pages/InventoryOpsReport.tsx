@@ -436,7 +436,7 @@ function ViewTable({
             <td className="p-2.5 text-right font-medium">
               {r.productName}
               {r.costMissing && (
-                <span className="mr-2 inline-block rounded-md border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-[11px] font-bold text-rose-700">
+                <span className="mr-2 inline-block rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-neg)]">
                   بلا تكلفة
                 </span>
               )}
@@ -450,7 +450,7 @@ function ViewTable({
             <td className="p-2.5 text-right">
               <span
                 className={`inline-block rounded-full px-2 py-0.5 text-xs ${
-                  r.opened ? "bg-muted text-muted-foreground" : "border border-amber-300 bg-amber-50 text-amber-800"
+                  r.opened ? "bg-muted text-muted-foreground" : "border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
                 }`}
               >
                 {r.opened ? "مُفتتَح — عجز بعد الافتتاح" : "بانتظار الجرد الافتتاحي"}

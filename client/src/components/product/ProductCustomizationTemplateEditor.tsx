@@ -173,7 +173,7 @@ export function ProductCustomizationTemplateEditor({ productId, enabled }: { pro
   }
 
   return (
-    <Card className="border-amber-200 bg-amber-50/40">
+    <Card className="border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)]/40">
       <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
         <div><CardTitle className="text-base">قالب التخصيص المنظم</CardTitle><CardDescription>عرّف الحقول التي تظهر للزبون وتبعياتها. المنتج العادي لا يعرض هذا النموذج.</CardDescription></div>
         <label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={isActive} disabled={setActive.isPending} onChange={(event) => changeActive(event.target.checked)} /> مفعّل</label>
@@ -192,7 +192,7 @@ export function ProductCustomizationTemplateEditor({ productId, enabled }: { pro
                 <Input value={field.label} onChange={(event) => updateField(index, { label: event.target.value })} placeholder="اسم الحقل" aria-label="اسم الحقل" />
                 <select value={field.fieldType} onChange={(event) => updateField(index, { fieldType: event.target.value as FieldType })} className="h-9 rounded-md border bg-background px-2 text-sm" aria-label="نوع الحقل"><option value="TEXT">نص قصير</option><option value="TEXTAREA">نص طويل</option><option value="SELECT">قائمة اختيار</option><option value="SWATCH">اختيارات مرئية</option><option value="FILE">مرجع ملف</option><option value="NUMBER">رقم</option></select>
                 <Input value={field.sortOrder} onChange={(event) => updateField(index, { sortOrder: Number(event.target.value) || 0 })} type="number" placeholder="الترتيب" aria-label="الترتيب" />
-                <Button type="button" variant="ghost" size="icon" onClick={() => setFields((current) => current.filter((_, i) => i !== index))} aria-label="حذف الحقل"><Trash2 className="size-4 text-rose-600" /></Button>
+                <Button type="button" variant="ghost" size="icon" onClick={() => setFields((current) => current.filter((_, i) => i !== index))} aria-label="حذف الحقل"><Trash2 className="size-4 text-[var(--sem-neg)]" /></Button>
               </div>
               <div className="mt-2 grid gap-2 md:grid-cols-4">
                 <label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={field.isRequired} onChange={(event) => updateField(index, { isRequired: event.target.checked })} /> مطلوب</label>

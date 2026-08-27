@@ -306,7 +306,7 @@ export default function ReportsCenter() {
       {favItems.length > 0 && (
         <section className="space-y-2">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-            <Star aria-hidden className="size-4 fill-amber-400 text-amber-500" />
+            <Star aria-hidden className="size-4 fill-[var(--sem-warn)] text-[var(--sem-warn)]" />
             <span>المفضّلة</span>
           </h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -391,7 +391,7 @@ function ReportCard({
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleFav(item.href); }}
             className={cn(
               "inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors",
-              fav ? "text-amber-500" : "text-muted-foreground/30 hover:text-amber-500",
+              fav ? "text-[var(--sem-warn)]" : "text-muted-foreground/30 hover:text-[var(--sem-warn)]",
             )}
             aria-label={fav ? "إزالة من المفضّلة" : "إضافة للمفضّلة"}
             title={fav ? "إزالة من المفضّلة" : "إضافة للمفضّلة"}
