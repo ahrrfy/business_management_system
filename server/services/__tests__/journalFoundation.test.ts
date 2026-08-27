@@ -44,7 +44,11 @@ async function reset() {
     "accountingEntries",
     "doubleEntrySettings",
     "users",
+    "branches",
   ]);
+  // Tier-3 #1 (٢٧/٨، هجرة 0272): FK على journalEntries.branchId + journalLines.branchId
+  // ⇒ الفروع تُبذر قبل كل اختبارٍ يمرّر branchId=1 (كل اختبارات الملف).
+  await db().insert(s.branches).values({ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" });
 }
 
 /** قيدٌ ماليٌّ حقيقيّ في الدفتر المبسّط ⇒ يُعيد معرّفه (الطرف المرجعيّ للقيد المزدوج). */
