@@ -439,7 +439,7 @@ function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: 
           <button
             onClick={onFail}
             disabled={busy}
-            className="ms-auto flex items-center gap-1 rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
+            className="ms-auto flex items-center gap-1 rounded-lg border border-[var(--sem-neg)]/40 px-3 py-2 text-xs font-bold text-[var(--sem-neg)] transition hover:bg-[var(--sem-neg-bg)] disabled:opacity-50"
           >
             <XCircle aria-hidden className="size-3.5" /> تعذّر التسليم
           </button>
@@ -469,7 +469,7 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="تعذّر التسليم" onClick={onCancel} dir="rtl">
       <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold text-rose-600 dark:text-rose-400">
+        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-neg)]">
           <XCircle aria-hidden className="size-5" />
           تعذّر تسليم <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
         </div>
@@ -480,7 +480,7 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
         </p>
         <div className="mb-2 flex flex-wrap gap-1.5">
           {REASONS.map((r) => (
-            <button key={r} type="button" onClick={() => setReason(r)} className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${reason === r ? "bg-rose-600 text-white" : "bg-muted text-muted-foreground hover:bg-accent"}`}>
+            <button key={r} type="button" onClick={() => setReason(r)} className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${reason === r ? "bg-[var(--sem-neg)] text-background" : "bg-muted text-muted-foreground hover:bg-accent"}`}>
               {r}
             </button>
           ))}
@@ -497,7 +497,7 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
           <button
             onClick={() => reason.trim().length >= 2 && onConfirm(reason.trim())}
             disabled={pending || reason.trim().length < 2}
-            className="flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-rose-700 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-[var(--sem-neg)] px-4 py-2 text-sm font-bold text-background transition hover:bg-[var(--sem-neg-hover)] disabled:opacity-50"
           >
             {pending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <XCircle aria-hidden className="size-4" />}
             تأكيد الإلغاء

@@ -1436,7 +1436,7 @@ export default function StocktakeReview() {
                     key={r.variantId}
                     className={`border-t align-top ${
                       r.overThreshold && !r.decision && !recPending
-                        ? "bg-rose-50/40"
+                        ? "bg-[var(--sem-neg-bg)]/60"
                         : r.diff != null && r.diff !== 0
                           ? "bg-[var(--sem-warn-bg)]/40"
                           : ""
@@ -1516,7 +1516,7 @@ export default function StocktakeReview() {
                         </p>
                       )}
                       {conflictOpen && r.conflict && (
-                        <p className="mt-1 inline-flex items-center gap-1 rounded-md bg-rose-50 px-1.5 py-0.5 text-[11px] font-bold text-rose-700">
+                        <p className="mt-1 inline-flex items-center gap-1 rounded-md bg-[var(--sem-neg-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-neg)]">
                           <AlertTriangle aria-hidden className="size-3" />
                           تعارض: {r.conflict.by1} عدّ{" "}
                           <span dir="ltr">{nf(r.conflict.qty1)}</span> —{" "}
@@ -1623,7 +1623,7 @@ export default function StocktakeReview() {
                         r.diff != null && r.diff > 0
                           ? "text-[var(--sem-info)]"
                           : r.diff != null && r.diff < 0
-                            ? "text-rose-700"
+                            ? "text-[var(--sem-neg)]"
                             : "text-[var(--sem-pos)]"
                       }`}
                       dir="ltr"
@@ -1639,7 +1639,7 @@ export default function StocktakeReview() {
                     <td
                       className={`p-2.5 text-center font-mono tabular-nums ${
                         r.value != null && D(r.value).isNegative()
-                          ? "text-rose-700"
+                          ? "text-[var(--sem-neg)]"
                           : r.value != null && D(r.value).gt(0)
                             ? "text-[var(--sem-info)]"
                             : "text-muted-foreground"
@@ -1734,7 +1734,7 @@ export default function StocktakeReview() {
                         <Button
                           size="sm"
                           variant="outline"
-                          className="text-rose-700"
+                          className="text-[var(--sem-neg)]"
                           disabled={!isOperational || !!r.reviewApproved}
                           onClick={() => setConflictFor(r.variantId)}
                         >

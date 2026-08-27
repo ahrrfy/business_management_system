@@ -279,10 +279,10 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
               onChange={(e) => { onChange({ username: e.target.value }); setUsernameChecked(false); setUsernameError(""); }}
               onBlur={() => void checkUsernameFn()}
               placeholder="مثال: marwa.ibrahim"
-              className={usernameError ? "border-destructive" : usernameChecked && !usernameError ? "border-emerald-500" : ""}
+              className={usernameError ? "border-destructive" : usernameChecked && !usernameError ? "border-[var(--sem-pos)]" : ""}
             />
             {usernameError && <p className="text-[11px] text-destructive">{usernameError}</p>}
-            {usernameChecked && !usernameError && value.username.trim() && <p className="text-[11px] text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" /> اسم المستخدم متاح</p>}
+            {usernameChecked && !usernameError && value.username.trim() && <p className="text-[11px] text-[var(--sem-pos)] inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" /> اسم المستخدم متاح</p>}
           </div>
           <div className="space-y-1">
             <Label htmlFor="acc-email">البريد الإلكتروني <span className="text-muted-foreground font-normal">(اختياري)</span></Label>
@@ -292,10 +292,10 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
               onChange={(e) => { onChange({ email: e.target.value }); setEmailChecked(false); setEmailError(""); }}
               onBlur={() => void checkEmailFn()}
               placeholder="user@alroya.local"
-              className={emailError ? "border-destructive" : emailChecked && !emailError ? "border-emerald-500" : ""}
+              className={emailError ? "border-destructive" : emailChecked && !emailError ? "border-[var(--sem-pos)]" : ""}
             />
             {emailError && <p className="text-[11px] text-destructive">{emailError}</p>}
-            {emailChecked && !emailError && <p className="text-[11px] text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" /> البريد متاح</p>}
+            {emailChecked && !emailError && <p className="text-[11px] text-[var(--sem-pos)] inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" /> البريد متاح</p>}
           </div>
           <div className="space-y-1">
             <div className="flex items-center justify-between">
@@ -385,7 +385,7 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
           <div className="space-y-1">
             <Label htmlFor="acc-branch">الفرع</Label>
             <select
-              id="acc-branch" className={`${selectCls} ${branchWarn ? "border-amber-400" : ""}`}
+              id="acc-branch" className={`${selectCls} ${branchWarn ? "border-[var(--sem-warn)]" : ""}`}
               value={String(value.branchId)}
               onChange={(e) => onChange({ branchId: e.target.value === "" ? "" : Number(e.target.value) })}
             >
@@ -395,7 +395,7 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
               ))}
             </select>
             {branchWarn && (
-              <p className="text-[11px] text-amber-600 inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" /> هذا الدور يُنصح بتحديد فرع محدد لتجنّب الوصول لكل الفروع.</p>
+              <p className="text-[11px] text-[var(--sem-warn)] inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" /> هذا الدور يُنصح بتحديد فرع محدد لتجنّب الوصول لكل الفروع.</p>
             )}
           </div>
         </CardContent>
