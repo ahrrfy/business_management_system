@@ -8,6 +8,14 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -313,11 +321,11 @@ export default function ReorderAlerts() {
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
+            <Table>
+              <TableHeader>
+                <TableRow>
                   {canWrite && (
-                    <th className="p-2 text-center w-10">
+                    <TableHead className="text-center w-10">
                       <input
                         type="checkbox"
                         className="size-4 align-middle"
@@ -325,27 +333,27 @@ export default function ReorderAlerts() {
                         checked={rows.length > 0 && selected.size === rows.length}
                         onChange={toggleAll}
                       />
-                    </th>
+                    </TableHead>
                   )}
-                  <th className="p-2 text-start">المنتج</th>
-                  <th className="p-2 text-start">المتغيّر / SKU</th>
-                  <th className="p-2 text-start">الفرع</th>
-                  <th className="p-2 text-left">الرصيد</th>
-                  <th className="p-2 text-left">الحد الأدنى</th>
-                  <th className="p-2 text-left">حدّ إعادة الطلب</th>
-                  <th className="p-2 text-left">الكمية المقترحة</th>
-                  {canWrite && <th className="p-2 text-center">العتبتان</th>}
-                </tr>
-              </thead>
-              <tbody>
+                  <TableHead className="text-start">المنتج</TableHead>
+                  <TableHead className="text-start">المتغيّر / SKU</TableHead>
+                  <TableHead className="text-start">الفرع</TableHead>
+                  <TableHead className="text-left">الرصيد</TableHead>
+                  <TableHead className="text-left">الحد الأدنى</TableHead>
+                  <TableHead className="text-left">حدّ إعادة الطلب</TableHead>
+                  <TableHead className="text-left">الكمية المقترحة</TableHead>
+                  {canWrite && <TableHead className="text-center">العتبتان</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {rows.map((r) => {
                   const key = rowKey(r);
                   const isEditing = editing === key;
                   const severe = r.quantity <= r.minStock;
                   return (
-                    <tr key={key} className={`border-t ${severe ? "bg-destructive/5" : "bg-[var(--sem-warn-bg)]/50"}`}>
+                    <TableRow key={key} className={severe ? "bg-destructive/5" : "bg-[var(--sem-warn-bg)]/50"}>
                       {canWrite && (
-                        <td className="p-2 text-center">
+                        <TableCell className="text-center">
                           <input
                             type="checkbox"
                             className="size-4 align-middle"
@@ -353,13 +361,13 @@ export default function ReorderAlerts() {
                             checked={selected.has(key)}
                             onChange={() => toggle(key)}
                           />
-                        </td>
+                        </TableCell>
                       )}
-                      <td className="p-2 font-medium">{r.productName}</td>
-                      <td className="p-2 text-xs">
+                      <TableCell className="font-medium">{r.productName}</TableCell>
+                      <TableCell className="text-xs">
                         {variantLabel(r)} <span className="text-muted-foreground font-mono" dir="ltr">({r.sku})</span>
-                      </td>
-                      <td className="p-2 text-xs">
+                      </TableCell>
+                      <TableCell className="text-xs">
                         {r.branchName}
                         {r.overrideActive && (
                           <span
@@ -369,9 +377,9 @@ export default function ReorderAlerts() {
                             مخصّص
                           </span>
                         )}
-                      </td>
-                      <td className="p-2 text-left tabular-nums font-semibold">{fmtInt(r.quantity)}</td>
-                      <td className="p-2 text-left tabular-nums">
+                      </TableCell>
+                      <TableCell className="text-left tabular-nums font-semibold">{fmtInt(r.quantity)}</TableCell>
+                      <TableCell className="text-left tabular-nums">
                         {isEditing ? (
                           <Input
                             dir="ltr"
@@ -385,8 +393,8 @@ export default function ReorderAlerts() {
                         ) : (
                           fmtInt(r.minStock)
                         )}
-                      </td>
-                      <td className="p-2 text-left tabular-nums">
+                      </TableCell>
+                      <TableCell className="text-left tabular-nums">
                         {isEditing ? (
                           <Input
                             dir="ltr"
@@ -399,10 +407,10 @@ export default function ReorderAlerts() {
                         ) : (
                           fmtInt(r.reorderPoint)
                         )}
-                      </td>
-                      <td className="p-2 text-left tabular-nums font-semibold text-primary">{fmtInt(r.suggestedQty)}</td>
+                      </TableCell>
+                      <TableCell className="text-left tabular-nums font-semibold text-primary">{fmtInt(r.suggestedQty)}</TableCell>
                       {canWrite && (
-                        <td className="p-2 text-center">
+                        <TableCell className="text-center">
                           {isEditing ? (
                             <div className="flex flex-col items-center gap-1">
                               <div className="flex items-center gap-1 text-[11px]">
@@ -454,9 +462,9 @@ export default function ReorderAlerts() {
                               تعديل
                             </Button>
                           )}
-                        </td>
+                        </TableCell>
                       )}
-                    </tr>
+                    </TableRow>
                   );
                 })}
                 {!alerts.isLoading && rows.length === 0 && (
@@ -465,8 +473,8 @@ export default function ReorderAlerts() {
                     message="لا منتجات بلغت حدّ إعادة الطلب. اضبط «حدّ إعادة الطلب» من شاشة المنتج (أو من هنا) لتفعيل الإنذار المبكّر."
                   />
                 )}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </ScrollTableShell>
         </CardContent>
       </Card>
@@ -514,24 +522,24 @@ export default function ReorderAlerts() {
             </div>
 
             <ScrollTableShell>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">المنتج</th>
-                    <th className="p-2 text-left">الرصيد</th>
-                    <th className="p-2 text-left">الكمية المطلوبة (أساس)</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-start">المنتج</TableHead>
+                    <TableHead className="text-left">الرصيد</TableHead>
+                    <TableHead className="text-left">الكمية المطلوبة (أساس)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {selectedRows.map((r) => {
                     const key = rowKey(r);
                     return (
-                      <tr key={key} className="border-t">
-                        <td className="p-2">
+                      <TableRow key={key}>
+                        <TableCell>
                           {r.productName} <span className="text-xs text-muted-foreground">({variantLabel(r)})</span>
-                        </td>
-                        <td className="p-2 text-left tabular-nums">{fmtInt(r.quantity)}</td>
-                        <td className="p-2 text-left">
+                        </TableCell>
+                        <TableCell className="text-left tabular-nums">{fmtInt(r.quantity)}</TableCell>
+                        <TableCell className="text-left">
                           <Input
                             dir="ltr"
                             inputMode="numeric"
@@ -540,12 +548,12 @@ export default function ReorderAlerts() {
                             className="h-8 w-24 text-center"
                             aria-label={`كمية ${r.productName}`}
                           />
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     );
                   })}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </ScrollTableShell>
           </div>
 
@@ -657,29 +665,29 @@ function BranchOverridesPanel(props: {
       {openPanel && (
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">المنتج</th>
-                  <th className="p-2 text-start">المتغيّر / SKU</th>
-                  <th className="p-2 text-start">الفرع</th>
-                  <th className="p-2 text-left">الحدّ الأدنى (override / افتراض)</th>
-                  <th className="p-2 text-left">حدّ إعادة الطلب (override / افتراض)</th>
-                  <th className="p-2 text-center">إجراءات</th>
-                </tr>
-              </thead>
-              <tbody>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-start">المنتج</TableHead>
+                  <TableHead className="text-start">المتغيّر / SKU</TableHead>
+                  <TableHead className="text-start">الفرع</TableHead>
+                  <TableHead className="text-left">الحدّ الأدنى (override / افتراض)</TableHead>
+                  <TableHead className="text-left">حدّ إعادة الطلب (override / افتراض)</TableHead>
+                  <TableHead className="text-center">إجراءات</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {props.overrides.map((o) => {
                   const key = keyOf(o);
                   const isEditing = editingKey === key;
                   return (
-                    <tr key={key} className="border-t">
-                      <td className="p-2 font-medium">{o.productName}</td>
-                      <td className="p-2 text-xs">
+                    <TableRow key={key}>
+                      <TableCell className="font-medium">{o.productName}</TableCell>
+                      <TableCell className="text-xs">
                         {o.variantName ?? "—"} <span className="text-muted-foreground font-mono" dir="ltr">({o.sku})</span>
-                      </td>
-                      <td className="p-2 text-xs">{o.branchName}</td>
-                      <td className="p-2 text-left tabular-nums">
+                      </TableCell>
+                      <TableCell className="text-xs">{o.branchName}</TableCell>
+                      <TableCell className="text-left tabular-nums">
                         {isEditing ? (
                           <Input dir="ltr" inputMode="numeric" value={editMin}
                             onChange={(e) => setEditMin(e.target.value.replace(/[^\d]/g, ""))}
@@ -691,8 +699,8 @@ function BranchOverridesPanel(props: {
                             <span className="text-muted-foreground text-xs mx-1">/ {o.defaultMinStock == null ? "—" : fmtInt(o.defaultMinStock)}</span>
                           </>
                         )}
-                      </td>
-                      <td className="p-2 text-left tabular-nums">
+                      </TableCell>
+                      <TableCell className="text-left tabular-nums">
                         {isEditing ? (
                           <Input dir="ltr" inputMode="numeric" value={editReorder}
                             onChange={(e) => setEditReorder(e.target.value.replace(/[^\d]/g, ""))}
@@ -704,8 +712,8 @@ function BranchOverridesPanel(props: {
                             <span className="text-muted-foreground text-xs mx-1">/ {o.defaultReorderPoint == null ? "—" : fmtInt(o.defaultReorderPoint)}</span>
                           </>
                         )}
-                      </td>
-                      <td className="p-2 text-center">
+                      </TableCell>
+                      <TableCell className="text-center">
                         {isEditing ? (
                           <div className="flex gap-1 justify-center">
                             <Button size="sm" onClick={() => saveInline(o)} disabled={props.saving}>حفظ</Button>
@@ -717,15 +725,15 @@ function BranchOverridesPanel(props: {
                             <Button size="sm" variant="ghost" onClick={() => props.onClear(o)} disabled={props.saving}>مسح</Button>
                           </div>
                         )}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   );
                 })}
                 {!props.isLoading && props.overrides.length === 0 && (
                   <TableEmptyRow colSpan={6} message="لا overrides مخصّصة — كلّ الفروع تستعمل الافتراض العام." />
                 )}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </ScrollTableShell>
         </CardContent>
       )}
