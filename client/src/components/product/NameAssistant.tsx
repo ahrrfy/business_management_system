@@ -49,7 +49,7 @@ export function NameAssistant({ name, onApply, excludeProductId, warnColors = fa
   return (
     <div className="mt-1.5 space-y-1.5 text-xs" dir="rtl">
       {exact && (
-        <div role="alert" className="flex items-start gap-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 px-2 py-1.5 text-amber-700 dark:text-amber-400">
+        <div role="alert" className="flex items-start gap-1.5 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]0/10 px-2 py-1.5 text-[var(--sem-warn)]">
           <AlertTriangle aria-hidden className="size-3.5 shrink-0 mt-0.5" />
           <span>
             منتج بنفس الاسم موجود فعلاً:{" "}

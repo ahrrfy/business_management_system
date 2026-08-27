@@ -97,7 +97,7 @@ export function MarginBadge({ cost, sell, className }: { cost: number | string; 
       dir="rtl"
       className={cn(
         "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums",
-        m.loss ? "bg-destructive/10 text-destructive" : "bg-emerald-500/15 text-emerald-700",
+        m.loss ? "bg-destructive/10 text-destructive" : "bg-[var(--sem-pos-bg)]0/15 text-[var(--sem-pos)]",
         className
       )}
     >

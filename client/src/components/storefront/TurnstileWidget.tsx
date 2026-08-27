@@ -171,7 +171,7 @@ export function TurnstileWidget({ siteKey, resetKey, onTokenChange, autoRetry = 
       <div ref={containerRef} className="min-h-16 w-full" />
       <p
         aria-live="polite"
-        className={`mt-2 text-xs ${status === "error" || status === "expired" ? "text-rose-600" : "text-slate-500"}`}
+        className={`mt-2 text-xs ${status === "error" || status === "expired" ? "text-[var(--sem-neg)]" : "text-slate-500"}`}
       >
         {message}
       </p>

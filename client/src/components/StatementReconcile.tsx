@@ -46,7 +46,7 @@ export function StatementReconcile({ entityName, entityType, phone, currentBalan
               أرسِل الرصيد الحالي لـ{isCustomer ? "العميل" : "المورد"} لتأكيد المطابقة، مع إرفاق كشف PDF تفصيلي.
             </div>
           </div>
-          <div className={`rounded-md px-3 py-1.5 text-sm tabular-nums ${num === 0 ? "bg-muted/40" : weHaveClaim ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`} dir="ltr">
+          <div className={`rounded-md px-3 py-1.5 text-sm tabular-nums ${num === 0 ? "bg-muted/40" : weHaveClaim ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"}`} dir="ltr">
             <span className="opacity-70 text-xs me-1">{dirLabel}:</span>
             <span className="font-bold">{fmt(Math.abs(num))}</span>
           </div>

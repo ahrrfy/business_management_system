@@ -130,7 +130,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
         </div>
         <div className="mb-4 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(order.salePrice)} د.ع</span></div>
-          {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(order.deposit ?? "0")} د.ع</span></div>}
+          {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmt(order.deposit ?? "0")} د.ع</span></div>}
           <div className="flex justify-between border-t pt-1 font-bold"><span>مبلغ التحصيل (COD)</span><span dir="ltr" className="tabular-nums">{fmt(String(cod))} د.ع</span></div>
         </div>
         {selectedParty?.partyType === "COMPANY" && (selectedParty.drivers?.length ?? 0) > 0 && (
@@ -150,7 +150,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
           </div>
         )}
         {selectedParty?.hasPortalAccess === false && (
-          <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+          <p className="mb-3 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs font-medium text-[var(--sem-warn)]">
             هذه الجهة بلا حساب بوابة؛ سيُسجَّل الإسناد إدارياً لكنها لن ترى الطلب في «توصيلاتي» حتى تربط حساباً بها.
           </p>
         )}

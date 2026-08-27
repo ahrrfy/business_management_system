@@ -203,7 +203,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className, na
                       {s.phone && <span className="text-[11px] text-muted-foreground" dir="ltr">{s.phone}</span>}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      {s.isVip && <Badge variant="default" className="text-[10px] bg-amber-500 hover:bg-amber-500">VIP</Badge>}
+                      {s.isVip && <Badge variant="default" className="text-[10px] bg-[var(--sem-warn-bg)]0 hover:bg-[var(--sem-warn-bg)]0">VIP</Badge>}
                       {s.isFrequent && !s.isVip && <Badge variant="secondary" className="text-[10px]">متكرّر</Badge>}
                       {typeof s.orderCount === "number" && (
                         <Badge variant="outline" className="text-[10px]" dir="ltr">

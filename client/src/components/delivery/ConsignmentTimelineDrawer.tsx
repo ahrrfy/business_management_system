@@ -204,7 +204,7 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
               <h3 className="mb-2 text-xs font-black text-muted-foreground">المبالغ</h3>
               <div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border bg-card/50 p-3 text-sm">
                 <div className="flex justify-between border-b pb-1"><span className="text-muted-foreground">مبلغ COD</span><span dir="ltr" className="tabular-nums font-bold">{fmt(cn_.codAmount)}</span></div>
-                <div className="flex justify-between border-b pb-1"><span className="text-muted-foreground">المُحصَّل</span><span dir="ltr" className="tabular-nums font-bold text-emerald-600">{fmt(cn_.collectedAmount)}</span></div>
+                <div className="flex justify-between border-b pb-1"><span className="text-muted-foreground">المُحصَّل</span><span dir="ltr" className="tabular-nums font-bold text-[var(--sem-pos)]">{fmt(cn_.collectedAmount)}</span></div>
                 <div className="flex justify-between border-b pb-1"><span className="text-muted-foreground">سُدِّد بالكاونتر</span><span dir="ltr" className="tabular-nums font-bold text-sky-600">{fmt(cn_.counterSettledAmount ?? "0")}</span></div>
                 <div className="flex justify-between border-b pb-1">
                   <span className="text-muted-foreground">الأجرة</span>

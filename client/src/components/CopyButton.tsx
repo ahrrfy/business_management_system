@@ -38,7 +38,7 @@ export function CopyButton({
       disabled={empty}
       onClick={() => void copy(value)}
     >
-      {copied ? <Check className="text-emerald-600" /> : <Copy />}
+      {copied ? <Check className="text-[var(--sem-pos)]" /> : <Copy />}
     </Button>
   );
 }
@@ -78,7 +78,7 @@ export function CopyInline({
     >
       <span className="truncate">{display ?? text}</span>
       {copied ? (
-        <Check className="size-3.5 shrink-0 text-emerald-600" />
+        <Check className="size-3.5 shrink-0 text-[var(--sem-pos)]" />
       ) : (
         <Copy className="size-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-60 group-focus-visible:opacity-60" />
       )}

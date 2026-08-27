@@ -94,7 +94,7 @@ export function ReportShell({
 
       {/* تنويه */}
       {note && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200">
+        <div className="rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">
           {note}
         </div>
       )}

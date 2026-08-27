@@ -38,7 +38,7 @@ export function MyPerformanceCard() {
               <div className="text-[11px] text-money-negative tabular-nums" dir="ltr">مرحَّل من الشهر السابق: {iqd(d.carryIn)}</div>
             )}
             {Number(d.consignDeduction) > 0 && (
-              <div className="text-[11px] text-amber-700 tabular-nums" dir="ltr">
+              <div className="text-[11px] text-[var(--sem-warn)] tabular-nums" dir="ltr">
                 يُستثنى: حصص بضاعة الأمانة −{iqd(d.consignDeduction)}
               </div>
             )}

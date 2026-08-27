@@ -171,7 +171,7 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
         <Button onClick={submit} disabled={busy || coolingDown || !pin}>
           {busy ? "جارٍ التحقق…" : coolingDown ? "انتظر قليلاً…" : "فتح"}
         </Button>
-        {error ? <p className="text-sm font-semibold text-red-600">{error}</p> : null}
+        {error ? <p className="text-sm font-semibold text-[var(--sem-neg)]">{error}</p> : null}
       </div>
       <button type="button" onClick={onRetry} className="text-xs text-muted-foreground underline">
         إعادة محاولة الاتصال بالخادم

@@ -244,7 +244,7 @@ export function LabelPrintModal({
                   </div>
                   <div className="text-[10px] text-muted-foreground truncate inline-flex items-center gap-1" dir="ltr">
                     <span>{l.barcode}</span>
-                    {!isValidEan13(l.barcode) && <AlertTriangle aria-hidden className="size-3 text-amber-500" />}
+                    {!isValidEan13(l.barcode) && <AlertTriangle aria-hidden className="size-3 text-[var(--sem-warn)]" />}
                   </div>
                   <label className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground">
                     عدد النسخ:

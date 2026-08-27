@@ -210,7 +210,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
             <typeInfo.icon aria-hidden className="size-3.5" />
           </div>
           <span className="text-sm font-extrabold text-foreground">{typeInfo.label}</span>
-          <span className="rounded-md border border-amber-300/40 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
+          <span className="rounded-md border border-[var(--sem-warn)]/40/40 bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
             {statusBadge ?? "مسوّدة"}
           </span>
         </div>
@@ -243,7 +243,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
                 ? "text-foreground"
                 : isReturn
                   ? "text-muted-foreground"
-                  : "border border-amber-300/40 bg-amber-50 text-amber-700",
+                  : "border border-[var(--sem-warn)]/40/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
             )}
           >
             {isSale ? <User aria-hidden className="size-3.5" /> : <Factory aria-hidden className="size-3.5" />}

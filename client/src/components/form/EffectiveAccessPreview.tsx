@@ -25,7 +25,7 @@ const STATION_ICON: Record<PosStation, typeof ShoppingCart> = {
   RECEPTION: Palette,
 };
 const STATION_CLS: Record<PosStation, string> = {
-  RETAIL: "border-emerald-500 bg-emerald-50 text-emerald-700",
+  RETAIL: "border-[var(--sem-pos)] bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
   PRINT_SERVICES: "border-[var(--sem-info)] bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
   RECEPTION: "border-violet-500 bg-violet-50 text-violet-700",
 };
@@ -72,7 +72,7 @@ export function EffectiveAccessPreview({
       {/* رؤية التكلفة/الربح */}
       <div className="flex items-center gap-1.5 text-xs">
         {eff.canSeeCost ? (
-          <span className="inline-flex items-center gap-1 text-amber-700"><Eye aria-hidden className="size-3" /> يرى التكلفة والربح</span>
+          <span className="inline-flex items-center gap-1 text-[var(--sem-warn)]"><Eye aria-hidden className="size-3" /> يرى التكلفة والربح</span>
         ) : (
           <span className="inline-flex items-center gap-1 text-muted-foreground"><EyeOff aria-hidden className="size-3" /> لا يرى التكلفة</span>
         )}
