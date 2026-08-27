@@ -495,7 +495,7 @@ function ContactPersonsCard({
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="font-medium truncate">{p.name}</span>
-                  {p.isPrimary && <Star aria-hidden className="size-3.5 text-amber-500 fill-amber-500 shrink-0" />}
+                  {p.isPrimary && <Star aria-hidden className="size-3.5 text-[var(--sem-warn)] fill-[var(--sem-warn)] shrink-0" />}
                   {!p.isActive && <Badge variant="neutral" className="text-[10px] shrink-0">معطَّل</Badge>}
                 </div>
                 <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
@@ -569,8 +569,8 @@ function DuplicatesCard({
         <p className="text-xs text-muted-foreground">لا نظائر مشابهة.</p>
       )}
       {rows.length > 0 && (
-        <div className="rounded-md border border-amber-300 bg-amber-50/60 p-3 space-y-1.5 dark:bg-amber-950/20">
-          <p className="flex items-center gap-1.5 text-xs font-bold text-amber-800 dark:text-amber-400">
+        <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 space-y-1.5">
+          <p className="flex items-center gap-1.5 text-xs font-bold text-[var(--sem-warn)]">
             <TriangleAlert aria-hidden className="size-3.5" /> نظائر مرشّحة — للمراجعة اليدوية فقط (بلا دمج تلقائي)
           </p>
           {rows.map((m) => (
