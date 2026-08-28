@@ -1849,6 +1849,13 @@
 			"when": 1788052332000,
 			"tag": "0280_courier_commission_rules",
 			"breakpoints": true
+		},
+		{
+			"idx": 281,
+			"version": "5",
+			"when": 1788052333000,
+			"tag": "0281_invoice_events",
+			"breakpoints": true
 		}
 	]
 }

@@ -80,6 +80,7 @@ export default defineConfig({
       "shared/workOrderEventType.test.ts",
       "shared/deliveryPricing.test.ts",
       "shared/courierCommission.test.ts",
+      "shared/invoiceEventType.test.ts",
       "shared/partialDispatch.test.ts",
       "shared/stocktakeCountMethod.test.ts",
       "shared/variantDisplay.test.ts",

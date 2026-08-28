@@ -256,6 +256,9 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   workOrderEvents_eventKey_unique: {
     msg: "حدث دورة الحياة سبق تسجيله لهذا الأمر — إعادةُ محاولةٍ نظيفةٌ لا تُنشئ سطراً مكرّراً في الخطّ الزمنيّ.",
   },
+  invoiceEvents_eventKey_unique: {
+    msg: "حدث دورة حياة الفاتورة سبق تسجيله — إعادةُ محاولةٍ نظيفةٌ لا تُنشئ سطراً مكرّراً.",
+  },
   // ── مناطق التوصيل + تسعيره (Slice 7 — 0279) ──
   deliveryZones_code_unique: {
     field: "رمز المنطقة",

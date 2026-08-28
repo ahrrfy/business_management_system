@@ -9272,6 +9272,43 @@ export const workOrderEvents = mysqlTable(
 export type WorkOrderEvent = typeof workOrderEvents.$inferSelect;
 
 /**
+ * سجلّ أحداث الفاتورة (Slice 9، ٢٨/٨/٢٦، هجرة 0281) — مرآةُ `workOrderEvents`.
+ *
+ * الفاتورةُ تعبُر مسار حياتها بأحداثٍ متعدّدة: إنشاء، تعديل، تصحيح (SUPERSEDED)، إلغاء،
+ * مرتجع، سداد. اليوم مسارُ auditLogs يعرض بعضها، لكنّه مبعثرٌ بلا `fromStatus/toStatus`
+ * مُنمَّطة. هذا السجلّ يوفّر الطبقة الثانية المنظَّمة (كنمط deliveryEvents).
+ *
+ * **Dual-write:** كسائر السجلّات الجديدة — المسارات الحرِجة تكتب هنا بالتوازي مع
+ * السلوك القائم بلا كسر.
+ */
+export const invoiceEvents = mysqlTable(
+  "invoiceEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** `inv:<invoiceId>:<eventType>[:<seq>]` — نفس اصطلاح workOrderEvents. */
+    eventKey: varchar("eventKey", { length: 160 }).notNull().unique(),
+    invoiceId: bigint("invoiceId", { mode: "number" })
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    eventType: varchar("eventType", { length: 60 }).notNull(),
+    fromStatus: varchar("fromStatus", { length: 30 }),
+    toStatus: varchar("toStatus", { length: 30 }),
+    payload: json("payload"),
+    actorUserId: int("actorUserId").references(() => users.id),
+    branchId: bigint("branchId", { mode: "number" }),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    invoiceTimeIdx: index("idx_invoice_event_inv_time").on(
+      table.invoiceId,
+      table.occurredAt,
+    ),
+    eventTypeIdx: index("idx_invoice_event_type").on(table.eventType),
+  }),
+);
+export type InvoiceEvent = typeof invoiceEvents.$inferSelect;
+
+/**
  * مناطق التوصيل (Slice 7، ٢٨/٨/٢٦، هجرة 0279) — يُنقل التسعير من ثابتٍ في الكود
  * (`shared/governorates.ts`) إلى **بيانات محكومة** يعدّلها المدير بلا نشر.
  *
