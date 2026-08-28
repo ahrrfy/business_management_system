@@ -44,7 +44,9 @@ export async function recordInvoiceEvent(
       branchId: input.branchId ?? null,
     });
   } catch (err) {
-    const code = (err as { code?: string } | null)?.code;
+    // Drizzle يلفّ خطأ mysql2 — الشيفرة في `.code` أو `.cause.code` (مطابق workOrderEvents).
+    const raw = err as { code?: string; cause?: { code?: string } } | null;
+    const code = raw?.code ?? raw?.cause?.code;
     if (code === "ER_DUP_ENTRY") {
       logger.debug(
         { invoiceId: input.invoiceId, eventKey, eventType: input.eventType },

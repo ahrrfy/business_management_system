@@ -51,10 +51,14 @@ export async function recordWorkOrderEvent(
       branchId: input.branchId ?? null,
     });
   } catch (err) {
-    // ازدواجُ الـeventKey (ER_DUP_ENTRY) للأحداث الأحاديّة سيناريو مقبول أثناء retry تعاملي:
-    // الاستدعاء الثاني يعني أنّ الأوّل نجح فعلاً. نُسجّل تنبيهاً ولا نرمي — الحفاظ على السلوك
-    // idempotent (نفس المعنى الذي تُوفّره `checkIdempotency` في مسار البيع).
-    const code = (err as { code?: string } | null)?.code;
+    // ازدواجُ الـeventKey (ER_DUP_ENTRY) للأحداث الأحاديّة سيناريو مقبول أثناء retry تعاملي أو
+    // إعادة claim بعد release (مسار «التحرّر الذاتيّ» في lifecycle): الاستدعاء الثاني يعني
+    // أنّ الأوّل نجح فعلاً. نُسجّل تنبيهاً ولا نرمي — نفس معنى `checkIdempotency` في البيع.
+    //
+    // ⚠️ Drizzle يلفّ خطأ mysql2 في `DrizzleQueryError` — الشيفرة الأصليّة تظهر في `.cause`
+    // لا في `.code` مباشرةً. كِلا الموضعين يُفحصان (fixed CI shard-2 fail على PR #854).
+    const raw = err as { code?: string; cause?: { code?: string } } | null;
+    const code = raw?.code ?? raw?.cause?.code;
     if (code === "ER_DUP_ENTRY") {
       logger.debug(
         { workOrderId: input.workOrderId, eventKey, eventType: input.eventType },
