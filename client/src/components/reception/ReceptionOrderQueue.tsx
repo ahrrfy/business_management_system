@@ -1,6 +1,6 @@
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Package, Store, Truck, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Check, Clock, Package, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,7 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } from "@shared/workOrderDeliveryState";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
+import { computeStateAgeMinutes, formatAgeShort, slaLevel, slaLevelChipClass } from "@shared/orderSla";
 import { cn } from "@/lib/utils";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
@@ -409,7 +410,11 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
 }) {
   const isReady = r.status === "READY";
   const isFinal = r.status === "DELIVERED" || r.status === "CANCELLED";
-  // ١٨/٨: حالة التوصيل المشتقّة — مصدرها المشترك، فلا تُعاد تسميتها هنا.
+  // Slice 5 (٢٨/٨/٢٦): عمرُ الحالة الحاليّة — يظهر شارةً بجانب الحالة. Polling كل ١٥ث في هذا
+  // الطابور يُحدِّث القيمة تلقائياً بلا حاجة لـsetInterval محلّيّ. الحقول تأتي من workOrders.list
+  // (workStartedAt/workSeconds مُضافان في Slice 5). الحسابُ على العميل (لا استعلام إضافيّ).
+  const ageMin = computeStateAgeMinutes(r as never);
+  const ageLevel = slaLevel(r.status, ageMin);
   const deliveryState = deriveWoDeliveryState(r.consignmentStatus, r.parcelStatus);
   const hasLiveConsignment = deliveryState !== "NONE";
   const actions: RowAction[] = [];
@@ -431,6 +436,15 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-bold", workOrderStatusBadgeCls(r.status))}>{workOrderStatusLabel(r.status)}</span>
+          {ageLevel !== "UNKNOWN" && ageMin != null && (
+            <span
+              className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-bold", slaLevelChipClass(ageLevel))}
+              title={ageLevel === "BREACHED" ? "تجاوز عتبة الـSLA — يحتاج تحرّكاً فورياً" : ageLevel === "WARNING" ? "اقترب من عتبة الـSLA" : "ضمن الوقت المتوقّع"}
+            >
+              <Clock aria-hidden className="size-3" />
+              {formatAgeShort(ageMin)}
+            </span>
+          )}
           {r.hasDelivery ? (
             <span className="inline-flex items-center gap-1 rounded bg-[var(--sem-info-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-info)]">
               <Truck aria-hidden className="size-3" /> توصيل

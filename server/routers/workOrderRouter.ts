@@ -473,6 +473,10 @@ export const workOrderRouter = router({
           deposit: workOrders.deposit,
           dueDate: workOrders.dueDate,
           createdAt: workOrders.createdAt,
+          // SLA age (Slice 5، ٢٨/٨/٢٦): يُحسَب على العميل من هذه الحقول عبر
+          // `computeStateAgeMinutes` (shared/orderSla.ts) — READY = workStartedAt + workSeconds.
+          workStartedAt: workOrders.workStartedAt,
+          workSeconds: workOrders.workSeconds,
           createdBy: workOrders.createdBy,
           createdByName: workOrderCreatorDisplayName,
           assignedTo: workOrders.assignedTo,
