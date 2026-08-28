@@ -268,6 +268,20 @@ export default function ProductImageStudio() {
       document.getElementById("studio-campaign-filter")?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 120);
   }, [searchString]);
+  // مرساة `#new-campaign` من رابط «إنشاء حملة جديدة» في شاشة إدارة الحملات: تمرير
+  // البصر إلى بطاقة منشئ الحملة كي يبدأ المدير التعبئةَ مباشرةً بلا بحثٍ يدويّ عن القسم.
+  // مرّةً واحدةً فقط لكلّ تحميل — كأثرِ المعامل أعلاه (مراجعة Codex P2).
+  const hashHandledRef = useRef(false);
+  useEffect(() => {
+    if (hashHandledRef.current) return;
+    if (typeof window === "undefined") return;
+    if (window.location.hash !== "#new-campaign") return;
+    hashHandledRef.current = true;
+    window.setTimeout(() => {
+      document.getElementById("new-campaign")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.getElementById("studio-campaign-name")?.focus();
+    }, 200);
+  }, []);
   const [savedView, setSavedView] = useState<"ALL" | "UNASSIGNED" | "OVERDUE" | "PENDING_REVIEW" | "MISSING_IMAGE">("ALL");
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<"ALL" | "LOW" | "NORMAL" | "HIGH" | "URGENT">("ALL");
   const [overdueOnly, setOverdueOnly] = useState(false);
@@ -1346,7 +1360,11 @@ export default function ProductImageStudio() {
       )}
 
       {dashboard.data?.canManage && (
-        <Card>
+        <Card id="new-campaign">
+          {/* المرساة `#new-campaign` هدفٌ لِمن يفتح الاستوديو من رابط «إنشاء حملة» في شاشة
+              الإدارة (مراجعة Codex P2). أثرُ التمرير في الأسفل يسحب البصر إليها فتُملأ
+              الحقول بلا بحثٍ يدويّ عن القسم. الـid على البطاقة ذاتها لأنّها **الحاوية**
+              الفعليّة لمنشئ الحملة (لا يوجد نموذجٌ منفصلٌ لها). */}
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Megaphone aria-hidden className="size-4" /> حملات اكتمال الصور

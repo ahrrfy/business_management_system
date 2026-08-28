@@ -48,34 +48,34 @@ export function StudioImageExportPanel({ categories }: { categories: CategoryOpt
   const canDownload = !!downloadUrl && !(scope === "PRODUCTS" && parsedProductIds.length > 500);
 
   // بلاغ المالك (٢٨/٨): «تنزيل صور الكتالوج يطلب مني كلمة المرور واسم المستخدم…».
-  // الجذر: `<a href download>` كان يعتمد على الملاحة المباشرة — حين تنتهي الجلسة أو ينقص
-  // كوكي الجلسة على طلب المتصفح (سلوك SameSite على تنزيلٍ بنقرةٍ مباشرة)، الخادمُ يعود بـ401
-  // ومتصفّح iOS/Safari يعرض حوار «تسجيل الدخول» الخاصّ به. النقر عليه بلا مصادقةٍ خادميّةٍ
-  // بالطبع يفشل. الحلّ: `fetch()` بـ`credentials:"include"` يمرّر الكوكي صراحةً، وأيّ خطأ
-  // يبقى داخل التطبيق كرسالةٍ عربية لا كحوار متصفّحٍ عاجز. تنزيلٌ عبر Blob بعد نجاح الاستجابة.
+  // الجذر: الملاحةُ المباشرة بـ`<a href download>` حين تنقص جلسةُ الكوكي، الخادمُ يعود بـ401
+  // ومتصفّح iOS/Safari يعرض حوار «تسجيل الدخول» الخاصّ به.
+  //
+  // ⚠️ حلٌّ سابقٌ (`fetch` + `Blob`) كان يُصلح حوار المصادقة لكنّه **يبتلع الأرشيف كلَّه في
+  // ذاكرة JS** قبل أن يبدأ التنزيلُ فعلياً: صادرةُ «كل الكتالوج» تصل ٢٠٠٠ صورة × ٩٠٠ ك.ب =
+  // ‎~1.8 ج.ب، فيتفجّر Safari على iPhone بذاكرةٍ محدودة (مراجعة Codex P1). الحلّ الجديد
+  // على مرحلتين: **استعلامٌ مسبق** (`?preflight=1`) خفيف يتحقّق من صلاحية الجلسة والنطاق
+  // بلا بثِّ بايتٍ واحد، ثمّ **ملاحةٌ برمجية** (`location.assign`) تُطلق تنزيلَ المتصفّح
+  // الأصيل الذي يبثّ الأرشيفَ من الشبكة إلى القرص مباشرةً بلا لمس ذاكرة JS. الفشلُ ما زال
+  // يبقى داخل التطبيق كرسالةٍ عربية لأنّ الاستعلامَ المسبقَ يلتقط 401/403/400 قبل الملاحة.
   const beginDownload = async () => {
     if (!downloadUrl || downloading) return;
     setDownloading(true);
     try {
-      const res = await fetch(downloadUrl, { credentials: "include" });
-      if (!res.ok) {
-        if (res.status === 401) throw new Error("انتهت جلستُك — سجّل دخولاً وأعد المحاولة");
-        if (res.status === 403) throw new Error("لا صلاحيةَ لتنزيل الصور — راجع مدير النظام");
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? `تعذّر تنزيل الأرشيف (${res.status})`);
+      const preflightUrl = `${downloadUrl}&preflight=1`;
+      const check = await fetch(preflightUrl, { credentials: "include" });
+      if (!check.ok) {
+        if (check.status === 401) throw new Error("انتهت جلستُك — سجّل دخولاً وأعد المحاولة");
+        if (check.status === 403) throw new Error("لا صلاحيةَ لتنزيل الصور — راجع مدير النظام");
+        const body = await check.json().catch(() => null);
+        throw new Error(body?.error ?? `تعذّر تجهيز التنزيل (${check.status})`);
       }
-      const blob = await res.blob();
-      if (blob.size === 0) throw new Error("الأرشيف فارغ — تحقّق من نطاق التصدير");
-      const url = URL.createObjectURL(blob);
-      const filename = `studio-images-${new Date().toISOString().slice(0, 10)}.zip`;
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      notify.ok(`اكتمل تنزيل ${filename}`);
+      // الاستعلامُ المسبق نجح ⇒ الجلسة صالحةٌ والنطاق مقبول. نُطلِق تنزيلَ المتصفّح
+      // الأصيل الذي يعتمد على كوكي الجلسة نفسه (نفس السياق، نفس الأصل) ويبثّ الأرشيف
+      // مباشرةً بلا Blob. الخادم يضيف `Content-Disposition: attachment` فيفتح مربّع الحفظ
+      // بلا انتقالٍ فعليّ عن الصفحة.
+      window.location.assign(downloadUrl);
+      notify.ok("بدأ التنزيل — تحقّق من مجلّد التنزيلات");
     } catch (err) {
       notify.err(err);
     } finally {

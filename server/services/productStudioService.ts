@@ -668,13 +668,20 @@ async function claimFreshCampaignTask(
       throw new TRPCError({ code: "NOT_FOUND", message: "لا توجد حملات تصوير نشطة حالياً — أنشئ حملةً لبدء التصوير" });
     }
     // تمييزٌ بين «لا حملات أصلاً» و«حملات موجودة لكنك لست عضواً» لغير المدير — قبلَ كان
-    // كلاهما يخرج بنفس «راجع المدير»، فيراجعه في حملةٍ غير موجودة أصلاً.
+    // كلاهما يخرج بنفس «راجع المدير»، فيراجعه في حملةٍ غير موجودة أصلاً. العدُّ مُقيَّدٌ
+    // بفرع الفاعل حين لا يعبر الفروع (مراجعة Codex P2): وإلّا حملةٌ في فرعٍ آخر تُنتج
+    // «حملات موجودة لكنك لست عضواً» ⇒ الموظّف يراجع مديره في حملةٍ خارج فرعه أصلاً،
+    // ويكشف تنبيهياً وجودَ نشاطٍ عبر الفروع (تسريبٌ عرضيّ).
     const [activeCount] = await tx
       .select({ n: sql<number>`count(*)` })
       .from(productStudioCampaigns)
-      .where(eq(productStudioCampaigns.status, "ACTIVE"));
+      .where(
+        canCrossBranches(actor) || actor.branchId == null
+          ? eq(productStudioCampaigns.status, "ACTIVE")
+          : and(eq(productStudioCampaigns.status, "ACTIVE"), eq(productStudioCampaigns.branchId, Number(actor.branchId))),
+      );
     if (Number(activeCount?.n ?? 0) === 0) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "لا توجد حملات تصوير نشطة حالياً — راجع المدير لبدء حملة" });
+      throw new TRPCError({ code: "NOT_FOUND", message: "لا توجد حملات تصوير نشطة حالياً في فرعك — راجع المدير لبدء حملة" });
     }
     // FORBIDDEN لا NOT_FOUND: عدم العضويّة قرارُ صلاحيةٍ (لا يخصّه الطابور) — والاختبار
     // السابق كان يعتمد على هذا الرمز حين كان المسار السابق (backlog-based lookup) يرفض
@@ -860,6 +867,23 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     // السحب مشروطٌ بعضوية الحملة: لا يسحب من ليس مصوّراً فيها.
     if (active.campaignId == null) {
       throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة تُسنَد من المدير ولا تُسحَب بالمسح" });
+    }
+    // حالةُ الحملة مطلوبةٌ هنا أيضاً بعد إضافة PAUSED (٢٨/٨، مراجعة Codex P1): «التجميد
+    // الذكيّ» على مستوى الحملة يعني أنّ **الطابور المُسنَد مُسبقاً** يبقى قابلاً للإتمام
+    // لكن السحبَ الطازج يتوقّف. `claimFreshCampaignTask` مغطّى بفلترِ `status='ACTIVE'`،
+    // أمّا هذا المسار (مهمّةٌ **موجودةٌ سلفاً** في الطابور بلا مُسنَد) فكان يُسنِد بلا فحص
+    // حالة الحملة ⇒ المصوّر يستمرّ في سحب المنتجات الـ٥٠٠ المولَّدة سلفاً حتى بعد الإيقاف.
+    // القفلُ للقراءة (`for("update")` عليه) — العمليةُ ذرّية.
+    const [campaignRow] = await tx
+      .select({ status: productStudioCampaigns.status })
+      .from(productStudioCampaigns)
+      .where(eq(productStudioCampaigns.id, Number(active.campaignId)))
+      .limit(1);
+    if (campaignRow?.status === "PAUSED") {
+      throw new TRPCError({ code: "CONFLICT", message: `«${displayName}» تتبع حملةً موقوفةً مؤقّتاً — راجع المدير للاستئناف` });
+    }
+    if (campaignRow?.status === "COMPLETED" || campaignRow?.status === "CANCELLED") {
+      throw new TRPCError({ code: "CONFLICT", message: `«${displayName}» تتبع حملةً مُغلقة — لا يمكن سحبها` });
     }
     const member = (
       await tx
@@ -3704,33 +3728,12 @@ export async function bindStudioProcessingCandidate(
 function classifyStudioSubmitError(err: unknown, taskId: number, userId: number): unknown {
   // `TRPCError` سبق أن صنَّفتها الخدمة (BAD_REQUEST/CONFLICT/PRECONDITION_FAILED) — مرورٌ كما هي.
   if (err instanceof TRPCError) return err;
-  const dbCode = mysqlCodeFrom(err);
-  if (dbCode === "ER_LOCK_WAIT_TIMEOUT" || dbCode === "ER_LOCK_DEADLOCK") {
-    logger.warn({ err, taskId, userId, dbCode }, "productStudio.submit.lock_conflict");
-    return new TRPCError({
-      code: "CONFLICT",
-      message: "تعارضٌ مؤقّتٌ أثناء الحفظ — أعد الإرسال بعد لحظات",
-      cause: err,
-    });
-  }
-  if (dbCode === "ER_DUP_ENTRY") {
-    logger.warn({ err, taskId, userId }, "productStudio.submit.duplicate");
-    return new TRPCError({
-      code: "CONFLICT",
-      message: "أُرسل هذا المرشّح للمراجعة سلفاً — حدِّث الشاشة وأعد المحاولة",
-      cause: err,
-    });
-  }
-  if (dbCode) {
-    logger.error({ err, taskId, userId, dbCode }, "productStudio.submit.db_error");
-    return new TRPCError({
-      code: "INTERNAL_SERVER_ERROR",
-      message: `تعذّر حفظ المرشّح في قاعدة البيانات (${dbCode})`,
-      cause: err,
-    });
-  }
-  // أخطاء طبقة النقل والمخزن (R2/S3 عبر AWS SDK): تُعرَّف باسمٍ محفوظٍ أو `$metadata.httpStatusCode`
-  // أو رمز شبكة Node — الفشلُ هنا لا يعني عطلاً في المنطق، ولا يجب أن يبدو كذلك للمصوّر.
+
+  // ⚠️ ترتيبُ الفحص مقصود: **الشبكة قبل قاعدة البيانات** — `mysqlCodeFrom` يقبل عمداً
+  // رموز Node العامّة (`E[A-Z]+`) كي يلتقط أخطاء الاتّصال الأدنى بـMySQL، فأخطاء R2/S3
+  // الشبكية (`ETIMEDOUT`/`ECONNRESET`/`ECONNREFUSED`/`ENOTFOUND`/`EPIPE`) تدخل الفرع
+  // الأوّل خطأً وتظهر للمصوّر «تعذّر حفظ المرشّح في قاعدة البيانات» — نصيحةٌ مضلِّلة.
+  // فحصُ الشبكة أوّلاً يُخرِج فشلَ المخزن قبل أن يبتلعه غيره (مراجعة Codex P2).
   const meta = err as {
     name?: string;
     code?: string;
@@ -3748,6 +3751,43 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
     return new TRPCError({
       code: "TIMEOUT",
       message: "تعذّر الاتّصال بمخزن الصور — تحقّق من الشبكة وأعد المحاولة",
+      cause: err,
+    });
+  }
+
+  const dbCode = mysqlCodeFrom(err);
+  if (dbCode === "ER_LOCK_WAIT_TIMEOUT" || dbCode === "ER_LOCK_DEADLOCK") {
+    logger.warn({ err, taskId, userId, dbCode }, "productStudio.submit.lock_conflict");
+    return new TRPCError({
+      code: "CONFLICT",
+      message: "تعارضٌ مؤقّتٌ أثناء الحفظ — أعد الإرسال بعد لحظات",
+      cause: err,
+    });
+  }
+  if (dbCode === "ER_DUP_ENTRY") {
+    logger.warn({ err, taskId, userId }, "productStudio.submit.duplicate");
+    return new TRPCError({
+      code: "CONFLICT",
+      message: "أُرسل هذا المرشّح للمراجعة سلفاً — حدِّث الشاشة وأعد المحاولة",
+      cause: err,
+    });
+  }
+  // الرموز الحقيقيّة لـMySQL تبدأ بـ`ER_` — أيّ رمزٍ عامّ (`E*`) وصل هنا لم يُصنَّف
+  // شبكةً أعلاه فهو يخصّ اتّصالَ الـDriver ذاته (ECONNRESET إلى MySQL مثلاً)، لكنّه
+  // ليس عطلَ استعلام. النصيحة أدق: «تعذّر الاتّصال بقاعدة البيانات».
+  if (dbCode?.startsWith("ER_")) {
+    logger.error({ err, taskId, userId, dbCode }, "productStudio.submit.db_error");
+    return new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `تعذّر حفظ المرشّح في قاعدة البيانات (${dbCode})`,
+      cause: err,
+    });
+  }
+  if (dbCode) {
+    logger.warn({ err, taskId, userId, dbCode }, "productStudio.submit.db_connection");
+    return new TRPCError({
+      code: "TIMEOUT",
+      message: `تعذّر الاتّصال بقاعدة البيانات (${dbCode}) — أعد المحاولة`,
       cause: err,
     });
   }

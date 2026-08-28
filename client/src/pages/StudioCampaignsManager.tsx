@@ -95,11 +95,22 @@ export default function StudioCampaignsManager() {
   const [openReasonFor, setOpenReasonFor] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
-  const campaigns = trpc.productStudio.campaigns.useQuery(undefined, { staleTime: 30_000 });
+  // صلاحيّةُ المدير مطلوبةٌ لأداء الشاشة: كلّ mutations تُرفَض بـ`productStudioManagerProcedure`
+  // إن حمّلها المدقّق/print_operator (مراجعة Codex P2). `dashboard.canManage` هو المصدر الوحيد
+  // للحقيقة (يوسّع `isManager` بأدوارٍ مخصّصة وأعلام المالك) — نستعمله لتقييد الاستعلامات
+  // وعرضِ رسالةٍ صريحةٍ لغير المدير بدلاً من شاشةٍ معطَّلة تُرجع FORBIDDEN عن كل زر.
+  const dashboard = trpc.productStudio.dashboard.useQuery(undefined, { staleTime: 60_000 });
+  const canManage = dashboard.data?.canManage === true;
+
+  const campaigns = trpc.productStudio.campaigns.useQuery(undefined, {
+    staleTime: 30_000,
+    // `listStudioCampaigns` يرفض غير المدير/المدقّق — لا نستدعيه قبل معرفة الصلاحية.
+    enabled: canManage,
+  });
   // قائمة الفروع النشطة — تُستعمل لعرض اسم الفرع بدل «#N» ولفلترٍ يُعرَض حين يعبر
   // المستخدم الفروعَ (له حملاتٌ من فرعَين+). للمستخدم أحاديّ الفرع القائمة تكفيها
   // القيمة الوحيدة ⇒ لا فائدةَ في إظهار الفلتر.
-  const branches = trpc.branches.list.useQuery(undefined, { staleTime: 5 * 60_000 });
+  const branches = trpc.branches.list.useQuery(undefined, { staleTime: 5 * 60_000, enabled: canManage });
   const branchNameById = useMemo(() => {
     const m = new Map<number, string>();
     for (const b of branches.data ?? []) m.set(Number(b.id), b.name);
@@ -111,13 +122,48 @@ export default function StudioCampaignsManager() {
     return Array.from(s);
   }, [campaigns.data]);
   const showBranchFilter = distinctCampaignBranches.length > 1;
+
+  // إلغاءُ طابور حملةٍ تجاوزت العتبة (٥٠٠ مهمّة/معاملة) لا يكتمل في نداءٍ واحد. بعد
+  // الانتقال إلى CANCELLED نفقد أزرارَ الإلغاء (الحالةُ نهائيّة) فتبقى الطابور المتبقّي
+  // شاغلاً `activeSlot` وقابلاً للسحب بالباركود عبر `claimStudioProductByBarcode`
+  // (يعمل على أيّ حالة — حرّاسه على المهمّة لا الحملة، فقد أضفنا حارس PAUSED صريحاً).
+  // مراجعة Codex P1: الحلّ استكمالُ الإلغاء عبر `bulkCancelStudioBacklog` (يقبل أيّ حالة
+  // للحملة) في حلقةٍ حتى `remaining === 0`. سقفُ عشرين محاولةٍ = ١٠٠٠٠ مهمّة، فوق سقف
+  // `MAX_CAMPAIGN_PRODUCTS = 5000` — حمايةٌ من حلقةٍ لا تنتهي إن انكسر عقد التقلّص.
+  const cancelBacklog = trpc.productStudio.cancelCampaignBacklog.useMutation();
+  const finishCancellation = async (campaignId: number, seedReason: string) => {
+    const clean = seedReason.trim().length >= 5 ? seedReason.trim() : "استكمال إلغاء طابور الحملة";
+    let sweptExtra = 0;
+    for (let i = 0; i < 20; i++) {
+      const res = await cancelBacklog.mutateAsync({ campaignId, reason: clean });
+      sweptExtra += res.cancelledCount;
+      if (res.remaining === 0) return { swept: true, extra: sweptExtra };
+    }
+    return { swept: false, extra: sweptExtra };
+  };
+
   const transition = trpc.productStudio.transitionCampaign.useMutation({
-    onSuccess: async (result) => {
-      notify.ok(
-        result.status === "CANCELLED"
-          ? `أُلغيت الحملة و${result.cancelledTasks} مهمة من طابورها${result.remainingTasks > 0 ? ` — تبقّى ${result.remainingTasks}` : ""}`
-          : `تحوّلت الحملة إلى ${STUDIO_CAMPAIGN_STATUS_AR[result.status as StudioCampaignStatus]}`,
-      );
+    onSuccess: async (result, variables) => {
+      const status = result.status as StudioCampaignStatus;
+      if (result.status === "CANCELLED" && result.remainingTasks > 0) {
+        notify.info(`أُلغيت الحملة و${result.cancelledTasks} مهمة — جارٍ إتمام ${result.remainingTasks}+ متبقّية…`);
+        try {
+          const done = await finishCancellation(variables.campaignId, variables.reason ?? "");
+          notify.ok(
+            done.swept
+              ? `اكتمل إلغاء الحملة — ${result.cancelledTasks + done.extra} مهمّة`
+              : `أُلغي ${result.cancelledTasks + done.extra} مهمّة؛ تبقّى المزيد — أعد المحاولة`,
+          );
+        } catch (e) {
+          notify.err(e);
+        }
+      } else {
+        notify.ok(
+          result.status === "CANCELLED"
+            ? `أُلغيت الحملة و${result.cancelledTasks} مهمة من طابورها`
+            : `تحوّلت الحملة إلى ${STUDIO_CAMPAIGN_STATUS_AR[status]}`,
+        );
+      }
       await utils.productStudio.campaigns.invalidate();
     },
     onError: (err) => notify.err(err),
@@ -153,6 +199,27 @@ export default function StudioCampaignsManager() {
   const runTransition = (campaignId: number, status: "ACTIVE" | "PAUSED" | "COMPLETED" | "CANCELLED", reason?: string) => {
     transition.mutate({ campaignId, status, ...(reason ? { reason } : {}) });
   };
+
+  // بوّابةُ صلاحيّة صريحة قبل الرَندر: `StudioRouteAccess` يفتح للمدقّق وprint_operator
+  // (READ)، لكنّ كلّ إجراءٍ هنا mutation يحتاج FULL. عرضُ الشاشة كاملةً لهم يخدعهم بأزرارٍ
+  // تفشل بـFORBIDDEN عند النقر (مراجعة Codex P2). الرسالة صريحةٌ وتُرجع القراءة إلى مكانها
+  // الطبيعيّ (الاستوديو نفسه) بلا فقدان الوصول.
+  if (dashboard.data && !canManage) {
+    return (
+      <div className="space-y-4">
+        <PageHeader title="إدارة حملات التصوير" backHref="/catalog/image-studio" backLabel="استوديو المنتجات" />
+        <Card>
+          <CardContent className="space-y-2 p-6 text-center">
+            <p className="text-sm font-medium">هذه الشاشة لإدارة الحملات — تحتاج صلاحيّة كاملة على وحدة استوديو المنتجات</p>
+            <p className="text-xs text-muted-foreground">للقراءة والاستعراض توجّه إلى استوديو المنتجات — تجد فيه لوحات الحملة وطابورها.</p>
+            <Button asChild variant="outline" className="mt-2 min-h-11">
+              <Link href="/catalog/image-studio">فتح استوديو المنتجات</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
