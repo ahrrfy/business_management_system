@@ -222,6 +222,22 @@ export default function WorkOrderNew() {
   const [deposit, setDeposit] = useState("");
   const [paymentReference, setPaymentReference] = useState("");
   const [paymentReceipts, setPaymentReceipts] = useState<ImageItem[]>([]);
+  // Slice 3 (٢٨/٨/٢٦، هجرة 0276): نمط الدفع — متى يُتوقَّع تحصيل ما تبقّى؟
+  //   • PREPAID (افتراضي) — دُفع كاملاً/عربوناً عند الإنشاء.
+  //   • COD     — تُحصَّل عند التسليم (يفتح مسار «زبون اتّصال + توصيل» بلا حاجز ائتمان).
+  //   • CREDIT  — دينٌ على العميل (يخضع لسقف الائتمان الكامل).
+  // الافتراضُ الذكيّ يُشتقّ من السياق: توصيلٌ بلا عربون ⇒ COD؛ غيرُ ذلك ⇒ PREPAID (السلوك السابق).
+  // المستخدم يستطيع تجاوزه صراحةً — يبقى كما اختاره حتى إعادة تحميل النموذج (مفتاح idempotency جديد).
+  const [paymentMode, setPaymentMode] = useState<"PREPAID" | "COD" | "CREDIT">("PREPAID");
+  const [paymentModeOverridden, setPaymentModeOverridden] = useState(false);
+  // اقتراحُ نمطٍ ذكيّ: توصيلٌ بلا عربون ⇒ COD (المندوب يُحصِّل). بلا توصيل أو مع عربون ⇒ PREPAID.
+  // يُطبَّق فقط إن لم يتخذ المستخدم قراراً صريحاً (`paymentModeOverridden`) ولا نُبدّل خلف ظهره.
+  useEffect(() => {
+    if (paymentModeOverridden) return;
+    const suggested: "PREPAID" | "COD" = hasDelivery && D(deposit || "0").isZero() && !cart.length ? "COD" : "PREPAID";
+    if (paymentMode !== suggested) setPaymentMode(suggested);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasDelivery, deposit, cart.length, paymentModeOverridden]);
 
   // ── الحسابات ──────────────────────────────────────────────────
   const cartSubtotal = useMemo(
@@ -388,6 +404,9 @@ export default function WorkOrderNew() {
       assignedTo: assignedTo ? Number(assignedTo) : undefined,
       deposit: depositD.toFixed(2),
       paymentMethod,
+      // Slice 3 (٢٨/٨/٢٦، هجرة 0276): يُمرَّر للخادم فيُخزَّن على workOrders.paymentMode.
+      // 'COD' يُتجاوز فحصَ حدّ الائتمان في workOrder.deliver (الحماية بديلة: التحصيل الكامل عند التسليم).
+      paymentMode,
       paymentReference: paymentReference.trim() || null,
       paymentReceiptUrl: paymentReceipts[0]?.dataUrl || null,
       hasDelivery,
@@ -889,6 +908,39 @@ export default function WorkOrderNew() {
                 singlePrimary={false}
                 hint="صورة الإيصال أو لقطة من الشاشة — حتى 3 ملفات."
               />
+            </div>
+          )}
+
+          {/* Slice 3 (٢٨/٨/٢٦): نمط الدفع — يفصل «متى يُدفع» عن «كيف يُقبض». افتراضي مقترحٌ من
+              السياق (توصيل بلا عربون ⇒ COD)، يمكن تجاوزُه صراحةً. */}
+          {hasCustom && (
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">نمط الدفع (للجزء الآجل)</Label>
+              <div className="flex flex-wrap gap-2">
+                {([
+                  { v: "PREPAID", label: "مسبق (يُدفع الآن)", hint: "الفاتورة مغطّاة بعربون/دفعة كاملة" },
+                  { v: "COD", label: "COD — عند التسليم", hint: "المندوب يُحصِّل ما تبقّى — يُفتَح لعميلٍ جديد بلا حاجز ائتمان" },
+                  { v: "CREDIT", label: "آجل (ذمّة)", hint: "يخضع لسقف ائتمان العميل" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.v}
+                    type="button"
+                    onClick={() => { setPaymentMode(opt.v); setPaymentModeOverridden(true); }}
+                    title={opt.hint}
+                    className={cn(
+                      "h-9 px-3 rounded-md border text-xs font-semibold flex items-center gap-1.5",
+                      paymentMode === opt.v ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent",
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {paymentMode === "COD" && (
+                <p className="text-[11px] text-[var(--sem-info)]">
+                  المندوب سيُحصِّل <span dir="ltr" className="tabular-nums">{fmt(customRemaining.toFixed(2))}</span> د.ع عند التسليم. لا يُفتح دَينٌ على العميل.
+                </p>
+              )}
             </div>
           )}
 

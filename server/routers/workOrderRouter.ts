@@ -1082,6 +1082,9 @@ export const workOrderRouter = router({
         priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
         deposit: nonNegMoneyString.nullish(),
         paymentMethod: receptionPaymentMethod.nullish(),
+        // Slice 3 (٢٨/٨/٢٦، هجرة 0276): نمط الدفع — يُخزَّن على workOrders.paymentMode.
+        // COD يفتح مسار الزبون الجديد بلا حاجز ائتمان (الحماية: التحصيل الكامل عند التسليم).
+        paymentMode: z.enum(["PREPAID", "COD", "CREDIT"]).nullish(),
         paymentReference: z.string().max(100).nullish(),
         paymentReceiptUrl: z.string().nullish(),
         hasDelivery: z.boolean().nullish(),
