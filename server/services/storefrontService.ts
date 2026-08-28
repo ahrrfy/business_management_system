@@ -162,6 +162,10 @@ export interface StorefrontVariantOption {
   colorHex: string | null;
   size: string | null;
   inStock: boolean;
+  /** معرض هذا البديل: صوره المعتمدة أولاً ثم صور المنتج العامة كاحتياط. */
+  imageUrls: string[];
+  /** أول صورة في معرض البديل، لاستعمالها في السلة والحركات البصرية. */
+  imageUrl: string | null;
   units: StorefrontUnitOption[];
 }
 
@@ -266,8 +270,10 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       unitName: productUnits.unitName,
       conversionFactor: productUnits.conversionFactor,
       price: productPrices.price,
-      imageId: productImages.id,
-      imageUrl: productImages.url,
+      // الصور تُرفق باستعلام مجمّع بعد حسم الصفوف؛ لا نحمل MEDIUMTEXT ولا نضاعف وحدات
+      // البيع بانضمام صورة رئيسية لكل بديل داخل الاستعلام الأساسي.
+      imageId: sql<number | null>`null`,
+      imageUrl: sql<string | null>`null`,
       productType: products.productType,
       isCustomizable: products.isCustomizable,
       isBundle: products.isBundle,
@@ -276,12 +282,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
-    .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(productImages, and(
-      eq(productImages.productId, products.id),
-      eq(productImages.isPrimary, true),
-      eq(productImages.reviewStatus, "APPROVED"),
-    ));
+    .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)));
 }
 
 /** مرحلة ترشيح ضيقة: لا تحمل URL/data الصور ولا الحقول التسويقية الثقيلة قبل حسم product-level limit. */
@@ -294,18 +295,20 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
       isFeatured: products.isFeatured,
       productName: products.name,
       storeTitle: products.storeTitle,
-      imageId: productImages.id,
+      // EXISTS يستعمل idx_pimg_product، ويحافظ على ترتيب «له صورة» بلا JOIN يضاعف
+      // صفوف الوحدات عند وجود صورة رئيسية مستقلة لكل بديل.
+      hasImage: sql<number>`exists (
+        select 1 from ${productImages}
+        where ${productImages.productId} = ${products.id}
+          and ${productImages.reviewStatus} = 'APPROVED'
+        limit 1
+      )`,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
-    .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(productImages, and(
-      eq(productImages.productId, products.id),
-      eq(productImages.isPrimary, true),
-      eq(productImages.reviewStatus, "APPROVED"),
-    ));
+    .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)));
 }
 
 function chooseCandidateProductIds(
@@ -314,7 +317,7 @@ function chooseCandidateProductIds(
     conversionFactor: string;
     isFeatured: boolean | null;
     productName: string;
-    imageId: number | null;
+    hasImage: number;
     availableQty: number;
   }>,
   cap: number,
@@ -333,13 +336,13 @@ function chooseCandidateProductIds(
     const current = productsById.get(id);
     if (current) {
       current.inStock ||= inStock;
-      current.hasImage ||= row.imageId != null;
+      current.hasImage ||= Boolean(row.hasImage);
     } else {
       productsById.set(id, {
         id,
         inStock,
         featured: row.isFeatured === true,
-        hasImage: row.imageId != null,
+        hasImage: Boolean(row.hasImage),
         name: row.productName,
       });
     }
@@ -515,31 +518,53 @@ async function attachBundleComponentImages(
 async function attachProductGalleryImages(
   db: NonNullable<ReturnType<typeof getDb>>,
   items: StorefrontProduct[],
+  limitPerGallery = 8,
 ): Promise<void> {
   if (!items.length) return;
   const productIds = Array.from(new Set(items.map((item) => item.productId)));
-  const rows = await db
+  const variantIds = Array.from(new Set(items.map((item) => item.variantId)));
+  // المرحلة الأولى تقرأ metadata خفيفة فقط وتستبعد بدائل غير مطلوبة؛ URL قد يكون MEDIUMTEXT.
+  const metadataRows = await db
     .select({
       id: productImages.id,
       productId: productImages.productId,
       variantId: productImages.variantId,
-      url: productImages.url,
-      isPrimary: productImages.isPrimary,
-      sortOrder: productImages.sortOrder,
     })
     .from(productImages)
-    .where(and(inArray(productImages.productId, productIds), eq(productImages.reviewStatus, "APPROVED")))
+    .where(and(
+      inArray(productImages.productId, productIds),
+      eq(productImages.reviewStatus, "APPROVED"),
+      or(isNull(productImages.variantId), inArray(productImages.variantId, variantIds)),
+    ))
     .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
+
+  const selectedIds = new Set<number>();
+  const counts = new Map<string, number>();
+  for (const row of metadataRows) {
+    const key = row.variantId == null ? `p:${row.productId}` : `v:${row.variantId}`;
+    const count = counts.get(key) ?? 0;
+    if (count >= limitPerGallery) continue;
+    counts.set(key, count + 1);
+    selectedIds.add(Number(row.id));
+  }
+  if (!selectedIds.size) return;
+  // المرحلة الثانية وحدها تحمل MEDIUMTEXT، وبسقف حتمي لكل معرض مطلوب.
+  const urlRows = await db
+    .select({ id: productImages.id, url: productImages.url })
+    .from(productImages)
+    .where(inArray(productImages.id, Array.from(selectedIds)));
+  const urlById = new Map(urlRows.map((row) => [Number(row.id), row.url]));
 
   const byVariant = new Map<number, string[]>();
   const byProduct = new Map<number, string[]>();
   const add = (target: Map<number, string[]>, key: number, value: string) => {
     const urls = target.get(key) ?? [];
-    if (urls.length < 8 && !urls.includes(value)) urls.push(value);
+    if (urls.length < limitPerGallery && !urls.includes(value)) urls.push(value);
     target.set(key, urls);
   };
-  for (const row of rows) {
-    const publicUrl = toPublicProductImage(row.id, row.url);
+  for (const row of metadataRows) {
+    if (!selectedIds.has(Number(row.id))) continue;
+    const publicUrl = toPublicProductImage(row.id, urlById.get(Number(row.id)) ?? null);
     if (!publicUrl) continue;
     if (row.variantId != null) add(byVariant, Number(row.variantId), publicUrl);
     else add(byProduct, Number(row.productId), publicUrl);
@@ -547,9 +572,21 @@ async function attachProductGalleryImages(
   for (const item of items) {
     const urls = [...(byVariant.get(item.variantId) ?? []), ...(byProduct.get(item.productId) ?? [])]
       .filter((url, index, all) => all.indexOf(url) === index)
-      .slice(0, 8);
-    if (urls.length > 0) item.imageUrls = urls;
+      .slice(0, limitPerGallery);
+    if (urls.length > 0) {
+      item.imageUrls = urls;
+      item.imageUrl = urls[0];
+    }
   }
+}
+
+/** يرفق وسائط بطاقات القوائم بالترتيب الحاكم: معرض المنتج أولاً ثم fallback مكوّنات البكج. */
+async function attachStorefrontListMedia(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  items: StorefrontProduct[],
+): Promise<void> {
+  await attachProductGalleryImages(db, items);
+  await attachBundleComponentImages(db, items);
 }
 
 /** الدليل الاجتماعي: يُرفق عدد مرّات بيع كل منتج (COUNT فواتير مميّزة) — استعلام مجمَّع واحد. */
@@ -761,8 +798,7 @@ export async function storefrontCatalog(opts: {
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
   await attachVariantColors(db, items, branchId);
-  await attachBundleComponentImages(db, items);
-  await attachProductGalleryImages(db, items);
+  await attachStorefrontListMedia(db, items);
   const last = items[items.length - 1];
   return {
     items,
@@ -855,6 +891,9 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   if (!rows.length) return null;
   const options = rows.map(toStorefront);
   await applyStorefrontPromotions(options, branchId);
+  // استعلام مجمّع واحد لكل صور المنتج؛ كل option يأخذ معرض بديله ثم الصور العامة.
+  // هذا يربط الصور بالـSKU الصحيح بلا N+1 وبلا JOIN يضاعف وحدات البيع.
+  await attachProductGalleryImages(db, options, 12);
   // المتجر يعرض منتجاً واحداً، لكن الطلب يجب أن يحمل المتغيّر المحدد فعلياً
   // (لون/قياس) لا أول SKU صامتاً. كل متغيّر يحتفظ بوحدات بيعه الخاصة.
   const byVariant = new Map<number, StorefrontVariantOption>();
@@ -873,6 +912,8 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
         colorHex: normalizeHex(source.colorHex) ?? resolveColorHex(source.color ?? "") ?? null,
         size: source.size?.trim() || null,
         inStock: false,
+        imageUrls: option.imageUrls ?? [],
+        imageUrl: option.imageUrl,
         units: [],
       };
       byVariant.set(variantId, variant);
@@ -897,20 +938,6 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   if (item.isCustomizable) {
     item.customizationTemplate = await loadStorefrontCustomizationTemplate(db, item.productId);
   }
-  const galleryRows = await db
-    .select({ id: productImages.id, url: productImages.url })
-    .from(productImages)
-    .where(and(
-      eq(productImages.productId, item.productId),
-      isNull(productImages.variantId),
-      eq(productImages.reviewStatus, "APPROVED"),
-    ))
-    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
-    .limit(12);
-  const galleryUrls = galleryRows
-    .map((row) => toPublicProductImage(row.id, row.url))
-    .filter((url): url is string => Boolean(url));
-  if (galleryUrls.length > 0) item.imageUrls = Array.from(new Set(galleryUrls));
   await attachSoldCounts(db, [item]);
   await attachVariantColors(db, [item], branchId);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
@@ -1015,6 +1042,7 @@ export async function storefrontCartRecommendations(
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
   await attachVariantColors(db, items, branchId);
+  await attachStorefrontListMedia(db, items);
   return items;
 }
 
@@ -1109,6 +1137,7 @@ export async function storefrontRelated(
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
   await attachVariantColors(db, items, branchId);
+  await attachStorefrontListMedia(db, items);
   return items;
 }
 
