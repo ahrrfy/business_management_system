@@ -115,6 +115,7 @@ const AgingReportsHub = lazy(() => import("@/pages/AgingReportsHub"));
 const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
 const ReportsHub = lazy(() => import("@/pages/ReportsHub"));
 const ChartOfAccounts = lazy(() => import("@/pages/ChartOfAccounts"));
+const StatutoryAccounting = lazy(() => import("@/pages/StatutoryAccounting"));
 const CreditExposureReport = lazy(() => import("@/pages/CreditExposureReport"));
 const ARReminders = lazy(() => import("@/pages/ARReminders"));
 const APReminders = lazy(() => import("@/pages/APReminders"));
@@ -466,6 +467,7 @@ export default function App() {
       <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
       <Route path="/reports"><Shell><ReportsHub /></Shell></Route>
       <Route path="/chart-of-accounts"><Shell><ChartOfAccounts /></Shell></Route>
+      <Route path="/statutory-accounting"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><StatutoryAccounting /></RequireRole></Shell></Route>
       {/* مسارات التقارير: module="reports" ⇒ المنح الصريح للتقارير يفتحها لأي دور (مرآة
           reportViewerProcedure)، وقوائم الأدوار وُسِّعت لتطابق SECTION_ROLES في مركز التقارير
           (المحاسب/المدقّق كانا مصدودَين واجهياً رغم سماح الخادم — تحقيق ٦/٧). */}

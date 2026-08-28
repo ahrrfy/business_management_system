@@ -81,6 +81,7 @@ import { announcementsRouter } from "./routers/announcementsRouter";
 import { receptionRouter } from "./routers/receptionRouter";
 import { executiveRouter } from "./routers/executiveRouter";
 import { cashRemediationRouter } from "./routers/cashRemediationRouter";
+import { statutoryAccountingRouter } from "./routers/statutoryAccountingRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -91,6 +92,7 @@ export const appRouter = router({
   superApp: superAppRouter,
   executive: executiveRouter,
   cashRemediation: cashRemediationRouter,
+  statutoryAccounting: statutoryAccountingRouter,
   // العمل دون اتصال (لقطات النموذج المحلي) — الشريحة ٢ من خطة الأوفلاين.
   offline: offlineRouter,
   users: userRouter,
