@@ -149,6 +149,26 @@ describe("طابور الباركود المجهول (ب-٤)", () => {
     expect(rows[0].status).toBe("PENDING");
   });
 
+  it("يرفض إعادة clientRequestId نفسه بباركود مختلف بدل ابتلاع تصادم الحمولة", async () => {
+    const r = await mkSession();
+    const id = await loginPin(r.code, pinOf(r));
+    const rid = randomUUID();
+    await recordUnknownScan(id, { barcode: "BC-NB-1", clientRequestId: rid });
+
+    await expectTrpc(
+      recordUnknownScan(id, { barcode: "GHOST-777", clientRequestId: rid }),
+      "CONFLICT",
+      /معرّف الطلب.*باركود مختلف/,
+    );
+
+    const rows = await db()
+      .select()
+      .from(s.stocktakeUnknownScans)
+      .where(eq(s.stocktakeUnknownScans.sessionId, r.sessionId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].barcode).toBe("BC-NB-1");
+  });
+
   it("القائمة: تُجمّع بالباركود مع قابلية الحلّ (معروفٌ خارج النطاق ⇒ resolvable، مجهولٌ ⇒ لا)", async () => {
     const r = await mkSession();
     const id = await loginPin(r.code, pinOf(r));

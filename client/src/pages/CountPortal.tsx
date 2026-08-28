@@ -26,6 +26,10 @@ import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/Bar
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
+import {
+  resolveProductBarcodeMatch,
+  type ProductBarcodeMatch,
+} from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
@@ -79,9 +83,16 @@ function displayBarcode(item: CountItem): string | null {
   return base?.barcode ?? item.units.find((u) => u.barcode)?.barcode ?? null;
 }
 
-/** مطابقة حرفية لباركود الوحدة — الأساسيّ أو أيّ بديل (فضاء تفرّد واحد كما في الكاشير). */
-function unitHasBarcode(u: CountItem["units"][number], code: string): boolean {
-  return (u.barcode != null && u.barcode === code) || u.aliases.includes(code);
+/** يحلّ الباركود عبر العقد المشترك ويعيد الصنف والوحدة المطابقين معاً. */
+function findBarcodeMatch(
+  items: readonly CountItem[],
+  raw: string,
+): { item: CountItem; match: ProductBarcodeMatch } | null {
+  for (const item of items) {
+    const match = resolveProductBarcodeMatch(item.units, raw);
+    if (match) return { item, match };
+  }
+  return null;
 }
 
 function CenterScreen({ children }: { children: ReactNode }) {
@@ -427,29 +438,35 @@ export default function CountPortal() {
     (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" = "SCAN_HID") => {
       const scanned = raw.trim();
       if (!scanned) return;
-      const hit = items.find((i) => i.units.some((u) => unitHasBarcode(u, scanned)));
-      if (!hit) {
+      const resolved = findBarcodeMatch(items, scanned);
+      if (!resolved) {
         // باركودٌ خارج الجلسة (ب-٤): لا يضيع — يُوضَع في طابورٍ يُزامَن (كالعدّات) فيصمد الانقطاع
         // (مراجعة Codex #2: الإرسال-وانسَ كان يفقده أوفلاين رغم إبلاغ العامل بأنّه سُجّل).
         if (canCount) {
-          enqueueUnknown(code, {
+          const queued = enqueueUnknown(code, {
             clientRequestId: newClientRequestId(),
             barcode: scanned,
             queuedAt: new Date().toISOString(),
           });
           setQueueCount(queueSize(code) + peekUnknown(code).length);
-          notify.warn(
-            "الباركود غير موجود ضمن منتجات الجلسة — سُجّل للمشرف (يُزامَن تلقائياً)",
-            scanned,
-          );
+          if (queued) {
+            notify.warn(
+              "الباركود غير موجود ضمن منتجات الجلسة — سُجّل للمشرف (يُزامَن تلقائياً)",
+              scanned,
+            );
+          } else {
+            notify.err(
+              "تعذّر حفظ الباركود — طابور الجهاز ممتلئ أو غير متاح",
+              "اتصل بالشبكة ثم أعد المسح، وأبلغ المشرف إذا استمر العطل.",
+            );
+          }
         } else {
           notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
         }
         return;
       }
-      const unitName =
-        hit.units.find((u) => unitHasBarcode(u, scanned))?.unitName ??
-        baseUnitName(hit);
+      const { item: hit, match } = resolved;
+      const unitName = match.unitName;
       // وضع التجميع: مسحٌ متكرّر للبطاقة المفتوحة يزيد وحدته +١؛ وصنفٌ آخر يلزمه حفظ الحالي أولاً.
       if (tallyMode && openVariantId != null) {
         if (openVariantId === hit.variantId) {
@@ -488,7 +505,7 @@ export default function CountPortal() {
     const exact = q.trim();
     if (!exact) return;
     const hit =
-      items.find((i) => i.units.some((u) => unitHasBarcode(u, exact))) ??
+      findBarcodeMatch(items, exact)?.item ??
       items.find((i) => (i.sku ?? "") === exact);
     if (hit) {
       setQ("");
@@ -501,6 +518,13 @@ export default function CountPortal() {
   /* ── حفظ العدّ ── */
   const submitMut = trpc.count.submit.useMutation();
   const openItem = openVariantId != null ? items.find((i) => i.variantId === openVariantId) ?? null : null;
+  const openScanMatch = useMemo(
+    () =>
+      openItem && openEntry.scannedBarcode
+        ? resolveProductBarcodeMatch(openItem.units, openEntry.scannedBarcode)
+        : null,
+    [openItem, openEntry.scannedBarcode],
+  );
   const openMode: CountMode = openItem
     ? openItem.isMine
       ? pendingRecountSet.has(openItem.variantId)
@@ -1225,6 +1249,7 @@ export default function CountPortal() {
               barcode={openEntry.scannedBarcode ?? displayBarcode(openItem)}
               imageUrl={openItem.imageUrl}
               scanned={openEntry.scannedBarcode != null}
+              scanMatch={openScanMatch}
             />
             <QtySheet
               key={`${openItem.variantId}-${openMode}`}

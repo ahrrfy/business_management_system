@@ -24,6 +24,10 @@ import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/Bar
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
+import {
+  resolveProductBarcodeMatch,
+  type ProductBarcodeMatch,
+} from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { confirm } from "@/lib/confirm";
@@ -70,11 +74,7 @@ type SubmitResult = RouterOutputs["count"]["submit"];
 
 /** مطابقة حرفية لباركود الوحدة — الأساسيّ أو أيّ بديل (فضاء تفرّد واحد كما في الكاشير). */
 function unitHasBarcode(unit: CountUnit, value: string) {
-  return unit.barcode === value || unit.aliases.includes(value);
-}
-
-function matchesBarcode(item: CountItem, value: string) {
-  return item.units.some((unit) => unitHasBarcode(unit, value));
+  return resolveProductBarcodeMatch([unit], value) != null;
 }
 
 function productLabel(item: CountItem) {
@@ -113,7 +113,8 @@ export default function MyStocktakeWorkspace() {
   const [selectedEntry, setSelectedEntry] = useState<{
     method: CountEntryMethod;
     scannedBarcode: string | null;
-  }>({ method: "SEARCH_PICK", scannedBarcode: null });
+    scanMatch: ProductBarcodeMatch | null;
+  }>({ method: "SEARCH_PICK", scannedBarcode: null, scanMatch: null });
   const [cameraOpen, setCameraOpen] = useState(false);
   const [online, setOnline] = useState<boolean>(
     () => typeof navigator === "undefined" || navigator.onLine,
@@ -252,9 +253,14 @@ export default function MyStocktakeWorkspace() {
     (
       item: CountItem,
       unitName?: string,
-      entry: { method: CountEntryMethod; scannedBarcode: string | null } = {
+      entry: {
+        method: CountEntryMethod;
+        scannedBarcode: string | null;
+        scanMatch: ProductBarcodeMatch | null;
+      } = {
         method: "SEARCH_PICK",
         scannedBarcode: null,
+        scanMatch: null,
       },
     ) => {
       if (
@@ -309,6 +315,7 @@ export default function MyStocktakeWorkspace() {
       openItem(item, undefined, {
         method: "MANUAL_AUTHORIZED",
         scannedBarcode: null,
+        scanMatch: null,
       });
     },
     [openItem],
@@ -318,22 +325,38 @@ export default function MyStocktakeWorkspace() {
     (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" = "SCAN_HID") => {
       const value = raw.trim();
       if (!value) return;
-      const found = items.find(
-        (item) => matchesBarcode(item, value) || item.sku === value,
-      );
+      let found: CountItem | undefined;
+      let scanMatch: ProductBarcodeMatch | null = null;
+      // نفحص فضاء الباركود أولاً كي لا يتحوّل SKU مصادف إلى «مسح» ولا يحجب باركود مادة أخرى.
+      for (const item of items) {
+        const match = resolveProductBarcodeMatch(item.units, value);
+        if (!match) continue;
+        found = item;
+        scanMatch = match;
+        break;
+      }
+      // SKU مدخل بحث فقط؛ لا نمنحه إثبات المسح حتى لو وصل من قارئ HID أو الكاميرا.
+      found ??= items.find((item) => item.sku === value);
       if (!found) {
         // باركودٌ خارج الجلسة (ب-٤): يُوضَع في طابورٍ يُزامَن فلا يضيع أوفلاين (مراجعة Codex #2).
         if (st?.session.status === "COUNTING" && st.assignment.status === "ACTIVE") {
-          enqueueUnknown(code, {
+          const persisted = enqueueUnknown(code, {
             clientRequestId: newClientRequestId(),
             barcode: value,
             queuedAt: new Date().toISOString(),
           });
           setQueueCount(queueSize(code) + peekUnknown(code).length);
-          notify.warn(
-            "الباركود غير موجود ضمن منتجات الجلسة — سُجّل للمشرف (يُزامَن تلقائياً)",
-            value,
-          );
+          if (persisted) {
+            notify.warn(
+              "الباركود غير موجود ضمن منتجات الجلسة — سُجّل للمشرف (يُزامَن تلقائياً)",
+              value,
+            );
+          } else {
+            notify.err(
+              "طابور المسح على هذا الجهاز ممتلئ — لم يُسجّل الباركود",
+              `اتصل بالشبكة للمزامنة أو أبلغ مشرف الجرد قبل المتابعة. الباركود: ${value}`,
+            );
+          }
         } else {
           notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", value);
         }
@@ -343,13 +366,12 @@ export default function MyStocktakeWorkspace() {
       // مراجعة Codex #7: مطابقةُ SKU (لا باركود وحدة) ليست مسحاً — الخادم يتحقّق من الباركود
       // فقط، فإسنادُ SKU كـscannedBarcode يفتح البطاقة ثم يُرفض الحفظ. نعامل مطابقة الباركود
       // وحدها كمسح؛ ومطابقة SKU كاختيارٍ حرّ (يُحجَب في المسح الإلزامي ويُقبَل في الحرّ).
-      const matchedUnit = found.units.find((u) => unitHasBarcode(u, value));
       openItem(
         found,
-        matchedUnit?.unitName,
-        matchedUnit
-          ? { method: source, scannedBarcode: value }
-          : { method: "SEARCH_PICK", scannedBarcode: null },
+        scanMatch?.unitName,
+        scanMatch
+          ? { method: source, scannedBarcode: value, scanMatch }
+          : { method: "SEARCH_PICK", scannedBarcode: null, scanMatch: null },
       );
     },
     [items, openItem, st, code, utils],
@@ -375,6 +397,7 @@ export default function MyStocktakeWorkspace() {
     openItem(hit, hit.units.find((u) => unitHasBarcode(u, exact))?.unitName, {
       method: "SEARCH_PICK",
       scannedBarcode: null,
+      scanMatch: null,
     });
   }, [items, openItem, query]);
 
@@ -977,6 +1000,7 @@ export default function MyStocktakeWorkspace() {
                 }
                 imageUrl={selected.imageUrl}
                 scanned={selectedEntry.scannedBarcode != null}
+                scanMatch={selectedEntry.scanMatch}
               />
               <QtyEditor
                 key={`${selected.variantId}-${selectedMode}`}
