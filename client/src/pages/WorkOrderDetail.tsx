@@ -23,6 +23,8 @@ import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { Printer, MessageCircle, Truck } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
+import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineCard";
+import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
 import { canSeeCost, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -614,6 +616,11 @@ export default function WorkOrderDetail() {
           </CardContent>
         </Card>
       )}
+
+      {/* الخطّ الزمنيّ للأمر (٢٨/٨/٢٦): كان مضمّناً في WorkOrders.tsx وWorkOrderStation فقط —
+          شاشة التفاصيل الأساسيّة بلا تاريخٍ للأمر، فالفنّي/الكاشير يفتحان صفحةً لا تُخبرهم متى
+          سُحب/بُدئ/جُهِّز/سُلّم. يقرأ من workOrders.timeline بعد أن صار صادقاً كاملاً في PR #851. */}
+      <WorkOrderTimelineCard workOrderId={workOrderId} statusHue={workOrderStatusHue(data.status)} />
 
       {durableRefundNotice && (
         <div
