@@ -16,6 +16,7 @@ import {
   serviceTypes,
   shifts,
   tasks,
+  workOrderEvents,
   workOrderImages,
   workOrderMaterials,
   workOrders,
@@ -946,6 +947,41 @@ export const workOrderRouter = router({
       .leftJoin(users, eq(auditLogs.userId, users.id))
       .where(and(eq(auditLogs.entityType, "workOrder"), eq(auditLogs.entityId, String(input.workOrderId))))
       .orderBy(asc(auditLogs.id));
+    return rows;
+  }),
+
+  /**
+   * eventTimeline (Slice 6، ٢٨/٨/٢٦، هجرة 0278) — يقرأ من `workOrderEvents` (السجلّ الجديد
+   * المُنمَّط) بدل `auditLogs` العامّ. أعمدةٌ منظَّمة: fromStatus/toStatus/eventType/payload
+   * قابلةُ الفلترة والفهرسة (`idx_wo_event_wo_time`). يُستهلَك مباشرةً من `EntityTimeline`
+   * الجديد بلا فكّ JSON عند العرض.
+   *
+   * `timeline` القديم يبقى مؤقّتاً (dual-write) — لا كسر للمستهلكين. بعد إثبات موثوقيّة
+   * السجلّ الجديد يمكن الاستغناء عن الكتابة المزدوجة والقارئ القديم.
+   */
+  eventTimeline: workordersReadProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+    const db = getDb();
+    if (!db) return [];
+    const wo = (
+      await db.select({ branchId: workOrders.branchId }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
+    )[0];
+    if (!wo) return [];
+    if (ctx.scopedBranchId != null && Number(wo.branchId) !== ctx.scopedBranchId) return [];
+    const rows = await db
+      .select({
+        id: workOrderEvents.id,
+        eventType: workOrderEvents.eventType,
+        fromStatus: workOrderEvents.fromStatus,
+        toStatus: workOrderEvents.toStatus,
+        payload: workOrderEvents.payload,
+        actorUserId: workOrderEvents.actorUserId,
+        actorName: users.name,
+        occurredAt: workOrderEvents.occurredAt,
+      })
+      .from(workOrderEvents)
+      .leftJoin(users, eq(workOrderEvents.actorUserId, users.id))
+      .where(eq(workOrderEvents.workOrderId, input.workOrderId))
+      .orderBy(asc(workOrderEvents.occurredAt));
     return rows;
   }),
 

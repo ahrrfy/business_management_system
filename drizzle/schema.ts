@@ -9219,6 +9219,58 @@ export const deliveryOutbox = mysqlTable(
 );
 export type DeliveryOutboxRow = typeof deliveryOutbox.$inferSelect;
 
+/**
+ * سجلّ أحداث دورة حياة أمر الشغل (Slice 6، ٢٨/٨/٢٦، هجرة 0278).
+ *
+ * تعميمُ النموذج المرجعيّ `deliveryEvents` على أمر الشغل — المحور ١ من تدقيق ٢٨/٨/٢٦:
+ * كان `workOrderRouter.timeline` يقرأ من `auditLogs` وحده، وهو سجلٌّ عامٌّ بأعمدة JSON
+ * (`oldValue`/`newValue`) صعبةِ الاستعلام والفهرسة. `workOrderEvents` يُضاف كطبقةٍ ثانيةٍ
+ * منظَّمة: `fromStatus`/`toStatus` أعمدةٌ مُنمَّطة قابلة للفلترة والفهرسة، و`eventKey`
+ * فريدٌ يمنع الازدواج (idempotency على مستوى القاعدة).
+ *
+ * **Dual-write أثناء الفترة الانتقاليّة:** المسارات الحاليّة تبقى تكتب `logAuditTx` (لا كسر
+ * لـtimeline القائم)، وتضيف `recordWorkOrderEvent` على التوازي. بمرور الوقت وبعد إثبات
+ * موثوقيّة السجلّ الجديد، يمكن الاستغناء عن الكتابة المزدوجة.
+ *
+ * **الفرق عن deliveryEvents:** كيانٌ مختلف (workOrder بدل consignment)، والحالة واحدةٌ
+ * (status) لا اثنتان (parcelStatus/moneyStatus).
+ */
+export const workOrderEvents = mysqlTable(
+  "workOrderEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /**
+     * مفتاحٌ فريدٌ لكلّ حدث — يمنع الازدواج على مستوى القاعدة. الاصطلاح:
+     * `wo:<workOrderId>:<eventType>:<seq?>` — seq اختياريّ للأحداث التي قد تتكرّر
+     * (assign/release/materials-update). للأحداث الأحاديّة (start/markReady/deliver/cancel)
+     * لا حاجة لـseq.
+     */
+    eventKey: varchar("eventKey", { length: 160 }).notNull().unique(),
+    workOrderId: bigint("workOrderId", { mode: "number" })
+      .notNull()
+      .references(() => workOrders.id, { onDelete: "cascade" }),
+    /** نوع الحدث (مطابق لـ`shared/workOrderEventType.ts` — enumerated للاستقرار). */
+    eventType: varchar("eventType", { length: 60 }).notNull(),
+    /** انتقالُ الحالة الاختياريّ (null للأحداث بلا نقلةٍ كـassign/materials-update). */
+    fromStatus: varchar("fromStatus", { length: 30 }),
+    toStatus: varchar("toStatus", { length: 30 }),
+    /** حمولة إضافيّة للحدث (مواد، أسباب، مبالغ، مستندات مرجعيّة). */
+    payload: json("payload"),
+    actorUserId: int("actorUserId").references(() => users.id),
+    /** الفرع لأثرِ العزل التقريريّ — بدونه استعلامات الأعمار تحتاج JOIN مع workOrders. */
+    branchId: bigint("branchId", { mode: "number" }),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    workOrderTimeIdx: index("idx_wo_event_wo_time").on(
+      table.workOrderId,
+      table.occurredAt,
+    ),
+    eventTypeIdx: index("idx_wo_event_type").on(table.eventType),
+  }),
+);
+export type WorkOrderEvent = typeof workOrderEvents.$inferSelect;
+
 /** إعدادات الضريبة (صفّ singleton واحد id=1): افتراضي تفعيل الضريبة على الفاتورة الجديدة +
  *  نسبتها + الرقم الضريبي للشركة (يُطبَع على الفاتورة). العراق VAT=0% افتراضياً — enabledByDefault
  *  يبقى false ما لم يُفعِّله المدير صراحةً. يُنشَأ الصفّ كسولاً (get-or-create) عند أول قراءة. */

@@ -7,6 +7,7 @@ import { logger } from "../../logger";
 import { canCrossBranches } from "../../lib/branchAuthority";
 import { hasModuleAccess } from "@shared/permissions";
 import { logAuditTx } from "../auditService";
+import { recordWorkOrderEvent } from "../workOrderEvents";
 import { applyMovement } from "../inventoryService";
 import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
@@ -46,6 +47,18 @@ export async function claimWorkOrder(workOrderId: number, actor: Actor & { role?
           newValue: { assignedTo: actor.userId, statusAtClaim: wo.status },
         },
       );
+      // Slice 6 (٢٨/٨/٢٦): dual-write إلى workOrderEvents — سجلٌّ منظَّم بأعمدة مُنمَّطة
+      // (fromStatus/toStatus قابلة للفلترة والفهرسة). `eventKey=wo:<id>:CLAIMED` أحاديٌّ
+      // بحكم التصميم — CLAIMED مرّةً واحدةً لكلّ أمر (idempotency على مستوى القاعدة).
+      await recordWorkOrderEvent(tx, {
+        workOrderId,
+        eventType: "CLAIMED",
+        fromStatus: wo.status,
+        toStatus: wo.status,
+        actorUserId: actor.userId,
+        branchId: actor.branchId ?? Number(wo.branchId),
+        payload: { assignedTo: actor.userId },
+      });
     }
     return { workOrderId, assignedTo: actor.userId };
   });
@@ -208,6 +221,16 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
         newValue: { status: "IN_PROGRESS", materialsCost: materialsCost.toFixed(2) },
       },
     );
+    // Slice 6 dual-write: STARTED أحاديٌّ (RECEIVED → IN_PROGRESS مرّةً واحدةً لكلّ أمر).
+    await recordWorkOrderEvent(tx, {
+      workOrderId,
+      eventType: "STARTED",
+      fromStatus: "RECEIVED",
+      toStatus: "IN_PROGRESS",
+      actorUserId: actor.userId,
+      branchId: actor.branchId ?? Number(wo.branchId),
+      payload: { materialsCost: materialsCost.toFixed(2) },
+    });
     return { workOrderId, status: "IN_PROGRESS", materialsCost: materialsCost.toFixed(2) };
   });
 }
@@ -373,6 +396,15 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
         newValue: { status: "READY", branchId: Number(wo.branchId) },
       },
     );
+    // Slice 6 dual-write: MARKED_READY أحاديٌّ. actor اختياريّ (نفس النمط أعلاه).
+    await recordWorkOrderEvent(tx, {
+      workOrderId,
+      eventType: "MARKED_READY",
+      fromStatus: "IN_PROGRESS",
+      toStatus: "READY",
+      actorUserId: actor?.userId ?? null,
+      branchId: actor?.branchId ?? Number(wo.branchId),
+    });
     return {
       workOrderId,
       status: "READY" as const,
