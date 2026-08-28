@@ -34,6 +34,43 @@ const FULFILL_GATE: RoleGate = { roles: ["cashier", "manager"], module: "workord
 const DISPATCH_GATE: RoleGate = { roles: ["cashier", "manager"] };
 
 /**
+ * صافرةُ إشعارِ جاهزيّة (Web Audio API) — 660Hz لـ150ms ثمّ 880Hz لـ200ms. لا ملفَّ صوتٍ ولا
+ * أصلَ إضافيّ. تفشل مغلقةً في السياقات بلا user-gesture: بعض المتصفّحات تحظر إنشاء AudioContext
+ * قبل أوّل نقرة، فنحاول بلا throw. Toast يبقى ظاهراً للمعتِمِد بصرياً وحده. لا نُخزّن Context
+ * عالمياً كي لا نحتفظ بحلقاتٍ مفتوحة بين تبويبات — دورةُ حياةٍ لكل صفارة.
+ */
+function playReadyBeep(): void {
+  try {
+    const AC: typeof AudioContext | undefined =
+      (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
+      ?? (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    const now = ctx.currentTime;
+    const beep = (freq: number, start: number, dur: number) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0, now + start);
+      gain.gain.linearRampToValueAtTime(0.15, now + start + 0.01);
+      gain.gain.linearRampToValueAtTime(0, now + start + dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + start);
+      osc.stop(now + start + dur);
+    };
+    beep(660, 0, 0.15);
+    beep(880, 0.18, 0.2);
+    // إغلاق AudioContext بعد نهاية آخر نغمة (منع تسريب)؛ فشلُ الإغلاق لا يهمّ.
+    setTimeout(() => {
+      try { ctx.close(); } catch { /* ignore */ }
+    }, 500);
+  } catch {
+    /* المتصفّح بلا صوت — Toast يفي (ولا نُفشل تجربة الاستقبال). */
+  }
+}
+
+/**
  * اِستقبال (تكامل التوصيل، ٤/٨): طابور طلبات الاستقبال — الفجوة التي أبلغ عنها المالك («بعد إكمال
  * الطلب كيف نحوّله للتوصيل؟ لا يظهر جدول طلبات ولا إسناد لمندوب»). ثلاثة أقسام (جاهزة/قيد التنفيذ/
  * سُلِّمت اليوم)، وكل صفٍّ يحمل إجراءات ديناميكية بحسب حالته وطريقة تسليمه: استلام مباشر، إسناد
@@ -46,11 +83,58 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
   const canFulfill = role === "admin" || role === "cashier" || role === "manager";
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
-  const active = trpc.workOrders.list.useQuery({ branchId, statuses: ["RECEIVED", "IN_PROGRESS", "READY"], limit: 200 });
+  // Polling كل ١٥ث + على استعادة التركيز: بلاغ المالك ٢٨/٨/٢٦ («الطلب يتيه — الاستقبال لا يرى»).
+  // كان `useQuery` بلا refetchInterval إطلاقاً — لا يحدَّث الطابور إلا بإعادة تحميلٍ يدويٍّ أو
+  // بـinvalidate من إجراءِ هذه الشاشة نفسها. إشعارُ «طلبك جاهز» يذهب للعميل بواتساب، والموظّف
+  // لا يعلم حتى يفتح الشاشة (T4 من تدقيق ٢٨/٨). refetchInterval ثابتٌ لا يتغيّر بتغيّر البيانات
+  // (كي لا تُتَخذ الشاشة نفسها ذريعةً لتوقّف polling حين تصفر النتائج).
+  const active = trpc.workOrders.list.useQuery(
+    { branchId, statuses: ["RECEIVED", "IN_PROGRESS", "READY"], limit: 200 },
+    { refetchInterval: 15_000, refetchOnWindowFocus: true },
+  );
   // مُتَسلَّم اليوم بصرف النظر عن تاريخ إنشاء الأمر (قد يكون أمس) — deliveredFrom/deliveredTo
   // يفلتران على workOrders.deliveredAt، لا from/to (تاريخ الإنشاء، يُخفي أوامر أُنشئت أمس وسُلِّمت اليوم).
-  const deliveredToday = trpc.workOrders.list.useQuery({ branchId, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 });
+  const deliveredToday = trpc.workOrders.list.useQuery(
+    { branchId, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 },
+    { refetchInterval: 30_000, refetchOnWindowFocus: true },
+  );
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canFulfill });
+
+  // كشف READY الجدد بين استعلامَين متتاليَين — يُشعِر الموظّف بجاهزيّة أمر شغل خرج من المطبعة
+  // للتوّ (بلاغ ٢٨/٨/٢٦). يقارن Set<workOrderId> بالسابق: النقلة تفلترها ورشة الطلب لا الاستعلام
+  // (طلبٌ نُقل من IN_PROGRESS إلى READY على الخادم ⇒ يظهر في القائمة نفسها بحالةٍ جديدة).
+  // firstLoad: تحميلٌ أوّل (أو تحديثٌ بعد mutation) لا يُطلق toast — نسجّل الأسسَ فقط. سباق الطلبات
+  // بين تبويبَين: كلٌّ يشتغل بـSet خاصّ (state محلّيّ لمكوّن)، فتنبيهُ الأخيرِ لا يُلغي الأوّل.
+  const knownReadyRef = useRef<Set<number>>(new Set());
+  const firstLoadRef = useRef<boolean>(true);
+  useEffect(() => {
+    const rows = active.data;
+    if (!rows) return;
+    const currentReady = new Set<number>();
+    for (const r of rows) {
+      if (r.status === "READY") currentReady.add(Number(r.id));
+    }
+    if (firstLoadRef.current) {
+      knownReadyRef.current = currentReady;
+      firstLoadRef.current = false;
+      return;
+    }
+    const freshIds: number[] = [];
+    Array.from(currentReady).forEach((id) => {
+      if (!knownReadyRef.current.has(id)) freshIds.push(id);
+    });
+    knownReadyRef.current = currentReady;
+    if (freshIds.length > 0) {
+      const freshRows = rows.filter((r) => freshIds.includes(Number(r.id)));
+      const first = freshRows[0]!;
+      const suffix = freshRows.length > 1 ? ` (و${freshRows.length - 1} طلب/طلبات أخرى)` : "";
+      notify.info(
+        `طلب جاهز للتسليم: ${first.orderNumber}${suffix}`,
+        first.customerName ? `العميل: ${first.customerName}` : undefined,
+      );
+      playReadyBeep();
+    }
+  }, [active.data]);
 
   const [dispatchTarget, setDispatchTarget] = useState<QueueRow | null>(null);
   const [pickupTarget, setPickupTarget] = useState<QueueRow | null>(null);

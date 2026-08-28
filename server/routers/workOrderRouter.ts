@@ -1399,14 +1399,11 @@ export const workOrderRouter = router({
   claim: workordersExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await claimWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
-      await logAudit(ctx, {
-        action: "workOrder.claim",
-        entityType: "workOrder",
-        entityId: input.workOrderId,
-        newValue: { assignedTo: ctx.user.id },
-      });
-      return res;
+      // سجلُّ التدقيق يُكتب داخل المعاملة (`lifecycle.ts:claimWorkOrder`) — لا تكرار هنا.
+      // نمطٌ مطابقٌ لـreverseDelivery (السطر 1559 أدناه): الكاتب داخل المعاملة يفوز
+      // بضمان الذرّيّة (فشل التدقيق ⇒ يفشل الانتقال). الكاتب المزدوج كان يضاعف صفوف
+      // الخطّ الزمنيّ (Codex #851 P2).
+      return await claimWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
     }),
 
   // التنفيذ (بدء/تجهيز) متاح لفني المطبعة على أوامره المسحوبة + الكاشير/المدير. التسليم/الفوترة
@@ -1414,17 +1411,15 @@ export const workOrderRouter = router({
   start: workordersExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await startWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
-      await logAudit(ctx, { action: "workOrder.start", entityType: "workOrder", entityId: input.workOrderId });
-      return res;
+      // سجلُّ التدقيق يُكتب داخل المعاملة (`lifecycle.ts:startWorkOrder`) — لا تكرار هنا.
+      return await startWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
     }),
 
   markReady: workordersExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await markWorkOrderReady(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
-      await logAudit(ctx, { action: "workOrder.markReady", entityType: "workOrder", entityId: input.workOrderId });
-      return res;
+      // سجلُّ التدقيق يُكتب داخل المعاملة (`lifecycle.ts:markWorkOrderReady`) — لا تكرار هنا.
+      return await markWorkOrderReady(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
     }),
 
   deliver: workordersCashierProcedure

@@ -29,7 +29,24 @@ export async function claimWorkOrder(workOrderId: number, actor: Actor & { role?
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن سحب أمر إلا وهو في الطابور الوارد" });
     if (wo.assignedTo != null && Number(wo.assignedTo) !== actor.userId)
       throw new TRPCError({ code: "CONFLICT", message: "الأمر مسحوبٌ بالفعل لمنفّذ آخر" });
+    // Idempotency: مُسحَبٌ سلفاً لنفس الفنّيّ ⇒ لا نُدرج أثراً مكرّراً في auditLogs.
+    const alreadyClaimed = wo.assignedTo != null && Number(wo.assignedTo) === actor.userId;
     await tx.update(workOrders).set({ assignedTo: actor.userId }).where(eq(workOrders.id, workOrderId));
+    if (!alreadyClaimed) {
+      // تدقيقُ SEED للـEvent Store الاحتياطيّ (auditLogs) — يجعل `workOrderRouter.timeline`
+      // يُظهر السحبَ بجانب إعادة الإسناد والإفراج والإلغاء (كانت تكتب logAuditTx وحدها).
+      await logAuditTx(
+        tx,
+        { user: { id: actor.userId, branchId: actor.branchId ?? null } as never, req: undefined as never },
+        {
+          action: "workOrder.claim",
+          entityType: "workOrder",
+          entityId: workOrderId,
+          oldValue: { assignedTo: null },
+          newValue: { assignedTo: actor.userId, statusAtClaim: wo.status },
+        },
+      );
+    }
     return { workOrderId, assignedTo: actor.userId };
   });
 }
@@ -177,6 +194,20 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
         assignedTo: sql`COALESCE(${workOrders.assignedTo}, ${actor.userId})`,
       })
       .where(eq(workOrders.id, workOrderId));
+    // تدقيقُ SEED للـEvent Store الاحتياطيّ — انتقالُ RECEIVED→IN_PROGRESS كان يُخصَم المخزون
+    // ويكتب قيدَ WIP لكن يبقى بلا أثرٍ زمنيّ في `workOrderRouter.timeline` (ثغرة #5 من تدقيق ٢٨/٨).
+    // materialsCost في newValue لأنّه رقمُ الاستهلاك المصمَّت (يُعزّز الأثر الماليّ حين يبحث المشرف).
+    await logAuditTx(
+      tx,
+      { user: { id: actor.userId, branchId: actor.branchId ?? null } as never, req: undefined as never },
+      {
+        action: "workOrder.start",
+        entityType: "workOrder",
+        entityId: workOrderId,
+        oldValue: { status: "RECEIVED" },
+        newValue: { status: "IN_PROGRESS", materialsCost: materialsCost.toFixed(2) },
+      },
+    );
     return { workOrderId, status: "IN_PROGRESS", materialsCost: materialsCost.toFixed(2) };
   });
 }
@@ -320,6 +351,28 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
         workSeconds: sql`GREATEST(TIMESTAMPDIFF(SECOND, ${workOrders.workStartedAt}, NOW()), 0)`,
       })
       .where(eq(workOrders.id, workOrderId));
+    // تدقيقُ SEED للـEvent Store الاحتياطيّ — IN_PROGRESS→READY كان الطلب «يتيه»: الفنّي أعلن
+    // الجاهزيّة، العميل تلقّى واتساب، لكن `workOrderRouter.timeline` لا يعرض السطر (لأنّ الأثر
+    // كان يُدهَس بعمود status عند التسليم). بلاغ المالك ٢٨/٨/٢٦.
+    //
+    // ⚠️ **Actor اختياريّ** — يُستدعى داخلياً بلا سياقٍ من مسارات flowNotify. الفابركة `userId: 0`
+    // كانت خطأً P1 (Codex #851): `auditLogs.userId` FK إلى `users.id`، وحين لا يوجد مستخدمٌ
+    // بمعرّف 0، الإدراج يفشل ويُرجع الانتقال كلّه. `userId` FK nullable — نمرّر `ctx.user`
+    // كـundefined فيصير null قانونياً. `branchId` من أمر الشغل مصدرُ حقيقةٍ لا اجتهاد.
+    const auditCtx: Parameters<typeof logAuditTx>[1] = actor
+      ? { user: { id: actor.userId, branchId: actor.branchId ?? null } as never, req: undefined as never }
+      : { user: undefined as never, req: undefined as never };
+    await logAuditTx(
+      tx,
+      auditCtx,
+      {
+        action: "workOrder.markReady",
+        entityType: "workOrder",
+        entityId: workOrderId,
+        oldValue: { status: "IN_PROGRESS" },
+        newValue: { status: "READY", branchId: Number(wo.branchId) },
+      },
+    );
     return {
       workOrderId,
       status: "READY" as const,

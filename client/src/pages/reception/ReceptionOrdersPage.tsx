@@ -13,9 +13,11 @@ import StationPageHeader from "@/components/StationPageHeader";
 export default function ReceptionOrdersPage() {
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId != null ? Number(me.data.branchId) : null;
+  // Polling كل ٢٠ث لبقاء الشارة عند العنوان مطابقةً للطابور — مرآةً لـReceptionOrderQueue (١٥ث)
+  // مع تخفيفٍ للتقليل من ازدواج الاستعلامات. refetchOnWindowFocus لاصطياد الفنيّ الذي عاد للتبويب.
   const counts = trpc.workOrders.counts.useQuery(
     { branchId: branchId ?? 0, branchQueue: true },
-    { enabled: branchId != null, staleTime: 30_000 },
+    { enabled: branchId != null, staleTime: 30_000, refetchInterval: 20_000, refetchOnWindowFocus: true },
   );
 
   return (
