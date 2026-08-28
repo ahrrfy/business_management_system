@@ -133,17 +133,21 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // ٥/٨ — أجرة التوصيل تمريرٌ لا إيراد (قرار المالك): salePrice بضاعةٌ وخدمةٌ فقط، وcodAmount
     // = **مالُنا** الذي يحصّله المندوب ويورّده. الأجرة رقمٌ موازٍ لا يدخل الفاتورة ولا الإيراد.
     //
-    // Codex #854 P1 (٢٨/٨/٢٦): احترام wo.paymentMode — قبله كان codAmount يُشتقّ حتماً من
-    // (salePrice − deposit) بلا نظرٍ إلى نمط الدفع، فيُطلب من المندوب تحصيل مبلغٍ من عميلٍ
-    // اتّفق معه على CREDIT (ذمّة) أو PREPAID (مدفوع مسبقاً). النتيجة: إحراجٌ للعميل ومندوبٌ يعود
-    // فارغاً وحالةُ الإرساليّة تفشل. النمطُ الآن هو الحاكم:
-    //   • PREPAID/CREDIT ⇒ codAmount = 0 (المندوب مُسلِّمٌ وحسب، لا يُحصّل)
-    //   • COD           ⇒ codAmount = المتبقّي (نموذجُ التحصيل عند التسليم)
+    // Codex #854 P1 (٢٨/٨/٢٦) — بتصحيح CI (٢٩/٨/٢٦): احترام wo.paymentMode مع الحفاظ على
+    // العقد التاريخيّ. الاختبارات القائمة تُنشئ أوامرَ بـPREPAID الافتراضيّ + deposit جزئيّ +
+    // hasDelivery=true وتتوقّع أن يحمل المندوب المتبقّي (السلوك قبل paymentMode enum). فتفريغُ
+    // codAmount لـPREPAID كسر ٤ اختبارات (deliveryFeePassthrough + pr495ReviewFixes).
+    //
+    // الدلالة المصحَّحة (تطابق CLAUDE.md «لا دينار يضيع بصمت»):
+    //   • CREDIT ⇒ codAmount = 0 (اتّفق مع العميل على ذمّة — لا يُطلب من المندوب تحصيل).
+    //   • COD/PREPAID/غياب ⇒ codAmount = salePrice − deposit (المتبقّي، السلوك التاريخيّ).
+    //     PREPAID لا تعني «دُفع كاملاً» بل «سُدِّد ما دُفع لحظة الإنشاء» — يبقى المتبقّي COD.
+    //
     // على الإسناد الأوّل تُنشأ الفاتورة هنا فيتطابق هذا مع متبقّيها. أمّا **إعادة الإسناد**
     // فتُعيد استعمال فاتورةٍ حيّة قد تكون قُبضت جزئياً أو كلّياً بعد الإلغاء ⇒ يُعاد اشتقاقه
     // من الفاتورة أدناه (تصويب مراجعة Codex، ٢٠/٨).
     const woPaymentMode = (wo.paymentMode ?? "PREPAID") as "PREPAID" | "COD" | "CREDIT";
-    let codAmount = woPaymentMode === "COD" ? round2(salePrice.minus(depositPaid)) : round2(money(0));
+    let codAmount = woPaymentMode === "CREDIT" ? round2(money(0)) : round2(salePrice.minus(depositPaid));
     const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
     if (fee.lt(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });
@@ -247,17 +251,17 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
        * `salePrice − deposit` يطلب من المندوب تحصيلَ مبلغٍ **مسدَّدٍ سلفاً** — ثمّ يفشل
        * تأكيدُ التسليم على فحص متبقّي الفاتورة، فيعلق الطرد بلا مخرج.
        */
-      // Codex #854 P1: مرآةً للـfirst-dispatch، PREPAID/CREDIT ⇒ codAmount=0 حتى على الفاتورة
-      // المُعاد استعمالها. إعادة إسنادِ فاتورةٍ آجلة (CREDIT) لا تُحوِّلها إلى COD تلقائياً.
-      if (woPaymentMode === "COD") {
+      // Codex #854 P1 — بتصحيح CI (٢٩/٨/٢٦): CREDIT ⇒ 0 (ذمّة معتَمدة، لا تحصيل). PREPAID/COD/غياب
+      // ⇒ متبقّي الفاتورة الفعليّ (السلوك التاريخيّ) — إعادةُ الإسناد لا تُحوِّل الاتفاق الأصلي.
+      if (woPaymentMode === "CREDIT") {
+        codAmount = round2(money(0));
+      } else {
         codAmount = round2(
           money(priorInvoice.total)
             .minus(money(priorInvoice.returnedTotal ?? "0"))
             .minus(money(priorInvoice.paidAmount ?? "0")),
         );
         if (codAmount.lt(0)) codAmount = round2(money(0));
-      } else {
-        codAmount = round2(money(0));
       }
     }
 
