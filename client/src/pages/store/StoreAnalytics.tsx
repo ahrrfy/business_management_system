@@ -7,16 +7,7 @@ import { useMemo, useState } from "react";
 import { BarChart3, Eye, Loader2, MapPin, MousePointerClick, PackageCheck, ShoppingBag, ShoppingCart, TrendingUp, Trophy, XCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { fmt, fmtInt } from "@/lib/money";
-
-const ST_LABEL: Record<string, string> = {
-  PENDING: "وارد", CONFIRMED: "مثبَّت", PROCESSING: "قيد التجهيز",
-  SHIPPED: "مع المندوب", DELIVERED: "سُلّم", CANCELLED: "ملغى",
-};
-const ST_ORDER = ["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"];
-const ST_COLOR: Record<string, string> = {
-  PENDING: "bg-amber-400", CONFIRMED: "bg-sky-400", PROCESSING: "bg-violet-400",
-  SHIPPED: "bg-indigo-400", DELIVERED: "bg-emerald-500", CANCELLED: "bg-rose-400",
-};
+import { ONLINE_ORDER_STATUSES, orderStatusLabel, orderStatusChartColor } from "@shared/onlineOrderStatus";
 
 // النطاقات بحبيبة يوم بغداد (UTC+3) لتطابق تفسير الخادم — لا بمنطقة المتصفّح (قد تنزلق يوماً على جهازٍ
 // بمنطقةٍ أخرى). نأخذ مكوّنات UTC للحظة (الآن + ٣ ساعات) فتكون التاريخَ التقويميّ ببغداد أياً كان المتصفّح.
@@ -88,14 +79,14 @@ export default function StoreAnalytics() {
             <div className="rounded-2xl border border-border bg-card p-4">
               <h3 className="mb-3 flex items-center gap-1.5 text-sm font-bold text-muted-foreground"><ShoppingBag aria-hidden className="size-4" /> حالات الطلبات</h3>
               <div className="space-y-2">
-                {ST_ORDER.filter((s) => (d.statusBreakdown[s] ?? 0) > 0).map((s) => {
+                {ONLINE_ORDER_STATUSES.filter((s) => (d.statusBreakdown[s] ?? 0) > 0).map((s) => {
                   const n = d.statusBreakdown[s] ?? 0;
                   const w = d.kpis.totalOrders > 0 ? Math.max((n / d.kpis.totalOrders) * 100, 3) : 0;
                   return (
                     <div key={s} className="flex items-center gap-2 text-xs">
-                      <span className="w-20 shrink-0 text-muted-foreground">{ST_LABEL[s]}</span>
+                      <span className="w-20 shrink-0 text-muted-foreground">{orderStatusLabel(s)}</span>
                       <div className="h-5 flex-1 overflow-hidden rounded-md bg-muted">
-                        <div className={`h-full ${ST_COLOR[s]} rounded-md transition-all`} style={{ width: `${w}%` }} />
+                        <div className={`h-full ${orderStatusChartColor(s)} rounded-md transition-all`} style={{ width: `${w}%` }} />
                       </div>
                       <span className="w-8 shrink-0 text-left font-bold tabular-nums">{fmtInt(n)}</span>
                     </div>

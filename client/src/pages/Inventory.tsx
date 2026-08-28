@@ -510,6 +510,7 @@ export default function Inventory() {
             sku={scannedRow.sku}
             barcode={lastScannedBarcode}
             imageUrl={scannedRow.imageUrl}
+            scanMatch={scannedRow.scanMatch}
             scanned
             actionLabel={canInlineAdjust ? "تأكيد المادة وفتح التسوية" : undefined}
             onAction={

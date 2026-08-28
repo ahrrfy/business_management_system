@@ -7,11 +7,7 @@ import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
-
-const ST_LABEL: Record<string, string> = {
-  PENDING: "وارد", CONFIRMED: "مثبَّت", PROCESSING: "قيد التجهيز",
-  SHIPPED: "مع المندوب", DELIVERED: "سُلّم", CANCELLED: "ملغى",
-};
+import { orderStatusLabel } from "@shared/onlineOrderStatus";
 
 export default function StoreDashboard() {
   const countsQ = trpc.storeAdmin.orders.counts.useQuery();
@@ -50,7 +46,7 @@ export default function StoreDashboard() {
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="tabular-nums font-bold" dir="ltr">{fmtInt(o.total)} د.ع</span>
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{ST_LABEL[o.status] ?? o.status}</span>
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{orderStatusLabel(o.status)}</span>
                 </div>
               </div>
             ))}

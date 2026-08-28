@@ -156,6 +156,41 @@ describe("inventory.onHand", () => {
     expect(bySpacedAlias.map((r) => Number(r.variantId))).toEqual([2]);
     expect(byPrimary[0]?.quantity).toBe(100);
     expect(byAlias[0]?.quantity).toBe(100);
+    expect(byPrimary[0]?.scanMatch).toEqual({
+      kind: "PRIMARY",
+      scannedBarcode: "6290000000200",
+      primaryBarcode: "6290000000200",
+      unitName: "قطعة",
+      factor: 1,
+    });
+    expect(byAlias[0]?.scanMatch).toEqual({
+      kind: "ALIAS",
+      scannedBarcode: "6290000000299",
+      primaryBarcode: "6290000000200",
+      unitName: "قطعة",
+      factor: 1,
+    });
+    expect(bySpacedPrimary[0]?.scanMatch).toEqual({
+      kind: "PRIMARY",
+      scannedBarcode: "LOT 2026 B",
+      primaryBarcode: "LOT 2026 B",
+      unitName: "حزمة",
+      factor: 10,
+    });
+    expect(bySpacedAlias[0]?.scanMatch).toEqual({
+      kind: "ALIAS",
+      scannedBarcode: "ALT LOT 2026 B",
+      primaryBarcode: "LOT 2026 B",
+      unitName: "حزمة",
+      factor: 10,
+    });
+  });
+
+  it("لا يرفق scanMatch لبحث نصي غير حرفي", async () => {
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const rows = await caller.inventory.onHand({ branchId: 1, q: "SKU-2" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.scanMatch).toBeNull();
   });
 
   it("يعيد هوية بصرية خفيفة للتسوية: صورة المتغيّر أولاً وباركود الوحدة الأساس", async () => {

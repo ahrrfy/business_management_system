@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import type { ProductBarcodeMatch } from "@shared/productScan";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { nonNegMoneyString } from "../lib/schemas";
 import { alias } from "drizzle-orm/mysql-core";
@@ -34,6 +35,7 @@ import {
 import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
 import { signedMoveQty } from "../services/inventoryService";
 import { buildVariantCatalogSearchWhere } from "../services/catalog/search";
+import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
 import { loadProductIdentificationImages } from "../services/catalog/productIdentification";
 import {
   ADJUSTMENT_REASONS,
@@ -844,6 +846,8 @@ export const inventoryRouter = router({
         })),
         { kind: "inventory" },
       );
+      const scannedBarcode = input?.q?.trim() ?? "";
+      const scanOwner = scannedBarcode ? await resolveBarcodeOwner(db, scannedBarcode) : null;
 
       return rows.map((r) => {
         // hasStockRow = صفٌّ فعليّ في branchStock (LEFT JOIN التقط الرصيد). المتغيّرات
@@ -853,6 +857,16 @@ export const inventoryRouter = router({
         const hasStockRow = r.quantity != null;
         const quantity = Number(r.quantity ?? 0);
         const minStock = r.minStock == null ? null : Number(r.minStock);
+        const scanMatch: ProductBarcodeMatch | null =
+          scanOwner && Number(r.variantId) === scanOwner.variantId
+            ? {
+                kind: scanOwner.matchKind,
+                scannedBarcode,
+                primaryBarcode: scanOwner.primaryBarcode,
+                unitName: scanOwner.unitName,
+                factor: scanOwner.factor,
+              }
+            : null;
         return {
           variantId: Number(r.variantId),
           branchId,
@@ -866,6 +880,7 @@ export const inventoryRouter = router({
           reorderPoint: r.reorderPoint == null ? null : Number(r.reorderPoint),
           productName: r.productName,
           primaryBarcode: r.primaryBarcode ?? null,
+          scanMatch,
           imageUrl: imageUrls.get(Number(r.variantId)) ?? null,
           lastCountedAt: r.lastCountedAt ?? null,
           isLow: hasStockRow && (minStock ?? 0) > 0 && quantity <= (minStock ?? 0),

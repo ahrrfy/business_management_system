@@ -106,6 +106,7 @@ export interface QueuedUnknownScan {
 }
 
 const uKeyFor = (sessionCode: string) => `countq_unknown_${sessionCode}`;
+const MAX_UNKNOWN_QUEUE_ITEMS = 500;
 
 function isQueuedUnknown(v: unknown): v is QueuedUnknownScan {
   if (typeof v !== "object" || v === null) return false;
@@ -129,16 +130,23 @@ function safeReadUnknown(sessionCode: string): QueuedUnknownScan[] {
 }
 
 function safeWriteUnknown(sessionCode: string, items: QueuedUnknownScan[]): boolean {
+  // لا نقتطع صامتاً: الواجهة تعتمد قيمة الإرجاع كي لا تقول للعامل «سُجّل» بينما أحدث
+  // مسح لم يُحفَظ. عند الامتلاء تبقى النسخة السابقة حرفياً ويُطلَب تفريغها أولاً.
+  if (items.length > MAX_UNKNOWN_QUEUE_ITEMS) return false;
   try {
     if (items.length === 0) localStorage.removeItem(uKeyFor(sessionCode));
-    else localStorage.setItem(uKeyFor(sessionCode), JSON.stringify(items.slice(0, 500)));
+    else localStorage.setItem(uKeyFor(sessionCode), JSON.stringify(items));
     return true;
   } catch {
     return false;
   }
 }
 
-/** يضيف مسحاً مجهولاً للطابور (إزالة تكرار بالباركود — نفس الكود لا يُكرَّر صفّاً). */
+/**
+ * يضيف مسحاً مجهولاً للطابور (إزالة تكرار بالباركود — نفس الكود لا يُكرَّر صفّاً).
+ * عند امتلاء 500 عنصراً يرجع false **بلا أي كتابة**؛ تحديث باركود موجود يبقى مسموحاً
+ * لأنه يستبدل عنصراً ولا يوسّع الطابور.
+ */
 export function enqueueUnknown(sessionCode: string, item: QueuedUnknownScan): boolean {
   const items = safeReadUnknown(sessionCode).filter((q) => q.barcode !== item.barcode);
   items.push(item);

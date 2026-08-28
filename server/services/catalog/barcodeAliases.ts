@@ -5,12 +5,22 @@
 // يمرّ على الجدولين معاً قبل أيّ إدراج، والبحث بالباركود يمرّ عليهما معاً كذلك.
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
+import type { ProductBarcodeMatchKind } from "@shared/productScan";
 import { getDb, type DB, type Tx } from "../../db";
 import { productUnits, productUnitBarcodes, productVariants, products } from "../../../drizzle/schema";
 
 type DbOrTx = DB | Tx;
 
-export type BarcodeOwner = { productUnitId: number; productName: string; unitName: string; sku: string | null };
+export type BarcodeOwner = {
+  productUnitId: number;
+  variantId: number;
+  productName: string;
+  unitName: string;
+  sku: string | null;
+  matchKind: ProductBarcodeMatchKind;
+  primaryBarcode: string | null;
+  factor: number;
+};
 
 /** يحلّ باركوداً واحداً إلى وحدة المنتج المالكة — أساسيّاً كان أو بديلاً. للاستعمال الداخليّ. */
 export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<BarcodeOwner | null> {
@@ -20,9 +30,12 @@ export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<Bar
   const primary = await db
     .select({
       productUnitId: productUnits.id,
+      variantId: productVariants.id,
       productName: products.name,
       unitName: productUnits.unitName,
       sku: productVariants.sku,
+      primaryBarcode: productUnits.barcode,
+      factor: productUnits.conversionFactor,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -32,18 +45,25 @@ export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<Bar
   if (primary[0]) {
     return {
       productUnitId: Number(primary[0].productUnitId),
+      variantId: Number(primary[0].variantId),
       productName: primary[0].productName,
       unitName: primary[0].unitName,
       sku: primary[0].sku,
+      matchKind: "PRIMARY",
+      primaryBarcode: primary[0].primaryBarcode,
+      factor: Number(primary[0].factor),
     };
   }
   // البديل ثانياً.
   const alias = await db
     .select({
       productUnitId: productUnitBarcodes.productUnitId,
+      variantId: productVariants.id,
       productName: products.name,
       unitName: productUnits.unitName,
       sku: productVariants.sku,
+      primaryBarcode: productUnits.barcode,
+      factor: productUnits.conversionFactor,
     })
     .from(productUnitBarcodes)
     .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
@@ -54,9 +74,13 @@ export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<Bar
   if (!alias[0]) return null;
   return {
     productUnitId: Number(alias[0].productUnitId),
+    variantId: Number(alias[0].variantId),
     productName: alias[0].productName,
     unitName: alias[0].unitName,
     sku: alias[0].sku,
+    matchKind: "ALIAS",
+    primaryBarcode: alias[0].primaryBarcode,
+    factor: Number(alias[0].factor),
   };
 }
 
@@ -288,4 +312,3 @@ export async function removeUnitBarcodeAlias(id: number) {
   await db.delete(productUnitBarcodes).where(eq(productUnitBarcodes.id, id));
   return { ok: true };
 }
-

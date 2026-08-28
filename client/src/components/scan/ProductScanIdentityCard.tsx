@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Barcode, CheckCircle2, ImageOff, PackageSearch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import type { ProductBarcodeMatch } from "@shared/productScan";
 
 export type ProductScanIdentityCardProps = {
   productName: string;
@@ -10,6 +11,7 @@ export type ProductScanIdentityCardProps = {
   sku: string;
   barcode?: string | null;
   imageUrl?: string | null;
+  scanMatch?: ProductBarcodeMatch | null;
   scanned?: boolean;
   loading?: boolean;
   actionLabel?: string;
@@ -28,6 +30,7 @@ export function ProductScanIdentityCard({
   sku,
   barcode,
   imageUrl,
+  scanMatch,
   scanned = false,
   loading = false,
   actionLabel,
@@ -38,8 +41,12 @@ export function ProductScanIdentityCard({
 
   useEffect(() => setImageFailed(false), [imageUrl]);
 
-  const shownCode = barcode?.trim() || sku;
+  const shownCode = scanMatch?.scannedBarcode.trim() || barcode?.trim() || sku;
   const showImage = Boolean(imageUrl) && !imageFailed && !loading;
+  const showAliasPrimaryBarcode =
+    scanMatch?.kind === "ALIAS" &&
+    Boolean(scanMatch.primaryBarcode?.trim()) &&
+    scanMatch.primaryBarcode?.trim() !== scanMatch.scannedBarcode.trim();
 
   return (
     <section
@@ -102,15 +109,53 @@ export function ProductScanIdentityCard({
             <p className="mt-0.5 text-sm font-semibold text-muted-foreground">{variantName}</p>
           ) : null}
 
+          {!loading && scanMatch ? (
+            <div
+              aria-label="تفاصيل مطابقة الباركود"
+              className="mt-2 flex flex-wrap items-center gap-1.5 text-xs"
+            >
+              <span
+                className={cn(
+                  "inline-flex min-h-6 items-center rounded-md border px-2 py-0.5 font-bold",
+                  scanMatch.kind === "PRIMARY"
+                    ? "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+                    : "border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
+                )}
+              >
+                {scanMatch.kind === "PRIMARY" ? "باركود أساسي" : "باركود بديل"}
+              </span>
+              <span className="inline-flex min-h-6 max-w-full items-center rounded-md border bg-background px-2 py-0.5 font-semibold text-foreground">
+                الوحدة الممسوحة: <span className="ms-1 font-bold">{scanMatch.unitName}</span>
+              </span>
+              {scanMatch.factor > 1 ? (
+                <span className="inline-flex min-h-6 items-center rounded-md border bg-muted/50 px-2 py-0.5 font-semibold text-muted-foreground">
+                  × {scanMatch.factor} من وحدة الأساس
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="mt-2 rounded-md border bg-background px-2.5 py-2">
             <p className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
               <Barcode aria-hidden className="size-3.5" />
-              {barcode ? "الباركود الممسوح" : "رمز المادة"}
+              {barcode || scanMatch ? "الباركود الممسوح" : "رمز المادة"}
             </p>
             <p className="mt-1 break-all font-mono text-sm font-bold tracking-wide text-foreground" dir="ltr">
               {shownCode || "—"}
             </p>
           </div>
+
+          {!loading && showAliasPrimaryBarcode ? (
+            <div className="mt-2 rounded-md border bg-background px-2.5 py-2">
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+                <Barcode aria-hidden className="size-3.5" />
+                الباركود الأساسي للوحدة
+              </p>
+              <p className="mt-1 break-all font-mono text-sm font-bold tracking-wide text-foreground" dir="ltr">
+                {scanMatch?.primaryBarcode}
+              </p>
+            </div>
+          ) : null}
 
           {!loading && sku !== shownCode ? (
             <p className="mt-1.5 truncate font-mono text-[11px] text-muted-foreground" dir="ltr">

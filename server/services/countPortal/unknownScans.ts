@@ -55,11 +55,15 @@ export async function recordUnknownScan(
       return { ok: true as const, idempotent: false, recorded: true };
     });
   } catch (e) {
-    // نفس clientRequestId داخل الجلسة ⇒ القيد الفريد يرفض الثاني — نجاح بلا أثر (مزامنة مكرّرة).
+    // نفس clientRequestId داخل الجلسة ⇒ القيد الفريد يرفض الثاني. لا نعدّه إعادةً آمنة إلا إن
+    // طابقت الحمولة الأصلية؛ قبول المفتاح نفسه لباركود آخر يبتلع تصادم/عطب عميل صامتاً.
     if (mysqlCodeFrom(e) === "ER_DUP_ENTRY") {
       const db = requireDb();
       const [dup] = await db
-        .select({ id: stocktakeUnknownScans.id })
+        .select({
+          id: stocktakeUnknownScans.id,
+          barcode: stocktakeUnknownScans.barcode,
+        })
         .from(stocktakeUnknownScans)
         .where(
           and(
@@ -68,7 +72,16 @@ export async function recordUnknownScan(
           ),
         )
         .limit(1);
-      if (dup) return { ok: true, idempotent: true, recorded: true };
+      if (dup) {
+        if (dup.barcode !== barcode) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "أُعيد معرّف الطلب نفسه بباركود مختلف — لم يُسجّل المسح الجديد.",
+          });
+        }
+        return { ok: true, idempotent: true, recorded: true };
+      }
     }
     throw e;
   }

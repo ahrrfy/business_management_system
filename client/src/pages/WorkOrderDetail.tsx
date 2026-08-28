@@ -23,6 +23,8 @@ import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { Printer, MessageCircle, Truck } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
+import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineCard";
+import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
 import { canSeeCost, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -157,6 +159,10 @@ export default function WorkOrderDetail() {
       utils.workOrders.cancellationRefundStatus.invalidate({ workOrderId }),
       utils.inventory.movements.invalidate(),
       utils.delivery.readyForDispatch.invalidate(),
+      // Codex #853 P2: بعد أيّ mutation دورة حياة (start/markReady/deliver/cancel/reverse) نُبطل
+      // كاش الخطّ الزمنيّ صراحةً؛ التطبيق يعطّل refetchOnFocus/Reconnect عالميّاً فيبقى العرض
+      // على تاريخٍ ما قبل الحدث حتى إعادة تحميل الصفحة يدوياً — والحدث الجديد كُتب فعلاً.
+      utils.workOrders.timeline.invalidate({ workOrderId }),
     ]);
   };
 
@@ -614,6 +620,11 @@ export default function WorkOrderDetail() {
           </CardContent>
         </Card>
       )}
+
+      {/* الخطّ الزمنيّ للأمر (٢٨/٨/٢٦): كان مضمّناً في WorkOrders.tsx وWorkOrderStation فقط —
+          شاشة التفاصيل الأساسيّة بلا تاريخٍ للأمر، فالفنّي/الكاشير يفتحان صفحةً لا تُخبرهم متى
+          سُحب/بُدئ/جُهِّز/سُلّم. يقرأ من workOrders.timeline بعد أن صار صادقاً كاملاً في PR #851. */}
+      <WorkOrderTimelineCard workOrderId={workOrderId} statusHue={workOrderStatusHue(data.status)} />
 
       {durableRefundNotice && (
         <div

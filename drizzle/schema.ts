@@ -1810,6 +1810,17 @@ export const invoices = mysqlTable(
       .default("0")
       .notNull(),
     paymentMethod: varchar("paymentMethod", { length: 20 }),
+    // paymentMode (٢٨/٨/٢٦، هجرة 0276): متى يُتوقَّع تحصيل الفاتورة؟ الحقلُ الغائبُ الذي كان يجعل
+    // النظام يخلط بين نمطَين ماليّين مختلفَين جوهريّاً:
+    //   • PREPAID — دُفعت لحظة الإنشاء (أو تُدفع الآن، مسار البيع الكلاسيكيّ).
+    //   • COD     — تُحصَّل لحظة التسليم (مالٌ حقيقيٌّ متأخّرٌ ساعات، **لا ائتمان**). يُتجاوز
+    //               فحصُ حدّ الائتمان لأنّ المال يأتي مع المندوب — لا يُترك ديناً على العميل.
+    //   • CREDIT  — دينٌ حقيقيٌّ على العميل (يخضع لسقف الائتمان الكامل).
+    // كان النظام يعامل كلَّ «غير مدفوع» كائتمان (بلاغ المالك: «لا يمكنني إنشاء طلبٍ لعميلٍ لا
+    // أعرفه»). الفرقُ حاسم: خلطُهما يمنع طلب اتّصالٍ مشروع أو يُدخل ديوناً وهميّة.
+    paymentMode: mysqlEnum("paymentMode", ["PREPAID", "COD", "CREDIT"])
+      .default("PREPAID")
+      .notNull(),
     paymentDate: timestamp("paymentDate"),
     notes: text("notes"),
     // ٥/٨ — زبون عابر: اسمٌ وهاتفٌ مرجعيّان على الفاتورة نفسها (لا عميل ولا ذمّة). يُطبَعان على
@@ -3324,6 +3335,14 @@ export const workOrders = mysqlTable(
       "WALLET",
       "TELECOM",
     ]),
+    // paymentMode (٢٨/٨/٢٦، هجرة 0276): يتشقّق «متى يُتوقَّع دفعُ ما تبقّى» عن «كيف قُبض العربون».
+    // القيَم نفسها كـinvoices.paymentMode (مصدر ذخيرة مشترك). أمر شغلٍ بـpaymentMode='COD' يعني
+    // المندوب سيُحصِّل عند التسليم — يُتجاوز فحصُ حدّ الائتمان في workOrder.deliver.
+    // اسم العمود = "paymentMode" (يطابق الهجرة SQL 0276 و invoices.paymentMode). Drizzle
+    // mysqlEnum inline (لا نوعاً معرَّفاً)، فلا تعارض بين جدولَين يحملان عموداً بنفس الاسم.
+    paymentMode: mysqlEnum("paymentMode", ["PREPAID", "COD", "CREDIT"])
+      .default("PREPAID")
+      .notNull(),
     paymentReference: varchar("paymentReference", { length: 100 }),
     // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.
     paymentReceiptUrl: text("paymentReceiptUrl"),
