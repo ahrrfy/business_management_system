@@ -45,16 +45,7 @@ import {
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { noteInteraction } from "@/lib/interactionDraft";
-
-/** حالات الطلب بالعربية + لونها — لعرض تتبّع الطلب العلنيّ. */
-const TRACK_STATUS: Record<string, { label: string; cls: string }> = {
-  PENDING: { label: "قيد المراجعة", cls: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300" },
-  CONFIRMED: { label: "تمّ التأكيد", cls: "bg-sky-100 text-sky-800 dark:bg-sky-500/15 dark:text-sky-300" },
-  PROCESSING: { label: "قيد التجهيز", cls: "bg-sky-100 text-sky-800 dark:bg-sky-500/15 dark:text-sky-300" },
-  SHIPPED: { label: "مع المندوب", cls: "bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300" },
-  DELIVERED: { label: "تمّ التسليم", cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" },
-  CANCELLED: { label: "ملغى", cls: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400" },
-};
+import { orderStatusChipClass, orderStatusLabelForCustomer } from "@shared/onlineOrderStatus";
 
 export function formatStorefrontReservationDeadline(value: Date | string): string {
   const date = value instanceof Date ? value : new Date(value);
@@ -2928,7 +2919,7 @@ function StorefrontContent() {
           ) : labelQ.data ? (
             <div className="space-y-3 text-sm">
               <div className="rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
-                <div className="flex items-center justify-between"><span className="font-extrabold" dir="ltr">{labelQ.data.orderNumber}</span><span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${TRACK_STATUS[labelQ.data.status]?.cls ?? "bg-slate-100 text-slate-600"}`}>{TRACK_STATUS[labelQ.data.status]?.label ?? labelQ.data.status}</span></div>
+                <div className="flex items-center justify-between"><span className="font-extrabold" dir="ltr">{labelQ.data.orderNumber}</span><span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(labelQ.data.status)}`}>{orderStatusLabelForCustomer(labelQ.data.status)}</span></div>
                 <p className="mt-3 text-base font-extrabold text-slate-900 dark:text-white">{labelQ.data.customerName ?? "العميل"}</p>
                 {labelQ.data.customerPhone && <p dir="ltr" className="mt-1 font-extrabold text-[var(--sem-info)]">{labelQ.data.customerPhone}</p>}
                 <p className="mt-2 leading-relaxed text-slate-600 dark:text-slate-300">{labelQ.data.addressText ?? labelQ.data.governorate ?? "—"}</p>
@@ -2994,8 +2985,8 @@ function StorefrontContent() {
               <div className="space-y-3 rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <div className="flex items-center justify-between">
                   <span className="font-extrabold tracking-wider text-slate-900 dark:text-white" dir="ltr">{trackResult.orderNumber}</span>
-                  <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${TRACK_STATUS[trackResult.status]?.cls ?? "bg-slate-100 text-slate-600"}`}>
-                    {TRACK_STATUS[trackResult.status]?.label ?? trackResult.status}
+                  <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(trackResult.status)}`}>
+                    {orderStatusLabelForCustomer(trackResult.status)}
                   </span>
                 </div>
                 <div className="divide-y divide-slate-100 dark:divide-slate-800">

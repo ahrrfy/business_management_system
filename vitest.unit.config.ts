@@ -75,6 +75,7 @@ export default defineConfig({
       "shared/invoiceChannel.test.ts",
       "shared/invoiceStatus.test.ts",
       "shared/workOrderStatus.test.ts",
+      "shared/onlineOrderStatus.test.ts",
       "shared/partialDispatch.test.ts",
       "shared/stocktakeCountMethod.test.ts",
       "shared/variantDisplay.test.ts",

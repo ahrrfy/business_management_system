@@ -14,6 +14,13 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { buildOnlineOrderFollowupMessage } from "@/lib/whatsapp";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  ONLINE_ORDER_STATUSES,
+  ORDER_NEXT_STEP,
+  orderStatusChipClass,
+  orderStatusLabel,
+  type OnlineOrderStatus,
+} from "@shared/onlineOrderStatus";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -26,28 +33,11 @@ import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/s
 import { printOnlineOrderPreparationA4, printOnlineOrderThermal } from "@/lib/printing/onlineOrder";
 import { storefrontUrl } from "@/lib/siteHosts";
 
-type Status = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
+// حالات الطلب + خرائط العرض/الانتقال ⇐ shared/onlineOrderStatus.ts (مصدر الحقيقة الوحيد).
+// كانت مُعرَّفةً محلياً هنا (وفي Storefront/StoreDashboard/StoreAnalytics) بألوانٍ متفاوتة —
+// التوحيد قرارٌ حاسمٌ من تدقيق ٢٨/٨/٢٦ لمنع انجراف قواميس المتجر.
 
-const STATUS_META: Record<Status, { label: string; pill: string }> = {
-  PENDING: { label: "وارد", pill: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" },
-  CONFIRMED: { label: "مثبَّت", pill: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
-  PROCESSING: { label: "قيد التجهيز", pill: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
-  SHIPPED: { label: "مع المندوب", pill: "bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300" },
-  DELIVERED: { label: "سُلّم", pill: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" },
-  CANCELLED: { label: "ملغى", pill: "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]" },
-};
-
-/** الخطوة الأمامية بتغيير حالة بحت (بلا أثر مالي). الإرسال (SHIPPED) يتمّ عبر منتقي المندوب
- *  (orders.dispatch) الذي يُنشئ الفاتورة — فلا يُدرَج هنا؛ لكن «بدء التجهيز» (CONFIRMED→PROCESSING)
- *  خطوةُ حالةٍ بحتةٌ اختياريّة تسبق الإرسال (الخادم يسمح بها في ALLOWED_TRANSITIONS، ومنتقي المندوب
- *  يقبل CONFIRMED وPROCESSING معاً). */
-const NEXT_STEP: Partial<Record<Status, { to: Status; label: string }>> = {
-  PENDING: { to: "CONFIRMED", label: "تثبيت الطلب" },
-  CONFIRMED: { to: "PROCESSING", label: "بدء التجهيز" },
-  SHIPPED: { to: "DELIVERED", label: "تم التسليم" },
-};
-
-const FILTERS: { value: Status | null; label: string }[] = [
+const FILTERS: { value: OnlineOrderStatus | null; label: string }[] = [
   { value: null, label: "الكل" },
   { value: "PENDING", label: "وارد" },
   { value: "CONFIRMED", label: "مثبَّت" },
@@ -67,7 +57,7 @@ type Row = RouterOutputs["storeAdmin"]["orders"]["list"][number];
 const PAGE_SIZE = 200;
 
 export default function OrderFulfillment() {
-  const [filter, setFilter] = useState<Status | null>(null);
+  const [filter, setFilter] = useState<OnlineOrderStatus | null>(null);
   const [query, setQuery] = useState("");
   // مدى تاريخ الطلب (إنشاء الطلب) — محفوظ في querystring (يعيش مع الرجوع من التفاصيل، يُشارَك رابطاً).
   const [f, setF, resetF] = useUrlFilters({ from: "", to: "" });
@@ -92,7 +82,7 @@ export default function OrderFulfillment() {
   );
   const setStatusM = trpc.storeAdmin.orders.setStatus.useMutation({
     onSuccess: (res) => {
-      notify.ok(`تم تحديث الطلب إلى «${STATUS_META[res.to].label}»`);
+      notify.ok(`تم تحديث الطلب إلى «${orderStatusLabel(res.to)}»`);
       setCancelTarget(null);
       void utils.storeAdmin.orders.list.invalidate();
       void utils.storeAdmin.orders.counts.invalidate();
@@ -139,7 +129,7 @@ export default function OrderFulfillment() {
   }
 
   // نصّ التأكيد يستعمل رقم الطلب الظاهر للمستخدم (orderNumber) لا معرّفه الداخلي (id).
-  async function advance(order: { id: number; orderNumber: string }, to: Status, label: string) {
+  async function advance(order: { id: number; orderNumber: string }, to: OnlineOrderStatus, label: string) {
     const ok = await confirm({ title: `${label}؟`, description: `الطلب رقم ${order.orderNumber}` });
     if (ok) setStatusM.mutate({ id: order.id, status: to });
   }
@@ -241,7 +231,7 @@ export default function OrderFulfillment() {
             { key: "governorate", header: "المحافظة" },
             { key: "itemCount", header: "عدد الأصناف" },
             { key: "total", header: "الإجمالي", money: true },
-            { key: "status", header: "الحالة", map: (r) => STATUS_META[(r.status as Status) in STATUS_META ? r.status as Status : "PENDING"].label },
+            { key: "status", header: "الحالة", map: (r) => orderStatusLabel(r.status) },
           ],
         }}
         filters={
@@ -315,12 +305,13 @@ export default function OrderFulfillment() {
               </tr>
             ) : (
               visibleOrders.map((o) => {
-                const st = (o.status as Status) in STATUS_META ? (o.status as Status) : "PENDING";
-                const meta = STATUS_META[st];
+                const st: OnlineOrderStatus = (ONLINE_ORDER_STATUSES as readonly string[]).includes(o.status)
+                  ? (o.status as OnlineOrderStatus)
+                  : "PENDING";
                 // طلب SHIPPED مُسنَد لمندوب يُسلَّم ويُحصَّل عبر «توصيلاتي» (لا زر «تم التسليم» بلا تحصيل
                 // — يُخفي COD؛ مراجعة عدائية ١٢/٧). النقل اليدوي لـDELIVERED محجوبٌ خادمياً أيضاً.
                 const courierShipped = st === "SHIPPED" && o.deliveryPartyId != null;
-                const next = courierShipped ? undefined : NEXT_STEP[st];
+                const next = courierShipped ? undefined : ORDER_NEXT_STEP[st];
                 const isBusy = setStatusM.isPending || printingId === o.id;
                 return (
                   <tr key={o.id} className="border-t border-border hover:bg-muted/40">
@@ -331,7 +322,7 @@ export default function OrderFulfillment() {
                     <td className="p-2 text-center tabular-nums">{o.itemCount}</td>
                     <td className="p-2 font-bold tabular-nums" dir="ltr">{money(o.total)} د.ع</td>
                     <td className="p-2">
-                      <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${meta.pill}`}>{meta.label}</span>
+                      <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(st)}`}>{orderStatusLabel(st)}</span>
                       {st === "CANCELLED" && o.cancelReason && (
                         <div className="mt-0.5 max-w-[12rem] truncate text-[11px] text-muted-foreground" title={o.cancelReason}>{o.cancelReason}</div>
                       )}
