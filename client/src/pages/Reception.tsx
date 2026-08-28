@@ -1843,7 +1843,8 @@ export default function Reception() {
       for (const receipt of receiptsToPrint) {
         try {
           const result = await printReceipt(receipt);
-          if (result.via === "browser") browserFallbacks += 1;
+          if (!result.ok) printFailures += 1;
+          else if (result.via === "browser") browserFallbacks += 1;
         } catch {
           printFailures += 1;
         }
@@ -2100,6 +2101,8 @@ export default function Reception() {
       paid: round2(paidNowD).toFixed(2),
       change: paidNowD.gt(grandTotalD) ? round2(paidNowD.minus(grandTotalD)).toFixed(2) : null,
       paymentMethod: PAY_METHOD_LABEL.CASH,
+    }).then((printed) => {
+      if (!printed.ok) notify.err("تعذّرت طباعة الإيصال المؤقت", "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
     }).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
 
     notify.ok(
@@ -2140,7 +2143,10 @@ export default function Reception() {
       void (async () => {
         let failures = 0;
         for (const r of lastSale.receipts) {
-          try { await printReceipt(r); } catch { failures += 1; }
+          try {
+            const printed = await printReceipt(r);
+            if (!printed.ok) failures += 1;
+          } catch { failures += 1; }
         }
         for (const w of lastSale.workOrders) {
           try { await printWorkOrderReceipt(w); } catch { failures += 1; }

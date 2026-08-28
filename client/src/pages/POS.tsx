@@ -858,9 +858,13 @@ export default function POS() {
       setReceipt(rec);
       notify.ok(`تمّت الفاتورة ${r.invoiceNumber}`, `الإجمالي ${r.total} د.ع — سُجِّلت الكروت وتسوية المزوّد.`);
       void utils.shifts.current.invalidate();
-      void printReceipt(buildBrandedReceipt(rec)).catch(() => {
-        notify.warn("تعذّرت الطباعة التلقائية", "الفاتورة محفوظة — أعِد الطباعة من شاشة الفواتير.");
-      });
+      void printReceipt(buildBrandedReceipt(rec))
+        .then((printed) => {
+          if (!printed.ok) notify.warn("تعذّرت الطباعة التلقائية", "حجب المتصفح نافذة الطباعة — الفاتورة محفوظة ويمكن إعادة طباعتها.");
+        })
+        .catch(() => {
+          notify.warn("تعذّرت الطباعة التلقائية", "الفاتورة محفوظة — أعِد الطباعة من شاشة الفواتير.");
+        });
     },
     onError: (e) => notify.err(e),
   });
@@ -1098,7 +1102,9 @@ export default function POS() {
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "" });
 
       const printed = await printReceipt(buildBrandedReceipt(alignedRec));
-      if (printed.via === "server") {
+      if (!printed.ok) {
+        notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+      } else if (printed.via === "server") {
         notify.ok("تمت الطباعة المباشرة", `فاتورة ${r.invoiceNumber} أُرسلت إلى طابعة الكاشير`);
       } else if (printed.via === "thermal") {
         notify.ok("تمت الطباعة الحرارية", `فاتورة ${r.invoiceNumber} أُرسلت إلى الطابعة المربوطة`);
@@ -1359,7 +1365,9 @@ export default function POS() {
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
     patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "" });
     const printed = await printReceipt(buildBrandedReceipt(rec));
-    if (printed.via === "browser") {
+    if (!printed.ok) {
+      notify.err("تعذّرت طباعة الإيصال المؤقت", "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+    } else if (printed.via === "browser") {
       notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة للإيصال المؤقت");
     }
   }
@@ -1536,7 +1544,9 @@ export default function POS() {
         // §٨.٧: مفتاح فتح شبكة الكروت. F4 محجوز للدفع وF9 للطباعة وF12 للتفريغ ⇒ F3.
         case "F3":  e.preventDefault(); if (!offline) setCardsOpen(true); break;
         case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSale(); break;
-        case "F9":  e.preventDefault(); if (receipt) printReceipt(buildBrandedReceipt(receipt)); break;
+        case "F9":  e.preventDefault(); if (receipt) void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
+          if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+        }).catch((error) => notify.err(error)); break;
         case "F12": e.preventDefault();
           if (cart.length) {
             void (async () => {
@@ -1883,7 +1893,9 @@ export default function POS() {
             // بمخزونٍ مضطرب دون تنبيه). نعيد التركيز صراحةً إلى حقل البحث كي يستقبل المسحة التالية.
             setTimeout(() => searchRef.current?.focus(), 0);
           }}
-          onPrint={() => printReceipt(buildBrandedReceipt(receipt!))}
+          onPrint={() => printReceipt(buildBrandedReceipt(receipt!)).then((printed) => {
+            if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+          }).catch((error) => notify.err(error))}
         />
       )}
       {shifting && (

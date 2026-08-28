@@ -897,7 +897,7 @@ export interface ReceiptBrowserData {
   heldDeposits?: string | number | null;
 }
 
-export function printBrowserReceipt(d: ReceiptBrowserData): void {
+export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
   const logo = logoUrl();
 
   let barSvg = '';
@@ -1019,7 +1019,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     خلال 48 ساعة بشرط سلامة المنتج بـ100%
   </div>`;
 
-  openPrintWindow(wrapReceiptDoc(`إيصال ${d.receiptNumber}`, body), 'width=380,height=700');
+  return openPrintWindow(wrapReceiptDoc(`إيصال ${d.receiptNumber}`, body), 'width=380,height=700');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

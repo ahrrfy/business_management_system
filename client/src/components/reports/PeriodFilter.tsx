@@ -2,7 +2,9 @@
 // + تبديل اختياري للمقارنة (مقابل الفترة السابقة / السنة الماضية). نمط عالمي أساسي في التقارير.
 // مكوّن متحكَّم به (controlled): يستقبل value ويُصدر onChange بـ{from,to} بصيغة YYYY-MM-DD محلية
 // (تطابق localDayStart الخادمي). يصدّر أيضاً دوال حساب النطاقات لإعادة استعمالها في الصفحات.
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 
 export type PresetKey = "today" | "week" | "mtd" | "qtd" | "ytd" | "lastMonth" | "custom";
 export type CompareMode = "none" | "prev" | "yoy";
@@ -52,28 +54,31 @@ export function presetRange(preset: PresetKey, today = new Date()): { from: stri
 }
 
 /** النطاق المقارَن: السابق (نفس الطول، ينتهي قبل from بيوم) أو السنة الماضية (نفس التواريخ −سنة). */
-export function comparativeRange(
-  from: string,
-  to: string,
-  mode: CompareMode,
-): { from: string; to: string } | null {
+export function comparativeRange(from: string, to: string, mode: CompareMode): { from: string; to: string } | null {
   if (mode === "none") return null;
   const f = new Date(from + "T00:00:00");
   const t = new Date(to + "T00:00:00");
   if (isNaN(f.getTime()) || isNaN(t.getTime())) return null;
   if (mode === "yoy") {
-    const pf = new Date(f); pf.setFullYear(f.getFullYear() - 1);
-    const pt = new Date(t); pt.setFullYear(t.getFullYear() - 1);
+    const pf = new Date(f);
+    pf.setFullYear(f.getFullYear() - 1);
+    const pt = new Date(t);
+    pt.setFullYear(t.getFullYear() - 1);
     return { from: ymd(pf), to: ymd(pt) };
   }
   // prev: نطاقٌ بنفس عدد الأيام ينتهي في اليوم السابق لـfrom.
   const days = Math.round((t.getTime() - f.getTime()) / 86_400_000);
-  const pt = new Date(f); pt.setDate(f.getDate() - 1);
-  const pf = new Date(pt); pf.setDate(pt.getDate() - days);
+  const pt = new Date(f);
+  pt.setDate(f.getDate() - 1);
+  const pf = new Date(pt);
+  pf.setDate(pt.getDate() - days);
   return { from: ymd(pf), to: ymd(pt) };
 }
 
-export const DEFAULT_PERIOD: PeriodValue = { ...presetRange("mtd"), preset: "mtd" };
+export const DEFAULT_PERIOD: PeriodValue = {
+  ...presetRange("mtd"),
+  preset: "mtd",
+};
 
 const PRESETS: { key: PresetKey; label: string }[] = [
   { key: "today", label: "اليوم" },
@@ -90,8 +95,7 @@ const COMPARE_LABELS: Record<CompareMode, string> = {
   yoy: "السنة الماضية",
 };
 
-const inputCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+const inputCls = "h-8 w-32 text-xs";
 
 export function PeriodFilter({
   value,
@@ -105,6 +109,7 @@ export function PeriodFilter({
   compare?: CompareMode;
   onCompareChange?: (m: CompareMode) => void;
 }) {
+  const presetId = useId();
   const setPreset = (preset: PresetKey) => {
     if (preset === "custom") {
       onChange({ ...value, preset: "custom" });
@@ -120,58 +125,33 @@ export function PeriodFilter({
   }, [compare, value.from, value.to]);
 
   return (
-    <div className="flex flex-wrap items-end gap-2">
-      <div className="flex flex-wrap gap-1">
-        {PRESETS.map((p) => (
-          <button
-            key={p.key}
-            type="button"
-            onClick={() => setPreset(p.key)}
-            className={`rounded-md px-2.5 py-1.5 text-xs transition ${
-              value.preset === p.key
-                ? "bg-primary text-primary-foreground font-medium"
-                : "bg-muted/60 text-foreground/70 hover:bg-accent"
-            }`}
-          >
-            {p.label}
-          </button>
+    <div className="flex min-w-max items-center gap-1.5" role="group" aria-label="فترة التقرير">
+      <label className="sr-only" htmlFor={presetId}>
+        الفترة الجاهزة
+      </label>
+      <AppSelect id={presetId} size="sm" className="w-32 text-xs" value={value.preset} onValueChange={(next) => setPreset(next as PresetKey)} aria-label="الفترة الجاهزة">
+        {PRESETS.map((preset) => (
+          <option key={preset.key} value={preset.key}>
+            {preset.label}
+          </option>
         ))}
-      </div>
-      <div className="flex items-end gap-2">
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-muted-foreground">من</label>
-          <input
-            type="date"
-            value={value.from}
-            onChange={(e) => onChange({ ...value, from: e.target.value, preset: "custom" })}
-            className={inputCls}
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-muted-foreground">إلى</label>
-          <input
-            type="date"
-            value={value.to}
-            onChange={(e) => onChange({ ...value, to: e.target.value, preset: "custom" })}
-            className={inputCls}
-          />
-        </div>
-      </div>
+        <option value="custom">فترة مخصصة</option>
+      </AppSelect>
+
+      <span className="text-2xs text-muted-foreground">من</span>
+      <Input type="date" value={value.from} onChange={(e) => onChange({ ...value, from: e.target.value, preset: "custom" })} className={inputCls} aria-label="من تاريخ" />
+      <span className="text-2xs text-muted-foreground">إلى</span>
+      <Input type="date" value={value.to} onChange={(e) => onChange({ ...value, to: e.target.value, preset: "custom" })} className={inputCls} aria-label="إلى تاريخ" />
       {compare !== undefined && onCompareChange && (
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-muted-foreground">مقارنة</label>
-          <select
-            className={inputCls}
-            value={compare}
-            onChange={(e) => onCompareChange(e.target.value as CompareMode)}
-          >
-            {(Object.keys(COMPARE_LABELS) as CompareMode[]).map((m) => (
-              <option key={m} value={m}>{COMPARE_LABELS[m]}</option>
-            ))}
-          </select>
-          {compareLabel && <span className="text-[10px] text-muted-foreground tabular-nums" dir="ltr">{compareLabel}</span>}
-        </div>
+        <AppSelect size="sm" className="w-32 text-xs" value={compare} onValueChange={(next) => onCompareChange(next as CompareMode)} aria-label="المقارنة">
+          {(Object.keys(COMPARE_LABELS) as CompareMode[]).map((m) => (
+            <option key={m} value={m}>
+              {COMPARE_LABELS[m]}
+            </option>
+          ))}
+        </AppSelect>
       )}
+      {compareLabel && <span className="sr-only">{compareLabel}</span>}
     </div>
   );
 }

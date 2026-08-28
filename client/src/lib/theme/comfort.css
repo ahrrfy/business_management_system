@@ -9,7 +9,7 @@
   --ui-space-2: 0.5rem;
   --ui-space-3: 0.75rem;
   --ui-space-4: 1rem;
-  --ui-space-5: 1.25rem;   /* الدرجة الناقصة — كان السلّم يقفز 16 ⇐ 24 */
+  --ui-space-5: 1.25rem; /* الدرجة الناقصة — كان السلّم يقفز 16 ⇐ 24 */
   --ui-space-6: 1.5rem;
   --ui-space-8: 2rem;
 
@@ -19,6 +19,14 @@
   --ui-control-critical: 3.25rem;
   --ui-table-head: 2.75rem;
   --ui-table-row: 3rem;
+
+  /* مساحة العمل التشغيلية: صفّان علويان مضبوطان + شريط حالة سفلي. */
+  --workspace-command-h: 2.75rem;
+  --workspace-toolbar-h: 2.5rem;
+  --workspace-status-h: 2.5rem;
+  --workspace-control-h: 2.25rem;
+  --workspace-gap: 0.5rem;
+  --workspace-pad-x: 0.75rem;
 
   --ui-icon-sm: 1rem;
   --ui-icon: 1.25rem;
@@ -42,8 +50,29 @@ body {
 }
 
 /* أدوات القوائم كثيرة الاستخدام تبقى مريحة حتى إن طلبت صفحة قديمة قياساً مضغوطاً. */
-.list-toolbar-actions :is([data-slot="button"], [data-slot="input"], [data-slot="select-trigger"]) {
-  min-height: var(--ui-control);
+.list-toolbar-actions
+  :is([data-slot="button"], [data-slot="input"], [data-slot="select-trigger"]) {
+  min-height: var(--workspace-control-h);
+}
+
+.workspace-command-bar
+  :is([data-slot="button"], [data-slot="input"], [data-slot="select-trigger"]),
+.workspace-filter-bar
+  :is([data-slot="button"], [data-slot="input"], [data-slot="select-trigger"]),
+.workspace-status-bar
+  :is([data-slot="button"], [data-slot="input"], [data-slot="select-trigger"]) {
+  min-height: var(--workspace-control-h);
+}
+
+/* فلاتر التقارير القديمة رتبت label فوق الحقل. داخل الشريط التشغيلي نسطّح الحاوية فقط،
+   فيبقى الاسم مرئياً بجانب الحقل وينخفض الصف إلى 40px من دون فقد دلالته. */
+.report-filter-bar > div > div > .flex-col {
+  display: contents;
+}
+
+.report-filter-bar > div > div > label {
+  white-space: nowrap;
+  font-size: 0.75rem;
 }
 
 /* عند عرض 1024–1279px لا نستهلك ربع الشاشة بشريط جانبي دائم. يبقى الدرج متاحاً من الرأس. */
@@ -131,7 +160,8 @@ body {
   min-inline-size: var(--ui-control);
 }
 
-.pos-workspace[data-pos-mode="RECEPTION"] :is(button, input, select, [role="combobox"]) {
+.pos-workspace[data-pos-mode="RECEPTION"]
+  :is(button, input, select, [role="combobox"]) {
   min-height: var(--ui-control);
   touch-action: manipulation;
 }
@@ -143,15 +173,27 @@ body {
     gap: 0.5rem;
   }
 
-  [data-pos-mode="RECEPTION"] [aria-label="تسلسل إنشاء الطلب"] + div + div > span {
+  [data-pos-mode="RECEPTION"]
+    [aria-label="تسلسل إنشاء الطلب"]
+    + div
+    + div
+    > span {
     flex-basis: auto;
   }
 
-  [data-pos-mode="RECEPTION"] [aria-label="تسلسل إنشاء الطلب"] + div + div > div:nth-child(2) {
+  [data-pos-mode="RECEPTION"]
+    [aria-label="تسلسل إنشاء الطلب"]
+    + div
+    + div
+    > div:nth-child(2) {
     min-width: 17.5rem;
   }
 
-  [data-pos-mode="RECEPTION"] [aria-label="تسلسل إنشاء الطلب"] + div + div > div:last-child {
+  [data-pos-mode="RECEPTION"]
+    [aria-label="تسلسل إنشاء الطلب"]
+    + div
+    + div
+    > div:last-child {
     margin-inline-start: 0;
     display: flex;
     flex: 1 1 auto;
@@ -161,13 +203,19 @@ body {
 }
 
 /* إبقاء طريقة الدفع في أول المنطقة المرئية بالاستقبال، مع ثباتها أثناء تمرير التفاصيل الثانوية. */
-[data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"] {
+[data-pos-mode="RECEPTION"]
+  div[tabindex="-1"][class*="container-type:size"]
+  > div[class*="overflow-y-auto"] {
   display: flex;
   flex-direction: column;
 }
 
-[data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
-  > div:has(> div > button:nth-child(4)):not(:has(> div > button:nth-child(5))) {
+[data-pos-mode="RECEPTION"]
+  div[tabindex="-1"][class*="container-type:size"]
+  > div[class*="overflow-y-auto"]
+  > div:has(> div > button:nth-child(4)):not(
+    :has(> div > button:nth-child(5))
+  ) {
   position: sticky;
   z-index: 4;
   top: 0;
@@ -178,64 +226,110 @@ body {
 
 /* في الارتفاعات المعتادة للكاشير نحذف الملخص المكرر فقط، ونبقي المبلغ وطرق الدفع والأفعال. */
 @media (max-height: 820px) {
-  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div:first-child > div:last-child {
+  [data-pos-mode="RECEPTION"]
+    div[tabindex="-1"][class*="container-type:size"]
+    > div:first-child
+    > div:last-child {
     display: none;
   }
 
-  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
+  [data-pos-mode="RECEPTION"]
+    div[tabindex="-1"][class*="container-type:size"]
+    > div[class*="overflow-y-auto"]
     > div:first-child {
     padding-block: 0;
   }
 
-  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
-    > div:has(> div > button:nth-child(4)):not(:has(> div > button:nth-child(5))) button {
+  [data-pos-mode="RECEPTION"]
+    div[tabindex="-1"][class*="container-type:size"]
+    > div[class*="overflow-y-auto"]
+    > div:has(> div > button:nth-child(4)):not(
+      :has(> div > button:nth-child(5))
+    )
+    button {
     min-height: var(--ui-control);
     flex-direction: row;
     gap: 0.375rem;
     padding-block: 0.125rem;
   }
 
-  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
-    > div:has(> div > button:nth-child(4)):not(:has(> div > button:nth-child(5))) {
+  [data-pos-mode="RECEPTION"]
+    div[tabindex="-1"][class*="container-type:size"]
+    > div[class*="overflow-y-auto"]
+    > div:has(> div > button:nth-child(4)):not(
+      :has(> div > button:nth-child(5))
+    ) {
     padding-block: 0;
   }
 
-  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
-    > div:has(> div > button:nth-child(4)):not(:has(> div > button:nth-child(5))) > div:first-child {
+  [data-pos-mode="RECEPTION"]
+    div[tabindex="-1"][class*="container-type:size"]
+    > div[class*="overflow-y-auto"]
+    > div:has(> div > button:nth-child(4)):not(
+      :has(> div > button:nth-child(5))
+    )
+    > div:first-child {
     display: none;
   }
 
-  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
+  [data-pos-mode="RECEPTION"]
+    div[tabindex="-1"][class*="container-type:size"]
+    > div[class*="overflow-y-auto"]
     > div:has(> div > button:nth-child(5)) {
     padding-block: 0.125rem;
   }
 
-  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div[class*="overflow-y-auto"]
-    > div:has(> div > button:nth-child(5)) > div {
+  [data-pos-mode="RECEPTION"]
+    div[tabindex="-1"][class*="container-type:size"]
+    > div[class*="overflow-y-auto"]
+    > div:has(> div > button:nth-child(5))
+    > div {
     gap: 0.25rem;
   }
 
-  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div:last-child {
+  [data-pos-mode="RECEPTION"]
+    div[tabindex="-1"][class*="container-type:size"]
+    > div:last-child {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.5rem;
     padding: 0.5rem 0.75rem 0.75rem;
   }
 
-  [data-pos-mode="RECEPTION"] div[tabindex="-1"][class*="container-type:size"] > div:last-child > * + * {
+  [data-pos-mode="RECEPTION"]
+    div[tabindex="-1"][class*="container-type:size"]
+    > div:last-child
+    > *
+    + * {
     margin-block-start: 0 !important;
   }
 }
 
 /* قارئ السعر يُصغّر لوحة 1920×1080 كاملة؛ نرفع النصوص الثانوية قبل التصغير عند 1024px. */
 @media (max-width: 1100px) {
-  .kioskpc-root :is(.logo-text span, .kiosk-tag, .price-unit, .banner-progress .counter, .qr-text span, .kpc-ph-sub) {
+  .kioskpc-root
+    :is(
+      .logo-text span,
+      .kiosk-tag,
+      .price-unit,
+      .banner-progress .counter,
+      .qr-text span,
+      .kpc-ph-sub
+    ) {
     font-size: 27px;
   }
 }
 
 @media (max-width: 800px) {
-  .kioskpc-root :is(.logo-text span, .kiosk-tag, .price-unit, .banner-progress .counter, .qr-text span, .kpc-ph-sub) {
+  .kioskpc-root
+    :is(
+      .logo-text span,
+      .kiosk-tag,
+      .price-unit,
+      .banner-progress .counter,
+      .qr-text span,
+      .kpc-ph-sub
+    ) {
     font-size: 36px;
   }
 }

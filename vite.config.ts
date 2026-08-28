@@ -152,6 +152,9 @@ export default defineConfig({
           // منفصلة ⇒ كل صفحة تطلب عشرات ملفات الأصول دفعةً واحدة، فتُشبع خادم الأصول
           // (Express + compression على threadpool ٤ خيوط) وتتعلّق الطلبات على «جار التحميل».
           if (id.includes("node_modules/lucide-react")) return "icons";
+          // الرسوم البيانية (~400KB) تُستعمل عند فتح لوحات التحليل فقط. عزل Recharts
+          // يمنع ابتلاعها داخل حزمة صفحة الخزينة وتجاوز سقف 500KB لبقية الشاشات.
+          if (id.includes("node_modules/recharts")) return "charts";
           // حزمة Excel ضخمة (~936KB) ومطلوبة فقط عند التصدير ⇒ افصلها كي لا تُثقل أي صفحة أخرى.
           if (id.includes("node_modules/exceljs")) return EXCEL_CHUNK_NAME;
           // مكتبات البنية المشتركة تتغير بوتيرة أبطأ من شيفرة النظام. فصلها يقلل

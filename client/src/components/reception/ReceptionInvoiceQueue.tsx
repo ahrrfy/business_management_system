@@ -162,7 +162,8 @@ export function ReceptionInvoiceQueue({
       const d = await utils.sales.get.fetch({ invoiceId: Number(row.id) });
       if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
       const result = await printReceipt(invoiceToReceipt(d));
-      if (result.via === "browser") notify.warn("الطابعة المباشرة غير متاحة", "فُتحت نافذة الطباعة البديلة");
+      if (!result.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+      else if (result.via === "browser") notify.warn("الطابعة المباشرة غير متاحة", "فُتحت نافذة الطباعة البديلة");
       else notify.ok("تمت إعادة الطباعة", `الفاتورة ${d.invoiceNumber}`);
     } catch (e) {
       notify.err(e);
