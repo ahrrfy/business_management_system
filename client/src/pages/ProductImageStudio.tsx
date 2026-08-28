@@ -28,6 +28,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { STUDIO_CAMPAIGN_STATUS_AR, STUDIO_CAMPAIGN_STATUS_VARIANT, STUDIO_CAMPAIGN_EDITABLE, type StudioCampaignStatus } from "@shared/studioCampaignStatus";
 import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, PauseCircle, PlayCircle, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, Wallet, XCircle } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useSearch } from "wouter";
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
 type StudioTask = RouterOutputs["productStudio"]["tasks"]["items"][number];
@@ -246,6 +247,27 @@ export default function ProductImageStudio() {
   const [campaignDueAt, setCampaignDueAt] = useState("");
   const [campaignBranchId, setCampaignBranchId] = useState("");
   const [selectedCampaignId, setSelectedCampaignId] = useState<number | null>(null);
+  // ٢٨/٨: توصيلٌ من شاشة إدارة الحملات — رابط «تفاصيل» يفتح الاستوديو بـ`?campaign=N`
+  // فتُنتقى الحملةُ في القائمة المنسدلة تلقائياً ويتمرّر التركيز إلى قسمها. بلا هذا،
+  // كان الرابط يفتح الاستوديو على «كل المهام» فيضطرّ المدير لفتح القائمة والبحث عن اسم
+  // حملةٍ اختارها للتوّ. الأثر يعمل مرّةً واحدةً على أوّل تحميلٍ يحمل المعامل، ولا يعكس
+  // اختياراتِ المستخدم اللاحقة (بلا هذا، تغيير القائمة يدوياً يُلغى بأثرٍ من URL قديم).
+  const searchString = useSearch();
+  const campaignParamHandledRef = useRef(false);
+  useEffect(() => {
+    if (campaignParamHandledRef.current) return;
+    const params = new URLSearchParams(searchString);
+    const raw = params.get("campaign");
+    if (!raw) return;
+    const parsed = Number(raw);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) return;
+    campaignParamHandledRef.current = true;
+    setSelectedCampaignId(parsed);
+    // نافذةٌ صغيرة كي تُركَّب القائمة أوّلاً (المدير يحتاج رؤية الأزرار مباشرة تحت البصر).
+    window.setTimeout(() => {
+      document.getElementById("studio-campaign-filter")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 120);
+  }, [searchString]);
   const [savedView, setSavedView] = useState<"ALL" | "UNASSIGNED" | "OVERDUE" | "PENDING_REVIEW" | "MISSING_IMAGE">("ALL");
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<"ALL" | "LOW" | "NORMAL" | "HIGH" | "URGENT">("ALL");
   const [overdueOnly, setOverdueOnly] = useState(false);
