@@ -89,6 +89,9 @@ jobs:
           # Storefront App Links تعتمد بصمة SHA-256 لمفتاح توقيع «مكتبة العربية» في Play App Signing —
           # يُدفَع للسرّ منذ ٢٦/٨/٢٦ (blocker على release-gate)، هنا نمرّره كـenv للـvalidator.
           STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS: ${{ secrets.STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS }}
+          # applicationId لتطبيق العميل — قيمة ثابتة معتمدة (verify-mobile-release-env يتحقّق
+          # منها حرفياً). نمرّرها هنا مباشرةً لا كـsecret لأنّها معلَنة في كود الإصدار نفسه.
+          STOREFRONT_ANDROID_PACKAGE: online.alarabiya.customerstore
         run: node scripts/verify-mobile-release-env.mjs --release
       - name: Restore signing and Firebase configuration
         env:
