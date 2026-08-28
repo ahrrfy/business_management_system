@@ -38,6 +38,7 @@ import {
   type StudioCampaignStatus,
 } from "@shared/studioCampaignStatus";
 import {
+  AlertTriangle,
   CheckCircle2,
   ExternalLink,
   Filter,
@@ -141,6 +142,13 @@ export default function StudioCampaignsManager() {
     return acc;
   }, [campaigns.data]);
 
+  // حملاتٌ تجاوزت موعد الاستحقاق وما زالت نشطة/موقوفة — تحتاج قراراً إدارياً: إمّا
+  // تمديدُ الموعد أو الإكمال/الإلغاء. تُبرَز في شريطٍ منفصلٍ فوق الجدول لأنّ اكتشافها
+  // بالبحث في العمود الرمادي ضئيلٌ حتى مع تلوين السطر.
+  const overdueCampaigns = useMemo(() => {
+    return (campaigns.data ?? []).filter((c) => classifyDueAt(c.dueAt, c.status as StudioCampaignStatus) === "overdue");
+  }, [campaigns.data]);
+
   // النوع مضيَّق: DRAFT حالةُ ابتداءٍ فقط لا هدفٌ للانتقال — الخادم يقبل الأربعة فقط.
   const runTransition = (campaignId: number, status: "ACTIVE" | "PAUSED" | "COMPLETED" | "CANCELLED", reason?: string) => {
     transition.mutate({ campaignId, status, ...(reason ? { reason } : {}) });
@@ -160,6 +168,27 @@ export default function StudioCampaignsManager() {
           </Button>
         }
       />
+
+      {/* تنبيه الحملات المتأخّرة — يظهر فقط حين يوجد ما يستحقّ قراراً. نقرةٌ عليه
+          تُصفّي الجدول على المتأخّرة (statusFilter=ACTIVE، وترتيبُ الجدول يبرزها).
+          يستخدم `--sem-neg` كي يتّسق مع تلوين السطر ووسم «متأخّرة». */}
+      {overdueCampaigns.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setStatusFilter("ACTIVE")}
+          className="flex w-full items-center justify-between gap-3 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg)]/5 p-3 text-start transition-colors hover:bg-[var(--sem-neg)]/10"
+        >
+          <span className="flex items-center gap-2 text-sm font-medium text-[var(--sem-neg)]">
+            <AlertTriangle aria-hidden className="size-4" />
+            {overdueCampaigns.length === 1
+              ? "حملةٌ واحدة تجاوزت موعد الاستحقاق"
+              : `${overdueCampaigns.length} حملات تجاوزت موعد الاستحقاق`}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            انقر لتصفية الجدول · مدِّد الموعد أو أكمل أو ألغِ
+          </span>
+        </button>
+      )}
 
       {/* شريط عدّادات بالحالة — كثيفٌ (text-base) لأنّه بيانُ سياقٍ لا رأس شاشة. */}
       <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
