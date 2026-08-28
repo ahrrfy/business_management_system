@@ -1835,6 +1835,13 @@
 			"when": 1788052330000,
 			"tag": "0278_work_order_events",
 			"breakpoints": true
+		},
+		{
+			"idx": 279,
+			"version": "5",
+			"when": 1788052331000,
+			"tag": "0279_delivery_pricing_rules",
+			"breakpoints": true
 		}
 	]
 }

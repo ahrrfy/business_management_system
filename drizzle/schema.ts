@@ -9271,6 +9271,70 @@ export const workOrderEvents = mysqlTable(
 );
 export type WorkOrderEvent = typeof workOrderEvents.$inferSelect;
 
+/**
+ * مناطق التوصيل (Slice 7، ٢٨/٨/٢٦، هجرة 0279) — يُنقل التسعير من ثابتٍ في الكود
+ * (`shared/governorates.ts`) إلى **بيانات محكومة** يعدّلها المدير بلا نشر.
+ *
+ * البذرة: ١٨ محافظة عراقية بنفس الأجرة التقديريّة القائمة — لا كسر للسلوك الحاليّ.
+ * المصدر يبقى `shared/governorates.ts` كـfallback حتى تُملأ الجداول (backwards-compat).
+ */
+export const deliveryZones = mysqlTable(
+  "deliveryZones",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** رمزٌ مستقرٌّ (مثل `baghdad`/`basra`) — يُطابق `Governorate.id` للربط بلا اجتهاد. */
+    code: varchar("code", { length: 60 }).notNull().unique(),
+    name: varchar("name", { length: 120 }).notNull(),
+    /**
+     * الفرعُ المفضَّل الذي يخدم هذه المنطقة (اختياريّ). إن كان `null` تعني: كلّ الفروع.
+     * يُستعمل مستقبلاً لتوجيه الطلب للفرع الأقرب.
+     */
+    preferredBranchId: bigint("preferredBranchId", { mode: "number" }),
+    isActive: boolean("isActive").default(true).notNull(),
+    displayOrder: int("displayOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+);
+export type DeliveryZone = typeof deliveryZones.$inferSelect;
+
+/**
+ * قواعد تسعير التوصيل (Slice 7، ٢٨/٨/٢٦، هجرة 0279).
+ *
+ * صفٌّ لكلّ (zoneId × ruleType) — الحدّ الأدنى FLAT_FEE فقط في هذه الشريحة، يمكن إضافة
+ * PER_KM/WEIGHT_TIER لاحقاً بلا كسر (varchar بدل enum مُغلَق).
+ *
+ * ⚠️ **حبيبة السعر:** بالدينار العراقي **الصحيح** (لا كسور — قرار المالك ٦/٨/٢٦: تقريب
+ * نقديّ ٢٥٠). العمود decimal(15,2) للتوافق مع تنسيق المال الحاليّ، القيم عمليّاً صحيحة.
+ */
+export const deliveryPricingRules = mysqlTable(
+  "deliveryPricingRules",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    zoneId: bigint("zoneId", { mode: "number" })
+      .notNull()
+      .references(() => deliveryZones.id, { onDelete: "cascade" }),
+    ruleType: varchar("ruleType", { length: 30 }).default("FLAT_FEE").notNull(),
+    /** الأجرة الأساس. مطلوبةٌ لكلّ ruleType (حتى PER_KM يبدأ من `baseFee` ثمّ يزيد). */
+    baseFee: decimal("baseFee", { precision: 15, scale: 2 }).notNull(),
+    /** ⚙️ حقولٌ اختياريّة لتوسّعٍ مستقبليّ (PER_KM: perKmFee؛ WEIGHT: perKgFee). */
+    perKmFee: decimal("perKmFee", { precision: 15, scale: 2 }),
+    perKgFee: decimal("perKgFee", { precision: 15, scale: 2 }),
+    minFee: decimal("minFee", { precision: 15, scale: 2 }),
+    maxFee: decimal("maxFee", { precision: 15, scale: 2 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    /** فرعُ المصدر إن كان التسعير مختلفاً بحسب فرع البدء. `null` = كلّ الفروع. */
+    branchId: bigint("branchId", { mode: "number" }),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    zoneIdx: index("idx_delivery_pricing_zone").on(table.zoneId, table.isActive),
+  }),
+);
+export type DeliveryPricingRule = typeof deliveryPricingRules.$inferSelect;
+
 /** إعدادات الضريبة (صفّ singleton واحد id=1): افتراضي تفعيل الضريبة على الفاتورة الجديدة +
  *  نسبتها + الرقم الضريبي للشركة (يُطبَع على الفاتورة). العراق VAT=0% افتراضياً — enabledByDefault
  *  يبقى false ما لم يُفعِّله المدير صراحةً. يُنشَأ الصفّ كسولاً (get-or-create) عند أول قراءة. */

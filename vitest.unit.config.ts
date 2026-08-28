@@ -78,6 +78,7 @@ export default defineConfig({
       "shared/onlineOrderStatus.test.ts",
       "shared/orderSla.test.ts",
       "shared/workOrderEventType.test.ts",
+      "shared/deliveryPricing.test.ts",
       "shared/partialDispatch.test.ts",
       "shared/stocktakeCountMethod.test.ts",
       "shared/variantDisplay.test.ts",
