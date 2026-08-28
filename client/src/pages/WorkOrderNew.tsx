@@ -230,14 +230,18 @@ export default function WorkOrderNew() {
   // المستخدم يستطيع تجاوزه صراحةً — يبقى كما اختاره حتى إعادة تحميل النموذج (مفتاح idempotency جديد).
   const [paymentMode, setPaymentMode] = useState<"PREPAID" | "COD" | "CREDIT">("PREPAID");
   const [paymentModeOverridden, setPaymentModeOverridden] = useState(false);
-  // اقتراحُ نمطٍ ذكيّ: توصيلٌ بلا عربون ⇒ COD (المندوب يُحصِّل). بلا توصيل أو مع عربون ⇒ PREPAID.
-  // يُطبَّق فقط إن لم يتخذ المستخدم قراراً صريحاً (`paymentModeOverridden`) ولا نُبدّل خلف ظهره.
+  // اقتراحُ نمطٍ ذكيّ: توصيلٌ بلا عربون ⇒ COD (المندوب يُحصِّل ما تبقّى من التخصيص). بلا توصيل
+  // أو مع عربون ⇒ PREPAID. يُطبَّق فقط إن لم يتخذ المستخدم قراراً صريحاً (`paymentModeOverridden`).
+  //
+  // Codex #854 P2: cart.length **لا يدخل الاشتراط** — أصنافُ السلّة تُباع بفاتورةٍ مستقلّة
+  // (saleRouter) ولا تُنقِص متبقّي التخصيص. طلبُ توصيلٍ بلا عربون + سلّة مسدَّدة كاملاً يبقى
+  // COD-مؤهَّلاً لأنّ متبقّي أمر الشغل نفسه ما زال يحتاج تحصيلاً عند التسليم.
   useEffect(() => {
     if (paymentModeOverridden) return;
-    const suggested: "PREPAID" | "COD" = hasDelivery && D(deposit || "0").isZero() && !cart.length ? "COD" : "PREPAID";
+    const suggested: "PREPAID" | "COD" = hasDelivery && D(deposit || "0").isZero() ? "COD" : "PREPAID";
     if (paymentMode !== suggested) setPaymentMode(suggested);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasDelivery, deposit, cart.length, paymentModeOverridden]);
+  }, [hasDelivery, deposit, paymentModeOverridden]);
 
   // ── الحسابات ──────────────────────────────────────────────────
   const cartSubtotal = useMemo(

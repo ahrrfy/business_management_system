@@ -1138,6 +1138,15 @@ export const workOrderRouter = router({
         });
       }
       await assertWorkOrderCustomerReady(input.customerId);
+      // Codex #854 P1: COD يشترط توصيلاً على الخادم — بلا هذا الحارس، عميلٌ نقديٌّ (creditLimit=0)
+      // يمكن أن يمرَّر paymentMode='COD' مع hasDelivery=false ⇒ deliverWorkOrder يتخطّى فحص الائتمان
+      // ويُدرج المتبقّي على currentBalance فيصير ديناً مسموحاً به بلا مندوبٍ يُحصّله.
+      if (input.paymentMode === "COD" && !input.hasDelivery) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "نمط COD يتطلّب توصيلاً (المندوب يُحصِّل عند التسليم) — للاستلام المباشر استعمل PREPAID أو CREDIT",
+        });
+      }
       const enforcedInput = { ...input, branchId: effectiveBranchId };
 
       // أعد المحاولة على سباق idempotency (طلبان متزامنان بنفس المفتاح ⇒ الثاني يُعيد الأول).
