@@ -159,6 +159,10 @@ export default function WorkOrderDetail() {
       utils.workOrders.cancellationRefundStatus.invalidate({ workOrderId }),
       utils.inventory.movements.invalidate(),
       utils.delivery.readyForDispatch.invalidate(),
+      // Codex #853 P2: بعد أيّ mutation دورة حياة (start/markReady/deliver/cancel/reverse) نُبطل
+      // كاش الخطّ الزمنيّ صراحةً؛ التطبيق يعطّل refetchOnFocus/Reconnect عالميّاً فيبقى العرض
+      // على تاريخٍ ما قبل الحدث حتى إعادة تحميل الصفحة يدوياً — والحدث الجديد كُتب فعلاً.
+      utils.workOrders.timeline.invalidate({ workOrderId }),
     ]);
   };
 

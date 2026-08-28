@@ -63,7 +63,9 @@ export function WorkOrderTimelineCard({ workOrderId, statusHue }: Props) {
           <ol className="relative space-y-3 border-s-2 border-border ps-4">
             {items.map((r, i) => {
               const isNewest = i === 0;
-              const dotColor = isNewest ? `oklch(0.6 0.17 ${accentHue})` : "var(--border-strong)";
+              // Codex #853 P2: `--border-strong` مُعرَّفٌ فقط داخل `.wob` (WorkOrders.board.css)،
+              // فهذا الكرت خارجه ⇒ يكون التوكن فارغاً والنقطة شفافة. `--border` توكنٌ عامّ.
+              const dotColor = isNewest ? `oklch(0.6 0.17 ${accentHue})` : "var(--border)";
               return (
                 <li key={r.id} className="relative">
                   <span
