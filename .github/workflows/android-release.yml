@@ -86,6 +86,9 @@ jobs:
           HR_DEVICE_IDENTITY_BINDINGS: ${{ secrets.HR_DEVICE_IDENTITY_BINDINGS }}
           HR_DEVICE_LEGACY_IDENTITY_MIGRATION: ${{ vars.HR_DEVICE_LEGACY_IDENTITY_MIGRATION }}
           ALRUEYA_PROD_BASE_URL: ${{ vars.ALRUEYA_PROD_BASE_URL }}
+          # Storefront App Links تعتمد بصمة SHA-256 لمفتاح توقيع «مكتبة العربية» في Play App Signing —
+          # يُدفَع للسرّ منذ ٢٦/٨/٢٦ (blocker على release-gate)، هنا نمرّره كـenv للـvalidator.
+          STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS: ${{ secrets.STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS }}
         run: node scripts/verify-mobile-release-env.mjs --release
       - name: Restore signing and Firebase configuration
         env:
