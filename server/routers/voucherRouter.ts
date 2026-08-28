@@ -21,8 +21,12 @@ import {
   treasuryManagerReadProcedure,
 } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { withTx } from "../services/tx";
+import { requireDb, withTx } from "../services/tx";
 import { resubmitRejectedExpensePayment } from "../services/voucher/approval";
+import {
+  notifyApprovalDecision,
+  notifyApprovalPending,
+} from "../services/approvalEventNotifier";
 import {
   VOUCHER_CATEGORY_POSTING_ROLES,
   isVoucherCategoryRoleCompatible,
@@ -128,6 +132,18 @@ export const voucherRouter = router({
               invoiceId: input.invoiceId ?? null,
             },
           });
+          // ن-٢-هـ: إشعار المُعتمِدين بأنّ سنداً بانتظارهم — fail-open داخل الدالّة.
+          if (res.approvalStatus === "PENDING_APPROVAL") {
+            void notifyApprovalPending({
+              receiptId: res.receiptId,
+              voucherNumber: res.voucherNumber,
+              direction: res.direction,
+              amount: input.amount,
+              branchId: scopedInput.branchId,
+              createdBy: ctx.user.id,
+              occurredAt: new Date(),
+            });
+          }
           return res;
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
@@ -161,6 +177,34 @@ export const voucherRouter = router({
           entityId: input.receiptId,
           newValue: { voucherNumber: res.voucherNumber, signatureHash: res.signatureHash, approvalAuthority: "OWNER" },
         });
+        // ن-٢-هـ: إشعار مُنشئ السند بأنّه اعتُمد — لا نقرأ الحقول من نتيجة الاعتماد
+        // (لا تحملها) بل قراءةٌ خفيفة بعده. fail-open داخل الدالّة.
+        try {
+          const [row] = await requireDb()
+            .select({
+              createdBy: receipts.createdBy,
+              direction: receipts.direction,
+              amount: receipts.amount,
+              voucherNumber: receipts.voucherNumber,
+            })
+            .from(receipts)
+            .where(eq(receipts.id, input.receiptId))
+            .limit(1);
+          if (row && row.voucherNumber) {
+            void notifyApprovalDecision({
+              receiptId: input.receiptId,
+              voucherNumber: row.voucherNumber,
+              direction: row.direction as "IN" | "OUT",
+              amount: String(row.amount ?? "0"),
+              decision: "APPROVED",
+              createdBy: row.createdBy != null ? Number(row.createdBy) : null,
+              actorUserId: ctx.user.id,
+              occurredAt: new Date(),
+            });
+          }
+        } catch {
+          // fail-open: قناة إفصاحٍ لا تُعطّل مسار الاعتماد.
+        }
       }
       return res;
     }),
@@ -183,6 +227,33 @@ export const voucherRouter = router({
         entityId: input.receiptId,
         newValue: { voucherNumber: res.voucherNumber, reason: input.reason.slice(0, 200) },
       });
+      // ن-٢-هـ: إشعار مُنشئ السند بالرفض + السبب. fail-open داخل الدالّة.
+      try {
+        const [row] = await requireDb()
+          .select({
+            createdBy: receipts.createdBy,
+            direction: receipts.direction,
+            amount: receipts.amount,
+          })
+          .from(receipts)
+          .where(eq(receipts.id, input.receiptId))
+          .limit(1);
+        if (row) {
+          void notifyApprovalDecision({
+            receiptId: input.receiptId,
+            voucherNumber: res.voucherNumber,
+            direction: row.direction as "IN" | "OUT",
+            amount: String(row.amount ?? "0"),
+            decision: "REJECTED",
+            createdBy: row.createdBy != null ? Number(row.createdBy) : null,
+            actorUserId: ctx.user.id,
+            reason: input.reason,
+            occurredAt: new Date(),
+          });
+        }
+      } catch {
+        // fail-open.
+      }
       return res;
     }),
 

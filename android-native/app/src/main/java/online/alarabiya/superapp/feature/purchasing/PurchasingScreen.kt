@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
@@ -65,6 +66,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -409,21 +411,21 @@ private fun PurchasingComposerDialog(composer: PurchasingComposer, capabilities:
 @Composable
 private fun SupplierFields(draft: SupplierDraft, canOpening: Boolean, onChange: (SupplierDraft) -> Unit) {
     TextInput("اسم المورد", draft.name) { onChange(draft.copy(name = it)) }
-    TextInput("الهاتف", draft.phone) { onChange(draft.copy(phone = it)) }
-    TextInput("واتساب", draft.whatsapp) { onChange(draft.copy(whatsapp = it)) }
-    TextInput("البريد", draft.email) { onChange(draft.copy(email = it)) }
+    TextInput("الهاتف", draft.phone, KeyboardType.Phone) { onChange(draft.copy(phone = it)) }
+    TextInput("واتساب", draft.whatsapp, KeyboardType.Phone) { onChange(draft.copy(whatsapp = it)) }
+    TextInput("البريد", draft.email, KeyboardType.Email) { onChange(draft.copy(email = it)) }
     TextInput("المدينة", draft.city) { onChange(draft.copy(city = it)) }
     TextInput("العنوان", draft.address) { onChange(draft.copy(address = it)) }
     TextInput("شروط الدفع", draft.paymentTerms) { onChange(draft.copy(paymentTerms = it)) }
     TextInput("ملاحظات", draft.notes) { onChange(draft.copy(notes = it)) }
-    if (canOpening) TextInput("الرصيد الافتتاحي", draft.openingBalance) { onChange(draft.copy(openingBalance = it)) }
+    if (canOpening) TextInput("الرصيد الافتتاحي", draft.openingBalance, KeyboardType.Decimal) { onChange(draft.copy(openingBalance = it)) }
 }
 
 @Composable
 private fun OrderFields(draft: PurchaseOrderDraft, catalog: List<online.alarabiya.superapp.model.purchasing.PurchaseCatalogItem>, onCatalogBranch: (Long) -> Unit, onChange: (PurchaseOrderDraft) -> Unit) {
     val line = draft.items.first()
-    TextInput("معرّف المورد", draft.supplierId.takeIf { it > 0 }?.toString().orEmpty()) { onChange(draft.copy(supplierId = it.toLongOrNull() ?: 0)) }
-    TextInput("معرّف الفرع", draft.branchId?.toString().orEmpty()) { onChange(draft.copy(branchId = it.toLongOrNull())) }
+    TextInput("معرّف المورد", draft.supplierId.takeIf { it > 0 }?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(supplierId = it.toLongOrNull() ?: 0)) }
+    TextInput("معرّف الفرع", draft.branchId?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(branchId = it.toLongOrNull())) }
     if (draft.branchId != null) OutlinedButton(onClick = { onCatalogBranch(draft.branchId) }) { Text("تحميل أصناف الفرع") }
     if (catalog.isNotEmpty()) {
         Text("اختر الصنف", fontWeight = FontWeight.Bold)
@@ -437,35 +439,35 @@ private fun OrderFields(draft: PurchaseOrderDraft, catalog: List<online.alarabiy
             }
         }
     } else {
-        TextInput("معرّف الصنف", line.variantId.takeIf { it > 0 }?.toString().orEmpty()) { onChange(draft.copy(items = listOf(line.copy(variantId = it.toLongOrNull() ?: 0)))) }
-        TextInput("معرّف الوحدة", line.productUnitId.takeIf { it > 0 }?.toString().orEmpty()) { onChange(draft.copy(items = listOf(line.copy(productUnitId = it.toLongOrNull() ?: 0)))) }
+        TextInput("معرّف الصنف", line.variantId.takeIf { it > 0 }?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(items = listOf(line.copy(variantId = it.toLongOrNull() ?: 0)))) }
+        TextInput("معرّف الوحدة", line.productUnitId.takeIf { it > 0 }?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(items = listOf(line.copy(productUnitId = it.toLongOrNull() ?: 0)))) }
     }
-    TextInput("الكمية", line.quantity) { onChange(draft.copy(items = listOf(line.copy(quantity = it)))) }
-    TextInput("سعر الوحدة", line.unitPrice) { onChange(draft.copy(items = listOf(line.copy(unitPrice = it)))) }
-    TextInput("تكلفة الشحن", draft.shippingCost) { onChange(draft.copy(shippingCost = it)) }
-    TextInput("الجمارك", draft.customsCost) { onChange(draft.copy(customsCost = it)) }
+    TextInput("الكمية", line.quantity, KeyboardType.Decimal) { onChange(draft.copy(items = listOf(line.copy(quantity = it)))) }
+    TextInput("سعر الوحدة", line.unitPrice, KeyboardType.Decimal) { onChange(draft.copy(items = listOf(line.copy(unitPrice = it)))) }
+    TextInput("تكلفة الشحن", draft.shippingCost, KeyboardType.Decimal) { onChange(draft.copy(shippingCost = it)) }
+    TextInput("الجمارك", draft.customsCost, KeyboardType.Decimal) { onChange(draft.copy(customsCost = it)) }
     TextInput("ملاحظات", draft.notes) { onChange(draft.copy(notes = it)) }
 }
 
 @Composable
 private fun ReturnFields(draft: PurchaseReturnDraft, onChange: (PurchaseReturnDraft) -> Unit) {
     val line = draft.items.first()
-    TextInput("معرّف المورد", draft.supplierId.takeIf { it > 0 }?.toString().orEmpty()) { onChange(draft.copy(supplierId = it.toLongOrNull() ?: 0)) }
-    TextInput("مرجع أمر الشراء", draft.purchaseOrderRefId?.toString().orEmpty()) { onChange(draft.copy(purchaseOrderRefId = it.toLongOrNull())) }
-    TextInput("معرّف الصنف", line.variantId.takeIf { it > 0 }?.toString().orEmpty()) { onChange(draft.copy(items = listOf(line.copy(variantId = it.toLongOrNull() ?: 0)))) }
-    TextInput("معرّف الوحدة", line.productUnitId.takeIf { it > 0 }?.toString().orEmpty()) { onChange(draft.copy(items = listOf(line.copy(productUnitId = it.toLongOrNull() ?: 0)))) }
-    TextInput("الكمية", line.quantity) { onChange(draft.copy(items = listOf(line.copy(quantity = it)))) }
-    TextInput("سعر الوحدة", line.unitPrice) { onChange(draft.copy(items = listOf(line.copy(unitPrice = it)))) }
+    TextInput("معرّف المورد", draft.supplierId.takeIf { it > 0 }?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(supplierId = it.toLongOrNull() ?: 0)) }
+    TextInput("مرجع أمر الشراء", draft.purchaseOrderRefId?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(purchaseOrderRefId = it.toLongOrNull())) }
+    TextInput("معرّف الصنف", line.variantId.takeIf { it > 0 }?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(items = listOf(line.copy(variantId = it.toLongOrNull() ?: 0)))) }
+    TextInput("معرّف الوحدة", line.productUnitId.takeIf { it > 0 }?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(items = listOf(line.copy(productUnitId = it.toLongOrNull() ?: 0)))) }
+    TextInput("الكمية", line.quantity, KeyboardType.Decimal) { onChange(draft.copy(items = listOf(line.copy(quantity = it)))) }
+    TextInput("سعر الوحدة", line.unitPrice, KeyboardType.Decimal) { onChange(draft.copy(items = listOf(line.copy(unitPrice = it)))) }
     TextInput("سبب المرتجع", draft.reason) { onChange(draft.copy(reason = it)) }
 }
 
 @Composable
 private fun ReceiveFields(draft: PurchaseReceiveDraft, onChange: (PurchaseReceiveDraft) -> Unit) {
-    draft.lines.forEachIndexed { index, line -> TextInput("كمية البند ${line.purchaseOrderItemId}", line.receivedBaseQuantity) { value -> onChange(draft.copy(lines = draft.lines.mapIndexed { i, old -> if (i == index) old.copy(receivedBaseQuantity = value) else old })) } }
-    TextInput("دفعة للمورد (اختياري)", draft.paymentAmount) { onChange(draft.copy(paymentAmount = it)) }
+    draft.lines.forEachIndexed { index, line -> TextInput("كمية البند ${line.purchaseOrderItemId}", line.receivedBaseQuantity, KeyboardType.Decimal) { value -> onChange(draft.copy(lines = draft.lines.mapIndexed { i, old -> if (i == index) old.copy(receivedBaseQuantity = value) else old })) } }
+    TextInput("دفعة للمورد (اختياري)", draft.paymentAmount, KeyboardType.Decimal) { onChange(draft.copy(paymentAmount = it)) }
 }
 
-@Composable private fun TextInput(label: String, value: String, onValue: (String) -> Unit) { OutlinedTextField(value, { onValue(it.take(500)) }, label = { Text(label) }, modifier = Modifier.fillMaxWidth()) }
+@Composable private fun TextInput(label: String, value: String, keyboardType: KeyboardType = KeyboardType.Text, onValue: (String) -> Unit) { OutlinedTextField(value, { onValue(it.take(500)) }, label = { Text(label) }, keyboardOptions = KeyboardOptions(keyboardType = keyboardType), modifier = Modifier.fillMaxWidth()) }
 @Composable private fun DetailHero(title: String, subtitle: String, badge: String, amount: String?) { Card(shape = RoundedCornerShape(topStart = 38.dp, topEnd = 16.dp, bottomEnd = 38.dp, bottomStart = 16.dp), colors = CardDefaults.cardColors(containerColor = PurchaseInk)) { Column(Modifier.fillMaxWidth().padding(22.dp)) { Text(badge, color = Color(0xFF80E2CD)); Text(title, color = Color.White, style = MaterialTheme.typography.titleLarge); Text(subtitle, color = Color.White.copy(alpha = .7f)); amount?.let { Text(it, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) } } } }
 @Composable private fun DetailField(label: String, value: String?) { if (!value.isNullOrBlank()) { Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) { Text(label, Modifier.width(100.dp), color = MaterialTheme.colorScheme.onSurfaceVariant); Text(value, Modifier.weight(1f)); }; HorizontalDivider() } }
 @Composable private fun CompactCard(icon: ImageVector, title: String, subtitle: String, tail: String?) { Card(shape = RoundedCornerShape(22.dp)) { Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) { RoundIcon(icon, PurchaseGreen); Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.Bold); Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }; tail?.let { Text(it, style = MaterialTheme.typography.labelMedium) } } } }

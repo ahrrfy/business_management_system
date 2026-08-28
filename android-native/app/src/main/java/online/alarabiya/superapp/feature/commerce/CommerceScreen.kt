@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
@@ -53,6 +54,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.commerce.CommerceCapabilities
@@ -347,6 +349,7 @@ private fun DigitalCardDecisionDialog(
                         onValueChange = { businessDate = it.take(10) },
                         label = { Text("تاريخ العمل YYYY-MM-DD") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
@@ -354,6 +357,7 @@ private fun DigitalCardDecisionDialog(
                         onValueChange = { sellPrice = it.filter { char -> char.isDigit() || char == '.' }.take(20) },
                         label = { Text("سعر البيع النافذ") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -577,7 +581,7 @@ private fun ReservationDetailContent(
         "extend" -> AlertDialog(
             onDismissRequest = { action = null },
             title = { Text("تمديد الحجز") },
-            text = { OutlinedTextField(hours, { hours = it.filter(Char::isDigit).take(2) }, label = { Text("الساعات 1–72") }) },
+            text = { OutlinedTextField(hours, { hours = it.filter(Char::isDigit).take(2) }, label = { Text("الساعات 1–72") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)) },
             confirmButton = {
                 TextButton(
                     onClick = { hours.toIntOrNull()?.takeIf { it in 1..72 }?.let { value -> action = null; onExtend(detail.summary.id, value) } },

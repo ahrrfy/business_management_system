@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -115,13 +116,13 @@ private fun OrderEditor(state: WorkOrdersUiState, actions: WorkOrdersViewModel) 
         item { PaneTitle("أمر شغل جديد", actions::closeOrderDraft) }
         item { Field("عنوان العمل", draft.title) { actions.updateOrderDraft(draft.copy(title = it)) } }
         item { Field("تفاصيل التخصيص", draft.customizationText, 3) { actions.updateOrderDraft(draft.copy(customizationText = it)) } }
-        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("الكمية", draft.quantity) { actions.updateOrderDraft(draft.copy(quantity = it)) } }; Box(Modifier.weight(1f)) { Field("سعر البيع", draft.salePrice) { actions.updateOrderDraft(draft.copy(salePrice = it)) } } } }
+        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("الكمية", draft.quantity, change = { actions.updateOrderDraft(draft.copy(quantity = it)) }, keyboardType = KeyboardType.Decimal) }; Box(Modifier.weight(1f)) { Field("سعر البيع", draft.salePrice, change = { actions.updateOrderDraft(draft.copy(salePrice = it)) }, keyboardType = KeyboardType.Decimal) } } }
         item { Field("تاريخ الاستحقاق YYYY-MM-DD", draft.dueDate) { actions.updateOrderDraft(draft.copy(dueDate = it)) } }
         item { Text("الأولوية", fontWeight = FontWeight.SemiBold); Chips(listOf(WorkOrderPriority.LOW, WorkOrderPriority.NORMAL, WorkOrderPriority.URGENT), draft.priority, { actions.updateOrderDraft(draft.copy(priority = it)) }) { it.label() } }
         item { Text("قناة الاستلام", fontWeight = FontWeight.SemiBold); Chips(ReceptionChannel.entries, draft.channel, { actions.updateOrderDraft(draft.copy(channel = it)) }) { it.label() } }
         if (state.staff.isNotEmpty()) item { Text("المنفذ", fontWeight = FontWeight.SemiBold); Chips(listOf<StaffOption?>(null) + state.staff, state.staff.firstOrNull { it.id == draft.assignedTo }, { actions.updateOrderDraft(draft.copy(assignedTo = it?.id)) }) { it?.name ?: "غير مسند" } }
         item { FilterChip(draft.hasDelivery, { actions.updateOrderDraft(draft.copy(hasDelivery = !draft.hasDelivery)) }, { Text("توصيل للعميل") }, leadingIcon = { Icon(Icons.Rounded.LocalShipping, null) }) }
-        if (draft.hasDelivery) { item { Field("عنوان التوصيل", draft.deliveryAddress, 2) { actions.updateOrderDraft(draft.copy(deliveryAddress = it)) } }; item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("الهاتف", draft.deliveryPhone) { actions.updateOrderDraft(draft.copy(deliveryPhone = it)) } }; Box(Modifier.weight(1f)) { Field("كلفة التوصيل", draft.deliveryCost) { actions.updateOrderDraft(draft.copy(deliveryCost = it)) } } } } }
+        if (draft.hasDelivery) { item { Field("عنوان التوصيل", draft.deliveryAddress, 2) { actions.updateOrderDraft(draft.copy(deliveryAddress = it)) } }; item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("الهاتف", draft.deliveryPhone, change = { actions.updateOrderDraft(draft.copy(deliveryPhone = it)) }, keyboardType = KeyboardType.Phone) }; Box(Modifier.weight(1f)) { Field("كلفة التوصيل", draft.deliveryCost, change = { actions.updateOrderDraft(draft.copy(deliveryCost = it)) }, keyboardType = KeyboardType.Decimal) } } } }
         item { Field("ملاحظات", draft.notes, 2) { actions.updateOrderDraft(draft.copy(notes = it)) } }
         item { Info("ينشئ هذا المسار خدمة تخصيص خالصة دون خامات أو عربون؛ لا يخصم مخزوناً غير موثق.") }
         item { Button(actions::saveOrder, Modifier.fillMaxWidth(), enabled = state.canBeginOrder) { Text("إنشاء أمر الشغل") } }
@@ -155,7 +156,7 @@ private fun OrderActions(order: WorkOrderDetail, state: WorkOrdersUiState, caps:
         if (WorkOrderAction.MARK_READY in allowed) Button(actions::markReady, Modifier.fillMaxWidth()) { Text("اعتماد الجاهزية") }
         if (WorkOrderAction.DELIVER in allowed && state.deliveryDraft == null) Button(actions::beginDelivery, Modifier.fillMaxWidth()) { Text("استلام وتسليم") }
         state.deliveryDraft?.let { draft ->
-            Field("المبلغ المقبوض الآن", draft.amount) { actions.updateDeliveryDraft(draft.copy(amount = it)) }
+            Field("المبلغ المقبوض الآن", draft.amount, change = { actions.updateDeliveryDraft(draft.copy(amount = it)) }, keyboardType = KeyboardType.Decimal)
             Text("طريقة الدفع", fontWeight = FontWeight.SemiBold); Chips(listOf(PaymentMethod.CASH, PaymentMethod.CARD, PaymentMethod.TRANSFER, PaymentMethod.WALLET), draft.method, { actions.updateDeliveryDraft(draft.copy(method = it)) }) { it.label() }
             if (draft.method != PaymentMethod.CASH) Field("مرجع الدفع", draft.reference) { actions.updateDeliveryDraft(draft.copy(reference = it)) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(actions::closeDelivery, Modifier.weight(1f)) { Text("رجوع") }; Button(actions::deliver, Modifier.weight(1f)) { Text("تأكيد التسليم") } }
@@ -185,12 +186,12 @@ private fun PricingPane(state: WorkOrdersUiState, actions: WorkOrdersViewModel, 
             if (draft.category == "SMALL") {
                 item { Text("المقاس", fontWeight = FontWeight.SemiBold); Chips(PAPER_SIZES, draft.paperSize, { actions.updatePricingDraft(draft.copy(paperSize = it)) }) { it } }
                 item { Chips(listOf("BW", "COLOR"), draft.colorMode, { actions.updatePricingDraft(draft.copy(colorMode = it)) }) { if (it == "BW") "أبيض وأسود" else "ملون" } }
-                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("النسخ", draft.copies) { actions.updatePricingDraft(draft.copy(copies = it)) } }; Box(Modifier.weight(1f)) { Field("صفحات النسخة", draft.pagesPerCopy) { actions.updatePricingDraft(draft.copy(pagesPerCopy = it)) } } } }
+                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("النسخ", draft.copies, change = { actions.updatePricingDraft(draft.copy(copies = it)) }, keyboardType = KeyboardType.Number) }; Box(Modifier.weight(1f)) { Field("صفحات النسخة", draft.pagesPerCopy, change = { actions.updatePricingDraft(draft.copy(pagesPerCopy = it)) }, keyboardType = KeyboardType.Number) } } }
                 item { Chips(listOf(1, 2), draft.sides, { actions.updatePricingDraft(draft.copy(sides = it)) }) { if (it == 1) "وجه واحد" else "وجهان" } }
                 if (bundle?.paperUpcharges?.isNotEmpty() == true) item { Text("الورق", fontWeight = FontWeight.SemiBold); Chips(listOf<PricingOption?>(null) + bundle.paperUpcharges, bundle.paperUpcharges.firstOrNull { it.id == draft.paperUpchargeId }, { actions.updatePricingDraft(draft.copy(paperUpchargeId = it?.id)) }) { it?.name ?: "قياسي" } }
             } else {
                 if (bundle?.wideMedia?.isNotEmpty() == true) item { Text("الوسيط", fontWeight = FontWeight.SemiBold); Chips(listOf<PricingOption?>(null) + bundle.wideMedia, bundle.wideMedia.firstOrNull { it.id == draft.mediaId }, { actions.updatePricingDraft(draft.copy(mediaId = it?.id)) }) { it?.name ?: "اختر الوسيط" } }
-                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("العرض م", draft.width) { actions.updatePricingDraft(draft.copy(width = it)) } }; Box(Modifier.weight(1f)) { Field("الارتفاع م", draft.height) { actions.updatePricingDraft(draft.copy(height = it)) } }; Box(Modifier.weight(1f)) { Field("العدد", draft.quantity) { actions.updatePricingDraft(draft.copy(quantity = it)) } } } }
+                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("العرض م", draft.width, change = { actions.updatePricingDraft(draft.copy(width = it)) }, keyboardType = KeyboardType.Decimal) }; Box(Modifier.weight(1f)) { Field("الارتفاع م", draft.height, change = { actions.updatePricingDraft(draft.copy(height = it)) }, keyboardType = KeyboardType.Decimal) }; Box(Modifier.weight(1f)) { Field("العدد", draft.quantity, change = { actions.updatePricingDraft(draft.copy(quantity = it)) }, keyboardType = KeyboardType.Number) } } }
             }
             if (bundle?.finishings?.isNotEmpty() == true) item { Text("التشطيب", fontWeight = FontWeight.SemiBold); LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(bundle.finishings) { option -> FilterChip(option.id in draft.finishingIds, { actions.updatePricingDraft(draft.copy(finishingIds = if (option.id in draft.finishingIds) draft.finishingIds - option.id else draft.finishingIds + option.id)) }, { Text(option.name) }) } } }
             item { FilterChip(draft.applySetupFee, { actions.updatePricingDraft(draft.copy(applySetupFee = !draft.applySetupFee)) }, { Text("رسم التجهيز") }) }
@@ -230,8 +231,8 @@ private fun RunEditor(state: WorkOrdersUiState, actions: WorkOrdersViewModel) {
     LazyColumn(verticalArrangement = Arrangement.spacedBy(11.dp)) {
         item { PaneTitle("تشغيل وصفة", actions::closeRun) }
         item { Text("الوصفة", fontWeight = FontWeight.SemiBold); Chips(listOf<RecipeSummary?>(null) + state.recipes, state.recipes.firstOrNull { it.id == draft.recipeId }, { actions.updateRunDraft(draft.copy(recipeId = it?.id)) }) { it?.name ?: "اختر وصفة" } }
-        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("حجم الدفعة", draft.batchQty) { actions.updateRunDraft(draft.copy(batchQty = it)) } }; Box(Modifier.weight(1f)) { Field("الهدر", draft.scrapQty) { actions.updateRunDraft(draft.copy(scrapQty = it)) } } } }
-        item { Field("عمل لكل وحدة (اختياري)", draft.laborPerUnit) { actions.updateRunDraft(draft.copy(laborPerUnit = it)) } }
+        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Box(Modifier.weight(1f)) { Field("حجم الدفعة", draft.batchQty, change = { actions.updateRunDraft(draft.copy(batchQty = it)) }, keyboardType = KeyboardType.Decimal) }; Box(Modifier.weight(1f)) { Field("الهدر", draft.scrapQty, change = { actions.updateRunDraft(draft.copy(scrapQty = it)) }, keyboardType = KeyboardType.Decimal) } } }
+        item { Field("عمل لكل وحدة (اختياري)", draft.laborPerUnit, change = { actions.updateRunDraft(draft.copy(laborPerUnit = it)) }, keyboardType = KeyboardType.Decimal) }
         item { OutlinedButton(actions::previewRun, Modifier.fillMaxWidth(), enabled = state.canBeginRun) { Text("معاينة الاستهلاك والكلفة") } }
         state.runPreview?.let { preview -> item { CurvedCard(if (preview.anyShort) WorkOrange else WorkGreen) { Text(preview.outputName, fontWeight = FontWeight.Bold); Text("سليم ${preview.outputBase} · كلفة ${preview.totalCost}"); preview.inputs.forEach { line -> Text("${line.label}: ${line.required} / متاح ${line.available ?: "—"}", color = if (line.available != null && line.required > line.available) WorkOrange else MaterialTheme.colorScheme.onSurfaceVariant) } } }; item { Button(actions::createRun, Modifier.fillMaxWidth(), enabled = state.canBeginRun && !preview.anyShort) { Text("ترحيل الإنتاج") } } }
     }
@@ -273,7 +274,7 @@ private fun ProductionDetailPane(state: WorkOrdersUiState, actions: WorkOrdersVi
         shape = RoundedCornerShape(18.dp),
     )
 }
-@Composable private fun Field(label: String, value: String, lines: Int = 1, change: (String) -> Unit) { OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, minLines = lines, maxLines = lines, shape = RoundedCornerShape(16.dp)) }
+@Composable private fun Field(label: String, value: String, lines: Int = 1, keyboardType: KeyboardType = KeyboardType.Text, change: (String) -> Unit) { OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, minLines = lines, maxLines = lines, shape = RoundedCornerShape(16.dp), keyboardOptions = KeyboardOptions(keyboardType = keyboardType)) }
 @Composable private fun <T> Chips(values: List<T>, selected: T, choose: (T) -> Unit, label: (T) -> String) { LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) { items(values) { value -> FilterChip(selected == value, { choose(value) }, { Text(label(value)) }) } } }
 @Composable private fun CurvedCard(accent: Color, content: @Composable ColumnScope.() -> Unit) { Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(topStart = 28.dp, topEnd = 14.dp, bottomEnd = 28.dp, bottomStart = 14.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Box { Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp), content = content); Box(Modifier.align(Alignment.CenterStart).fillMaxHeight().width(4.dp).background(accent)) } } }
 @Composable private fun Pill(text: String, color: Color) { Surface(color = color.copy(alpha = .12f), shape = RoundedCornerShape(14.dp)) { Text(text, Modifier.padding(horizontal = 10.dp, vertical = 5.dp), color = color, fontWeight = FontWeight.Bold) } }

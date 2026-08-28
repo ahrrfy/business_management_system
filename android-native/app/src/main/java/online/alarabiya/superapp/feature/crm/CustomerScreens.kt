@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Chat
@@ -40,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.crm.CrmCapabilities
 import online.alarabiya.superapp.model.crm.CustomerDetail
@@ -280,8 +282,8 @@ private fun CustomerEditorPane(
         item {
             CrmCard {
                 EditorField(draft.name, { onChange(draft.copy(name = it)) }, "اسم العميل *")
-                EditorField(draft.phone, { onChange(draft.copy(phone = it)) }, "الهاتف", leftToRight = true)
-                EditorField(draft.whatsapp, { onChange(draft.copy(whatsapp = it)) }, "واتساب", leftToRight = true)
+                EditorField(draft.phone, { onChange(draft.copy(phone = it)) }, "الهاتف", leftToRight = true, keyboardType = KeyboardType.Phone)
+                EditorField(draft.whatsapp, { onChange(draft.copy(whatsapp = it)) }, "واتساب", leftToRight = true, keyboardType = KeyboardType.Phone)
                 EditorField(draft.city, { onChange(draft.copy(city = it)) }, "المدينة")
                 EditorField(draft.district, { onChange(draft.copy(district = it)) }, "المنطقة")
                 EditorField(draft.address, { onChange(draft.copy(address = it)) }, "العنوان", singleLine = false)
@@ -323,6 +325,7 @@ private fun EditorField(
     label: String,
     singleLine: Boolean = true,
     leftToRight: Boolean = false,
+    keyboardType: KeyboardType = KeyboardType.Text,
 ) {
     OutlinedTextField(
         value = value,
@@ -332,6 +335,7 @@ private fun EditorField(
         singleLine = singleLine,
         minLines = if (singleLine) 1 else 2,
         textStyle = if (leftToRight) ltrInputTextStyle() else LocalTextStyle.current,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
     )
 }
 

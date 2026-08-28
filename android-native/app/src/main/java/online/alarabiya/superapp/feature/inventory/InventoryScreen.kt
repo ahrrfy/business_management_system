@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.CompareArrows
@@ -64,6 +65,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.inventory.AdjustmentDraft
@@ -476,7 +478,7 @@ private fun TransferEditor(state: InventoryUiState, capabilities: InventoryCapab
                 }
             }
         }
-        item { FormField("الكمية", draft.quantity) { actions.updateTransferDraft(draft.copy(quantity = it)) } }
+        item { FormField("الكمية", draft.quantity, change = { actions.updateTransferDraft(draft.copy(quantity = it)) }, keyboardType = KeyboardType.Decimal) }
         item {
             Text("سبب التحويل", fontWeight = FontWeight.SemiBold)
             EnumFilters(TransferReasons, draft.reason, { actions.updateTransferDraft(draft.copy(reason = it)) }, ::transferReasonLabel)
@@ -510,7 +512,7 @@ private fun TransferDetailPane(state: InventoryUiState, capabilities: InventoryC
                 val lineDraft = receive?.lines?.firstOrNull { it.lineId == line.id }
                 if (lineDraft == null) Text("المرسل ${line.quantitySent} · المستلم ${line.quantityReceived ?: "—"}")
                 else {
-                    FormField("الكمية المستلمة من ${line.quantitySent}", lineDraft.quantity) { value -> actions.updateReceiveDraft(receive.copy(lines = receive.lines.map { if (it.lineId == line.id) it.copy(quantity = value) else it })) }
+                    FormField("الكمية المستلمة من ${line.quantitySent}", lineDraft.quantity, change = { value -> actions.updateReceiveDraft(receive.copy(lines = receive.lines.map { if (it.lineId == line.id) it.copy(quantity = value) else it })) }, keyboardType = KeyboardType.Decimal)
                     FormField("ملاحظة الفرق", lineDraft.note) { value -> actions.updateReceiveDraft(receive.copy(lines = receive.lines.map { if (it.lineId == line.id) it.copy(note = value) else it })) }
                 }
             }
@@ -536,7 +538,7 @@ private fun AdjustmentsPane(state: InventoryUiState, capabilities: InventoryCapa
     if (draft != null) LazyColumn(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { PaneTitle("طلب تسوية", actions.closeAdjustmentDraft) }
         item { ReadOnlyField("الصنف", draft.itemLabel) }
-        item { FormField("الرصيد المستهدف", draft.targetQuantity) { actions.updateAdjustmentDraft(draft.copy(targetQuantity = it)) } }
+        item { FormField("الرصيد المستهدف", draft.targetQuantity, change = { actions.updateAdjustmentDraft(draft.copy(targetQuantity = it)) }, keyboardType = KeyboardType.Decimal) }
         item { FormField("سبب التسوية", draft.notes, 3) { actions.updateAdjustmentDraft(draft.copy(notes = it)) } }
         item { Button(onClick = actions.saveAdjustment, modifier = Modifier.fillMaxWidth()) { Text("إرسال للاعتماد") } }
     } else LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -553,7 +555,7 @@ private fun AdjustmentCard(request: AdjustmentRequest, state: InventoryUiState, 
         Text("${request.sku} · من ${request.currentQuantity} إلى ${request.targetQuantity}")
         Text("بواسطة ${request.createdByName ?: "—"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (state.rejectingAdjustmentId == request.id) {
-            FormField("سبب الرفض", state.rejectionReason, 2, actions.setRejectionReason)
+            FormField("سبب الرفض", state.rejectionReason, 2, change = actions.setRejectionReason)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(actions.closeRejectAdjustment, Modifier.weight(1f)) { Text("رجوع") }; Button(actions.confirmRejectAdjustment, Modifier.weight(1f)) { Text("تأكيد الرفض") } }
         } else if (capabilities.canManage && request.status == AdjustmentStatus.PENDING_APPROVAL) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton({ actions.beginRejectAdjustment(request.id) }, Modifier.weight(1f)) { Text("رفض") }; Button({ actions.approveAdjustment(request.id) }, Modifier.weight(1f)) { Text("اعتماد") } }
@@ -597,7 +599,7 @@ private fun StocktakeEditor(draft: StocktakeDraft?, actions: InventoryActions) {
         item { PaneTitle("جلسة جرد جديدة", actions.closeStocktakeDraft) }
         item { FormField("اسم الجلسة", draft.name) { actions.updateStocktakeDraft(draft.copy(name = it)) } }
         item { EnumFilters(listOf("FULL", "MOVING"), draft.scopeType, { actions.updateStocktakeDraft(draft.copy(scopeType = it)) }) { if (it == "FULL") "شامل" else "أصناف متحركة" } }
-        if (draft.scopeType == "MOVING") item { FormField("عدد أيام الحركة", draft.movingDays) { actions.updateStocktakeDraft(draft.copy(movingDays = it)) } }
+        if (draft.scopeType == "MOVING") item { FormField("عدد أيام الحركة", draft.movingDays, change = { actions.updateStocktakeDraft(draft.copy(movingDays = it)) }, keyboardType = KeyboardType.Number) }
         item { FormField("ملاحظات", draft.notes, 3) { actions.updateStocktakeDraft(draft.copy(notes = it)) } }
         item { InfoCard("الجلسة عمياء؛ لا تظهر الأرصدة المتوقعة للعادّ، وسيتم تكليف حسابك الحالي فقط.") }
         item { Button(actions.saveStocktake, Modifier.fillMaxWidth()) { Text("إنشاء الجلسة") } }
@@ -619,7 +621,7 @@ private fun StocktakeDetailPane(state: InventoryUiState, capabilities: Inventory
                 if (capabilities.canManage && detail.summary.status == StocktakeStatus.COUNTING) TextButton(onClick = { actions.beginRecount(count.variantId) }, modifier = Modifier.align(Alignment.End)) { Text("إعادة عد") }
             }
         }
-        if (state.recountVariantId != null) item { FormField("سبب إعادة العد", state.recountReason, 2, actions.setRecountReason); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(actions.closeRecount, Modifier.weight(1f)) { Text("إلغاء") }; Button(actions.confirmRecount, Modifier.weight(1f)) { Text("إرسال") } } }
+        if (state.recountVariantId != null) item { FormField("سبب إعادة العد", state.recountReason, 2, change = actions.setRecountReason); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(actions.closeRecount, Modifier.weight(1f)) { Text("إلغاء") }; Button(actions.confirmRecount, Modifier.weight(1f)) { Text("إرسال") } } }
         item { StocktakeActions(detail, state, capabilities, actions) }
     }
 }
@@ -633,7 +635,7 @@ private fun StocktakeActions(detail: StocktakeDetail, state: InventoryUiState, c
             Button(actions.approveStocktake, Modifier.fillMaxWidth()) { Text("اعتماد الجرد") }
         }
         if (capabilities.canCancelStocktake && detail.summary.status !in setOf(StocktakeStatus.APPROVED, StocktakeStatus.CANCELLED)) {
-            FormField("سبب الإلغاء (اختياري)", state.cancelStocktakeReason, 2, actions.setCancelStocktakeReason)
+            FormField("سبب الإلغاء (اختياري)", state.cancelStocktakeReason, 2, change = actions.setCancelStocktakeReason)
             TextButton(actions.cancelStocktake, Modifier.fillMaxWidth(), colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("إلغاء الجلسة") }
         }
     }
@@ -667,7 +669,7 @@ private fun CountSessionPane(session: CountSession, state: InventoryUiState, act
             OperationalCard(if (item.recountReason != null) Warning else if (item.counted) Positive else MaterialTheme.colorScheme.outline) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(item.label, Modifier.weight(1f), fontWeight = FontWeight.Bold); if (item.counted) Icon(Icons.Rounded.CheckCircle, "معدود", tint = Positive) }
                 item.recountReason?.let { Text("إعادة عد: $it", color = Warning) }
-                FormField("الكمية الفعلية", quantity) { quantity = it }
+                FormField("الكمية الفعلية", quantity, change = { quantity = it }, keyboardType = KeyboardType.Decimal)
                 Button(onClick = { actions.submitCount(item.variantId, quantity) }, modifier = Modifier.align(Alignment.End)) { Text(if (item.counted) "تحديث العد" else "حفظ العد") }
             }
         }
@@ -691,8 +693,8 @@ private fun SearchField(value: String, change: (String) -> Unit, search: () -> U
 }
 
 @Composable
-private fun FormField(label: String, value: String, lines: Int = 1, change: (String) -> Unit) {
-    OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, minLines = lines, maxLines = lines.coerceAtLeast(1), shape = RoundedCornerShape(16.dp))
+private fun FormField(label: String, value: String, lines: Int = 1, keyboardType: KeyboardType = KeyboardType.Text, change: (String) -> Unit) {
+    OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, minLines = lines, maxLines = lines.coerceAtLeast(1), shape = RoundedCornerShape(16.dp), keyboardOptions = KeyboardOptions(keyboardType = keyboardType))
 }
 
 @Composable

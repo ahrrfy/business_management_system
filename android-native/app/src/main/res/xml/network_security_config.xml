@@ -1,5 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!--
+        تثبيت شهادة (Certificate Pinning) لمضيف الإنتاج srv1548487.hstgr.cloud
+        ================================================================
+
+        ⚠️ تحذير حرِج: القيم أدناه placeholder فقط. لا تُطلق build إلى
+        Play (حتى Internal testing) قبل استبدالها بقيم SHA-256 الحقيقيّة
+        المستخرَجة من الشهادة الحيّة، وإلّا فشل TLS handshake على كل
+        الأجهزة ⇒ التطبيق مبْرَك (bricked) لا يتّصل بالخادم.
+
+        استخراج SHA-256 من الشهادة الحيّة (SPKI):
+            openssl s_client -connect srv1548487.hstgr.cloud:443 -showcerts </dev/null 2>/dev/null \
+              | openssl x509 -pubkey -noout \
+              | openssl pkey -pubin -outform DER \
+              | openssl dgst -sha256 -binary \
+              | openssl enc -base64
+
+        دورة التدوير (rotation):
+        - شهادة Let's Encrypt تُجدَّد آلياً كل ~٦٠ يوماً عبر certbot على الـVPS.
+          راجع ذاكرة certbot-timer-blocked-deploy-2026-08-16.md لمعرفة تأثير
+          مؤقّت certbot على النشر (كان يُسقط بوّابة nginx بإنذار كاذب).
+        - عند كل تجديد: استخرج SHA-256 الجديدة، ضعها في خانة "active"،
+          وانقل السابقة إلى "backup"، ثمّ أطلق نسخةً جديدة مسبقاً قبل
+          انتهاء expiration أدناه.
+        - يجب أن يبقى pin واحد على الأقلّ صالحاً في **الشهادة الحيّة** دائماً،
+          وإلّا انقطع كل مستعملي الإصدار السابق. لذا نُبقي pin احتياطياً دائماً.
+    -->
+    <domain-config>
+        <domain includeSubdomains="true">srv1548487.hstgr.cloud</domain>
+        <pin-set expiration="2027-08-01">
+            <!-- نشِطة (active): SPKI SHA-256 للشهادة الحاليّة على الخادم -->
+            <pin digest="SHA-256">PLACEHOLDER_ACTIVE_SPKI_SHA256_BASE64==</pin>
+            <!-- احتياطيّة (backup): SPKI SHA-256 لشهادة التدوير التالية -->
+            <pin digest="SHA-256">PLACEHOLDER_BACKUP_SPKI_SHA256_BASE64==</pin>
+        </pin-set>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />

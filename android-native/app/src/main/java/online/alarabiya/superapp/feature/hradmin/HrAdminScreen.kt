@@ -614,12 +614,12 @@ private fun LegalSettingsDialog(
                     else -> {
                         val value = draft ?: loaded
                         Row(verticalAlignment = Alignment.CenterVertically) { Text("الضمان الاجتماعي", Modifier.weight(1f)); Switch(value.socialSecurityEnabled, { draft = value.copy(socialSecurityEnabled = it) }) }
-                        OutlinedTextField(value.socialSecurityEmployeeRate, { draft = value.copy(socialSecurityEmployeeRate = it) }, Modifier.fillMaxWidth(), label = { Text("نسبة الموظف %") }, singleLine = true)
-                        OutlinedTextField(value.socialSecurityEmployerRate, { draft = value.copy(socialSecurityEmployerRate = it) }, Modifier.fillMaxWidth(), label = { Text("نسبة الشركة %") }, singleLine = true)
+                        OutlinedTextField(value.socialSecurityEmployeeRate, { draft = value.copy(socialSecurityEmployeeRate = it) }, Modifier.fillMaxWidth(), label = { Text("نسبة الموظف %") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                        OutlinedTextField(value.socialSecurityEmployerRate, { draft = value.copy(socialSecurityEmployerRate = it) }, Modifier.fillMaxWidth(), label = { Text("نسبة الشركة %") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
                         Row(verticalAlignment = Alignment.CenterVertically) { Text("ضريبة الدخل", Modifier.weight(1f)); Switch(value.incomeTaxEnabled, { draft = value.copy(incomeTaxEnabled = it) }) }
-                        OutlinedTextField(value.incomeTaxExemption, { draft = value.copy(incomeTaxExemption = it) }, Modifier.fillMaxWidth(), label = { Text("الإعفاء الشهري") }, singleLine = true)
+                        OutlinedTextField(value.incomeTaxExemption, { draft = value.copy(incomeTaxExemption = it) }, Modifier.fillMaxWidth(), label = { Text("الإعفاء الشهري") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
                         Row(verticalAlignment = Alignment.CenterVertically) { Text("نهاية الخدمة", Modifier.weight(1f)); Switch(value.endOfServiceEnabled, { draft = value.copy(endOfServiceEnabled = it) }) }
-                        OutlinedTextField(value.endOfServiceDaysPerYear, { draft = value.copy(endOfServiceDaysPerYear = it) }, Modifier.fillMaxWidth(), label = { Text("أيام الاستحقاق لكل سنة") }, singleLine = true)
+                        OutlinedTextField(value.endOfServiceDaysPerYear, { draft = value.copy(endOfServiceDaysPerYear = it) }, Modifier.fillMaxWidth(), label = { Text("أيام الاستحقاق لكل سنة") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                     }
                 }
             }
