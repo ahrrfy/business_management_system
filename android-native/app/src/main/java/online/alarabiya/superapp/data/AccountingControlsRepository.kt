@@ -204,6 +204,9 @@ internal fun JSONObject.toFinancialReconciliationReport(): FinancialReconciliati
         // Tier-2 #4 (٢٦/٨): محور طلبات المتجر × الإرساليات. غيابه من الخريطة كان يجعل
         // Android يرمي «إجمالي المطابقة المالية غير متسق» عند أوّل انحرافٍ يكشفه الخادم.
         "onlineOrders" to FinancialReconciliationAxis.ONLINE_ORDERS,
+        // Tier-3 #5 (٢٧/٨): محور أيتام journalLines بلا accountId. نفس السبب — لا نترك
+        // Android يرمي عندما يكشف الخادم سطرَ يتيمٍ في journalLines.
+        "journalOrphans" to FinancialReconciliationAxis.JOURNAL_ORPHANS,
     )
     val sections = axes.map { (key, axis) ->
         val section = payload.optJSONObject(key) ?: error("محور المطابقة المالية مفقود: $key")

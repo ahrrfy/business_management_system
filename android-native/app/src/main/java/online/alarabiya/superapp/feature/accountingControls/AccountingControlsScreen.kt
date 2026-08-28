@@ -850,6 +850,7 @@ private fun FinancialReconciliationAxis.label() = when (this) {
     FinancialReconciliationAxis.INVENTORY -> "أرصدة المخزون"
     FinancialReconciliationAxis.LEDGER -> "قيود الدفتر"
     FinancialReconciliationAxis.ONLINE_ORDERS -> "طلبات المتجر × الإرساليات"
+    FinancialReconciliationAxis.JOURNAL_ORPHANS -> "أيتام قيود الدفتر"
 }
 
 private fun FinancialReconciliationAxis.icon(): ImageVector = when (this) {
@@ -859,6 +860,7 @@ private fun FinancialReconciliationAxis.icon(): ImageVector = when (this) {
     FinancialReconciliationAxis.INVENTORY -> Icons.Rounded.Inventory2
     FinancialReconciliationAxis.LEDGER -> Icons.AutoMirrored.Rounded.ReceiptLong
     FinancialReconciliationAxis.ONLINE_ORDERS -> Icons.Rounded.Storefront
+    FinancialReconciliationAxis.JOURNAL_ORPHANS -> Icons.AutoMirrored.Rounded.ReceiptLong
 }
 
 private fun formatReconciliationRunAt(raw: String): String = runCatching {
