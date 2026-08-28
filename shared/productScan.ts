@@ -1,0 +1,58 @@
+/**
+ * هوية مسح المنتج الدنيا المشتركة بين مسارات الجرد والتسوية.
+ *
+ * لا تحمل سعراً أو تكلفةً أو رصيداً: هي تشرح فقط أيّ وحدة طابقها الكود، وهل كان
+ * الباركود أساسياً أم بديلاً. بذلك تبقى صالحةً لواجهة العامل والجرد الأعمى بلا تسريب.
+ */
+export type ProductBarcodeMatchKind = "PRIMARY" | "ALIAS";
+
+export type ScannableProductUnit = {
+  unitName: string;
+  /** عدد وحدات الأساس في الوحدة الممسوحة. */
+  factor: number;
+  /** الباركود الأساسي للوحدة، إن وُجد. */
+  barcode: string | null;
+  /** الباركودات البديلة التي تعود إلى الوحدة نفسها. */
+  aliases: readonly string[];
+};
+
+export type ProductBarcodeMatch = {
+  kind: ProductBarcodeMatchKind;
+  scannedBarcode: string;
+  primaryBarcode: string | null;
+  unitName: string;
+  factor: number;
+};
+
+/**
+ * مطابقة حرفية بعد trim فقط؛ لا نطبّع الأرقام أو الحروف لأن الباركود هوية لا نص بحث.
+ * الأساسي له الأولوية الدفاعية، ثم البديل، اتساقاً مع فضاء التفرّد الخادمي.
+ */
+export function resolveProductBarcodeMatch(
+  units: readonly ScannableProductUnit[],
+  raw: string,
+): ProductBarcodeMatch | null {
+  const scannedBarcode = raw.trim();
+  if (!scannedBarcode) return null;
+
+  const primary = units.find((unit) => unit.barcode === scannedBarcode);
+  if (primary) {
+    return {
+      kind: "PRIMARY",
+      scannedBarcode,
+      primaryBarcode: primary.barcode,
+      unitName: primary.unitName,
+      factor: primary.factor,
+    };
+  }
+
+  const alias = units.find((unit) => unit.aliases.includes(scannedBarcode));
+  if (!alias) return null;
+  return {
+    kind: "ALIAS",
+    scannedBarcode,
+    primaryBarcode: alias.barcode,
+    unitName: alias.unitName,
+    factor: alias.factor,
+  };
+}
