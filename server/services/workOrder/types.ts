@@ -35,6 +35,14 @@ export interface CreateWorkOrderInput {
   paymentMethod?: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM" | null;
   paymentReference?: string | null;
   paymentReceiptUrl?: string | null;
+  /**
+   * paymentMode (٢٨/٨/٢٦، هجرة 0276): متى يُتوقَّع تحصيل ما تبقّى من الأمر؟
+   * - `'PREPAID'` (افتراضي) — دُفع كاملاً/عربوناً عند الإنشاء، أو مسار كلاسيكيّ.
+   * - `'COD'` — المندوب يُحصِّل عند التسليم. يُتجاوز فحصُ حدّ الائتمان في `workOrder.deliver`
+   *   حين يبقى متبقٍّ (الحمايةُ بديلة: التحصيل الكامل مفروضٌ في مسار التسليم نفسه).
+   * - `'CREDIT'` — دينٌ فعليّ (يخضع للفحص الكامل).
+   */
+  paymentMode?: "PREPAID" | "COD" | "CREDIT" | null;
   hasDelivery?: boolean | null;
   deliveryAddress?: string | null;
   deliveryCost?: string | null;

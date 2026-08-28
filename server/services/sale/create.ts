@@ -748,7 +748,9 @@ export async function createSaleInTx(
           consumerUserId: actor.userId,
         });
       } else {
-        await assertCreditLimit(tx, input.customerId, unpaid, input.branchId);
+        // paymentMode='COD' (٢٨/٨/٢٦، هجرة 0276): يُتجاوز فحصُ السقف — المال يأتي مع المندوب،
+        // لا يبقى ديناً على العميل. الحمايةُ بديلة عبر workOrder.deliver عند التسليم.
+        await assertCreditLimit(tx, input.customerId, unpaid, input.branchId, input.paymentMode ?? undefined);
       }
     }
 
@@ -789,6 +791,9 @@ export async function createSaleInTx(
       status,
       paidAmount: toDbMoney(paidNow),
       paymentMethod: input.payment?.method ?? null,
+      // paymentMode (٢٨/٨/٢٦، هجرة 0276): افتراضي PREPAID للحفاظ على السلوك الحاليّ لكلّ فاتورةٍ
+      // بلا مسار COD صريح. يُمرَّر من `checkoutReception` عند طلب توصيلٍ نقديٍّ عند التسليم.
+      paymentMode: input.paymentMode ?? "PREPAID",
       paymentDate: paidNow.gt(0) ? new Date() : null,
       notes: input.notes ?? null,
       // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).

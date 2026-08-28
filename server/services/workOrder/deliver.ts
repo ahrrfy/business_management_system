@@ -147,9 +147,15 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // H5: فحص حدّ الائتمان على الجزء الآجل قبل إنشاء الفاتورة (يَرمي FORBIDDEN عند التجاوز).
     // وضع الافتتاح (قرار المالك ١٠/٨): أثناء النافذة الفعّالة يُعفى تسليم أمر الشغل من حاجز الائتمان —
     // الجزء الآجل يُرحَّل ذمّةً على العميل (AR) كالمعتاد دون رفض. مؤقّتٌ وينتهي بانتهاء النافذة.
+    //
+    // paymentMode='COD' (٢٨/٨/٢٦، هجرة 0276): يُتجاوز فحصُ السقف حين الأمر مُصنَّفٌ COD صراحةً —
+    // المندوب يحمل المسؤوليّة الماليّة (نمط codDispatchPending للاستقبال، لكن أعمّ). لكنّ حماية
+    // «لا دينار صامت» تبقى: إن كان `unpaidPortion > 0` مع COD فهذا يعني المندوب لم يُحصِّل كاملاً،
+    // وهو سيناريو مشروع (تسليم جزئيّ أُقرّ) لكن يفتح ذمّةً حقيقيّة تُعالَج كباقي الآجل.
     const unpaidPortion = round2(salePrice.minus(totalPaid));
+    const woPaymentMode = (wo.paymentMode ?? "PREPAID") as "PREPAID" | "COD" | "CREDIT";
     if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
-      await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId));
+      await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);
     }
 
     // Invoice number — reuse the invoice numbering (per-branch daily seq).

@@ -87,6 +87,7 @@ export default defineConfig({
       "shared/consignmentView.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "server/lib/__tests__/opaqueFailure.test.ts",
+      "server/lib/__tests__/paymentModeCod.test.ts",
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",
       "server/auth/password.test.ts",
       "server/lib/imageStore/__tests__/imageStore.test.ts",

@@ -153,6 +153,9 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       // `?? "CASH"` (ومعه default القاعدة) يسحق null الصريح القادم من المسوّدة/الواجهة فيُقرأ
       // أمرٌ لم يُقبض فيه دينار كأنّه «دُفع نقداً».
       paymentMethod: round2(money(input.deposit ?? "0")).gt(0) ? (input.paymentMethod ?? null) : null,
+      // paymentMode (٢٨/٨/٢٦، هجرة 0276): افتراضي PREPAID. يُمرَّر 'COD' من مسار الاستقبال
+      // لطلبات التوصيل التي سيُحصِّلها المندوب — يُتجاوز فحصُ الائتمان عند التسليم.
+      paymentMode: input.paymentMode ?? "PREPAID",
       paymentReference: input.paymentReference?.trim() || null,
       paymentReceiptUrl: input.paymentReceiptUrl?.trim() || null,
       hasDelivery: !!input.hasDelivery,
