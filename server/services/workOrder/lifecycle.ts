@@ -354,19 +354,23 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
     // تدقيقُ SEED للـEvent Store الاحتياطيّ — IN_PROGRESS→READY كان الطلب «يتيه»: الفنّي أعلن
     // الجاهزيّة، العميل تلقّى واتساب، لكن `workOrderRouter.timeline` لا يعرض السطر (لأنّ الأثر
     // كان يُدهَس بعمود status عند التسليم). بلاغ المالك ٢٨/٨/٢٦.
-    // Actor اختياريّ (يُستدعى داخلياً أحياناً): نستعمل معرّف المُنفّذ المُسنَد كـfallback نسبيّاً
-    // كي يبقى الحدث منسوباً؛ وbranchId من أمر الشغل ذاته (مصدر حقيقة لا اجتهاد).
-    const auditUserId = actor?.userId ?? (wo.assignedTo != null ? Number(wo.assignedTo) : 0);
-    const auditBranchId = actor?.branchId ?? Number(wo.branchId);
+    //
+    // ⚠️ **Actor اختياريّ** — يُستدعى داخلياً بلا سياقٍ من مسارات flowNotify. الفابركة `userId: 0`
+    // كانت خطأً P1 (Codex #851): `auditLogs.userId` FK إلى `users.id`، وحين لا يوجد مستخدمٌ
+    // بمعرّف 0، الإدراج يفشل ويُرجع الانتقال كلّه. `userId` FK nullable — نمرّر `ctx.user`
+    // كـundefined فيصير null قانونياً. `branchId` من أمر الشغل مصدرُ حقيقةٍ لا اجتهاد.
+    const auditCtx: Parameters<typeof logAuditTx>[1] = actor
+      ? { user: { id: actor.userId, branchId: actor.branchId ?? null } as never, req: undefined as never }
+      : { user: undefined as never, req: undefined as never };
     await logAuditTx(
       tx,
-      { user: { id: auditUserId, branchId: auditBranchId } as never, req: undefined as never },
+      auditCtx,
       {
         action: "workOrder.markReady",
         entityType: "workOrder",
         entityId: workOrderId,
         oldValue: { status: "IN_PROGRESS" },
-        newValue: { status: "READY" },
+        newValue: { status: "READY", branchId: Number(wo.branchId) },
       },
     );
     return {

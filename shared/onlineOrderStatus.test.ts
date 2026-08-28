@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   ONLINE_ORDER_STATUSES,
@@ -15,18 +17,19 @@ import {
 } from "./onlineOrderStatus";
 
 /**
- * ⚠️ **قائمة مرآة enum** — تُنسخ حرفياً من `mysqlEnum('orderStatus', […])` في
- * [drizzle/schema.ts:4444]. أيّ تعديلٍ لـenum يلزمه تعديلٌ هنا **بنفس الهجرة** — الاختبار
- * يفشل مغلقاً وإلا لتذكيرك.
+ * قيم enum الحيّة من `drizzle/schema.ts` — **لا نسخةَ يدويّة** (على نمط `workOrderStatus.test.ts`).
+ *
+ * الحارس الذي يقرأ من مصدرٍ غير الذي ينفّذ عليه ليس حارساً (Codex #851 P2): تحرير enum خادمياً
+ * دون تحديث القاموس المشترك سيُحمِّر هذا الملف تلقائياً — لا حاجة لتذكّرٍ بشريّ.
  */
-const SCHEMA_ENUM_VALUES = [
-  "PENDING",
-  "CONFIRMED",
-  "PROCESSING",
-  "SHIPPED",
-  "DELIVERED",
-  "CANCELLED",
-] as const;
+function enumFromSchema(): string[] {
+  const src = readFileSync(join(__dirname, "..", "drizzle/schema.ts"), "utf8");
+  const m = /mysqlEnum\("orderStatus",\s*\[([^\]]*)\]/.exec(src);
+  if (!m) throw new Error("تعذّر إيجاد mysqlEnum(\"orderStatus\") في drizzle/schema.ts");
+  return [...m[1].matchAll(/"([A-Z_]+)"/g)].map((x) => x[1]);
+}
+
+const SCHEMA_ENUM_VALUES = enumFromSchema();
 
 describe("قاموس حالة طلب المتجر — مصدر الحقيقة", () => {
   it("ONLINE_ORDER_STATUSES يطابق enum خادمياً (schema.ts:4444)", () => {
