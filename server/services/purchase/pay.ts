@@ -27,6 +27,7 @@ import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { money, round2, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { createSystemPaymentRequestTx } from "../voucher/create";
+import { notifyApprovalPendingByReceipt } from "../approvalEventNotifier";
 import {
   assertPurchaseBranch,
   pendingPurchaseSupplierPaymentsTx,
@@ -58,7 +59,7 @@ export async function payPurchaseOrder(
     throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الدفعة يجب أن يكون موجباً" });
   }
 
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const preview = (
       await tx
         .select()
@@ -204,4 +205,10 @@ export async function payPurchaseOrder(
       remainingBefore: remaining.toFixed(2),
     };
   });
+  // ن-٢-هـ (Codex P2 ٢٨/٨): أخطر المُعتمِدين إن كان السند PENDING_APPROVAL — الدالّة
+  // تُصفّي على الحالة داخلياً فالاستدعاءُ آمنٌ عند سنداتٍ اعتُمِدت مباشرةً كذلك.
+  if (result.paymentRequestReceiptId != null) {
+    void notifyApprovalPendingByReceipt(result.paymentRequestReceiptId);
+  }
+  return result;
 }

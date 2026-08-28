@@ -349,7 +349,9 @@ private fun DigitalCardDecisionDialog(
                         onValueChange = { businessDate = it.take(10) },
                         label = { Text("تاريخ العمل YYYY-MM-DD") },
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        // Codex P2 ٢٨/٨: canSubmit يشترط YYYY-MM-DD والـNumber IME لا يوفّر «-»،
+                        // فيقفل تحرير الحقل بعد مسحه ⇒ Text IME أسلم حتى يُدخَل DatePicker حقيقي.
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(

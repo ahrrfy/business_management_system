@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
-import { and, eq, or, sql } from "drizzle-orm";
-import { users } from "../../drizzle/schema";
+import { and, eq, sql } from "drizzle-orm";
+import { receipts, users } from "../../drizzle/schema";
 import { createAppNotification } from "./appNotificationService";
 import { requireDb } from "./tx";
 
@@ -15,46 +15,22 @@ import { requireDb } from "./tx";
  *   3) idempotency: `eventKey` يعتمد على (receiptId + decision + recipientId) — إعادةُ
  *      اعتمادٍ replayed تولّد نفس المفتاح، فالإشعار لا يُنشَر ثانية (تفصيل: `createAppNotification`
  *      يعتمد على قيدٍ فريدٍ على eventKey في جدول `appNotifications`).
- *   4) fail-open: كلّ نقطةِ استدعاءٍ في الراوتر تُغلّف الاستدعاء بـtry/catch — فشلُ الإشعار
+ *   4) fail-open: كلّ نقطةِ استدعاءٍ تُغلّف الاستدعاء بـtry/catch — فشلُ الإشعار
  *      لا يُعطّل الاعتماد ولا الإنشاء (المسار المالي لا يعتمد على قناة الإفصاح).
- *   5) الحمولةُ ماليّة (مبلغ + رقم سند) ⇒ `lockScreenSafe:false` (الافتراضي، فيحجب على
- *      شاشة القفل ويُعرض داخل التطبيق فقط).
+ *   5) الحمولةُ ماليّة (مبلغ + رقم سند) ⇒ `lockScreenSafe:false` (الأثر الحقيقيّ يُطبَّق
+ *      داخل `nativePayloadFor` بشمل `APPROVAL_REQUIRED` في قائمة الحسّاسين — Codex P1 ٢٨/٨).
+ *
+ * ملكيّة الاستعلام (Codex P1 ٢٨/٨): الراوتر يمرّر receiptId فقط — كلّ SELECT وتشكيلُ
+ * حمولةِ الإشعار داخل هذه الخدمة حصراً (طبقة `services/` تملك الاستعلامات، طبقة
+ * `routers/` تملك zod + بوّابات الصلاحية). راجع AGENTS.md §٢ (قاعدة الطبقات).
  */
 
-export type VoucherDirection = "IN" | "OUT";
 export type ApprovalDecision = "APPROVED" | "REJECTED";
 
-export interface ApprovalPendingInput {
-  receiptId: number;
-  voucherNumber: string;
-  direction: VoucherDirection;
-  /** المبلغ نصّاً (سلسلة decimal كما تُحفَظ). */
-  amount: string;
-  /** فرعُ السند — لا يُستعمل للتصفية (كلّ المالكين يعتمدون كل الفروع)، مخزَّن للسياق. */
-  branchId: number | null;
-  /** مُنشئ السند — يُستثنى من قائمة المستقبِلين. */
-  createdBy: number | null;
-  /** لحظةُ الإنشاء (تدخل في eventKey لتمييز محاولاتٍ نادرة بنفس receiptId عبر مسار خطأ/إعادة). */
-  occurredAt: Date;
-}
+/** المسار الويب للاعتماد — `/my-work` تستهلك `superApp.approvalInbox` (App.tsx:419). */
+const WEB_APPROVAL_ROUTE = "/my-work";
 
-export interface ApprovalDecisionInput {
-  receiptId: number;
-  voucherNumber: string;
-  direction: VoucherDirection;
-  amount: string;
-  /** APPROVED أو REJECTED. */
-  decision: ApprovalDecision;
-  /** المستقبِلُ = مُنشئ السند. `null` = لا مستقبِلَ معلوم فيُتخطّى صامتاً. */
-  createdBy: number | null;
-  /** المُعتمِد/الرافض (للسياق داخل الجسم). */
-  actorUserId: number;
-  /** سببُ الرفض إن وُجد. */
-  reason?: string | null;
-  occurredAt: Date;
-}
-
-function humanDirection(direction: VoucherDirection): string {
+function humanDirection(direction: "IN" | "OUT"): string {
   return direction === "IN" ? "قبض" : "صرف";
 }
 
@@ -96,20 +72,65 @@ async function listApprovers(excludeUserId: number | null): Promise<number[]> {
   return rows.map((r) => Number(r.id)).filter((id) => id !== exclude);
 }
 
+interface ReceiptProjection {
+  createdBy: number | null;
+  direction: "IN" | "OUT";
+  amount: string;
+  voucherNumber: string | null;
+  approvalStatus: string;
+}
+
+async function loadReceiptProjection(
+  receiptId: number,
+): Promise<ReceiptProjection | null> {
+  const db = requireDb();
+  const [row] = await db
+    .select({
+      createdBy: receipts.createdBy,
+      direction: receipts.direction,
+      amount: receipts.amount,
+      voucherNumber: receipts.voucherNumber,
+      approvalStatus: receipts.approvalStatus,
+    })
+    .from(receipts)
+    .where(eq(receipts.id, receiptId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    createdBy: row.createdBy != null ? Number(row.createdBy) : null,
+    direction: (row.direction as "IN" | "OUT") ?? "IN",
+    amount: String(row.amount ?? "0"),
+    voucherNumber: row.voucherNumber ?? null,
+    approvalStatus: String(row.approvalStatus ?? ""),
+  };
+}
+
 /**
- * يُخطر المالكين النشطين بسندٍ جديدٍ ينتظر اعتمادَهم. **fail-open**: أي عطلٍ يُلتَقَط
- * ويُهمَل — لا يوقف إنشاء السند.
+ * يُخطر المالكين النشطين بسندٍ جديدٍ ينتظر اعتمادَهم. **fail-open**.
+ *
+ * Codex P2 ٢٨/٨: الدالّة تُدعى بـreceiptId فقط — تقرأ الحمولةَ بنفسها من قاعدةِ البيانات.
+ * هذا يسمح **لكل** المسارات المولِّدة لسندٍ PENDING_APPROVAL (voucherRouter.create،
+ * consignmentSettlement، createSystemPaymentRequestTx عبر assets/walletOps/exchange/…)
+ * أن تستدعيها بأمر واحد بعد commit المعاملة، دون تكرار قراءة الحقول في كلّ مستدعٍ.
  */
-export async function notifyApprovalPending(
-  input: ApprovalPendingInput,
+export async function notifyApprovalPendingByReceipt(
+  receiptId: number,
+  occurredAt: Date = new Date(),
 ): Promise<void> {
   try {
-    const recipients = await listApprovers(input.createdBy);
+    const projection = await loadReceiptProjection(receiptId);
+    if (!projection) return;
+    // لا نُخطر إلّا سندَ الاعتماد الفعليّ — إن كان APPROVED مباشرة (تحت العتبة) فلا حاجة.
+    if (projection.approvalStatus !== "PENDING_APPROVAL") return;
+    if (!projection.voucherNumber) return;
+    const recipients = await listApprovers(projection.createdBy);
     if (recipients.length === 0) return;
-    const kindLabel = humanDirection(input.direction);
-    const title = `اعتماد ${kindLabel} #${input.voucherNumber} بانتظارك`;
-    const body = `سند ${kindLabel} بمبلغ ${formatAmountIqd(input.amount)} — بانتظار اعتماد مالك.`;
-    const route = "/mobile#approvals";
+    const kindLabel = humanDirection(projection.direction);
+    const title = `اعتماد ${kindLabel} #${projection.voucherNumber} بانتظارك`;
+    const body = `سند ${kindLabel} بمبلغ ${formatAmountIqd(projection.amount)} — بانتظار اعتماد مالك.`;
+    // مُلاحظة زمنيّة: `occurredAt` لا يدخل حالياً في eventKey ⇒ إعادةُ الاستدعاء لنفس
+    // (receiptId, recipientId) مسموحة idempotency-wise. يُبقى المعامل لسياقٍ لاحقٍ إن لزم.
+    void occurredAt;
     await Promise.allSettled(
       recipients.map((recipientId) =>
         createAppNotification({
@@ -117,12 +138,12 @@ export async function notifyApprovalPending(
           kind: "APPROVAL_REQUIRED",
           title,
           body,
-          route,
-          eventKey: computeEventKey(input.receiptId, "pending", recipientId),
+          route: WEB_APPROVAL_ROUTE,
+          eventKey: computeEventKey(receiptId, "pending", recipientId),
           entityType: "receipt",
-          entityId: input.receiptId,
+          entityId: receiptId,
           requiresAction: true,
-          // مالٌ ورقمُ سند ⇒ لا يُعرض على شاشة القفل (يُعرض داخل التطبيق فقط).
+          // مالٌ ورقمُ سند ⇒ لا يُعرض على شاشة القفل (nativePayloadFor يتولّى ذلك).
           lockScreenSafe: false,
         }),
       ),
@@ -135,41 +156,50 @@ export async function notifyApprovalPending(
 /**
  * يُخطر مُنشئَ السند بنتيجة الاعتماد/الرفض. **fail-open**.
  *
+ * Codex P1 ٢٨/٨: الراوتر يمرّر receiptId + decision + actorUserId + reason — والخدمة
+ * تقرأ (createdBy, direction, amount, voucherNumber) بنفسها. لا SELECT في الراوتر.
+ *
  * ملاحظة: عند `replayed=true` في `approveVoucher`، الاستدعاءُ آمن لأنّ eventKey ثابت
  * (نفس receiptId + نفس decision + نفس recipient) ⇒ createAppNotification يعيد
  * `created:false` بلا إنشاءٍ مكرَّر. لكن الأفضلُ ألّا يستدعيه الراوتر عند replayed تجنّباً
  * لضربة قاعدةٍ عديمة الأثر.
  */
-export async function notifyApprovalDecision(
-  input: ApprovalDecisionInput,
+export async function notifyApprovalDecisionByReceipt(
+  receiptId: number,
+  decision: ApprovalDecision,
+  actorUserId: number,
+  reason?: string | null,
+  occurredAt: Date = new Date(),
 ): Promise<void> {
   try {
-    if (input.createdBy == null) return;
+    const projection = await loadReceiptProjection(receiptId);
+    if (!projection) return;
+    if (projection.createdBy == null) return;
     // لا نُخطر المُعتمِدَ إن كان هو المُنشئ (لن يقع فعلياً لأنّ SOD يرفضه، لكنّه حرسٌ دفاعيّ).
-    if (input.createdBy === input.actorUserId) return;
-    const kindLabel = humanDirection(input.direction);
-    const statusLabel =
-      input.decision === "APPROVED" ? "اعتُمد" : "رُفض";
-    const title = `${statusLabel} ${kindLabel} #${input.voucherNumber}`;
+    if (projection.createdBy === actorUserId) return;
+    if (!projection.voucherNumber) return;
+    const kindLabel = humanDirection(projection.direction);
+    const statusLabel = decision === "APPROVED" ? "اعتُمد" : "رُفض";
+    const title = `${statusLabel} ${kindLabel} #${projection.voucherNumber}`;
     const reasonPart =
-      input.decision === "REJECTED" && input.reason
-        ? ` — السبب: ${input.reason.trim().slice(0, 200)}`
+      decision === "REJECTED" && reason
+        ? ` — السبب: ${reason.trim().slice(0, 200)}`
         : "";
-    const body = `سند ${kindLabel} بمبلغ ${formatAmountIqd(input.amount)} ${statusLabel}${reasonPart}.`;
-    const route = "/mobile#approvals";
+    const body = `سند ${kindLabel} بمبلغ ${formatAmountIqd(projection.amount)} ${statusLabel}${reasonPart}.`;
+    void occurredAt;
     await createAppNotification({
-      userId: input.createdBy,
+      userId: projection.createdBy,
       kind: "APPROVAL_REQUIRED",
       title,
       body,
-      route,
+      route: WEB_APPROVAL_ROUTE,
       eventKey: computeEventKey(
-        input.receiptId,
-        `decision:${input.decision}`,
-        input.createdBy,
+        receiptId,
+        `decision:${decision}`,
+        projection.createdBy,
       ),
       entityType: "receipt",
-      entityId: input.receiptId,
+      entityId: receiptId,
       // القرارُ إفصاحٌ نهائيّ — لا يطلب فعلاً من المستقبِل.
       requiresAction: false,
       lockScreenSafe: false,

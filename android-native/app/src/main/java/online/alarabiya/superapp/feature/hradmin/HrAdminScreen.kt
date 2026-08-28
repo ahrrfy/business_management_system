@@ -619,7 +619,8 @@ private fun LegalSettingsDialog(
                         Row(verticalAlignment = Alignment.CenterVertically) { Text("ضريبة الدخل", Modifier.weight(1f)); Switch(value.incomeTaxEnabled, { draft = value.copy(incomeTaxEnabled = it) }) }
                         OutlinedTextField(value.incomeTaxExemption, { draft = value.copy(incomeTaxExemption = it) }, Modifier.fillMaxWidth(), label = { Text("الإعفاء الشهري") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
                         Row(verticalAlignment = Alignment.CenterVertically) { Text("نهاية الخدمة", Modifier.weight(1f)); Switch(value.endOfServiceEnabled, { draft = value.copy(endOfServiceEnabled = it) }) }
-                        OutlinedTextField(value.endOfServiceDaysPerYear, { draft = value.copy(endOfServiceDaysPerYear = it) }, Modifier.fillMaxWidth(), label = { Text("أيام الاستحقاق لكل سنة") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        // Codex P2 ٢٨/٨: الخادم يقبل قيمة كسريّة (مثلاً 21.5) — Decimal لا Number.
+                        OutlinedTextField(value.endOfServiceDaysPerYear, { draft = value.copy(endOfServiceDaysPerYear = it) }, Modifier.fillMaxWidth(), label = { Text("أيام الاستحقاق لكل سنة") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
                     }
                 }
             }

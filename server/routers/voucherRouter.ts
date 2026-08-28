@@ -21,11 +21,11 @@ import {
   treasuryManagerReadProcedure,
 } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { requireDb, withTx } from "../services/tx";
+import { withTx } from "../services/tx";
 import { resubmitRejectedExpensePayment } from "../services/voucher/approval";
 import {
-  notifyApprovalDecision,
-  notifyApprovalPending,
+  notifyApprovalDecisionByReceipt,
+  notifyApprovalPendingByReceipt,
 } from "../services/approvalEventNotifier";
 import {
   VOUCHER_CATEGORY_POSTING_ROLES,
@@ -132,17 +132,12 @@ export const voucherRouter = router({
               invoiceId: input.invoiceId ?? null,
             },
           });
-          // ن-٢-هـ: إشعار المُعتمِدين بأنّ سنداً بانتظارهم — fail-open داخل الدالّة.
+          // ن-٢-هـ: إشعار المُعتمِدين بأنّ سنداً بانتظارهم — الخدمة تقرأ الحمولةَ بنفسها.
+          // Codex P2 ٢٨/٨: هذا الاستدعاء بـreceiptId فقط يُعاد استعماله من
+          // consignmentSettlement + createSystemPaymentRequestTx (assets/walletOps/exchange/…)
+          // بلا نسخِ حقول.
           if (res.approvalStatus === "PENDING_APPROVAL") {
-            void notifyApprovalPending({
-              receiptId: res.receiptId,
-              voucherNumber: res.voucherNumber,
-              direction: res.direction,
-              amount: input.amount,
-              branchId: scopedInput.branchId,
-              createdBy: ctx.user.id,
-              occurredAt: new Date(),
-            });
+            void notifyApprovalPendingByReceipt(res.receiptId);
           }
           return res;
         } catch (e: any) {
@@ -177,34 +172,13 @@ export const voucherRouter = router({
           entityId: input.receiptId,
           newValue: { voucherNumber: res.voucherNumber, signatureHash: res.signatureHash, approvalAuthority: "OWNER" },
         });
-        // ن-٢-هـ: إشعار مُنشئ السند بأنّه اعتُمد — لا نقرأ الحقول من نتيجة الاعتماد
-        // (لا تحملها) بل قراءةٌ خفيفة بعده. fail-open داخل الدالّة.
-        try {
-          const [row] = await requireDb()
-            .select({
-              createdBy: receipts.createdBy,
-              direction: receipts.direction,
-              amount: receipts.amount,
-              voucherNumber: receipts.voucherNumber,
-            })
-            .from(receipts)
-            .where(eq(receipts.id, input.receiptId))
-            .limit(1);
-          if (row && row.voucherNumber) {
-            void notifyApprovalDecision({
-              receiptId: input.receiptId,
-              voucherNumber: row.voucherNumber,
-              direction: row.direction as "IN" | "OUT",
-              amount: String(row.amount ?? "0"),
-              decision: "APPROVED",
-              createdBy: row.createdBy != null ? Number(row.createdBy) : null,
-              actorUserId: ctx.user.id,
-              occurredAt: new Date(),
-            });
-          }
-        } catch {
-          // fail-open: قناة إفصاحٍ لا تُعطّل مسار الاعتماد.
-        }
+        // ن-٢-هـ: إشعار مُنشئ السند بأنّه اعتُمد — الخدمة تقرأ الحمولة بنفسها.
+        // Codex P1 ٢٨/٨: لا SELECT في الراوتر (طبقة `services/` تملك الاستعلامات).
+        void notifyApprovalDecisionByReceipt(
+          input.receiptId,
+          "APPROVED",
+          ctx.user.id,
+        );
       }
       return res;
     }),
@@ -227,33 +201,14 @@ export const voucherRouter = router({
         entityId: input.receiptId,
         newValue: { voucherNumber: res.voucherNumber, reason: input.reason.slice(0, 200) },
       });
-      // ن-٢-هـ: إشعار مُنشئ السند بالرفض + السبب. fail-open داخل الدالّة.
-      try {
-        const [row] = await requireDb()
-          .select({
-            createdBy: receipts.createdBy,
-            direction: receipts.direction,
-            amount: receipts.amount,
-          })
-          .from(receipts)
-          .where(eq(receipts.id, input.receiptId))
-          .limit(1);
-        if (row) {
-          void notifyApprovalDecision({
-            receiptId: input.receiptId,
-            voucherNumber: res.voucherNumber,
-            direction: row.direction as "IN" | "OUT",
-            amount: String(row.amount ?? "0"),
-            decision: "REJECTED",
-            createdBy: row.createdBy != null ? Number(row.createdBy) : null,
-            actorUserId: ctx.user.id,
-            reason: input.reason,
-            occurredAt: new Date(),
-          });
-        }
-      } catch {
-        // fail-open.
-      }
+      // ن-٢-هـ: إشعار مُنشئ السند بالرفض + السبب — الخدمة تقرأ الحمولةَ بنفسها.
+      // Codex P1 ٢٨/٨: لا SELECT في الراوتر.
+      void notifyApprovalDecisionByReceipt(
+        input.receiptId,
+        "REJECTED",
+        ctx.user.id,
+        input.reason,
+      );
       return res;
     }),
 
