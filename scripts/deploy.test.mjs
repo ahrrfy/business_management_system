@@ -5,13 +5,17 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
 const {
   cleanupWebCandidate,
   commitWebArtifact,
+  defaultWebCandidateOperations,
   hasPendingWebActivation,
   installWebCandidate,
   isWebCandidateActive,
   normalizeWebHealthEnvironment,
+  normalizeViteBuildEnvironment,
   prepareWebCandidate,
   pruneWebArtifactSnapshots,
   recoverPendingWebActivation,
@@ -19,6 +23,129 @@ const {
   snapshotWebArtifact,
   verifyRollbackWebArtifactCompatibility,
 } = await import("./deploy.mjs");
+const {
+  chunkBudgetViolation,
+  EXCEL_CHUNK_NAME,
+  resolveViteEnvDir,
+  VITE_DISABLE_DOTENV_ENV_KEY,
+  VITE_DISABLE_DOTENV_ENV_VALUE,
+} = await import("./vite-build-contract.mjs");
+
+{
+  assert.equal(
+    resolveViteEnvDir(
+      { [VITE_DISABLE_DOTENV_ENV_KEY]: VITE_DISABLE_DOTENV_ENV_VALUE },
+      "/srv/erp",
+    ),
+    false,
+    "the production candidate must disable Vite dotenv loading",
+  );
+  assert.equal(
+    resolveViteEnvDir({}, "/srv/erp"),
+    "/srv/erp",
+    "local development must preserve the project dotenv directory",
+  );
+}
+
+{
+  const previousDisableDotEnv = process.env[VITE_DISABLE_DOTENV_ENV_KEY];
+  process.env[VITE_DISABLE_DOTENV_ENV_KEY] = VITE_DISABLE_DOTENV_ENV_VALUE;
+  try {
+    const { loadConfigFromFile } = await import("vite");
+    const loaded = await loadConfigFromFile(
+      { command: "build", mode: "production" },
+      path.join(root, "vite.config.ts"),
+      root,
+      "silent",
+    );
+    assert.equal(
+      loaded?.config.envDir,
+      false,
+      "the real Vite config must consume the production dotenv-disable flag",
+    );
+  } finally {
+    if (previousDisableDotEnv === undefined) {
+      delete process.env[VITE_DISABLE_DOTENV_ENV_KEY];
+    } else {
+      process.env[VITE_DISABLE_DOTENV_ENV_KEY] = previousDisableDotEnv;
+    }
+  }
+}
+
+{
+  assert.deepEqual(
+    normalizeViteBuildEnvironment({
+      NODE_ENV: "production",
+      DATABASE_URL: "mysql://must-not-reach-vite",
+      VITE_PUBLIC_SITE_ORIGIN: "https://alarabiya.online",
+      VITE_SENTRY_DSN_CLIENT: "",
+      vite_lowercase: "ignored",
+    }),
+    {
+      VITE_PUBLIC_SITE_ORIGIN: "https://alarabiya.online",
+      VITE_SENTRY_DSN_CLIENT: "",
+    },
+    "the web candidate may inherit public VITE_* values only",
+  );
+}
+
+{
+  const calls = [];
+  const operations = defaultWebCandidateOperations(
+    "/srv/erp",
+    {
+      VITE_PUBLIC_SITE_ORIGIN: "https://alarabiya.online",
+      DATABASE_URL: "mysql://must-not-reach-build-from-explicit-env",
+      NODE_OPTIONS: "--require=/tmp/must-not-load-from-explicit-env.cjs",
+      PATH: "/tmp/must-not-replace-parent-path",
+    },
+    {
+      parentEnvironment: {
+        HOME: "/home/deploy",
+        PATH: "/usr/local/bin:/usr/bin",
+        DATABASE_URL: "mysql://must-not-reach-build",
+        NODE_OPTIONS: "--require=/tmp/must-not-load.cjs",
+      },
+      execFileSync: (...args) => calls.push(args),
+    },
+  );
+  operations.build("/srv/erp-candidate");
+  const [command, args, options] = calls[0];
+  assert.equal(command, "pnpm");
+  assert.deepEqual(args, ["build"]);
+  assert.equal(options.cwd, "/srv/erp-candidate");
+  assert.equal(
+    options.env[VITE_DISABLE_DOTENV_ENV_KEY],
+    VITE_DISABLE_DOTENV_ENV_VALUE,
+  );
+  assert.equal(
+    options.env.VITE_PUBLIC_SITE_ORIGIN,
+    "https://alarabiya.online",
+  );
+  assert.equal(options.env.PATH, "/usr/local/bin:/usr/bin");
+  assert.equal(Object.hasOwn(options.env, "DATABASE_URL"), false);
+  assert.equal(Object.hasOwn(options.env, "NODE_OPTIONS"), false);
+}
+
+{
+  const chunk = (name, bytes) => ({
+    type: "chunk",
+    name,
+    fileName: `${name}.js`,
+    code: "x".repeat(bytes),
+  });
+  assert.equal(chunkBudgetViolation({ type: "asset" }), null);
+  assert.equal(chunkBudgetViolation(chunk("page", 500_000)), null);
+  assert.match(
+    chunkBudgetViolation(chunk("page", 500_001)),
+    /CHUNK_BUDGET_EXCEEDED page\.js: 500001 > 500000/,
+  );
+  assert.equal(chunkBudgetViolation(chunk(EXCEL_CHUNK_NAME, 950_000)), null);
+  assert.match(
+    chunkBudgetViolation(chunk(EXCEL_CHUNK_NAME, 950_001)),
+    /CHUNK_BUDGET_EXCEEDED exceljs\.js: 950001 > 950000/,
+  );
+}
 
 {
   const current = "a".repeat(64);
@@ -61,7 +188,6 @@ const {
   }
 }
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ecosystemProbeEnvironment = {
   ...process.env,
   HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE: "1",

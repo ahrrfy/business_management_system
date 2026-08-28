@@ -67,7 +67,7 @@
   --sem-warn: oklch(0.520 0.110 80);  --sem-warn-bg: oklch(0.958 0.038 80);
   --sem-info: oklch(0.505 0.120 240); --sem-info-bg: oklch(0.955 0.024 240);
   /* ٢٥/٨/٢٦ — hover states: أغمق في الفاتح (تباين WCAG على text-background المُقلَب). كان
-     نمط `hover:bg-[var(--sem-*)]/90` يقصر الفاتحَ بألفا فيسقط التباينُ إلى ~3.5:1 على cream
+     نمط hover الدلالي مع ألفا 90% يقصر الفاتحَ فيسقط التباينُ إلى ~3.5:1 على cream
      background (Codex #814 P2). التوكن opaque = عكس ذلك تماماً: تقليل L بمقدار ~‎0.09‎ في الفاتح. */
   --sem-pos-hover: oklch(0.415 0.120 152);
   --sem-neg-hover: oklch(0.440 0.170 27);
