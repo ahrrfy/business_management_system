@@ -1821,6 +1821,13 @@
 			"when": 1788052326000,
 			"tag": "0274_journal_lines_secondary_dims",
 			"breakpoints": true
+		},
+		{
+			"idx": 276,
+			"version": "5",
+			"when": 1788052328000,
+			"tag": "0276_payment_mode",
+			"breakpoints": true
 		}
 	]
 }

@@ -10,20 +10,34 @@ import { money, type DecimalInput } from "../services/money";
  *  - `'0'` أو 0 ⇒ حظر كامل للبيع الآجل (لا ائتمان لهذا العميل).
  *  - موجب (> 0) ⇒ يُفحص: `currentBalance + addAmount ≤ creditLimit`.
  *
+ *  paymentMode (٢٨/٨/٢٦، هجرة 0276):
+ *  - `'COD'` (Cash on Delivery) ⇒ **يُتجاوز الفحص كلّياً**. المال يأتي مع المندوب لحظة
+ *    التسليم — لا يُترك ديناً على العميل، فلا مبرِّرَ لفحص السقف. كان هذا الفحصُ يمنع
+ *    زبونَ الاتّصال الجديد من طلب توصيلٍ COD (بلاغ المالك): `creditLimit='0'` الافتراضيّ
+ *    كان يحظر كلَّ ما ليس مدفوعاً لحظياً، بينما COD **ليس ائتماناً** — هو تأجيلٌ لساعات.
+ *  - `'PREPAID'` / `'CREDIT'` / غير مُمرَّر ⇒ الفحص الكامل (نمط ما قبل الهجرة).
+ *
  *  يَقرأ صفّ العميل بـ`.for("update")` لتسلسل البيوع المتزامنة.
  *  يَرمي TRPCError code='FORBIDDEN' عند تجاوز الحدّ أو حظر الائتمان.
  *
  *  ملاحظة: `branchId` مُمرَّر للسجلّ والمراقبة (auditService) لكنه لا يُغيّر القرار
  *  حالياً — حدّ الائتمان عالمي عبر الفروع (الرصيد مُجمَّع على العميل).
  */
+export type CreditPaymentMode = "PREPAID" | "COD" | "CREDIT";
+
 export async function assertCreditLimit(
   tx: any,
   customerId: number,
   addAmount: DecimalInput,
   _branchId: number,
+  paymentMode?: CreditPaymentMode,
 ): Promise<void> {
   const add = money(addAmount);
   if (add.lte(0)) return; // لا زيادة على الذمم ⇒ لا فحص (نقدي بحت أو دفعة).
+  // COD: المال يأتي مع المندوب لا يبقى ديناً — لا مبرِّرَ لفحص السقف الائتمانيّ.
+  // ⛔ لا يمرّ COD بلا حماية: مسار workOrder.deliver يفرض التحصيل الكامل عند التسليم بشكل
+  // منفصل (assertNoUnpaidRemainderOnCOD)، فحماية «لا دينار صامت» مضمونةٌ هناك لا هنا.
+  if (paymentMode === "COD") return;
 
   const rows = await tx
     .select({
