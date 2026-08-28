@@ -8,9 +8,10 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
 import { TONE_TEXT_CLASS, type Tone } from "@/lib/tone";
-import { FileSpreadsheet, MoreHorizontal, Printer } from "lucide-react";
+import { FileSpreadsheet, Info, MoreHorizontal, Printer } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 /** نبرة مؤشّر — مُعاد تصديرها من `@/lib/tone` (مصدرٌ واحد مشترك مع StatCard). */
 export type KpiTone = Tone;
@@ -121,15 +122,31 @@ export function ReportShell({
       {/* مؤشرات التقرير شريط حالة سفلي: تبقى البيانات أولاً ولا تُزاح من أعلى الشاشة. */}
       {kpis && kpis.length > 0 && (
         <WorkspaceStatusBar label="مؤشرات التقرير" className="gap-0 overflow-x-auto p-0">
-          {kpis.map((k, i) => (
-            <div key={i} className="min-w-36 flex-1 border-e border-border/70 px-3 py-0.5 text-center last:border-e-0" title={typeof k.hint === "string" ? k.hint : undefined}>
-              <p className="truncate text-2xs text-muted-foreground">{k.label}</p>
-              <p className={cn("truncate text-sm font-bold tabular-nums", TONE_TEXT_CLASS[k.tone ?? "default"])} dir="ltr">
-                {k.value}
-              </p>
-              {(k.hintNode ?? k.hint) && <span className="sr-only">{k.hintNode ?? k.hint}</span>}
-            </div>
-          ))}
+          {kpis.map((k, i) => {
+            const hint = k.hintNode ?? k.hint;
+            return (
+              <div key={i} className="min-w-36 flex-1 border-e border-border/70 px-3 py-0.5 text-center last:border-e-0">
+                <div className="flex items-center justify-center gap-1 text-2xs text-muted-foreground">
+                  <span className="truncate">{k.label}</span>
+                  {hint && (
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button type="button" className="grid size-5 shrink-0 place-items-center rounded hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`تفاصيل ${k.label}`}>
+                          <Info aria-hidden className="size-3.5" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent side="top" className="w-72 text-start text-xs leading-5">
+                        {hint}
+                      </PopoverContent>
+                    </Popover>
+                  )}
+                </div>
+                <p className={cn("truncate text-sm font-bold tabular-nums", TONE_TEXT_CLASS[k.tone ?? "default"])} dir="ltr">
+                  {k.value}
+                </p>
+              </div>
+            );
+          })}
         </WorkspaceStatusBar>
       )}
     </div>

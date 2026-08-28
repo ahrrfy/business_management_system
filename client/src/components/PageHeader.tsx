@@ -55,7 +55,7 @@ type PageHeaderProps = {
 export function PageHeader({ title, description, actions, actionsClassName, icon, breadcrumbs, backHref, backLabel, homeHref, variant = "default", className }: PageHeaderProps) {
   if (variant === "workspace") {
     return (
-      <WorkspaceBar variant="command" label="أوامر الصفحة" className={cn("justify-between overflow-hidden", className)}>
+      <WorkspaceBar variant="command" label="أوامر الصفحة" className={cn("justify-between overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden", className)}>
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="flex shrink-0 items-center gap-1">
             {backHref && (
@@ -84,13 +84,13 @@ export function PageHeader({ title, description, actions, actionsClassName, icon
             <span className="truncate">{title}</span>
           </h1>
           {description && (
-            <p className="hidden min-w-0 truncate border-s ps-2 text-xs text-muted-foreground xl:block" title={typeof description === "string" ? description : undefined}>
+            <p className="sr-only min-w-0 truncate border-s ps-2 text-xs text-muted-foreground lg:not-sr-only" title={typeof description === "string" ? description : undefined}>
               {description}
             </p>
           )}
         </div>
         {actions && (
-          <div data-page-header-actions className={cn("flex min-w-0 shrink-0 items-center gap-1.5 overflow-x-auto whitespace-nowrap [&>*]:shrink-0", actionsClassName)}>
+          <div data-page-header-actions className={cn("flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0", actionsClassName)}>
             {actions}
           </div>
         )}

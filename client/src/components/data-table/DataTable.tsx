@@ -98,6 +98,8 @@ type DataTableProps<T, K = string> = {
    */
   errorState?: { isError: boolean; message?: string; onRetry?: () => void };
   toolbar?: React.ReactNode; // أزرار إضافية (تصدير/إضافة) تظهر بجانب البحث
+  /** ملخّص تشغيلي يُدمج في شريط الحالة السفلي (مجاميع/تنبيهات) بدل إنشاء شريط ثانٍ. */
+  statusSummary?: React.ReactNode;
   // === التَحديد المُتَعَدِّد (اختِياري) ===
   selection?: DataTableSelection<K>;
   getRowId?: (row: T) => K; // مُلزِم لو selection مُعَطاة
@@ -181,7 +183,7 @@ function writeTableView(key: string, value: StoredTableView): void {
 function TableShell({ bounded, maxHeightClass, children }: { bounded: boolean; maxHeightClass?: string; children: React.ReactNode }) {
   if (bounded)
     return (
-      <ScrollTableShell maxHeightClass={maxHeightClass} showColumnVisibility={false}>
+      <ScrollTableShell maxHeightClass={maxHeightClass ?? "max-h-[calc(100dvh-11rem)]"} showColumnVisibility={false}>
         {children}
       </ScrollTableShell>
     );
@@ -202,6 +204,7 @@ export function DataTable<T, K = string>({
   loading = false,
   errorState,
   toolbar,
+  statusSummary,
   selection,
   getRowId,
   mobileCardRenderer,
@@ -402,8 +405,8 @@ export function DataTable<T, K = string>({
   return (
     <div className={compact ? "space-y-2 [&_th]:!p-1.5 [&_td]:!p-1.5 [&_tbody_tr]:text-xs" : "space-y-2"} data-table-density={compact ? "compact" : "comfortable"}>
       {(showSearch || toolbar) && (
-        <WorkspaceBar variant="filters" label="بحث وأدوات الجدول" className="justify-between overflow-hidden">
-          {showSearch ? (
+        <WorkspaceBar variant="filters" label="بحث وأدوات الجدول" className="justify-between overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {showSearch && (
             <div className={cn("relative min-w-40 flex-1", barcodeSearch ? "max-w-sm" : "max-w-xs")}>
               <Input
                 autoFocus={autoFocusSearch}
@@ -419,10 +422,8 @@ export function DataTable<T, K = string>({
               />
               {barcodeSearch && <BarcodeSearchCue />}
             </div>
-          ) : (
-            <span />
           )}
-          <div className="flex min-w-0 shrink-0 items-center gap-1.5 overflow-x-auto whitespace-nowrap [&>*]:shrink-0">{toolbar}</div>
+          {toolbar && <div className="flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">{toolbar}</div>}
         </WorkspaceBar>
       )}
       {mobileCardRenderer ? (
@@ -690,33 +691,52 @@ export function DataTable<T, K = string>({
           total={serverPagination!.total}
           hasMore={serverPagination!.hasMore}
           isLoading={loading}
-          status={selectionEnabled && selection!.count > 0 ? `محدّد: ${selection!.count.toLocaleString("ar-IQ-u-nu-latn")}` : undefined}
+          status={
+            statusSummary || (selectionEnabled && selection!.count > 0) ? (
+              <span className="inline-flex min-w-max items-center gap-3">
+                {statusSummary}
+                {selectionEnabled && selection!.count > 0 && <>محدّد: {selection!.count.toLocaleString("ar-IQ-u-nu-latn")}</>}
+              </span>
+            ) : undefined
+          }
           actions={columnControls}
         />
       ) : (
-        data.length > 0 && (
-          <WorkspaceStatusBar>
-            <span>
-              {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ-u-nu-latn")} من {data.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ
-              {selectionEnabled && selection!.count > 0 && <> · مُحَدَّد: {selection!.count.toLocaleString("ar-IQ-u-nu-latn")}</>}
+        (data.length > 0 || columnControls || statusSummary) && (
+          <WorkspaceStatusBar
+            role={paginated && table.getPageCount() > 1 ? "navigation" : "group"}
+            aria-label={paginated && table.getPageCount() > 1 ? "ترقيم صفحات الجدول" : "أدوات الجدول"}
+            className="h-auto flex-wrap gap-1 py-1 sm:flex-nowrap"
+          >
+            <span role="status" aria-live="polite" className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {data.length > 0 ? (
+                <>
+                  {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ-u-nu-latn")} من {data.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ
+                  {selectionEnabled && selection!.count > 0 && <> · مُحَدَّد: {selection!.count.toLocaleString("ar-IQ-u-nu-latn")}</>}
+                </>
+              ) : (
+                "لا بيانات"
+              )}
+              {statusSummary && <> · {statusSummary}</>}
             </span>
-            {paginated && table.getPageCount() > 1 && (
-              <div className="flex items-center gap-2">
+            <div className="ms-auto min-w-0 max-w-full overflow-x-auto">
+              <div className="flex min-w-max items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">
                 {columnControls}
-                <span>
-                  صفحة {(table.getState().pagination.pageIndex + 1).toLocaleString("ar-IQ-u-nu-latn")} من {table.getPageCount().toLocaleString("ar-IQ-u-nu-latn")}
-                </span>
-                <div className="flex gap-1">
+                {paginated && table.getPageCount() > 1 && (
+                  <>
+                  <span>
+                    صفحة {(table.getState().pagination.pageIndex + 1).toLocaleString("ar-IQ-u-nu-latn")} من {table.getPageCount().toLocaleString("ar-IQ-u-nu-latn")}
+                  </span>
                   <Button size="sm" variant="outline" className="h-7" onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()} aria-label="الصفحة السابقة">
                     <ChevronRight aria-hidden className="size-4" />
                   </Button>
                   <Button size="sm" variant="outline" className="h-7" onClick={() => table.nextPage()} disabled={!table.getCanNextPage()} aria-label="الصفحة التالية">
                     <ChevronLeft aria-hidden className="size-4" />
                   </Button>
-                </div>
+                  </>
+                )}
               </div>
-            )}
-            {(!paginated || table.getPageCount() <= 1) && columnControls}
+            </div>
           </WorkspaceStatusBar>
         )
       )}

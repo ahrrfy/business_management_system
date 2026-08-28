@@ -16,7 +16,7 @@ export function ScrollTableShell({
   children,
   className,
   /** صنف الارتفاع الأقصى — الافتراضي يترك مكاناً للترويسة وشريط الأدوات والترقيم. */
-  maxHeightClass = "max-h-[calc(100dvh-11rem)]",
+  maxHeightClass = "max-h-[calc(100dvh-15rem)]",
   /** حدّ + زوايا مُدوَّرة. اجعلها false حين تكون الحاوية داخل بطاقة (Card) لها حدّها أصلاً. */
   bordered = true,
   /** تعطّلها DataTable لأنه يملك قائمة أعمدة مرتبطة بحالة TanStack الخاصة به. */

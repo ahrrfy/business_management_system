@@ -11,7 +11,7 @@ import { PeriodFilter, type PeriodValue, type PresetKey } from "@/components/rep
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
 import { fmtDate } from "@/lib/date";
-import { exportRows } from "@/lib/export";
+import { exportRows, type ExportColumn } from "@/lib/export";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
@@ -36,7 +36,6 @@ import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDial
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
-import { WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
 
 type Row = RouterOutputs["sales"]["list"][number];
 
@@ -106,6 +105,23 @@ const deliveryCell = (r: Pick<Row, "consignmentStatus" | "deliveryPartyName" | "
 const codInTransit = (r: Pick<Row, "consignmentStatus">) => r.consignmentStatus === "DISPATCHED" || r.consignmentStatus === "PARTIAL";
 const paymentLabel = (r: Pick<Row, "consignmentStatus" | "paymentMethod" | "paidAmount">) =>
   codInTransit(r) ? (D(r.paidAmount).gt(0) ? `عند الاستلام (COD) — عربون ${paymentMethodLabel(r.paymentMethod)}` : "عند الاستلام (COD)") : paymentMethodLabel(r.paymentMethod);
+
+const INVOICE_EXPORT_COLUMNS: ExportColumn<Row>[] = [
+  { key: "invoiceNumber", header: "رقم الفاتورة" },
+  { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
+  { key: "customerName", header: "العميل", map: (r) => custName(r.customerName) },
+  { key: "sourceType", header: "المصدر", map: (r) => sourceTypeLabel(r.sourceType) },
+  { key: "channel", header: "القناة", map: (r) => invoiceChannelLabel(deriveInvoiceChannel(r)) },
+  { key: "workOrderNumber", header: "رقم أمر الشغل", map: (r) => r.workOrderNumber ?? "" },
+  { key: "consignmentStatus", header: "التوصيل", map: (r) => deliveryCell(r) },
+  { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
+  { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
+  { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
+  { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+  { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+  { key: "paymentMethod", header: "طريقة الدفع", map: (r) => paymentLabel(r) },
+  { key: "status", header: "الحالة", map: (r) => exportStatusLabel(r.status) },
+];
 
 /** فلتر عميل مدمج — بحث حيّ عبر customers.smartSearch (نمط CustomerPicker) مجرّداً من زرّ
  *  «+ عميل جديد» (سياق فلترة لا إدخال بيانات). الاسم المختار يُجلب بـcustomers.get — ضروري
@@ -234,8 +250,6 @@ export default function Invoices() {
   // تَحديد مُتَعَدِّد لِلصُفوف (نَسخ/تَصدير المُحَدَّد فَقَط).
   const sel = useRowSelection<number>();
 
-  // حالة تحضير تصدير «الكل» (جلب كامل النتائج المطابقة للفلتر، لا الصفحة المعروضة).
-  const [exporting, setExporting] = useState(false);
   const [printingReceiptId, setPrintingReceiptId] = useState<number | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<Row | null>(null);
   const [cancelDeliveryTarget, setCancelDeliveryTarget] = useState<Row | null>(null);
@@ -452,88 +466,6 @@ export default function Invoices() {
       navigate("/sales/new");
     } catch (e) {
       notify.err(e);
-    }
-  }
-
-  // تصدير «الكل»: sales.list سقفٌ صلب بلا offset حقيقي للتصدير ⇒ جلبٌ واحد كبير
-  // بنفس فلاتر القائمة (بدون limit/offset الصفحة) ثم exportRows. لا يمسّ تصدير المُحَدَّد.
-  async function exportAll() {
-    setExporting(true);
-    try {
-      // كل الصفحات المطابقة للفلتر **والبحث** (لا الصفحة المعروضة ولا استعلام عملاق واحد):
-      // نفس filterInput ⇒ المُصدَّر = ما تراه على الشاشة موسَّعاً، لا مجموعة أخرى.
-      const allRows = await fetchAllPaged<Row>((offset, limit) => utils.sales.list.fetch({ ...filterInput, limit, offset }).then((r) => ({ rows: (r ?? []) as Row[] })), { pageSize: 500 });
-      exportRows(allRows, {
-        filename: "المبيعات",
-        columns: [
-          { key: "invoiceNumber", header: "رقم الفاتورة" },
-          {
-            key: "invoiceDate",
-            header: "التاريخ",
-            map: (r) => fmtDate(r.invoiceDate),
-          },
-          {
-            key: "customerName",
-            header: "العميل",
-            map: (r) => custName(r.customerName),
-          },
-          {
-            key: "sourceType",
-            header: "المصدر",
-            map: (r) => sourceTypeLabel(r.sourceType),
-          },
-          {
-            key: "channel",
-            header: "القناة",
-            map: (r) => invoiceChannelLabel(deriveInvoiceChannel(r)),
-          },
-          {
-            key: "workOrderNumber",
-            header: "رقم أمر الشغل",
-            map: (r) => r.workOrderNumber ?? "",
-          },
-          {
-            key: "consignmentStatus",
-            header: "التوصيل",
-            map: (r) => deliveryCell(r),
-          },
-          {
-            key: "salespersonName",
-            header: "موظف المبيعات",
-            map: (r) => r.salespersonName ?? "",
-          },
-          {
-            key: "shiftId",
-            header: "رقم الوردية",
-            map: (r) => r.shiftId ?? "",
-          },
-          {
-            key: "deviceId",
-            header: "محطة البيع",
-            map: (r) => r.deviceId ?? "",
-          },
-          { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
-          {
-            key: "paidAmount",
-            header: "المدفوع",
-            map: (r) => Number(r.paidAmount),
-          },
-          {
-            key: "paymentMethod",
-            header: "طريقة الدفع",
-            map: (r) => paymentLabel(r),
-          },
-          {
-            key: "status",
-            header: "الحالة",
-            map: (r) => exportStatusLabel(r.status),
-          },
-        ],
-      });
-    } catch (e) {
-      notify.err(e);
-    } finally {
-      setExporting(false);
     }
   }
 
@@ -915,7 +847,19 @@ export default function Invoices() {
         }
         activeFilterCount={activeFilterCount}
         onResetFilters={resetF}
+        exportSpec={{
+          filename: "المبيعات",
+          rows: data,
+          columns: INVOICE_EXPORT_COLUMNS,
+          fetchAll: () =>
+            fetchAllPaged<Row>((offset, limit) => utils.sales.list.fetch({ ...filterInput, limit, offset }).then((result) => ({ rows: (result ?? []) as Row[] })), { pageSize: 500 }),
+        }}
         add={canCreateSale ? { onClick: () => navigate("/sales/new"), label: "فاتورة جديدة" } : undefined}
+        secondaryActions={
+          me.data?.role === "admin" || me.data?.role === "manager"
+            ? [{ label: "تقرير الموظفين", onSelect: () => navigate("/reports/sales-by-dimension") }]
+            : undefined
+        }
         filters={
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-4">
             <div className="space-y-1">
@@ -1052,16 +996,7 @@ export default function Invoices() {
             </div>
           </div>
         }
-      >
-        {(me.data?.role === "admin" || me.data?.role === "manager") && (
-          <Button variant="outline" size="sm" className="h-8" onClick={() => navigate("/reports/sales-by-dimension")}>
-            تقرير الموظفين
-          </Button>
-        )}
-        <Button variant="outline" size="sm" className="h-8" disabled={!total || exporting} onClick={() => void exportAll()}>
-          {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
-        </Button>
-      </ListToolbar>
+      />
 
       <DataTable
         columns={columns}
@@ -1085,6 +1020,24 @@ export default function Invoices() {
           pageSize: PAGE_SIZE,
           total,
         }}
+        statusSummary={
+          summary.data ? (
+            <>
+              <span>
+                الفواتير: <b className="tabular-nums" dir="ltr">{summary.data.count.toLocaleString("ar-IQ-u-nu-latn")}</b>
+              </span>
+              <span>
+                الإجمالي: <b className="tabular-nums" dir="ltr">{fmt(summary.data.totalAmount)}</b>
+              </span>
+              <span>
+                المسدَّد: <b className="tabular-nums text-money-positive" dir="ltr">{fmt(summary.data.paidAmount)}</b>
+              </span>
+              <span>
+                المتبقي: <b className="tabular-nums text-[var(--stock-low)]" dir="ltr">{fmt(summary.data.dueAmount)}</b>
+              </span>
+            </>
+          ) : undefined
+        }
         mobileCardRenderer={(r) => {
           const stLabel = invoiceStatusLabel(r.status);
           // خريطة variant من المصدر الوحيد (shared/invoiceStatus) — كانت محلّية هنا بـdestructive/secondary
@@ -1214,36 +1167,6 @@ export default function Invoices() {
         </div>
       )}
 
-      {/* شريط المجاميع — لكل النتائج المطابقة للفلتر خادمياً (لا الصفحة المعروضة فقط). */}
-      {summary.data && (
-        <WorkspaceStatusBar label="مجاميع الفواتير" className="justify-start gap-6 overflow-x-auto whitespace-nowrap">
-          <span>
-            عدد الفواتير:{" "}
-            <b className="tabular-nums" dir="ltr">
-              {summary.data.count.toLocaleString("ar-IQ-u-nu-latn")}
-            </b>
-          </span>
-          <span>
-            الإجمالي:{" "}
-            <b className="tabular-nums" dir="ltr">
-              {fmt(summary.data.totalAmount)}
-            </b>
-          </span>
-          <span>
-            المسدَّد:{" "}
-            <b className="tabular-nums text-money-positive" dir="ltr">
-              {fmt(summary.data.paidAmount)}
-            </b>
-          </span>
-          <span>
-            المتبقي:{" "}
-            <b className="tabular-nums text-[var(--stock-low)]" dir="ltr">
-              {fmt(summary.data.dueAmount)}
-            </b>
-          </span>
-          <span className="text-xs text-muted-foreground">المجاميع لكل النتائج المطابقة للفلتر</span>
-        </WorkspaceStatusBar>
-      )}
       <InvoiceDispatchDialog
         open={dispatchTarget != null}
         onOpenChange={(open) => {

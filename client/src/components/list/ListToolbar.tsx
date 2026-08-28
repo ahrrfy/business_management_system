@@ -35,6 +35,12 @@ export type ExportSpec<T> = {
 };
 
 type AddSpec = { label?: string } & ({ href: string } | { onClick: () => void });
+type SecondaryAction = {
+  label: string;
+  onSelect: () => void;
+  icon?: React.ReactNode;
+  disabled?: boolean;
+};
 
 export type ListToolbarProps<T> = {
   title?: React.ReactNode;
@@ -67,6 +73,8 @@ export type ListToolbarProps<T> = {
   refreshing?: boolean;
   refreshLabel?: string;
   add?: AddSpec;
+  /** أوامر قليلة التكرار تُدمج مع قائمة «المزيد» بدلاً من مزاحمة الإجراء الأساسي. */
+  secondaryActions?: SecondaryAction[];
   children?: React.ReactNode;
 };
 
@@ -89,6 +97,7 @@ export function ListToolbar<T>({
   refreshing = false,
   refreshLabel = "تحديث",
   add,
+  secondaryActions,
   children,
 }: ListToolbarProps<T>) {
   const formats = exportSpec?.formats ?? ["xlsx"];
@@ -151,16 +160,30 @@ export function ListToolbar<T>({
   // تُنشئ صفوفاً إضافية فوق البيانات، والإجراءات الأقل تكراراً داخل قائمة «المزيد».
   const hasFilterSection = Boolean(search || quickFilters || filters || activeFilterCount > 0 || onResetFilters);
   const showResetButton = onResetFilters && (activeFilterCount > 0 || Boolean(search?.value.trim()));
-  const hasSecondaryActions = Boolean(onImport || onRefresh || exportSpec || onPrint);
+  const hasSecondaryActions = Boolean(onImport || onRefresh || exportSpec || onPrint || secondaryActions?.length);
 
   return (
     <div className="flex flex-col gap-2" data-operational-toolbar>
-      <WorkspaceBar variant="command" label="أوامر القائمة" className="justify-between overflow-hidden">
-        <div className="flex min-w-0 items-center gap-2">
+      <WorkspaceBar variant="command" label="أوامر القائمة" className="justify-between overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex min-w-0 shrink-0 items-center gap-2">
           {title != null && <span className="text-base font-semibold">{title}</span>}
           {(count != null || loading) && <span className="shrink-0 text-xs text-muted-foreground">{loading ? "جارٍ التحميل…" : `${(count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} صفّ`}</span>}
         </div>
-        <div className="list-toolbar-actions flex min-w-0 shrink-0 items-center gap-1.5 overflow-x-auto whitespace-nowrap [&>*]:shrink-0">
+        <div className="list-toolbar-actions flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">
+          {add &&
+            ("href" in add ? (
+              <Button asChild size="sm" className="h-8">
+                <Link href={add.href}>
+                  <Plus className="size-4" />
+                  {add.label ?? "إضافة"}
+                </Link>
+              </Button>
+            ) : (
+              <Button size="sm" className="h-8" onClick={add.onClick}>
+                <Plus className="size-4" />
+                {add.label ?? "إضافة"}
+              </Button>
+            ))}
           {children}
           {hasSecondaryActions && (
             <DropdownMenu>
@@ -179,6 +202,12 @@ export function ListToolbar<T>({
                     {refreshing ? "جارٍ التحديث…" : refreshLabel}
                   </DropdownMenuItem>
                 )}
+                {secondaryActions?.map((action) => (
+                  <DropdownMenuItem key={action.label} disabled={action.disabled} onSelect={() => action.onSelect()}>
+                    {action.icon}
+                    {action.label}
+                  </DropdownMenuItem>
+                ))}
                 {onImport && (
                   <DropdownMenuItem onSelect={() => onImport()}>
                     <Upload aria-hidden className="size-4" />
@@ -208,25 +237,11 @@ export function ListToolbar<T>({
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          {add &&
-            ("href" in add ? (
-              <Button asChild size="sm" className="h-8">
-                <Link href={add.href}>
-                  <Plus className="size-4" />
-                  {add.label ?? "إضافة"}
-                </Link>
-              </Button>
-            ) : (
-              <Button size="sm" className="h-8" onClick={add.onClick}>
-                <Plus className="size-4" />
-                {add.label ?? "إضافة"}
-              </Button>
-            ))}
         </div>
       </WorkspaceBar>
 
       {hasFilterSection && (
-        <WorkspaceBar variant="filters" label="البحث والفلاتر" className="overflow-hidden">
+        <WorkspaceBar variant="filters" label="البحث والفلاتر" className="list-toolbar-filter-panel overflow-hidden">
           {search && (
             <div className={cn("relative min-w-40 flex-1", search.barcode && "min-w-64")}>
               <Search className={cn("pointer-events-none absolute top-1/2 size-4 -translate-y-1/2 text-muted-foreground", search.barcode ? "left-2" : "right-2")} />

@@ -38,6 +38,7 @@ export default defineConfig({
       "client/src/lib/voucherCategoryAccounting.test.ts",
       "client/src/components/vouchers/voucherUiPolicy.test.ts",
       "client/src/components/workspace/OperationalWorkspace.test.ts",
+      "client/src/components/table/TablePager.test.ts",
       "client/src/components/ui/MobileDataCard.test.ts",
       "client/src/components/storefront/TurnstileWidget.test.ts",
       "client/src/components/storefront/ConsentChoice.test.ts",
