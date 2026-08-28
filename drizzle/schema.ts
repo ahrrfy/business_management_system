@@ -9335,6 +9335,55 @@ export const deliveryPricingRules = mysqlTable(
 );
 export type DeliveryPricingRule = typeof deliveryPricingRules.$inferSelect;
 
+/**
+ * قواعدُ عمولة جهة التوصيل (Slice 8، ٢٨/٨/٢٦، هجرة 0280) — الغرض:
+ *
+ * كان تسعير عمولة المندوب/الشركة يجري باجتهاد التسوية اليدويّة (deliveryLedgerEntries) —
+ * لا قاعدةٌ صريحةٌ محكومة. الآن جدولٌ مصدرُ الحقيقة لكيفيّة حساب العمولة لكلّ جهة (أو
+ * افتراضيّاً بلا partyId ⇒ يُطبَّق على كلّ الجهات التي لا قاعدةَ خاصّةً لها).
+ *
+ * **الأنماط المدعومة الآن:**
+ *   • `FLAT_PER_DELIVERY`  — مبلغٌ ثابتٌ لكلّ إرساليّة (أشيع نموذج في العراق).
+ *   • `PERCENT_OF_FEE`     — نسبةٌ من أجرة التوصيل نفسها (إذا كانت الأجرة عالية).
+ *   • `PERCENT_OF_ORDER`   — نسبةٌ من قيمة الطلب المُحصَّل (نموذج «التاكسي التسليم»).
+ *   • `HYBRID`             — الأنسب: ثابتٌ + نسبة.
+ *
+ * ⚠️ **صفر أثرٍ ماليّ في هذه الشريحة** — هذا الأساسُ فقط. الاستهلاك (auto-posting +
+ * auto-settlement عند إغلاق الوردية) يأتي في شريحةٍ لاحقة بعد قرارٍ صريحٍ من المالك
+ * على نموذج العمولة الأنسب لعملياته.
+ */
+export const courierCommissionRules = mysqlTable(
+  "courierCommissionRules",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** الجهةُ المخصَّصة. `null` = قاعدةٌ افتراضيّةٌ لكلّ الجهات (يُطبَّق حين لا قاعدةَ خاصّة). */
+    partyId: bigint("partyId", { mode: "number" }).references(() => deliveryParties.id, {
+      onDelete: "cascade",
+    }),
+    ruleType: varchar("ruleType", { length: 30 }).notNull(),
+    /** المبلغُ الثابت لكلّ إرساليّة (يُقرأ بـFLAT_PER_DELIVERY و HYBRID). */
+    flatAmount: decimal("flatAmount", { precision: 15, scale: 2 }),
+    /** نسبة العمولة (0-100). يُقرأ بـPERCENT_OF_FEE و PERCENT_OF_ORDER و HYBRID. */
+    percentValue: decimal("percentValue", { precision: 5, scale: 2 }),
+    /** حدٌّ أدنى مضمون للمندوب (كلَّ إرساليّة). حِمايةً للمندوب في السلال الصغيرة. */
+    minGuarantee: decimal("minGuarantee", { precision: 15, scale: 2 }),
+    /** حدٌّ أعلى لكلّ إرساليّة. حِمايةً للمكتبة في الطلبات الكبيرة. */
+    maxCap: decimal("maxCap", { precision: 15, scale: 2 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    /** الفرع الذي تسري عليه القاعدة. `null` = كلّ الفروع. */
+    branchId: bigint("branchId", { mode: "number" }),
+    effectiveFrom: timestamp("effectiveFrom"),
+    effectiveTo: timestamp("effectiveTo"),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    partyIdx: index("idx_courier_commission_party").on(table.partyId, table.isActive),
+  }),
+);
+export type CourierCommissionRule = typeof courierCommissionRules.$inferSelect;
+
 /** إعدادات الضريبة (صفّ singleton واحد id=1): افتراضي تفعيل الضريبة على الفاتورة الجديدة +
  *  نسبتها + الرقم الضريبي للشركة (يُطبَع على الفاتورة). العراق VAT=0% افتراضياً — enabledByDefault
  *  يبقى false ما لم يُفعِّله المدير صراحةً. يُنشَأ الصفّ كسولاً (get-or-create) عند أول قراءة. */

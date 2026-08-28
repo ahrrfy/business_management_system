@@ -1842,6 +1842,13 @@
 			"when": 1788052331000,
 			"tag": "0279_delivery_pricing_rules",
 			"breakpoints": true
+		},
+		{
+			"idx": 280,
+			"version": "5",
+			"when": 1788052332000,
+			"tag": "0280_courier_commission_rules",
+			"breakpoints": true
 		}
 	]
 }
