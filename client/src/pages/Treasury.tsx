@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DataTable } from "@/components/data-table/DataTable";
 import { fmtDate, fmtDateTime } from "@/lib/date";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, sum } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { newClientRequestId } from "@/lib/countQueue";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -627,11 +627,7 @@ export default function Treasury() {
     [dashboard.data],
   );
   const totalTreasuryAll = useMemo(
-    () =>
-      dashboard.data?.treasuryBalances.reduce(
-        (s, r) => s + Number(r.balance),
-        0,
-      ) ?? 0,
+    () => sum(dashboard.data?.treasuryBalances.map((r) => r.balance) ?? []),
     [dashboard.data],
   );
 
@@ -892,8 +888,14 @@ export default function Treasury() {
         {!hideTreasury && (
           <TreasuryKpiCard
             icon={Vault}
-            label="النقد في الخزينة"
-            value={String(totalTreasuryAll)}
+            label={
+              branchId !== ""
+                ? `النقد في خزينة ${branches.data?.find((b) => b.id === Number(branchId))?.name ?? "الفرع المحدد"}`
+                : isAdmin
+                  ? "النقد في الخزائن — إجمالي الفروع"
+                  : "النقد في خزينة فرعك"
+            }
+            value={totalTreasuryAll}
             deltaPct={trends.data?.treasuryTotal.deltaPct ?? null}
             deltaLabel="مقابل قبل اليوم"
             accent="purple"
