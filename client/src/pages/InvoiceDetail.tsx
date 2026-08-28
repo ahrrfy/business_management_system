@@ -444,7 +444,9 @@ export default function InvoiceDetail() {
         ...invoiceToReceipt(data),
         digitalDetails: digitalPrint.data?.length ? digitalPrint.data : null,
       });
-      if (result.via === "server") {
+      if (!result.ok) {
+        notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+      } else if (result.via === "server") {
         notify.ok(
           "تمت إعادة الطباعة",
           `أُرسلت الفاتورة ${data.invoiceNumber} إلى طابعة الكاشير`,

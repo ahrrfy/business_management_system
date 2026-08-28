@@ -414,8 +414,10 @@ export default function PrintPOS() {
       setClientRequestId(crypto.randomUUID());
       const printed = await printReceipt(brandedReceipt(rec));
       setMessage({
-        kind: printed.via === "browser" ? "warn" : "ok",
-        text: printed.via === "server"
+        kind: !printed.ok ? "err" : printed.via === "browser" ? "warn" : "ok",
+        text: !printed.ok
+          ? `تمّ البيع، لكن حجب المتصفح نافذة الطباعة — اسمح بالنوافذ المنبثقة وأعد طباعة الفاتورة ${r.invoiceNumber}`
+          : printed.via === "server"
           ? `تمّ البيع والطباعة المباشرة — فاتورة ${r.invoiceNumber}`
           : printed.via === "thermal"
             ? `تمّ البيع والطباعة على الطابعة الحرارية — فاتورة ${r.invoiceNumber}`
@@ -587,7 +589,9 @@ export default function PrintPOS() {
       kind: "ok",
       text: `بيع دون اتصال — إيصال مؤقّت ${receiptNumber}. الرقم الرسميّ يصدر تلقائياً عند عودة الاتصال.`,
     });
-    void printReceipt(brandedReceipt(rec)).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
+    void printReceipt(brandedReceipt(rec)).then((printed) => {
+      if (!printed.ok) setMessage({ kind: "err", text: `حُفظ الإيصال المؤقت ${receiptNumber}، لكن حجب المتصفح نافذة الطباعة` });
+    }).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
     return true;
   }
 
@@ -834,7 +838,9 @@ export default function PrintPOS() {
         // = زرّ الدفع. سكانرُ/كيبورد الكاشير التالي يبتلعه الزرّ بلا أثر ⇒ إعادةٌ صريحة للبحث.
         setReceipt(null);
         setTimeout(() => searchRef.current?.focus(), 0);
-      }} onPrint={() => printReceipt(brandedReceipt(receipt))} />}
+      }} onPrint={() => printReceipt(brandedReceipt(receipt)).then((printed) => {
+        if (!printed.ok) setMessage({ kind: "err", text: "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة" });
+      }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّرت الطباعة" }))} />}
       {shifting && <ShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
       {creditPrompt && (
         <CreditApprovalDialog C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}

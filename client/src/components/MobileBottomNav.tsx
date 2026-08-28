@@ -16,7 +16,7 @@ import {
   Menu,
   type LucideIcon,
 } from "lucide-react";
-import type { PermissionMap } from "@shared/permissions";
+import { visibleStations, type PermissionMap } from "@shared/permissions";
 import { INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
 
 export interface BottomNavItem {
@@ -53,6 +53,8 @@ const TASKS_GATE = {
 
 const DELIVERY_GATE = {
   roles: ["admin", "manager", "accountant", "cashier", "auditor"],
+  module: "store",
+  level: "READ",
 } satisfies RoleGate;
 
 const MENU_ITEM: BottomNavItem = {
@@ -98,13 +100,13 @@ export function getMobileBottomNavItems(
   }
 
   if (role === "cashier") {
+    const canOpenPos = visibleStations(role, permsOverride).length > 0;
     const candidates: BottomNavItem[] = [
-      {
+      ...(canOpenPos ? [{
         href: "/pos",
         label: "نقطة البيع",
         icon: ShoppingCart,
-        gate: { module: "pos", level: "FULL" },
-      },
+      }] : []),
       {
         href: "/invoices",
         label: "فواتيري",

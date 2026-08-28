@@ -405,7 +405,9 @@ export default function Invoices() {
         return;
       }
       const result = await printReceipt(invoiceToReceipt(d));
-      if (result.via === "server") {
+      if (!result.ok) {
+        notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+      } else if (result.via === "server") {
         notify.ok("تمت إعادة الطباعة", `أُرسلت الفاتورة ${d.invoiceNumber} إلى طابعة الكاشير`);
       } else if (result.via === "thermal") {
         notify.ok("تمت إعادة الطباعة الحرارية", `أُرسلت الفاتورة ${d.invoiceNumber} إلى الطابعة المربوطة`);
@@ -775,7 +777,7 @@ export default function Invoices() {
 
   // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
   // الفِكرة: TSV لِلَّصق في Excel، ومُلَخَّص نَصّي مُكَثَّف لِواتساب الإدارة.
-  const TSV_HEADERS = useMemo(() => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "التوصيل", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "طريقة الدفع", "الحالة"], []);
+  const TSV_HEADERS = useMemo(() => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "القناة", "رقم أمر الشغل", "التوصيل", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "طريقة الدفع", "الحالة"], []);
   const selectedRows = useMemo(() => data.filter((r) => sel.isSelected(r.id)), [data, sel]);
   const selectedTsv = useMemo(() => {
     if (!selectedRows.length) return "";
@@ -824,6 +826,7 @@ export default function Invoices() {
     <div className="space-y-2.5">
       <ListToolbar
         title="المبيعات"
+        pageTitle
         count={total}
         loading={rows.isLoading}
         search={{

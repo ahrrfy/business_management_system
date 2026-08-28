@@ -41,7 +41,11 @@ describe("MobileBottomNav — عقود صلاحيات الأدوار", () => {
         workorders: "FULL",
         tasks: "NONE",
       }),
-    ).toEqual(["/invoices", "/work-orders", "/delivery", "/price-checker"]);
+    ).toEqual(["/pos", "/invoices", "/work-orders", "/delivery"]);
+  });
+
+  it("يخفي التوصيل عند المنع الصريح لوحدة المتجر", () => {
+    expect(mobileHrefs("cashier", { store: "NONE" })).not.toContain("/delivery");
   });
 
   it("لا يعرض الخزينة أو المطبعة للأدوار العامة التي لا تملك وحداتهما", () => {

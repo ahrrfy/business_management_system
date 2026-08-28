@@ -1,5 +1,4 @@
 import { Link } from "wouter";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { allocateLineTax } from "@/components/invoice";
 import { PurchaseIntegrityPanel } from "@/components/purchases/PurchaseIntegrityPanel";
@@ -232,6 +231,7 @@ export default function Purchases() {
         <CardHeader className="p-0">
           <ListToolbar
             title="المشتريات"
+            pageTitle
             count={total}
             loading={query.isLoading}
             search={{
@@ -254,8 +254,8 @@ export default function Purchases() {
                   <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} />
                 </FilterField>
                 <FilterField label="المورد">
-                  <AppSelect size="sm" value={f.supplierId} onValueChange={(supplierId) => setF({ supplierId })}>
-                    <option value="">— كل الموردين —</option>
+                  <AppSelect size="sm" value={f.supplierId || "ALL"} onValueChange={(supplierId) => setF({ supplierId: supplierId === "ALL" ? "" : supplierId })}>
+                    <option value="ALL">— كل الموردين —</option>
                     {(suppliers.data ?? []).map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
@@ -265,8 +265,8 @@ export default function Purchases() {
                   </AppSelect>
                 </FilterField>
                 <FilterField label="الحالة">
-                  <AppSelect size="sm" value={f.status} onValueChange={(status) => setF({ status })}>
-                    <option value="">— كل الحالات —</option>
+                  <AppSelect size="sm" value={f.status || "ALL"} onValueChange={(status) => setF({ status: status === "ALL" ? "" : status })}>
+                    <option value="ALL">— كل الحالات —</option>
                     {Object.entries(PO_STATUS).map(([k, v]) => (
                       <option key={k} value={k}>
                         {v}
@@ -276,8 +276,8 @@ export default function Purchases() {
                 </FilterField>
                 {isElevated && (
                   <FilterField label="الفرع">
-                    <AppSelect size="sm" value={f.branchId} onValueChange={(branchId) => setF({ branchId })}>
-                      <option value="">— كل الفروع —</option>
+                    <AppSelect size="sm" value={f.branchId || "ALL"} onValueChange={(branchId) => setF({ branchId: branchId === "ALL" ? "" : branchId })}>
+                      <option value="ALL">— كل الفروع —</option>
                       {(branches.data ?? []).map((b) => (
                         <option key={b.id} value={b.id}>
                           {b.name}

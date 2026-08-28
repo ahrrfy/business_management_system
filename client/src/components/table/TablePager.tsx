@@ -57,6 +57,7 @@ export function TablePager({
   const canPrev = page > 0;
 
   const emptyFirstPage = rowsOnPage === 0 && !canPrev;
+  const emptyLaterPage = rowsOnPage === 0 && canPrev;
   // لا نُكرّر رسالة الفراغ ما لم توجد حالة أو أدوات لازمة (مثل إعادة ضبط الأعمدة المخفية).
   if (emptyFirstPage && !actions && !status) return null;
 
@@ -68,6 +69,12 @@ export function TablePager({
       <span className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs text-muted-foreground [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="status" aria-live="polite">
         {emptyFirstPage ? (
           status ?? "لا بيانات"
+        ) : emptyLaterPage ? (
+          <>
+            لا بيانات في هذه الصفحة
+            {pages && pages > 1 ? <> · صفحة {fmtInt(Math.min(page + 1, pages))} من {fmtInt(pages)}</> : null}
+            {status ? <> · {status}</> : null}
+          </>
         ) : (
           <>
             عرض {fmtInt(first)}–{fmtInt(last)}

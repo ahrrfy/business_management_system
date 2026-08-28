@@ -9,7 +9,7 @@ const BAR_CLASS: Record<WorkspaceBarVariant, string> = {
   filters:
     "workspace-filter-bar min-h-[var(--workspace-toolbar-h)] rounded-md border border-border/70 bg-card py-0",
   status:
-    "workspace-status-bar sticky bottom-0 z-20 min-h-[var(--workspace-status-h)] border-t border-border/80 bg-card/95 py-0 shadow-[0_-1px_4px_rgb(15_23_42/0.06)] backdrop-blur-sm",
+    "workspace-status-bar sticky bottom-0 z-20 min-h-[var(--workspace-status-h)] border-t border-border/80 bg-card py-0 shadow-[0_-1px_4px_rgb(15_23_42/0.06)]",
 };
 
 export interface WorkspaceBarProps extends React.HTMLAttributes<HTMLDivElement> {

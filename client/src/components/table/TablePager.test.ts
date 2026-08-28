@@ -39,4 +39,15 @@ describe("TablePager", () => {
     expect(html).toContain("السابق");
     expect(html).toContain("التالي");
   });
+
+  it("لا يعرض نطاقاً أو رقم صفحة مستحيلاً بعد تقلص الإجمالي", () => {
+    const html = renderToStaticMarkup(
+      createElement(TablePager, { ...baseProps, page: 2, rowsOnPage: 0, total: 100 }),
+    );
+    expect(html).toContain("لا بيانات في هذه الصفحة");
+    expect(html).toContain("صفحة 2 من 2");
+    expect(html).not.toContain("صفحة 3 من 2");
+    expect(html).not.toContain("عرض 0–100");
+    expect(html).toContain("السابق");
+  });
 });

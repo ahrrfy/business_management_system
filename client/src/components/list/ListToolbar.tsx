@@ -44,6 +44,8 @@ type SecondaryAction = {
 
 export type ListToolbarProps<T> = {
   title?: React.ReactNode;
+  /** يرسم عنوان الشريط كعنوان الصفحة الدلالي حين يكون هو الرأس الوحيد للشاشة. */
+  pageTitle?: boolean;
   count?: number;
   loading?: boolean;
   search?: {
@@ -80,6 +82,7 @@ export type ListToolbarProps<T> = {
 
 export function ListToolbar<T>({
   title,
+  pageTitle = false,
   count,
   loading,
   search,
@@ -166,7 +169,7 @@ export function ListToolbar<T>({
     <div className="flex flex-col gap-2" data-operational-toolbar>
       <WorkspaceBar variant="command" label="أوامر القائمة" className="justify-between overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="flex min-w-0 shrink-0 items-center gap-2">
-          {title != null && <span className="text-base font-semibold">{title}</span>}
+          {title != null && (pageTitle ? <h1 className="text-base font-semibold">{title}</h1> : <span className="text-base font-semibold">{title}</span>)}
           {(count != null || loading) && <span className="shrink-0 text-xs text-muted-foreground">{loading ? "جارٍ التحميل…" : `${(count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} صفّ`}</span>}
         </div>
         <div className="list-toolbar-actions flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">
@@ -243,7 +246,7 @@ export function ListToolbar<T>({
       {hasFilterSection && (
         <WorkspaceBar variant="filters" label="البحث والفلاتر" className="list-toolbar-filter-panel overflow-hidden">
           {search && (
-            <div className={cn("relative min-w-40 flex-1", search.barcode && "min-w-64")}>
+            <div className={cn("relative min-w-0 flex-1 sm:min-w-40", search.barcode && "sm:min-w-64")}>
               <Search className={cn("pointer-events-none absolute top-1/2 size-4 -translate-y-1/2 text-muted-foreground", search.barcode ? "left-2" : "right-2")} />
               <Input
                 type="search"
@@ -258,8 +261,8 @@ export function ListToolbar<T>({
               {search.barcode && <BarcodeSearchCue />}
             </div>
           )}
-          {quickFilters && <div className="min-w-0 overflow-x-auto [&>div]:!flex-nowrap">{quickFilters}</div>}
-          {(filters || activeFilterCount > 0) && (
+          {quickFilters && <div className="hidden min-w-0 overflow-x-auto sm:block [&>div]:!flex-nowrap">{quickFilters}</div>}
+          {(filters || quickFilters || activeFilterCount > 0) && (
             <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
               <SheetTrigger asChild>
                 <Button variant="outline" size="sm" className="h-8 shrink-0">
@@ -273,7 +276,10 @@ export function ListToolbar<T>({
                   <SheetTitle>فلاتر القائمة</SheetTitle>
                   <SheetDescription>الفلاتر الثانوية محفوظة خارج مساحة البيانات وتظهر نتائجها فوراً.</SheetDescription>
                 </SheetHeader>
-                <div className="grid min-h-0 flex-1 grid-cols-1 content-start gap-3 overflow-y-auto p-4 sm:grid-cols-2">{filters}</div>
+                <div className="grid min-h-0 flex-1 grid-cols-1 content-start gap-3 overflow-y-auto p-4 sm:grid-cols-2">
+                  {quickFilters && <div className="sm:hidden">{quickFilters}</div>}
+                  {filters}
+                </div>
                 <SheetFooter className="flex-row border-t">
                   {showResetButton && (
                     <Button type="button" variant="ghost" onClick={onResetFilters}>
