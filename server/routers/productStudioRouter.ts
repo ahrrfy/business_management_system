@@ -140,7 +140,9 @@ export const productStudioRouter = router({
   transitionCampaign: productStudioManagerProcedure
     .input(z.object({
       campaignId,
-      status: z.enum(["ACTIVE", "COMPLETED", "CANCELLED"]),
+      // PAUSED (٢٨/٨) = «تجميد ذكيّ» يخفي الحملة عن مسار المسح، ويُبقي المهام المُسنَدة سلفاً
+      // قابلةً للإتمام. الحرسُ الفعليّ للانتقالات في `transitionStudioCampaign` نفسه.
+      status: z.enum(["ACTIVE", "PAUSED", "COMPLETED", "CANCELLED"]),
       startsAt: z.coerce.date().nullable().optional(),
       dueAt: z.coerce.date().nullable().optional(),
       reason: z.string().trim().max(500).optional(),

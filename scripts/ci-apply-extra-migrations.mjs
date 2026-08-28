@@ -159,6 +159,10 @@ const EXTRA_MIGRATIONS = [
   // فنُعيد التطبيق idempotently. الجدول الجانبيّ `productStudioCampaignCategories`
   // يُبنيه db:push من schema.ts؛ الهجرة تتحقّق من وجوده لا تُعيد إنشاءه.
   "drizzle/migrations/0269_studio_multi_category_and_any_policy.sql",
+  // ٢٨/٨/٢٦: PAUSED للحملة (تجميدٌ ذكيّ) — نفس منطق ٠٢٦٩: db:push لا يُوسّع enum
+  // موثوقاً على MySQL 8، فالقيمة الجديدة تلزم إعادةَ التطبيق يدوياً على قاعدة الاختبار
+  // كي يمرّ `check:migrations` وتقبل الخدمة الانتقالات الجديدة.
+  "drizzle/migrations/0277_add_paused_studio_campaign_status.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

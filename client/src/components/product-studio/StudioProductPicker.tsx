@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { createLatestBarcodeResolutionGate } from "@/lib/productStudio/barcodeResolution";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { Camera, Loader2, Search } from "lucide-react";
+import { Camera, Loader2, Package, Search } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 type StudioProduct = RouterOutputs["productStudio"]["products"]["rows"][number];
@@ -138,7 +138,16 @@ export function StudioProductPicker({
           إظهار المنتجات المعطّلة للمراجعة
         </label>
       )}
-      {selected && !query && <p className="text-xs text-muted-foreground">المنتج المختار: {selected.productName}</p>}
+      {selected && !query && (
+        <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>المنتج المختار: {selected.productName}</span>
+          {selected.isBundle && (
+            <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
+              <Package className="size-3" aria-hidden /> بكج
+            </span>
+          )}
+        </p>
+      )}
       {unknownBarcode && <p className="text-xs text-destructive" role="status">{unknownBarcode}</p>}
       {open && (
         <div id="studio-product-results" className="max-h-64 overflow-auto rounded-md border bg-popover shadow-sm" role="listbox">
@@ -162,6 +171,11 @@ export function StudioProductPicker({
                 >
                   <span className="font-medium">{row.productName}</span>
                   {(row.variantName || row.unitName) && <span className="text-muted-foreground"> — {[row.variantName, row.unitName].filter(Boolean).join(" / ")}</span>}
+                  {row.isBundle && (
+                    <span className="ms-2 inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400" title="بكج مركَّب من مكوّناتٍ متعدّدة">
+                      <Package className="size-3" aria-hidden /> بكج
+                    </span>
+                  )}
                   {!row.isActive && <span className="mr-2 text-xs text-destructive">معطّل</span>}
                 </button>
               ))}

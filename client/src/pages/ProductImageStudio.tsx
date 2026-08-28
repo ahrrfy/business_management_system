@@ -25,7 +25,8 @@ import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { getOfflineProfile, saveOfflineProfile, setOfflinePin, type OfflineProfile } from "@/lib/offline/pinLock";
 import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, Wallet, XCircle } from "lucide-react";
+import { STUDIO_CAMPAIGN_STATUS_AR, STUDIO_CAMPAIGN_STATUS_VARIANT, STUDIO_CAMPAIGN_EDITABLE, type StudioCampaignStatus } from "@shared/studioCampaignStatus";
+import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, PauseCircle, PlayCircle, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, Wallet, XCircle } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
@@ -1090,10 +1091,18 @@ export default function ProductImageStudio() {
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {(myCampaigns.data ?? []).map((camp) => (
-              <div key={camp.campaignId} className="min-w-0 rounded-md border p-3">
+              <div key={camp.campaignId} className={`min-w-0 rounded-md border p-3 ${camp.status === "PAUSED" ? "bg-[var(--sem-warn)]/5 border-[var(--sem-warn)]/30" : ""}`}>
                 <div className="flex items-start justify-between gap-2">
                   <p className="min-w-0 truncate text-sm font-medium">{camp.name}</p>
-                  {camp.requiredImages > 1 && <Badge variant="outline">{camp.requiredImages} صور</Badge>}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {/* الحملة المُوقَفة تُعرَض للمصوّر (٢٨/٨) لأنّ مهامه المُسنَدة عليها تبقى قابلةً
+                        للإتمام — لكن شارةً صريحة تُنذره أنّ منتجاً جديداً بالمسح لن يُنشئ عملاً
+                        تحتها حتى يستأنف المدير. الاختفاء الكامل كان يُوهم أنّ مهامه اختفت. */}
+                    {camp.status === "PAUSED" && (
+                      <Badge variant="warning" className="text-[10px]">موقوفة مؤقّتاً</Badge>
+                    )}
+                    {camp.requiredImages > 1 && <Badge variant="outline">{camp.requiredImages} صور</Badge>}
+                  </div>
                 </div>
                 <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
                   <div className="rounded bg-muted/30 p-2">
@@ -1119,43 +1128,48 @@ export default function ProductImageStudio() {
         </Card>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {/* بلاغ المالك (٢٨/٨) «حجم البطاقات كبيرة»: خُفّضت الحشوة من p-4 إلى p-3 والرقم
+          من text-2xl إلى text-xl، والفواصل من gap-3 إلى gap-2 — تكثيفٌ بصريّ يُبقي كل
+          البيانات مرئيّةً بلا أن تسيطر KPI على طول الشاشة. الشبكة صارت xl:grid-cols-4
+          مع تخفيض العرض الأفقي الأقصى لكل خانة. */}
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-3">
             {/* العنوان يتبع النطاق: أرقامُ المنفّذ مهامُه هو، لا حال الفرع. */}
             <div className="text-xs text-muted-foreground">{dashboard.data?.scopeKind === "PERSONAL" ? "مهامي النشطة" : "المهام النشطة"}</div>
-            <div className="mt-1 text-2xl font-bold">{dashboard.data?.active ?? 0}</div>
+            <div className="mt-0.5 text-xl font-bold">{dashboard.data?.active ?? 0}</div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-3">
             <div className="text-xs text-muted-foreground">{dashboard.data?.scopeKind === "PERSONAL" ? "قيد عملي" : "قيد العمل"}</div>
             {/* المسنَد لمنفّذ فقط. جمع ASSIGNED كاملةً كان يَعُدّ طابور الحملة عملاً جارياً. */}
-            <div className="mt-1 text-2xl font-bold">{dashboard.data?.inProgress ?? 0}</div>
+            <div className="mt-0.5 text-xl font-bold">{dashboard.data?.inProgress ?? 0}</div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-3">
             <div className="text-xs text-muted-foreground">بانتظار المراجعة</div>
-            <div className="mt-1 text-2xl font-bold">{counts?.PENDING_REVIEW ?? 0}</div>
+            <div className="mt-0.5 text-xl font-bold">{counts?.PENDING_REVIEW ?? 0}</div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-3">
             <div className="text-xs text-muted-foreground">المعتمدة</div>
-            <div className="mt-1 text-2xl font-bold">{counts?.APPROVED ?? 0}</div>
+            <div className="mt-0.5 text-xl font-bold">{counts?.APPROVED ?? 0}</div>
           </CardContent>
         </Card>
       </div>
 
       {/* مؤشّرات المدير الثانوية داخل بطاقةٍ واحدة عوض ٦ بطاقاتٍ عائمة — كانت
-          تُفرّق البصرَ وتتنافس مع مؤشّرات النطاق الأربعة أعلاها. */}
+          تُفرّق البصرَ وتتنافس مع مؤشّرات النطاق الأربعة أعلاها. أرقامٌ مضغوطة (text-base)
+          لأنّها مؤشراتُ تشخيصٍ ثانوية لا رأس الشاشة. */}
       {dashboard.data?.canManage && (
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground">صحّة الطابور الإدارية</CardTitle>
+          <CardHeader className="pb-1 pt-3">
+            <CardTitle className="text-xs font-medium text-muted-foreground">صحّة الطابور الإدارية</CardTitle>
           </CardHeader>
-          <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <CardContent className="grid gap-2 pb-3 sm:grid-cols-3 lg:grid-cols-6">
             {[
               ["غير المسندة", dashboard.data.unassigned ?? "—"],
               ["المتأخرة", dashboard.data.overdue],
@@ -1165,9 +1179,9 @@ export default function ProductImageStudio() {
               ["المنجزة اليوم", dashboard.data.completedToday],
               [`وسيط زمن الدورة (${dashboard.data.medianCycleWindowDays} يوماً)`, dashboard.data.medianCycleMinutes == null ? "—" : `${dashboard.data.medianCycleMinutes} د`],
             ].map(([label, value]) => (
-              <div key={String(label)} className="rounded-md border bg-muted/20 p-3">
-                <div className="text-xs text-muted-foreground">{label}</div>
-                <div className="mt-1 text-xl font-bold">{value}</div>
+              <div key={String(label)} className="rounded-md border bg-muted/20 p-2">
+                <div className="truncate text-[11px] text-muted-foreground">{label}</div>
+                <div className="mt-0.5 text-base font-bold">{value}</div>
               </div>
             ))}
           </CardContent>
@@ -1495,7 +1509,13 @@ export default function ProductImageStudio() {
             {selectedCampaign && (
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2 rounded-md border p-3">
-                  <span className="text-sm font-medium">الحالة: {selectedCampaign.status}</span>
+                  {/* الحالة تُعرَض من القاموس الموحَّد لا خاماً — قبلَ كان يظهر «ACTIVE»
+                      باللاتينية للمدير العربيّ، ومع إضافة PAUSED صار تعريفُ ٥ حالات
+                      داخل شاشة الاستوديو مرشَّحاً للانحراف. الشارة تحمل اللون الدلاليّ. */}
+                  <span className="text-sm font-medium">الحالة:</span>
+                  <Badge variant={STUDIO_CAMPAIGN_STATUS_VARIANT[selectedCampaign.status as StudioCampaignStatus] ?? "neutral"}>
+                    {STUDIO_CAMPAIGN_STATUS_AR[selectedCampaign.status as StudioCampaignStatus] ?? selectedCampaign.status}
+                  </Badge>
                   {selectedCampaign.status === "DRAFT" && (
                     <Button
                       className="min-h-11"
@@ -1507,19 +1527,42 @@ export default function ProductImageStudio() {
                         dueAt: campaignDueAt ? new Date(campaignDueAt) : selectedCampaign.dueAt,
                       })}
                     >
-                      تفعيل الحملة
+                      <PlayCircle aria-hidden className="size-4" /> تفعيل الحملة
                     </Button>
                   )}
+                  {/* إيقافٌ مؤقّت (٢٨/٨، قرار المالك) — الحملة تختفي من مسار المصوّر لكنّ
+                      المهام المُسنَدة سلفاً تبقى قابلةً للإتمام. الاستئناف زرٌّ واحد. */}
                   {selectedCampaign.status === "ACTIVE" && (
                     <Button
+                      variant="outline"
+                      className="min-h-11"
+                      disabled={offline || transitionCampaign.isPending}
+                      onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "PAUSED" })}
+                      title="تجميد ذكيّ: تختفي عن مسار المصوّر لكن المهام المُسنَدة تبقى قابلةً للإتمام"
+                    >
+                      <PauseCircle aria-hidden className="size-4" /> إيقاف مؤقّت
+                    </Button>
+                  )}
+                  {selectedCampaign.status === "PAUSED" && (
+                    <Button
+                      className="min-h-11"
+                      disabled={offline || transitionCampaign.isPending}
+                      onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "ACTIVE" })}
+                    >
+                      <PlayCircle aria-hidden className="size-4" /> استئناف الحملة
+                    </Button>
+                  )}
+                  {(selectedCampaign.status === "ACTIVE" || selectedCampaign.status === "PAUSED") && (
+                    <Button
+                      variant="outline"
                       className="min-h-11"
                       disabled={offline || transitionCampaign.isPending}
                       onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "COMPLETED" })}
                     >
-                      إكمال الحملة
+                      <CheckCircle2 aria-hidden className="size-4" /> إكمال الحملة
                     </Button>
                   )}
-                  {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                  {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE" || selectedCampaign.status === "PAUSED") && (
                     <Button
                       variant="outline"
                       className="min-h-11"
@@ -1527,14 +1570,14 @@ export default function ProductImageStudio() {
                       title={backlogCancelReason.trim().length < 5 ? "اكتب سبب الإلغاء في الحقل أدناه أولاً" : undefined}
                       onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "CANCELLED", reason: backlogCancelReason })}
                     >
-                      إلغاء الحملة ومهام طابورها
+                      <XCircle aria-hidden className="size-4" /> إلغاء الحملة ومهام طابورها
                     </Button>
                   )}
                   {/* تعديلُ بيانات الحملة الجارية: اسم، عدد صور مطلوبة، مواعيد. مسموحٌ على
                       DRAFT وACTIVE فقط — المُغلقة (COMPLETED/CANCELLED) لا تُعدَّل. رفعُ عدد
                       الصور يُعيد منتجاتٍ كانت مكتملةً إلى الطابور — سلوكٌ مطلوب حين يكتشف
                       المدير أنّ منتجاتٍ تحتاج أكثر من صورة بعد بدء العمل. */}
-                  {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                  {STUDIO_CAMPAIGN_EDITABLE.has(selectedCampaign.status as StudioCampaignStatus) && (
                     <Button
                       variant="outline"
                       className="min-h-11"
@@ -1550,7 +1593,7 @@ export default function ProductImageStudio() {
                     </Button>
                   )}
                 </div>
-                {campaignEditOpen && (selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                {campaignEditOpen && STUDIO_CAMPAIGN_EDITABLE.has(selectedCampaign.status as StudioCampaignStatus) && (
                   <div className="grid gap-3 rounded-md border bg-muted/20 p-3 md:grid-cols-2">
                     <div className="space-y-1.5">
                       <Label htmlFor="studio-edit-campaign-name">اسم الحملة</Label>
@@ -1618,7 +1661,7 @@ export default function ProductImageStudio() {
                   <option value="ALL">كل المهام دون حملة محددة</option>
                   {(campaigns.data ?? []).map((campaign) => (
                     <option key={Number(campaign.id)} value={Number(campaign.id)}>
-                      {campaign.name} · {campaign.status === "ACTIVE" ? "نشطة" : campaign.status}
+                      {campaign.name} · {STUDIO_CAMPAIGN_STATUS_AR[campaign.status as StudioCampaignStatus] ?? campaign.status}
                     </option>
                   ))}
                 </AppSelect>
@@ -1684,16 +1727,16 @@ export default function ProductImageStudio() {
                   <span className="text-xs text-muted-foreground">التوجيه: {campaignBoard.data.requiredImages} صورة لكل منتج</span>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <div className="rounded-md border bg-[var(--sem-pos-bg,transparent)] p-3">
+                  <div className="rounded-md border bg-[var(--sem-pos-bg,transparent)] p-2">
                     <div className="text-xs text-muted-foreground">منتجات اكتملت صورها</div>
-                    <div className="mt-1 text-2xl font-bold">
+                    <div className="mt-0.5 text-lg font-bold">
                       {campaignBoard.data.done}
-                      <span className="text-sm font-normal text-muted-foreground"> / {campaignBoard.data.totalProducts}</span>
+                      <span className="text-xs font-normal text-muted-foreground"> / {campaignBoard.data.totalProducts}</span>
                     </div>
                   </div>
-                  <div className="rounded-md border p-3">
+                  <div className="rounded-md border p-2">
                     <div className="text-xs text-muted-foreground">منتجات متبقّية</div>
-                    <div className="mt-1 text-2xl font-bold">{campaignBoard.data.remaining}</div>
+                    <div className="mt-0.5 text-lg font-bold">{campaignBoard.data.remaining}</div>
                   </div>
                 </div>
                 <div className="text-xs text-muted-foreground">المهام الجارية (وحدةُ مهمّة لا منتج)</div>
@@ -1795,9 +1838,9 @@ export default function ProductImageStudio() {
                   ["وسيط الدورة", campaignAnalytics.data.medianCycleMinutes == null ? "—" : `${campaignAnalytics.data.medianCycleMinutes} د`],
                   ["مرفوضة", campaignAnalytics.data.rejected],
                 ].map(([label, value]) => (
-                  <div key={String(label)} className="rounded-md border p-3">
+                  <div key={String(label)} className="rounded-md border p-2">
                     <div className="text-xs text-muted-foreground">{label}</div>
-                    <div className="mt-1 text-lg font-bold">{value}</div>
+                    <div className="mt-0.5 text-base font-bold">{value}</div>
                   </div>
                 ))}
               </div>

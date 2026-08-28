@@ -1828,6 +1828,13 @@
 			"when": 1788052328000,
 			"tag": "0276_payment_mode",
 			"breakpoints": true
+		},
+		{
+			"idx": 277,
+			"version": "5",
+			"when": 1788052329000,
+			"tag": "0277_add_paused_studio_campaign_status",
+			"breakpoints": true
 		}
 	]
 }

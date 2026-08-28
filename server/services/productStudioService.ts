@@ -12,6 +12,7 @@ import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } fro
 import { assertImageStoreOperationalConfiguration, contentHash, getImageStore, isImageStoreOperational, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, objectKeyFor, shortHash, studioObjectPrefix } from "../lib/imageStore";
 import { hashPassword } from "../auth/password";
 import { logger } from "../logger";
+import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { isMultiTenantModeActive } from "../db";
 import { resolveCompanyById } from "../tenancy/registry";
@@ -517,6 +518,9 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
       id: products.id,
       name: products.name,
       isActive: products.isActive,
+      // البكج يعبر مسار الاستوديو كمنتج عاديّ، فكانت الشاشة تعرضه بلا تمييز — لا شارةٌ ولا فلتر.
+      // تمريرُ `isBundle` هنا يفتح شارةً في المنتقي وحماية «قد لا تُطابق مكوّناته» في المراجعة.
+      isBundle: products.isBundle,
       rank,
     })
     .from(products)
@@ -524,7 +528,7 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
     .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
     .leftJoin(productUnitBarcodes, eq(productUnitBarcodes.productUnitId, productUnits.id))
     .where(baseWhere)
-    .groupBy(products.id, products.name, products.isActive)
+    .groupBy(products.id, products.name, products.isActive, products.isBundle)
     .having(afterCursor)
     .orderBy(asc(rank), asc(products.name), asc(products.id))
     .limit(STUDIO_PRODUCT_PAGE_SIZE + 1);
@@ -572,6 +576,7 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
       productId: Number(product.id),
       productName: product.name,
       isActive: Boolean(product.isActive),
+      isBundle: Boolean(product.isBundle),
       variantId: selected?.context.variantId == null ? null : Number(selected.context.variantId),
       variantName: selected?.context.variantName ?? null,
       unitId: selected?.context.unitId == null ? null : Number(selected.context.unitId),
@@ -627,28 +632,54 @@ async function claimFreshCampaignTask(
   const variantId = resolved.variantId == null ? null : Number(resolved.variantId);
   // اسمُ العرض للمصوّر يجمع المنتج والبديل (إن وُجد) — الرسائل والأثر يستعملانه بلا تغييرِ عقد.
   const displayName = resolved.variantName ? `${resolved.productName} — ${resolved.variantName}` : resolved.productName;
-  const campaigns = await tx
-    .select({
-      id: productStudioCampaigns.id,
-      name: productStudioCampaigns.name,
-      branchId: productStudioCampaigns.branchId,
-      dueAt: productStudioCampaigns.dueAt,
-      scopeKind: productStudioCampaigns.scopeKind,
-      scopeCategoryId: productStudioCampaigns.scopeCategoryId,
-      requiredImages: productStudioCampaigns.requiredImages,
-      imagesPolicy: productStudioCampaigns.imagesPolicy,
-    })
-    .from(productStudioCampaigns)
-    .innerJoin(productStudioCampaignAssignees, and(eq(productStudioCampaignAssignees.campaignId, productStudioCampaigns.id), eq(productStudioCampaignAssignees.userId, actor.userId)))
-    .where(eq(productStudioCampaigns.status, "ACTIVE"))
-    // أولويّةٌ معلَنة عند تداخل حملتين على المنتج نفسه: الأقرب موعداً ثمّ الأقدم إنشاءً.
-    // بلا ترتيبٍ كان الاختيار يتبع ما تُرجعه MySQL أوّلاً — فيُنسَب العمل لحملةٍ عشوائية.
-    .orderBy(asc(productStudioCampaigns.dueAt), asc(productStudioCampaigns.id));
+  const managerActor = isManager(actor);
+  // مدير النظام/المالك يستطيع بدء تصوير أيّ منتج داخل نطاق حملةٍ نشطة **بلا** اشتراط عضويّة
+  // `productStudioCampaignAssignees` — إنشاء الحملة لا يُدرجه فيها تلقائياً، وطلبُ إضافة نفسه
+  // قبل أوّل مسحٍ يعارض دوره التشغيليّ. شروطُ الفرع والنطاق تبقى مطبَّقةً تحت (الحلقة أدناه)،
+  // فالاستثناء يخصّ العضويّة وحدها لا التخويلَ ككلّ. بلا هذا كان الأدمن الذي أنشأ الحملة
+  // يقف عاجزاً أمام أوّل باركود يمسحه ويصله «راجع المدير لإضافتك» — وهو المدير نفسه.
+  const baseCampaignSelect = {
+    id: productStudioCampaigns.id,
+    name: productStudioCampaigns.name,
+    branchId: productStudioCampaigns.branchId,
+    dueAt: productStudioCampaigns.dueAt,
+    scopeKind: productStudioCampaigns.scopeKind,
+    scopeCategoryId: productStudioCampaigns.scopeCategoryId,
+    requiredImages: productStudioCampaigns.requiredImages,
+    imagesPolicy: productStudioCampaigns.imagesPolicy,
+  };
+  const campaigns = managerActor
+    ? await tx
+        .select(baseCampaignSelect)
+        .from(productStudioCampaigns)
+        .where(eq(productStudioCampaigns.status, "ACTIVE"))
+        // أولويّةٌ معلَنة عند تداخل حملتين على المنتج نفسه: الأقرب موعداً ثمّ الأقدم إنشاءً.
+        // بلا ترتيبٍ كان الاختيار يتبع ما تُرجعه MySQL أوّلاً — فيُنسَب العمل لحملةٍ عشوائية.
+        .orderBy(asc(productStudioCampaigns.dueAt), asc(productStudioCampaigns.id))
+    : await tx
+        .select(baseCampaignSelect)
+        .from(productStudioCampaigns)
+        .innerJoin(productStudioCampaignAssignees, and(eq(productStudioCampaignAssignees.campaignId, productStudioCampaigns.id), eq(productStudioCampaignAssignees.userId, actor.userId)))
+        .where(eq(productStudioCampaigns.status, "ACTIVE"))
+        .orderBy(asc(productStudioCampaigns.dueAt), asc(productStudioCampaigns.id));
   if (campaigns.length === 0) {
+    // مديرٌ بلا أيّ حملة نشطة: رسالةٌ تدعوه لبدء واحدة بدل «راجع المدير».
+    if (managerActor) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "لا توجد حملات تصوير نشطة حالياً — أنشئ حملةً لبدء التصوير" });
+    }
+    // تمييزٌ بين «لا حملات أصلاً» و«حملات موجودة لكنك لست عضواً» لغير المدير — قبلَ كان
+    // كلاهما يخرج بنفس «راجع المدير»، فيراجعه في حملةٍ غير موجودة أصلاً.
+    const [activeCount] = await tx
+      .select({ n: sql<number>`count(*)` })
+      .from(productStudioCampaigns)
+      .where(eq(productStudioCampaigns.status, "ACTIVE"));
+    if (Number(activeCount?.n ?? 0) === 0) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "لا توجد حملات تصوير نشطة حالياً — راجع المدير لبدء حملة" });
+    }
     // FORBIDDEN لا NOT_FOUND: عدم العضويّة قرارُ صلاحيةٍ (لا يخصّه الطابور) — والاختبار
     // السابق كان يعتمد على هذا الرمز حين كان المسار السابق (backlog-based lookup) يرفض
     // المصوّرَ غير العضو قبل الفحص. الحفاظ على FORBIDDEN يُبقي عقد الرمز متسقاً.
-    throw new TRPCError({ code: "FORBIDDEN", message: "لست ضمن مصوّري أيّ حملةٍ نشطة — راجع المدير لإضافتك" });
+    throw new TRPCError({ code: "FORBIDDEN", message: "لست ضمن مصوّري أيّ حملةٍ نشطة — راجع المدير لإضافتك للحملة" });
   }
   let branchMismatchCount = 0;
   let outOfScopeCount = 0;
@@ -878,6 +909,7 @@ export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: s
       unitId: activeMatch.unitId,
       unitName: activeMatch.unitName,
       isActive: activeMatch.isActive,
+      isBundle: activeMatch.isBundle,
       matchKind: activeMatch.matchKind,
     };
   }
@@ -1136,11 +1168,19 @@ export async function transitionStudioCampaign(
       throw new TRPCError({ code: "NOT_FOUND", message: "حملة الاستوديو غير موجودة" });
     }
     assertCampaignAccess(actor, campaign);
+    // مصفوفة الانتقالات المشروعة بعد إضافة PAUSED (٢٨/٨، تجميد ذكيّ):
+    //   DRAFT     → ACTIVE | CANCELLED
+    //   ACTIVE    → PAUSED | COMPLETED | CANCELLED
+    //   PAUSED    → ACTIVE | COMPLETED | CANCELLED   (الاستئناف هو PAUSED→ACTIVE)
+    //   COMPLETED / CANCELLED نهائيّتان
+    // إبقاء الحرسِ صريحاً على شكل جدولٍ يمنع «انزلاقاً» غير مقصود كإعادة تفعيلٍ من CANCELLED.
     const legal =
       (campaign.status === "DRAFT" &&
         (input.status === "ACTIVE" || input.status === "CANCELLED")) ||
       (campaign.status === "ACTIVE" &&
-        (input.status === "COMPLETED" || input.status === "CANCELLED"));
+        (input.status === "PAUSED" || input.status === "COMPLETED" || input.status === "CANCELLED")) ||
+      (campaign.status === "PAUSED" &&
+        (input.status === "ACTIVE" || input.status === "COMPLETED" || input.status === "CANCELLED"));
     if (!legal) {
       throw new TRPCError({ code: "CONFLICT", message: "انتقال حالة الحملة غير مسموح" });
     }
@@ -1293,7 +1333,11 @@ export async function listMyStudioCampaigns(actor: ProductStudioActor) {
         eq(productStudioCampaignAssignees.userId, userId),
       ),
     )
-    .where(and(eq(productStudioCampaigns.status, "ACTIVE"), branchFilter))
+    // PAUSED (٢٨/٨، تجميد ذكيّ) تُشمَل: المصوّر يفقد بابَ الإنشاء الجديد بالمسح، لكنّ
+    // المهام المُسنَدة إليه سلفاً في حملةٍ مُوقَفة لا تختفي عن لوحته — يستطيع إتمامها.
+    // الشاشة تميّز الحالتين بشارةٍ (`status` مُعادٌ لكل صفّ)، فالمصوّر يعرف أنّه لن
+    // يستطيع سحب منتجٍ جديد تحت هذه الحملة حتى يستأنفها المدير.
+    .where(and(inArray(productStudioCampaigns.status, ["ACTIVE", "PAUSED"]), branchFilter))
     .orderBy(asc(productStudioCampaigns.dueAt), asc(productStudioCampaigns.id));
 
   // إجماليّ الحملة (منتجات نُفّذت / متبقّية) يُشتقّ خارج الاستعلام بنفس صيغة لوحة
@@ -1320,7 +1364,9 @@ export async function listMyStudioCampaigns(actor: ProductStudioActor) {
         campaignId: Number(row.id),
         name: row.name,
         branchId: row.branchId == null ? null : Number(row.branchId),
-        status: row.status as "DRAFT" | "ACTIVE" | "COMPLETED" | "CANCELLED",
+        // PAUSED (٢٨/٨) مضافة إلى القاموس — ينكسر الاستنتاج للواجهة إن نسينا توسيع هذا
+        // التمثيل. المصدر الوحيد للسلسلة `shared/studioCampaignStatus.ts`.
+        status: row.status as import("@shared/studioCampaignStatus").StudioCampaignStatus,
         startsAt: row.startsAt,
         dueAt: row.dueAt,
         requiredImages: required,
@@ -3647,6 +3693,100 @@ export async function bindStudioProcessingCandidate(
   });
 }
 
+/**
+ * تحويلُ خطأ إرسال المرشّح **الخام** إلى `TRPCError` مصنَّف برسالةٍ عربيةٍ موجَّهة.
+ *
+ * قبل هذا: أيّ فشلٍ لم يُلفّ في `TRPCError` مسمّى (خطأ مخزن R2/S3 مؤقّت، انقطاع شبكة،
+ * قفل مؤجَّل …) يصعد كـ`INTERNAL_SERVER_ERROR` عامّ، فيصل المصوّرَ «حدث خطأ غير متوقّع
+ * — رمز المتابعة …» بلا دلالة يفعل بها شيئاً (لا يعلم أنّه شبكة أو تعارض قفل أو مخزن).
+ * الحرصُ هنا **لا يبتلع** خطأً — يعيد رميه بعقدٍ يعرفه الوسيط ورسالةٍ ينفَع بها المستخدم.
+ */
+function classifyStudioSubmitError(err: unknown, taskId: number, userId: number): unknown {
+  // `TRPCError` سبق أن صنَّفتها الخدمة (BAD_REQUEST/CONFLICT/PRECONDITION_FAILED) — مرورٌ كما هي.
+  if (err instanceof TRPCError) return err;
+  const dbCode = mysqlCodeFrom(err);
+  if (dbCode === "ER_LOCK_WAIT_TIMEOUT" || dbCode === "ER_LOCK_DEADLOCK") {
+    logger.warn({ err, taskId, userId, dbCode }, "productStudio.submit.lock_conflict");
+    return new TRPCError({
+      code: "CONFLICT",
+      message: "تعارضٌ مؤقّتٌ أثناء الحفظ — أعد الإرسال بعد لحظات",
+      cause: err,
+    });
+  }
+  if (dbCode === "ER_DUP_ENTRY") {
+    logger.warn({ err, taskId, userId }, "productStudio.submit.duplicate");
+    return new TRPCError({
+      code: "CONFLICT",
+      message: "أُرسل هذا المرشّح للمراجعة سلفاً — حدِّث الشاشة وأعد المحاولة",
+      cause: err,
+    });
+  }
+  if (dbCode) {
+    logger.error({ err, taskId, userId, dbCode }, "productStudio.submit.db_error");
+    return new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `تعذّر حفظ المرشّح في قاعدة البيانات (${dbCode})`,
+      cause: err,
+    });
+  }
+  // أخطاء طبقة النقل والمخزن (R2/S3 عبر AWS SDK): تُعرَّف باسمٍ محفوظٍ أو `$metadata.httpStatusCode`
+  // أو رمز شبكة Node — الفشلُ هنا لا يعني عطلاً في المنطق، ولا يجب أن يبدو كذلك للمصوّر.
+  const meta = err as {
+    name?: string;
+    code?: string;
+    message?: string;
+    $metadata?: { httpStatusCode?: number };
+  };
+  const name = typeof meta?.name === "string" ? meta.name : "";
+  const nodeCode = typeof meta?.code === "string" ? meta.code : "";
+  const httpStatus = meta?.$metadata?.httpStatusCode;
+  const isNetwork =
+    ["NetworkingError", "TimeoutError", "AbortError", "RequestTimeout"].includes(name) ||
+    ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE"].includes(nodeCode);
+  if (isNetwork) {
+    logger.warn({ err, taskId, userId, name, nodeCode }, "productStudio.submit.network");
+    return new TRPCError({
+      code: "TIMEOUT",
+      message: "تعذّر الاتّصال بمخزن الصور — تحقّق من الشبكة وأعد المحاولة",
+      cause: err,
+    });
+  }
+  const isAccessDenied =
+    ["AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch"].includes(name) ||
+    httpStatus === 401 ||
+    httpStatus === 403;
+  if (isAccessDenied) {
+    logger.error({ err, taskId, userId, name, httpStatus }, "productStudio.submit.storage_auth");
+    return new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "إعدادات مخزن الصور غير صحيحة — أبلغ الإدارة",
+      cause: err,
+    });
+  }
+  const isStorageMissing = ["NoSuchBucket", "PermanentRedirect"].includes(name) || httpStatus === 404;
+  if (isStorageMissing) {
+    logger.error({ err, taskId, userId, name, httpStatus }, "productStudio.submit.storage_missing");
+    return new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "مخزن الصور غير مهيّأ للاستخدام — أبلغ الإدارة",
+      cause: err,
+    });
+  }
+  if (typeof httpStatus === "number" && httpStatus >= 500) {
+    logger.warn({ err, taskId, userId, httpStatus }, "productStudio.submit.storage_5xx");
+    return new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `مخزن الصور يستجيب بخطأ (${httpStatus}) — حاول مجدّداً بعد قليل`,
+      cause: err,
+    });
+  }
+  // غير مصنَّف: يصعد كـINTERNAL_SERVER_ERROR والرسالةُ عامّة، فيلحق به «رمز المتابعة»
+  // من `errorFormatter`. سجلٌّ بنيويٌّ هنا يمنح فريق الدعم مسمًّى ينتظره في السجلّ حين يصل
+  // الرقم من الحقل، فلا يكون العثور عليه بحثاً أعمى في ملفّ تشغيل.
+  logger.error({ err, taskId, userId }, "productStudio.submit.unclassified");
+  return err;
+}
+
 export async function submitStudioCandidate(
   actor: ProductStudioActor,
   input: {
@@ -3815,11 +3955,14 @@ export async function submitStudioCandidate(
     // مكانه العامل الدوريّ المحروس بمُشغّلٍ واحد في العنقود.
     return result;
   } catch (error) {
+    // إفلاتُ الحصر أوّلاً كي لا تبقى المهمّة «قيد رفع» حتى انتهاء الإيجار (٢ دقيقة)
+    // بينما الفشلُ لحظيّ. ثمّ يُصنَّف الخطأُ الخام إلى `TRPCError` برسالةٍ عربيةٍ موجَّهة —
+    // بدل «حدث خطأ غير متوقّع + رمز متابعة» على كلّ فشلٍ لا صلة له بحالة المهمة.
     await requireDb()
       .update(productImageJobs)
       .set({ uploadLeaseToken: null, uploadLeaseExpiresAt: null })
       .where(and(eq(productImageJobs.id, input.taskId), eq(productImageJobs.uploadLeaseToken, token)));
-    throw error;
+    throw classifyStudioSubmitError(error, input.taskId, actor.userId);
   }
 }
 
