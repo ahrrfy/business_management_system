@@ -56,14 +56,60 @@ const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
   ...STUDIO_CAMPAIGN_STATUS_AR,
 };
 
+/**
+ * وصفٌ لطيفٌ لنطاق الحملة — أوجزُ للعرض من `scopeKind` الخام.
+ * `CATEGORIES` (متعدّد) مضافةٌ منذ هجرة 0269 مع `CATEGORY` (واحد) للتوافق.
+ */
+const SCOPE_LABEL: Record<string, string> = {
+  ALL: "كل الكتالوج",
+  CATEGORY: "فئة واحدة",
+  CATEGORIES: "عدّة فئات",
+  PRODUCTS: "منتجات مختارة",
+};
+
+/**
+ * حالةُ ميقاتٍ صغيرة تُصنَّف نصّياً لتلوين العرض ولا تدخل في المنطق:
+ *   • overdue  — تجاوز الآن، وحالةُ الحملة نشطة/موقوفة.
+ *   • soon     — أقلّ من ٧ أيام. تنبيهٌ ناعمٌ للمدير.
+ *   • ok       — آنٍ ومتّسع.
+ * الحملة المكتملة/الملغاة لا تُعرَض هنا محتاجةً تصنيفاً — تظلّ رمادية.
+ */
+function classifyDueAt(dueAt: unknown, status: StudioCampaignStatus): "overdue" | "soon" | "ok" | "none" {
+  if (dueAt == null) return "none";
+  if (status === "COMPLETED" || status === "CANCELLED") return "none";
+  const d = new Date(dueAt as string | Date).getTime();
+  if (!Number.isFinite(d)) return "none";
+  const diffMs = d - Date.now();
+  const day = 86_400_000;
+  if (diffMs < 0) return "overdue";
+  if (diffMs < 7 * day) return "soon";
+  return "ok";
+}
+
 export default function StudioCampaignsManager() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
+  const [branchFilter, setBranchFilter] = useState<"ALL" | number>("ALL");
   const [search, setSearch] = useState("");
   const [cancelReason, setCancelReason] = useState<Record<number, string>>({});
   const [openReasonFor, setOpenReasonFor] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
   const campaigns = trpc.productStudio.campaigns.useQuery(undefined, { staleTime: 30_000 });
+  // قائمة الفروع النشطة — تُستعمل لعرض اسم الفرع بدل «#N» ولفلترٍ يُعرَض حين يعبر
+  // المستخدم الفروعَ (له حملاتٌ من فرعَين+). للمستخدم أحاديّ الفرع القائمة تكفيها
+  // القيمة الوحيدة ⇒ لا فائدةَ في إظهار الفلتر.
+  const branches = trpc.branches.list.useQuery(undefined, { staleTime: 5 * 60_000 });
+  const branchNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const b of branches.data ?? []) m.set(Number(b.id), b.name);
+    return m;
+  }, [branches.data]);
+  const distinctCampaignBranches = useMemo(() => {
+    const s = new Set<number>();
+    for (const c of campaigns.data ?? []) s.add(Number(c.branchId));
+    return Array.from(s);
+  }, [campaigns.data]);
+  const showBranchFilter = distinctCampaignBranches.length > 1;
   const transition = trpc.productStudio.transitionCampaign.useMutation({
     onSuccess: async (result) => {
       notify.ok(
@@ -81,10 +127,11 @@ export default function StudioCampaignsManager() {
     const q = search.trim().toLowerCase();
     return rows.filter((c) => {
       if (statusFilter !== "ALL" && c.status !== statusFilter) return false;
+      if (branchFilter !== "ALL" && Number(c.branchId) !== branchFilter) return false;
       if (q && !c.name.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [campaigns.data, statusFilter, search]);
+  }, [campaigns.data, statusFilter, branchFilter, search]);
 
   // إحصاءٌ سريع لكل حالة — يُبرز حجم الحملات النشطة/المُوقَفة في الشريط العلويّ بلا فتح جدول.
   const statusCounts = useMemo(() => {
@@ -144,7 +191,7 @@ export default function StudioCampaignsManager() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid gap-2 md:grid-cols-2">
+          <div className={`grid gap-2 ${showBranchFilter ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
             <div className="space-y-1.5">
               <Label htmlFor="campaigns-search">بحث باسم الحملة</Label>
               <div className="relative">
@@ -160,6 +207,23 @@ export default function StudioCampaignsManager() {
                 ))}
               </AppSelect>
             </div>
+            {/* فلترُ الفرع يظهر لمن يعبر الفروع فعلاً — قائمةٌ فيها فرعان+ من الحملات
+                القائمة. للمستخدم أحاديّ الفرع يبقى الحقلُ مخفياً بلا ضجيج. */}
+            {showBranchFilter && (
+              <div className="space-y-1.5">
+                <Label htmlFor="campaigns-branch">الفرع</Label>
+                <AppSelect
+                  id="campaigns-branch"
+                  value={branchFilter === "ALL" ? "ALL" : String(branchFilter)}
+                  onValueChange={(v) => setBranchFilter(v === "ALL" ? "ALL" : Number(v))}
+                >
+                  <option value="ALL">كل الفروع</option>
+                  {distinctCampaignBranches.map((bid) => (
+                    <option key={bid} value={String(bid)}>{branchNameById.get(bid) ?? `فرع #${bid}`}</option>
+                  ))}
+                </AppSelect>
+              </div>
+            )}
           </div>
 
           {campaigns.isLoading && <p className="py-6 text-center text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
@@ -178,6 +242,14 @@ export default function StudioCampaignsManager() {
                 const isMutating = transition.isPending && transition.variables?.campaignId === Number(c.id);
                 const reason = cancelReason[Number(c.id)] ?? "";
                 const reasonOpen = openReasonFor === Number(c.id);
+                const branchName = branchNameById.get(Number(c.branchId)) ?? `فرع #${c.branchId}`;
+                const dueClass = classifyDueAt(c.dueAt, status);
+                const dueColor =
+                  dueClass === "overdue"
+                    ? "text-[var(--sem-neg)] font-semibold"
+                    : dueClass === "soon"
+                      ? "text-[var(--sem-warn)]"
+                      : "text-muted-foreground";
                 return (
                   <li key={Number(c.id)} className="rounded-md border p-3">
                     <div className="flex flex-wrap items-start justify-between gap-2">
@@ -188,10 +260,19 @@ export default function StudioCampaignsManager() {
                           {c.requiredImages > 1 && (
                             <Badge variant="outline" className="text-[10px]">{c.requiredImages} صور مطلوبة</Badge>
                           )}
+                          {dueClass === "overdue" && <Badge variant="danger" className="text-[10px]">متأخّرة</Badge>}
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                          فرع #{c.branchId} · نطاق: {c.scopeKind === "ALL" ? "كل الكتالوج" : c.scopeKind === "CATEGORY" ? "فئة واحدة" : c.scopeKind === "CATEGORIES" ? "عدّة فئات" : "منتجات مختارة"}
-                          {c.dueAt ? ` · ينتهي ${new Date(c.dueAt as unknown as string | Date).toLocaleDateString("ar-IQ")}` : ""}
+                        <p className="flex flex-wrap items-center gap-1 text-xs">
+                          <span className="text-muted-foreground">
+                            {branchName} · نطاق: {SCOPE_LABEL[c.scopeKind as string] ?? c.scopeKind}
+                          </span>
+                          {c.dueAt && (
+                            <span className={dueColor}>
+                              {" · "}
+                              {dueClass === "overdue" ? "انتهت" : dueClass === "soon" ? "تنتهي" : "ينتهي"}{" "}
+                              {new Date(c.dueAt as unknown as string | Date).toLocaleDateString("ar-IQ-u-nu-latn")}
+                            </span>
+                          )}
                         </p>
                       </div>
 
