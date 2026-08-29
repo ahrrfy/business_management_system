@@ -59,7 +59,7 @@ export type ProductChannelContentInput = z.infer<typeof productChannelContentSch
 const evidenceKey = z
   .string()
   .regex(
-    /^(category|productType|brand|modelName|attributes\.[a-zA-Z0-9_.-]+|variants\.[0-9]+\.(color|size)|saleUnits\.[0-9]+\.(name|conversionFactor)|verifiedClaims\.[0-9]+|audience)$/,
+    /^(category|productType|brand|modelName|attributes\.[a-zA-Z0-9_.-]+|variants\.[0-9]+\.(color|size)|saleUnits\.[0-9]+\.(name|conversionFactor)|verifiedClaims\.[0-9]+|audience|image\.[0-9]+)$/,
   )
   .max(120);
 
@@ -96,6 +96,36 @@ export const aiProductDraftSchema = z
   .strict();
 
 export type AiProductDraft = z.infer<typeof aiProductDraftSchema>;
+
+// م٣ — عقد الاستخراج «من صورة»: مساعد إنشاء منتجٍ جديد. الموظّف يرفع صورة، والنظام
+// يقترح الحقول الأساسية (اسم، نوع، ماركة، وصف قصير). لا يُنشئ منتجاً — يُطبَّق على النموذج
+// فقط بعد مراجعة الموظّف. النتيجة قصيرة، بلا claims/evidenceKeys، لأنّها مدخل تعبئةٍ لا مخرج
+// نشر — التحقّق التسويقي/المرجعيّ يجري لاحقاً عبر generateProductContentDraft.
+export const extractedProductFactsSchema = z
+  .object({
+    suggestedName: z.string().trim().min(1).max(160).nullable(),
+    productType: z.string().trim().min(1).max(80).nullable(),
+    brand: z.string().trim().min(1).max(80).nullable(),
+    modelHint: z.string().trim().min(1).max(80).nullable(),
+    description: z.string().trim().max(500),
+    keywords: z.array(z.string().trim().min(1).max(60)).max(10),
+    confidence: z.enum(["low", "medium", "high"]),
+    // ما اقترحه النموذج ثمّ حجبه — يُعرَض للموظّف كمعرفةٍ نافعة (مثلاً «رأيت رقماً غير واضح»)
+    // ليعوّضه يدوياً إن أراد. لا يُطبَّق على النموذج تلقائياً.
+    unsupportedGuesses: z
+      .array(
+        z
+          .object({
+            text: z.string().trim().min(1).max(200),
+            reason: z.string().trim().min(1).max(200),
+          })
+          .strict(),
+      )
+      .max(10),
+  })
+  .strict();
+
+export type ExtractedProductFacts = z.infer<typeof extractedProductFactsSchema>;
 
 export type DraftValidation = {
   blockers: string[];
@@ -227,18 +257,24 @@ export function validateAiProductDraft(
   const warnings = [...draft.warnings];
 
   draft.claims.forEach((claim, index) => {
-    const evidenceValues: string[] = [];
+    const textEvidenceValues: string[] = [];
     claim.evidenceKeys.forEach((key) => {
+      // مفاتيح image.N: البروتوكول البصريّ في البرومبت يعنونها (image.0 = الصورة الأولى…) ومراجعة
+      // المدير تحكمها. لا factMap لها ولا تطابق نصّيٍّ ممكن — لكنّها **دليلٌ مقبول** ما دام الادّعاء
+      // بصريّاً بحتاً. إن اختلط بصريّ ونصّيّ، يبقى فحص التطابق نافذاً على النصّيّ فقط.
+      if (/^image\.\d+$/.test(key)) return;
       const evidence = factMap.get(key);
-      if (!evidence)
+      if (!evidence) {
         blockers.push(
           `الادعاء رقم ${index + 1} يستخدم دليلاً غير موجود: ${key}`,
         );
-      else evidenceValues.push(evidence);
+        return;
+      }
+      textEvidenceValues.push(evidence);
     });
     if (
-      evidenceValues.length > 0 &&
-      !claimIsGrounded(claim.text, evidenceValues)
+      textEvidenceValues.length > 0 &&
+      !claimIsGrounded(claim.text, textEvidenceValues)
     ) {
       blockers.push(
         `الادعاء رقم ${index + 1} لا يتطابق نصياً مع القيم التي استند إليها`,
@@ -293,6 +329,22 @@ export function validateAiProductDraft(
     warnings: Array.from(new Set(warnings)),
     ok: blockers.length === 0,
   };
+}
+
+/**
+ * يُطبِّع مُدخَل «معامل التحويل» ليطابق regex السكيمة على الخادم:
+ * أرقام عربية/فارسية ⇒ لاتينية · فاصلة عشرية ⇒ نقطة · إسقاط نقطةٍ زائدة/أصفارٍ بادئة.
+ * السبب: النموذج يقبل «١٢» أو «1,5» من الموظّف، والخادم يرفضهما ⇒ BAD_REQUEST غامض.
+ */
+export function normalizeConversionFactor(value: string | null | undefined): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "1";
+  const latin = normalizeDigits(raw).replace(/[،٫]/g, ".").replace(/,/g, ".");
+  const match = latin.match(/^0*(\d+)(?:\.(\d*?)0*)?\.?$/);
+  if (!match) return raw; // نُبقيه كما هو ⇒ يُحمَّر الحقل خادمياً برسالةٍ واضحة
+  const intPart = match[1] || "0";
+  const frac = match[2] ?? "";
+  return frac.length > 0 ? `${intPart}.${frac}` : intPart;
 }
 
 export function canonicalJson(value: unknown): string {

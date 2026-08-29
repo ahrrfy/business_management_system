@@ -65,6 +65,7 @@ export function AiProductContentAssistant({
   const [validation, setValidation] = useState<DraftValidation | null>(null);
   const [needsValidation, setNeedsValidation] = useState(false);
   const [cacheHit, setCacheHit] = useState(false);
+  const [imagesUsed, setImagesUsed] = useState(0);
   const [savedDraftId, setSavedDraftId] = useState<number | null>(null);
   const [sourceFingerprint, setSourceFingerprint] = useState<string | null>(
     null,
@@ -101,6 +102,7 @@ export function AiProductContentAssistant({
       setNeedsValidation(false);
       setSourceFingerprint(factsFingerprint);
       setCacheHit(result.cacheHit);
+      setImagesUsed(result.imagesUsed ?? 0);
       setSavedDraftId(null);
       setEdited({});
       if (productId && result.validation.ok) {
@@ -134,7 +136,9 @@ export function AiProductContentAssistant({
   }, [draft, edited]);
 
   function generateDraft(forceRefresh = false) {
-    generate.mutate({ facts, forceRefresh });
+    // productId موجود ⇒ الخدمة تحمّل صور المنتج المعتمَدة وتفعّل مسار Gemini vision تلقائياً.
+    // في وضع الإضافة (productId غائب) يبقى المسار نصّياً — الصور تُرفَع بعد أوّل حفظ.
+    generate.mutate({ facts, forceRefresh, productId });
   }
 
   const validate = trpc.catalog.validateContentDraft.useMutation();
@@ -249,6 +253,14 @@ export function AiProductContentAssistant({
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge variant="outline">مسودة غير منشورة</Badge>
               {cacheHit && <Badge variant="secondary">من Cache</Badge>}
+              {imagesUsed > 0 && (
+                <Badge
+                  variant="secondary"
+                  className="border-violet-400/40 bg-violet-100/60 text-violet-800 dark:bg-violet-900/30 dark:text-violet-200"
+                >
+                  تحليل بصريّ: {imagesUsed} صورة معتمَدة
+                </Badge>
+              )}
               {savedDraftId && (
                 <Badge variant="secondary">مسودة محفوظة #{savedDraftId}</Badge>
               )}

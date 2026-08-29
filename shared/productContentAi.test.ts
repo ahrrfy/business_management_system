@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   aiProductDraftSchema,
+  extractedProductFactsSchema,
+  normalizeConversionFactor,
   productFactsSchema,
   validateAiProductDraft,
 } from "./productContentAi";
@@ -104,5 +106,167 @@ describe("productContentAi", () => {
     const result = validateAiProductDraft(draft, facts);
     expect(result.ok).toBe(false);
     expect(result.blockers.some((item) => item.includes("أفضل"))).toBe(true);
+  });
+});
+
+describe("normalizeConversionFactor", () => {
+  const cases: Array<[string | null | undefined, string]> = [
+    ["12", "12"],
+    ["1.5", "1.5"],
+    ["1,5", "1.5"],
+    ["1٫5", "1.5"],
+    ["١٢", "12"],
+    ["٠١٢", "12"],
+    ["12.", "12"],
+    ["12.0", "12"],
+    ["12.50", "12.5"],
+    ["  12  ", "12"],
+    ["", "1"],
+    [null, "1"],
+    [undefined, "1"],
+  ];
+  cases.forEach(([input, expected]) => {
+    it(`normalizes ${JSON.stringify(input)} → ${JSON.stringify(expected)}`, () => {
+      const normalized = normalizeConversionFactor(input);
+      expect(normalized).toBe(expected);
+      // مرور السكيمة على القيمة المُطبَّعة (الاختبار الحاسم — لأنّ الخادم يرفض ما يخالف الregex).
+      expect(() =>
+        productFactsSchema.parse({
+          finalProductName: "منتج",
+          saleUnits: [{ name: "درزن", conversionFactor: normalized }],
+        }),
+      ).not.toThrow();
+    });
+  });
+
+  it("leaves malformed input unchanged (server-side rejection surfaces exact reason)", () => {
+    // مدخل غير مفهوم يظلّ كما هو، فيرفضه الخادم برسالةٍ عن الحقل ⇒ أوضح من تحويلٍ صامتٍ خاطئ.
+    expect(normalizeConversionFactor("abc")).toBe("abc");
+    expect(normalizeConversionFactor("1/2")).toBe("1/2");
+  });
+});
+
+describe("vision evidence (image.N keys)", () => {
+  it("accepts image.N in evidenceKeys through the schema", () => {
+    expect(() =>
+      aiProductDraftSchema.parse({
+        ...validDraft,
+        claims: [
+          { text: "بحجم A5", evidenceKeys: ["modelName"] },
+          // ادّعاء بصريّ خالص — بلا دليلٍ نصّيّ في الحقائق.
+          { text: "لون أزرق ظاهر", evidenceKeys: ["image.0"] },
+          // ادّعاء مختلط — دليلٌ نصّيّ + بصريّ.
+          { text: "دفتر ملاحظات أزرق", evidenceKeys: ["productType", "image.0"] },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects malformed image keys (image.abc, image., image, images.0)", () => {
+    for (const bad of ["image.abc", "image.", "image", "images.0", "image.-1"]) {
+      expect(() =>
+        aiProductDraftSchema.parse({
+          ...validDraft,
+          claims: [{ text: "أزرق", evidenceKeys: [bad] }],
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("image-only claim is accepted without textual grounding", () => {
+    // «لون أزرق» لا يظهر في أيّ حقلٍ نصّيّ (facts.variants[0].color = 'أزرق' حاضر لكن كوّناً مستقلاً).
+    // الادّعاء المستند إلى image.0 يجب ألّا يخضع لفحص «التطابق النصّيّ» — البروتوكول البصريّ في
+    // البرومبت + مراجعة المدير هما الحارسان.
+    const draft = aiProductDraftSchema.parse({
+      ...validDraft,
+      claims: [
+        { text: "بحجم A5", evidenceKeys: ["modelName"] },
+        { text: "شعار روتا ظاهر أعلى الغلاف", evidenceKeys: ["image.0"] },
+      ],
+    });
+    const result = validateAiProductDraft(draft, facts);
+    expect(result.ok).toBe(true);
+    // لا حاصر عن الادّعاء البصريّ (رقم ٢).
+    expect(result.blockers.some((b) => b.includes("رقم 2"))).toBe(false);
+  });
+
+  it("extractedProductFactsSchema accepts a well-formed extraction result", () => {
+    const parsed = extractedProductFactsSchema.parse({
+      suggestedName: "دفتر ملاحظات روتا سلك A5",
+      productType: "دفتر ملاحظات",
+      brand: "روتا",
+      modelHint: "A5",
+      description: "دفتر مجلَّد بسلك، غلاف أزرق داكن، حجم متوسط.",
+      keywords: ["دفتر", "سلك", "A5"],
+      confidence: "high",
+      unsupportedGuesses: [
+        { text: "100 ورقة", reason: "لا رقم ظاهرٌ على الغلاف" },
+      ],
+    });
+    expect(parsed.brand).toBe("روتا");
+    expect(parsed.unsupportedGuesses).toHaveLength(1);
+  });
+
+  it("extractedProductFactsSchema accepts nulls for all optional facts", () => {
+    // صورةٌ غامضة ⇒ النموذج يُعيد كلّ حقلٍ null ووصفاً فارغاً، والسكيمة تقبله.
+    // الواجهة تعرض «— لم يتبيّن —» وزرّ «طبّق» لا يُغيّر شيئاً على النموذج.
+    const parsed = extractedProductFactsSchema.parse({
+      suggestedName: null,
+      productType: null,
+      brand: null,
+      modelHint: null,
+      description: "",
+      keywords: [],
+      confidence: "low",
+      unsupportedGuesses: [],
+    });
+    expect(parsed.description).toBe("");
+    expect(parsed.suggestedName).toBeNull();
+  });
+
+  it("extractedProductFactsSchema rejects extra properties and out-of-range enums", () => {
+    // strict() ⇒ حقلٌ غير معلَنٍ يفشل، وهو ما يمنع النموذجَ من تهريب سعرٍ/كميّةٍ ابتلعتهما الواجهة.
+    expect(() =>
+      extractedProductFactsSchema.parse({
+        suggestedName: null,
+        productType: null,
+        brand: null,
+        modelHint: null,
+        description: "",
+        keywords: [],
+        confidence: "high",
+        unsupportedGuesses: [],
+        price: "5000", // ⛔
+      }),
+    ).toThrow();
+    expect(() =>
+      extractedProductFactsSchema.parse({
+        suggestedName: null,
+        productType: null,
+        brand: null,
+        modelHint: null,
+        description: "",
+        keywords: [],
+        confidence: "أعلى", // ⛔ خارج enum
+        unsupportedGuesses: [],
+      }),
+    ).toThrow();
+  });
+
+  it("mixed claim still requires textual evidence to match", () => {
+    // ادّعاء يحمل دليلاً نصّياً غير مطابقٍ + دليلاً بصريّاً ⇒ يفشل على النصّيّ (لا يُغني عنه البصريّ).
+    const draft = aiProductDraftSchema.parse({
+      ...validDraft,
+      claims: [
+        { text: "بحجم A5", evidenceKeys: ["modelName"] },
+        // «سلك حديد» ليس في modelName (الذي يحمل «سلك A5») + دليلٌ بصريّ ⇒ يفشل على النصّيّ.
+        { text: "سلك حديد", evidenceKeys: ["modelName", "image.0"] },
+      ],
+    });
+    const result = validateAiProductDraft(draft, facts);
+    expect(result.ok).toBe(false);
+    expect(
+      result.blockers.some((b) => b.includes("رقم 2") && b.includes("لا يتطابق")),
+    ).toBe(true);
   });
 });

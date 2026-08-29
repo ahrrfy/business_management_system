@@ -1,17 +1,32 @@
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
+import { and, asc, desc, eq } from "drizzle-orm";
+import {
+  categories,
+  productImages,
+  productUnits,
+  productVariants,
+  products,
+} from "../../drizzle/schema";
+import { saveProductContentDraft } from "./productContentGovernanceService";
 import { getAiStudioRuntime } from "./imageStudioSettingsService";
 import {
   ImageStudioGuardError,
   imageStudioGuardErrorMessageAr,
   runGuardedImageStudioCall,
 } from "./imageStudioUsageGuard";
+import { requireDb } from "./tx";
+import { getImageStore } from "../lib/imageStore";
+import { decodeDataUrl } from "../imageRoute";
+import { logger } from "../logger";
 import {
   aiProductDraftSchema,
   canonicalJson,
+  extractedProductFactsSchema,
   productFactsSchema,
   validateAiProductDraft,
   type AiProductDraft,
+  type ExtractedProductFacts,
   type ProductFacts,
 } from "../../shared/productContentAi";
 
@@ -20,10 +35,15 @@ const GEMINI_API_BASE = (
   "https://generativelanguage.googleapis.com/v1beta"
 ).replace(/\/+$/, "");
 const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
-const PROMPT_VERSION = "product-content-ar-v2";
+const TEXT_PROMPT_VERSION = "product-content-ar-v2";
+const VISION_PROMPT_VERSION = "product-content-ar-v3-vision";
 const MAX_RESPONSE_BYTES = 512 * 1024;
 const TIMEOUT_MS = 25_000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+// ٤ صور كسقفٍ عمليّ: 4 × 900KB = 3.6MB (بعيدٌ عن حدّ Gemini ~20MB) + انتباه بصريّ مركّز
+// بلا ازدحام يذوّب الاختلاف بين الصور. الأولوية لـisPrimary ثمّ sortOrder.
+const MAX_VISION_IMAGES = 4;
+const MAX_IMAGE_BYTES = 900_000;
 
 type TextFetch = typeof fetch;
 
@@ -59,6 +79,30 @@ finalProductName وinputDescription هما مدخل الصياغة الذي كت
 إذا كانت البيانات غير كافية، أعد نصاً محافظاً وأضف السبب إلى warnings أو unsupportedClaims.
 استخدم عربية واضحة مناسبة للعراق بلا تشكيل ولا كشيدة.
 أعد JSON فقط مطابقاً للمخطط المطلوب.`;
+
+// بروتوكول الأدلّة البصريّة — يُلحَق بالبرومبت فقط عند إرسال صور معتمَدة مع الطلب. الصور
+// تُعنوَن image.0, image.1, ... بترتيب ورودها في parts. الادّعاء البصريّ يجب أن يحمل مفتاح
+// image.N في evidenceKeys ليُميَّز عن الادّعاء النصّيّ المدعوم بحقلٍ مُنظَّم.
+const VISUAL_PROTOCOL = `PRODUCT_IMAGES:
+الصور المرفقة معتمَدة (مرت مراجعة الاستوديو) وترقيمها image.0, image.1, image.2, ... حسب ترتيب ورودها قبل النصّ.
+
+يُسمح استنتاجه بصرياً — وثّق مصدره بمفتاح image.N في evidenceKeys:
+- اللون الظاهر (أخضر، أزرق داكن، ذهبيّ…)
+- النوع العام المرئيّ (كتاب، دفتر ملاحظات، قلم، علبة أقلام…)
+- شعار أو نصّ ماركة مقروء (اكتب النصّ كما هو ظاهر بلا ترجمة)
+- عدد قطعٍ ظاهرة بوضوحٍ داخل تغليفٍ شفّاف
+- الشكل العام (مستطيل، دائريّ، مجلَّد بسلك، أسطوانيّ…)
+- وجود تغليفٍ من عدمه، ولون التغليف
+
+يُحظَر استنتاجه بصرياً — أضفه إلى unsupportedClaims إن ورَد بلا حقلٍ مقابل في VERIFIED_PRODUCT_FACTS:
+- المادّة (ورق/بلاستيك/معدن…) ما لم يكن مطبوعاً واضحاً على العلبة
+- عدد الصفحات، السماكة، الأبعاد بالسنتيمترات، الوزن
+- بلد الصنع، الشهادات، الضمان، تاريخ إنتاج
+- سعرٌ أو تخفيض
+- كلّ ادّعاءٍ عن الجودة/المتانة/الأمان
+
+إن تعارضت الصورة مع حقلٍ مُنظَّم فالأولوية للحقل المُنظَّم.
+لا تخترع أرقاماً مصدرها الصورة (عدد الصفحات، قياس بالمليمترات، وزن…) — الأرقام في المخرَج يجب أن تأتي من حقلٍ مُنظَّم فقط.`;
 
 const OUTPUT_JSON_SCHEMA = {
   type: "object",
@@ -186,18 +230,98 @@ export type ProductContentDraftResult = {
   model: string;
   promptVersion: string;
   cacheHit: boolean;
+  // عدد الصور المعتمَدة التي دخلت البرومبت البصريّ فعلاً (0 ⇒ توليدٌ نصّيّ خالص).
+  // الواجهة تعرضه لتُبيّن للموظّف/المدير أنّ الاقتراح استفاد من الصور.
+  imagesUsed: number;
 };
+
+type VisualCacheContext = { imageHashes: string[] } | null;
 
 export function productContentCacheKey(
   facts: ProductFacts,
   model: string,
+  visual: VisualCacheContext = null,
 ): string {
+  // نسخة البرومبت تختلف بحسب وجود الصور ⇒ لا تصادم كاش بين المسارَين حتى مع نفس الحقائق.
+  const promptVersion = visual ? VISION_PROMPT_VERSION : TEXT_PROMPT_VERSION;
   return createHash("sha256")
     .update(
-      canonicalJson({ facts, model, promptVersion: PROMPT_VERSION }),
+      canonicalJson({ facts, model, promptVersion, visual }),
       "utf8",
     )
     .digest("hex");
+}
+
+type VisionImage = {
+  index: number;
+  mime: string;
+  data: string; // base64
+  contentHash: string;
+};
+
+/**
+ * يحمّل حتى ٤ صور معتمَدة (`reviewStatus='APPROVED'`) لمنتجٍ ما بترتيب: `isPrimary` ثمّ `sortOrder`.
+ * الصورة من R2 عبر `imageStore.getBuffer` (كائنٌ معنون-بالمحتوى)، أو من `url` كـdata-URL موروث.
+ * فشل صورةٍ منفردة يُتجاهَل بصمتٍ (سنستعمل الباقي) — لا يُعطَّل التوليد من أجل صورةٍ واحدة تالفة.
+ * ⛔ لا نُثِق بمعرّفات صورٍ يمرّرها العميل: الخدمة تختار بنفسها من DB بشرط الاعتماد.
+ */
+async function loadProductImagesForVision(
+  productId: number,
+): Promise<VisionImage[]> {
+  const rows = await requireDb()
+    .select({
+      id: productImages.id,
+      mime: productImages.mime,
+      bytes: productImages.bytes,
+      objectKey: productImages.objectKey,
+      contentHash: productImages.contentHash,
+      url: productImages.url,
+    })
+    .from(productImages)
+    .where(
+      and(
+        eq(productImages.productId, productId),
+        eq(productImages.reviewStatus, "APPROVED"),
+      ),
+    )
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder))
+    .limit(MAX_VISION_IMAGES);
+
+  const out: VisionImage[] = [];
+  const store = getImageStore();
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx];
+    try {
+      let bytes: Buffer | null = null;
+      let mime = row.mime ?? "";
+      if (row.objectKey && row.contentHash) {
+        // R2: نُقيّد القراءة بـMAX_IMAGE_BYTES منعاً لتضخّم غير متوقّع (row.bytes قد يكذب في بيانات
+        // موروثة؛ الحدّ العلويّ الصلب هنا حاسم قبل إرسال البايتات إلى Gemini).
+        const expected = Math.min(row.bytes ?? MAX_IMAGE_BYTES, MAX_IMAGE_BYTES);
+        bytes = await store.getBuffer(row.objectKey, expected);
+      } else if (row.url) {
+        // موروث: data-URL في العمود نصّاً. decodeDataUrl يحقّق الصيغة وقائمة mime البيضاء.
+        const decoded = decodeDataUrl(row.url);
+        if (decoded && decoded.bytes.length <= MAX_IMAGE_BYTES) {
+          bytes = decoded.bytes;
+          mime = decoded.mime;
+        }
+      }
+      if (!bytes || bytes.length === 0 || !mime) continue;
+      out.push({
+        index: idx,
+        mime,
+        data: bytes.toString("base64"),
+        contentHash: row.contentHash ?? createHash("sha256").update(bytes).digest("hex"),
+      });
+    } catch (err) {
+      logger.warn(
+        { err, productId, imageId: row.id },
+        "vision: skipping image (load failed)",
+      );
+    }
+  }
+  return out;
 }
 
 export async function generateProductContentDraft(
@@ -207,6 +331,11 @@ export async function generateProductContentDraft(
     timeoutMs?: number;
     forceRefresh?: boolean;
     actor?: { userId: number; branchId?: number | null };
+    // productId اختياريّ: إن وُجد وله صور معتمَدة، ينفّذ المسار البصريّ (Gemini vision).
+    // إن غاب أو لم يجد صوراً، يظلّ المسار نصّياً بحتاً — لا فشل صامت، لا تعطيل ميزة قائمة.
+    productId?: number;
+    // لحقن صورٍ في الاختبار دون الحاجة إلى R2/DB فعليَّين.
+    imagesOverride?: VisionImage[];
   } = {},
 ): Promise<ProductContentDraftResult> {
   const facts = productFactsSchema.parse(rawFacts);
@@ -238,7 +367,22 @@ export async function generateProductContentDraft(
   const model = runtime.model.includes("image")
     ? DEFAULT_TEXT_MODEL
     : runtime.model;
-  const cacheKey = productContentCacheKey(facts, model);
+
+  // نحمّل الصور المعتمَدة **قبل** حساب مفتاح الكاش ⇒ مسارٌ نصّيّ ومسارٌ بصريّ لهما مفتاحان
+  // مختلفان، وإعادة رفع صورةٍ (contentHash جديد) تُبطل الكاش تلقائياً.
+  // ⛔ لا نطلب الصور من العميل: الخدمة تختار بنفسها بشرط APPROVED.
+  const images: VisionImage[] =
+    opts.imagesOverride ??
+    (opts.productId && Number.isSafeInteger(opts.productId) && opts.productId > 0
+      ? await loadProductImagesForVision(opts.productId)
+      : []);
+  const visualContext: VisualCacheContext =
+    images.length > 0 ? { imageHashes: images.map((i) => i.contentHash).sort() } : null;
+  const promptVersionUsed = visualContext
+    ? VISION_PROMPT_VERSION
+    : TEXT_PROMPT_VERSION;
+  const cacheKey = productContentCacheKey(facts, model, visualContext);
+
   pruneDraftCache();
   if (!opts.forceRefresh) {
     const cached = draftCache.get(cacheKey);
@@ -258,15 +402,20 @@ export async function generateProductContentDraft(
       opts.timeoutMs ?? TIMEOUT_MS,
     );
 
+    // ترتيب parts متعمَّد: الصور أوّلاً (يزيد انتباه النموذج للبصريّ) والنصّ آخراً بحيث ترد
+    // التعليمات النهائية مباشرةً قبل التوليد. البروتوكول البصريّ يُلحَق فقط عند وجود صور.
+    const imageParts = images.map((img) => ({
+      inlineData: { mimeType: img.mime, data: img.data },
+    }));
+    const textPrompt = visualContext
+      ? `${SYSTEM_PROMPT}\n\n${VISUAL_PROTOCOL}\n\nVERIFIED_PRODUCT_FACTS:\n${JSON.stringify(facts)}\n\nأعد مسودة المنتج الآن مستنداً إلى الحقائق المُنظَّمة والصور المرفقة.`
+      : `${SYSTEM_PROMPT}\n\nVERIFIED_PRODUCT_FACTS:\n${JSON.stringify(facts)}\n\nأعد مسودة المنتج الآن.`;
+
     const payload = {
       contents: [
         {
           role: "user",
-          parts: [
-            {
-              text: `${SYSTEM_PROMPT}\n\nVERIFIED_PRODUCT_FACTS:\n${JSON.stringify(facts)}\n\nأعد مسودة المنتج الآن.`,
-            },
-          ],
+          parts: [...imageParts, { text: textPrompt }],
         },
       ],
       generationConfig: {
@@ -359,8 +508,9 @@ export async function generateProductContentDraft(
         validation,
         cacheKey,
         model,
-        promptVersion: PROMPT_VERSION,
+        promptVersion: promptVersionUsed,
         cacheHit: false,
+        imagesUsed: images.length,
       };
     } finally {
       clearTimeout(timeout);
@@ -392,5 +542,423 @@ export async function generateProductContentDraft(
     throw error;
   } finally {
     inFlightDrafts.delete(cacheKey);
+  }
+}
+
+// م٣ — استخراج الحقائق الأساسية من صورة (للتدفّق «صورة أوّلاً»).
+const EXTRACTION_PROMPT_VERSION = "product-extract-ar-v1";
+const EXTRACTION_ALLOWED_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+]);
+
+const EXTRACTION_PROMPT = `أنت محلّل صور منتجات لكتالوج مكتبة وقرطاسية عراقية.
+مهمّتك استخراج بيانات المنتج التي **تظهر بوضوح** في الصورة، لا أكثر. أنت لا تخترع، لا تُكمّل، لا تُخمّن.
+
+يُسمح استخراجه:
+- suggestedName: مقترحٌ مركّبٌ ممّا تراه (النوع + الماركة + الموديل إن كان مقروءاً). أمثلة: «دفتر ملاحظات روتا سلك A5»، «قلم حبر بايلوت أزرق»، «علبة أقلام رصاص فابر كاستل ١٢ قطعة».
+- productType: النوع العامّ المرئيّ عربياً (كتاب، دفتر ملاحظات، قلم، علبة أقلام، حقيبة، مسطرة، ممحاة…).
+- brand: نصّ الماركة المقروء على الغلاف كما هو (عربياً أو لاتينياً — لا تُترجم).
+- modelHint: رقم موديل أو نصّ تعريفيّ ثانويّ **مطبوعٌ ظاهر** (مثلاً A5، M-101، No. 2B).
+- description: جملة أو اثنتان تصفان ما هو مرئيّ فعلاً: اللون، الشكل، وجود تغليف، عدد قطعٍ ظاهر بوضوح في تغليف شفّاف. حدّ ٥٠٠ حرف.
+- keywords: كلمات بحث محتملة من المرئيّ (حدّ ١٠).
+
+يُحظَر إخراجه — إن فكّرتَ فيه فأضفه إلى unsupportedGuesses مع سبب الرفض:
+- سعر أو تخفيض أو خصم
+- مادّة داخلية (ورق/معدن/بلاستيك…) ما لم تكن مطبوعةً واضحةً على الغلاف
+- عدد صفحات ما لم يكن مطبوعاً
+- أبعاد بالسنتيمتر أو الوزن
+- بلد صنع ما لم يكن مطبوعاً
+- ادّعاء جودة/متانة/أمان/توافق
+- شهادات أو ضمانات
+
+قواعد الصياغة:
+- إن لم تتبيّن حقلاً فبقيمة null (لا فراغ ولا «غير معروف»).
+- عربية مبسّطة مناسبة للعراق، بلا تشكيل ولا كشيدة.
+- ثقة (confidence): high إذا كان النصّ/الشعار مقروءاً واضحاً، medium إذا استنتجتَ النوع بصرياً بلا نصّ، low للصور الغامضة/الجانبية/المشوّشة.
+
+أعد JSON فقط مطابقاً لمخطط المخرَج.`;
+
+const EXTRACTION_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "suggestedName",
+    "productType",
+    "brand",
+    "modelHint",
+    "description",
+    "keywords",
+    "confidence",
+    "unsupportedGuesses",
+  ],
+  properties: {
+    suggestedName: { type: ["string", "null"] },
+    productType: { type: ["string", "null"] },
+    brand: { type: ["string", "null"] },
+    modelHint: { type: ["string", "null"] },
+    description: { type: "string" },
+    keywords: {
+      type: "array",
+      maxItems: 10,
+      items: { type: "string" },
+    },
+    confidence: { type: "string", enum: ["low", "medium", "high"] },
+    unsupportedGuesses: {
+      type: "array",
+      maxItems: 10,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text", "reason"],
+        properties: {
+          text: { type: "string" },
+          reason: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
+export type ExtractProductFactsResult = {
+  facts: ExtractedProductFacts;
+  model: string;
+  promptVersion: string;
+};
+
+/**
+ * يستخرج حقائق منتجٍ من صورةٍ واحدة (للتدفّق «صورة أوّلاً»، م٣).
+ * ⛔ لا يُنشئ منتجاً — الموظّف يراجع الاقتراحات ثمّ يطبّقها على النموذج.
+ * تحت نفس حارس الاستخدام اليوميّ (٢٠ نداءً) — الحارس يعدّ النداءات لا البايتات.
+ */
+export async function extractProductFactsFromImage(
+  input: {
+    imageBase64: string;
+    mime: string;
+    contextName?: string | null;
+  },
+  opts: {
+    fetchImpl?: TextFetch;
+    timeoutMs?: number;
+    actor?: { userId: number; branchId?: number | null };
+  } = {},
+): Promise<ExtractProductFactsResult> {
+  if (!EXTRACTION_ALLOWED_MIMES.has(input.mime)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "نوع الصورة غير مدعوم؛ استعمل JPEG/PNG/WEBP/GIF/AVIF.",
+    });
+  }
+  const bytesLen = Math.ceil((input.imageBase64.length * 3) / 4);
+  if (bytesLen > MAX_IMAGE_BYTES) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `حجم الصورة يتجاوز الحدّ (${MAX_IMAGE_BYTES / 1024}KB).`,
+    });
+  }
+  const runtime = await getAiStudioRuntime();
+  if (!runtime) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "مسار الذكاء الاصطناعي غير مفعّل أو لا يوجد مفتاح صالح في إعدادات الاستوديو.",
+    });
+  }
+  if (runtime.provider !== "GEMINI") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "مزود محتوى المنتج غير مدعوم حالياً.",
+    });
+  }
+  if (
+    !opts.actor ||
+    !Number.isSafeInteger(opts.actor.userId) ||
+    opts.actor.userId <= 0
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "تعذر تحديد مستخدم طلب الاستخراج.",
+    });
+  }
+
+  const model = runtime.model.includes("image")
+    ? DEFAULT_TEXT_MODEL
+    : runtime.model;
+
+  const extract = async (): Promise<ExtractProductFactsResult> => {
+    const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      opts.timeoutMs ?? TIMEOUT_MS,
+    );
+
+    const contextLine = input.contextName
+      ? `\n\nCONTEXT (ما كتبه الموظّف حتى الآن، للاسترشاد لا للنسخ): ${input.contextName.slice(0, 160)}`
+      : "";
+    const payload = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType: input.mime, data: input.imageBase64 } },
+            { text: `${EXTRACTION_PROMPT}${contextLine}\n\nاستخرج الآن.` },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        responseMimeType: "application/json",
+        responseSchema: EXTRACTION_JSON_SCHEMA,
+      },
+    };
+
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": runtime.apiKey,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (error: any) {
+      clearTimeout(timeout);
+      if (error?.name === "AbortError")
+        throw new TRPCError({
+          code: "TIMEOUT",
+          message: "تأخر مزود الذكاء الاصطناعي؛ أعد المحاولة لاحقاً.",
+        });
+      throw new TRPCError({
+        code: "TIMEOUT",
+        message: "تعذر الوصول إلى مزود الذكاء الاصطناعي.",
+      });
+    }
+
+    try {
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const body = JSON.parse(await readBoundedText(response, 32 * 1024));
+          detail = String(body?.error?.message ?? "").slice(0, 250);
+        } catch {
+          detail = "";
+        }
+        if (response.status === 401 || response.status === 403) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "مفتاح مزود الذكاء الاصطناعي غير صالح أو بلا صلاحية.",
+          });
+        }
+        const code =
+          response.status === 429
+            ? "TOO_MANY_REQUESTS"
+            : response.status >= 500
+              ? "INTERNAL_SERVER_ERROR"
+              : "BAD_REQUEST";
+        throw new TRPCError({
+          code,
+          message:
+            code === "INTERNAL_SERVER_ERROR"
+              ? "تعذر الوصول إلى مزود الذكاء الاصطناعي مؤقتاً."
+              : detail || "فشل استخراج حقائق المنتج من الصورة.",
+        });
+      }
+
+      let body: any;
+      try {
+        body = JSON.parse(await readBoundedText(response, MAX_RESPONSE_BYTES));
+      } catch {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "ردّ مزود الذكاء الاصطناعي غير صالح.",
+        });
+      }
+
+      let facts: ExtractedProductFacts;
+      try {
+        facts = extractedProductFactsSchema.parse(
+          JSON.parse(stripCodeFence(textFromGeminiResponse(body))),
+        );
+      } catch {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "نتيجة الاستخراج لا تطابق المخطط المطلوب.",
+        });
+      }
+
+      return { facts, model, promptVersion: EXTRACTION_PROMPT_VERSION };
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  try {
+    return await runGuardedImageStudioCall({
+      service: "AI",
+      userId: opts.actor.userId,
+      branchId: opts.actor.branchId ?? null,
+      run: extract,
+    });
+  } catch (error) {
+    if (error instanceof ImageStudioGuardError) {
+      throw new TRPCError({
+        code:
+          error.kind === "DAILY_BUDGET_EXHAUSTED"
+            ? "PRECONDITION_FAILED"
+            : "TOO_MANY_REQUESTS",
+        message: imageStudioGuardErrorMessageAr(error.kind),
+      });
+    }
+    throw error;
+  }
+}
+
+// ── هجين: توليدٌ تلقائيّ يُشغَّل بعد اعتماد صورة استوديو (fire-and-forget) ────────────
+
+export type AutoContentDraftOutcome =
+  | { draftId: number; reason: "created" }
+  | {
+      draftId: null;
+      reason:
+        | "product-not-found"
+        | "no-images"
+        | "validation-failed"
+        | "budget-exhausted"
+        | "generate-failed"
+        | "save-failed";
+      detail?: string;
+    };
+
+/**
+ * يبني حقائق منتجٍ ما مباشرةً من قاعدة البيانات كما تراها الشاشة: اسم، وصف، فئة، نوع، ماركة،
+ * موديل، وحدات البيع من variant الأوّل. الغرض: تغذية الاستدعاء التلقائيّ لـgenerate بعد اعتماد
+ * صورةٍ في الاستوديو — لا ينتظر من الموظّف كتابة أيّ شيء إضافيّ.
+ */
+async function buildProductFactsFromDb(
+  productId: number,
+): Promise<ProductFacts | null> {
+  const db = requireDb();
+  const [row] = await db
+    .select({
+      name: products.name,
+      description: products.description,
+      productType: products.productType,
+      brand: products.brand,
+      modelName: products.modelName,
+      categoryName: categories.name,
+    })
+    .from(products)
+    .leftJoin(categories, eq(categories.id, products.categoryId))
+    .where(eq(products.id, productId))
+    .limit(1);
+  if (!row) return null;
+
+  const [variant] = await db
+    .select({ id: productVariants.id })
+    .from(productVariants)
+    .where(eq(productVariants.productId, productId))
+    .orderBy(asc(productVariants.id))
+    .limit(1);
+  const units = variant
+    ? await db
+        .select({
+          unitName: productUnits.unitName,
+          conversionFactor: productUnits.conversionFactor,
+        })
+        .from(productUnits)
+        .where(eq(productUnits.variantId, variant.id))
+        .orderBy(asc(productUnits.isBaseUnit))
+    : [];
+
+  return productFactsSchema.parse({
+    finalProductName: row.name?.trim() || null,
+    inputDescription: row.description?.trim() || null,
+    category: row.categoryName?.trim() || null,
+    productType: row.productType?.trim() || null,
+    brand: row.brand?.trim() || null,
+    modelName: row.modelName?.trim() || null,
+    attributes: {},
+    variants: [],
+    saleUnits: units.map((u) => ({
+      name: u.unitName,
+      conversionFactor: String(u.conversionFactor ?? "1"),
+    })),
+    verifiedClaims: [],
+    audience: null,
+  });
+}
+
+/**
+ * الهجين — يُستدعى **بعد** اعتماد صورةٍ في استوديو المنتجات (بعد commit المعاملة، fire-and-forget).
+ * يبني الحقائق ⇒ يولّد بالمسار البصريّ (م٢) ⇒ يحفظ مسودّةً DRAFT عبر حوكمة المحتوى القائمة.
+ * لا يرمي أبداً: كلّ فشلٍ عن سببه في النتيجة، فيُسجّلها المستدعي بلا إفشال اعتماد الاستوديو.
+ * حالاتٌ حميدة معلَنة (لا صور مطابقة، تجاوز الميزانية، سقوط التحقّق) — يمكن للمشغّل قراءتها.
+ */
+export async function generateAndSaveContentDraftForProduct(
+  productId: number,
+  actor: { userId: number; branchId?: number | null },
+): Promise<AutoContentDraftOutcome> {
+  const facts = await buildProductFactsFromDb(productId).catch(() => null);
+  if (!facts) return { draftId: null, reason: "product-not-found" };
+
+  let result: ProductContentDraftResult;
+  try {
+    result = await generateProductContentDraft(facts, {
+      productId,
+      actor,
+    });
+  } catch (err: any) {
+    const msg = String(err?.message ?? "");
+    // الحوكمة القائمة تُرجع PRECONDITION_FAILED مع نصّ «سقف» عند نضوب الميزانية اليوميّة.
+    if (err?.code === "PRECONDITION_FAILED" && msg.includes("سقف")) {
+      return { draftId: null, reason: "budget-exhausted", detail: msg };
+    }
+    return { draftId: null, reason: "generate-failed", detail: msg };
+  }
+
+  // لا صور معتمَدة مرتبطة بالمنتج ⇒ النتيجة نصّية بحتة، ولا فائدة من مسودّةٍ تلقائيّة (المستخدم
+  // يستطيع طلب التوليد النصّي يدوياً وقت الحاجة). هذا يمنع ملء الطابور بمسودّاتٍ ضعيفة عند
+  // اعتماد صورةٍ لمنتجٍ آخر (سباق) أو حين تُلغى الصورة بين الاستدعاء والقراءة.
+  if (result.imagesUsed === 0) return { draftId: null, reason: "no-images" };
+
+  if (!result.validation.ok) return { draftId: null, reason: "validation-failed" };
+
+  try {
+    const saved = await saveProductContentDraft(
+      {
+        productId,
+        sourceFacts: facts as unknown as Record<string, unknown>,
+        sourceFactsHash: result.cacheKey,
+        content: {
+          internalName: null,
+          storeTitle: result.draft.seoTitle,
+          seoTitle: result.draft.seoTitle,
+          shortTitle: result.draft.shortTitle,
+          posLabel: result.draft.posLabel,
+          invoiceLabel: result.draft.invoiceLabel,
+          marketingCopy: result.draft.marketingCopy,
+          description: result.draft.description,
+        },
+        validation: result.validation,
+        promptVersion: result.promptVersion,
+        model: result.model,
+      },
+      actor,
+    );
+    return { draftId: saved.draftId, reason: "created" };
+  } catch (err: any) {
+    return {
+      draftId: null,
+      reason: "save-failed",
+      detail: String(err?.message ?? ""),
+    };
   }
 }
