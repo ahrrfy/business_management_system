@@ -90,6 +90,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.accountingControls.AccountGroup
 import online.alarabiya.superapp.model.accountingControls.AccountingControlsCapabilities
 import online.alarabiya.superapp.model.accountingControls.AccountingControlsSection
@@ -638,7 +639,7 @@ private fun ReconciliationForm(state: AccountingControlsUiState, actions: Accoun
             OutlinedTextField(draft.statedIqd, { actions.reconciliationDraft(draft.copy(statedIqd = it)) }, Modifier.weight(1f), label = { Text("رصيد IQD") }, singleLine = true, enabled = !state.locked)
             OutlinedTextField(draft.statedUsd, { actions.reconciliationDraft(draft.copy(statedUsd = it)) }, Modifier.weight(1f), label = { Text("رصيد USD") }, singleLine = true, enabled = !state.locked)
         }
-        OutlinedTextField(draft.asOfDate, { actions.reconciliationDraft(draft.copy(asOfDate = it)) }, Modifier.fillMaxWidth(), label = { Text("تاريخ قطع اختياري YYYY-MM-DD") }, singleLine = true, enabled = !state.locked)
+        ArabicDatePicker(draft.asOfDate, { actions.reconciliationDraft(draft.copy(asOfDate = it)) }, "تاريخ قطع اختياري", enabled = !state.locked)
         OutlinedButton(actions.reconcile, Modifier.fillMaxWidth(), enabled = !state.locked && draft.statedIqd.isNotBlank() && draft.statedUsd.isNotBlank()) { Text("مطابقة كشف الصيرفة") }
         state.reconciliation?.let { result ->
             Text(if (result.matched) "متطابق" else "فرق IQD ${result.differenceIqd} • USD ${result.differenceUsd}", color = if (result.matched) ControlBlue else MaterialTheme.colorScheme.error, fontWeight = FontWeight.ExtraBold)
@@ -697,7 +698,7 @@ private fun PeriodControl(
             ) { Text("فتح مع توثيق السبب") }
         } ?: run {
             Surface(color = ControlMint, shape = RoundedCornerShape(20.dp, 8.dp, 20.dp, 8.dp)) { Text("لا يوجد قفل مالي نشط", Modifier.padding(13.dp), color = ControlBlue, fontWeight = FontWeight.Bold) }
-            OutlinedTextField(state.lockDate, actions.lockDate, Modifier.fillMaxWidth(), label = { Text("تاريخ القطع YYYY-MM-DD") }, singleLine = true, enabled = !state.locked)
+            ArabicDatePicker(state.lockDate, actions.lockDate, "تاريخ القطع", enabled = !state.locked)
             OutlinedTextField(state.lockNotes, actions.lockNotes, Modifier.fillMaxWidth(), label = { Text("ملاحظات الإقفال") }, enabled = !state.locked)
             Button(
                 { confirm(Confirmation("إقفال الفترة", "بعد الإقفال سيرفض محرك الدفتر كل قيد بتاريخ يساوي ${state.lockDate} أو يسبقه.", actions.lockPeriod)) },

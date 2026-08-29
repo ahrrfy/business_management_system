@@ -57,6 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.commerce.CommerceCapabilities
 import online.alarabiya.superapp.model.commerce.DigitalCard
 import online.alarabiya.superapp.model.commerce.DigitalCardAvailability
@@ -344,15 +345,12 @@ private fun DigitalCardDecisionDialog(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(item.title)
                 if (mismatchApproval) {
-                    OutlinedTextField(
+                    // Wave 3 (٢٩/٨): DatePicker بديلاً عن حقلٍ نصّيّ. يُلغي كامل حاجة IME للإدخال
+                    // اليدويّ لتاريخٍ ISO — راجع `ArabicDatePicker` وذاكرة `feedback-latin-digits-always`.
+                    ArabicDatePicker(
                         value = businessDate,
-                        onValueChange = { businessDate = it.take(10) },
-                        label = { Text("تاريخ العمل YYYY-MM-DD") },
-                        singleLine = true,
-                        // Codex P2 ٢٨/٨: canSubmit يشترط YYYY-MM-DD والـNumber IME لا يوفّر «-»،
-                        // فيقفل تحرير الحقل بعد مسحه ⇒ Text IME أسلم حتى يُدخَل DatePicker حقيقي.
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                        modifier = Modifier.fillMaxWidth(),
+                        onValue = { businessDate = it },
+                        label = "تاريخ العمل",
                     )
                     OutlinedTextField(
                         value = sellPrice,

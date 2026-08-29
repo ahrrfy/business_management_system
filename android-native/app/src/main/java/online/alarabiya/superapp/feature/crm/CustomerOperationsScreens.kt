@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.crm.CatalogOption
 import online.alarabiya.superapp.model.crm.CrmCapabilities
 import online.alarabiya.superapp.model.crm.CustomerContractPrice
@@ -371,15 +372,10 @@ private fun FollowUpEditorDialog(state: CrmUiState, actions: CrmActions) {
                     label = { Text("نص المتابعة") },
                     minLines = 3,
                 )
-                OutlinedTextField(
+                ArabicDatePicker(
                     value = draft.followUpDate,
-                    onValueChange = { actions.updateFollowUpDraft(draft.copy(followUpDate = it.take(10))) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("تاريخ المتابعة") },
-                    placeholder = { Text("YYYY-MM-DD") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                    textStyle = ltrInputTextStyle(),
+                    onValue = { actions.updateFollowUpDraft(draft.copy(followUpDate = it)) },
+                    label = "تاريخ المتابعة",
                 )
             }
         },

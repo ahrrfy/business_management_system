@@ -77,6 +77,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.announcements.AnnouncementAudienceType
 import online.alarabiya.superapp.model.announcements.AnnouncementDetail
 import online.alarabiya.superapp.model.announcements.AnnouncementPriority
@@ -549,12 +550,10 @@ private fun AnnouncementEditorDialog(
                     Spacer(Modifier.width(6.dp))
                     Text("يتطلّب إقراراً", Modifier.weight(1f))
                 }
-                OutlinedTextField(
+                ArabicDatePicker(
                     value = expiresAt,
-                    onValueChange = { expiresAt = it.filter { char -> char.isDigit() || char == '-' }.take(10) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("ينتهي (اختياري) YYYY-MM-DD") },
-                    singleLine = true,
+                    onValue = { expiresAt = it },
+                    label = "ينتهي (اختياري)",
                     enabled = !submitting,
                 )
                 errorText?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }

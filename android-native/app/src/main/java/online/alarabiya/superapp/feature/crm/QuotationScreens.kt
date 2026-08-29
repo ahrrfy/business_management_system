@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.crm.BranchOption
 import online.alarabiya.superapp.model.crm.CatalogOption
 import online.alarabiya.superapp.model.crm.CrmCapabilities
@@ -312,7 +313,7 @@ private fun QuotationEditorPane(
                         )
                     }
                 }
-                QuoteField(draft.validUntil, { actions.updateQuotationDraft(draft.copy(validUntil = it)) }, "صالح حتى YYYY-MM-DD")
+                ArabicDatePicker(draft.validUntil, { actions.updateQuotationDraft(draft.copy(validUntil = it)) }, "صالح حتى")
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         draft.invoiceDiscount,

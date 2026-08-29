@@ -72,6 +72,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.collaboration.AssignableStaff
 import online.alarabiya.superapp.model.collaboration.BroadcastAction
 import online.alarabiya.superapp.model.collaboration.BroadcastActionPolicy
@@ -585,7 +586,7 @@ private fun TaskEditorDialog(
                     }
                 }
                 item { StaffPicker(staff, draft.assignedTo) { actions.updateTask(draft.copy(assignedTo = it)) } }
-                item { OutlinedTextField(draft.dueAt, { actions.updateTask(draft.copy(dueAt = it.take(40))) }, Modifier.fillMaxWidth(), label = { Text("الاستحقاق (ISO أو YYYY-MM-DD)") }) }
+                item { ArabicDatePicker(draft.dueAt, { actions.updateTask(draft.copy(dueAt = it)) }, "الاستحقاق") }
             }
         },
         confirmButton = { Button(actions.saveTask) { Text("إنشاء") } },
