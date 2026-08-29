@@ -14,6 +14,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { notify } from "@/lib/notify";
@@ -49,7 +50,11 @@ const STATE_VARIANT: Record<Health, "danger" | "warning" | "info" | "success" | 
 const STATE_TOOLTIP: Record<Health, string> = {
   NO_IMAGES: "منتجٌ نشط بلا أيّ صورةٍ معتمَدة — أنشئ حملة تصوير أو ارفع صورةً محلياً.",
   BUNDLE_NO_IMAGE: "بكجٌ (منتجٌ مركَّب) بلا صورة موحَّدة — يمكن رفعُ صورةٍ خاصّةٍ به أو التركيب من صور مكوّناته لاحقاً.",
-  SINGLE_IMAGE: "منتجٌ بصورةٍ واحدةٍ فقط — أضف زوايا/تفاصيل إضافية إن كان يستحقّ معرضاً أوسع.",
+  // Codex P2: `healthCaseSql()` يُصنّف حالة SINGLE_IMAGE قبل التحقّق من صور البدائل،
+  // فالمنتج ذو صورةٍ واحدة وبدائلَ غير مُغطّاة يظهر هنا. النصّ الأوّل «أضف زوايا إن استحقّ»
+  // كان يوهم أنّ العمل اختياريّ، بينما قد يكون مطلوباً لكلّ بديلٍ منفصل. النصّ المصحَّح
+  // يذكر كلا المسارَين ويوجّه المدير للتحقّق من عمود «بدائل بصور».
+  SINGLE_IMAGE: "منتجٌ بصورةٍ معتمَدةٍ واحدة — قد تكون كافية للأمّ، لكن تحقّق من عمود «بدائل بصور» أدناه: إن كان أحد البدائل بلا صورةٍ خاصّةٍ به فأنشئ حملةً بديلاً-بديلاً.",
   PARENT_ONLY_HAS_VARIANTS: "الأمّ لها صورة لكنّ بعض البدائل بلا صورةٍ خاصّة — أنشئ حملةً بديلاً-بديلاً.",
   VARIANTS_INCOMPLETE: "أحد بدائل هذا المنتج ينقصه صورةٌ خاصّة — أنشئ حملةً تشمله.",
   HEALTHY: "المنتج مكتمل صوراً بحسب توجيه الحملة الحاليّ. لا فعلَ مطلوب.",
@@ -119,6 +124,8 @@ export function StudioImageDiscoveryPanel({
   const [bundleOnly, setBundleOnly] = useState(initialFilters.bundleOnly);
   const [sort, setSort] = useState<SortOption>(initialFilters.sort);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // شرحُ بطاقة KPI الموسَّع — بطاقةٌ واحدةٌ في كلّ وقت تكفي وتمنع تراكمَ شروحٍ داخل الشبكة.
+  const [expandedHint, setExpandedHint] = useState<Health | null>(null);
   // أثرُ الحفظ: يُطلَق كلّما تغيّر أيٌّ من الفلاتر. `selectedIds` **لا يُحفَظ** — التحديد
   // مرتبطٌ بالجلسة الحاليّة، وإعادةُ فتح المتصفح لاحقاً لا تعني نفس نيّة العمل.
   useEffect(() => {
@@ -127,40 +134,21 @@ export function StudioImageDiscoveryPanel({
 
   const counts = trpc.productStudio.imageHealthCounts.useQuery(undefined, { staleTime: 60_000 });
   const topCategories = trpc.productStudio.topGapCategories.useQuery({ limit: 8 }, { staleTime: 120_000 });
+  // الفرز يُرسَل إلى الخادم كي يُطبَّق قبل التقطيع (Codex P2): الفرز على الواجهة كان
+  // يمسّ ١٠٠ صفٍّ فقط، فيُقصّ الأولويّ إن كان معرّفه فوق النطاق.
   const gaps = trpc.productStudio.discoverImageGaps.useQuery(
     {
       states: selectedStates.length > 0 ? selectedStates : undefined,
       isBundle: bundleOnly || undefined,
       search: search.trim() || undefined,
       limit: 100,
+      sort,
     },
     { staleTime: 30_000, placeholderData: (prev) => prev },
   );
 
-  // الفرز يُطبَّق على الواجهة (الخادم يُرجع بترتيبه الافتراضيّ). مسحٌ محلّيٌّ على ١٠٠ صفّاً
-  // كحدٍّ أقصى — تكلفةٌ لا تُذكَر. الترتيب مُستقرّ: `productId` كحلٍّ للتعادل يمنع اهتزاز
-  // الصفوف بين إعادات التحميل حين يتساوى المفتاح الأساسيّ.
-  const items = useMemo(() => {
-    const rows = gaps.data?.items ?? [];
-    const copy = rows.slice();
-    switch (sort) {
-      case "NAME_ASC":
-        copy.sort((a, b) => a.name.localeCompare(b.name, "ar") || a.productId - b.productId);
-        break;
-      case "APPROVED_ASC":
-        copy.sort((a, b) => a.approvedImages - b.approvedImages || a.productId - b.productId);
-        break;
-      case "VARIANTS_MISSING_MOST":
-        copy.sort((a, b) => b.variantsMissing - a.variantsMissing || a.productId - b.productId);
-        break;
-      case "MISSING_MOST":
-      default:
-        // «الأحوج»: تركيبةُ الأولوية = بدائل ناقصة أوّلاً، ثمّ الأقلّ صوراً معتمَدة، ثمّ الاسم.
-        copy.sort((a, b) => (b.variantsMissing - a.variantsMissing) || (a.approvedImages - b.approvedImages) || a.name.localeCompare(b.name, "ar"));
-        break;
-    }
-    return copy;
-  }, [gaps.data, sort]);
+  // الفرز يقع على الخادم قبل التقطيع (Codex P2 على PR #865) — نستهلك الترتيب كما يعود.
+  const items = gaps.data?.items ?? [];
   const allShownSelected = items.length > 0 && items.every((i) => selectedIds.has(i.productId));
 
   const kpiCards: Array<{ label: string; value: number; state: Health; icon: React.ReactNode }> = useMemo(() => {
@@ -197,27 +185,44 @@ export function StudioImageDiscoveryPanel({
           </div>
         )}
 
-        {/* عدّادات KPI — نقرةٌ لتفعيل/إبطال الحالة كفلتر. مضغوطةٌ (p-2 + text-base) بعد
-            بلاغ المالك «حجم البطاقات كبيرة» ٢٨/٨: البطاقة أزرارٌ وليست بيانات رأس، فالكثافة
-            أهمّ من الحضور. min-h-11 محفوظ لبقاء منطقة النقر ضمن معيار اللمس (٤٤px). */}
+        {/* عدّادات KPI — نقرةٌ على البطاقة تُبدّل الفلتر، والـInfo زرٌّ مستقلّ داخل البطاقة
+            يفتح/يُغلق شرحاً منظوراً (Codex P2 — الاعتماد على `title` وحده يعطّل الشرح على
+            اللمس). الشرحُ داخل نفس البطاقة كي لا يُبعِد البصر. e.stopPropagation ضروريّ
+            كي لا يوسّع أو يوسّع الفلتر بالخطأ عند طلب الشرح. */}
         <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
           {kpiCards.map((k) => {
             const active = selectedStates.includes(k.state);
+            const expanded = expandedHint === k.state;
             return (
-              <button
-                key={k.state}
-                type="button"
-                onClick={() => setSelectedStates((cur) => (active ? cur.filter((s) => s !== k.state) : [...cur, k.state]))}
-                title={STATE_TOOLTIP[k.state]}
-                aria-label={`${k.label} — ${STATE_TOOLTIP[k.state]}`}
-                className={`min-h-11 rounded-md border p-2 text-start transition-colors ${active ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}
-              >
-                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  {k.icon} <span className="truncate">{k.label}</span>
-                  <Info aria-hidden className="ms-auto size-3 shrink-0 opacity-50" />
-                </div>
-                <div className="mt-0.5 text-base font-bold">{k.value}</div>
-              </button>
+              <div key={k.state} className={`rounded-md border p-2 transition-colors ${active ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedStates((cur) => (active ? cur.filter((s) => s !== k.state) : [...cur, k.state]))}
+                  className="block w-full min-h-11 text-start"
+                  aria-pressed={active}
+                >
+                  <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    {k.icon} <span className="min-w-0 truncate">{k.label}</span>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label={expanded ? "إخفاء الشرح" : "شرح هذه الحالة"}
+                      aria-expanded={expanded}
+                      onClick={(e) => { e.stopPropagation(); setExpandedHint(expanded ? null : k.state); }}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); setExpandedHint(expanded ? null : k.state); } }}
+                      className="ms-auto flex size-5 shrink-0 items-center justify-center rounded-full hover:bg-muted focus:bg-muted focus:outline-none focus:ring-2 focus:ring-primary"
+                    >
+                      <Info aria-hidden className="size-3 opacity-70" />
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-base font-bold">{k.value}</div>
+                </button>
+                {expanded && (
+                  <p className="mt-1.5 rounded bg-muted/40 p-1.5 text-[10.5px] leading-snug text-muted-foreground">
+                    {STATE_TOOLTIP[k.state]}
+                  </p>
+                )}
+              </div>
             );
           })}
         </div>
@@ -275,18 +280,19 @@ export function StudioImageDiscoveryPanel({
             <Label htmlFor="discovery-sort" className="flex items-center gap-1">
               <ArrowUpDown aria-hidden className="size-3" /> فرز
             </Label>
-            {/* select عاديّ لأنّ AppSelect (Radix) يفتح popup داخل الـCard يُقصّ أحياناً؛
-                الفرز على الواجهة فقط، فلا حاجةَ للـkeyboard type-ahead المتقدّم. */}
-            <select
+            {/* AppSelect (Radix Portal) بدل select عاريّ (Codex P2) — بعض بيئات Chromium
+                تقصّ الـpopup الأصيل داخل الحاويات المُدارة، والـPortal يحلّ ذلك مع دعم RTL
+                وthemeing الموحَّد. */}
+            <AppSelect
               id="discovery-sort"
-              value={sort}
-              onChange={(e) => setSort(e.target.value as SortOption)}
               className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={sort}
+              onValueChange={(v) => setSort(v as SortOption)}
             >
               {(Object.keys(SORT_LABEL) as SortOption[]).map((k) => (
                 <option key={k} value={k}>{SORT_LABEL[k]}</option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         </div>
 
@@ -352,11 +358,38 @@ export function StudioImageDiscoveryPanel({
           </div>
 
           {gaps.isLoading && <p className="py-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>}
-          {gaps.isError && <p role="alert" className="text-sm text-destructive">تعذّر جلب النتائج.</p>}
-          {!gaps.isLoading && items.length === 0 && (
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              لا نتائج بهذه الفلاتر — جرّب توسيع الحالات أو حذف البحث.
+          {gaps.isError && (
+            <p role="alert" className="text-sm text-destructive">
+              تعذّر جلب النتائج — {gaps.error?.message ?? "خطأ غير متوقّع"}
             </p>
+          )}
+          {/* الرسالة الفارغة تُعرَض فقط عند غياب الخطأ (بلاغ المالك ٢٩/٨: كانت رسالة الخطأ
+              ورسالة «لا نتائج» تظهران معاً فتُوهم الخطأَ نتيجةً فارغة). ورسالةٌ خاصّة بحالة
+              «البكج فقط» تُوجّه المستخدم لتوسيع الحالات: البكج بصورةٍ واحدة أو أكثر يُصنَّف
+              SINGLE_IMAGE/HEALTHY وليس BUNDLE_NO_IMAGE، ومن ثمّ لا يظهر إن كانت الفلاتر
+              الافتراضية مُختارةً وحدها. */}
+          {!gaps.isLoading && !gaps.isError && items.length === 0 && (
+            <div className="space-y-2 py-6 text-center text-sm text-muted-foreground">
+              {bundleOnly ? (
+                <>
+                  <p>لا بكجات مطابقة لحالاتك المختارة.</p>
+                  <p className="text-xs">
+                    البكج بصورةٍ واحدة يُصنَّف «صورةٌ واحدة» (لا «بكج بلا صورة») — فعِّل حالاتٍ إضافيةً أعلاه أو أطفئ «البكج فقط» لرؤية كلّ الكتالوج.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="min-h-11"
+                    onClick={() => setSelectedStates(["NO_IMAGES", "BUNDLE_NO_IMAGE", "SINGLE_IMAGE", "PARENT_ONLY_HAS_VARIANTS", "VARIANTS_INCOMPLETE", "HEALTHY"])}
+                  >
+                    وسّع الحالات كلّها
+                  </Button>
+                </>
+              ) : (
+                <p>لا نتائج بهذه الفلاتر — جرّب توسيع الحالات أو حذف البحث.</p>
+              )}
+            </div>
           )}
           {items.length > 0 && (
             <ul className="space-y-1">

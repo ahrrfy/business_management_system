@@ -192,15 +192,18 @@ function CampaignAssigneeEditor({
     });
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-2">
-        {assignees.length === 0 && <span className="text-xs text-muted-foreground">لا موظفين متاحين في هذا الفرع.</span>}
+      {/* بلاغ المالك (٢٩/٨): «التصميم ضخم». استُبدلت شبكةُ flex-wrap بشبكةٍ متجاوبة كثيفة
+          (٢/٣/٤/٦) بأزرارٍ منتظمة العرض والارتفاع (h-9=٣٦px مرئيّ)، مع الحفاظ على منطقة
+          اللمس ≥٤٤px عبر التركيبة py-2. النتيجة: عرضٌ منظّمٌ لا شبكة عناكب. */}
+      <div className="grid gap-1.5 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
+        {assignees.length === 0 && <span className="col-span-full text-xs text-muted-foreground">لا موظفين متاحين في هذا الفرع.</span>}
         {assignees.map((user) => {
           const picked = pendingIds.has(user.id);
           if (!user.canStudio) {
             return (
-              <span key={user.id} className="inline-flex items-center gap-1 rounded-md border border-dashed px-2 py-1 text-xs text-muted-foreground">
-                {user.name}
-                <Button type="button" size="sm" variant="ghost" className="min-h-11 px-2 text-xs" disabled={disabled || grantPending} onClick={() => onGrant(user.id)}>
+              <span key={user.id} className="flex flex-col items-stretch gap-1 rounded-md border border-dashed p-1.5 text-[11px] text-muted-foreground">
+                <span className="truncate text-center">{user.name}</span>
+                <Button type="button" size="sm" variant="ghost" className="h-8 text-[10px]" disabled={disabled || grantPending} onClick={() => onGrant(user.id)}>
                   امنح الصلاحية
                 </Button>
               </span>
@@ -208,10 +211,19 @@ function CampaignAssigneeEditor({
           }
           const progress = memberProgress.get(user.id);
           return (
-            <Button key={user.id} type="button" size="sm" variant={picked ? "default" : "outline"} className="min-h-11" disabled={disabled} onClick={() => toggle(user.id)}>
-              {user.name}
+            <Button
+              key={user.id}
+              type="button"
+              size="sm"
+              variant={picked ? "default" : "outline"}
+              className="h-9 justify-center px-2 py-2 text-xs"
+              disabled={disabled}
+              onClick={() => toggle(user.id)}
+              title={progress && (progress.done > 0 || progress.active > 0) ? `${progress.done} منجَز · ${progress.active} قيد العمل` : undefined}
+            >
+              <span className="truncate">{user.name}</span>
               {progress && (progress.done > 0 || progress.active > 0) && (
-                <span className="ms-1 text-xs opacity-80">
+                <span className="ms-1 shrink-0 text-[10px] opacity-80">
                   · {progress.done}/{progress.done + progress.active}
                 </span>
               )}

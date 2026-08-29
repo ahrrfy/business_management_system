@@ -25,7 +25,7 @@ import {
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
   UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards, ClipboardCheck,
-  History, Star, Images, Megaphone, FileCheck2,
+  History, Star, Images, FileCheck2,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -112,11 +112,11 @@ const NAV_LINKS: NavLink[] = [
   // شاشة المندوب الذاتية — courier فقط (admin يراها عبر canSeeGate؛ المدير يدير عبر /delivery).
   { href: "/my-deliveries", label: "توصيلاتي", icon: PackageCheck, roles: ["courier"], module: "courier" },
   { href: "/store-admin", label: "طلبات المتجر", icon: Store, roles: ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"], module: "store" },
+  // ٢٩/٨ (بلاغ مالك): بندٌ واحدٌ فقط للاستوديو — دُمج «حملات التصوير» ضمنه بعد أن أُفرد
+  // في ٢٨/٨. المدير يجد إدارةَ الحملات عبر زرٍّ بارزٍ داخل شاشة الاستوديو، ولا حاجةَ
+  // لبندٍ منفصلٍ يضاعف طول القائمة الجانبية. المسار الفنّيّ `/catalog/image-studio/campaigns`
+  // يبقى محفوظاً — يُوصَل إليه من داخل الاستوديو ومن أيّ رابطٍ خارجيّ.
   { href: "/catalog/image-studio", label: "استوديو المنتجات", icon: Images, roles: ["admin", "manager", "print_operator", "auditor"], module: "productStudio" },
-  // ٢٨/٨: بندٌ منفصلٌ لإدارة الحملات — قرار المالك «رابط في القائمة الجانبية + زرّ داخل
-  // استوديو المنتجات». المدير يكتشفها من هنا مباشرةً بلا الحاجة إلى فتح الاستوديو والبحث
-  // في قسمه الداخليّ. Icon Megaphone يميّزها عن الاستوديو نفسه (Images).
-  { href: "/catalog/image-studio/campaigns", label: "حملات التصوير", icon: Megaphone, roles: ["admin", "manager", "auditor"], module: "productStudio" },
   { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
   // (ج) دوري — أسبوعي/عند الحاجة
   { href: "/purchases", label: "المشتريات", icon: Package },

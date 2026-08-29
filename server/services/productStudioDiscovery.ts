@@ -137,6 +137,9 @@ export async function getImageHealthCounts(actor: ProductStudioActor) {
   };
 }
 
+/** خياراتُ فرزٍ للكاشف — تُطبَّق داخل الاستعلام قبل التقطيع كي لا يُقصَّ الأولويّ. */
+export type DiscoverySort = "MISSING_MOST" | "NAME_ASC" | "APPROVED_ASC" | "VARIANTS_MISSING_MOST";
+
 /** فلاترُ اكتشاف الفجوات. */
 export interface DiscoveryFilters {
   states?: ImageHealthState[];
@@ -145,6 +148,8 @@ export interface DiscoveryFilters {
   search?: string;
   limit?: number;
   cursor?: number;
+  /** ترتيب النتائج قبل التقطيع (Codex P2): بدونه الفرز على الواجهة يُقصّ الأولويّ. */
+  sort?: DiscoverySort;
 }
 
 /**
@@ -187,6 +192,10 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
   // نُنفّذ التصفية بالحالة على subquery الخارجيّ كي لا نضيف CASE في WHERE (يتكرّر
   // الحساب في MySQL). النمط: SELECT ... FROM (SELECT ..., CASE ... FROM products WHERE ...)
   // AS x WHERE x.health IN (...)
+  //
+  // ⚠️ الفرز يُطبَّق على الاستعلام **الخارجيّ** (Codex P2 على PR #865): الفرز على الواجهة
+  // كان يمسّ ١٠٠ صفٍّ فقط، فيُقصّ الأولويّ إن كان معرّفه فوق المائة. `variantCount` و
+  // `variantsWithImages` محسوبان في subquery داخليّ فيسهل الوصول إليهما بالاسم في الخارج.
   const inner = db
     .select({
       id: products.id,
@@ -211,13 +220,28 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
     })
     .from(products)
     .where(and(...conditions, cursor != null ? sql`${products.id} > ${cursor}` : undefined))
+    // نطاقُ الترشيح الداخليّ يبقى بمعرّف المنتج (يتحدّد بالـcursor)، والفرز الحقيقيّ
+    // يقع على الخارجيّ بعد الترشيح بالحالة. `limit + 1` هنا كافٍ لأنّ التقطيع خارجيّ.
     .orderBy(asc(products.id))
     .limit(limit + 1)
     .as("d");
+  const sort: DiscoverySort = input.sort ?? "MISSING_MOST";
+  // نبني تعبير الفرز الخارجيّ بأعمدة الـsubquery. `productId` كتعادلٍ مستقرّ يمنع اهتزاز
+  // الترتيب بين إعادات التحميل حين تتساوى المفاتيح الأساسيّة.
+  const missingCount = sql`(${inner.variantCount} - ${inner.variantsWithImages})`;
+  const orderBy = sort === "NAME_ASC"
+    ? [asc(inner.name), asc(inner.id)]
+    : sort === "APPROVED_ASC"
+      ? [asc(inner.approvedImages), asc(inner.name), asc(inner.id)]
+      : sort === "VARIANTS_MISSING_MOST"
+        ? [desc(missingCount), asc(inner.name), asc(inner.id)]
+        // MISSING_MOST (افتراضيّ): «الأحوج» = بدائل ناقصة أوّلاً ثمّ الأقلّ صوراً معتمَدة ثمّ الاسم.
+        : [desc(missingCount), asc(inner.approvedImages), asc(inner.name), asc(inner.id)];
   const rows = await db
     .select()
     .from(inner)
-    .where(inArray(inner.health, stateFilter));
+    .where(inArray(inner.health, stateFilter))
+    .orderBy(...orderBy);
 
   const hasMore = rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
