@@ -1,7 +1,8 @@
 // أدوات وحدة الهدايا: توليد رقم السند (نمط nextConsignmentNumber) + أنواع مشتركة.
-import { and, asc, desc, eq, inArray, like, sql } from "drizzle-orm";
-import { branchStock, giftVouchers } from "../../../drizzle/schema";
+import { desc, like, sql } from "drizzle-orm";
+import { giftVouchers } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { ensureAndLockBranchStockRows } from "../inventory/stockLock";
 import { toDateStr } from "../money";
 
 export type GiftDirection = "OUT" | "IN";
@@ -38,30 +39,18 @@ export async function nextGiftNumber(tx: Tx, branchId: number): Promise<string> 
 }
 
 /**
- * يضمن وجود صفّ `branchStock` لكل (variant, branchId) ثمّ يقفل صفوف كلّ المتغيّرات FOR UPDATE.
+ * يقفل mutex المتغيّرات أولاً، ثم يضمن `branchStock` لكل (variant, branchId) ويقفله.
  * ضروريّ قبل قراءة SUM المخزون (WAVG): بلا صفٍّ موجود لا يقفل FOR UPDATE شيئاً فيتسرّب سباقٌ بين
  * استلامٍ مجّانيّ وشراءٍ متزامنَين على متغيّرٍ جديد (تدقيق Codex P1). ويوحّد ترتيب القفل
- * (branchStock ثمّ productVariants) عبر مسارات الوارد/الصادر/الشراء ⇒ لا deadlock (تدقيق Codex P1).
+ * (productVariants ثمّ branchStock) عبر مسارات الوارد/الصادر/الشراء ⇒ لا deadlock.
  */
 export async function ensureAndLockBranchStock(tx: Tx, variantIds: number[], branchId: number): Promise<void> {
   if (!variantIds.length) return;
-  // المسار هـ-١ (١٧/٨) — نطاق القفل وترتيبه:
+  // المسار هـ-١ (١٧/٨) — نطاق قفل الرصيد بعد mutex المتغيّر:
   //  ١) **بالفرع**: القفل كان `WHERE variantId IN (…)` بلا `branchId` رغم وجوده في التوقيع ⇒ يقفل
   //     صفوف **كلّ الفروع** لتلك المتغيّرات، فتُسلسَل مبيعات فرعٍ آخر خلف هديةٍ في فرعٍ لا علاقة له
   //     بها (اختناقٌ صامت، لا خطأ يظهر).
   //  ٢) **مرتّباً تصاعدياً بـvariantId** في الإدراج والقفل معاً — نفس نمط `sale/create.ts` المُثبَت:
   //     مسارانِ يمسكان المتغيّرين نفسيهما بترتيبين متعاكسين يصنعان `ER_LOCK_DEADLOCK`.
-  const ordered = Array.from(new Set(variantIds)).sort((a, b) => a - b);
-  for (const variantId of ordered) {
-    await tx
-      .insert(branchStock)
-      .values({ variantId, branchId, quantity: 0 })
-      .onDuplicateKeyUpdate({ set: { variantId: sql`${branchStock.variantId}` } });
-  }
-  await tx
-    .select({ id: branchStock.id })
-    .from(branchStock)
-    .where(and(eq(branchStock.branchId, branchId), inArray(branchStock.variantId, ordered)))
-    .orderBy(asc(branchStock.variantId))
-    .for("update");
+  await ensureAndLockBranchStockRows(tx, variantIds, branchId);
 }

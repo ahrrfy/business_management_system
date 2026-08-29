@@ -16,6 +16,7 @@ import {
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { setStock, isBundleVariant, isServiceVariant } from "../inventoryService";
+import { lockInventoryVariants } from "./stockLock";
 import { loadOpeningPurchaseLinkedVariantIds } from "../stocktake/openingEligibility";
 import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
@@ -238,6 +239,7 @@ export async function approveStockAdjustment(
     assertApprover({ createdBy: r.createdBy != null ? Number(r.createdBy) : null, branchId: Number(r.branchId) }, actor, "اعتماد");
 
     const branchId = Number(r.branchId);
+    await lockInventoryVariants(tx, [Number(r.variantId)]);
     // C1 (مراجعة عدائية): تفاؤليّ — الهدف مطلق، فلو تغيّر الرصيد بين الطلب والاعتماد (بيع/شراء/تحويل)
     // لكان الاعتماد يمحو تلك الحركات ويُرحّل ربحاً/خسارةً وهميّة. نرفض إن انحرف الرصيد الحيّ عن لقطة الطلب.
     const cur = (
@@ -251,7 +253,7 @@ export async function approveStockAdjustment(
         message: `تغيّر المخزون منذ الطلب (كان ${r.expectedQuantity}، الآن ${liveQty}) — أعد الطلب بالرصيد الحاليّ`,
       });
     }
-    // ترتيب القفل الحاكم مع الشراء/WAVG: branchStock ثم productVariants. نحجز لقطة التكلفة حتى
+    // ترتيب القفل الحاكم مع الشراء/WAVG: productVariants ثم branchStock. نحجز لقطة التكلفة حتى
     // نهاية الاعتماد، ونرفض أيضاً أي طلب قديم صار صنفه أمانة قبل تطبيق حركة أو قيد.
     const variant = (
       await tx

@@ -5,7 +5,8 @@ import { asc, eq, inArray, sql } from "drizzle-orm";
 import { branchStock, productVariants, products, productionLines, productionOrders } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { applyMovement } from "../inventoryService";
+import { applyMovement, ensureBranchStockRows } from "../inventoryService";
+import { lockInventoryVariants } from "../inventory/stockLock";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
 import {
@@ -33,6 +34,9 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
 
     // ② تحقّق + تحليل الأسطر (تشغيل بوصفة أو مدخلات/مخرجات يدوية) + حارس التحويل الذاتي + وجود الأصناف.
     const { inLines, outLines, laborCost, spoilage, linkedRecipeId } = await resolveAndValidateLines(tx, input);
+    // اقفل اتحاد المدخلات والمخرجات مرةً واحدةً بترتيب id قبل أي حركة؛ وإلّا قد يمسك
+    // مستندٌ مدخلاً أعلى ثم ينتظر مخرجاً أدنى يمسكه مستندٌ معاكس.
+    await lockInventoryVariants(tx, inLines.concat(outLines).map((line) => line.variantId));
 
     // ③ رأس المستند (تكاليف مؤقّتة + حقول الإنتاجية إن كان تشغيلاً بوصفة).
     const docNumber = await nextProductionNumber(tx, input.branchId);
@@ -281,6 +285,7 @@ async function produceOutputs(
 
   // اقفل صفوف رصيد المخرجات ثم اقرأ SUM العالمي **قبل** أي إدخال (مطابقة purchaseService).
   const outVarList = Array.from(new Set(outLines.map((l) => l.variantId)));
+  await ensureBranchStockRows(tx, outVarList, branchId);
   await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, outVarList)).orderBy(asc(branchStock.variantId)).for("update");
   const stockRows = await tx
     .select({ variantId: branchStock.variantId, totalQty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })

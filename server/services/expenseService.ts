@@ -25,6 +25,7 @@ import { localDayStart } from "./dateRange";
 import { getDb, type Tx } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
+import { lockInventoryVariants } from "./inventory/stockLock";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -507,6 +508,9 @@ async function createStockExpenseTx(
 
   // خصم المخزون (تصاعدياً بـvariantId) + snapshot الكلفة + أسطر الأصناف.
   resolved.sort((a, b) => a.variantId - b.variantId);
+  // mutex التكلفة يسبق اللقطة: لا تسجّل فاتورة المصروف COGS قديمة ثم تخصم المخزون
+  // بعد إعادة تقييم/WAVG أحدث داخل المعاملة نفسها.
+  await lockInventoryVariants(tx, varIds);
   const costRows = await tx
     .select({ id: productVariants.id, costPrice: productVariants.costPrice })
     .from(productVariants)

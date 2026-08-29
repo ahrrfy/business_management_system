@@ -35,6 +35,7 @@ import {
   lineDiscountExceedsThreshold,
 } from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
+import { lockInventoryVariants } from "./inventory/stockLock";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "./accounting/postingEngine";
 import { money, round2, roundCashIQD, toDbMoney } from "./money";
@@ -268,11 +269,10 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
 
     // ٤. تحقّق أنّ كل سطر بندُ طباعة، وحمّل نوعه المخزني وكلفة متوسطه المرجّح.
     const lineVarIds = Array.from(new Set(input.lines.map((l) => l.variantId)));
-    const varRows = await tx
+    const rawVarRows = await tx
       .select({
         id: productVariants.id,
         isActive: productVariants.isActive,
-        costPrice: productVariants.costPrice,
         productType: products.productType,
         productName: products.name,
         invoiceLabel: products.invoiceLabel,
@@ -282,6 +282,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productVariants.id, lineVarIds));
+    const varRows = rawVarRows.map((v) => ({ ...v, costPrice: "0" }));
     const varMap = new Map(varRows.map((v) => [Number(v.id), v]));
     for (const l of input.lines) {
       const v = varMap.get(l.variantId);
@@ -322,6 +323,15 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     }
     // كلفة المواد المُستهلَكة (snapshot من costPrice).
     const materialVarIds = Array.from(new Set(recLines.map((rl) => Number(rl.inputVariantId))));
+    await lockInventoryVariants(tx, lineVarIds.concat(materialVarIds));
+    const lockedLineCosts = await tx
+      .select({ id: productVariants.id, costPrice: productVariants.costPrice })
+      .from(productVariants)
+      .where(inArray(productVariants.id, lineVarIds));
+    for (const row of lockedLineCosts) {
+      const current = varMap.get(Number(row.id));
+      if (current) current.costPrice = String(row.costPrice ?? "0");
+    }
     const matCostRows = materialVarIds.length
       ? await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(inArray(productVariants.id, materialVarIds))
       : [];

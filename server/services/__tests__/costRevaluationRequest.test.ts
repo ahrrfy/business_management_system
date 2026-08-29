@@ -277,8 +277,24 @@ describe("approveCostRevaluation — الأثر عند الاعتماد وحده
       { variantId: 1, newCost: "80.00", purpose: "CORRECTION", reason: REASON },
       admin,
     );
-    await expect(approveCostRevaluation(req.requestId, mgr2)).rejects.toThrow(/رصيدٌ في فرعٍ آخر/);
+    await expect(approveCostRevaluation(req.requestId, mgr2)).rejects.toThrow(/فرعٍ آخر/);
     expect(await variantCost()).toBe("100.00");
+  });
+
+  it("عزل الفرع يبقى نافذاً عند صفر المخزون — لا موافقة ولا رفض لطلب فرعٍ آخر", async () => {
+    await seed({ qty1: 0 });
+    const req = await requestCostRevaluation(
+      { variantId: 1, newCost: "80.00", purpose: "CORRECTION", reason: REASON },
+      mgr1,
+    );
+
+    await expect(approveCostRevaluation(req.requestId, mgr2)).rejects.toThrow(/فرعٍ آخر/);
+    await expect(rejectCostRevaluation(req.requestId, mgr2, "طلب لا يخص هذا الفرع")).rejects.toThrow(/فرعٍ آخر/);
+    expect(await variantCost()).toBe("100.00");
+
+    await rejectCostRevaluation(req.requestId, mgr1b, "الفاتورة الأصلية صحيحة");
+    const rows = await listCostRevaluations({ status: "REJECTED", branchId: 1 }, mgr1b);
+    expect(rows).toHaveLength(1);
   });
 });
 
@@ -305,5 +321,13 @@ describe("rejectCostRevaluation + المعاينة", () => {
     expect(pv.totalQuantity).toBe(14);
     expect(pv.branches.map((b) => [b.branchId, b.quantity])).toEqual([[1, 10], [2, 4]]);
     expect(pv.branches[0].branchName).toBe("الرئيسي");
+  });
+
+  it("معاينة مدير الفرع لا تكشف اسم فرعٍ آخر أو كميته", async () => {
+    await seed({ cost: "100.00", qty1: 10, qty2: 4 });
+    const pv = await getCostRevaluationPreview(1, mgr1);
+    expect(pv.totalQuantity).toBe(10);
+    expect(pv.branches.map((b) => [b.branchId, b.quantity])).toEqual([[1, 10]]);
+    expect(pv.branches.some((b) => b.branchName === "فرع المبيعات")).toBe(false);
   });
 });

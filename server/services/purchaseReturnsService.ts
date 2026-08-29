@@ -22,6 +22,7 @@ import {
   recordIdempotencyKey,
 } from "./idempotency";
 import { applyMovement } from "./inventoryService";
+import { lockInventoryVariants } from "./inventory/stockLock";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { money, round2, sumMoney, toDbMoney } from "./money";
@@ -220,6 +221,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       return refItem;
     });
     const variantIds = Array.from(new Set(selectedRefItems.map((item) => Number(item.variantId)))).sort((a, b) => a - b);
+    await lockInventoryVariants(tx, variantIds);
     await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, variantIds)).for("update");
     const lockedVariants = await tx
       .select({

@@ -29,7 +29,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   auditLogs,
   branchStock,
@@ -94,7 +94,7 @@ async function loadBranchQuantities(
   const base = tx
     .select({ branchId: branchStock.branchId, quantity: branchStock.quantity })
     .from(branchStock)
-    .where(and(eq(branchStock.variantId, variantId), ne(branchStock.quantity, 0)));
+    .where(eq(branchStock.variantId, variantId));
   const rows = lock ? await base.for("update") : await base;
   return rows
     .map((r) => ({ branchId: Number(r.branchId), quantity: Number(r.quantity ?? 0) }))
@@ -138,6 +138,24 @@ function assertBranchAuthority(
     throw new TRPCError({
       code: "FORBIDDEN",
       message: `التكلفة عامّة لكل الفروع، ولهذا الصنف رصيدٌ في فرعٍ آخر — لا يمكن ${verb} إعادة تقييمه إلّا من الإدارة.`,
+    });
+  }
+}
+
+/**
+ * الطلب نفسه مستندٌ فرعيّ حتى عندما تكون لقطة المخزون صفرية. لا تكفي سلطة صفوف
+ * `branchStock`: قد لا توجد صفوف أصلاً، وعندها يجب أن يبقى القرار في فرع المنشئ.
+ */
+function assertRequestBranchAuthority(
+  requestBranchId: number,
+  actor: Actor & { isOwner?: boolean | null },
+  verb: string,
+): void {
+  if (canCrossBranches(actor)) return;
+  if (Number(actor.branchId) !== Number(requestBranchId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `لا يمكن ${verb} طلب إعادة تقييم تابعٍ لفرعٍ آخر.`,
     });
   }
 }
@@ -273,8 +291,8 @@ function assertApprover(createdBy: number | null, actor: Actor, verb: string): v
 /**
  * يعتمد طلباً معلَّقاً: يحدّث التكلفة ويُرحّل قيد `ADJUST` لكل فرعٍ له رصيد.
  *
- * الترتيب مقصود — قفل `branchStock` ثمّ `productVariants` هو نفس ترتيب قفل مسار الشراء/WAVG
- * وتسوية المخزون، فلا حلقةَ انتظارٍ متبادل بينها.
+ * الترتيب مقصود — `productVariants` هو mutex الحاكم ثمّ `branchStock`، مطابقاً لكل
+ * حركة/WAVG؛ فلا تتجزّأ أقفال الفروع قبل حسم ملكية الصنف.
  */
 export async function approveCostRevaluation(
   id: number,
@@ -290,15 +308,13 @@ export async function approveCostRevaluation(
         .limit(1)
     )[0];
     if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "طلب إعادة التقييم غير موجود" });
+    assertRequestBranchAuthority(Number(r.branchId), actor, "اعتماد");
     if (r.status !== "PENDING_APPROVAL") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "طلب إعادة التقييم ليس في انتظار الموافقة" });
     }
     assertApprover(r.createdBy != null ? Number(r.createdBy) : null, actor, "اعتماد");
 
     const variantId = Number(r.variantId);
-    const liveRows = await loadBranchQuantities(tx, variantId, true);
-    assertBranchAuthority(liveRows, actor, "اعتماد");
-
     const variant = (
       await tx
         .select({
@@ -318,6 +334,8 @@ export async function approveCostRevaluation(
         message: "صار الصنف بضاعة أمانة بعد الطلب — ارفض الطلب بدل اعتماده",
       });
     }
+    const liveRows = await loadBranchQuantities(tx, variantId, true);
+    assertBranchAuthority(liveRows, actor, "اعتماد");
 
     // انحراف التكلفة: قيمة القيد تُحسب من الفرق، فلو تحرّكت التكلفة منذ الطلب (استلامٌ غيّر WAVG
     // مثلاً) لرحّلنا فرقاً محسوباً على أساسٍ زال — والنتيجة تكلفةٌ نهائية صحيحة بقيدٍ خاطئ.
@@ -428,13 +446,19 @@ export async function rejectCostRevaluation(
   return withTx(async (tx) => {
     const r = (
       await tx
-        .select({ id: costRevaluationRequests.id, status: costRevaluationRequests.status, createdBy: costRevaluationRequests.createdBy })
+        .select({
+          id: costRevaluationRequests.id,
+          branchId: costRevaluationRequests.branchId,
+          status: costRevaluationRequests.status,
+          createdBy: costRevaluationRequests.createdBy,
+        })
         .from(costRevaluationRequests)
         .where(eq(costRevaluationRequests.id, id))
         .for("update")
         .limit(1)
     )[0];
     if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "طلب إعادة التقييم غير موجود" });
+    assertRequestBranchAuthority(Number(r.branchId), actor, "رفض");
     if (r.status !== "PENDING_APPROVAL") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "طلب إعادة التقييم ليس في انتظار الموافقة" });
     }
@@ -540,7 +564,7 @@ export async function listCostRevaluations(
 /** يقرأ حالة صنفٍ قبل الطلب: التكلفة الحالية وكميّاته لكل فرع — تُعرَض في نموذج الطلب. */
 export async function getCostRevaluationPreview(
   variantId: number,
-  _actor: Actor,
+  actor: Actor & { isOwner?: boolean | null },
 ): Promise<{
   variantId: number;
   costPrice: string;
@@ -558,7 +582,10 @@ export async function getCostRevaluationPreview(
         .limit(1)
     )[0];
     if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
-    const rows = await loadBranchQuantities(tx, variantId, false);
+    const allRows = await loadBranchQuantities(tx, variantId, false);
+    const rows = canCrossBranches(actor)
+      ? allRows
+      : allRows.filter((r) => Number(r.branchId) === Number(actor.branchId));
     const names = rows.length
       ? await tx
         .select({ id: branches.id, name: branches.name })
