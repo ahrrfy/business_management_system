@@ -18,6 +18,7 @@ import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/delivery
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { playReadyBeep } from "@/lib/notifyBeep";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } from "@shared/workOrderDeliveryState";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
@@ -34,42 +35,7 @@ type PartialPickup = { row: QueueRow; payment?: PickupPayment; message: string; 
 const FULFILL_GATE: RoleGate = { roles: ["cashier", "manager"], module: "workorders", level: "FULL" };
 const DISPATCH_GATE: RoleGate = { roles: ["cashier", "manager"] };
 
-/**
- * صافرةُ إشعارِ جاهزيّة (Web Audio API) — 660Hz لـ150ms ثمّ 880Hz لـ200ms. لا ملفَّ صوتٍ ولا
- * أصلَ إضافيّ. تفشل مغلقةً في السياقات بلا user-gesture: بعض المتصفّحات تحظر إنشاء AudioContext
- * قبل أوّل نقرة، فنحاول بلا throw. Toast يبقى ظاهراً للمعتِمِد بصرياً وحده. لا نُخزّن Context
- * عالمياً كي لا نحتفظ بحلقاتٍ مفتوحة بين تبويبات — دورةُ حياةٍ لكل صفارة.
- */
-function playReadyBeep(): void {
-  try {
-    const AC: typeof AudioContext | undefined =
-      (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
-      ?? (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AC) return;
-    const ctx = new AC();
-    const now = ctx.currentTime;
-    const beep = (freq: number, start: number, dur: number) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.frequency.value = freq;
-      osc.type = "sine";
-      gain.gain.setValueAtTime(0, now + start);
-      gain.gain.linearRampToValueAtTime(0.15, now + start + 0.01);
-      gain.gain.linearRampToValueAtTime(0, now + start + dur);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(now + start);
-      osc.stop(now + start + dur);
-    };
-    beep(660, 0, 0.15);
-    beep(880, 0.18, 0.2);
-    // إغلاق AudioContext بعد نهاية آخر نغمة (منع تسريب)؛ فشلُ الإغلاق لا يهمّ.
-    setTimeout(() => {
-      try { ctx.close(); } catch { /* ignore */ }
-    }, 500);
-  } catch {
-    /* المتصفّح بلا صوت — Toast يفي (ولا نُفشل تجربة الاستقبال). */
-  }
-}
+// صافرة الجاهزيّة استُخرجت إلى @/lib/notifyBeep — تُستعمل هنا وفي DeliveryHub معاً (Slice A، ٢٩/٨/٢٦).
 
 /**
  * اِستقبال (تكامل التوصيل، ٤/٨): طابور طلبات الاستقبال — الفجوة التي أبلغ عنها المالك («بعد إكمال
