@@ -865,6 +865,7 @@ export const saleRouter = router({
             customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
             customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
             customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
+            createdBy: invoices.createdBy,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             // قناة الفاتورة (١٩/٨): `sourceType` وحده لا يميّز الكاشيرات الثلاثة (كلّها POS).
@@ -938,6 +939,7 @@ export const saleRouter = router({
             customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
             customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
             customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
+            createdBy: invoices.createdBy,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             // قناة الفاتورة (١٩/٨): `sourceType` وحده لا يميّز الكاشيرات الثلاثة (كلّها POS).

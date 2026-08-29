@@ -33,6 +33,7 @@ export default defineConfig({
       "client/src/lib/priceHistory.test.ts",
       "client/src/lib/dashboardActionScope.test.ts",
       "client/src/lib/integrationCenter.test.ts",
+      "client/src/lib/uiConsistency.test.ts",
       "client/src/lib/doubleEntryReportPeriod.test.ts",
       "client/src/lib/doubleEntryRoleLabels.test.ts",
       "client/src/lib/workOrderRefundPolicy.test.ts",

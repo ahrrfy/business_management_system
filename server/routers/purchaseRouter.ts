@@ -10,6 +10,7 @@ import {
   purchaseOrderItems,
   purchaseOrders,
   suppliers,
+  users,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
@@ -699,10 +700,13 @@ export const purchaseRouter = router({
               returnedUsd: purchaseOrders.returnedUsd,
               agreedRate: purchaseOrders.agreedRate,
               status: purchaseOrders.status,
+              createdBy: purchaseOrders.createdBy,
+              createdByName: users.name,
               supplierName: suppliers.name,
             })
             .from(purchaseOrders)
             .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
+            .leftJoin(users, eq(purchaseOrders.createdBy, users.id))
             .where(where)
             .orderBy(desc(purchaseOrders.id))
             .limit(lim)

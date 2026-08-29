@@ -38,6 +38,27 @@
   --ui-shadow-surface: 0 1px 2px rgb(15 23 42 / 0.08);
   --ui-shadow-float: 0 12px 30px -16px rgb(15 23 42 / 0.28);
   --ui-shadow-dialog: 0 24px 64px -24px rgb(15 23 42 / 0.45);
+
+  /* رموز التخطيط الدلالية — حقول التفاصيل والجداول والنماذج تستعملها بدل أرقام محلية. */
+  --ui-detail-gap-x: 1rem;
+  --ui-detail-gap-y: 0.875rem;
+  --ui-detail-min-column: 12rem;
+  --ui-form-min-column: 15rem;
+  --ui-table-cell-inline: 0.75rem;
+  --ui-reading-line: 1.7;
+}
+
+/* مقياس قراءة آمن: root rem فقط؛ لا CSS zoom ولا transform. الحدود 15–18px تمنع
+   التصغير المؤذي أو التكبير الذي يجعل الحقول غير قابلة للاستعمال. تقريب المتصفح يبقى مستقلاً. */
+html,
+html[data-ui-scale="normal"] { font-size: 16px; }
+html[data-ui-scale="compact"] { font-size: 15px; }
+html[data-ui-scale="large"] { font-size: 17px; }
+html[data-ui-scale="xlarge"] { font-size: 18px; }
+
+@media print {
+  html,
+  html[data-ui-scale] { font-size: 16px; }
 }
 
 body {
