@@ -83,6 +83,16 @@ export function studioExportRouter(): Router {
     const parsed = parseScope(req.query);
     if (!parsed.ok) return res.status(400).json({ error: parsed.message });
 
+    // وضعُ الاستعلام المسبق (preflight): يعيد ٢٠٠ فوراً بلا بثِّ أرشيفٍ أو استعلامِ صور
+    // — كي يتحقّق الواجهةُ عبر `fetch` من صلاحية الجلسة وسلامة النطاق قبل أن يُطلق تنزيلَ
+    // المتصفّح **الأصيل** (`<a href download>` أو `location.assign`) الذي يبثّ الأرشيفَ
+    // إلى القرص دون تحميله في ذاكرة JS. بلا هذا كنّا نلفّ الأرشيف كلَّه في Blob (يصل ١٫٨
+    // ج.ب لصادرات ٢٠٠٠ صورة) فيتفجّر Safari على iPhone (مراجعة Codex P1). القراءةُ فقط
+    // من حرّاس المسار أعلاه — لا تكلفةَ فعليّة (لا استعلامَ صورة، لا نداءَ R2).
+    if (req.query.preflight === "1") {
+      return res.status(200).json({ ok: true });
+    }
+
     const actor: ProductStudioActor = {
       userId: Number(user.id),
       branchId: user.branchId == null ? null : Number(user.branchId),

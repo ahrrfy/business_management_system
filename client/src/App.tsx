@@ -83,6 +83,7 @@ const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
 const ProductImageStudio = lazy(() => import("@/pages/ProductImageStudio"));
+const StudioCampaignsManager = lazy(() => import("@/pages/StudioCampaignsManager"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
 const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
 const PurchaseEdit = lazy(() => import("@/pages/PurchaseEdit"));
@@ -340,6 +341,9 @@ export default function App() {
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
+      {/* ٢٨/٨: شاشة إدارة الحملات المستقلّة — أسبقُ من `/catalog/image-studio` في الترتيب
+          لأنّها أكثر تخصّصاً (wouter يطابق الترتيب النصّيّ). */}
+      <Route path="/catalog/image-studio/campaigns"><Shell><StudioRouteAccess><StudioCampaignsManager /></StudioRouteAccess></Shell></Route>
       <Route path="/catalog/image-studio"><Shell allowColdOffline><StudioRouteAccess><ProductImageStudio /></StudioRouteAccess></Shell></Route>
       {/* gstack B10 (٧/٧/٢٦): موجات الأسعار — تبويب داخل InventoryHub. المسار المستقلّ يبقى للحفاظ على الروابط. */}
       <Route path="/price-waves"><Redirect to="/inventory?tab=price-waves" /></Route>

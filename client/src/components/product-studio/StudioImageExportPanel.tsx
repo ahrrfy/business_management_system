@@ -14,7 +14,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Download, Image as ImageIcon } from "lucide-react";
+import { notify } from "@/lib/notify";
+import { Download, Image as ImageIcon, Loader2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 type ExportScope = "ALL" | "CATEGORY" | "PRODUCTS";
@@ -28,6 +29,7 @@ export function StudioImageExportPanel({ categories }: { categories: CategoryOpt
   const [scope, setScope] = useState<ExportScope>("ALL");
   const [categoryId, setCategoryId] = useState("");
   const [productIdsInput, setProductIdsInput] = useState("");
+  const [downloading, setDownloading] = useState(false);
 
   const parsedProductIds = useMemo(() => {
     return productIdsInput
@@ -42,6 +44,44 @@ export function StudioImageExportPanel({ categories }: { categories: CategoryOpt
     if (scope === "PRODUCTS") return parsedProductIds.length > 0 ? `/api/studio/export.zip?scope=PRODUCTS&productIds=${parsedProductIds.join(",")}` : null;
     return null;
   }, [scope, categoryId, parsedProductIds]);
+
+  const canDownload = !!downloadUrl && !(scope === "PRODUCTS" && parsedProductIds.length > 500);
+
+  // بلاغ المالك (٢٨/٨): «تنزيل صور الكتالوج يطلب مني كلمة المرور واسم المستخدم…».
+  // الجذر: الملاحةُ المباشرة بـ`<a href download>` حين تنقص جلسةُ الكوكي، الخادمُ يعود بـ401
+  // ومتصفّح iOS/Safari يعرض حوار «تسجيل الدخول» الخاصّ به.
+  //
+  // ⚠️ حلٌّ سابقٌ (`fetch` + `Blob`) كان يُصلح حوار المصادقة لكنّه **يبتلع الأرشيف كلَّه في
+  // ذاكرة JS** قبل أن يبدأ التنزيلُ فعلياً: صادرةُ «كل الكتالوج» تصل ٢٠٠٠ صورة × ٩٠٠ ك.ب =
+  // ‎~1.8 ج.ب، فيتفجّر Safari على iPhone بذاكرةٍ محدودة (مراجعة Codex P1). الحلّ الجديد
+  // على مرحلتين: **استعلامٌ مسبق** (`?preflight=1`) خفيف يتحقّق من صلاحية الجلسة والنطاق
+  // بلا بثِّ بايتٍ واحد، ثمّ **ملاحةٌ برمجية** (`location.assign`) تُطلق تنزيلَ المتصفّح
+  // الأصيل الذي يبثّ الأرشيفَ من الشبكة إلى القرص مباشرةً بلا لمس ذاكرة JS. الفشلُ ما زال
+  // يبقى داخل التطبيق كرسالةٍ عربية لأنّ الاستعلامَ المسبقَ يلتقط 401/403/400 قبل الملاحة.
+  const beginDownload = async () => {
+    if (!downloadUrl || downloading) return;
+    setDownloading(true);
+    try {
+      const preflightUrl = `${downloadUrl}&preflight=1`;
+      const check = await fetch(preflightUrl, { credentials: "include" });
+      if (!check.ok) {
+        if (check.status === 401) throw new Error("انتهت جلستُك — سجّل دخولاً وأعد المحاولة");
+        if (check.status === 403) throw new Error("لا صلاحيةَ لتنزيل الصور — راجع مدير النظام");
+        const body = await check.json().catch(() => null);
+        throw new Error(body?.error ?? `تعذّر تجهيز التنزيل (${check.status})`);
+      }
+      // الاستعلامُ المسبق نجح ⇒ الجلسة صالحةٌ والنطاق مقبول. نُطلِق تنزيلَ المتصفّح
+      // الأصيل الذي يعتمد على كوكي الجلسة نفسه (نفس السياق، نفس الأصل) ويبثّ الأرشيف
+      // مباشرةً بلا Blob. الخادم يضيف `Content-Disposition: attachment` فيفتح مربّع الحفظ
+      // بلا انتقالٍ فعليّ عن الصفحة.
+      window.location.assign(downloadUrl);
+      notify.ok("بدأ التنزيل — تحقّق من مجلّد التنزيلات");
+    } catch (err) {
+      notify.err(err);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <Card>
@@ -94,19 +134,17 @@ export function StudioImageExportPanel({ categories }: { categories: CategoryOpt
         <div>
           {/* قيدُ ٥٠٠ لنطاق PRODUCTS فقط — تبديلُ النطاق يترك حقلَ المنتجات معبَّأً،
               فتقييدُ الأزرار كلّها به يُبقيها معطَّلةً بلا سببٍ فعّال (الجذر: مراجعة
-              Codex P2 على PR #811). */}
-          <Button asChild className="min-h-11" disabled={!downloadUrl || (scope === "PRODUCTS" && parsedProductIds.length > 500)}>
-            {downloadUrl && (scope !== "PRODUCTS" || parsedProductIds.length <= 500) ? (
-              // <a download> يُخبِر المتصفح بفتح مربّع حفظ (بدل عرض الاستجابة). الخادم يُرسل
-              // Content-Disposition attachment كذلك كإحتياط. الفتحُ في نافذةٍ جديدة يمنع
-              // خسارة حالة الاستوديو إن ألغى المستخدمُ التنزيل.
-              <a href={downloadUrl} download rel="noopener noreferrer">
-                <Download aria-hidden className="size-4" /> نزّل الأرشيف
-              </a>
+              Codex P2 على PR #811). زرٌّ لا رابط: `fetch` يمرّر الكوكي صراحةً ويُعيد أخطاءَ
+              الخادم رسالةً عربية داخل التطبيق — لا حوار مصادقةٍ متصفّحيّ عاجز. */}
+          <Button type="button" className="min-h-11" disabled={!canDownload || downloading} onClick={beginDownload}>
+            {downloading ? (
+              <>
+                <Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ تجهيز الأرشيف…
+              </>
             ) : (
-              <span>
+              <>
                 <Download aria-hidden className="size-4" /> نزّل الأرشيف
-              </span>
+              </>
             )}
           </Button>
         </div>
