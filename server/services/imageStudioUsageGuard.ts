@@ -22,12 +22,22 @@ const MAX_CONCURRENT_CALLS = 2;
 const USER_WINDOW_MS = 60_000;
 const MAX_REQUESTS_PER_USER_WINDOW = 3;
 
+/**
+ * يقبل ١..maximum كسقفٍ يوميّ، **و`0` كقيمةٍ خاصّة تعني «لا سقف داخليّ»** (يُستعمَل حين
+ * تحكم الكلفة من بوّابة المزوّد نفسه — Google AI Studio billing / remove.bg). قيمةٌ خارج
+ * النطاق ⇒ عودةٌ إلى الافتراضي بلا تحذير.
+ * صفرٌ صريحٌ ⇒ يُتخطّى فحص السقف اليوميّ (تُحسَب الاستهلاكات للتقرير فقط، بلا رفض).
+ */
 function boundedEnvInt(name: string, fallback: number, maximum: number): number {
-  const value = Number(process.env[name]);
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (value === 0) return 0; // ⇒ بلا سقف داخليّ
   return Number.isInteger(value) && value >= 1 && value <= maximum ? value : fallback;
 }
 
-/** حدود متحفظة قابلة للضبط من بيئة الخادم فقط، وليست من إدخال مستخدم أو واجهة عمومية. */
+/** حدود متحفظة قابلة للضبط من بيئة الخادم فقط، وليست من إدخال مستخدم أو واجهة عمومية.
+ *  قيمةُ `0` عبر env تعني «بلا سقف داخليّ» — تُحسَب الاستهلاكات ولا تُرفَض. */
 export const IMAGE_STUDIO_DAILY_LIMITS: Record<ImageStudioService, number> = {
   REMOVEBG: boundedEnvInt("IMAGE_STUDIO_REMOVEBG_DAILY_LIMIT", 30, 1_000),
   AI: boundedEnvInt("IMAGE_STUDIO_AI_DAILY_LIMIT", 20, 1_000),
@@ -150,7 +160,12 @@ async function reserveSharedBudgets(
       .from(imageStudioUsageDaily)
       .where(and(eq(imageStudioUsageDaily.usageDate, usageDate), eq(imageStudioUsageDaily.service, service)))
       .for("update");
-    if (!daily || daily.requestCount >= dailyLimit) {
+    if (!daily) {
+      throw new ImageStudioGuardError("DAILY_BUDGET_EXHAUSTED");
+    }
+    // `dailyLimit === 0` ⇒ سقفٌ خارجيّ لدى المزوّد (Google AI Studio billing) يحكم الكلفة،
+    // فلا حاجة لسقفٍ داخليٍّ يزدوج معه. نُبقي عدّ الاستهلاك للتقرير/الشفافية ولا نرفض.
+    if (dailyLimit > 0 && daily.requestCount >= dailyLimit) {
       throw new ImageStudioGuardError("DAILY_BUDGET_EXHAUSTED");
     }
     await tx.update(imageStudioUsageDaily).set({
