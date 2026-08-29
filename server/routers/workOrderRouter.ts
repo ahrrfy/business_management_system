@@ -646,6 +646,9 @@ export const workOrderRouter = router({
           deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
           deliveryCost: workOrders.deliveryCost,
+          // Slice D (٢٩/٨/٢٦) — «إجمالي ما يدفعه العميل» يُعرَض في بطاقة الأمر ⇒ يلزمه معرفة مَن
+          // يقبض الأجرة (نفس منطق DispatchDialog): COURIER يجمعها فوق COD، COUNTER/SHOP لا يزيد.
+          deliveryFeeCollection: workOrders.deliveryFeeCollection,
           assignedTo: workOrders.assignedTo,
           assigneeName: users.name,
           createdBy: workOrders.createdBy,

@@ -480,6 +480,29 @@ export default function WorkOrderDetail() {
 
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="سعر البيع" value={data.salePrice} strong />
+              {D(data.deposit ?? 0).gt(0) && (
+                <SummaryRow label="العربون المقبوض" value={`−${fmt(data.deposit ?? "0")}`} />
+              )}
+              {/* Slice D (٢٩/٨/٢٦): إظهار «إجمالي ما سيدفعه العميل» شاملاً التوصيل في بطاقة الأمر —
+                  بلاغ المالك: «يجب أن يعلم الزبون بالمبلغ الكلي النهائي شاملاً التوصيل». يظهر عند
+                  التوصيل بأجرةٍ موجبة، ويُحسَب بحسب `feeCollection`: COURIER يجمع، COUNTER/SHOP لا. */}
+              {data.hasDelivery && D(data.deliveryCost ?? 0).gt(0) && (() => {
+                const feeCollection = (data.deliveryFeeCollection ?? "COURIER") as "COURIER" | "COUNTER" | "SHOP";
+                const feeLabel = feeCollection === "COURIER" ? "أجرة التوصيل (المندوب يقبضها)"
+                  : feeCollection === "COUNTER" ? "أجرة التوصيل (قُبضت أمانةً)"
+                  : "أجرة التوصيل (تتحمّلها المكتبة)";
+                const remaining = Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0));
+                const customerPays = feeCollection === "COURIER" ? remaining + Number(data.deliveryCost ?? 0) : remaining;
+                return (
+                  <>
+                    <SummaryRow label={feeLabel} value={data.deliveryCost ?? "0"} />
+                    <div className="flex justify-between border-t border-[var(--sem-info)] pt-2 text-base font-black text-[var(--sem-info)]">
+                      <span>يدفعه العميل</span>
+                      <span dir="ltr" className="tabular-nums">{fmt(String(customerPays))} د.ع</span>
+                    </div>
+                  </>
+                );
+              })()}
               {showCost && <SummaryRow label="كلفة المواد" value={data.materialsCost} />}
               {showCost && <SummaryRow label="كلفة العمالة" value={data.laborCost} />}
             </div>
