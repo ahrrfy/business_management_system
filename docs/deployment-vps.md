@@ -151,6 +151,35 @@ systemctl show pm2-deploy.service -p ExecStart --value | grep pm2-systemd-start.
 `sudoedit`؛ لا تمرّره وسيطاً ولا تنسخ المثال الوهمي. بعد إصدار الشهادات، التجديد المسموح هو
 `certbot renew`؛ لا تشغّل أمراً يعيد كتابة vhost الملتزم.
 
+### عقد تدوير TLS مع Android v10
+
+إصدار Android v10 يفرض SPKI pinning على `srv1548487.hstgr.cloud` وحده. المجموعة الموزعة تحتوي
+pin الورقة الحيّة وpin وسيط Let's Encrypt `YE1`، وتنتهي حمايتها في `2027-08-01`. الجرد الكامل
+للبصمات وأوامر الاستخراج ودورة التداخل موجود في
+[`android-native/docs/certificate-pinning.md`](../android-native/docs/certificate-pinning.md).
+
+- قبل `certbot renew` اليدوي، أو أي تغيير CA/مفتاح/سلسلة، استخرج السلسلة المرشحة واحسب SPKI لكل
+  شهادة. لا تُفعّل سلسلة لا يطابق أحد مفاتيحها pin موجوداً في نسخة Android المنتشرة.
+- تجديد الورقة تحت الوسيط `YE1` تغطيه المجموعة الحالية، لكن يلزم بعد التجديد فحص السلسلة الحية من
+  خارج VPS ثم اختبار تسجيل الدخول و2FA و`superApp.bootstrap` من نسخة Play على جهاز حقيقي.
+- تغيير الوسيط يتطلب أولاً إضافة pin حقيقية للسلسلة الجديدة، إصدار `versionCode` أعلى، اجتياز
+  `pnpm check:mobile-release` وفحوص Android، ثم انتظار وصول النسخة إلى `95%` من المختبرين قبل تبديل
+  nginx. أبق pin السلسلة القديمة خلال نافذة التداخل.
+- ابدأ مراجعة دورية جديدة في موعد أقصاه `2027-07-01`. انتهاء `pin-set` لا يقطع التطبيق، لكنه يوقف
+  فرض pinning ويعيد الثقة إلى مخزن النظام، لذلك يُعامل كتراجع أمني لا كمهلة قابلة للتجاهل.
+
+فحص القراءة بعد أي تجديد:
+
+```bash
+host='srv1548487.hstgr.cloud'
+openssl s_client -connect "${host}:443" -servername "$host" \
+  -verify_hostname "$host" -verify_return_error -showcerts </dev/null
+curl --fail --silent --show-error "https://${host}/healthz"
+```
+
+إذا لم تطابق السلسلة الحية أي pin موزعة، أعد السلسلة السابقة ثم نفّذ `nginx -t` وreload قبل أي
+محاولة إصلاح أخرى. على هذا الخادم المشترك لا reboot ولا تعديل عام للجدار الناري ضمن تدوير الشهادة.
+
 **ثبّت مُثبّت Nginx الموثوق مرة لكل إصدار تغيّرت فيه ملفاته.** لا تشغّل JavaScript من
 `/home/deploy/erp` بصلاحية root. استعمل فقط SHA-256 المنشورين في summary تشغيل
 `check-test-build` الأخضر على push إلى `main` للإصدار نفسه. تشمل الحزمة المثبّت والعقد والمدقق

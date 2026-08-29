@@ -21,6 +21,11 @@ const expected = Object.freeze({
   versionCode: 10,
   versionName: "1.0.2",
   productionBaseUrl: "https://srv1548487.hstgr.cloud",
+  certificatePinExpiration: "2027-08-01",
+  certificateSpkiPins: Object.freeze([
+    "heyx24VzgigLNUK/xrMM4IODY0kLR33mjqjg/b8HUPg=",
+    "brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=",
+  ]),
 });
 const firebaseTokenUri = "https://oauth2.googleapis.com/token";
 const firebaseMessagingScope = "https://www.googleapis.com/auth/firebase.messaging";
@@ -491,8 +496,83 @@ function yamlJobBlock(source, jobName) {
     .join("\n");
 }
 
+function xmlAttribute(attributes, name) {
+  return attributes.match(new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`))?.[1] ?? null;
+}
+
+function verifyNetworkSecurityPinning(source) {
+  if (/PLACEHOLDER|BASE64_SHA256|YYYY-MM-DD|dev\.invalid|staging\.invalid/i.test(source)) {
+    fail("native production certificate pinning contains a placeholder or non-production host");
+  }
+
+  const expectedHost = new URL(expected.productionBaseUrl).hostname;
+  const domainConfigs = [...source.matchAll(/<domain-config\b([^>]*)>([\s\S]*?)<\/domain-config>/g)];
+  if (domainConfigs.length !== 1) {
+    fail("native production network security config must contain exactly one pinned domain-config");
+  }
+
+  const [, domainConfigAttributes, domainConfigBody] = domainConfigs[0];
+  if (xmlAttribute(domainConfigAttributes, "cleartextTrafficPermitted") !== "false") {
+    fail("native production pinned domain must explicitly reject cleartext traffic");
+  }
+
+  const domains = [...domainConfigBody.matchAll(/<domain\b([^>]*)>([^<]+)<\/domain>/g)];
+  if (
+    domains.length !== 1 ||
+    domains[0][2].trim() !== expectedHost ||
+    xmlAttribute(domains[0][1], "includeSubdomains") !== "false"
+  ) {
+    fail("native certificate pinning must target only the exact approved production host");
+  }
+
+  const pinSets = [...domainConfigBody.matchAll(/<pin-set\b([^>]*)>([\s\S]*?)<\/pin-set>/g)];
+  if (
+    pinSets.length !== 1 ||
+    xmlAttribute(pinSets[0][1], "expiration") !== expected.certificatePinExpiration
+  ) {
+    fail("native certificate pin expiration is missing or does not match the reviewed rotation date");
+  }
+
+  const pins = [...pinSets[0][2].matchAll(/<pin\b([^>]*)>([^<]+)<\/pin>/g)].map(
+    ([, attributes, value]) => {
+      const pin = value.trim();
+      if (xmlAttribute(attributes, "digest") !== "SHA-256") {
+        fail("native certificate pins must use SHA-256");
+      }
+      if (
+        !/^[A-Za-z0-9+/]{43}=$/.test(pin) ||
+        Buffer.from(pin, "base64").length !== 32 ||
+        Buffer.from(pin, "base64").toString("base64") !== pin
+      ) {
+        fail("native certificate pin is not a canonical SHA-256 SPKI value");
+      }
+      return pin;
+    },
+  );
+  const actualPins = [...new Set(pins)].sort();
+  const reviewedPins = [...expected.certificateSpkiPins].sort();
+  if (
+    pins.length !== reviewedPins.length ||
+    actualPins.length !== reviewedPins.length ||
+    actualPins.some((pin, index) => pin !== reviewedPins[index])
+  ) {
+    fail("native certificate pins do not match the independently reviewed production chain");
+  }
+
+  const trustAnchors = [...domainConfigBody.matchAll(/<certificates\b([^>]*)\/>/g)].map((match) =>
+    xmlAttribute(match[1], "src"),
+  );
+  if (!trustAnchors.includes("system") || trustAnchors.some((anchor) => anchor !== "system")) {
+    fail("native pinned production traffic must trust system anchors only");
+  }
+}
+
 function verifySourceContract() {
   const gradle = fs.readFileSync(path.join(root, "android-native/app/build.gradle.kts"), "utf8");
+  const networkSecurityConfig = fs.readFileSync(
+    path.join(root, "android-native/app/src/main/res/xml/network_security_config.xml"),
+    "utf8",
+  );
   const nativeCi = fs.readFileSync(path.join(root, ".github/workflows/android-native-ci.yml"), "utf8");
   const releaseCi = fs.readFileSync(path.join(root, ".github/workflows/android-release.yml"), "utf8");
   const releaseWorkflowGate = fs.readFileSync(
@@ -543,6 +623,7 @@ function verifySourceContract() {
   for (const fragment of requiredGradleFragments) {
     if (!gradle.includes(fragment)) fail("native Gradle release identity/policy is incomplete");
   }
+  verifyNetworkSecurityPinning(networkSecurityConfig);
   const applicationIdSuffixes = [...gradle.matchAll(/applicationIdSuffix\s*=\s*"([^"]+)"/g)]
     .map((match) => match[1]);
   if (applicationIdSuffixes.length !== 1 || applicationIdSuffixes[0] !== ".debug") {
@@ -594,6 +675,18 @@ function verifySourceContract() {
     !signedArtifactsJob.includes('test "$aab_actual" = "$expected"')
   ) {
     fail("release workflow does not verify the AAB signing certificate");
+  }
+  const expectedProductionHost = new URL(expected.productionBaseUrl).hostname;
+  for (const fragment of [
+    'dump xmltree --file res/xml/network_security_config.xml "$apk"',
+    `grep -Fq "T: '${expectedProductionHost}'"`,
+    "grep -Fq 'A: includeSubdomains=false'",
+    `grep -Fq 'A: expiration="${expected.certificatePinExpiration}"'`,
+    'test "$pin_count" -eq 2',
+  ]) {
+    if (!signedArtifactsJob.includes(fragment)) {
+      fail("release workflow does not verify certificate pinning in the packaged production APK");
+    }
   }
   if (!nativeCi.includes('- "scripts/verify-android-release-workflow-gate.mjs"')) {
     fail("native CI path filters do not cover release gate changes");
