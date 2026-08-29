@@ -20,7 +20,7 @@
  *     الاستوديو حيث لها كل السياق. الشاشة هنا مركزُ **الحوكمة** لا الاستهلاك.
  */
 import { Link } from "wouter";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -90,10 +90,51 @@ function classifyDueAt(dueAt: unknown, status: StudioCampaignStatus): "overdue" 
   return "ok";
 }
 
+/**
+ * حفظ فلاتر الشاشة في localStorage (٢٩/٨، تناظر مع S13 في كاشف الفجوات):
+ * حالة + فرع + بحث تُستعاد عند فتح الشاشة لاحقاً. المفتاح بنسخةٍ (v1) يتيح ترقيةً مستقبلية
+ * بلا كسرِ مستخدمٍ يحمل شكلاً قديماً — رفضٌ صامتٌ + عودةٌ للافتراضيّ. Storage معطَّل
+ * (Safari Private) يُعالَج بـtry/catch — لا كسرَ على مسارٍ غير حاسم.
+ */
+const CAMPAIGNS_FILTERS_KEY = "studio.campaigns-manager.filters.v1";
+type PersistedCampaignFilters = { status: StatusFilter; branch: "ALL" | number; search: string };
+const DEFAULT_CAMPAIGN_FILTERS: PersistedCampaignFilters = { status: "ALL", branch: "ALL", search: "" };
+
+function loadPersistedCampaignFilters(): PersistedCampaignFilters {
+  if (typeof window === "undefined") return DEFAULT_CAMPAIGN_FILTERS;
+  try {
+    const raw = window.localStorage.getItem(CAMPAIGNS_FILTERS_KEY);
+    if (!raw) return DEFAULT_CAMPAIGN_FILTERS;
+    const parsed = JSON.parse(raw) as Partial<PersistedCampaignFilters>;
+    // تحقّقٌ ضيّق: `status` ضمن القيم المعروفة، `branch` رقمٌ أو "ALL"، `search` نصٌّ محدود.
+    const status = typeof parsed.status === "string" && (parsed.status === "ALL" || parsed.status in STUDIO_CAMPAIGN_STATUS_AR) ? (parsed.status as StatusFilter) : DEFAULT_CAMPAIGN_FILTERS.status;
+    const branch = parsed.branch === "ALL" || (typeof parsed.branch === "number" && Number.isSafeInteger(parsed.branch) && parsed.branch > 0) ? parsed.branch : DEFAULT_CAMPAIGN_FILTERS.branch;
+    const search = typeof parsed.search === "string" ? parsed.search.slice(0, 80) : "";
+    return { status, branch, search };
+  } catch {
+    return DEFAULT_CAMPAIGN_FILTERS;
+  }
+}
+
+function persistCampaignFilters(filters: PersistedCampaignFilters): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CAMPAIGNS_FILTERS_KEY, JSON.stringify(filters));
+  } catch {
+    // تخطٍّ صامت — النقطة ليست حاسمة.
+  }
+}
+
 export default function StudioCampaignsManager() {
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
-  const [branchFilter, setBranchFilter] = useState<"ALL" | number>("ALL");
-  const [search, setSearch] = useState("");
+  // ٢٩/٨ (تناظر مع S13 في كاشف الفجوات): فلاتر شاشة الإدارة تُحفَظ في localStorage كي
+  // لا يُعيد المدير ضبطها كلّ زيارة. المفتاح بنسخةٍ (v1) يسمح ترقيةً لاحقة بلا كسر.
+  const initialFilters = useMemo(() => loadPersistedCampaignFilters(), []);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialFilters.status);
+  const [branchFilter, setBranchFilter] = useState<"ALL" | number>(initialFilters.branch);
+  const [search, setSearch] = useState(initialFilters.search);
+  useEffect(() => {
+    persistCampaignFilters({ status: statusFilter, branch: branchFilter, search });
+  }, [statusFilter, branchFilter, search]);
   const [cancelReason, setCancelReason] = useState<Record<number, string>>({});
   const [openReasonFor, setOpenReasonFor] = useState<number | null>(null);
   // ٢٩/٨ (بلاغ مالك: «ألغيت الحملات ولكن مازالت تظهر مهام مسندة»): خيار المدير الصريح
