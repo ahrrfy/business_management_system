@@ -39,6 +39,7 @@ import {
 } from "@shared/studioCampaignStatus";
 import {
   AlertTriangle,
+  CalendarPlus,
   CheckCircle2,
   ExternalLink,
   Filter,
@@ -47,6 +48,8 @@ import {
   PlayCircle,
   Plus,
   Search,
+  Users,
+  UserSquare,
   XCircle,
 } from "lucide-react";
 
@@ -140,6 +143,21 @@ export default function StudioCampaignsManager() {
       if (res.remaining === 0) return { swept: true, extra: sweptExtra };
     }
     return { swept: false, extra: sweptExtra };
+  };
+
+  // تمديدُ الموعد السريع للحملات المتأخّرة (٢٩/٨) — بدلاً من فتح محرّر التفاصيل في
+  // الاستوديو، زرٌّ داخل السطر يستدعي `updateCampaignDetails` بموعدٍ = اليومَ + ٧ أيام
+  // من الوقت الحاليّ. يبقى محرّر التفاصيل متاحاً لتعديلاتٍ أدقّ في الاستوديو.
+  const updateDetails = trpc.productStudio.updateCampaignDetails.useMutation({
+    onSuccess: async () => {
+      notify.ok("مُدِّد الموعد ٧ أيام");
+      await utils.productStudio.campaigns.invalidate();
+    },
+    onError: (err) => notify.err(err),
+  });
+  const extendDueBySevenDays = (campaignId: number) => {
+    const next = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    updateDetails.mutate({ campaignId, dueAt: next });
   };
 
   const transition = trpc.productStudio.transitionCampaign.useMutation({
@@ -370,6 +388,21 @@ export default function StudioCampaignsManager() {
                             </span>
                           )}
                         </p>
+                        {/* الملكيّة والفريق (٢٩/٨): اسمُ المُنشئ + عدد المصوّرين — يكشفان
+                            بلمحةٍ من صاحبُ الحملة ومن يعمل فيها بلا فتح تفاصيل الاستوديو.
+                            صفرُ مصوّرين حالةٌ حقيقيّة (طابور محفوظ لكن بلا فريق) — تُبرَز
+                            بشارةٍ تحذيرية لأنّ المصوّر لن يستطيع سحب مسحاً جديداً بلا عضوية. */}
+                        <p className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                          {c.createdByName && (
+                            <span className="inline-flex items-center gap-1">
+                              <UserSquare aria-hidden className="size-3" /> {c.createdByName}
+                            </span>
+                          )}
+                          <span className={`inline-flex items-center gap-1 ${Number(c.assigneeCount ?? 0) === 0 && (status === "ACTIVE" || status === "DRAFT") ? "text-[var(--sem-warn)] font-medium" : ""}`}>
+                            <Users aria-hidden className="size-3" /> {Number(c.assigneeCount ?? 0)} مصوّر
+                            {Number(c.assigneeCount ?? 0) === 0 && (status === "ACTIVE" || status === "DRAFT") ? " — أضِف فريقاً" : ""}
+                          </span>
+                        </p>
                       </div>
 
                       <div className="flex shrink-0 flex-wrap gap-1.5">
@@ -391,6 +424,13 @@ export default function StudioCampaignsManager() {
                         {(status === "ACTIVE" || status === "PAUSED") && (
                           <Button size="sm" variant="outline" className="min-h-9" disabled={isMutating} onClick={() => runTransition(Number(c.id), "COMPLETED")}>
                             <CheckCircle2 aria-hidden className="size-4" /> إكمال
+                          </Button>
+                        )}
+                        {/* «+٧ أيام» للحملات المتأخّرة (٢٩/٨) — بدلاً من فتح محرّر
+                            التفاصيل في الاستوديو، تمديدٌ سريع بضغطةٍ واحدة إلى وقتنا+٧د. */}
+                        {dueClass === "overdue" && (status === "ACTIVE" || status === "PAUSED") && (
+                          <Button size="sm" variant="outline" className="min-h-9" disabled={updateDetails.isPending} onClick={() => extendDueBySevenDays(Number(c.id))} title="مدِّد موعد الاستحقاق ٧ أيام من الآن">
+                            <CalendarPlus aria-hidden className="size-4" /> +٧ أيام
                           </Button>
                         )}
                         {(status === "DRAFT" || status === "ACTIVE" || status === "PAUSED") && (

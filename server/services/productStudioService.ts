@@ -1167,6 +1167,43 @@ export async function createStudioCampaign(
   });
 }
 
+/**
+ * قاموسٌ لبنية إشعارِ التغيّر لكل انتقالٍ — العنوان/النص/متطلَّب الفعل. مركزيٌّ كي لا
+ * يعود المطوّرُ ليصيغَ رسالةً ثانيةً في مسارٍ آخر، ولا تُهدَر ترجمةٌ بحسب المسار.
+ * `requiresAction` = true فقط للحالات النهائيّة (COMPLETED/CANCELLED) — المصوّر يحتاج
+ * التزاماً فورياً بحفظ عمله؛ PAUSED/ACTIVE إعلاماتٌ استمراريّة.
+ */
+function studioCampaignTransitionNotification(status: StudioCampaignStatus, campaignName: string): { title: string; body: string; requiresAction: boolean } | null {
+  switch (status) {
+    case "PAUSED":
+      return {
+        title: "حملة تصوير موقوفة مؤقّتاً",
+        body: `أوقف المدير حملة «${campaignName}» مؤقّتاً — لن تستطيع سحب منتجاتٍ جديدة منها حتى الاستئناف، ومهامك المسنَدة تبقى قابلةً للإتمام.`,
+        requiresAction: false,
+      };
+    case "ACTIVE":
+      return {
+        title: "استُؤنفت حملة تصوير",
+        body: `أعاد المدير تفعيل حملة «${campaignName}» — يمكنك مسح منتجاتها من جديد.`,
+        requiresAction: false,
+      };
+    case "COMPLETED":
+      return {
+        title: "أُغلقت حملة تصوير",
+        body: `أكمل المدير حملة «${campaignName}» — أنجز مهامك المسنَدة قبل أن تنقضي مواعيدها.`,
+        requiresAction: true,
+      };
+    case "CANCELLED":
+      return {
+        title: "أُلغيت حملة تصوير",
+        body: `ألغى المدير حملة «${campaignName}» — طابورها غير المسنَد أُغلق، لا حاجةَ لعملٍ إضافيّ منك.`,
+        requiresAction: false,
+      };
+    default:
+      return null;
+  }
+}
+
 export async function transitionStudioCampaign(
   actor: ProductStudioActor,
   input: {
@@ -1179,7 +1216,7 @@ export async function transitionStudioCampaign(
   },
 ) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
-  return withStudioTx(async (tx) => {
+  const outcome = await withStudioTx(async (tx) => {
     const campaign = (
       await tx
         .select()
@@ -1241,6 +1278,13 @@ export async function transitionStudioCampaign(
       input.status === "CANCELLED"
         ? await cancelCampaignQueuedTasksInTx(tx, actor, campaign, input.reason?.trim() || `أُلغيت مع حملة «${campaign.name}» (#${input.campaignId})`, "productStudio.campaign.cancelWithCampaign")
         : { cancelledCount: 0, remaining: 0 };
+    // قائمةُ المصوّرين تُلتقط داخل المعاملة (مرجعٌ اتّساقيّ) وتُستعمل بعد commit لإرسال
+    // الإشعارات — إشعاراتٌ خارج المعاملة كي لا يُدحرَج انتقالُ الحملة بسببِ فشلِ إشعارٍ.
+    const assigneeIds = await tx
+      .select({ userId: productStudioCampaignAssignees.userId })
+      .from(productStudioCampaignAssignees)
+      .where(eq(productStudioCampaignAssignees.campaignId, input.campaignId))
+      .then((rows) => rows.map((r) => Number(r.userId)));
     return {
       campaignId: input.campaignId,
       status: input.status,
@@ -1249,8 +1293,40 @@ export async function transitionStudioCampaign(
       cancelledTasks: cascade.cancelledCount,
       /** مهام طابورٍ لم تُلغَ بعد لأنّ الدفعة محدودة — تُستكمل بزرّ إلغاء الطابور. */
       remainingTasks: cascade.remaining,
+      /** يُستعمَل خارج المعاملة لإرسال الإشعارات — ليس جزءاً من عقد الواجهة. */
+      _assigneeIds: assigneeIds,
+      _campaignName: campaign.name,
     };
   });
+  // إشعارات المصوّرين بتغيّر الحالة (٢٩/٨) — كانت الحالة تتغيّر صامتاً فيَجد المصوّر
+  // قائمته النشطة فارغةً بلا سبب. الإشعار خارج المعاملة كي لا يُلغيَ إخفاقُ push انتقالاً
+  // ماليّ الأثر (إلغاء يجرّ الطابور). كل مصوّر يحصل على إشعارٍ بعنوانٍ ونصٍّ بحسب الحالة.
+  const notification = studioCampaignTransitionNotification(outcome.status, outcome._campaignName);
+  if (notification && outcome._assigneeIds.length > 0) {
+    // eventKey فريدٌ لكل (مصوّر، حملة، حالة) يمنع تكرار الإشعار إن أُعيد الانتقال ذاته
+    // (نادر لكن ممكن) — نفس نمط `studioAssignedEventKey`.
+    await Promise.allSettled(
+      outcome._assigneeIds.map((userId) =>
+        createAppNotification({
+          userId,
+          kind: "TASK_ASSIGNED",
+          title: notification.title,
+          body: notification.body,
+          route: `/catalog/image-studio?campaign=${outcome.campaignId}`,
+          eventKey: `studio.campaign.transition:${outcome.campaignId}:${outcome.status}:${userId}`,
+          entityType: "productStudioCampaign",
+          entityId: outcome.campaignId,
+          requiresAction: notification.requiresAction,
+        }).catch((err) => {
+          logger.warn({ err, userId, campaignId: outcome.campaignId, status: outcome.status }, "تعذّر إشعار مصوّر بتغيّر حالة الحملة");
+        }),
+      ),
+    );
+  }
+  // الحقول الداخليّة تُقشَّر قبل الإعادة — عقد الواجهة لا يحمل قائمة معرّفات المصوّرين.
+  const { _assigneeIds: _a, _campaignName: _n, ...publicResult } = outcome;
+  void _a; void _n;
+  return publicResult;
 }
 
 export async function listStudioCampaigns(actor: ProductStudioActor) {
@@ -1273,8 +1349,18 @@ export async function listStudioCampaigns(actor: ProductStudioActor) {
       scopeKind: productStudioCampaigns.scopeKind,
       scopeCategoryId: productStudioCampaigns.scopeCategoryId,
       createdAt: productStudioCampaigns.createdAt,
+      // اسمُ منشئ الحملة + عدد مصوّريها (٢٩/٨) — يُوضّحان الملكيّةَ والفريقَ في السطر
+      // الواحد بلا نداءٍ ثانٍ من الواجهة. `assigneeCount` عبر subquery correlated (فرد
+      // بفرد، بلا JOIN) لأنّ الحملات قد تصل عشراتٍ لكل صفٍ ٤٥+ مصوّراً في الحالة القصوى.
+      createdByName: users.name,
+      assigneeCount: sql<number>`(
+        select count(*) from ${productStudioCampaignAssignees}
+        where ${productStudioCampaignAssignees.campaignId} = ${productStudioCampaigns.id}
+      )`,
     })
     .from(productStudioCampaigns)
+    // LEFT JOIN كي يُقاوم صفَّ حملةٍ يتيمٍ (منشئ محذوف) — لا يُسقطها من القائمة.
+    .leftJoin(users, eq(users.id, productStudioCampaigns.createdBy))
     .where(conditions)
     .orderBy(desc(productStudioCampaigns.createdAt), desc(productStudioCampaigns.id));
   if (rows.length === 0) return [];
