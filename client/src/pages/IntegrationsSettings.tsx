@@ -1,24 +1,37 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, Clock, Copy, Eye, EyeOff, KeyRound, LayoutTemplate, Loader2, Plus, Power, RefreshCw, RotateCcw, Save, Scissors, Settings2, ShoppingBag, Trash2, User, Wand2, MessageSquare } from "lucide-react";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Activity, AlertCircle, AlertTriangle, Cable, CheckCircle2, ChevronDown, Clock, Copy, Eye, EyeOff, KeyRound, LayoutTemplate, Loader2, Plus, Power, RefreshCw, RotateCcw, Save, Scissors, Search, Settings2, ShoppingBag, Trash2, User, Wand2, MessageSquare } from "lucide-react";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import {
+  filterIntegrations,
+  summarizeIntegrations,
+  type IntegrationChannelFilter,
+  type IntegrationConnectionChannel,
+  type IntegrationConnectionStatus,
+  type IntegrationStatusFilter,
+} from "@/lib/integrationCenter";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState } from "@/components/PageState";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { Switch } from "@/components/ui/switch";
 import { useEffect, useMemo, useState } from "react";
 
 /**
- * شاشة تكاملات القنوات الخارجية — `/settings/integrations` (شريحة #6).
+ * مركز التكاملات — `/settings/integrations`.
  *
- * الإدارة الكاملة لـtokens WhatsApp/Instagram/Store في الواجهة بدل SSH للسيرفر:
- *   - بطاقة لكل (فرع × قناة).
+ * يجمع اتصالات القنوات، وأتمتة واتساب، وخدمات محتوى المنتجات في أقسام واضحة:
+ *   - بطاقة تشغيلية لكل (فرع × قناة).
  *   - حقول secrets مقنّعة (•••abcd) مع زر «أظهر/أخف».
- *   - زر «تحقّق» يضرب Meta/Store API فعلياً ⇒ status لايف + lastError مقروء.
- *   - زر «انسخ webhook URL» للصق في Meta/Salla.
+ *   - زر «تحقّق» يختبر Meta أو سلامة secret لقناة المتجر المخصّصة.
+ *   - زر «انسخ webhook URL» للصق لدى مزوّد القناة.
+ *   - قناة المتجر Webhook موقّع فقط، بلا مزامنة للمنتجات أو المخزون.
  *   - تعطيل/تفعيل/حذف بلا فقد audit history.
  *
  * RBAC: adminProcedure فقط (محمي في App.tsx بـRequireRole + في tRPC).
@@ -26,20 +39,45 @@ import { useEffect, useMemo, useState } from "react";
  */
 
 type Integration = RouterOutputs["integrations"]["list"][number];
-type Channel = "WHATSAPP" | "INSTAGRAM" | "STORE";
 
-const CHANNEL_META: Record<Channel, { label: string; Icon: typeof MessageSquare; cls: string }> = {
+const CHANNEL_META: Record<IntegrationConnectionChannel, { label: string; Icon: typeof MessageSquare; cls: string }> = {
   WHATSAPP: { label: "واتساب", Icon: MessageSquare, cls: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30" },
   INSTAGRAM: { label: "انستغرام", Icon: User, cls: "bg-pink-500/10 text-pink-700 dark:text-pink-400 border-pink-500/30" },
-  STORE: { label: "المتجر", Icon: ShoppingBag, cls: "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/30" },
+  STORE: { label: "Webhook متجر مخصص", Icon: ShoppingBag, cls: "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/30" },
 };
 
-const STATUS_META: Record<string, { label: string; cls: string }> = {
+const STATUS_META: Record<IntegrationConnectionStatus, { label: string; cls: string }> = {
   PENDING: { label: "بانتظار التحقّق", cls: "badge-status-pending" },
-  ACTIVE: { label: "متّصل", cls: "badge-status-active" },
+  ACTIVE: { label: "فعّال", cls: "badge-status-active" },
   FAILED: { label: "فشل", cls: "badge-stock-out" },
   DISABLED: { label: "معطّل", cls: "badge-status-cancelled" },
 };
+
+type CenterSection = "connections" | "whatsapp" | "content";
+
+function CenterMetric({
+  label,
+  value,
+  icon: Icon,
+  iconClassName,
+}: {
+  label: string;
+  value: number;
+  icon: typeof Activity;
+  iconClassName: string;
+}) {
+  return (
+    <div className="flex min-h-24 items-center justify-between rounded-lg border bg-card p-4">
+      <div>
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+        <div className="mt-1 text-2xl font-bold tabular-nums">{value}</div>
+      </div>
+      <div className="grid size-10 place-items-center rounded-lg border bg-muted/30">
+        <Icon aria-hidden className={`size-5 ${iconClassName}`} />
+      </div>
+    </div>
+  );
+}
 
 /** حقل secret: قناع •••• افتراضي + زر إظهار + إدخال نصّ جديد (يستبدل القديم). */
 function SecretField({
@@ -63,13 +101,14 @@ function SecretField({
       <label className="text-xs font-medium">{label}</label>
       {hint && <div className="text-[11px] text-muted-foreground">{hint}</div>}
       <div className="flex gap-2">
-        <div className="relative flex-1">
+        <div className="relative flex-1" dir="ltr">
           <input
             type={show ? "text" : "password"}
             value={value}
             onChange={(e) => onChange(e.target.value)}
             placeholder={masked ? `الحالي: ${masked}` : (placeholder ?? "الصق القيمة الجديدة")}
             dir="ltr"
+            aria-label={label}
             className="w-full h-9 px-3 pe-9 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           <button
@@ -77,6 +116,7 @@ function SecretField({
             onClick={() => setShow(!show)}
             className="absolute end-1 top-1/2 -translate-y-1/2 size-7 grid place-items-center text-muted-foreground hover:text-foreground"
             title={show ? "إخفاء" : "إظهار"}
+            aria-label={show ? `إخفاء ${label}` : `إظهار ${label}`}
           >
             {show ? <EyeOff aria-hidden className="size-4" /> : <Eye aria-hidden className="size-4" />}
           </button>
@@ -95,8 +135,15 @@ interface DraftState {
   accessToken: string;
 }
 
-function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: () => void }) {
-  const ch = CHANNEL_META[integ.channel as Channel];
+type PublicDraftField = "displayName" | "phoneNumberId" | "wabaId";
+const CLEAN_PUBLIC_DRAFT: Record<PublicDraftField, boolean> = {
+  displayName: false,
+  phoneNumberId: false,
+  wabaId: false,
+};
+
+function IntegrationCard({ integ, onChanged, wide = false }: { integ: Integration; onChanged: () => void; wide?: boolean }) {
+  const ch = CHANNEL_META[integ.channel as IntegrationConnectionChannel];
   const st = STATUS_META[integ.status] ?? STATUS_META.PENDING;
   const [draft, setDraft] = useState<DraftState>({
     displayName: integ.displayName ?? "",
@@ -106,15 +153,34 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
     appSecret: "",
     accessToken: "",
   });
+  const [publicDirty, setPublicDirty] = useState(CLEAN_PUBLIC_DRAFT);
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    setDraft((current) => ({
+      ...current,
+      displayName: publicDirty.displayName ? current.displayName : (integ.displayName ?? ""),
+      phoneNumberId: publicDirty.phoneNumberId ? current.phoneNumberId : (integ.phoneNumberId ?? ""),
+      wabaId: publicDirty.wabaId ? current.wabaId : (integ.wabaId ?? ""),
+    }));
+  }, [integ.displayName, integ.phoneNumberId, integ.wabaId, publicDirty]);
 
   const utils = trpc.useUtils();
   const upsert = trpc.integrations.upsert.useMutation({
-    onSuccess: () => { notify.ok("تم الحفظ", "الـtokens مشفّرة في DB. اضغط «تحقّق» لاختبار الاتصال."); utils.integrations.list.invalidate(); onChanged(); },
+    onSuccess: () => {
+      notify.ok("تم الحفظ", "الـtokens مشفّرة في DB. اضغط «تحقّق» لاختبار الاتصال.");
+      setPublicDirty(CLEAN_PUBLIC_DRAFT);
+      utils.integrations.list.invalidate();
+      onChanged();
+    },
     onError: (e) => notify.err(e),
   });
   const verify = trpc.integrations.verify.useMutation({
-    onSuccess: (r) => { (r.ok ? notify.ok : notify.warn)(r.ok ? "متّصل" : "فشل التحقّق", r.message); utils.integrations.list.invalidate(); },
+    onSuccess: (r) => {
+      const successTitle = integ.channel === "STORE" ? "الإعداد صالح" : "متّصل";
+      (r.ok ? notify.ok : notify.warn)(r.ok ? successTitle : "فشل التحقّق", r.message);
+      utils.integrations.list.invalidate();
+    },
     onError: (e) => notify.err(e),
   });
   const disable = trpc.integrations.disable.useMutation({
@@ -133,10 +199,10 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
   const save = () => {
     upsert.mutate({
       branchId: integ.branchId,
-      channel: integ.channel as Channel,
-      displayName: draft.displayName.trim() || null,
-      phoneNumberId: draft.phoneNumberId.trim() || null,
-      wabaId: draft.wabaId.trim() || null,
+      channel: integ.channel as IntegrationConnectionChannel,
+      displayName: publicDirty.displayName ? (draft.displayName.trim() || null) : undefined,
+      phoneNumberId: publicDirty.phoneNumberId ? (draft.phoneNumberId.trim() || null) : undefined,
+      wabaId: publicDirty.wabaId ? (draft.wabaId.trim() || null) : undefined,
       // فقط الحقول التي كتب فيها نصّ جديد ⇒ undefined لبقاء القديم.
       verifyToken: draft.verifyToken ? draft.verifyToken : undefined,
       appSecret: draft.appSecret ? draft.appSecret : undefined,
@@ -146,34 +212,42 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
   };
 
   const copyUrl = async () => {
-    await navigator.clipboard.writeText(integ.webhookUrl).catch(() => {});
-    notify.ok("نسخ", `webhook URL: ${integ.webhookUrl}`);
+    try {
+      await navigator.clipboard.writeText(integ.webhookUrl);
+      notify.ok("تم النسخ", "نُسخ عنوان webhook إلى الحافظة.");
+    } catch {
+      notify.err("تعذّر النسخ إلى الحافظة. حدّد العنوان وانسخه يدوياً.");
+    }
   };
+  const hasDraftChanges = Object.values(publicDirty).some(Boolean)
+    || Boolean(draft.verifyToken || draft.appSecret || draft.accessToken);
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
+    <Card className={`gap-0 overflow-hidden py-0 shadow-none ${open || wide ? "xl:col-span-2" : ""}`}>
+      <CardHeader className="p-4 pb-3">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
             <div className={`size-10 rounded-lg grid place-items-center flex-shrink-0 border ${ch.cls}`}>
               <ch.Icon aria-hidden className="size-5" />
             </div>
             <div className="min-w-0">
-              <CardTitle className="text-base">{ch.label} — {integ.branchName ?? `فرع #${integ.branchId}`}</CardTitle>
-              {integ.displayName && <div className="text-xs text-muted-foreground mt-0.5">{integ.displayName}</div>}
+              <CardTitle className="text-base"><h3>{ch.label}</h3></CardTitle>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                {integ.branchName ?? `فرع #${integ.branchId}`}{integ.displayName ? ` — ${integ.displayName}` : ""}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="outline" className={st.cls}>{st.label}</Badge>
             {integ.lastVerifiedAt && (
-              <span className="text-[10px] text-muted-foreground" dir="ltr">
-                آخر تحقّق {fmtDateTime(integ.lastVerifiedAt)}
+              <span className="text-xs text-muted-foreground">
+                آخر تحقّق: <span dir="ltr">{fmtDateTime(integ.lastVerifiedAt)}</span>
               </span>
             )}
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-3 px-4 pb-4">
         {integ.lastError && integ.status === "FAILED" && (
           <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-xs flex items-start gap-2">
             <AlertCircle aria-hidden className="size-4 text-destructive flex-shrink-0 mt-0.5" />
@@ -181,30 +255,32 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
           </div>
         )}
 
-        <div className="rounded-md border bg-muted/30 p-2.5 space-y-1.5">
-          <div className="text-xs text-muted-foreground">webhook URL للصق في إدارة المزوّد:</div>
-          <div className="flex gap-2 items-center">
-            <code className="flex-1 text-[11px] bg-background border rounded px-2 py-1 truncate" dir="ltr">{integ.webhookUrl}</code>
-            <Button size="sm" variant="outline" onClick={copyUrl}>
-              <Copy aria-hidden className="size-3.5 me-1" /> نسخ
-            </Button>
-          </div>
-        </div>
-
         {/* الحقول الـsecret — مطوية لتقليل الازدحام البصري */}
         <details open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
-          <summary className="text-sm font-medium cursor-pointer select-none inline-flex items-center gap-1.5">
+          <summary className="inline-flex min-h-9 cursor-pointer select-none items-center gap-1.5 text-sm font-medium text-primary">
             <ChevronDown aria-hidden className={`size-4 transition-transform ${open ? "rotate-0" : "-rotate-90"}`} />
-            تفاصيل + tokens
+            إدارة الاتصال
           </summary>
           <div className="space-y-3 mt-3 pt-3 border-t">
+            <div className="rounded-md border bg-muted/30 p-2.5 space-y-1.5">
+              <div className="text-xs text-muted-foreground">عنوان webhook المسجّل لدى المزوّد</div>
+              <div className="flex gap-2 items-center">
+                <code className="flex-1 truncate rounded border bg-background px-2 py-1 text-xs" dir="ltr">{integ.webhookUrl}</code>
+                <Button size="sm" variant="outline" onClick={copyUrl}>
+                  <Copy aria-hidden className="size-3.5 me-1" /> نسخ
+                </Button>
+              </div>
+            </div>
             <div className="grid gap-3 md:grid-cols-2 items-start">
               <div className="space-y-1">
                 <label className="text-xs font-medium">اسم العرض (اختياري)</label>
                 <input
                   type="text"
                   value={draft.displayName}
-                  onChange={(e) => setDraft({ ...draft, displayName: e.target.value })}
+                  onChange={(e) => {
+                    setDraft({ ...draft, displayName: e.target.value });
+                    setPublicDirty((current) => ({ ...current, displayName: true }));
+                  }}
                   placeholder={`${ch.label} — ${integ.branchName ?? ""}`}
                   className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
@@ -216,7 +292,10 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
                   <input
                     type="text"
                     value={draft.phoneNumberId}
-                    onChange={(e) => setDraft({ ...draft, phoneNumberId: e.target.value })}
+                    onChange={(e) => {
+                      setDraft({ ...draft, phoneNumberId: e.target.value });
+                      setPublicDirty((current) => ({ ...current, phoneNumberId: true }));
+                    }}
                     placeholder="مثلاً: 123456789012345"
                     dir="ltr"
                     className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -230,7 +309,10 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
                   <input
                     type="text"
                     value={draft.wabaId}
-                    onChange={(e) => setDraft({ ...draft, wabaId: e.target.value })}
+                    onChange={(e) => {
+                      setDraft({ ...draft, wabaId: e.target.value });
+                      setPublicDirty((current) => ({ ...current, wabaId: true }));
+                    }}
                     placeholder="مثلاً: 987654321098765"
                     dir="ltr"
                     className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -263,7 +345,7 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
             </div>
 
             <div className="flex gap-2 flex-wrap pt-2">
-              <Button onClick={save} disabled={upsert.isPending}>
+              <Button onClick={save} disabled={upsert.isPending || !hasDraftChanges}>
                 {upsert.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : null}
                 حفظ
               </Button>
@@ -316,59 +398,62 @@ function NewIntegrationDialog({ onCreated, onClose, branches }: {
   branches: { id: number; name: string }[];
 }) {
   const [branchId, setBranchId] = useState<number>(branches[0]?.id ?? 0);
-  const [channel, setChannel] = useState<Channel>("WHATSAPP");
+  const [channel, setChannel] = useState<IntegrationConnectionChannel>("WHATSAPP");
   const upsert = trpc.integrations.upsert.useMutation({
     onSuccess: () => { onCreated(); onClose(); },
     onError: (e) => notify.err(e),
   });
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm grid place-items-center p-4" onClick={onClose}>
-      <Card className="w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-        <CardHeader>
-          <CardTitle className="text-base">إضافة تكامل جديد</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent dir="rtl" className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>إضافة قناة اتصال</DialogTitle>
+          <DialogDescription>اختر الفرع والقناة، ثم أكمل الاعتمادات واختبر الإعداد بعد الإضافة.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2 items-start">
             <div>
               <label className="text-xs text-muted-foreground">الفرع</label>
-              <select
-                value={branchId}
-                onChange={(e) => setBranchId(Number(e.target.value))}
-                className="w-full h-9 border rounded-md px-2 text-sm bg-background mt-1"
+              <AppSelect
+                value={String(branchId || "")}
+                onValueChange={(value) => setBranchId(Number(value))}
+                className="mt-1"
+                aria-label="الفرع"
               >
                 {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div>
               <label className="text-xs text-muted-foreground">القناة</label>
-              <select
+              <AppSelect
                 value={channel}
-                onChange={(e) => setChannel(e.target.value as Channel)}
-                className="w-full h-9 border rounded-md px-2 text-sm bg-background mt-1"
+                onValueChange={(value) => setChannel(value as IntegrationConnectionChannel)}
+                className="mt-1"
+                aria-label="القناة"
               >
                 <option value="WHATSAPP">{CHANNEL_META.WHATSAPP.label}</option>
                 <option value="INSTAGRAM">{CHANNEL_META.INSTAGRAM.label}</option>
                 <option value="STORE">{CHANNEL_META.STORE.label}</option>
-              </select>
+              </AppSelect>
             </div>
           </div>
           <div className="text-xs text-muted-foreground rounded-md bg-muted/30 border p-2.5">
-            بعد الإنشاء، اضغط البطاقة للصق الـtokens، ثم زر «تحقّق» يضرب Meta API فعلياً للتأكّد.
+            بعد الإنشاء افتح «إدارة الاتصال» لإدخال الاعتمادات وإجراء التحقق. قناة المتجر الحالية تستقبل webhook موقّعاً فقط ولا تزامن المنتجات أو المخزون.
           </div>
-        </CardContent>
-        <div className="flex gap-2 p-4 pt-0">
+        </div>
+        <DialogFooter className="sm:justify-stretch">
           <Button variant="outline" onClick={onClose} className="flex-1">إلغاء</Button>
           <Button
             onClick={() => upsert.mutate({ branchId, channel })}
             disabled={upsert.isPending || !branchId}
             className="flex-1"
           >
-            إنشاء
+            إضافة القناة
           </Button>
-        </div>
-      </Card>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -389,6 +474,10 @@ function ImageStudioIntegrationCard() {
     onSuccess: (r) => { (r.ok ? notify.ok : notify.warn)(r.ok ? "المفتاح صالح" : "فشل الفحص", r.message); utils.imageStudio.settings.invalidate(); },
     onError: (e) => notify.err(e),
   });
+  if (settings.isError) {
+    return <ErrorState message="تعذّر تحميل إعدادات remove.bg." onRetry={() => void settings.refetch()} />;
+  }
+  if (settings.isLoading || !settings.data) return <LoadingState />;
   const s = settings.data;
 
   return (
@@ -512,6 +601,10 @@ function AiImageStudioIntegrationCard() {
     onSuccess: (r) => { (r.ok ? notify.ok : notify.warn)(r.ok ? "المفتاح صالح" : "فشل الفحص", r.message); utils.imageStudio.aiSettings.invalidate(); },
     onError: (e) => notify.err(e),
   });
+  if (aiSettings.isError) {
+    return <ErrorState message="تعذّر تحميل إعدادات خدمة الصور التوليدية." onRetry={() => void aiSettings.refetch()} />;
+  }
+  if (aiSettings.isLoading || !aiSettings.data) return <LoadingState />;
   const s = aiSettings.data;
   const modelValue = modelDraft ?? s?.aiModel ?? "";
   const promptValue = promptDraft ?? s?.aiStudioPrompt ?? "";
@@ -750,7 +843,12 @@ function KillSwitchCard() {
     onSuccess: () => { utils.integrations.waHubSettings.invalidate(); },
     onError: (e) => notify.err(e),
   });
-  const killSwitch = q.data?.killSwitch ?? false;
+
+  if (q.isError) {
+    return <ErrorState message="تعذّر تحميل حالة إيقاف الطوارئ." onRetry={() => void q.refetch()} />;
+  }
+  if (q.isLoading || !q.data) return <LoadingState />;
+  const killSwitch = q.data.killSwitch;
 
   const handleToggle = async (next: boolean) => {
     if (next) {
@@ -808,21 +906,30 @@ const FLOW_KEYS: { key: "flowArReminder" | "flowOrderReady" | "flowPurchaseThank
 function AutomationSettingsCard() {
   const utils = trpc.useUtils();
   const q = trpc.integrations.waHubSettings.get.useQuery();
-  const [draft, setDraft] = useState<AutomationDraft | null>(null);
+  const [draft, setDraftState] = useState<AutomationDraft | null>(null);
+  const [draftDirty, setDraftDirty] = useState(false);
+  const setDraft = (next: Parameters<typeof setDraftState>[0]) => {
+    setDraftDirty(true);
+    setDraftState(next);
+  };
 
   useEffect(() => {
-    if (q.data) setDraft(draftFromServer(q.data));
-  }, [q.data]);
+    if (q.data && !draftDirty) setDraftState(draftFromServer(q.data));
+  }, [q.data, draftDirty]);
 
   const update = trpc.integrations.waHubSettings.update.useMutation({
     onSuccess: (row) => {
       notify.ok("حفظت إعدادات الأتمتة");
       utils.integrations.waHubSettings.invalidate();
-      setDraft(draftFromServer(row));
+      setDraftDirty(false);
+      setDraftState(draftFromServer(row));
     },
     onError: (e) => notify.err(e),
   });
 
+  if (q.isError) {
+    return <ErrorState message="تعذّر تحميل إعدادات الأتمتة." onRetry={() => void q.refetch()} />;
+  }
   if (q.isLoading || !draft) return <LoadingState />;
 
   function toggleDay(d: number) {
@@ -898,6 +1005,7 @@ function AutomationSettingsCard() {
                 key={i}
                 type="button"
                 onClick={() => toggleDay(i)}
+                aria-pressed={draft.days.includes(i)}
                 className={`text-xs px-2.5 py-1 rounded-md border font-medium ${
                   draft.days.includes(i) ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-accent"
                 }`}
@@ -1054,6 +1162,8 @@ function TemplateSyncSection({ branches }: { branches: { id: number; name: strin
 
         {templatesQ.isLoading ? (
           <LoadingState />
+        ) : templatesQ.isError ? (
+          <ErrorState message="تعذّر تحميل قوالب Meta." onRetry={() => void templatesQ.refetch()} />
         ) : (templatesQ.data?.length ?? 0) === 0 ? (
           <div className="text-xs text-muted-foreground border border-dashed rounded-lg p-4 text-center">
             لا قوالب مزامنة بعد. اضغط «مزامنة القوالب من Meta» بعد ضبط WABA ID.
@@ -1114,11 +1224,35 @@ export default function IntegrationsSettings() {
   const list = trpc.integrations.list.useQuery(undefined, { enabled: cryptoReady.data?.ready });
   const branchesQ = trpc.branches.list.useQuery();
   const [showNew, setShowNew] = useState(false);
+  const [section, setSection] = useState<CenterSection>("connections");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<IntegrationStatusFilter>("ALL");
+  const [channelFilter, setChannelFilter] = useState<IntegrationChannelFilter>("ALL");
+  const [branchFilter, setBranchFilter] = useState<number | null>(null);
 
   const branches = useMemo(
     () => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })),
     [branchesQ.data],
   );
+  const integrations = list.data ?? [];
+  const summary = useMemo(() => summarizeIntegrations(integrations), [integrations]);
+  const filteredIntegrations = useMemo(
+    () => filterIntegrations(integrations, {
+      query,
+      status: statusFilter,
+      channel: channelFilter,
+      branchId: branchFilter,
+    }),
+    [integrations, query, statusFilter, channelFilter, branchFilter],
+  );
+  const hasFilters = query.trim() !== "" || statusFilter !== "ALL" || channelFilter !== "ALL" || branchFilter != null;
+
+  const clearFilters = () => {
+    setQuery("");
+    setStatusFilter("ALL");
+    setChannelFilter("ALL");
+    setBranchFilter(null);
+  };
 
   // المفتاح الرئيسي غير مضبوط ⇒ توجيه واضح بدل صفحة فارغة.
   if (cryptoReady.data && !cryptoReady.data.ready) {
@@ -1154,44 +1288,157 @@ pnpm prod:deploy
     );
   }
 
+  if (cryptoReady.isLoading || branchesQ.isLoading || (cryptoReady.data?.ready && list.isLoading)) {
+    return <LoadingState message="جارٍ تحميل مركز التكاملات…" />;
+  }
+
+  if (cryptoReady.isError || list.isError || branchesQ.isError) {
+    return (
+      <ErrorState
+        message="تعذّر تحميل مركز التكاملات. لم تُعرض البيانات كأنها قائمة فارغة."
+        onRetry={() => {
+          void cryptoReady.refetch();
+          if (cryptoReady.data?.ready) void list.refetch();
+          void branchesQ.refetch();
+        }}
+      />
+    );
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
-        title="تكاملات القنوات"
-        description="إدارة tokens WhatsApp/Instagram/المتجر — مشفّرة AES-256-GCM داخل DB. لا حاجة لـSSH."
+        title="مركز التكاملات"
+        description="إدارة الاتصالات الخارجية وحالتها حسب الفرع. الاعتمادات مشفّرة ولا تظهر في سجلات التدقيق."
+        icon={<Cable aria-hidden className="size-6 text-primary" />}
         actions={
           <Button onClick={() => setShowNew(true)} disabled={branches.length === 0}>
-            <Plus aria-hidden className="size-4 me-1" /> إضافة تكامل
+            <Plus aria-hidden className="size-4 me-1" /> إضافة قناة
           </Button>
         }
       />
 
-      <WaHubAutomationSection branches={branches} />
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <CenterMetric label="إجمالي الاتصالات" value={summary.total} icon={Cable} iconClassName="text-primary" />
+        <CenterMetric label="فعّال" value={summary.active} icon={CheckCircle2} iconClassName="text-[var(--sem-pos)]" />
+        <CenterMetric label="يحتاج تدخلاً" value={summary.attention} icon={AlertTriangle} iconClassName="text-[var(--sem-warn)]" />
+        <CenterMetric label="معطّل إدارياً" value={summary.disabled} icon={Power} iconClassName="text-muted-foreground" />
+      </div>
 
-      <ImageStudioIntegrationCard />
-
-      <AiImageStudioIntegrationCard />
-
-      {cryptoReady.isLoading || list.isLoading ? (
-        <LoadingState />
-      ) : list.data?.length === 0 ? (
-        <Card>
-          <CardContent className="text-center py-12 space-y-3">
-            <div className="size-16 rounded-full bg-muted mx-auto grid place-items-center">
-              <KeyRound aria-hidden className="size-7 text-muted-foreground" />
-            </div>
-            <div className="text-sm text-muted-foreground">
-              لا تكاملات بعد. اضغط «إضافة تكامل» لبدء WhatsApp/Instagram/المتجر.
-            </div>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {list.data?.map((integ) => (
-            <IntegrationCard key={integ.id} integ={integ} onChanged={() => list.refetch()} />
-          ))}
+      <Tabs value={section} onValueChange={(value) => setSection(value as CenterSection)} dir="rtl">
+        <div className="overflow-x-auto pb-1">
+          <TabsList className="min-w-max">
+            <TabsTrigger value="connections"><Cable aria-hidden />الاتصالات</TabsTrigger>
+            <TabsTrigger value="whatsapp"><MessageSquare aria-hidden />واتساب والأتمتة</TabsTrigger>
+            <TabsTrigger value="content"><Scissors aria-hidden />خدمات المحتوى</TabsTrigger>
+          </TabsList>
         </div>
-      )}
+
+        <TabsContent value="connections" forceMount className="mt-2 space-y-4 data-[state=inactive]:hidden">
+          {summary.attention > 0 && !list.isLoading && (
+            <div role="status" className="flex items-start gap-2 rounded-lg border badge-status-pending p-3 text-sm">
+              <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <div>
+                <span className="font-bold">{summary.attention} اتصال يحتاج متابعة.</span>{" "}
+                افتح بطاقة الاتصال للاطلاع على الخطأ أو إكمال التحقق.
+              </div>
+            </div>
+          )}
+
+          <Card className="gap-0 py-0 shadow-none">
+            <CardContent className="p-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_180px_180px_180px_auto]">
+                <div className="relative">
+                  <Search aria-hidden className="pointer-events-none absolute end-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="ابحث بالاسم أو الفرع"
+                    className="pe-9"
+                    aria-label="البحث في الاتصالات"
+                  />
+                </div>
+                <AppSelect value={statusFilter} onValueChange={(value) => setStatusFilter(value as IntegrationStatusFilter)} aria-label="حالة الاتصال">
+                  <option value="ALL">كل الحالات</option>
+                  <option value="ACTIVE">فعّال</option>
+                  <option value="ATTENTION">يحتاج تدخلاً</option>
+                  <option value="DISABLED">معطّل</option>
+                </AppSelect>
+                <AppSelect value={channelFilter} onValueChange={(value) => setChannelFilter(value as IntegrationChannelFilter)} aria-label="نوع القناة">
+                  <option value="ALL">كل القنوات</option>
+                  <option value="WHATSAPP">واتساب</option>
+                  <option value="INSTAGRAM">انستغرام</option>
+                  <option value="STORE">Webhook متجر</option>
+                </AppSelect>
+                <AppSelect
+                  value={branchFilter == null ? "ALL" : String(branchFilter)}
+                  onValueChange={(value) => setBranchFilter(value === "ALL" ? null : Number(value))}
+                  aria-label="الفرع"
+                >
+                  <option value="ALL">كل الفروع</option>
+                  {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+                </AppSelect>
+                <Button variant="outline" onClick={clearFilters} disabled={!hasFilters}>مسح الفلاتر</Button>
+              </div>
+              <div className="mt-3 text-xs text-muted-foreground">
+                عرض {filteredIntegrations.length} من {summary.total} اتصال
+              </div>
+            </CardContent>
+          </Card>
+
+          {cryptoReady.isLoading || list.isLoading ? (
+            <LoadingState />
+          ) : integrations.length === 0 ? (
+            <Card className="shadow-none">
+              <CardContent className="space-y-3 py-12 text-center">
+                <div className="mx-auto grid size-14 place-items-center rounded-full border bg-muted/30">
+                  <Cable aria-hidden className="size-6 text-muted-foreground" />
+                </div>
+                <div className="font-medium">لا توجد قنوات اتصال مهيأة</div>
+                <div className="text-sm text-muted-foreground">أضف واتساب أو انستغرام أو webhook متجر مخصص، ثم اختبر الاتصال قبل الاعتماد عليه.</div>
+                <Button onClick={() => setShowNew(true)} disabled={branches.length === 0}>
+                  <Plus aria-hidden className="size-4 me-1" /> إضافة قناة
+                </Button>
+              </CardContent>
+            </Card>
+          ) : filteredIntegrations.length === 0 ? (
+            <Card className="shadow-none">
+              <CardContent className="space-y-3 py-10 text-center">
+                <Search aria-hidden className="mx-auto size-6 text-muted-foreground" />
+                <div className="font-medium">لا توجد نتائج مطابقة</div>
+                <Button variant="outline" onClick={clearFilters}>مسح الفلاتر</Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-4 xl:grid-cols-2">
+              {filteredIntegrations.map((integ, index) => (
+                <IntegrationCard
+                  key={integ.id}
+                  integ={integ}
+                  wide={filteredIntegrations.length % 2 === 1 && index === filteredIntegrations.length - 1}
+                  onChanged={() => list.refetch()}
+                />
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="whatsapp" forceMount className="mt-2 data-[state=inactive]:hidden">
+          <WaHubAutomationSection branches={branches} />
+        </TabsContent>
+
+        <TabsContent value="content" forceMount className="mt-2 space-y-4 data-[state=inactive]:hidden">
+          <div className="flex items-center gap-2">
+            <Scissors aria-hidden className="size-5 text-primary" />
+            <div>
+              <h2 className="text-base font-bold">خدمات محتوى المنتجات</h2>
+              <p className="text-xs text-muted-foreground">إعداد مزوّدي معالجة الصور والتوليد بعيداً عن اتصالات القنوات التشغيلية.</p>
+            </div>
+          </div>
+          <ImageStudioIntegrationCard />
+          <AiImageStudioIntegrationCard />
+        </TabsContent>
+      </Tabs>
 
       {showNew && (
         <NewIntegrationDialog
