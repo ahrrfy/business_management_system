@@ -360,7 +360,7 @@ export async function activateDoubleEntry(tx: Tx, options: ChangeOptions) {
     });
   }
   const now = options.now ?? new Date();
-  const gate = await canActivate({ tx, now });
+  const gate = await canActivate({ tx, now, requireStatutoryCompliance: true });
   if (!gate.ok) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
