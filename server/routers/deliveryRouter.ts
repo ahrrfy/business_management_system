@@ -226,6 +226,8 @@ export const deliveryRouter = router({
         defaultFee: moneyStr.nullish(),
         floatLimit: moneyStr.nullish(),
         notes: z.string().max(1000).nullish(),
+        /** H2 (٢٩/٨/٢٦): استبدال الأجرة بالعمولة عند التسوية — اختيار لكلّ جهة. */
+        useCommissionForSettlement: z.boolean().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

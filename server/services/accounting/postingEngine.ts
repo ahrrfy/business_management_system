@@ -194,6 +194,7 @@ export type PostingProfile =
   | "DELIVERY_FEE_EXPENSE"
   | "DELIVERY_FEE_ACCRUAL"
   | "DELIVERY_FEE_SETTLEMENT"
+  | "DELIVERY_COMMISSION_SETTLEMENT"
   | "DELIVERY_FEE_HELD_RECEIPT"
   | "DELIVERY_FEE_HELD_PAYOUT"
   | "DELIVERY_WRITEOFF_FLOAT"
@@ -367,6 +368,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "DELIVERY_FEE_EXPENSE",
     "DELIVERY_FEE_ACCRUAL",
     "DELIVERY_FEE_SETTLEMENT",
+    "DELIVERY_COMMISSION_SETTLEMENT",
   ],
   DELIVERY_FEE_HELD: ["DELIVERY_FEE_HELD_RECEIPT", "DELIVERY_FEE_HELD_PAYOUT"],
   DELIVERY_WRITEOFF: ["DELIVERY_WRITEOFF_FLOAT"],
@@ -2139,6 +2141,19 @@ export const PROFILE_POLICIES = Object.freeze({
     {
       sourceAssertions: [
         sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
+      ],
+      requireRoleComponents: ["COURIER_PAYABLE", ...CASH_ASSETS],
+    },
+  ),
+  // H2 (٢٩/٨/٢٦): تسويةٌ باستبدال الأجرة بالعمولة — المندوب يستلم العمولة نقداً، والفارقُ إيرادُ توصيلٍ للمكتبة.
+  // DR COURIER_PAYABLE = feeAmount, CR CASH = commissionAmount, CR DELIVERY_REVENUE = (fee − commission).
+  DELIVERY_COMMISSION_SETTLEMENT: profilePolicy(
+    "DELIVERY_FEE",
+    ["COURIER_PAYABLE"],
+    [...CASH_ASSETS, "DELIVERY_REVENUE"],
+    {
+      sourceAssertions: [
+        // القيدُ متوازنٌ داخلياً — لا مصدرٌ يقود المبلغَ من قيدٍ آخر.
       ],
       requireRoleComponents: ["COURIER_PAYABLE", ...CASH_ASSETS],
     },

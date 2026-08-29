@@ -8619,6 +8619,12 @@ export const deliveryParties = mysqlTable(
       .default("0")
       .notNull(),
     floatLimit: decimal("floatLimit", { precision: 15, scale: 2 }),
+    /**
+     * H2 (٢٩/٨/٢٦، هجرة 0289) — تفعيلٌ لكلّ جهة: عند التسوية يُدفَع للمندوب مبلغُ العمولة (من قاعدة
+     * `courierCommissionRules`) بدل الأجرة الكاملة، والفارقُ يُقيَّد إيراداً `DELIVERY_REVENUE` للمكتبة.
+     * يعمل فقط حين تكون للجهة قاعدةٌ فعّالة أيضاً. `false` (الافتراض) = السلوك السابق بلا مساس.
+     */
+    useCommissionForSettlement: boolean("useCommissionForSettlement").default(false).notNull(),
     notes: text("notes"),
     isActive: boolean("isActive").default(true).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

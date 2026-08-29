@@ -1,7 +1,7 @@
 // CRUD جهات التوصيل.
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, like, ne, or, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryPartyMembers, onlineOrders, users } from "../../../drizzle/schema";
+import { courierCommissionRules, deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryPartyMembers, onlineOrders, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -140,6 +140,8 @@ export interface UpdateDeliveryPartyInput {
   defaultFee?: string | null;
   floatLimit?: string | null;
   notes?: string | null;
+  /** H2 (٢٩/٨/٢٦): opt-in لاستبدال الأجرة بالعمولة عند التسوية — يتطلّب قاعدة عمولةٍ فعّالة. */
+  useCommissionForSettlement?: boolean;
 }
 
 export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _actor: DeliveryActor): Promise<{ id: number }> {
@@ -206,6 +208,25 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
     if (input.defaultFee !== undefined) patch.defaultFee = toDbMoney(input.defaultFee ?? "0");
     if (input.floatLimit !== undefined) patch.floatLimit = input.floatLimit != null && input.floatLimit !== "" ? toDbMoney(input.floatLimit) : null;
     if (input.notes !== undefined) patch.notes = input.notes;
+    if (input.useCommissionForSettlement !== undefined) {
+      // H2: قبل التفعيل يجب وجود قاعدة عمولةٍ فعّالة (وإلّا العلَم لا يُحدث أثراً وسيُحيّر المدير).
+      if (input.useCommissionForSettlement === true) {
+        const active = (await tx
+          .select({ n: sql<number>`COUNT(*)` })
+          .from(courierCommissionRules)
+          .where(and(
+            or(eq(courierCommissionRules.partyId, input.id), isNull(courierCommissionRules.partyId)),
+            eq(courierCommissionRules.isActive, true),
+          )))[0];
+        if (!active || Number(active.n) === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "لا قاعدة عمولةٍ فعّالة لهذه الجهة — أَضِف قاعدةً أولاً من تبويب «قاعدة العمولة»",
+          });
+        }
+      }
+      patch.useCommissionForSettlement = input.useCommissionForSettlement;
+    }
     if (Object.keys(patch).length === 0) return { id: input.id };
     await tx.update(deliveryParties).set(patch).where(eq(deliveryParties.id, input.id));
     return { id: input.id };

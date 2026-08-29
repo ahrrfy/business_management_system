@@ -107,6 +107,36 @@ export function deliveryFeeSettlementIntent(
   );
 }
 
+/**
+ * H2 (٢٩/٨/٢٦) — تسويةٌ باستبدال الأجرة بالعمولة:
+ *   DR COURIER_PAYABLE = feeAmount   (يُخفَّض الالتزام كاملاً كما لو دُفعت الأجرة)
+ *   CR CASH            = commissionAmount   (النقد المدفوع فعلياً للمندوب — العمولة الأقلّ)
+ *   CR DELIVERY_REVENUE = feeAmount − commissionAmount   (الفارقُ إيرادُ توصيلٍ للمكتبة)
+ *
+ * حين commission == fee ⇒ سطرُ الإيراد صفرٌ (يُقتطع)، فالقيدُ يعود لنمط `deliveryFeeSettlementIntent`.
+ * commission > fee مرفوضٌ في fees.ts قبل بلوغِ هذه الدالّة (لا نُقيّد إيراداً سالباً).
+ */
+export function deliveryCommissionSettlementIntent(
+  feeAmount: Decimal,
+  commissionAmount: Decimal,
+  cashBucket: Exclude<CashBucket, null | undefined>,
+): PostingIntent {
+  const paidFrom = paymentAccountRole("CASH", cashBucket, "OUT");
+  const margin = feeAmount.minus(commissionAmount);
+  const credits = [creditLine(paidFrom, commissionAmount)];
+  const roleCredits: Record<string, Decimal> = { [paidFrom]: commissionAmount };
+  if (margin.gt(0)) {
+    credits.push(creditLine("DELIVERY_REVENUE", margin));
+    roleCredits.DELIVERY_REVENUE = margin;
+  }
+  return createPostingIntent(
+    "DELIVERY_COMMISSION_SETTLEMENT",
+    "DELIVERY_FEE",
+    [debitLine("COURIER_PAYABLE", feeAmount), ...credits],
+    { roleDebits: { COURIER_PAYABLE: feeAmount }, roleCredits },
+  );
+}
+
 /** A fee collected from the customer is held for the courier, not recognised as revenue. */
 export function deliveryFeeHeldReceiptIntent(
   amount: Decimal,

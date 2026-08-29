@@ -1877,6 +1877,13 @@
 			"when": 1788052340000,
 			"tag": "0288_add_courier_commission_to_remittance",
 			"breakpoints": true
+		},
+		{
+			"idx": 289,
+			"version": "5",
+			"when": 1788052341000,
+			"tag": "0289_enable_commission_per_party",
+			"breakpoints": true
 		}
 	]
 }
