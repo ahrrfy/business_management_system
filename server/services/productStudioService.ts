@@ -1234,6 +1234,13 @@ export async function transitionStudioCampaign(
     dueAt?: Date | null;
     /** سبب إلغاء الحملة — يُنسَخ على كل مهمة طابورٍ تُلغى معها. */
     reason?: string | null;
+    /**
+     * ٢٩/٨ (بلاغ مالك: «ألغيت الحملات ولكن مازالت تظهر مهام مسندة»): عند CANCELLED، إن
+     * كانت `true` تُلغى **كلّ** المهام الحيّة (ASSIGNED/IN_PROGRESS/PENDING_REVIEW/REJECTED)
+     * لا الطابور غير المسنَد فقط. القرار للمدير عبر الشاشة — الافتراضيّ `false` يُصان به
+     * عملُ الموظف كما هو تاريخياً (اختبارٌ صريح يحرسه).
+     */
+    cascadeAssignedTasks?: boolean;
   },
 ) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
@@ -1297,7 +1304,7 @@ export async function transitionStudioCampaign(
     // لا يُمحى تبعاً لقرارٍ إداريّ على الحملة، بل يُلغى فرداً فرداً بقرارٍ مرئيّ.
     const cascade =
       input.status === "CANCELLED"
-        ? await cancelCampaignQueuedTasksInTx(tx, actor, campaign, input.reason?.trim() || `أُلغيت مع حملة «${campaign.name}» (#${input.campaignId})`, "productStudio.campaign.cancelWithCampaign")
+        ? await cancelCampaignQueuedTasksInTx(tx, actor, campaign, input.reason?.trim() || `أُلغيت مع حملة «${campaign.name}» (#${input.campaignId})`, input.cascadeAssignedTasks === true ? "productStudio.campaign.cancelWithCampaign.cascade" : "productStudio.campaign.cancelWithCampaign", { cascadeAssigned: input.cascadeAssignedTasks === true })
         : { cancelledCount: 0, remaining: 0 };
     // قائمةُ المستلمين تُلتقط داخل المعاملة (مرجعٌ اتّساقيّ) وتُستعمل بعد commit لإرسال
     // الإشعارات — إشعاراتٌ خارج المعاملة كي لا يُدحرَج انتقالُ الحملة بسببِ فشلِ إشعارٍ.
@@ -4639,9 +4646,29 @@ const CANCEL_BATCH_LIMIT = 500;
  * نواة إلغاء طابور حملة، مشتركةٌ بين الإلغاء الصريح وإلغاء الحملة نفسها.
  * تفترض أنّ صلاحية الفاعل على الحملة قد فُحصت، وتعمل داخل معاملة القادم.
  */
-async function cancelCampaignQueuedTasksInTx(tx: Parameters<Parameters<typeof withTx>[0]>[0], actor: ProductStudioActor, campaign: { id: number | string; branchId: number | string | null }, reason: string, action: string) {
+async function cancelCampaignQueuedTasksInTx(
+  tx: Parameters<Parameters<typeof withTx>[0]>[0],
+  actor: ProductStudioActor,
+  campaign: { id: number | string; branchId: number | string | null },
+  reason: string,
+  action: string,
+  options: {
+    /**
+     * `false` (افتراضيّ) — يُلغي غير المُسنَد فقط (السلوك التاريخيّ: عملُ الموظفين يُصان).
+     * `true` (٢٩/٨، بلاغ مالك) — يُلغي كلّ المهام الحيّة (ASSIGNED/IN_PROGRESS/PENDING_REVIEW/
+     * REJECTED)، سواء مُسنَدةً لموظفٍ أم لا. المستَعمَل عندما يريد المدير محوَ الحملة كلّياً.
+     * قرارُ المالك يعلو على السلوك الافتراضيّ — الشاشة تسأل صراحةً قبل تفعيله.
+     */
+    cascadeAssigned?: boolean;
+  } = {},
+) {
   const campaignId = Number(campaign.id);
-  const scope = and(eq(productImageJobs.campaignId, campaignId), eq(productImageJobs.status, "ASSIGNED"), isNull(productImageJobs.assignedTo), eq(productImageJobs.activeSlot, 1));
+  const cascadeAssigned = options.cascadeAssigned === true;
+  const scope = cascadeAssigned
+    // كل مهمّةٍ حيّةٍ على الحملة — بمُنفّذٍ أو بلا — تُلغى. PENDING_REVIEW تُلغى أيضاً لأنّها
+    // ما زالت مفتوحةً على منتجٍ ينتظر قراراً؛ عدم إلغائها يترك تناقضاً مع «الحملة ملغاة».
+    ? and(eq(productImageJobs.campaignId, campaignId), inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]), eq(productImageJobs.activeSlot, 1))
+    : and(eq(productImageJobs.campaignId, campaignId), eq(productImageJobs.status, "ASSIGNED"), isNull(productImageJobs.assignedTo), eq(productImageJobs.activeSlot, 1));
   const rows = await tx.select({ id: productImageJobs.id }).from(productImageJobs).where(scope).orderBy(asc(productImageJobs.id)).limit(CANCEL_BATCH_LIMIT).for("update");
   if (rows.length === 0) return { cancelledCount: 0, remaining: 0 };
   const ids = rows.map((row) => Number(row.id));
@@ -4662,7 +4689,7 @@ async function cancelCampaignQueuedTasksInTx(tx: Parameters<Parameters<typeof wi
   return { cancelledCount: ids.length, remaining };
 }
 
-export async function bulkCancelStudioBacklog(actor: ProductStudioActor, input: { campaignId: number; reason: string }) {
+export async function bulkCancelStudioBacklog(actor: ProductStudioActor, input: { campaignId: number; reason: string; cascadeAssigned?: boolean }) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const cleanReason = input.reason.trim();
   if (cleanReason.length < 5)
@@ -4678,7 +4705,7 @@ export async function bulkCancelStudioBacklog(actor: ProductStudioActor, input: 
         message: "حملة الاستوديو غير موجودة",
       });
     assertCampaignAccess(actor, campaign);
-    return cancelCampaignQueuedTasksInTx(tx, actor, campaign, cleanReason, "productStudio.campaign.cancelBacklog");
+    return cancelCampaignQueuedTasksInTx(tx, actor, campaign, cleanReason, input.cascadeAssigned === true ? "productStudio.campaign.cancelBacklog.cascade" : "productStudio.campaign.cancelBacklog", { cascadeAssigned: input.cascadeAssigned === true });
   });
 }
 

@@ -64,6 +64,9 @@ export const productStudioRouter = router({
         search: z.string().trim().max(80).optional(),
         limit: z.number().int().min(1).max(200).optional(),
         cursor: z.number().int().nonnegative().optional(),
+        // فرزٌ خادميّ (Codex P2 على PR #865): الفرز على الواجهة كان يمسّ الصفحة المقطَّعة
+        // فيُقصّ الأولويّ. الآن يُطبَّق داخل الاستعلام قبل التقطيع.
+        sort: z.enum(["MISSING_MOST", "NAME_ASC", "APPROVED_ASC", "VARIANTS_MISSING_MOST"]).optional(),
       }),
     )
     .query(({ ctx, input }) => discoverImageGaps(actor(ctx), input)),
@@ -146,6 +149,8 @@ export const productStudioRouter = router({
       startsAt: z.coerce.date().nullable().optional(),
       dueAt: z.coerce.date().nullable().optional(),
       reason: z.string().trim().max(500).optional(),
+      // ٢٩/٨ (بلاغ مالك): CANCELLED + true ⇒ إلغاءُ كلّ المهام الحيّة لا الطابور فقط.
+      cascadeAssignedTasks: z.boolean().optional(),
     }))
     .mutation(({ ctx, input }) => transitionStudioCampaign(actor(ctx), input)),
   previewCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => previewStudioCampaignBacklog(actor(ctx), input.campaignId)),
@@ -309,6 +314,8 @@ export const productStudioRouter = router({
       z.object({
         campaignId,
         reason: z.string().trim().min(5).max(500),
+        // ٢٩/٨: cascade أيضاً في الـsweep حتى لا يبقى المسنَد بعد أن اختار المدير حذفَه.
+        cascadeAssigned: z.boolean().optional(),
       }),
     )
     .mutation(({ ctx, input }) => bulkCancelStudioBacklog(actor(ctx), input)),

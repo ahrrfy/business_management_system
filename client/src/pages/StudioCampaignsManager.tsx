@@ -96,6 +96,10 @@ export default function StudioCampaignsManager() {
   const [search, setSearch] = useState("");
   const [cancelReason, setCancelReason] = useState<Record<number, string>>({});
   const [openReasonFor, setOpenReasonFor] = useState<number | null>(null);
+  // ٢٩/٨ (بلاغ مالك: «ألغيت الحملات ولكن مازالت تظهر مهام مسندة»): خيار المدير الصريح
+  // لإلغاء المهام المُسنَدة والقيدَ عملها مع الحملة — بلا هذا يبقى عمل الموظف قائماً
+  // (السلوك التاريخيّ الآمن). القرار بحسب الحملة.
+  const [cascadeAssigned, setCascadeAssigned] = useState<Record<number, boolean>>({});
   const utils = trpc.useUtils();
 
   // صلاحيّةُ المدير مطلوبةٌ لأداء الشاشة: كلّ mutations تُرفَض بـ`productStudioManagerProcedure`
@@ -134,11 +138,12 @@ export default function StudioCampaignsManager() {
   // للحملة) في حلقةٍ حتى `remaining === 0`. سقفُ عشرين محاولةٍ = ١٠٠٠٠ مهمّة، فوق سقف
   // `MAX_CAMPAIGN_PRODUCTS = 5000` — حمايةٌ من حلقةٍ لا تنتهي إن انكسر عقد التقلّص.
   const cancelBacklog = trpc.productStudio.cancelCampaignBacklog.useMutation();
-  const finishCancellation = async (campaignId: number, seedReason: string) => {
+  const finishCancellation = async (campaignId: number, seedReason: string, cascade: boolean) => {
     const clean = seedReason.trim().length >= 5 ? seedReason.trim() : "استكمال إلغاء طابور الحملة";
     let sweptExtra = 0;
     for (let i = 0; i < 20; i++) {
-      const res = await cancelBacklog.mutateAsync({ campaignId, reason: clean });
+      // ٢٩/٨: cascade يُمرَّر إلى الـsweep حتى لا يتوقّف عند غير المسنَد بينما اختار المدير الحذف الكلّيّ.
+      const res = await cancelBacklog.mutateAsync({ campaignId, reason: clean, cascadeAssigned: cascade });
       sweptExtra += res.cancelledCount;
       if (res.remaining === 0) return { swept: true, extra: sweptExtra };
     }
@@ -166,7 +171,7 @@ export default function StudioCampaignsManager() {
       if (result.status === "CANCELLED" && result.remainingTasks > 0) {
         notify.info(`أُلغيت الحملة و${result.cancelledTasks} مهمة — جارٍ إتمام ${result.remainingTasks}+ متبقّية…`);
         try {
-          const done = await finishCancellation(variables.campaignId, variables.reason ?? "");
+          const done = await finishCancellation(variables.campaignId, variables.reason ?? "", variables.cascadeAssignedTasks === true);
           notify.ok(
             done.swept
               ? `اكتمل إلغاء الحملة — ${result.cancelledTasks + done.extra} مهمّة`
@@ -214,8 +219,8 @@ export default function StudioCampaignsManager() {
   }, [campaigns.data]);
 
   // النوع مضيَّق: DRAFT حالةُ ابتداءٍ فقط لا هدفٌ للانتقال — الخادم يقبل الأربعة فقط.
-  const runTransition = (campaignId: number, status: "ACTIVE" | "PAUSED" | "COMPLETED" | "CANCELLED", reason?: string) => {
-    transition.mutate({ campaignId, status, ...(reason ? { reason } : {}) });
+  const runTransition = (campaignId: number, status: "ACTIVE" | "PAUSED" | "COMPLETED" | "CANCELLED", reason?: string, cascade?: boolean) => {
+    transition.mutate({ campaignId, status, ...(reason ? { reason } : {}), ...(cascade === true ? { cascadeAssignedTasks: true } : {}) });
   };
 
   // بوّابةُ صلاحيّة صريحة قبل الرَندر: `StudioRouteAccess` يفتح للمدقّق وprint_operator
@@ -459,6 +464,22 @@ export default function StudioCampaignsManager() {
                           onChange={(e) => setCancelReason((cur) => ({ ...cur, [Number(c.id)]: e.target.value }))}
                           placeholder="مثال: تغيّر خطّة التصوير — أُلغيت الحملة لصالح حملةٍ أوسع"
                         />
+                        {/* ٢٩/٨ (بلاغ مالك): خيار إلغاء المهام المسنَدة والقيدَ عملها أيضاً.
+                            الافتراضيّ مُعطَّل كي لا يمحوَ عملَ الموظف بالخطأ — تفعيلٌ صريح. */}
+                        <label className="flex items-start gap-2 rounded border border-dashed border-[var(--sem-warn)]/40 bg-[var(--sem-warn)]/5 p-2 text-xs">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 size-4 shrink-0"
+                            checked={cascadeAssigned[Number(c.id)] === true}
+                            onChange={(e) => setCascadeAssigned((cur) => ({ ...cur, [Number(c.id)]: e.target.checked }))}
+                          />
+                          <span>
+                            <span className="font-medium text-[var(--sem-warn)]">أَلغِ المهام المسنَدة والقيدَ عملها أيضاً</span>
+                            <span className="block text-[10.5px] text-muted-foreground">
+                              افتراضياً يُلغى الطابور غير المسنَد فقط، ويبقى عمل الموظف قابلاً للإتمام. فعِّل هذا الخيار إن أردتَ إلغاءَ الحملة كلّياً بلا استثناء (لا رجعة، تشمل PENDING_REVIEW).
+                            </span>
+                          </span>
+                        </label>
                         <div className="flex justify-end gap-2">
                           <Button size="sm" variant="ghost" className="min-h-9" onClick={() => setOpenReasonFor(null)}>
                             إلغاء
@@ -468,7 +489,7 @@ export default function StudioCampaignsManager() {
                             className="min-h-9"
                             disabled={isMutating || reason.trim().length < 5}
                             onClick={() => {
-                              runTransition(Number(c.id), "CANCELLED", reason.trim());
+                              runTransition(Number(c.id), "CANCELLED", reason.trim(), cascadeAssigned[Number(c.id)] === true);
                               setOpenReasonFor(null);
                             }}
                           >
