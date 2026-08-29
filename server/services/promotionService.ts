@@ -25,6 +25,7 @@ import Decimal from "decimal.js";
 import { money, round2, toDbMoney } from "./money";
 import { getEmployeeStatement } from "./hr/employeeStatement";
 import { createSystemPaymentRequestTx } from "./voucher/create";
+import { notifyApprovalPendingByReceipt } from "./approvalEventNotifier";
 import {
   wageProfileColumns,
   wageProfileOf,
@@ -953,5 +954,11 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       userDisabled,
       deviceLinksReleased,
     };
+  }).then((result) => {
+    // ن-٢-هـ (Codex P2 ٢٨/٨): تسوية نهاية الخدمة تُنشئ سند دفعٍ قد يكون PENDING_APPROVAL.
+    if (result.settlementVoucher?.receiptId) {
+      void notifyApprovalPendingByReceipt(result.settlementVoucher.receiptId);
+    }
+    return result;
   });
 }

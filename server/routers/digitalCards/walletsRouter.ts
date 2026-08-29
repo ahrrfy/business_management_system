@@ -4,6 +4,7 @@ import { z } from "zod";
 import { nonNegMoneyString, positiveMoneyString } from "../../lib/schemas";
 import { walletOpsService, walletService } from "../../services/digitalCards";
 import { withTx } from "../../services/tx";
+import { notifyApprovalPendingByReceipt } from "../../services/approvalEventNotifier";
 import { digitalCardsAdminReadProcedure, digitalCardsManagerProcedure, router } from "../../trpc";
 import { actorOf, idInput, requireDb, scopedBranchOf } from "./shared";
 
@@ -78,9 +79,14 @@ export const walletsRouter = router({
         notes: z.string().max(300).nullish(),
       }),
     )
-    .mutation(async ({ input, ctx }) =>
-      withTx((tx) => walletOpsService.deposit(tx, input, actorOf(ctx))),
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const result = await withTx((tx) => walletOpsService.deposit(tx, input, actorOf(ctx)));
+      // ن-٢-هـ (Codex P2 ٢٨/٨): أخطر المُعتمِدين بعد commit — الدالّة تُصفّي على الحالة.
+      if (result.pendingApproval && result.receiptId) {
+        void notifyApprovalPendingByReceipt(result.receiptId);
+      }
+      return result;
+    }),
 
   withdraw: digitalCardsManagerProcedure
     .input(
@@ -94,9 +100,12 @@ export const walletsRouter = router({
         notes: z.string().max(300).nullish(),
       }),
     )
-    .mutation(async ({ input, ctx }) =>
-      withTx((tx) => walletOpsService.withdraw(tx, input, actorOf(ctx))),
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const result = await withTx((tx) => walletOpsService.withdraw(tx, input, actorOf(ctx)));
+      // ن-٢-هـ (Codex P2 ٢٨/٨): السحب يُنشئ سنداً قد يكون PENDING_APPROVAL — الدالّة تُصفّي.
+      if (result.receiptId) void notifyApprovalPendingByReceipt(result.receiptId);
+      return result;
+    }),
 
   /** طلب تعديل — لا يمسّ الرصيد؛ يعتمده مديرٌ **آخر** (SOD). */
   requestAdjustment: digitalCardsManagerProcedure
