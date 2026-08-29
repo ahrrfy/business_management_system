@@ -2659,6 +2659,13 @@ export async function listStudioTasks(
     unassigned?: boolean;
     search?: string;
     now?: Date;
+    /**
+     * ٢٩/٨ (بلاغ مالك: مهام الحملات الملغاة تُشوّش القائمة): يُخفي المهامَّ التي حملتُها
+     * في حالةٍ نهائيّة (COMPLETED/CANCELLED). PAUSED تبقى ظاهرةً لأنّها لحظيةٌ لا نهائيّة —
+     * المصوّر ينهي عمله المسنَد ثمّ يُنتظَر استئنافٌ إداريّ. `campaignId IS NULL` (المهام
+     * المستقلّة بلا حملة، أو مهام PS بيدويّ) لا تُلمس.
+     */
+    hideClosedCampaigns?: boolean;
   },
 ) {
   const conds = [];
@@ -2702,6 +2709,15 @@ export async function listStudioTasks(
   if (productId != null) conds.push(eq(productImageJobs.productId, productId));
   if (campaignId != null) conds.push(eq(productImageJobs.campaignId, campaignId));
   if (input.unassigned === true) conds.push(isNull(productImageJobs.assignedTo));
+  // إخفاءُ مهام الحملات النهائيّة (٢٩/٨): يُنفَّذ في WHERE عبر subquery correlated كي لا
+  // نُغيّر جدول الأصل ولا نضيف JOIN إضافياً للفلترة. `NOT IN` مع `IS NULL` (مهامّ بلا حملة).
+  if (input.hideClosedCampaigns === true) {
+    conds.push(
+      sql`(${productImageJobs.campaignId} is null or ${productImageJobs.campaignId} not in (
+        select id from ${productStudioCampaigns} where status in ('COMPLETED', 'CANCELLED')
+      ))`,
+    );
+  }
   // بحثٌ باسم المنتج/الرمز داخل الطابور. بدونه كان الوصول إلى مهمةٍ بعينها بين آلاف الصفوف
   // يعني الضغط على «تحميل المزيد» عشرات المرّات ثمّ المسح البصريّ.
   if (search) {
@@ -2751,11 +2767,15 @@ export async function listStudioTasks(
       dueAt: productImageJobs.dueAt,
       revision: productImageJobs.revision,
       overdue: sql<boolean>`${productImageJobs.dueAt} is not null and ${productImageJobs.dueAt} < ${now} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'REJECTED')`,
+      // حالةُ حملة المهمّة تصعد إلى الواجهة (٢٩/٨) لتُبرزَ الشاشةُ شارة تحذير على المهام
+      // التي تتبع حملةً مغلقة/موقوفة. `null` للمهام المستقلّة بلا حملة.
+      campaignStatus: productStudioCampaigns.status,
     })
     .from(productImageJobs)
     .innerJoin(products, eq(products.id, productImageJobs.productId))
     .leftJoin(productVariants, eq(productVariants.id, productImageJobs.variantId))
     .leftJoin(users, eq(users.id, productImageJobs.assignedTo))
+    .leftJoin(productStudioCampaigns, eq(productStudioCampaigns.id, productImageJobs.campaignId))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(productImageJobs.updatedAt), desc(productImageJobs.id))
     .limit(limit + 1);
