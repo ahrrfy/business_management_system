@@ -71,6 +71,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.marketing.AnomalyCode
 import online.alarabiya.superapp.model.marketing.AnomalySeverity
 import online.alarabiya.superapp.model.marketing.CatalogAnomaly
@@ -553,7 +554,7 @@ private fun PromotionFormDialog(
                 item { OutlinedTextField(description, { description = it.take(2000) }, label = { Text("الوصف") }, modifier = Modifier.fillMaxWidth()) }
                 item { ChoiceRow(PromotionType.entries.filterNot { it == PromotionType.Unknown }, type, { type = it }, { it.label }, enabled = initial == null) }
                 item { OutlinedTextField(value, { value = it }, label = { Text("قيمة الخصم") }, modifier = Modifier.fillMaxWidth()) }
-                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(from, { from = it.take(10) }, label = { Text("من YYYY-MM-DD") }, modifier = Modifier.weight(1f)); OutlinedTextField(to, { to = it.take(10) }, label = { Text("إلى") }, modifier = Modifier.weight(1f)) } }
+                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { ArabicDatePicker(from, { from = it }, "من", modifier = Modifier.weight(1f)); ArabicDatePicker(to, { to = it }, "إلى", modifier = Modifier.weight(1f)) } }
                 item { ChoiceRow(PromotionMode.entries, mode, { mode = it }, { it.label }) }
                 item { ChoiceRow(PromotionChannel.entries, channel, { channel = it }, { it.label }) }
                 item {
@@ -751,7 +752,7 @@ private fun AnomalyActionDialog(anomaly: CatalogAnomaly, onDismiss: () -> Unit, 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(anomaly.productName, fontWeight = FontWeight.Bold)
                 OutlinedTextField(justification, { justification = it.take(500) }, label = { Text("تبرير إداري — 10 أحرف على الأقل") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(until, { until = it.take(10) }, label = { Text("استثناء حتى YYYY-MM-DD — اختياري") }, modifier = Modifier.fillMaxWidth())
+                ArabicDatePicker(until, { until = it }, "استثناء حتى — اختياري")
             }
         },
         confirmButton = {

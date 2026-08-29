@@ -3,6 +3,7 @@ package online.alarabiya.superapp.model.insights
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
+import online.alarabiya.superapp.core.time.baghdadToday
 import java.time.temporal.ChronoUnit
 import online.alarabiya.superapp.model.AppBootstrap
 
@@ -67,7 +68,7 @@ data class InsightDateRange(val from: String, val to: String) {
     }
 
     companion object {
-        fun forPreset(preset: PeriodPreset, today: LocalDate = LocalDate.now()): InsightDateRange {
+        fun forPreset(preset: PeriodPreset, today: LocalDate = baghdadToday()): InsightDateRange {
             val days = preset.days ?: 30
             return InsightDateRange(today.minusDays(days - 1), today)
         }

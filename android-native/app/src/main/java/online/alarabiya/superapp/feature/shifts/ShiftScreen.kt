@@ -62,6 +62,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.shifts.CurrentShift
 import online.alarabiya.superapp.model.shifts.ShiftFilters
 import online.alarabiya.superapp.model.shifts.ShiftMoney
@@ -322,15 +323,7 @@ private fun <T : Any> FilterRow(label: String, options: List<Pair<T, String>>, s
 
 @Composable
 private fun DateFilter(label: String, value: String, modifier: Modifier, onValue: (String) -> Unit) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = { onValue(it.filter { char -> char.isDigit() || char == '-' }.take(10)) },
-        label = { Text(label) },
-        placeholder = { Text("YYYY-MM-DD") },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        singleLine = true,
-        modifier = modifier,
-    )
+    ArabicDatePicker(value = value, onValue = onValue, label = label, modifier = modifier)
 }
 
 @Composable
@@ -692,7 +685,7 @@ internal fun formatShiftTimestamp(raw: String, zoneId: ZoneId = ZoneId.of("Asia/
     val instant = runCatching { Instant.parse(raw) }.getOrNull()
         ?: runCatching { OffsetDateTime.parse(raw).toInstant() }.getOrNull()
         ?: return raw
-    val formatter = DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ"))
+    val formatter = DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ-u-nu-latn"))
         .withZone(zoneId)
     return ltrIsolate(formatter.format(instant))
 }

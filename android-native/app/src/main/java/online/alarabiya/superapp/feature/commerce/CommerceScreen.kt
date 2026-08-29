@@ -57,6 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.commerce.CommerceCapabilities
 import online.alarabiya.superapp.model.commerce.DigitalCard
 import online.alarabiya.superapp.model.commerce.DigitalCardAvailability
@@ -74,6 +75,7 @@ import online.alarabiya.superapp.ui.rtlIsolate
 import java.text.NumberFormat
 import java.util.Locale
 import java.time.LocalDate
+import online.alarabiya.superapp.core.time.baghdadToday
 
 @Composable
 fun CommerceRoute(
@@ -326,7 +328,7 @@ private fun DigitalCardDecisionDialog(
     onConfirm: (Boolean, DigitalCardApprovalDecision) -> Unit,
 ) {
     var reason by rememberSaveable(item.id, approve) { mutableStateOf("") }
-    var businessDate by rememberSaveable(item.id) { mutableStateOf(LocalDate.now().toString()) }
+    var businessDate by rememberSaveable(item.id) { mutableStateOf(baghdadToday().toString()) }
     var sellPrice by rememberSaveable(item.id) { mutableStateOf(item.currentSellPrice.orEmpty()) }
     val mismatchApproval = approve && item.kind == DigitalCardApprovalKind.PRICE_MISMATCH
     val validBusinessDate = businessDate.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$"))
@@ -344,15 +346,12 @@ private fun DigitalCardDecisionDialog(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(item.title)
                 if (mismatchApproval) {
-                    OutlinedTextField(
+                    // Wave 3 (٢٩/٨): DatePicker بديلاً عن حقلٍ نصّيّ. يُلغي كامل حاجة IME للإدخال
+                    // اليدويّ لتاريخٍ ISO — راجع `ArabicDatePicker` وذاكرة `feedback-latin-digits-always`.
+                    ArabicDatePicker(
                         value = businessDate,
-                        onValueChange = { businessDate = it.take(10) },
-                        label = { Text("تاريخ العمل YYYY-MM-DD") },
-                        singleLine = true,
-                        // Codex P2 ٢٨/٨: canSubmit يشترط YYYY-MM-DD والـNumber IME لا يوفّر «-»،
-                        // فيقفل تحرير الحقل بعد مسحه ⇒ Text IME أسلم حتى يُدخَل DatePicker حقيقي.
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                        modifier = Modifier.fillMaxWidth(),
+                        onValue = { businessDate = it },
+                        label = "تاريخ العمل",
                     )
                     OutlinedTextField(
                         value = sellPrice,
@@ -752,7 +751,7 @@ private val CommerceSection.icon: ImageVector
         CommerceSection.Approvals -> Icons.Rounded.FactCheck
     }
 
-private val moneyFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).apply { maximumFractionDigits = 0 }
+private val moneyFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ-u-nu-latn")).apply { maximumFractionDigits = 0 }
 private fun formatMoney(raw: String): String = raw.toDoubleOrNull()?.let { "${moneyFormat.format(it)} د.ع" } ?: raw
 private fun giftStatusLabel(value: String) = when (value) {
     "PENDING_APPROVAL" -> "بانتظار الاعتماد"

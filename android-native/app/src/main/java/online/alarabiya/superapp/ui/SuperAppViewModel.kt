@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import online.alarabiya.superapp.core.time.baghdadToday
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -257,7 +258,7 @@ class SuperAppViewModel(
                     repository.loadWorkspace()
                 } else {
                     PersonalWorkspace(
-                        date = java.time.LocalDate.now().toString(),
+                        date = baghdadToday().toString(),
                         employee = null,
                         attendance = null,
                         tasks = emptyList(),
@@ -301,7 +302,7 @@ class SuperAppViewModel(
                         sessionState = AppSessionState.Ready(
                             bootstrap = bootstrap,
                             workspace = PersonalWorkspace(
-                                date = java.time.LocalDate.now().toString(), employee = null, attendance = null,
+                                date = baghdadToday().toString(), employee = null, attendance = null,
                                 tasks = emptyList(), notifications = emptyList(), payroll = null,
                             ),
                             biometricEnabled = repository.isBiometricEnabled(),

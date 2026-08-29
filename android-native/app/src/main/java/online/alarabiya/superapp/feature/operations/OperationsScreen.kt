@@ -79,6 +79,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.text.NumberFormat
 import java.util.Locale
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.operations.AssetDetail
 import online.alarabiya.superapp.model.operations.AssetStatus
 import online.alarabiya.superapp.model.operations.AssetSummary
@@ -647,15 +648,7 @@ private fun MaintenanceDialog(
                 Text("تغيّر حالة الأصل فقط. الصيانة المدفوعة تُنفّذ من المسار المالي المعتمد.", color = MutedInk)
                 OutlinedTextField(type, { type = it.take(255) }, Modifier.fillMaxWidth(), label = { Text("نوع الصيانة") })
                 OutlinedTextField(vendor, { vendor = it.take(255) }, Modifier.fillMaxWidth(), label = { Text("الجهة المنفذة — اختياري") })
-                OutlinedTextField(
-                    date,
-                    { date = it.take(10) },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("التاريخ — اختياري") },
-                    placeholder = { Text("YYYY-MM-DD") },
-                    isError = !dateValid,
-                    singleLine = true,
-                )
+                ArabicDatePicker(date, { date = it }, "التاريخ — اختياري")
                 OutlinedTextField(note, { note = it.take(500) }, Modifier.fillMaxWidth(), label = { Text("ملاحظة") }, minLines = 2)
             }
         },
@@ -910,5 +903,5 @@ private fun productLabel(product: ConsignorProduct): String = listOfNotNull(
 
 private fun formatMoney(value: String): String {
     val amount = value.toDoubleOrNull() ?: return "$value د.ع"
-    return "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).format(amount)} د.ع"
+    return "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ-u-nu-latn")).format(amount)} د.ع"
 }

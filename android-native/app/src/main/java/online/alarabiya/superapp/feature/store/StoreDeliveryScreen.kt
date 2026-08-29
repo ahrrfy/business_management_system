@@ -90,6 +90,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.store.CourierDelivery
 import online.alarabiya.superapp.model.store.DeliveryMoney
 import online.alarabiya.superapp.model.store.DeliveryPartyAccount
@@ -608,23 +609,17 @@ private fun StoreListPane(state: StoreDeliveryUiState, viewModel: StoreDeliveryV
             }
             if (showDateFilters) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
+                    ArabicDatePicker(
                         value = fromDate,
-                        onValueChange = { fromDate = it.take(10) },
+                        onValue = { fromDate = it },
+                        label = "من",
                         modifier = Modifier.weight(1f).testTag("store_from_date"),
-                        label = { Text("من") },
-                        placeholder = { Text("YYYY-MM-DD") },
-                        singleLine = true,
-                        isError = fromDate.isNotBlank() && !datePattern.matches(fromDate),
                     )
-                    OutlinedTextField(
+                    ArabicDatePicker(
                         value = toDate,
-                        onValueChange = { toDate = it.take(10) },
+                        onValue = { toDate = it },
+                        label = "إلى",
                         modifier = Modifier.weight(1f).testTag("store_to_date"),
-                        label = { Text("إلى") },
-                        placeholder = { Text("YYYY-MM-DD") },
-                        singleLine = true,
-                        isError = toDate.isNotBlank() && !datePattern.matches(toDate),
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1165,5 +1160,5 @@ private fun confirmationText(action: StoreOrderAction): String = when (action) {
 
 private fun formatMoney(value: String): String {
     val amount = runCatching { BigDecimal(value.trim()) }.getOrNull() ?: return "$value د.ع"
-    return "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).format(amount)} د.ع"
+    return "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ-u-nu-latn")).format(amount)} د.ع"
 }

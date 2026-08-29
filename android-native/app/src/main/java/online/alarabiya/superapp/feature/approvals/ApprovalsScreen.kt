@@ -590,5 +590,5 @@ private fun SelectionHint() {
 private fun Double.pretty(): String = if (this % 1.0 == 0.0) toLong().toString() else toString()
 
 private fun formatDate(value: String): String = runCatching {
-    OffsetDateTime.parse(value).format(DateTimeFormatter.ofPattern("d MMM yyyy، h:mm a", Locale.forLanguageTag("ar")))
+    OffsetDateTime.parse(value).format(DateTimeFormatter.ofPattern("d MMM yyyy، h:mm a", Locale.forLanguageTag("ar-IQ-u-nu-latn")))
 }.getOrDefault(value)

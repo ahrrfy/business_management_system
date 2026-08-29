@@ -585,6 +585,9 @@ private fun TaskEditorDialog(
                     }
                 }
                 item { StaffPicker(staff, draft.assignedTo) { actions.updateTask(draft.copy(assignedTo = it)) } }
+                // Codex P2 (٢٩/٨، #864): task dueAt يقبل ISO instant بوقتٍ محدَّد أيضاً؛ خدمتُه
+                // تفسّر YYYY-MM-DD كمنتصف ليل UTC = 03:00 بغداد ⇒ يظهر متأخّراً معظمَ اليوم.
+                // نُبقي حقلاً نصّياً حتى نُضيف ArabicInstantPicker يحمل وقتاً.
                 item { OutlinedTextField(draft.dueAt, { actions.updateTask(draft.copy(dueAt = it.take(40))) }, Modifier.fillMaxWidth(), label = { Text("الاستحقاق (ISO أو YYYY-MM-DD)") }) }
             }
         },
@@ -973,7 +976,7 @@ private fun formatDate(value: String?): String {
     if (value.isNullOrBlank()) return "—"
     return runCatching {
         val instant = runCatching { Instant.parse(value) }.getOrElse { OffsetDateTime.parse(value).toInstant() }
-        DateTimeFormatter.ofPattern("d MMM yyyy، h:mm a", Locale.forLanguageTag("ar"))
+        DateTimeFormatter.ofPattern("d MMM yyyy، h:mm a", Locale.forLanguageTag("ar-IQ-u-nu-latn"))
             .withZone(ZoneId.systemDefault()).format(instant)
     }.getOrDefault(value.take(16))
 }

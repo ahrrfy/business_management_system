@@ -682,7 +682,7 @@ private fun formatTime(value: String?): String {
     return runCatching {
         val instant = runCatching { Instant.parse(value) }
             .getOrElse { OffsetDateTime.parse(value).toInstant() }
-        DateTimeFormatter.ofPattern("d MMM، h:mm a", Locale.forLanguageTag("ar"))
+        DateTimeFormatter.ofPattern("d MMM، h:mm a", Locale.forLanguageTag("ar-IQ-u-nu-latn"))
             .withZone(ZoneId.systemDefault())
             .format(instant)
     }.getOrDefault(value.take(16))

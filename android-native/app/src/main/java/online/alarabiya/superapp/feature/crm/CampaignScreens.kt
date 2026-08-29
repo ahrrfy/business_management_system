@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.crm.BranchOption
 import online.alarabiya.superapp.model.crm.CampaignDraft
 import online.alarabiya.superapp.model.crm.CampaignStatus
@@ -201,19 +202,17 @@ private fun CampaignEditorPane(
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
+                    ArabicDatePicker(
                         draft.startsOn,
                         { actions.updateCampaignDraft(draft.copy(startsOn = it)) },
-                        label = { Text("البداية YYYY-MM-DD") },
+                        "البداية",
                         modifier = Modifier.weight(1f),
-                        singleLine = true,
                     )
-                    OutlinedTextField(
+                    ArabicDatePicker(
                         draft.endsOn,
                         { actions.updateCampaignDraft(draft.copy(endsOn = it)) },
-                        label = { Text("النهاية YYYY-MM-DD") },
+                        "النهاية",
                         modifier = Modifier.weight(1f),
-                        singleLine = true,
                     )
                 }
             }

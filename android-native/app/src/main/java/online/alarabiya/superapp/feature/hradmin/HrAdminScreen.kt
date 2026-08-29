@@ -79,6 +79,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.hradmin.ApplicantStage
 import online.alarabiya.superapp.model.hradmin.EmploymentStatus
 import online.alarabiya.superapp.model.hradmin.HrAdminCapabilities
@@ -450,13 +451,11 @@ private fun EmployeeDetail(
                         "إجراء نهائي يعطّل حساب النظام المرتبط ويحرّر ربط جهاز البصمة. يمنع الخادم إنهاء سجلّك الشخصي وآخر مدير نشط.",
                         color = MaterialTheme.colorScheme.error,
                     )
-                    OutlinedTextField(
+                    ArabicDatePicker(
                         value = terminationDate,
-                        onValueChange = { terminationDate = it.filter { char -> char.isDigit() || char == '-' }.take(10) },
-                        label = { Text("تاريخ إنهاء الخدمة YYYY-MM-DD") },
-                        singleLine = true,
+                        onValue = { terminationDate = it },
+                        label = "تاريخ إنهاء الخدمة",
                         enabled = !locked,
-                        modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
                         value = terminationReason,

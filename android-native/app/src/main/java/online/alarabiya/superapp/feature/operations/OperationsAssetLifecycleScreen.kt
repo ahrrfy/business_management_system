@@ -95,11 +95,13 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
 import java.time.YearMonth
+import online.alarabiya.superapp.core.time.baghdadToday
 import java.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import online.alarabiya.superapp.core.scanner.NativeScanField
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.operations.AssetCategory
 import online.alarabiya.superapp.model.operations.AssetDetail
 import online.alarabiya.superapp.model.operations.AssetDisposalInput
@@ -380,7 +382,7 @@ internal fun AssetLifecycleOverlays(state: OperationsUiState, viewModel: Operati
 private fun AssetEditorDialog(detail: AssetDetail?, state: OperationsUiState, viewModel: OperationsViewModel) {
     val options = (state.assetOptions as? OperationsDetailState.Content)?.value
     val editing = detail != null
-    val today = remember { LocalDate.now().toString() }
+    val today = remember { baghdadToday().toString() }
     var name by rememberSaveable(detail?.summary?.id) { mutableStateOf(detail?.summary?.name.orEmpty()) }
     var categoryWire by rememberSaveable(detail?.summary?.id) { mutableStateOf(detail?.summary?.category?.wire ?: AssetCategory.Computers.wire) }
     var brand by rememberSaveable(detail?.summary?.id) { mutableStateOf(detail?.brand.orEmpty()) }
@@ -475,7 +477,7 @@ private fun AssetEditorDialog(detail: AssetDetail?, state: OperationsUiState, vi
         OutlinedTextField(location, { location = it.take(255) }, Modifier.fillMaxWidth(), label = { Text("الموقع") }, singleLine = true)
         OutlinedTextField(condition, { condition = it.take(255) }, Modifier.fillMaxWidth(), label = { Text("الحالة الفنية") }, singleLine = true)
         Text("الشراء والإهلاك", style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
-        OutlinedTextField(purchaseDate, { purchaseDate = it.take(10) }, Modifier.fillMaxWidth(), label = { Text("تاريخ الشراء *") }, placeholder = { Text("YYYY-MM-DD") }, singleLine = true)
+        ArabicDatePicker(purchaseDate, { purchaseDate = it }, "تاريخ الشراء *")
         OutlinedTextField(
             purchaseValue,
             { purchaseValue = decimalInput(it) },
@@ -510,7 +512,7 @@ private fun AssetEditorDialog(detail: AssetDetail?, state: OperationsUiState, vi
                 )
             }
         }
-        OutlinedTextField(warrantyEnd, { warrantyEnd = it.take(10) }, Modifier.fillMaxWidth(), label = { Text("نهاية الكفالة") }, placeholder = { Text("YYYY-MM-DD") }, singleLine = true)
+        ArabicDatePicker(warrantyEnd, { warrantyEnd = it }, "نهاية الكفالة")
         LifecycleValue("القسط السنوي التقديري", assetMoney(annualDepreciation(input)))
         validation?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
         if (editing) {
@@ -571,7 +573,7 @@ private fun AssetCustodyReturnDialog(detail: AssetDetail, viewModel: OperationsV
 @Composable
 private fun AssetDisposalDialog(detail: AssetDetail, viewModel: OperationsViewModel) {
     var statusWire by rememberSaveable(detail.summary.id) { mutableStateOf(AssetStatus.Retired.wire) }
-    var date by rememberSaveable(detail.summary.id) { mutableStateOf(LocalDate.now().toString()) }
+    var date by rememberSaveable(detail.summary.id) { mutableStateOf(baghdadToday().toString()) }
     var reason by rememberSaveable(detail.summary.id) { mutableStateOf("") }
     var value by rememberSaveable(detail.summary.id) { mutableStateOf("") }
     var confirmation by rememberSaveable(detail.summary.id) { mutableStateOf("") }
@@ -593,7 +595,7 @@ private fun AssetDisposalDialog(detail: AssetDetail, viewModel: OperationsViewMo
                 FilterChip(status == option, { statusWire = option.wire }, label = { Text(option.label) }, modifier = Modifier.weight(1f))
             }
         }
-        OutlinedTextField(date, { date = it.take(10) }, Modifier.fillMaxWidth(), label = { Text("التاريخ *") }, placeholder = { Text("YYYY-MM-DD") }, singleLine = true)
+        ArabicDatePicker(date, { date = it }, "التاريخ *")
         if (status == AssetStatus.Disposed) {
             OutlinedTextField(
                 value,
