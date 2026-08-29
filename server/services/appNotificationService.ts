@@ -248,6 +248,12 @@ function nativePayloadFor(
     // الإعلان قد يحمل معلوماتٍ داخليّةً حسّاسة وجمهورُه واسع ⇒ يُنقَّح على شاشة القفل افتراضاً
     // (العميل يستبدل العنوان/النص بنصٍّ آمن حتى فتح التطبيق).
     input.kind === "ANNOUNCEMENT" ||
+    // الاعتماد يحمل رقم السند والمبلغ وسبب الرفض ⇒ يُنقَّح على شاشة القفل (بيانات ماليّة).
+    // Codex P1 ٢٨/٨: كان lockScreenSafe:false في المستدعي بلا أثر لأنّ الفحص أدناه
+    // خصّ ATTENDANCE وحده — الاعتماد كان يخرج sensitive=false ⇒ VISIBILITY_PUBLIC على أندرويد.
+    input.kind === "APPROVAL_REQUIRED" ||
+    // إشعار الجلسة يحمل عنوان IP والموقع الجغرافي ⇒ حسّاس كذلك.
+    input.kind === "SESSION_EVENT" ||
     (input.kind === "ATTENDANCE" && input.lockScreenSafe !== true);
   return normalizeNativePushPayload({
     notificationId,

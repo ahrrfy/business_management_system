@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Chat
@@ -41,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.crm.BranchOption
@@ -318,6 +320,7 @@ private fun QuotationEditorPane(
                         label = { Text("خصم العرض") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     )
                     OutlinedTextField(
                         draft.taxRatePercent,
@@ -325,6 +328,7 @@ private fun QuotationEditorPane(
                         label = { Text("الضريبة %") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     )
                 }
                 QuoteField(draft.notes, { actions.updateQuotationDraft(draft.copy(notes = it)) }, "ملاحظات", singleLine = false)
@@ -458,6 +462,7 @@ private fun QuotationLineEditor(
                 modifier = Modifier.weight(1f),
                 enabled = enabled,
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             )
             OutlinedTextField(
                 line.unitPriceOverride,
@@ -466,6 +471,7 @@ private fun QuotationLineEditor(
                 modifier = Modifier.weight(1f),
                 enabled = enabled,
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -476,6 +482,7 @@ private fun QuotationLineEditor(
                 modifier = Modifier.weight(1f),
                 enabled = enabled,
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             )
             OutlinedTextField(
                 line.discountAmount,
@@ -484,6 +491,7 @@ private fun QuotationLineEditor(
                 modifier = Modifier.weight(1f),
                 enabled = enabled,
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             )
         }
     }

@@ -13,6 +13,7 @@ import {
 } from "../accounting/accrualObligations";
 import { money, toDateStr, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
+import { notifyApprovalPendingByReceipt } from "../approvalEventNotifier";
 
 export async function requestSupplierAssetSettlement(
   input: { assetId: number; clientRequestId: string },
@@ -22,7 +23,7 @@ export async function requestSupplierAssetSettlement(
   if (!clientRequestId || clientRequestId.length > 64) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح منع تكرار طلب سداد الأصل إلزامي" });
   }
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const [asset] = await tx
       .select({
         id: fixedAssets.id,
@@ -133,4 +134,10 @@ export async function requestSupplierAssetSettlement(
     });
     return { obligationId: Number(obligation.id), receiptId: receipt.receiptId, replayed: false as const, status: "PAYMENT_PENDING" as const };
   });
+  // ن-٢-هـ (Codex P2 ٢٨/٨): أخطر المُعتمِدين إن كان السند PENDING_APPROVAL — الدالّة
+  // تقرأ الحمولةَ بنفسها وتُصفّي على الحالة، فالاستدعاءُ آمنٌ عند replayed أيضاً.
+  if (!result.replayed && result.receiptId != null) {
+    void notifyApprovalPendingByReceipt(result.receiptId);
+  }
+  return result;
 }
