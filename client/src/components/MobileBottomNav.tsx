@@ -33,6 +33,9 @@ interface MobileBottomNavProps {
   role?: string;
   permsOverride?: PermissionMap | null;
   onOpenMenu: () => void;
+  /** Codex P2 (٢٩/٨): شارات الجاهز على الجوال — نفس شارات القائمة الجانبية (Slice J). */
+  workOrderReadyCount?: number;
+  deliveryReadyCount?: number;
 }
 
 const TASKS_GATE = {
@@ -190,9 +193,15 @@ function triggerHaptic() {
   }
 }
 
-export function MobileBottomNav({ role, permsOverride, onOpenMenu }: MobileBottomNavProps) {
+export function MobileBottomNav({ role, permsOverride, onOpenMenu, workOrderReadyCount = 0, deliveryReadyCount = 0 }: MobileBottomNavProps) {
   const [loc] = useLocation();
   const items = getMobileBottomNavItems(role, permsOverride);
+  // Codex P2 (٢٩/٨) — badge per item (نفس منطق الشريط الجانبي).
+  const badgeFor = (href: string | undefined): number => {
+    if (href === "/work-orders") return workOrderReadyCount;
+    if (href === "/delivery") return deliveryReadyCount;
+    return 0;
+  };
 
   // لا تعرض الشريط السفلي داخل شاشة نقطة البيع أو قارئ الأسعار كاملة الشاشة
   if (loc === "/price-checker" || loc === "/pos") {
@@ -228,6 +237,8 @@ export function MobileBottomNav({ role, permsOverride, onOpenMenu }: MobileBotto
           }
 
           const active = item.href === "/" ? loc === "/" : loc === item.href || loc.startsWith(item.href + "/");
+          const badge = badgeFor(item.href);
+          const badgeLabel = badge > 99 ? "99+" : String(badge);
 
           return (
             <Link
@@ -249,6 +260,14 @@ export function MobileBottomNav({ role, permsOverride, onOpenMenu }: MobileBotto
                 )}
               >
                 <Icon className={cn("size-5", active && "scale-105")} aria-hidden />
+                {badge > 0 && (
+                  <span
+                    aria-label={item.href === "/delivery" ? `${badge} إرسالية جاهزة` : `${badge} أمر جاهز`}
+                    className="absolute -top-1 -end-1 inline-flex min-w-[1.1rem] items-center justify-center rounded-full bg-[var(--sem-warn)] px-1 py-0.5 text-[9px] font-black text-background tabular-nums leading-none"
+                  >
+                    {badgeLabel}
+                  </span>
+                )}
                 {active && (
                   <span className="absolute -bottom-1 size-1 bg-primary rounded-full" aria-hidden />
                 )}

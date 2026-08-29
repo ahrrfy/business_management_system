@@ -26,6 +26,7 @@ import {
   recordManualDeliveryProof,
   listOpenConsignments,
   listPartyRemittances,
+  countReadyForDispatch,
   listReadyForDispatch,
   payPartyDeliveryFees,
   recordStaffDeliveryConfirmation,
@@ -252,6 +253,11 @@ export const deliveryRouter = router({
 
   // ─── قراءات الشاشة ───
   readyForDispatch: deliveryReadProcedure.query(({ ctx }) => listReadyForDispatch(ctx.scopedBranchId)),
+
+  // Codex P2 (٢٩/٨) — عدّاد خفيف لشارة القائمة الجانبية. كان الاستهلاك السابق يستدعي
+  // `readyForDispatch` (صفوف كاملة بالعنوان والهاتف) لقراءة `length` فقط ⇒ حِمل شبكة وقاعدة
+  // بحجم الطابور كاملاً على كلّ موظفٍ مؤهَّل. `SELECT COUNT(*)` بديلٌ مصداقيّ.
+  readyForDispatchCount: deliveryReadProcedure.query(({ ctx }) => countReadyForDispatch(ctx.scopedBranchId)),
 
   /**
    * **قيد التوصيل** — كل الطرود الخارجة التي لم تُغلق بعد، أياً كانت حالة الطرد (بلاغ المالك

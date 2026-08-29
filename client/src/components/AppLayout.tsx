@@ -31,6 +31,7 @@ import {
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CASHIER_NAV_PATHS, INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
 import {
   NAV_FAVORITES_LIMIT,
@@ -181,22 +182,42 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   });
   // ٢٩/٨ (بلاغ المالك): «الفنيّ حوّله لجاهز — لا شي يظهر ولا يلاحظه موظفو الاستقبال». Slice A كان
   // إشعاراً داخل شاشة الطابور فقط (يعمل حين تكون مفتوحة). هنا شارةٌ عالميّة على /work-orders
-  // و/delivery تظهر عدد الطلبات الجاهزة بصرف النظر عن أيّ شاشة يفتحها الموظف — منفذُ إعلانٍ
-  // دائم يفوت الاستقبال ما دام مسجَّلاً في النظام. الاستعلامان خفيفان (COUNT فقط، لا صفوف).
-  const readyBadgeEligible = !coldStudio && Boolean(me.data)
-    && (["admin", "manager", "cashier", "accountant", "auditor"].includes(me.data?.role ?? ""));
-  const woCounts = trpc.workOrders.counts.useQuery(undefined, {
-    enabled: readyBadgeEligible,
-    refetchInterval: 20_000,
-    refetchOnWindowFocus: true,
-  });
-  const readyForDispatch = trpc.delivery.readyForDispatch.useQuery(undefined, {
-    enabled: readyBadgeEligible,
+  // و/delivery تظهر عدد الطلبات الجاهزة بصرف النظر عن أيّ شاشة يفتحها الموظف.
+  //
+  // Codex P2 (٢٩/٨) — الاستعلامان محكومان بأذونات الوحدة لا بقائمة أدوارٍ ثابتة:
+  //  - workorders:READ للـ workOrders.counts
+  //  - store:READ لـ readyForDispatchCount
+  // بلا هذا: محاسبٌ قالبه `workorders:NONE` يُصدر FORBIDDEN متكرّراً رغم إخفاء الرابط.
+  //
+  // Codex P1 (٢٩/٨) — للـsupervisors (workorders:FULL): تمرير `branchQueue: true` كي يُلغى
+  // `scopedOwnerId` ⇒ الشارة تعدّ طابور الفرع كاملاً (الأمر الجاهز الذي أنشأه زميل يظهر أيضاً،
+  // وهو سيناريو تسليم الوردية الذي صُمّمت له الشارة أصلاً).
+  const roleForGate = me.data?.role ?? "";
+  const overrideForGate = (me.data?.permissionsOverride ?? null) as
+    | import("@shared/permissions").PermissionMap
+    | null;
+  const canReadWorkOrders = !coldStudio && Boolean(me.data)
+    && hasModuleAccess(roleForGate, overrideForGate, "workorders", "READ");
+  const canReadDelivery = !coldStudio && Boolean(me.data)
+    && hasModuleAccess(roleForGate, overrideForGate, "store", "READ");
+  const canBranchQueueWorkOrders = canReadWorkOrders
+    && hasModuleAccess(roleForGate, overrideForGate, "workorders", "FULL");
+  const woCounts = trpc.workOrders.counts.useQuery(
+    canBranchQueueWorkOrders ? { branchQueue: true } : {},
+    {
+      enabled: canReadWorkOrders,
+      refetchInterval: 20_000,
+      refetchOnWindowFocus: true,
+    },
+  );
+  // Codex P2 (٢٩/٨) — نستهلك عدّاداً خفيفاً بدل الصفوف الكاملة (شارة تحتاج `.length` فقط).
+  const deliveryReadyCountQ = trpc.delivery.readyForDispatchCount.useQuery(undefined, {
+    enabled: canReadDelivery,
     refetchInterval: 20_000,
     refetchOnWindowFocus: true,
   });
   const workOrderReadyCount = woCounts.data?.ready ?? 0;
-  const deliveryReadyCount = readyForDispatch.data?.length ?? 0;
+  const deliveryReadyCount = deliveryReadyCountQ.data ?? 0;
   const printer = usePrinterConnection();
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
@@ -422,7 +443,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             const badge = m.href === "/work-orders" ? workOrderReadyCount
               : m.href === "/delivery" ? deliveryReadyCount
               : 0;
-            const badgeLabel = badge > 99 ? "+٩٩" : String(badge);
+            // Codex P2 (٢٩/٨): الأرقام لاتينيّة دائماً (قاعدة i18n)؛ التجاوز يعرض «99+» لا «+٩٩».
+            const badgeLabel = badge > 99 ? "99+" : String(badge);
             return (
               <div key={m.href} className="group relative">
                 <Link
@@ -574,6 +596,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           role={role}
           permsOverride={permsOverride}
           onOpenMenu={() => setNavOpen(true)}
+          // Codex P2 (٢٩/٨) — الشارات على الجوال أيضاً: القائمة الجانبية مخفيّة أقلَّ من lg،
+          // فبلا هذا لا يرى موظّفو الاستقبال على الهاتف/التابلت أيَّ إعلانٍ للجاهز.
+          workOrderReadyCount={workOrderReadyCount}
+          deliveryReadyCount={deliveryReadyCount}
         />
       )}
     </div>

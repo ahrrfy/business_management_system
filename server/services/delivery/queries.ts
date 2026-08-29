@@ -57,6 +57,32 @@ const partyHasPortalSql = sql<number>`(
   )
 )`;
 
+/**
+ * عدّ الأوامر الجاهزة للإرسال (لشارة القائمة الجانبية) — استعلامٌ خفيف بلا صفوف كاملة.
+ * Codex P2 على Slice J (٢٩/٨): `readyForDispatch.length` كان يجرّ العنوان والهاتف واسم العميل
+ * لكلّ إرسالية لتقرأ `length` فقط ⇒ تحميلٌ غير مبرَّر. `SELECT COUNT(*)` مكانه الطبيعيّ هنا.
+ */
+export async function countReadyForDispatch(branchId: number | null): Promise<number> {
+  const db = getDb();
+  if (!db) return 0;
+  const conds = [
+    eq(workOrders.status, "READY"),
+    eq(workOrders.hasDelivery, true),
+    sql`NOT EXISTS (
+      SELECT 1 FROM deliveryConsignments dc
+      WHERE dc.workOrderId = ${workOrders.id}
+        AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+    )`,
+  ];
+  if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
+  const row = (await db
+    .select({ c: sql<number>`COUNT(*)` })
+    .from(workOrders)
+    .where(and(...conds))
+  )[0];
+  return Number(row?.c ?? 0);
+}
+
 /** أوامر الشغل الجاهزة (READY) القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
 export async function listReadyForDispatch(branchId: number | null) {
   const db = getDb();
