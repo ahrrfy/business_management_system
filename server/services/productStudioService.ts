@@ -1170,10 +1170,19 @@ export async function createStudioCampaign(
 /**
  * قاموسٌ لبنية إشعارِ التغيّر لكل انتقالٍ — العنوان/النص/متطلَّب الفعل. مركزيٌّ كي لا
  * يعود المطوّرُ ليصيغَ رسالةً ثانيةً في مسارٍ آخر، ولا تُهدَر ترجمةٌ بحسب المسار.
- * `requiresAction` = true فقط للحالات النهائيّة (COMPLETED/CANCELLED) — المصوّر يحتاج
- * التزاماً فورياً بحفظ عمله؛ PAUSED/ACTIVE إعلاماتٌ استمراريّة.
+ *
+ * `survivingJobs` تُبدّل الرسالة لـCOMPLETED/CANCELLED (مراجعة Codex P1 على PR #862):
+ * الحالتان النهائيّتان تُلغيان الطابور غير المسنَد فقط، والمهامّ المُسنَدة تبقى قابلةً
+ * للإتمام. رسالةُ «لا حاجةَ لعملٍ» على مصوّرٍ لا يزال يملك مهاماً حيّة تدفعه لهجرها
+ * فتصير يتيمةً. مصفوفة الرسائل:
+ *   PAUSED             — إعلامٌ إعلاميّ (لا يعتمد على survivingJobs)
+ *   ACTIVE (استئناف)   — إعلامٌ إعلاميّ
+ *   COMPLETED + 0 jobs — تهنئةُ إغلاق
+ *   COMPLETED + N jobs — «الحملة أُغلقت لكنّك تحتفظ بـN مهمّة — أنجزها»
+ *   CANCELLED + 0 jobs — «طابورها أُلغي، لا حاجةَ لعملٍ إضافيّ»
+ *   CANCELLED + N jobs — «مهامّك المسنَدة قائمةٌ ولم تُلغَ — أكملها أو راجع المدير»
  */
-function studioCampaignTransitionNotification(status: StudioCampaignStatus, campaignName: string): { title: string; body: string; requiresAction: boolean } | null {
+function studioCampaignTransitionNotification(status: StudioCampaignStatus, campaignName: string, survivingJobs: number): { title: string; body: string; requiresAction: boolean } | null {
   switch (status) {
     case "PAUSED":
       return {
@@ -1188,17 +1197,29 @@ function studioCampaignTransitionNotification(status: StudioCampaignStatus, camp
         requiresAction: false,
       };
     case "COMPLETED":
-      return {
-        title: "أُغلقت حملة تصوير",
-        body: `أكمل المدير حملة «${campaignName}» — أنجز مهامك المسنَدة قبل أن تنقضي مواعيدها.`,
-        requiresAction: true,
-      };
+      return survivingJobs > 0
+        ? {
+            title: "أُغلقت حملة تصوير — مهامّك قائمة",
+            body: `أكمل المدير حملة «${campaignName}» لكنّك تحتفظ بـ${survivingJobs} مهمّة مسنَدةً — أنجزها قبل أن تنقضي مواعيدها.`,
+            requiresAction: true,
+          }
+        : {
+            title: "أُغلقت حملة تصوير",
+            body: `أكمل المدير حملة «${campaignName}» — لا مهامَّ مسنَدة إليك، شكراً على عملك.`,
+            requiresAction: false,
+          };
     case "CANCELLED":
-      return {
-        title: "أُلغيت حملة تصوير",
-        body: `ألغى المدير حملة «${campaignName}» — طابورها غير المسنَد أُغلق، لا حاجةَ لعملٍ إضافيّ منك.`,
-        requiresAction: false,
-      };
+      return survivingJobs > 0
+        ? {
+            title: "أُلغيت حملة تصوير — مهامّك لم تُلغَ",
+            body: `ألغى المدير حملة «${campaignName}» لكنّه لم يُلغِ مهامّك المسنَدة (${survivingJobs}) — أكملها أو راجع المدير لإلغائها فرداً فرداً.`,
+            requiresAction: true,
+          }
+        : {
+            title: "أُلغيت حملة تصوير",
+            body: `ألغى المدير حملة «${campaignName}» — طابورها غير المسنَد أُغلق، لا حاجةَ لعملٍ إضافيّ منك.`,
+            requiresAction: false,
+          };
     default:
       return null;
   }
@@ -1278,13 +1299,49 @@ export async function transitionStudioCampaign(
       input.status === "CANCELLED"
         ? await cancelCampaignQueuedTasksInTx(tx, actor, campaign, input.reason?.trim() || `أُلغيت مع حملة «${campaign.name}» (#${input.campaignId})`, "productStudio.campaign.cancelWithCampaign")
         : { cancelledCount: 0, remaining: 0 };
-    // قائمةُ المصوّرين تُلتقط داخل المعاملة (مرجعٌ اتّساقيّ) وتُستعمل بعد commit لإرسال
+    // قائمةُ المستلمين تُلتقط داخل المعاملة (مرجعٌ اتّساقيّ) وتُستعمل بعد commit لإرسال
     // الإشعارات — إشعاراتٌ خارج المعاملة كي لا يُدحرَج انتقالُ الحملة بسببِ فشلِ إشعارٍ.
-    const assigneeIds = await tx
+    //
+    // اتحادُ (عضويّة الحملة) ∪ (مالكو مهام حيّة على الحملة) بعد مراجعة Codex P2 على PR #862:
+    // `updateCampaignAssignees` يحذف صفَّ العضويّة ويترك المهامَّ سليمةً — فمصوّرٌ أُخرج من
+    // الفريق وأبقى بيدِه مهامَّ مسنَدةً كان يفوت الإشعار. الاتحادُ يضمن أنّ صاحبَ عملٍ حيٍّ
+    // على الحملة يعرف تغيّرَ حالتها حتى لو حُذفت عضويّته.
+    //
+    // survivingJobsByUser (Codex P1): كل مستلمٍ يحصل على رسالةٍ تعكس **جزءه** من الطابور
+    // المتبقّي بعد الانتقال — لا رسالةٌ عامّة «لا حاجةَ لعملٍ» على مصوّرٍ يملك مهاماً حيّة
+    // (CANCELLED/COMPLETED يلغيان الطابور غير المسنَد فقط).
+    const assigneeRows = await tx
       .select({ userId: productStudioCampaignAssignees.userId })
       .from(productStudioCampaignAssignees)
-      .where(eq(productStudioCampaignAssignees.campaignId, input.campaignId))
-      .then((rows) => rows.map((r) => Number(r.userId)));
+      .where(eq(productStudioCampaignAssignees.campaignId, input.campaignId));
+    const jobOwnerRows = await tx
+      .selectDistinct({ userId: productImageJobs.assignedTo })
+      .from(productImageJobs)
+      .where(and(
+        eq(productImageJobs.campaignId, input.campaignId),
+        isNotNull(productImageJobs.assignedTo),
+        inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]),
+      ));
+    const recipientIds = Array.from(new Set([
+      ...assigneeRows.map((r) => Number(r.userId)),
+      ...jobOwnerRows.map((r) => Number(r.userId)),
+    ]));
+    // عدُّ الأحياء لكل مستلمٍ — نداءٌ واحد GROUP BY assignedTo كي لا نكرّر استعلام لكل مستلم.
+    const survivingCounts = recipientIds.length === 0
+      ? []
+      : await tx
+          .select({ userId: productImageJobs.assignedTo, n: sql<number>`count(*)` })
+          .from(productImageJobs)
+          .where(and(
+            eq(productImageJobs.campaignId, input.campaignId),
+            inArray(productImageJobs.assignedTo, recipientIds),
+            inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]),
+          ))
+          .groupBy(productImageJobs.assignedTo);
+    const survivingByUser = new Map<number, number>();
+    for (const row of survivingCounts) {
+      if (row.userId != null) survivingByUser.set(Number(row.userId), Number(row.n));
+    }
     return {
       campaignId: input.campaignId,
       status: input.status,
@@ -1294,38 +1351,53 @@ export async function transitionStudioCampaign(
       /** مهام طابورٍ لم تُلغَ بعد لأنّ الدفعة محدودة — تُستكمل بزرّ إلغاء الطابور. */
       remainingTasks: cascade.remaining,
       /** يُستعمَل خارج المعاملة لإرسال الإشعارات — ليس جزءاً من عقد الواجهة. */
-      _assigneeIds: assigneeIds,
+      _recipients: recipientIds.map((userId) => ({ userId, survivingJobs: survivingByUser.get(userId) ?? 0 })),
       _campaignName: campaign.name,
     };
   });
-  // إشعارات المصوّرين بتغيّر الحالة (٢٩/٨) — كانت الحالة تتغيّر صامتاً فيَجد المصوّر
+  // إشعارات المستلمين بتغيّر الحالة (٢٩/٨) — كانت الحالة تتغيّر صامتاً فيَجد المصوّر
   // قائمته النشطة فارغةً بلا سبب. الإشعار خارج المعاملة كي لا يُلغيَ إخفاقُ push انتقالاً
-  // ماليّ الأثر (إلغاء يجرّ الطابور). كل مصوّر يحصل على إشعارٍ بعنوانٍ ونصٍّ بحسب الحالة.
-  const notification = studioCampaignTransitionNotification(outcome.status, outcome._campaignName);
-  if (notification && outcome._assigneeIds.length > 0) {
-    // eventKey فريدٌ لكل (مصوّر، حملة، حالة) يمنع تكرار الإشعار إن أُعيد الانتقال ذاته
-    // (نادر لكن ممكن) — نفس نمط `studioAssignedEventKey`.
+  // ماليّ الأثر (إلغاء يجرّ الطابور).
+  //
+  // occurrenceNonce (Codex P2 على PR #862): eventKey فريدٌ **لكل حدث انتقال** لا لكل
+  // (حملة، حالة، مستلم) فقط. `appNotifications.eventKey` قيدُ تفرّدٍ عالميّ، فكان
+  // الاستئناف الثاني (PAUSED→ACTIVE مرّتين) يُبتلَع صامتاً. الوقتُ اللحظيّ (epoch ms)
+  // مضمونُ التميّز داخل هذه الدالة (نداءٌ واحد يُصدر إشعارات على أعلى تقدير أقلّ من
+  // مللي ثانية بين المستلمين). إعادة محاولة الطلب نفسها ما زالت idempotent بشرطها الآخر:
+  // العميل يجب أن يُعيد نفس occurrenceNonce، وهذا خارج نطاق هذا المكوّن — على القاعدة
+  // العامّة أنّ إعادة تنفيذ transitionStudioCampaign تُعالَج بحرّاسها المسبقة لا هنا.
+  const occurrenceNonce = Date.now();
+  if (outcome._recipients.length > 0) {
+    // eventKey شكلٌ: transition:<حملة>:<حالة>:<وقت>:<مستلم>. تنبيه لكل مستلم رسالتُه
+    // مبنيّة على عدد مهامه الحيّة — قد يختلف بين مستلَمَين لنفس الانتقال.
     await Promise.allSettled(
-      outcome._assigneeIds.map((userId) =>
-        createAppNotification({
+      outcome._recipients.map(({ userId, survivingJobs }) => {
+        const notification = studioCampaignTransitionNotification(outcome.status, outcome._campaignName, survivingJobs);
+        if (!notification) return Promise.resolve();
+        return createAppNotification({
           userId,
           kind: "TASK_ASSIGNED",
           title: notification.title,
           body: notification.body,
           route: `/catalog/image-studio?campaign=${outcome.campaignId}`,
-          eventKey: `studio.campaign.transition:${outcome.campaignId}:${outcome.status}:${userId}`,
+          eventKey: `studio.campaign.transition:${outcome.campaignId}:${outcome.status}:${occurrenceNonce}:${userId}`,
           entityType: "productStudioCampaign",
           entityId: outcome.campaignId,
           requiresAction: notification.requiresAction,
         }).catch((err) => {
-          logger.warn({ err, userId, campaignId: outcome.campaignId, status: outcome.status }, "تعذّر إشعار مصوّر بتغيّر حالة الحملة");
-        }),
-      ),
+          // ملاحظةٌ لمراجعة Codex P2: هذا المسار ما زال يفقد الإشعار إن فشل createAppNotification
+          // بعد commit المعاملة (اضطرابٌ عابر). المسار المكافئ لـ`reconcileStudioAssignmentNotifications`
+          // على انتقالات الحملة يبقى شغلاً مفتوحاً — يحتاج جدولَ outbox يمثّل الحدث ثمّ عامل
+          // تسوية دوريّاً. الأثر الحاليّ محدود: الطابور المتبقّي كافٍ لتنبيه المصوّر عند فتح
+          // الشاشة، وأثرُ الفقد رسالةٌ push غير موجَّهة.
+          logger.warn({ err, userId, campaignId: outcome.campaignId, status: outcome.status, survivingJobs }, "تعذّر إشعار مستلم بتغيّر حالة الحملة");
+        });
+      }),
     );
   }
-  // الحقول الداخليّة تُقشَّر قبل الإعادة — عقد الواجهة لا يحمل قائمة معرّفات المصوّرين.
-  const { _assigneeIds: _a, _campaignName: _n, ...publicResult } = outcome;
-  void _a; void _n;
+  // الحقول الداخليّة تُقشَّر قبل الإعادة — عقد الواجهة لا يحمل قائمة المستلمين.
+  const { _recipients: _r, _campaignName: _n, ...publicResult } = outcome;
+  void _r; void _n;
   return publicResult;
 }
 
@@ -1352,10 +1424,19 @@ export async function listStudioCampaigns(actor: ProductStudioActor) {
       // اسمُ منشئ الحملة + عدد مصوّريها (٢٩/٨) — يُوضّحان الملكيّةَ والفريقَ في السطر
       // الواحد بلا نداءٍ ثانٍ من الواجهة. `assigneeCount` عبر subquery correlated (فرد
       // بفرد، بلا JOIN) لأنّ الحملات قد تصل عشراتٍ لكل صفٍ ٤٥+ مصوّراً في الحالة القصوى.
+      //
+      // Codex P2: تُستبعَد الحسابات غير المتاحة (isActive=false أو accessExpiresAt ماضٍ)
+      // كي لا يُخفي مصوّرٌ مؤقّتٌ منتهي الصلاحية تحذيرَ «صفر فريق». المصوّر المؤقّت يحمل
+      // صفَّ عضويّةٍ للحفاظ على الأثر التدقيقيّ حتى بعد الإبطال (revokeTemporaryPhotographers
+      // يجعله `isActive=false` مع `accessExpiresAt=revokedAt` بلا مسِّ صفّ العضويّة).
       createdByName: users.name,
       assigneeCount: sql<number>`(
-        select count(*) from ${productStudioCampaignAssignees}
-        where ${productStudioCampaignAssignees.campaignId} = ${productStudioCampaigns.id}
+        select count(*)
+        from ${productStudioCampaignAssignees} psca
+        inner join users a on a.id = psca.userId
+        where psca.campaignId = ${productStudioCampaigns.id}
+          and a.isActive = 1
+          and (a.accessExpiresAt is null or a.accessExpiresAt > now())
       )`,
     })
     .from(productStudioCampaigns)
@@ -1776,6 +1857,47 @@ export async function updateStudioCampaignDetails(
       throw new TRPCError({ code: "BAD_REQUEST", message: "موعد الحملة يجب أن يكون بعد بدايتها" });
     }
     await tx.update(productStudioCampaigns).set(patch).where(eq(productStudioCampaigns.id, input.campaignId));
+
+    // تعديلُ `dueAt` يتالى إلى (١) المهامّ الحيّة على الحملة و(٢) المصوّرين المؤقّتين
+    // (٢٩/٨، مراجعة Codex P1 على PR #862): زرّ «+٧ أيام» كان يُحدّث `productStudioCampaigns`
+    // فقط، والمهامّ المُسنَدة تحمل نسخةَ الموعد القديم (نُقلت لحظة توليد الطابور)، والحسابات
+    // المؤقّتة لها `accessExpiresAt = campaign.dueAt` (نُقلت لحظة الإنشاء) — فالواجهة تُبلّغ
+    // بتمديدٍ ناجح بينما المهامّ تبقى متأخّرة والمصوّر المؤقّت يُقفَل حسابه في الموعد الأصليّ.
+    // النطاق ضيّق: المهام الحيّة فقط (ASSIGNED/IN_PROGRESS/PENDING_REVIEW/REJECTED)، والحسابات
+    // المؤقّتة **غير المُبطَلة** (`isActive=true`) كي لا نعيد إحياءَ حسابٍ أُلغي قصداً.
+    let cascadeJobs = 0;
+    let cascadeTempUsers = 0;
+    if (patch.dueAt !== undefined) {
+      const newDueAt = patch.dueAt as Date | null;
+      const jobsResult = await tx
+        .update(productImageJobs)
+        .set({ dueAt: newDueAt })
+        .where(and(
+          eq(productImageJobs.campaignId, input.campaignId),
+          inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]),
+        ));
+      // mysql2 driver يُرجع rowsAffected في result[0].affectedRows؛ درizzle يلفّه في header.
+      // نعتمد على `changes`/`rowsAffected` بحسب الـdriver — إن غاب نعدّ صفراً بلا فشل.
+      cascadeJobs = Number((jobsResult as unknown as { rowsAffected?: number; affectedRows?: number }).rowsAffected
+        ?? (jobsResult as unknown as { affectedRows?: number }).affectedRows
+        ?? 0);
+      // المصوّرون المؤقّتون: مطابقةٌ عبر جدول العضويّة + بادئة `openId=studio-temp:`.
+      // `newDueAt=null` = «بلا موعد» ⇒ نُبقي وصولَهم حتى إبطالٍ إداريّ صريح؛ إن وُجد موعدٌ
+      // جديد فهو مصدرُ الحقيقة كما كان الأصل. لا نطيلُ أبداً `accessExpiresAt` وراء
+      // `newDueAt` — الأمانُ هنا في الاتّجاه الواحد.
+      const tempUsersResult = await tx
+        .update(users)
+        .set({ accessExpiresAt: newDueAt })
+        .where(and(
+          eq(users.isActive, true),
+          like(users.openId, "studio-temp:%"),
+          sql`${users.id} in (select ${productStudioCampaignAssignees.userId} from ${productStudioCampaignAssignees} where ${productStudioCampaignAssignees.campaignId} = ${input.campaignId})`,
+        ));
+      cascadeTempUsers = Number((tempUsersResult as unknown as { rowsAffected?: number; affectedRows?: number }).rowsAffected
+        ?? (tempUsersResult as unknown as { affectedRows?: number }).affectedRows
+        ?? 0);
+    }
+
     const oldSnapshot: Record<string, unknown> = {};
     const newSnapshot: Record<string, unknown> = {};
     for (const key of Object.keys(patch)) {
@@ -1790,9 +1912,9 @@ export async function updateStudioCampaignDetails(
       entityType: "productStudioCampaign",
       entityId: String(input.campaignId),
       oldValue: oldSnapshot,
-      newValue: newSnapshot,
+      newValue: { ...newSnapshot, cascadeJobs, cascadeTempUsers },
     });
-    return { campaignId: input.campaignId, updated: Object.keys(patch) };
+    return { campaignId: input.campaignId, updated: Object.keys(patch), cascadeJobs, cascadeTempUsers };
   });
 }
 

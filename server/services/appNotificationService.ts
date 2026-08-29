@@ -212,6 +212,16 @@ function nativeDestinationFor(
 ): string | null {
   const entity = input.entityId != null ? String(input.entityId) : null;
   if (input.kind === "TASK_ASSIGNED") {
+    // إشعاراتُ حملات الاستوديو تُشارك kind=TASK_ASSIGNED مع مهام الاستوديو الفردية لأنّ
+    // كليهما «عملٌ يخصّ المصوّر»، لكنّ الوجهة العميقة تختلف: entityId هنا معرّف حملةٍ لا
+    // مهمة، فتوجيهها إلى `/module/tasks/view/N` يفتح مهمّةً غير موجودة (مراجعة Codex P2
+    // على PR #862). التمييز بـ`entityType` فقط — إبقاء kind واحداً يحفظ تفضيلاتِ الإشعار
+    // (المصوّر الذي يقبل مهام يقبل الاثنين). وحتى تدعم المحطة العميقة صراحةً استوديو
+    // الحملات على أندرويد، نُوجّه إلى وحدة الاستوديو كسقفٍ آمن — نفس المصوّر يجد التغيّرات
+    // من المنصّة، لا شاشةَ مهمّةٍ خاطئة.
+    if (input.entityType === "productStudioCampaign") {
+      return "alrueya://app/module/productStudio";
+    }
     return entity
       ? `alrueya://app/module/tasks/view/${entity}`
       : "alrueya://app/tasks";
