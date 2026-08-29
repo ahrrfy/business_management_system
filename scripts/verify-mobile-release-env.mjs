@@ -678,7 +678,10 @@ function verifySourceContract() {
   }
   const expectedProductionHost = new URL(expected.productionBaseUrl).hostname;
   for (const fragment of [
-    'dump xmltree --file res/xml/network_security_config.xml "$apk"',
+    'dump resources "$apk"',
+    '$NF == "xml/network_security_config"',
+    'network_security_config packaged path was not found',
+    'dump xmltree --file "$network_config_path" "$apk"',
     `grep -Fq "T: '${expectedProductionHost}'"`,
     "grep -Fq 'A: includeSubdomains=false'",
     `grep -Fq 'A: expiration="${expected.certificatePinExpiration}"'`,

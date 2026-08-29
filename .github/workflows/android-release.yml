@@ -139,7 +139,21 @@ jobs:
           "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='10' versionName='1.0.2'"
           unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/native-classes.dex"
           grep -aFq 'https://srv1548487.hstgr.cloud' "$RUNNER_TEMP/native-classes.dex"
-          "$aapt2_path" dump xmltree --file res/xml/network_security_config.xml "$apk" > "$RUNNER_TEMP/network-security-config.txt"
+          # R8/resource shrinking may shorten the packaged XML path (for example res/a.xml),
+          # so resolve the compiled path from the resource table instead of assuming the source path.
+          network_config_path="$("$aapt2_path" dump resources "$apk" | awk '
+            $1 == "resource" && $NF == "xml/network_security_config" { found = 1; next }
+            found {
+              for (field = 1; field < NF; field += 1) {
+                if ($field == "(file)") { print $(field + 1); exit }
+              }
+            }
+          ')"
+          case "$network_config_path" in
+            res/*) ;;
+            *) echo "network_security_config packaged path was not found" >&2; exit 1 ;;
+          esac
+          "$aapt2_path" dump xmltree --file "$network_config_path" "$apk" > "$RUNNER_TEMP/network-security-config.txt"
           grep -Fq "T: 'srv1548487.hstgr.cloud'" "$RUNNER_TEMP/network-security-config.txt"
           grep -Fq 'A: includeSubdomains=false' "$RUNNER_TEMP/network-security-config.txt"
           grep -Fq 'A: expiration="2027-08-01"' "$RUNNER_TEMP/network-security-config.txt"
