@@ -18,6 +18,7 @@ import {
   bundleComponents,
   categories,
   customers,
+  deliveryZones,
   onlineOrderItems,
   onlineOrders,
   productPrices,
@@ -27,6 +28,7 @@ import {
   storeSettings as storeSettingsTable,
 } from "../../drizzle/schema";
 import { deliveryFeeFor, governorateById } from "@shared/governorates";
+import { previewDeliveryQuote } from "./delivery/pricingRules";
 import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164 } from "../lib/phone";
@@ -485,13 +487,32 @@ async function priceOnlineOrderLines(
   return priced;
 }
 
-function totalOnlineOrderQuote(
+/**
+ * H3 (٢٩/٨/٢٦): مصدرُ الأجرة يتبع الأولويّة التالية:
+ *   ① جدول `deliveryPricingRules` عبر `deliveryZones.code = governorate` (المدير عدّل الأجرة)
+ *   ② الافتراض الثابت من `governorates.ts` (السلوك السابق — يبقى للتوافق ولمناطق بلا زون)
+ * البذرة (H4، هجرة 0290) تنقل كلّ المحافظات الثمانية عشرة إلى المسار ①.
+ */
+async function resolveDeliveryFee(tx: Tx, governorate: string): Promise<import("decimal.js").default> {
+  const zone = (
+    await tx.select({ id: deliveryZones.id, isActive: deliveryZones.isActive })
+      .from(deliveryZones).where(eq(deliveryZones.code, governorate)).limit(1)
+  )[0];
+  if (zone && zone.isActive) {
+    const quote = await previewDeliveryQuote(tx, Number(zone.id), null, null);
+    if (quote) return round2(money(quote.fee));
+  }
+  return round2(deliveryFeeFor(governorate));
+}
+
+async function totalOnlineOrderQuote(
+  tx: Tx,
   items: Array<{ lineTotal: string }>,
   governorate: string,
   freeShippingThreshold: string | null | undefined,
-): Pick<OnlineOrderQuoteResult, "subtotal" | "deliveryFee" | "total"> {
+): Promise<Pick<OnlineOrderQuoteResult, "subtotal" | "deliveryFee" | "total">> {
   const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
-  let deliveryFee = round2(deliveryFeeFor(governorate));
+  let deliveryFee = await resolveDeliveryFee(tx, governorate);
   const freeThreshold = freeShippingThreshold ? money(freeShippingThreshold) : null;
   if (freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold)) deliveryFee = round2(money(0));
   return {
@@ -514,7 +535,7 @@ export async function quoteOnlineOrder(input: OnlineOrderQuoteInput): Promise<On
     const items = await priceOnlineOrderLines(tx, context.branchId, normalizedLines, { lock: false, coupon: lockedCoupon });
     const couponDiscountTotal = round2(items.reduce((sum, item) => sum.plus(money(item.couponDiscountPerUnit ?? "0").times(item.quantity)), money(0)));
     if (lockedCoupon && couponDiscountTotal.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف السلة" });
-    const totals = totalOnlineOrderQuote(items, input.governorate, settings?.freeShippingThreshold);
+    const totals = await totalOnlineOrderQuote(tx, items, input.governorate, settings?.freeShippingThreshold);
     return {
       couponCode: lockedCoupon?.code ?? null,
       couponProgramName: lockedCoupon?.programName ?? null,
@@ -761,7 +782,7 @@ async function createOnlineOrderAttempt(
     }
     const couponDiscount = round2(items.reduce((sum, item) => sum.plus(money(item.couponDiscountPerUnit ?? "0").times(item.quantity)), money(0)));
     if (lockedCoupon && couponDiscount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف السلة" });
-    const quoteTotals = totalOnlineOrderQuote(items, input.governorate, storeSettings?.freeShippingThreshold);
+    const quoteTotals = await totalOnlineOrderQuote(tx, items, input.governorate, storeSettings?.freeShippingThreshold);
     const subtotal = money(quoteTotals.subtotal);
     const deliveryFee = money(quoteTotals.deliveryFee);
     const total = money(quoteTotals.total);

@@ -1884,6 +1884,13 @@
 			"when": 1788052341000,
 			"tag": "0289_enable_commission_per_party",
 			"breakpoints": true
+		},
+		{
+			"idx": 290,
+			"version": "5",
+			"when": 1788052342000,
+			"tag": "0290_seed_iraq_delivery_zones",
+			"breakpoints": true
 		}
 	]
 }
