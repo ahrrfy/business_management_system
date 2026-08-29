@@ -281,6 +281,52 @@ describe("product studio governed workflow", () => {
     })).resolves.toMatchObject({ status: "CANCELLED" });
   });
 
+  it("يوقف سحب المهام الجديدة مؤقتاً ويُبقي العمل المسند قابلاً للإتمام ثم يستأنف السحب", async () => {
+    await db().insert(s.productVariants).values([
+      { id: 920, productId: 1, sku: "PAUSE-A", costPrice: "1" },
+      { id: 921, productId: 2, sku: "PAUSE-B", costPrice: "1" },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 920, variantId: 920, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6001000000920" },
+      { id: 921, variantId: 921, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6001000000921" },
+    ]);
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة الإيقاف والاستئناف",
+      status: "ACTIVE",
+      scopeKind: "PRODUCTS",
+      scopeProductIds: [1, 2],
+      assigneeIds: [worker.userId],
+    });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ createdCount: 2 });
+
+    const claimedBeforePause = await claimStudioProductByBarcode(worker, "6001000000920");
+    await expect(transitionStudioCampaign(manager, {
+      campaignId: campaign.campaignId,
+      status: "PAUSED",
+    })).resolves.toMatchObject({ status: "PAUSED" });
+
+    // ما بدأه المصوّر يبقى في يده، أمّا مهمة الطابور غير المسندة فلا تُسحب أثناء الإيقاف.
+    await expect(claimStudioProductByBarcode(worker, "6001000000920")).resolves.toMatchObject({
+      claimed: false,
+      taskId: claimedBeforePause.taskId,
+    });
+    await expect(claimStudioProductByBarcode(worker, "6001000000921")).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("موقوفة"),
+    });
+    const [queuedWhilePaused] = await db()
+      .select()
+      .from(s.productImageJobs)
+      .where(and(eq(s.productImageJobs.campaignId, campaign.campaignId), eq(s.productImageJobs.productId, 2)));
+    expect(queuedWhilePaused).toMatchObject({ assignedTo: null, status: "ASSIGNED", activeSlot: 1 });
+
+    await expect(transitionStudioCampaign(manager, {
+      campaignId: campaign.campaignId,
+      status: "ACTIVE",
+    })).resolves.toMatchObject({ status: "ACTIVE" });
+    await expect(claimStudioProductByBarcode(worker, "6001000000921")).resolves.toMatchObject({ claimed: true });
+  });
+
   it("deduplicates automatic assignment and rejection notifications by event key", async () => {
     const assigned = await assignStudioTask(manager, {
       productId: 1,
@@ -2097,6 +2143,43 @@ describe("product studio governed workflow", () => {
     expect(byProduct.get(3)).toMatchObject({ status: "ASSIGNED", assignedTo: worker.userId, activeSlot: 1, cancelledAt: null });
     // والمنتجات المحرَّرة تقبل مهاماً جديدة رغم أنّ حملتها ملغاة.
     await expect(assignStudioTask(manager, { productId: 4, assigneeId: worker.userId })).resolves.toMatchObject({ revision: 1 });
+  });
+
+  it("يُكمل إلغاء طابور حملةٍ نهائية بعد تجاوز دفعة الخمسمئة", async () => {
+    const productIds = Array.from({ length: 501 }, (_, index) => 1000 + index);
+    await db().insert(s.products).values(productIds.map((id) => ({ id, name: `منتج إلغاء ${id}` })));
+    const campaign = await createStudioCampaign(manager, { name: "حملة كبيرة تُلغى", status: "ACTIVE" });
+    await db().insert(s.productImageJobs).values(productIds.map((productId) => ({
+      productId,
+      campaignId: campaign.campaignId,
+      branchId: 1,
+      mode: "FLATTEN" as const,
+      status: "ASSIGNED" as const,
+      assignedTo: null,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      revision: 1,
+      templateVersion: 1,
+    })));
+
+    await expect(transitionStudioCampaign(manager, {
+      campaignId: campaign.campaignId,
+      status: "CANCELLED",
+      reason: "إلغاء حملة كبيرة للاختبار",
+    })).resolves.toMatchObject({
+      status: "CANCELLED",
+      cancelledTasks: 500,
+      remainingTasks: 1,
+    });
+
+    // الحالة صارت نهائية، لكن مسار الاستكمال يبقى صالحاً ولا يترك activeSlot محجوزاً.
+    await expect(bulkCancelStudioBacklog(manager, {
+      campaignId: campaign.campaignId,
+      reason: "إلغاء حملة كبيرة للاختبار",
+    })).resolves.toEqual({ cancelledCount: 1, remaining: 0 });
+    const rows = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId));
+    expect(rows).toHaveLength(501);
+    expect(rows.every((row) => row.status === "CANCELLED" && row.activeSlot == null)).toBe(true);
   });
 
   it("إكمال الحملة لا يلغي شيئاً، وبلا سببٍ صريح يُنسَب الإلغاء إلى الحملة", async () => {
