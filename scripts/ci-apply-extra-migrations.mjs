@@ -162,7 +162,7 @@ const EXTRA_MIGRATIONS = [
   // ٢٨/٨/٢٦: PAUSED للحملة (تجميدٌ ذكيّ) — نفس منطق ٠٢٦٩: db:push لا يُوسّع enum
   // موثوقاً على MySQL 8، فالقيمة الجديدة تلزم إعادةَ التطبيق يدوياً على قاعدة الاختبار
   // كي يمرّ `check:migrations` وتقبل الخدمة الانتقالات الجديدة.
-  "drizzle/migrations/0277_add_paused_studio_campaign_status.sql",
+  "drizzle/migrations/0283_add_paused_studio_campaign_status.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
