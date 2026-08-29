@@ -31,6 +31,8 @@ export type ExportColumn<T> = {
   map?: (row: T) => string | number | null | undefined;
   /** عمود مالي ⇒ يُنسَّق رقمياً (#,##0) ومحاذاة يسار في Excel. */
   money?: boolean;
+  /** عمود رمز/معرّف نصي؛ يحافظ Excel على الأصفار البادئة عند الإدخال اللاحق في القالب. */
+  text?: boolean;
 };
 
 type SheetMeta = { label: string; value: string };
@@ -162,6 +164,7 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
 
   // عرض الأعمدة (تلقائي بحسب أطول محتوى، بحدّ أعلى أضيق ٣٢ ⇒ يبقى الخطّ كبيراً عند ضبط A4).
   cols.forEach((c, i) => {
+    if (c.text) ws.getColumn(i + 1).numFmt = "@";
     let max = c.header.length;
     for (const row of spec.rows) {
       const v = cellValue(row, c);
