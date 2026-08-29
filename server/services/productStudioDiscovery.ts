@@ -230,7 +230,9 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
       variantsWithImages: variantsWithImagesSql.as("variantsWithImages"),
       // عمودٌ مستقلّ للفرز — الحسابُ داخل الـsubquery حيث الـcorrelated subqueries صالحةٌ.
       variantsMissing: sql<number>`greatest(0, (${variantCountSql}) - (${variantsWithImagesSql}))`.as("variantsMissing"),
-      health,
+      // نفس القاعدة على `health` — يُستهلَك بـ`inner.health` في `inArray`، فيلزمه alias
+      // معلَن وإلّا رمى Drizzle 0.45 نفس رسالة raw-SQL-field-without-alias (بلاغ ٢٩/٨).
+      health: health.as("health"),
     })
     .from(products)
     .where(and(...conditions, cursor != null ? sql`${products.id} > ${cursor}` : undefined))
