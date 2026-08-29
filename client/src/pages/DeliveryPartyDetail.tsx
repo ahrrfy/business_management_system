@@ -19,6 +19,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -529,6 +530,16 @@ const RULE_TYPE_LABEL: Record<string, string> = {
 function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boolean }) {
   const utils = trpc.useUtils();
   const list = trpc.delivery.listCommissionRules.useQuery({ partyId });
+  // H2 (٢٩/٨/٢٦): علَم استبدال الأجرة بالعمولة عند التسوية — يُقرأ من getParty، ويُغيَّر بـupdateParty.
+  const partyFull = trpc.delivery.getParty.useQuery({ id: partyId });
+  const updateParty = trpc.delivery.updateParty.useMutation({
+    onSuccess: () => {
+      notify.ok("حُدِّث تفعيل استبدال الأجرة بالعمولة");
+      utils.delivery.getParty.invalidate({ id: partyId });
+    },
+    onError: (e) => notify.err(e),
+  });
+  const useCommissionActive = !!partyFull.data?.useCommissionForSettlement;
   // معاينة حيّة: أدخِل أجرةً وقيمة طلبٍ افتراضيّة ← احسب العمولة التي ستُصرف بحسب القواعد الفعّالة.
   const [previewFee, setPreviewFee] = useState("5000");
   const [previewOrder, setPreviewOrder] = useState("50000");
@@ -577,9 +588,54 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
   };
   return (
     <div className="space-y-4">
+      {/* H2 (٢٩/٨/٢٦): بطاقة تفعيل الاستبدال المحاسبيّ. تظهر فقط لمن يستطيع التعديل، ولا يُفعَّل
+          إلّا حين تكون للجهة قاعدةٌ فعّالة (الخادم يرفض غير ذلك بلا لبس). */}
+      {canEdit && (
+        <div className={cn(
+          "rounded-lg border p-4",
+          useCommissionActive
+            ? "border-[var(--sem-pos)]/45 bg-[var(--sem-pos-bg)]"
+            : "border-dashed bg-muted/30",
+        )}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex-1 space-y-1">
+              <h4 className="text-sm font-extrabold">
+                {useCommissionActive ? "التسوية المحاسبيّة مُفعَّلة" : "تفعيل التسوية بالعمولة"}
+              </h4>
+              <p className="text-xs text-muted-foreground">
+                عند التفعيل: دفعُ أجور هذه الجهة يستبدل الأجرة بمبلغ العمولة (بحسب القاعدة أعلاه)،
+                والفارقُ يُقيَّد إيراد توصيلٍ للمكتبة تلقائياً.
+                {!useCommissionActive && rows.length === 0 && (
+                  <span className="ms-1 font-bold text-[var(--sem-warn)]">أضف قاعدةً فعّالة أولاً.</span>
+                )}
+              </p>
+            </div>
+            <Button
+              variant={useCommissionActive ? "outline" : "default"}
+              disabled={updateParty.isPending || (!useCommissionActive && rows.length === 0)}
+              onClick={async () => {
+                const ok = await confirm({
+                  variant: useCommissionActive ? "warning" : "info",
+                  title: useCommissionActive ? "إيقاف الاستبدال المحاسبيّ" : "تفعيل الاستبدال المحاسبيّ",
+                  description: useCommissionActive
+                    ? "بعد الإيقاف: يعود دفعُ الأجرة كاملةً للمندوب بلا اقتطاعٍ لصالح المكتبة."
+                    : "بعد التفعيل: كلّ دفعِ أجرةٍ لاحقٍ سيقيّد الفارق بين الأجرة والعمولة إيراداً للمكتبة. يمكن التراجع لاحقاً بلا أثر على القيود السابقة.",
+                  confirmText: useCommissionActive ? "إيقاف" : "تفعيل",
+                });
+                if (!ok) return;
+                updateParty.mutate({ id: partyId, useCommissionForSettlement: !useCommissionActive });
+              }}
+            >
+              {updateParty.isPending ? "جارٍ…" : useCommissionActive ? "إيقاف" : "تفعيل"}
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="rounded-lg border bg-[var(--sem-info-bg)] p-3 text-xs text-[var(--sem-info)]">
-        قاعدة العمولة تُقيَّم لكلّ إرساليّة عند التسوية. حاليّاً <b>معاينةٌ فقط</b> — القيدُ المحاسبيّ التلقائيّ
-        سيُفعَّل في مرحلةٍ لاحقة بعد موافقة المالك على النموذج.
+        قاعدة العمولة تُقيَّم لكلّ إرساليّة عند التسوية. {useCommissionActive
+          ? <span className="font-bold">القيد المحاسبيّ التلقائيّ <b>مُفعَّل</b> — الفارقُ إيرادٌ للمكتبة.</span>
+          : "التفعيل اختياريّ (بطاقة التفعيل أعلاه)."}
       </div>
 
       {rows.length > 0 && (

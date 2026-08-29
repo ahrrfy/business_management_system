@@ -2,7 +2,7 @@
 // المستحقّ يُشتقّ من دفتر التوصيل حصراً (FEE_EARNED − FEE_REFUNDED − FEE_PAID − FEE_OFFSET)
 // لا من عمود deliveryFee: الدفترُ يعرف ما صُرف من أيّ مسارٍ كان، والعمود لا يعرف.
 import { TRPCError } from "@trpc/server";
-import type Decimal from "decimal.js";
+import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
 import { accountingEntries, deliveryConsignments, deliveryLedgerEntries, deliveryParties, invoices, receipts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
@@ -14,7 +14,8 @@ import { resolveBranchCashShiftTx } from "../shiftService";
 import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { appendDeliveryLedgerEntry } from "./lifecycle";
-import { deliveryFeeHeldPayoutIntent, deliveryFeeSettlementIntent } from "./posting";
+import { deliveryCommissionSettlementIntent, deliveryFeeHeldPayoutIntent, deliveryFeeSettlementIntent } from "./posting";
+import { previewCommission } from "./commissionRules";
 import type { DeliveryTxActor } from "./types";
 
 /** المستحقّ الدفتري لأجرة إرسالية = Σ(FEE_EARNED − FEE_REFUNDED) − Σ(FEE_PAID + FEE_OFFSET). */
@@ -48,6 +49,13 @@ async function postFeePayment(
   /** لاحقة مفاتيح idempotency للقيدين — clientRequestId للفردي، BULK:{receipt} للمجمّع. */
   keySuffix: string,
   actor: DeliveryTxActor,
+  /**
+   * H2 (٢٩/٨/٢٦): مبلغُ العمولة الفعليّ المدفوع للمندوب حين تكون للجهة قاعدةٌ فعّالة والعلَم
+   * `useCommissionForSettlement=true`. `null` = السلوك الحاليّ (تُدفَع كامل الأجرة). لا يمسّ
+   * COUNTER (أمانةٌ تُبرَّأ بمبلغها المقبوض حرفياً — لا هامشَ فيها). commission > amount مرفوضٌ
+   * في المستدعي (لا نُقيّد إيراداً سالباً في هذه الدالّة).
+   */
+  commissionOverride?: Decimal | null,
 ): Promise<void> {
   await appendDeliveryLedgerEntry(tx, {
     eventKey: `CN:${cn.id}:FEE_PAID:${keySuffix}`,
@@ -58,22 +66,33 @@ async function postFeePayment(
     amount: toDbMoney(amount),
     actorUserId: actor.userId,
   });
+  // H2: للجهة قاعدةُ عمولة فعّالة + العلَم مُشغَّل ⇒ استبدلِ الأجرة بالعمولة (لا يمسّ COUNTER).
+  const useCommission =
+    cn.feeCollection !== "COUNTER"
+    && commissionOverride != null
+    && commissionOverride.gte(0)
+    && commissionOverride.lt(amount);
+  const cashOut = useCommission ? commissionOverride! : amount;
+  const margin = useCommission ? amount.minus(commissionOverride!) : new Decimal(0);
   await postEntry(tx, {
     entryType: cn.feeCollection === "COUNTER" ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
     postingIntent: cn.feeCollection === "COUNTER"
       ? deliveryFeeHeldPayoutIntent(amount.neg(), "DRAWER")
-      : deliveryFeeSettlementIntent(amount, "DRAWER"),
-    postingSourceComponents: {
-      roleDebits: { COURIER_PAYABLE: amount },
-      roleCredits: { CASH: amount },
-    },
+      : useCommission
+        ? deliveryCommissionSettlementIntent(amount, commissionOverride!, "DRAWER")
+        : deliveryFeeSettlementIntent(amount, "DRAWER"),
+    postingSourceComponents: useCommission
+      ? { roleDebits: { COURIER_PAYABLE: amount }, roleCredits: { CASH: cashOut, DELIVERY_REVENUE: margin } }
+      : { roleDebits: { COURIER_PAYABLE: amount }, roleCredits: { CASH: amount } },
     dedupeKey: `DELIVERY_FEE_PAID:${cn.id}:${keySuffix}`,
     branchId: Number(cn.branchId),
     invoiceId: Number(cn.invoiceId),
     deliveryPartyId: Number(cn.partyId),
     receiptId,
     amount: cn.feeCollection === "COUNTER" ? amount.neg() : amount,
-    notes: `دفع أجرة ${cn.consignmentNumber}`,
+    notes: useCommission
+      ? `دفع عمولة ${cn.consignmentNumber} — استُبقيَ ${margin.toFixed(2)} إيراداً`
+      : `دفع أجرة ${cn.consignmentNumber}`,
   });
   if (fullyPaid) {
     await tx.update(deliveryConsignments).set({ feeSettledAt: new Date() }).where(eq(deliveryConsignments.id, Number(cn.id)));
@@ -236,7 +255,11 @@ export async function payPartyDeliveryFees(
       branchId: Number(input.branchId), cashBucket: "DRAWER", shiftId: resolved.shiftId,
     });
     const party = (
-      await tx.select({ id: deliveryParties.id, branchId: deliveryParties.branchId }).from(deliveryParties)
+      await tx.select({
+        id: deliveryParties.id,
+        branchId: deliveryParties.branchId,
+        useCommissionForSettlement: deliveryParties.useCommissionForSettlement,
+      }).from(deliveryParties)
         .where(eq(deliveryParties.id, Number(input.partyId))).for("update").limit(1)
     )[0];
     if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
@@ -264,9 +287,12 @@ export async function payPartyDeliveryFees(
         consignmentNumber: string; feeCollection: string | null;
       };
       due: Decimal;
+      /** H2: عمولةٌ محسوبة (null = لا استبدال — تُدفَع الأجرة كاملة). */
+      commission: Decimal | null;
     };
     const items: FeeItem[] = [];
     let total = round2(money("0"));
+    let cashOutTotal = round2(money("0"));
     for (const candidate of candidates) {
       const cn = (
         await tx.select().from(deliveryConsignments)
@@ -285,6 +311,23 @@ export async function payPartyDeliveryFees(
       if (!invoice) throw new TRPCError({ code: "CONFLICT", message: `فاتورة الإرسالية ${cn.consignmentNumber} غير موجودة` });
       const due = await ledgerFeeDue(tx, Number(cn.id));
       if (due.lte(0)) continue;
+      // H2 (٢٩/٨/٢٦): إن كان العلَم مفعّلاً + قاعدةٌ فعّالة + الأجرة NOT COUNTER (الأمانة تُبرَّأ حرفياً
+      // بمقبوضها). العمولة تُقصَر إلى due أعلى (لا هامشَ سالب). null ⇒ سلوكٌ سابق (كامل الأجرة).
+      let commission: Decimal | null = null;
+      if (party.useCommissionForSettlement && cn.feeCollection !== "COUNTER") {
+        const quote = await previewCommission(
+          tx,
+          Number(cn.partyId),
+          Number(due.toFixed(2)),
+          0,
+        );
+        if (quote != null) {
+          const c = round2(money(quote.commission));
+          if (c.gte(0) && c.lt(due)) {
+            commission = c;
+          }
+        }
+      }
       items.push({
         cn: {
           id: Number(cn.id),
@@ -295,38 +338,44 @@ export async function payPartyDeliveryFees(
           feeCollection: cn.feeCollection,
         },
         due,
+        commission,
       });
       total = round2(total.plus(due));
+      cashOutTotal = round2(cashOutTotal.plus(commission ?? due));
     }
     if (!items.length || total.lte(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا أجور مستحقّة للجهة على هذا الفرع" });
     }
 
+    // H2: النقد الخارج فعلياً = Σ(commission ?? due) ≤ total. الإيصال يعكسه بدقّة.
     await assertCashOutAvailable(tx, {
       branchId: Number(input.branchId), cashBucket: "DRAWER", shiftId: resolved.shiftId,
-      amount: total, operation: "صرف أجور توصيل مجمّع من الدرج",
+      amount: cashOutTotal, operation: "صرف أجور توصيل مجمّع من الدرج",
     });
+    const marginTotal = round2(total.minus(cashOutTotal));
     const inserted = await tx.insert(receipts).values({
       branchId: Number(input.branchId),
       shiftId: resolved.shiftId,
       // سندٌ واحد لعدّة فواتير ⇒ لا invoiceId على الإيصال؛ النسبةُ لكل فاتورةٍ في قيودها.
       direction: "OUT",
-      amount: toDbMoney(total),
+      amount: toDbMoney(cashOutTotal),
       paymentMethod: "CASH",
       cashBucket: "DRAWER",
       status: "COMPLETED",
       partyType: "OTHER",
       referenceNumber: `DLV-FEES-${input.partyId}`,
-      description: `صرف أجور توصيل مجمّع — جهة #${input.partyId} (${items.length} إرسالية)`,
+      description: marginTotal.gt(0)
+        ? `صرف عمولة توصيل مجمّع — جهة #${input.partyId} (${items.length} إرسالية) — أجرة ${total.toFixed(2)}، عمولة ${cashOutTotal.toFixed(2)}، هامش ${marginTotal.toFixed(2)}`
+        : `صرف أجور توصيل مجمّع — جهة #${input.partyId} (${items.length} إرسالية)`,
       createdBy: actor.userId,
     });
     const receiptId = extractInsertId(inserted);
     for (const item of items) {
       // اللاحقة برقم الإيصال لا clientRequestId: القيود تظلّ قابلة للإحصاء عند الإعادة
       // (replayResult) بلا مطابقة نصوصٍ حرّة، والإيصالُ فريدٌ ففريدةٌ مفاتيحُه حتماً.
-      await postFeePayment(tx, item.cn, item.due, true, receiptId, `BULK:${receiptId}`, actor);
+      await postFeePayment(tx, item.cn, item.due, true, receiptId, `BULK:${receiptId}`, actor, item.commission);
     }
     await recordIdempotencyKey(tx, "delivery.payPartyFees", input.clientRequestId, receiptId, hash);
-    return { receiptId, paidTotal: total.toFixed(2), count: items.length, replay: false };
+    return { receiptId, paidTotal: cashOutTotal.toFixed(2), count: items.length, replay: false };
   });
 }
