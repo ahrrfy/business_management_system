@@ -179,6 +179,24 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     enabled: !coldStudio && Boolean(me.data),
     refetchInterval: 30_000,
   });
+  // ٢٩/٨ (بلاغ المالك): «الفنيّ حوّله لجاهز — لا شي يظهر ولا يلاحظه موظفو الاستقبال». Slice A كان
+  // إشعاراً داخل شاشة الطابور فقط (يعمل حين تكون مفتوحة). هنا شارةٌ عالميّة على /work-orders
+  // و/delivery تظهر عدد الطلبات الجاهزة بصرف النظر عن أيّ شاشة يفتحها الموظف — منفذُ إعلانٍ
+  // دائم يفوت الاستقبال ما دام مسجَّلاً في النظام. الاستعلامان خفيفان (COUNT فقط، لا صفوف).
+  const readyBadgeEligible = !coldStudio && Boolean(me.data)
+    && (["admin", "manager", "cashier", "accountant", "auditor"].includes(me.data?.role ?? ""));
+  const woCounts = trpc.workOrders.counts.useQuery(undefined, {
+    enabled: readyBadgeEligible,
+    refetchInterval: 20_000,
+    refetchOnWindowFocus: true,
+  });
+  const readyForDispatch = trpc.delivery.readyForDispatch.useQuery(undefined, {
+    enabled: readyBadgeEligible,
+    refetchInterval: 20_000,
+    refetchOnWindowFocus: true,
+  });
+  const workOrderReadyCount = woCounts.data?.ready ?? 0;
+  const deliveryReadyCount = readyForDispatch.data?.length ?? 0;
   const printer = usePrinterConnection();
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
@@ -400,6 +418,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             const active = isModuleActive(loc, m.href);
             const favorite = favoritePaths.has(m.href);
             const Icon = m.icon;
+            // شارة العدّ (٢٩/٨): الجاهز لأمر الشغل → /work-orders، الجاهز للإرسال → /delivery.
+            const badge = m.href === "/work-orders" ? workOrderReadyCount
+              : m.href === "/delivery" ? deliveryReadyCount
+              : 0;
+            const badgeLabel = badge > 99 ? "+٩٩" : String(badge);
             return (
               <div key={m.href} className="group relative">
                 <Link
@@ -413,6 +436,19 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 >
                   <Icon className="size-4 shrink-0" aria-hidden />
                   <span className="truncate">{m.label}</span>
+                  {badge > 0 && (
+                    <span
+                      aria-label={m.href === "/delivery"
+                        ? `${badge} إرسالية جاهزة`
+                        : `${badge} أمر جاهز`}
+                      title={m.href === "/delivery"
+                        ? `${badge} إرسالية جاهزة للتوصيل`
+                        : `${badge} أمر شغل جاهز للتسليم`}
+                      className="ms-auto inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-[var(--sem-warn)] px-1.5 py-0.5 text-[10px] font-black text-background tabular-nums"
+                    >
+                      {badgeLabel}
+                    </span>
+                  )}
                 </Link>
                 <button
                   type="button"
