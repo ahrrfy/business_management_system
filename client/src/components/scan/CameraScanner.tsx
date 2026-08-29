@@ -58,15 +58,19 @@ function ManualEntry({ onSubmit }: { onSubmit: (value: string) => void }) {
       }}
     >
       {/* text-base (لا text-sm) لتجنّب auto-zoom في Safari iOS عند التركيز على الحقل.
-          h-11 كي يبلغ معيارَ اللمس ٤٤px، inputMode=numeric يفتح لوحةً رقمية على الأجهزة
-          الملموسة. */}
+          h-11 كي يبلغ معيارَ اللمس ٤٤px.
+          inputMode="text" مقصود (Codex P2): باركودات Code39/Code128 و`ALR*` الداخليّ
+          أبجديّة-عدديّة معتمَدة في `shared/barcodeSymbology.ts`؛ لوحةٌ رقميّةٌ فقط تمنع
+          إدخالها يدوياً. النصّ يقبل كليهما بلا فقد التلميح اللمسيّ. */}
       <input
         dir="ltr"
         value={value}
         onChange={(event) => setValue(event.target.value)}
         placeholder="اكتب رقم الباركود يدوياً"
-        inputMode="numeric"
+        inputMode="text"
         autoComplete="off"
+        autoCapitalize="off"
+        spellCheck={false}
         className="h-11 flex-1 rounded-lg border border-white/30 bg-white/10 px-3 text-base text-white placeholder:text-white/55 focus:outline-none focus:ring-2 focus:ring-white/60"
       />
       <button type="submit" className="h-11 rounded-lg bg-white px-5 text-sm font-bold text-black active:bg-white/90">
