@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { CopyContextMenu } from "@/lib/copy/CopyContextMenu";
 import { TableSkeleton, EmptyState } from "@/components/PageState";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
@@ -39,6 +40,8 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { cn } from "@/lib/utils";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
+import { ActorCell, type OperationActor } from "@/components/data-table/ActorCell";
+import { columnPresentationClass, columnUsesLtrIsolate } from "@/components/data-table/columnContract";
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
 function columnHeaderText(col: { columnDef: { header?: unknown }; id: string }): string {
@@ -109,6 +112,11 @@ type DataTableProps<T, K = string> = {
   rowClickSelects?: boolean;
   /** صنف بصري اختياري للصف مشتق من بياناته (تمييز حالات تشغيلية مهمة). */
   getRowClassName?: (row: T) => string | undefined;
+  /** بيان موحّد لمن أنشأ/نفّذ العملية، يُضاف كعمود أخير من دون تكراره في كل شاشة. */
+  actor?: {
+    getActor: (row: T) => OperationActor | null | undefined;
+    label?: string;
+  };
   /** حجم الصفحة لِلتَرقيم المحلّي (افتِراضياً ٥٠). مَرِّر Infinity لِتَعطيل التَرقيم (عَرض الكُل).
    *  يُتجاهَل مَع serverPagination (حجم الصفحة عندئذٍ من الخادم). */
   pageSize?: number;
@@ -210,6 +218,7 @@ export function DataTable<T, K = string>({
   mobileCardRenderer,
   rowClickSelects = false,
   getRowClassName,
+  actor,
   pageSize = 50,
   bounded = true,
   maxHeightClass,
@@ -218,13 +227,30 @@ export function DataTable<T, K = string>({
   viewKey,
   serverSorting,
 }: DataTableProps<T, K>) {
+  const effectiveColumns = useMemo<ColumnDef<T, unknown>[]>(() => {
+    if (!actor) return columns;
+    return [
+      ...columns,
+      {
+        id: "operationActor",
+        header: actor.label ?? "من قام بالعملية",
+        accessorFn: (row) => {
+          const value = actor.getActor(row);
+          return value?.name ?? value?.userId ?? value?.source ?? "";
+        },
+        cell: ({ row }) => <ActorCell actor={actor.getActor(row.original)} />,
+        enableSorting: false,
+        meta: { kind: "actor" },
+      },
+    ];
+  }, [actor, columns]);
   const storageKey = useMemo(() => {
     const scope = viewKey || (typeof window !== "undefined" ? window.location.pathname : "table");
-    const ids = columns.map((column, index) => columnIdentity(column as ColumnDef<unknown, unknown>, index)).join("|");
+    const ids = effectiveColumns.map((column, index) => columnIdentity(column as ColumnDef<unknown, unknown>, index)).join("|");
     let hash = 0;
     for (let i = 0; i < ids.length; i += 1) hash = ((hash << 5) - hash + ids.charCodeAt(i)) | 0;
     return `data-table-view:v2:${scope}:${hash >>> 0}`;
-  }, [columns, viewKey]);
+  }, [effectiveColumns, viewKey]);
   const initialView = useMemo(() => readTableView(storageKey), [storageKey]);
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
@@ -244,7 +270,7 @@ export function DataTable<T, K = string>({
   const effectiveSorting = serverMode ? (serverSorting?.value ?? []) : sorting;
   const table = useReactTable({
     data,
-    columns,
+    columns: effectiveColumns,
     state: serverMode ? { sorting: effectiveSorting, columnVisibility } : { sorting, globalFilter, columnVisibility },
     onSortingChange: serverMode && serverSorting ? (updater) => serverSorting.onChange(typeof updater === "function" ? updater(serverSorting.value) : updater) : setSorting,
     onColumnVisibilityChange: setColumnVisibility,
@@ -430,9 +456,23 @@ export function DataTable<T, K = string>({
         <>
           {/* عرض الكروت الذكية على شاشات الهاتف (<md) */}
           <div className="md:hidden space-y-2.5">
-            {loading && <TableSkeleton rows={4} cols={1} />}
-            {!loading && visibleRows.map((row, idx) => <div key={row.id}>{mobileCardRenderer(row.original, idx)}</div>)}
-            {!loading && visibleRows.length === 0 && <div className="p-8 text-center text-muted-foreground text-sm bg-card border border-border/60 rounded-xl">{emptyOrError}</div>}
+            {loading && Array.from({ length: 4 }).map((_, index) => (
+              <div key={index} className="space-y-3 rounded-lg border bg-card p-4" aria-hidden>
+                <Skeleton className="h-4 w-2/3" />
+                <Skeleton className="h-3 w-1/2" />
+                <Skeleton className="h-9 w-full" />
+              </div>
+            ))}
+            {!loading && visibleRows.map((row, idx) => (
+              <div key={row.id}>
+                {mobileCardRenderer(row.original, idx)}
+              </div>
+            ))}
+            {!loading && visibleRows.length === 0 && (
+              <div className="p-8 text-center text-muted-foreground text-sm bg-card border border-border/60 rounded-xl">
+                {emptyOrError}
+              </div>
+            )}
           </div>
 
           {/* الجدول الكامل للشاشات المتوسطة والأكبر (>=md) */}
@@ -462,7 +502,7 @@ export function DataTable<T, K = string>({
                         return (
                           <th
                             key={h.id}
-                            className={`border-b border-border/80 px-3 py-2.5 text-xs font-bold text-foreground whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
+                            className={`border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground ${columnPresentationClass(h.column)} ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
                             aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
                             {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
                             onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
@@ -496,60 +536,67 @@ export function DataTable<T, K = string>({
                   ))}
                 </thead>
                 <tbody>
-                  {loading && <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />}
-                  {!loading &&
-                    visibleRows.map((row, rowIndex) => {
-                      const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
-                      const isSelected = selectionEnabled && selection!.isSelected(id as K);
-                      return (
-                        <tr
-                          key={row.id}
-                          data-selected={isSelected || undefined}
-                          className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
-                          onClick={(e) => {
-                            if (!selectionEnabled) return;
-                            const target = e.target as HTMLElement;
-                            if (target.closest("button, a, input, select, textarea, [role=button]")) return;
-                            if (e.shiftKey || rowClickSelects) {
-                              handleRowToggle(rowIndex, e);
-                            }
-                          }}
-                        >
-                          {selectionEnabled && (
-                            <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
-                              <input
-                                type="checkbox"
-                                aria-label="تَحديد الصَفّ"
-                                className="size-4 cursor-pointer accent-primary"
-                                checked={isSelected}
-                                onClick={(e) => {
-                                  handleRowToggle(rowIndex, e);
-                                  e.preventDefault();
-                                }}
-                                onChange={() => {
-                                  /* noop — التَغيير عَبر onClick */
-                                }}
-                              />
+                  {loading && (
+                    <TableSkeleton rows={8} cols={effectiveColumns.length + (selectionEnabled ? 1 : 0)} />
+                  )}
+                  {!loading && visibleRows.map((row, rowIndex) => {
+                    const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
+                    const isSelected = selectionEnabled && selection!.isSelected(id as K);
+                    return (
+                      <tr
+                        key={row.id}
+                        data-selected={isSelected || undefined}
+                        className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                        onClick={(e) => {
+                          if (!selectionEnabled) return;
+                          const target = e.target as HTMLElement;
+                          if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                          if (e.shiftKey || rowClickSelects) {
+                            handleRowToggle(rowIndex, e);
+                          }
+                        }}
+                      >
+                        {selectionEnabled && (
+                          <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              aria-label="تَحديد الصَفّ"
+                              className="size-4 cursor-pointer accent-primary"
+                              checked={isSelected}
+                              onClick={(e) => {
+                                handleRowToggle(rowIndex, e);
+                                e.preventDefault();
+                              }}
+                              onChange={() => { /* noop — التَغيير عَبر onClick */ }}
+                            />
+                          </td>
+                        )}
+                        {row.getVisibleCells().map((cell) => {
+                          const colId = cell.column.id;
+                          const cellVal = cellPrimitive(cell.getValue());
+                          const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
+                          return (
+                            <td key={cell.id} className={`border-b border-border/55 px-[var(--ui-table-cell-inline)] py-2.5 align-middle ${columnPresentationClass(cell.column)}`}>
+                              <CopyContextMenu
+                                value={cellVal}
+                                rowHeaders={copyHeaders}
+                                rowValues={rowValues}
+                                columnHeader={columnHeaderText(cell.column)}
+                                columnValues={columnValuesByColId[colId]}
+                              >
+                                {columnUsesLtrIsolate(cell.column) ? (
+                                  <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
+                                ) : flexRender(cell.column.columnDef.cell, cell.getContext())}
+                              </CopyContextMenu>
                             </td>
-                          )}
-                          {row.getVisibleCells().map((cell) => {
-                            const colId = cell.column.id;
-                            const cellVal = cellPrimitive(cell.getValue());
-                            const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
-                            return (
-                              <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
-                                <CopyContextMenu value={cellVal} rowHeaders={copyHeaders} rowValues={rowValues} columnHeader={columnHeaderText(cell.column)} columnValues={columnValuesByColId[colId]}>
-                                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                </CopyContextMenu>
-                              </td>
-                            );
-                          })}
+                          );
+                        })}
                         </tr>
                       );
                     })}
                   {!loading && visibleRows.length === 0 && (
                     <tr>
-                      <td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">
+                      <td colSpan={effectiveColumns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">
                         {emptyOrError}
                       </td>
                     </tr>
@@ -585,7 +632,7 @@ export function DataTable<T, K = string>({
                     return (
                       <th
                         key={h.id}
-                        className={`border-b border-border/80 px-3 py-2.5 text-xs font-bold text-foreground whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
+                        className={`border-b border-border/80 px-[var(--ui-table-cell-inline)] py-2.5 text-xs font-bold text-foreground ${columnPresentationClass(h.column)} ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
                         aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
                         {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
                         onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
@@ -619,60 +666,67 @@ export function DataTable<T, K = string>({
               ))}
             </thead>
             <tbody>
-              {loading && <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />}
-              {!loading &&
-                visibleRows.map((row, rowIndex) => {
-                  const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
-                  const isSelected = selectionEnabled && selection!.isSelected(id as K);
-                  return (
-                    <tr
-                      key={row.id}
-                      data-selected={isSelected || undefined}
-                      className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
-                      onClick={(e) => {
-                        if (!selectionEnabled) return;
-                        const target = e.target as HTMLElement;
-                        if (target.closest("button, a, input, select, textarea, [role=button]")) return;
-                        if (e.shiftKey || rowClickSelects) {
-                          handleRowToggle(rowIndex, e);
-                        }
-                      }}
-                    >
-                      {selectionEnabled && (
-                        <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            aria-label="تَحديد الصَفّ"
-                            className="size-4 cursor-pointer accent-primary"
-                            checked={isSelected}
-                            onClick={(e) => {
-                              handleRowToggle(rowIndex, e);
-                              e.preventDefault();
-                            }}
-                            onChange={() => {
-                              /* noop — التَغيير عَبر onClick */
-                            }}
-                          />
+              {loading && (
+                <TableSkeleton rows={8} cols={effectiveColumns.length + (selectionEnabled ? 1 : 0)} />
+              )}
+              {!loading && visibleRows.map((row, rowIndex) => {
+                const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
+                const isSelected = selectionEnabled && selection!.isSelected(id as K);
+                return (
+                  <tr
+                    key={row.id}
+                    data-selected={isSelected || undefined}
+                    className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                    onClick={(e) => {
+                      if (!selectionEnabled) return;
+                      const target = e.target as HTMLElement;
+                      if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                      if (e.shiftKey || rowClickSelects) {
+                        handleRowToggle(rowIndex, e);
+                      }
+                    }}
+                  >
+                    {selectionEnabled && (
+                      <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label="تَحديد الصَفّ"
+                          className="size-4 cursor-pointer accent-primary"
+                          checked={isSelected}
+                          onClick={(e) => {
+                            handleRowToggle(rowIndex, e);
+                            e.preventDefault();
+                          }}
+                          onChange={() => { /* noop — التَغيير عَبر onClick */ }}
+                        />
+                      </td>
+                    )}
+                    {row.getVisibleCells().map((cell) => {
+                      const colId = cell.column.id;
+                      const cellVal = cellPrimitive(cell.getValue());
+                      const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
+                      return (
+                        <td key={cell.id} className={`border-b border-border/55 px-[var(--ui-table-cell-inline)] py-2.5 align-middle ${columnPresentationClass(cell.column)}`}>
+                          <CopyContextMenu
+                            value={cellVal}
+                            rowHeaders={copyHeaders}
+                            rowValues={rowValues}
+                            columnHeader={columnHeaderText(cell.column)}
+                            columnValues={columnValuesByColId[colId]}
+                          >
+                            {columnUsesLtrIsolate(cell.column) ? (
+                              <bdi dir="ltr">{flexRender(cell.column.columnDef.cell, cell.getContext())}</bdi>
+                            ) : flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </CopyContextMenu>
                         </td>
-                      )}
-                      {row.getVisibleCells().map((cell) => {
-                        const colId = cell.column.id;
-                        const cellVal = cellPrimitive(cell.getValue());
-                        const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
-                        return (
-                          <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
-                            <CopyContextMenu value={cellVal} rowHeaders={copyHeaders} rowValues={rowValues} columnHeader={columnHeaderText(cell.column)} columnValues={columnValuesByColId[colId]}>
-                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                            </CopyContextMenu>
-                          </td>
-                        );
-                      })}
+                      );
+                    })}
                     </tr>
                   );
                 })}
               {!loading && visibleRows.length === 0 && (
                 <tr>
-                  <td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">
+                  <td colSpan={effectiveColumns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">
                     {emptyOrError}
                   </td>
                 </tr>

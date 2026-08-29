@@ -774,6 +774,14 @@ export default function Invoices() {
     ],
     [printingReceiptId, showBranchCol, branchNames, canOpenStatement],
   );
+  const invoiceActor = useMemo(() => ({
+    getActor: (invoice: Row) => ({
+      userId: invoice.createdBy,
+      name: invoice.salespersonName,
+      source: invoice.createdBy == null ? "legacy" as const : "user" as const,
+    }),
+    label: "منشئ الفاتورة",
+  }), []);
 
   // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
   // الفِكرة: TSV لِلَّصق في Excel، ومُلَخَّص نَصّي مُكَثَّف لِواتساب الإدارة.
@@ -1004,6 +1012,7 @@ export default function Invoices() {
       <DataTable
         columns={columns}
         data={data}
+        actor={invoiceActor}
         searchable={false}
         loading={rows.isLoading}
         // صدق الخطأ: الرفض ٤٠٣/انقطاع الشبكة كان يُعرَض «لا فواتير مطابقة» فيُقرأ «لا فواتير لي».

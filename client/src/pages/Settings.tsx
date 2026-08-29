@@ -6,6 +6,7 @@ import { RowActions } from "@/components/list/RowActions";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { DangerConfirmDialog } from "@/components/DangerConfirmDialog";
+import { InfoField, InfoGrid } from "@/components/data-display/InfoGrid";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -264,18 +265,20 @@ export default function Settings() {
       {/* معلومات النظام */}
       <Card id="sec-info" className="scroll-mt-4">
         <CardHeader><CardTitle className="text-base">معلومات النظام</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3 text-sm">
-          <Stat label="القاعدة" value={info.data?.db.name ?? "…"} mono />
-          <Stat label="الخادم" value={info.data?.db.host ?? "…"} mono />
-          <Stat label="الفروع" value={c ? String(c.branches) : "…"} />
-          <Stat label="المستخدمون" value={c ? String(c.users) : "…"} />
-          <Stat label="المنتجات" value={c ? String(c.products) : "…"} />
-          <Stat label="العملاء" value={c ? String(c.customers) : "…"} />
-          <Stat label="الفواتير" value={c ? String(c.invoices) : "…"} />
-          <Stat label="النسخ" value={info.data ? `${info.data.backups.count} (${fmtKb(info.data.backups.totalKb)})` : "…"} />
-          <Stat label="آخر نسخة" value={fmtDateTime(info.data?.backups.latest ?? null)} />
-          <Stat label="الطباعة الصامتة" value={bridge.enabled ? "مفعّلة" : "غير مفعّلة"} ok={bridge.enabled} />
-          <Stat label="النسخ التلقائي" value={`يومياً 02:00${info.data?.schedule.offsiteConfigured ? " + خارجي" : ""}`} />
+        <CardContent>
+          <InfoGrid density="compact">
+            <InfoField label="القاعدة" value={info.data?.db.name ?? "…"} kind="code" />
+            <InfoField label="الخادم" value={info.data?.db.host ?? "…"} kind="code" />
+            <InfoField label="الفروع" value={c ? String(c.branches) : "…"} kind="number" />
+            <InfoField label="المستخدمون" value={c ? String(c.users) : "…"} kind="number" />
+            <InfoField label="المنتجات" value={c ? String(c.products) : "…"} kind="number" />
+            <InfoField label="العملاء" value={c ? String(c.customers) : "…"} kind="number" />
+            <InfoField label="الفواتير" value={c ? String(c.invoices) : "…"} kind="number" />
+            <InfoField label="النسخ" value={info.data ? `${info.data.backups.count} (${fmtKb(info.data.backups.totalKb)})` : "…"} />
+            <InfoField label="آخر نسخة" value={fmtDateTime(info.data?.backups.latest ?? null)} kind="datetime" />
+            <InfoField label="الطباعة الصامتة" value={bridge.enabled ? "مفعّلة" : "غير مفعّلة"} kind="status" tone={bridge.enabled ? "positive" : "default"} />
+            <InfoField label="النسخ التلقائي" value={`يومياً 02:00${info.data?.schedule.offsiteConfigured ? " + خارجي" : ""}`} />
+          </InfoGrid>
         </CardContent>
       </Card>
 
@@ -619,15 +622,6 @@ export default function Settings() {
         pending={dangerPending}
         onConfirm={handleDangerConfirm}
       />
-    </div>
-  );
-}
-
-function Stat({ label, value, mono, ok }: { label: string; value: string; mono?: boolean; ok?: boolean }) {
-  return (
-    <div>
-      <div className="text-muted-foreground text-xs">{label}</div>
-      <div className={`${mono ? "font-mono" : ""} ${ok ? "text-[var(--status-active)] font-semibold" : ""}`} dir={mono ? "ltr" : undefined}>{value}</div>
     </div>
   );
 }
