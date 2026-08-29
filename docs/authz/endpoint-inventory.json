@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1106,
+    "trpcTotal": 1107,
     "byKind": {
       "mutation": 582,
-      "query": 524
+      "query": 525
     },
     "byAuthority": {
       "module-gate": 550,
-      "module-map": 338,
+      "module-map": 339,
       "admin": 67,
       "none": 53,
       "raw-role": 46,
@@ -21,7 +21,7 @@
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 522,
+      "LOW": 523,
       "MEDIUM": 427,
       "HIGH": 157
     },
@@ -29,7 +29,7 @@
       "(none)": 193,
       "hr": 100,
       "reports": 94,
-      "store": 80,
+      "store": 81,
       "digital_cards": 75,
       "inventory": 70,
       "treasury": 64,
@@ -77,14 +77,14 @@
     "expressMounts": 12,
     "jobs": 22,
     "routerFiles": 96,
-    "proposedPermissions": 922,
+    "proposedPermissions": 923,
     "proposedDomains": {
       "hr": 106,
       "reports": 97,
       "treasury": 88,
       "inventory": 86,
       "catalog": 81,
-      "store": 80,
+      "store": 81,
       "sales": 49,
       "productstudio": 44,
       "iam": 42,
@@ -4424,6 +4424,23 @@
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
       "loc": "server/routers/deliveryRouter.ts:164"
+    },
+    {
+      "surface": "trpc",
+      "router": "deliveryRouter",
+      "proposedPermission": "store.delivery.commission_comparison",
+      "name": "commissionComparison",
+      "kind": "query",
+      "procedure": "deliveryReadProcedure",
+      "authority": "module-map",
+      "module": "store",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/deliveryRouter.ts:986"
     },
     {
       "surface": "trpc",

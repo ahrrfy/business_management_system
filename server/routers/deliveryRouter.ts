@@ -979,4 +979,51 @@ export const deliveryRouter = router({
         return previewDeliveryQuote(tx as never, input.zoneId, input.distanceKm, input.weightKg);
       });
     }),
+
+  // ─── تقرير مقارنة العمولة (Slice K، ٢٩/٨/٢٦) ─── يساعد المالكَ على اتّخاذ قرار تفعيل H2
+  // لكلّ جهةٍ: يقارن الأجرة الفعليّة المدفوعة بالعمولة التقديريّة (المخزَّنة منذ Slice H) في نافذةٍ
+  // زمنيّة. الفرق الموجب = وفر متوقَّع للمكتبة عند التفعيل. مؤشّرٌ نصّيّ فقط — لا قيدَ محاسبيّ.
+  commissionComparison: deliveryReadProcedure
+    .input(z.object({
+      fromDate: z.string().nullish(),  // YYYY-MM-DD
+      toDate: z.string().nullish(),
+    }).optional())
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return [];
+      const { deliveryRemittances, deliveryParties } = await import("../../drizzle/schema");
+      const { sum: sqlSum, count: sqlCount, eq: eqOp, and: andOp, isNotNull, gte, lt } = await import("drizzle-orm");
+      const { utcDayStart, utcNextDayStart } = await import("../services/businessDay");
+      const conds = [isNotNull(deliveryRemittances.courierCommissionAmount)];
+      if (input?.fromDate) conds.push(gte(deliveryRemittances.receivedAt, utcDayStart(input.fromDate)));
+      // نافذةٌ نصف مفتوحة `[from, toNext)` بحدود UTC — لا انزياحٌ بحسب TZ المستعمل.
+      if (input?.toDate) conds.push(lt(deliveryRemittances.receivedAt, utcNextDayStart(input.toDate)));
+      const rows = await db
+        .select({
+          partyId: deliveryRemittances.partyId,
+          partyName: deliveryParties.name,
+          useCommission: deliveryParties.useCommissionForSettlement,
+          feesTotal: sqlSum(deliveryRemittances.feesTotal).mapWith(String),
+          commissionTotal: sqlSum(deliveryRemittances.courierCommissionAmount).mapWith(String),
+          remittanceCount: sqlCount(deliveryRemittances.id).mapWith(Number),
+        })
+        .from(deliveryRemittances)
+        .innerJoin(deliveryParties, eqOp(deliveryRemittances.partyId, deliveryParties.id))
+        .where(andOp(...conds))
+        .groupBy(deliveryRemittances.partyId, deliveryParties.name, deliveryParties.useCommissionForSettlement);
+      // إثراء بحقل الفرق (لا داعي للحساب على الواجهة — نضمن الدقّة كسلسلةٍ نصيّة).
+      return rows.map((r) => {
+        const fees = Number(r.feesTotal ?? 0);
+        const commission = Number(r.commissionTotal ?? 0);
+        return {
+          partyId: Number(r.partyId),
+          partyName: r.partyName ?? "—",
+          useCommission: !!r.useCommission,
+          feesTotal: (r.feesTotal ?? "0").toString(),
+          commissionTotal: (r.commissionTotal ?? "0").toString(),
+          delta: (fees - commission).toFixed(2),
+          remittanceCount: r.remittanceCount ?? 0,
+        };
+      });
+    }),
 });
