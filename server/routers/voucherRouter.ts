@@ -24,6 +24,10 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
 import { resubmitRejectedExpensePayment } from "../services/voucher/approval";
 import {
+  notifyApprovalDecisionByReceipt,
+  notifyApprovalPendingByReceipt,
+} from "../services/approvalEventNotifier";
+import {
   VOUCHER_CATEGORY_POSTING_ROLES,
   isVoucherCategoryRoleCompatible,
 } from "../../shared/voucherCategoryAccounting";
@@ -128,6 +132,13 @@ export const voucherRouter = router({
               invoiceId: input.invoiceId ?? null,
             },
           });
+          // ن-٢-هـ: إشعار المُعتمِدين بأنّ سنداً بانتظارهم — الخدمة تقرأ الحمولةَ بنفسها.
+          // Codex P2 ٢٨/٨: هذا الاستدعاء بـreceiptId فقط يُعاد استعماله من
+          // consignmentSettlement + createSystemPaymentRequestTx (assets/walletOps/exchange/…)
+          // بلا نسخِ حقول.
+          if (res.approvalStatus === "PENDING_APPROVAL") {
+            void notifyApprovalPendingByReceipt(res.receiptId);
+          }
           return res;
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
@@ -161,6 +172,13 @@ export const voucherRouter = router({
           entityId: input.receiptId,
           newValue: { voucherNumber: res.voucherNumber, signatureHash: res.signatureHash, approvalAuthority: "OWNER" },
         });
+        // ن-٢-هـ: إشعار مُنشئ السند بأنّه اعتُمد — الخدمة تقرأ الحمولة بنفسها.
+        // Codex P1 ٢٨/٨: لا SELECT في الراوتر (طبقة `services/` تملك الاستعلامات).
+        void notifyApprovalDecisionByReceipt(
+          input.receiptId,
+          "APPROVED",
+          ctx.user.id,
+        );
       }
       return res;
     }),
@@ -183,6 +201,14 @@ export const voucherRouter = router({
         entityId: input.receiptId,
         newValue: { voucherNumber: res.voucherNumber, reason: input.reason.slice(0, 200) },
       });
+      // ن-٢-هـ: إشعار مُنشئ السند بالرفض + السبب — الخدمة تقرأ الحمولةَ بنفسها.
+      // Codex P1 ٢٨/٨: لا SELECT في الراوتر.
+      void notifyApprovalDecisionByReceipt(
+        input.receiptId,
+        "REJECTED",
+        ctx.user.id,
+        input.reason,
+      );
       return res;
     }),
 

@@ -1,5 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!--
+        تثبيت شهادة (Certificate Pinning) لمضيف الإنتاج srv1548487.hstgr.cloud
+        ================================================================
+
+        السقالة موجودة في `android-native/docs/certificate-pinning.md` مع أوامر
+        openssl لاستخراج SPKI SHA-256 من الشهادة الحيّة ودورة التدوير.
+
+        ⚠️ لا يُفعَّل هذا الإعداد بقيم placeholder — Android Lint يرفض pin غير
+        صالح (تصفيةٌ صحّية)، وpin كاذب على شهادةٍ حقيقية يُعطّل TLS handshake
+        فيُبْرِك (bricks) كل الأجهزة قبل بلوغ الخادم.
+
+        خطوات التفعيل (يدويّاً، خارج CI):
+        1) استخرج SPKI SHA-256 (active + backup) بأمر openssl الموثَّق في وثيقة
+           android-native/docs/certificate-pinning.md.
+        2) أنشئ فرعاً منفصلاً وأدخِل <domain-config> أدناه بقِيَم حقيقية.
+        3) اختبر على جهازٍ حقيقيّ (لا محاكي) قبل الدمج — pin خاطئ لا يظهر
+           إلّا حين يتّصل التطبيق بالخادم فعلاً.
+        4) بعد الدمج: أطلِق نسخةً جديدة قبل انتهاء `expiration` بأسبوعين
+           على الأقلّ، لأنّ النسخ السابقة تعتمد على الـpin القديم.
+
+        قالبٌ للنسخ (بعد ملء القيم):
+        <domain-config>
+            <domain includeSubdomains="true">srv1548487.hstgr.cloud</domain>
+            <pin-set expiration="YYYY-MM-DD">
+                <pin digest="SHA-256">BASE64_SHA256_ACTIVE</pin>
+                <pin digest="SHA-256">BASE64_SHA256_BACKUP</pin>
+            </pin-set>
+            <trust-anchors>
+                <certificates src="system" />
+            </trust-anchors>
+        </domain-config>
+    -->
+
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
