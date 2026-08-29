@@ -97,6 +97,36 @@ export const aiProductDraftSchema = z
 
 export type AiProductDraft = z.infer<typeof aiProductDraftSchema>;
 
+// م٣ — عقد الاستخراج «من صورة»: مساعد إنشاء منتجٍ جديد. الموظّف يرفع صورة، والنظام
+// يقترح الحقول الأساسية (اسم، نوع، ماركة، وصف قصير). لا يُنشئ منتجاً — يُطبَّق على النموذج
+// فقط بعد مراجعة الموظّف. النتيجة قصيرة، بلا claims/evidenceKeys، لأنّها مدخل تعبئةٍ لا مخرج
+// نشر — التحقّق التسويقي/المرجعيّ يجري لاحقاً عبر generateProductContentDraft.
+export const extractedProductFactsSchema = z
+  .object({
+    suggestedName: z.string().trim().min(1).max(160).nullable(),
+    productType: z.string().trim().min(1).max(80).nullable(),
+    brand: z.string().trim().min(1).max(80).nullable(),
+    modelHint: z.string().trim().min(1).max(80).nullable(),
+    description: z.string().trim().max(500),
+    keywords: z.array(z.string().trim().min(1).max(60)).max(10),
+    confidence: z.enum(["low", "medium", "high"]),
+    // ما اقترحه النموذج ثمّ حجبه — يُعرَض للموظّف كمعرفةٍ نافعة (مثلاً «رأيت رقماً غير واضح»)
+    // ليعوّضه يدوياً إن أراد. لا يُطبَّق على النموذج تلقائياً.
+    unsupportedGuesses: z
+      .array(
+        z
+          .object({
+            text: z.string().trim().min(1).max(200),
+            reason: z.string().trim().min(1).max(200),
+          })
+          .strict(),
+      )
+      .max(10),
+  })
+  .strict();
+
+export type ExtractedProductFacts = z.infer<typeof extractedProductFactsSchema>;
+
 export type DraftValidation = {
   blockers: string[];
   warnings: string[];

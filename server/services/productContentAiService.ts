@@ -15,9 +15,11 @@ import { logger } from "../logger";
 import {
   aiProductDraftSchema,
   canonicalJson,
+  extractedProductFactsSchema,
   productFactsSchema,
   validateAiProductDraft,
   type AiProductDraft,
+  type ExtractedProductFacts,
   type ProductFacts,
 } from "../../shared/productContentAi";
 
@@ -533,5 +535,281 @@ export async function generateProductContentDraft(
     throw error;
   } finally {
     inFlightDrafts.delete(cacheKey);
+  }
+}
+
+// م٣ — استخراج الحقائق الأساسية من صورة (للتدفّق «صورة أوّلاً»).
+const EXTRACTION_PROMPT_VERSION = "product-extract-ar-v1";
+const EXTRACTION_ALLOWED_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+]);
+
+const EXTRACTION_PROMPT = `أنت محلّل صور منتجات لكتالوج مكتبة وقرطاسية عراقية.
+مهمّتك استخراج بيانات المنتج التي **تظهر بوضوح** في الصورة، لا أكثر. أنت لا تخترع، لا تُكمّل، لا تُخمّن.
+
+يُسمح استخراجه:
+- suggestedName: مقترحٌ مركّبٌ ممّا تراه (النوع + الماركة + الموديل إن كان مقروءاً). أمثلة: «دفتر ملاحظات روتا سلك A5»، «قلم حبر بايلوت أزرق»، «علبة أقلام رصاص فابر كاستل ١٢ قطعة».
+- productType: النوع العامّ المرئيّ عربياً (كتاب، دفتر ملاحظات، قلم، علبة أقلام، حقيبة، مسطرة، ممحاة…).
+- brand: نصّ الماركة المقروء على الغلاف كما هو (عربياً أو لاتينياً — لا تُترجم).
+- modelHint: رقم موديل أو نصّ تعريفيّ ثانويّ **مطبوعٌ ظاهر** (مثلاً A5، M-101، No. 2B).
+- description: جملة أو اثنتان تصفان ما هو مرئيّ فعلاً: اللون، الشكل، وجود تغليف، عدد قطعٍ ظاهر بوضوح في تغليف شفّاف. حدّ ٥٠٠ حرف.
+- keywords: كلمات بحث محتملة من المرئيّ (حدّ ١٠).
+
+يُحظَر إخراجه — إن فكّرتَ فيه فأضفه إلى unsupportedGuesses مع سبب الرفض:
+- سعر أو تخفيض أو خصم
+- مادّة داخلية (ورق/معدن/بلاستيك…) ما لم تكن مطبوعةً واضحةً على الغلاف
+- عدد صفحات ما لم يكن مطبوعاً
+- أبعاد بالسنتيمتر أو الوزن
+- بلد صنع ما لم يكن مطبوعاً
+- ادّعاء جودة/متانة/أمان/توافق
+- شهادات أو ضمانات
+
+قواعد الصياغة:
+- إن لم تتبيّن حقلاً فبقيمة null (لا فراغ ولا «غير معروف»).
+- عربية مبسّطة مناسبة للعراق، بلا تشكيل ولا كشيدة.
+- ثقة (confidence): high إذا كان النصّ/الشعار مقروءاً واضحاً، medium إذا استنتجتَ النوع بصرياً بلا نصّ، low للصور الغامضة/الجانبية/المشوّشة.
+
+أعد JSON فقط مطابقاً لمخطط المخرَج.`;
+
+const EXTRACTION_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "suggestedName",
+    "productType",
+    "brand",
+    "modelHint",
+    "description",
+    "keywords",
+    "confidence",
+    "unsupportedGuesses",
+  ],
+  properties: {
+    suggestedName: { type: ["string", "null"] },
+    productType: { type: ["string", "null"] },
+    brand: { type: ["string", "null"] },
+    modelHint: { type: ["string", "null"] },
+    description: { type: "string" },
+    keywords: {
+      type: "array",
+      maxItems: 10,
+      items: { type: "string" },
+    },
+    confidence: { type: "string", enum: ["low", "medium", "high"] },
+    unsupportedGuesses: {
+      type: "array",
+      maxItems: 10,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text", "reason"],
+        properties: {
+          text: { type: "string" },
+          reason: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
+export type ExtractProductFactsResult = {
+  facts: ExtractedProductFacts;
+  model: string;
+  promptVersion: string;
+};
+
+/**
+ * يستخرج حقائق منتجٍ من صورةٍ واحدة (للتدفّق «صورة أوّلاً»، م٣).
+ * ⛔ لا يُنشئ منتجاً — الموظّف يراجع الاقتراحات ثمّ يطبّقها على النموذج.
+ * تحت نفس حارس الاستخدام اليوميّ (٢٠ نداءً) — الحارس يعدّ النداءات لا البايتات.
+ */
+export async function extractProductFactsFromImage(
+  input: {
+    imageBase64: string;
+    mime: string;
+    contextName?: string | null;
+  },
+  opts: {
+    fetchImpl?: TextFetch;
+    timeoutMs?: number;
+    actor?: { userId: number; branchId?: number | null };
+  } = {},
+): Promise<ExtractProductFactsResult> {
+  if (!EXTRACTION_ALLOWED_MIMES.has(input.mime)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "نوع الصورة غير مدعوم؛ استعمل JPEG/PNG/WEBP/GIF/AVIF.",
+    });
+  }
+  const bytesLen = Math.ceil((input.imageBase64.length * 3) / 4);
+  if (bytesLen > MAX_IMAGE_BYTES) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `حجم الصورة يتجاوز الحدّ (${MAX_IMAGE_BYTES / 1024}KB).`,
+    });
+  }
+  const runtime = await getAiStudioRuntime();
+  if (!runtime) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "مسار الذكاء الاصطناعي غير مفعّل أو لا يوجد مفتاح صالح في إعدادات الاستوديو.",
+    });
+  }
+  if (runtime.provider !== "GEMINI") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "مزود محتوى المنتج غير مدعوم حالياً.",
+    });
+  }
+  if (
+    !opts.actor ||
+    !Number.isSafeInteger(opts.actor.userId) ||
+    opts.actor.userId <= 0
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "تعذر تحديد مستخدم طلب الاستخراج.",
+    });
+  }
+
+  const model = runtime.model.includes("image")
+    ? DEFAULT_TEXT_MODEL
+    : runtime.model;
+
+  const extract = async (): Promise<ExtractProductFactsResult> => {
+    const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      opts.timeoutMs ?? TIMEOUT_MS,
+    );
+
+    const contextLine = input.contextName
+      ? `\n\nCONTEXT (ما كتبه الموظّف حتى الآن، للاسترشاد لا للنسخ): ${input.contextName.slice(0, 160)}`
+      : "";
+    const payload = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType: input.mime, data: input.imageBase64 } },
+            { text: `${EXTRACTION_PROMPT}${contextLine}\n\nاستخرج الآن.` },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        responseMimeType: "application/json",
+        responseSchema: EXTRACTION_JSON_SCHEMA,
+      },
+    };
+
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": runtime.apiKey,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (error: any) {
+      clearTimeout(timeout);
+      if (error?.name === "AbortError")
+        throw new TRPCError({
+          code: "TIMEOUT",
+          message: "تأخر مزود الذكاء الاصطناعي؛ أعد المحاولة لاحقاً.",
+        });
+      throw new TRPCError({
+        code: "TIMEOUT",
+        message: "تعذر الوصول إلى مزود الذكاء الاصطناعي.",
+      });
+    }
+
+    try {
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const body = JSON.parse(await readBoundedText(response, 32 * 1024));
+          detail = String(body?.error?.message ?? "").slice(0, 250);
+        } catch {
+          detail = "";
+        }
+        if (response.status === 401 || response.status === 403) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "مفتاح مزود الذكاء الاصطناعي غير صالح أو بلا صلاحية.",
+          });
+        }
+        const code =
+          response.status === 429
+            ? "TOO_MANY_REQUESTS"
+            : response.status >= 500
+              ? "INTERNAL_SERVER_ERROR"
+              : "BAD_REQUEST";
+        throw new TRPCError({
+          code,
+          message:
+            code === "INTERNAL_SERVER_ERROR"
+              ? "تعذر الوصول إلى مزود الذكاء الاصطناعي مؤقتاً."
+              : detail || "فشل استخراج حقائق المنتج من الصورة.",
+        });
+      }
+
+      let body: any;
+      try {
+        body = JSON.parse(await readBoundedText(response, MAX_RESPONSE_BYTES));
+      } catch {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "ردّ مزود الذكاء الاصطناعي غير صالح.",
+        });
+      }
+
+      let facts: ExtractedProductFacts;
+      try {
+        facts = extractedProductFactsSchema.parse(
+          JSON.parse(stripCodeFence(textFromGeminiResponse(body))),
+        );
+      } catch {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "نتيجة الاستخراج لا تطابق المخطط المطلوب.",
+        });
+      }
+
+      return { facts, model, promptVersion: EXTRACTION_PROMPT_VERSION };
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  try {
+    return await runGuardedImageStudioCall({
+      service: "AI",
+      userId: opts.actor.userId,
+      branchId: opts.actor.branchId ?? null,
+      run: extract,
+    });
+  } catch (error) {
+    if (error instanceof ImageStudioGuardError) {
+      throw new TRPCError({
+        code:
+          error.kind === "DAILY_BUDGET_EXHAUSTED"
+            ? "PRECONDITION_FAILED"
+            : "TOO_MANY_REQUESTS",
+        message: imageStudioGuardErrorMessageAr(error.kind),
+      });
+    }
+    throw error;
   }
 }

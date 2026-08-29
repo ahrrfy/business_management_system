@@ -18,6 +18,7 @@ import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/l
 import { UnitBarcodeAliases, type LocalAlias } from "@/components/product/UnitBarcodeAliases";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
+import { ImageFirstProductAssistant } from "@/components/product/ImageFirstProductAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
@@ -349,6 +350,20 @@ export default function SimpleProductForm() {
 
   return (
     <div className="space-y-4">
+      {/* م٣ — تدفّق «صورة أوّلاً» للموظّف الذي لا يعرف كيف يصف: ارفع صورة ⇒ اقتراح الحقول
+          الأساسية ⇒ يطبّق على الفارغ فقط. لا تُطمس أيّ قيمةٍ كتبها الموظّف بنفسه. */}
+      <ImageFirstProductAssistant
+        currentFields={{ name, productType, brand, modelName, description }}
+        onApply={(f) => {
+          // «الفارغ فقط»: احترام كتابة الموظّف قاعدةٌ صلبة. النموذج مصدر الحقيقة، والاقتراح رافد.
+          if (!name.trim() && f.suggestedName) setName(f.suggestedName);
+          if (!productType.trim() && f.productType) setProductType(f.productType);
+          if (!brand.trim() && f.brand) setBrand(f.brand);
+          if (!modelName.trim() && f.modelHint) setModelName(f.modelHint);
+          if (!description.trim() && f.description) setDescription(f.description);
+        }}
+      />
+
       {/* ── بيانات المنتج ── */}
       <Card>
         <CardHeader>

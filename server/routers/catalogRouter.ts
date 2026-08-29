@@ -57,7 +57,10 @@ import {
   classifySeverity,
   type UnitPricing,
 } from "../../shared/priceSanity";
-import { generateProductContentDraft } from "../services/productContentAiService";
+import {
+  extractProductFactsFromImage,
+  generateProductContentDraft,
+} from "../services/productContentAiService";
 import {
   decideProductContentDraft,
   listProductContentDrafts,
@@ -590,6 +593,31 @@ export const catalogRouter = router({
   validateContentDraft: productsManagerProcedure
     .input(z.object({ facts: productFactsSchema, draft: aiProductDraftSchema }))
     .mutation(({ input }) => validateAiProductDraft(input.draft, input.facts)),
+
+  // م٣ — تدفّق «صورة أوّلاً»: يستقبل صورة (base64) ويُرجع حقائق مقترحة تُملأ على النموذج
+  // بعد مراجعة الموظّف. لا يُنشئ منتجاً؛ لا يمسّ DB. الحدود: base64 يقارب 1.2MB (يوازي
+  // 900KB بايتات) — نتحقّق من الحجم في الخدمة نفسها ⇒ سقفٌ واحد لا يُغَشّ من الواجهة.
+  extractFactsFromImage: productsManagerProcedure
+    .input(
+      z
+        .object({
+          imageBase64: z.string().min(64).max(1_400_000),
+          mime: z.enum([
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/gif",
+            "image/avif",
+          ]),
+          contextName: z.string().trim().max(160).nullable().optional(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ input, ctx }) =>
+      extractProductFactsFromImage(input, {
+        actor: { userId: ctx.user.id, branchId: ctx.user.branchId ?? null },
+      }),
+    ),
 
   saveContentDraft: productsManagerProcedure
     .input(z.object({

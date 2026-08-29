@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   aiProductDraftSchema,
+  extractedProductFactsSchema,
   normalizeConversionFactor,
   productFactsSchema,
   validateAiProductDraft,
@@ -187,6 +188,69 @@ describe("vision evidence (image.N keys)", () => {
     expect(result.ok).toBe(true);
     // لا حاصر عن الادّعاء البصريّ (رقم ٢).
     expect(result.blockers.some((b) => b.includes("رقم 2"))).toBe(false);
+  });
+
+  it("extractedProductFactsSchema accepts a well-formed extraction result", () => {
+    const parsed = extractedProductFactsSchema.parse({
+      suggestedName: "دفتر ملاحظات روتا سلك A5",
+      productType: "دفتر ملاحظات",
+      brand: "روتا",
+      modelHint: "A5",
+      description: "دفتر مجلَّد بسلك، غلاف أزرق داكن، حجم متوسط.",
+      keywords: ["دفتر", "سلك", "A5"],
+      confidence: "high",
+      unsupportedGuesses: [
+        { text: "100 ورقة", reason: "لا رقم ظاهرٌ على الغلاف" },
+      ],
+    });
+    expect(parsed.brand).toBe("روتا");
+    expect(parsed.unsupportedGuesses).toHaveLength(1);
+  });
+
+  it("extractedProductFactsSchema accepts nulls for all optional facts", () => {
+    // صورةٌ غامضة ⇒ النموذج يُعيد كلّ حقلٍ null ووصفاً فارغاً، والسكيمة تقبله.
+    // الواجهة تعرض «— لم يتبيّن —» وزرّ «طبّق» لا يُغيّر شيئاً على النموذج.
+    const parsed = extractedProductFactsSchema.parse({
+      suggestedName: null,
+      productType: null,
+      brand: null,
+      modelHint: null,
+      description: "",
+      keywords: [],
+      confidence: "low",
+      unsupportedGuesses: [],
+    });
+    expect(parsed.description).toBe("");
+    expect(parsed.suggestedName).toBeNull();
+  });
+
+  it("extractedProductFactsSchema rejects extra properties and out-of-range enums", () => {
+    // strict() ⇒ حقلٌ غير معلَنٍ يفشل، وهو ما يمنع النموذجَ من تهريب سعرٍ/كميّةٍ ابتلعتهما الواجهة.
+    expect(() =>
+      extractedProductFactsSchema.parse({
+        suggestedName: null,
+        productType: null,
+        brand: null,
+        modelHint: null,
+        description: "",
+        keywords: [],
+        confidence: "high",
+        unsupportedGuesses: [],
+        price: "5000", // ⛔
+      }),
+    ).toThrow();
+    expect(() =>
+      extractedProductFactsSchema.parse({
+        suggestedName: null,
+        productType: null,
+        brand: null,
+        modelHint: null,
+        description: "",
+        keywords: [],
+        confidence: "أعلى", // ⛔ خارج enum
+        unsupportedGuesses: [],
+      }),
+    ).toThrow();
   });
 
   it("mixed claim still requires textual evidence to match", () => {
