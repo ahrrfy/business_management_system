@@ -8,7 +8,6 @@ import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { createSystemPaymentRequestTx } from "../voucher/create";
-import { notifyApprovalPendingByReceipt } from "../approvalEventNotifier";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
 
 export interface DepositInput {
@@ -30,8 +29,7 @@ export async function depositToExchange(
   input: DepositInput,
   actor: Actor,
 ): Promise<{ txnId: number; txnNumber: string; pendingApproval?: boolean }> {
-  let notifyReceiptId: number | null = null;
-  const result = await withTx(async (tx) => {
+  return withTx(async (tx) => {
     if (input.clientRequestId) {
       const existing = await findIdempotentRefId(tx, "exchange.deposit", input.clientRequestId);
       if (existing != null) {
@@ -133,12 +131,6 @@ export async function depositToExchange(
     if (input.clientRequestId) {
       await recordIdempotencyKey(tx, "exchange.deposit", input.clientRequestId, txnId);
     }
-    notifyReceiptId = request.receiptId;
     return { txnId, txnNumber, pendingApproval: true };
   });
-  // ن-٢-هـ (Codex P2 ٢٨/٨): أخطر المُعتمِدين بعد commit — الدالّة تُصفّي على الحالة.
-  if (notifyReceiptId != null) {
-    void notifyApprovalPendingByReceipt(notifyReceiptId);
-  }
-  return result;
 }

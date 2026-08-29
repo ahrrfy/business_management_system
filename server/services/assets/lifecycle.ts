@@ -9,7 +9,6 @@ import { companyBranchScope } from "../companyBranchScope";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
 import { createSystemPaymentRequestTx } from "../voucher/create";
-import { notifyApprovalPendingByReceipt } from "../approvalEventNotifier";
 import { postEntry } from "../ledgerService";
 import { expenseAccrualRecognition } from "../accounting/accrualPosting";
 import { createAccrualObligationTx, transitionAccrualObligationTx } from "../accounting/accrualObligations";
@@ -279,10 +278,7 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
       await tx.update(fixedAssets).set({ status: "maintenance" }).where(eq(fixedAssets.id, assetId));
     }
   });
-  // ن-٢-هـ (Codex P2 ٢٨/٨): أخطر المُعتمِدين بعد commit — الدالّة تُصفّي على الحالة.
-  if (paymentRequestReceiptId != null) {
-    void notifyApprovalPendingByReceipt(paymentRequestReceiptId);
-  }
+  // ن-٢-هـ: إشعارُ المُعتمِدين مركزيّ في createSystemPaymentRequestTx (tx.ts.enqueuePostCommit).
   const asset = await getAsset(assetId, scope);
   return asset
     ? { ...asset, paymentPending: paymentRequestReceiptId != null, paymentRequestReceiptId }

@@ -23,10 +23,11 @@ import {
 import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
 import { resubmitRejectedExpensePayment } from "../services/voucher/approval";
-import {
-  notifyApprovalDecisionByReceipt,
-  notifyApprovalPendingByReceipt,
-} from "../services/approvalEventNotifier";
+// notifyApprovalPendingByReceipt is enqueued centrally inside createVoucher /
+// createSystemPaymentRequestTx (voucher/create.ts + tx.ts.enqueuePostCommit) —
+// the router only wires the decision notifier (which is not enqueue-able because
+// it fires from approveVoucher/rejectVoucher, not from a Tx write path).
+import { notifyApprovalDecisionByReceipt } from "../services/approvalEventNotifier";
 import {
   VOUCHER_CATEGORY_POSTING_ROLES,
   isVoucherCategoryRoleCompatible,
@@ -132,13 +133,8 @@ export const voucherRouter = router({
               invoiceId: input.invoiceId ?? null,
             },
           });
-          // ن-٢-هـ: إشعار المُعتمِدين بأنّ سنداً بانتظارهم — الخدمة تقرأ الحمولةَ بنفسها.
-          // Codex P2 ٢٨/٨: هذا الاستدعاء بـreceiptId فقط يُعاد استعماله من
-          // consignmentSettlement + createSystemPaymentRequestTx (assets/walletOps/exchange/…)
-          // بلا نسخِ حقول.
-          if (res.approvalStatus === "PENDING_APPROVAL") {
-            void notifyApprovalPendingByReceipt(res.receiptId);
-          }
+          // ن-٢-هـ: إشعار المُعتمِدين مركزيّاً داخل createVoucher عبر enqueuePostCommit
+          // (راجع voucher/create.ts + tx.ts). الراوترُ لا يستدعي الـnotifier يدوياً بعد اليوم.
           return res;
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;

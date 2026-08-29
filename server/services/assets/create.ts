@@ -11,7 +11,6 @@ import { type Actor, withTx } from "../tx";
 import { companyBranchScope, resolveTargetBranch } from "../companyBranchScope";
 import { getAsset } from "./queries";
 import { createSystemPaymentRequestTx } from "../voucher/create";
-import { notifyApprovalPendingByReceipt } from "../approvalEventNotifier";
 import { fixedAssetAccrualRecognition } from "../accounting/accrualPosting";
 import { createAccrualObligationTx, transitionAccrualObligationTx } from "../accounting/accrualObligations";
 import { idempotencyHash } from "../idempotency";
@@ -85,7 +84,6 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
     acquisitionEvidenceReference: evidenceReference,
     clientRequestId,
   });
-  let notifyReceiptId: number | null = null;
   const id = await withTx(async (tx) => {
     const [existing] = await tx
       .select({ id: fixedAssets.id, requestPayloadHash: fixedAssets.requestPayloadHash })
@@ -279,7 +277,6 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
           evidenceReference,
           dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
         });
-        notifyReceiptId = request.receiptId;
       }
     }
 
@@ -309,10 +306,8 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
     }
     return newId;
   });
-  // ن-٢-هـ (Codex P2 ٢٨/٨): أخطر المُعتمِدين بعد commit — الدالّة تُصفّي على الحالة.
-  if (notifyReceiptId != null) {
-    void notifyApprovalPendingByReceipt(notifyReceiptId);
-  }
+  // ن-٢-هـ: إشعارُ المُعتمِدين مُعالَجٌ مركزياً داخل createSystemPaymentRequestTx
+  // عبر enqueuePostCommit (راجع voucher/create.ts + services/tx.ts).
   const asset = await getAsset(id, scope);
   return asset;
 }

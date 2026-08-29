@@ -24,7 +24,8 @@ import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
 import type { Tx } from "../../db";
-import { type Actor, withTx } from "../tx";
+import { type Actor, enqueuePostCommit, withTx } from "../tx";
+import { notifyApprovalPendingByReceipt } from "../approvalEventNotifier";
 import {
   computeSignature,
   nextVoucherNumber,
@@ -1004,9 +1005,16 @@ export async function createSystemPaymentRequestTx(
   actor: Actor,
   request: SystemPaymentRequest,
 ): Promise<VoucherResult> {
-  return createVoucherTx(tx, { ...input, voucherType: "PAYMENT" }, actor, {
+  const result = await createVoucherTx(tx, { ...input, voucherType: "PAYMENT" }, actor, {
     systemRequest: request,
   });
+  // ن-٢-هـ (Codex ٢٩/٨): إشعارُ المُعتمِدين مركزيّاً هنا — كلّ مسارٍ يُنشئ سنداً
+  // PENDING_APPROVAL يُخطر تلقائياً بلا حاجةِ كلِّ مُستدعٍ لتذكّر الوصلة. الهوك يفرغ
+  // بعد commit — لا يفرغ على rollback (راجع `tx.ts.drainPostCommitHooks`).
+  if (result.approvalStatus === "PENDING_APPROVAL") {
+    enqueuePostCommit(tx, () => notifyApprovalPendingByReceipt(result.receiptId));
+  }
+  return result;
 }
 
 /**
@@ -1038,9 +1046,14 @@ export async function createSystemReceiptRequestTx(
       message: "مرفق دليل استرداد المبلغ إلزامي",
     });
   }
-  return createVoucherTx(tx, { ...input, voucherType: "RECEIPT" }, actor, {
+  const result = await createVoucherTx(tx, { ...input, voucherType: "RECEIPT" }, actor, {
     systemRequest: request,
   });
+  // ن-٢-هـ (Codex ٢٩/٨): إشعار مركزيّ لطلب استرداد تصحيح الاستحقاق أيضاً.
+  if (result.approvalStatus === "PENDING_APPROVAL") {
+    enqueuePostCommit(tx, () => notifyApprovalPendingByReceipt(result.receiptId));
+  }
+  return result;
 }
 
 export async function createVoucher(
@@ -1053,6 +1066,14 @@ export async function createVoucher(
     assertInboundPaymentMethodEnabled(input.paymentMethod);
   }
   return withMysqlDeadlockRetry(() =>
-    withTx((tx) => createVoucherTx(tx, input, actor)),
+    withTx(async (tx) => {
+      const result = await createVoucherTx(tx, input, actor);
+      // ن-٢-هـ (Codex ٢٩/٨): مسارُ الراوتر (`vouchers.create`) يمرّ هنا — إشعارٌ
+      // مركزيٌّ يُغني عن حاجةِ الراوتر لاستدعاءِ notifier يدوياً.
+      if (result.approvalStatus === "PENDING_APPROVAL") {
+        enqueuePostCommit(tx, () => notifyApprovalPendingByReceipt(result.receiptId));
+      }
+      return result;
+    })
   );
 }
