@@ -24,6 +24,8 @@ import { Printer, MessageCircle, Truck } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
 import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineCard";
+import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
+import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -215,6 +217,22 @@ export default function WorkOrderDetail() {
       await refresh();
     },
     onError: (e) => setError(e.message),
+  });
+  // Slice C (٢٩/٨/٢٦) — الإسناد المتأخّر: زرّ «تغيير طريقة التسليم» يظهر قبل التسليم/الإرسال ⇒
+  // موظّف الاستقبال يقلب استلاماً⇄توصيلاً من هذه الشاشة نفسها بلا العودة للطابور (بلاغ المالك:
+  // «الإسناد يحتوي على مشكلة، يسند الطلب منذ البداية ولا نعلم هل الشركة أم المندوب»). المكوّن
+  // نفسه المُستعمَل في ReceptionOrderQueue (حارس أمانة الأجرة موحَّد بين الشاشتَين).
+  const [reclassifyOpen, setReclassifyOpen] = useState(false);
+  const setDeliveryMethodMut = trpc.workOrders.setDeliveryMethod.useMutation({
+    onSuccess: async (r) => {
+      notify.ok(
+        "حُدِّثت طريقة التسليم",
+        Number(r.refundedFee) > 0 ? `رُدّت أمانة الأجرة ${fmtAr(r.refundedFee)} د.ع نقداً للزبون` : undefined,
+      );
+      setReclassifyOpen(false);
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
   });
   const cancel = trpc.workOrders.cancel.useMutation({
     onSuccess: async (result) => {
@@ -774,6 +792,14 @@ export default function WorkOrderDetail() {
             {deliver.isPending ? "جارٍ…" : "تسليم وإصدار فاتورة"}
           </Button>
         )}
+        {/* Slice C: زرّ «تغيير طريقة التسليم» يظهر لكاشير/مدير قبل التسليم/الإرسال (لا إرسالية حيّة).
+            إذا كان الطلب مسنَداً لمندوب فعلياً (consignmentId) يُخفى — التحويل يمرّ من إلغاء الإسناد أوّلاً. */}
+        {canDeliverWorkOrder && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && !data.consignmentId && (
+          <Button variant="outline" onClick={() => setReclassifyOpen(true)} disabled={setDeliveryMethodMut.isPending}>
+            <Truck aria-hidden className="me-1 size-4" />
+            {data.hasDelivery ? "تحويل لاستلامٍ مباشر" : "تحويل إلى توصيل"}
+          </Button>
+        )}
         {canCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
@@ -859,6 +885,22 @@ export default function WorkOrderDetail() {
           </div>
         </div>
       )}
+
+      <ReclassifyDeliveryDialog
+        order={reclassifyOpen ? {
+          id: workOrderId,
+          orderNumber: data.orderNumber,
+          title: data.title,
+          hasDelivery: data.hasDelivery,
+          deliveryAddress: data.deliveryAddress,
+          deliveryPhone: data.deliveryPhone,
+          deliveryCost: data.deliveryCost,
+          customerPhone: data.customerPhone,
+        } : null}
+        pending={setDeliveryMethodMut.isPending}
+        onClose={() => setReclassifyOpen(false)}
+        onConfirm={(payload) => setDeliveryMethodMut.mutate({ workOrderId, ...payload })}
+      />
 
       <CancelWorkOrderDialog
         open={cancelOpen}
