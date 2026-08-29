@@ -20,6 +20,10 @@ export interface LabelPrintableOrder {
   customerName: string | null;
   customerPhone: string | null;
   deliveryAddress: string | null;
+  /** Slice F (٢٩/٨/٢٦): بلاغ المالك «يعرف الزبون الكلي شاملاً التوصيل» — الملصقُ الذي يرافق
+   *  الطرد يجب أن يعرض الإجماليّ الذي سيدفعه الزبون للمندوب: COD + الأجرة (COURIER) أو COD وحده. */
+  deliveryCost?: string | null;
+  deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
 }
 
 /** بوليصة توصيل حرارية (جسر/WebUSB/متصفح) عند الإرسال. */
@@ -103,6 +107,13 @@ export async function printReadyOrderLabel(
   opts?: { partyName?: string | null; trackingNumber?: string; cod?: string; into?: Window | null },
 ) {
   const cod = opts?.cod ?? String(Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0)));
+  // Slice F (٢٩/٨/٢٦): «الكلي للعميل» على الملصق — COURIER يقبض COD + الأجرة، الآخران COD وحده.
+  // الملصق مصدرُ الحقيقة البصريّ للمندوب عند التسليم؛ رقمٌ مختلفٌ عمّا في يد الزبون = خلاف.
+  const feeCollection = order.deliveryFeeCollection ?? "COURIER";
+  const feeD = Number(order.deliveryCost ?? 0);
+  const totalDue = feeCollection === "COURIER" && feeD > 0
+    ? String(Number(cod) + feeD)
+    : cod;
   const res = await printShippingLabel(
     {
       orderNumber: opts?.trackingNumber ?? order.orderNumber,
@@ -110,7 +121,7 @@ export async function printReadyOrderLabel(
       customerPhone: order.customerPhone,
       governorate: null,
       addressText: order.deliveryAddress,
-      total: cod,
+      total: totalDue,
       deliveryPartyName: opts?.partyName ?? null,
       createdAt: new Date(),
       items: [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
