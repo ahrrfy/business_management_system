@@ -75,6 +75,7 @@ import online.alarabiya.superapp.ui.rtlIsolate
 import java.text.NumberFormat
 import java.util.Locale
 import java.time.LocalDate
+import online.alarabiya.superapp.core.time.baghdadToday
 
 @Composable
 fun CommerceRoute(
@@ -327,7 +328,7 @@ private fun DigitalCardDecisionDialog(
     onConfirm: (Boolean, DigitalCardApprovalDecision) -> Unit,
 ) {
     var reason by rememberSaveable(item.id, approve) { mutableStateOf("") }
-    var businessDate by rememberSaveable(item.id) { mutableStateOf(LocalDate.now().toString()) }
+    var businessDate by rememberSaveable(item.id) { mutableStateOf(baghdadToday().toString()) }
     var sellPrice by rememberSaveable(item.id) { mutableStateOf(item.currentSellPrice.orEmpty()) }
     val mismatchApproval = approve && item.kind == DigitalCardApprovalKind.PRICE_MISMATCH
     val validBusinessDate = businessDate.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$"))

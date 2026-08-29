@@ -95,6 +95,7 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
 import java.time.YearMonth
+import online.alarabiya.superapp.core.time.baghdadToday
 import java.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -381,7 +382,7 @@ internal fun AssetLifecycleOverlays(state: OperationsUiState, viewModel: Operati
 private fun AssetEditorDialog(detail: AssetDetail?, state: OperationsUiState, viewModel: OperationsViewModel) {
     val options = (state.assetOptions as? OperationsDetailState.Content)?.value
     val editing = detail != null
-    val today = remember { LocalDate.now().toString() }
+    val today = remember { baghdadToday().toString() }
     var name by rememberSaveable(detail?.summary?.id) { mutableStateOf(detail?.summary?.name.orEmpty()) }
     var categoryWire by rememberSaveable(detail?.summary?.id) { mutableStateOf(detail?.summary?.category?.wire ?: AssetCategory.Computers.wire) }
     var brand by rememberSaveable(detail?.summary?.id) { mutableStateOf(detail?.brand.orEmpty()) }
@@ -572,7 +573,7 @@ private fun AssetCustodyReturnDialog(detail: AssetDetail, viewModel: OperationsV
 @Composable
 private fun AssetDisposalDialog(detail: AssetDetail, viewModel: OperationsViewModel) {
     var statusWire by rememberSaveable(detail.summary.id) { mutableStateOf(AssetStatus.Retired.wire) }
-    var date by rememberSaveable(detail.summary.id) { mutableStateOf(LocalDate.now().toString()) }
+    var date by rememberSaveable(detail.summary.id) { mutableStateOf(baghdadToday().toString()) }
     var reason by rememberSaveable(detail.summary.id) { mutableStateOf("") }
     var value by rememberSaveable(detail.summary.id) { mutableStateOf("") }
     var confirmation by rememberSaveable(detail.summary.id) { mutableStateOf("") }

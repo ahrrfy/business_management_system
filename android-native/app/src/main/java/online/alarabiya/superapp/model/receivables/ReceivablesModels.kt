@@ -3,6 +3,7 @@ package online.alarabiya.superapp.model.receivables
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
+import online.alarabiya.superapp.core.time.baghdadToday
 import online.alarabiya.superapp.model.AppBootstrap
 
 @JvmInline
@@ -232,7 +233,7 @@ data class ReminderActionDraft(
 ) {
     enum class Kind { SEND_API, SKIP }
 
-    fun validationError(today: LocalDate = LocalDate.now()): String? {
+    fun validationError(today: LocalDate = baghdadToday()): String? {
         if (kind == Kind.SKIP && reason.trim().isEmpty()) return "سبب التأجيل أو التخطّي مطلوب"
         if (reason.length > 255) return "السبب أطول من الحد المسموح"
         if (promisedDate.isNotBlank() && !promisedDate.isYmd()) return "تاريخ الوعد غير صالح"
@@ -318,7 +319,7 @@ data class CardFilters(
 
 data class ReconciliationDraft(
     val branchId: String = "",
-    val asOfDate: String = LocalDate.now().toString(),
+    val asOfDate: String = baghdadToday().toString(),
     val statementBalance: String = "",
     val statementLabel: String = "",
     val note: String = "",
