@@ -251,6 +251,8 @@ jobs:
         run: pnpm check:save-shortcut-coverage
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
+      - name: اختبار عقود النشر والبناء الآمنة
+        run: pnpm test:nginx-contract
       - name: بناء الإنتاج
         run: pnpm build
 

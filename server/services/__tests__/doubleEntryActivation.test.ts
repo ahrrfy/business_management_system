@@ -33,6 +33,12 @@ import {
 } from "../accounting/postingEngine";
 import { reconcileDoubleEntry } from "../reconcileService";
 import { computeShadowOpeningHash } from "../accounting/shadowOpening";
+import {
+  approveStatutoryProfile,
+  createStatutoryProfile,
+  replaceStatutoryAccounts,
+  replaceStatutoryMappings,
+} from "../accounting/statutoryAccounting";
 import { postOpeningEntry, upsertOpeningEntry } from "../openingBalance";
 import { withTx } from "../tx";
 import { truncateTables } from "./__testUtils__";
@@ -66,6 +72,9 @@ async function reset() {
     "auditLogs",
     "journalLines",
     "journalEntries",
+    "statutoryAccountMappings",
+    "statutoryAccounts",
+    "statutoryAccountingProfiles",
     "accrualCorrectionRequests",
     "accrualObligationEvents",
     "accrualObligations",
@@ -109,6 +118,87 @@ async function reset() {
       isActive: true,
     })),
   );
+}
+
+async function seedApprovedStatutoryProfile() {
+  const observedRoles = await db()
+    .selectDistinct({ role: s.journalLines.role })
+    .from(s.journalLines);
+  const current = await db().select().from(s.accounts);
+  const existingRoles = new Set(
+    current.map((row) => row.systemRole).filter((role): role is string => Boolean(role)),
+  );
+  const missingRoles = observedRoles
+    .map((row) => row.role)
+    .filter((role) => !existingRoles.has(role));
+  if (missingRoles.length) {
+    await db().insert(s.accounts).values(
+      missingRoles.map((role, index) => ({
+        code: `TEST-STAT-${index + 1}`,
+        name: role,
+        type:
+          role === "AR"
+            ? ("ASSET" as const)
+            : role === "CAPITAL"
+              ? ("EQUITY" as const)
+              : ("LIABILITY" as const),
+        systemRole: role,
+        isActive: true,
+      })),
+    );
+  }
+  const internal = await db()
+    .select()
+    .from(s.accounts)
+    .where(eq(s.accounts.isActive, true));
+  await withTx(async (tx) => {
+    const { id: profileId } = await createStatutoryProfile(
+      tx,
+      {
+        profileKey: "ACTIVATION_TEST",
+        version: 1,
+        name: "دليل تفعيل الاختبار",
+        authorityReference: "مرجع اختبار بوابة ACTIVE",
+        effectiveFrom: "2026-08-01",
+      },
+      ADMIN_ID,
+    );
+    await replaceStatutoryAccounts(
+      tx,
+      profileId,
+      internal.map((account, index) => ({
+        code: `S-${index + 1}`,
+        name: `نظامي — ${account.name}`,
+        type: account.type,
+        normalBalance:
+          account.type === "ASSET" || account.type === "EXPENSE"
+            ? ("DEBIT" as const)
+            : ("CREDIT" as const),
+      })),
+    );
+    const statutory = await tx
+      .select()
+      .from(s.statutoryAccounts)
+      .where(eq(s.statutoryAccounts.profileId, profileId));
+    await replaceStatutoryMappings(
+      tx,
+      profileId,
+      internal.map((account, index) => ({
+        internalAccountId: Number(account.id),
+        statutoryAccountId: Number(statutory[index].id),
+      })),
+      ADMIN_ID,
+    );
+    await approveStatutoryProfile(
+      tx,
+      {
+        profileId,
+        accountantName: "مراقب حسابات الاختبار",
+        approvalReference: "اعتماد اختبار ACTIVE",
+      },
+      ADMIN_ID,
+    );
+  });
 }
 
 async function insertSale(input: {
@@ -1524,6 +1614,7 @@ describe("تغيير وضع الدفتر — انتقالات ذرّية مُد�
 
   it("SHADOW → ACTIVE لا يتم إلا بعد اجتياز البوابة ويُدقَّق", async () => {
     await seedShadow();
+    await seedApprovedStatutoryProfile();
 
     const result = await withTx(async (tx) =>
       activateDoubleEntry(tx, {

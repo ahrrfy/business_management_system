@@ -5,10 +5,13 @@
 // المعالِج المقابل ⇒ كل تقرير يكتفي بتمرير onExport/onPrint ويحصل على الأنماط الثلاثة.
 import { type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
 import { TONE_TEXT_CLASS, type Tone } from "@/lib/tone";
+import { FileSpreadsheet, Info, MoreHorizontal, Printer } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 /** نبرة مؤشّر — مُعاد تصديرها من `@/lib/tone` (مصدرٌ واحد مشترك مع StatCard). */
 export type KpiTone = Tone;
@@ -56,30 +59,48 @@ export function ReportShell({
   children: ReactNode;
 }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5" data-report-workspace>
       {/* الرأس — عبر PageHeader المشترك (رابط رجوع + عنوان + وصف)، وأزرار التصدير/الطباعة في منطقة الإجراءات. */}
       <PageHeader
         title={title}
         description={description}
         backHref={backHref ?? undefined}
         backLabel="مركز التقارير"
+        variant="workspace"
         actions={
           <>
             {actions}
-            {onExportCsv && (
-              <Button variant="outline" size="sm" disabled={exportDisabled} onClick={onExportCsv}>
-                تصدير CSV
-              </Button>
-            )}
-            {onExport && (
-              <Button variant="outline" size="sm" disabled={exportDisabled} onClick={onExport}>
-                تصدير Excel
-              </Button>
-            )}
-            {onPrint && (
-              <Button variant="outline" size="sm" disabled={printDisabled} onClick={onPrint}>
-                طباعة / PDF
-              </Button>
+            {(onExportCsv || onExport || onPrint) && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8">
+                    <MoreHorizontal aria-hidden className="size-4" />
+                    إجراءات التقرير
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-52">
+                  <DropdownMenuLabel>التصدير والطباعة</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {onExportCsv && (
+                    <DropdownMenuItem disabled={exportDisabled} onSelect={() => onExportCsv()}>
+                      <FileSpreadsheet aria-hidden className="size-4" />
+                      تصدير CSV
+                    </DropdownMenuItem>
+                  )}
+                  {onExport && (
+                    <DropdownMenuItem disabled={exportDisabled} onSelect={() => onExport()}>
+                      <FileSpreadsheet aria-hidden className="size-4" />
+                      تصدير Excel
+                    </DropdownMenuItem>
+                  )}
+                  {onPrint && (
+                    <DropdownMenuItem disabled={printDisabled} onSelect={() => onPrint()}>
+                      <Printer aria-hidden className="size-4" />
+                      طباعة / PDF
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </>
         }
@@ -87,37 +108,47 @@ export function ReportShell({
 
       {/* شريط الفلاتر */}
       {filters && (
-        <Card>
-          <CardContent className="pt-4 pb-3">{filters}</CardContent>
-        </Card>
+        <WorkspaceBar variant="filters" label="فلاتر التقرير" className="report-filter-bar overflow-x-auto">
+          <div className="min-w-max [&>div]:!flex-nowrap">{filters}</div>
+        </WorkspaceBar>
       )}
 
       {/* تنويه */}
-      {note && (
-        <div className="rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">
-          {note}
-        </div>
-      )}
-
-      {/* شريط المؤشّرات */}
-      {kpis && kpis.length > 0 && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {kpis.map((k, i) => (
-            <Card key={i}>
-              <CardContent className="pt-4 pb-3 text-center">
-                <p className="text-xs text-muted-foreground">{k.label}</p>
-                <p className={cn("text-xl font-bold tabular-nums", TONE_TEXT_CLASS[k.tone ?? "default"])} dir="ltr">
-                  {k.value}
-                </p>
-                {(k.hintNode ?? k.hint) && <p className="mt-0.5 text-[10px] text-muted-foreground">{k.hintNode ?? k.hint}</p>}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+      {note && <div className="rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs text-[var(--sem-warn)]">{note}</div>}
 
       {/* المحتوى */}
       {children}
+
+      {/* مؤشرات التقرير شريط حالة سفلي: تبقى البيانات أولاً ولا تُزاح من أعلى الشاشة. */}
+      {kpis && kpis.length > 0 && (
+        <WorkspaceStatusBar label="مؤشرات التقرير" className="gap-0 overflow-x-auto p-0">
+          {kpis.map((k, i) => {
+            const hint = k.hintNode ?? k.hint;
+            return (
+              <div key={i} className="min-w-36 flex-1 border-e border-border/70 px-3 py-0.5 text-center last:border-e-0">
+                <div className="flex items-center justify-center gap-1 text-2xs text-muted-foreground">
+                  <span className="truncate">{k.label}</span>
+                  {hint && (
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button type="button" className="grid size-5 shrink-0 place-items-center rounded hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`تفاصيل ${k.label}`}>
+                          <Info aria-hidden className="size-3.5" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent side="top" className="w-72 text-start text-xs leading-5">
+                        {hint}
+                      </PopoverContent>
+                    </Popover>
+                  )}
+                </div>
+                <p className={cn("truncate text-sm font-bold tabular-nums", TONE_TEXT_CLASS[k.tone ?? "default"])} dir="ltr">
+                  {k.value}
+                </p>
+              </div>
+            );
+          })}
+        </WorkspaceStatusBar>
+      )}
     </div>
   );
 }

@@ -23,6 +23,10 @@ export {
   isServerBridgeEnabled, getServerBridgeStatus, serverPrintTest, sendRawToServer,
 } from "./serverBridge";
 
+export type PrintResult =
+  | { via: "server" | "thermal" | "browser"; ok: true }
+  | { via: "browser"; ok: false; reason: "popup-blocked" };
+
 /** بناء بايتات ESC/POS من المستند (نقطية Canvas + قطع). يعيد null إن تعذّر الرسم (بلا DOM). */
 async function buildReceiptBytes(doc: PrintDoc): Promise<Uint8Array | null> {
   const raster = await docToRaster(doc); // async: توليد QR وCode128 على Canvas
@@ -37,14 +41,14 @@ async function buildReceiptBytes(doc: PrintDoc): Promise<Uint8Array | null> {
  *  ٣) **حوار المتصفّح** — بديل أخير بعرض 80مم.
  * أي فشل في مستوى أعلى يتدهّور بسلاسة للمستوى التالي ⇒ لا تُسقَط الطباعة أبداً.
  */
-export async function printDoc(doc: PrintDoc): Promise<{ via: "server" | "thermal" | "browser" }> {
+export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
   // ١) جسر الخادم (الأولوية حين يكون مفعّلاً).
   if (await isServerBridgeEnabled()) {
     const bytes = await buildReceiptBytes(doc);
     if (bytes) {
       try {
         await sendRawToServer(bytes);
-        return { via: "server" };
+        return { via: "server", ok: true };
       } catch (e) {
         // فشل الجسر ⇒ تدهور سلس للبدائل (لا نُسقط الطباعة).
         console.warn("[print] فشل جسر الخادم، نتراجع للبديل:", e);
@@ -56,15 +60,20 @@ export async function printDoc(doc: PrintDoc): Promise<{ via: "server" | "therma
   if (isPaired()) {
     const bytes = await buildReceiptBytes(doc);
     if (bytes) {
-      await sendBytes(bytes);
-      return { via: "thermal" };
+      try {
+        await sendBytes(bytes);
+        return { via: "thermal", ok: true };
+      } catch (e) {
+        console.warn("[print] فشل WebUSB، نتراجع لنافذة المتصفّح:", e);
+      }
     }
   }
 
   // ٣) حوار طباعة المتصفّح (بديل أخير).
   const html = await docToHtml(doc); // async: توليد QR SVG
-  printHtml(html);
-  return { via: "browser" };
+  return printHtml(html)
+    ? { via: "browser", ok: true }
+    : { via: "browser", ok: false, reason: "popup-blocked" };
 }
 
 /**
@@ -73,7 +82,7 @@ export async function printDoc(doc: PrintDoc): Promise<{ via: "server" | "therma
  *  ١) جسر الخادم  ٢) WebUSB  ٣) نافذة المتصفّح (قالب الإيصال المُعلَّم نفسه).
  * التصميم واحد في المسارات الثلاثة ⇒ لا يتفاوت شكل الإيصال بتفاوت الناقل.
  */
-export async function printReceipt(d: ReceiptBrowserData): Promise<{ via: "server" | "thermal" | "browser" }> {
+export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> {
   // ش٢ (§١٠) — حارسٌ بنيويّ: قالب الإيصال لمستندٍ محاسبيّ حقيقيّ حصراً. حمولةٌ بلا رقمٍ، أو
   // برقم مسوّدة (DRF-)، تُنتج ورقةً لا يميّزها الزبون عن إيصال دفعٍ فعليّ — تُطبَع المسوّدة
   // بقالبها المنفصل (printDraftTicket) الذي يعلن «غير محاسَبة» ويُمنع فيه سطرا مدفوع/الفكّة.
@@ -101,7 +110,7 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<{ via: "serve
       if (bridgeEnabled) {
         try {
           await sendRawToServer(bytes);
-          return { via: "server" };
+          return { via: "server", ok: true };
         } catch (e) {
           console.warn("[print] فشل جسر الخادم، نتراجع للبديل:", e);
         }
@@ -109,7 +118,7 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<{ via: "serve
       if (isPaired()) {
         try {
           await sendBytes(bytes);
-          return { via: "thermal" };
+          return { via: "thermal", ok: true };
         } catch (e) {
           // طابعة مفصولة/خطأ نقل ⇒ تدهور سلس لنافذة المتصفّح (لا تُسقَط الطباعة).
           console.warn("[print] فشل WebUSB، نتراجع لنافذة المتصفّح:", e);
@@ -117,8 +126,9 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<{ via: "serve
       }
     }
   }
-  printBrowserReceipt(d);
-  return { via: "browser" };
+  return printBrowserReceipt(d)
+    ? { via: "browser", ok: true }
+    : { via: "browser", ok: false, reason: "popup-blocked" };
 }
 
 /**

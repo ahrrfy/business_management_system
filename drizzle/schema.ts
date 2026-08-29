@@ -10811,6 +10811,148 @@ export const accounts = mysqlTable(
 export type Account = typeof accounts.$inferSelect;
 export type InsertAccount = typeof accounts.$inferInsert;
 
+/**
+ * إصدار دليل الامتثال النظامي. الحسابات التشغيلية تبقى في `accounts`، بينما هذا الإصدار
+ * يثبت الدليل الذي اعتمده مراقب الحسابات مع مرجعه وتاريخ نفاذه وبصمة محتواه. `activeGuard`
+ * حارس singleton: لا يمكن أن يوجد أكثر من إصدار نظامي نافذ في اللحظة نفسها.
+ */
+export const statutoryAccountingProfiles = mysqlTable(
+  "statutoryAccountingProfiles",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    profileKey: varchar("profileKey", { length: 64 }).notNull(),
+    version: int("version").notNull(),
+    name: varchar("name", { length: 160 }).notNull(),
+    authorityReference: varchar("authorityReference", { length: 255 }).notNull(),
+    effectiveFrom: date("effectiveFrom", { mode: "string" }).notNull(),
+    status: mysqlEnum("status", ["DRAFT", "ACTIVE", "RETIRED"])
+      .default("DRAFT")
+      .notNull(),
+    activeGuard: varchar("activeGuard", { length: 16 }),
+    contentHash: char("contentHash", { length: 64 }),
+    accountantName: varchar("accountantName", { length: 150 }),
+    approvalReference: varchar("approvalReference", { length: 255 }),
+    approvedBy: int("approvedBy").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    keyVersionUq: unique("uq_stat_profile_key_version").on(
+      t.profileKey,
+      t.version,
+    ),
+    activeGuardUq: unique("uq_stat_profile_active_guard").on(t.activeGuard),
+    activeStateCheck: check(
+      "chk_stat_profile_active_state",
+      sql`((${t.status} = 'ACTIVE' AND ${t.activeGuard} = 'ACTIVE') OR (${t.status} <> 'ACTIVE' AND ${t.activeGuard} IS NULL))`,
+    ),
+    statusIdx: index("idx_stat_profile_status").on(t.status),
+  }),
+);
+export type StatutoryAccountingProfile =
+  typeof statutoryAccountingProfiles.$inferSelect;
+export type InsertStatutoryAccountingProfile =
+  typeof statutoryAccountingProfiles.$inferInsert;
+
+/** حساب نظامي ضمن إصدارٍ واحد؛ رموزه لا تُخلط برموز الدليل التشغيلي. */
+export const statutoryAccounts = mysqlTable(
+  "statutoryAccounts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    profileId: bigint("profileId", { mode: "number" })
+      .notNull()
+      .references(() => statutoryAccountingProfiles.id, { onDelete: "cascade" }),
+    code: varchar("code", { length: 30 }).notNull(),
+    name: varchar("name", { length: 160 }).notNull(),
+    type: mysqlEnum("type", [
+      "ASSET",
+      "LIABILITY",
+      "EQUITY",
+      "REVENUE",
+      "EXPENSE",
+    ]).notNull(),
+    normalBalance: mysqlEnum("normalBalance", ["DEBIT", "CREDIT"]).notNull(),
+    parentId: bigint("parentId", { mode: "number" }),
+    isPosting: boolean("isPosting").default(true).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    notes: varchar("notes", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    profileCodeUq: unique("uq_stat_account_profile_code").on(
+      t.profileId,
+      t.code,
+    ),
+    profileTypeIdx: index("idx_stat_account_profile_type").on(
+      t.profileId,
+      t.type,
+      t.sortOrder,
+    ),
+    parentFk: foreignKey({
+      name: "fk_stat_account_parent",
+      columns: [t.parentId],
+      foreignColumns: [t.id],
+    }).onDelete("restrict"),
+  }),
+);
+export type StatutoryAccount = typeof statutoryAccounts.$inferSelect;
+export type InsertStatutoryAccount = typeof statutoryAccounts.$inferInsert;
+
+/**
+ * الخريطة المعتمدة بين حسابٍ تشغيلي وحسابٍ نظامي. الإصدار جزء من المفتاح عبر `profileId`؛
+ * لذلك تعديل دليلٍ لاحق لا يعيد تصنيف تاريخ إصدارٍ سابق.
+ */
+export const statutoryAccountMappings = mysqlTable(
+  "statutoryAccountMappings",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    profileId: bigint("profileId", { mode: "number" })
+      .notNull(),
+    internalAccountId: bigint("internalAccountId", { mode: "number" })
+      .notNull(),
+    statutoryAccountId: bigint("statutoryAccountId", { mode: "number" })
+      .notNull(),
+    rationale: varchar("rationale", { length: 500 }),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    internalUq: unique("uq_stat_mapping_internal").on(
+      t.profileId,
+      t.internalAccountId,
+    ),
+    statutoryIdx: index("idx_stat_mapping_statutory").on(
+      t.profileId,
+      t.statutoryAccountId,
+    ),
+    profileFk: foreignKey({
+      name: "fk_stat_mapping_profile",
+      columns: [t.profileId],
+      foreignColumns: [statutoryAccountingProfiles.id],
+    }).onDelete("cascade"),
+    internalFk: foreignKey({
+      name: "fk_stat_mapping_internal",
+      columns: [t.internalAccountId],
+      foreignColumns: [accounts.id],
+    }).onDelete("restrict"),
+    statutoryFk: foreignKey({
+      name: "fk_stat_mapping_account",
+      columns: [t.statutoryAccountId],
+      foreignColumns: [statutoryAccounts.id],
+    }).onDelete("restrict"),
+  }),
+);
+export type StatutoryAccountMapping =
+  typeof statutoryAccountMappings.$inferSelect;
+export type InsertStatutoryAccountMapping =
+  typeof statutoryAccountMappings.$inferInsert;
+
 // ============================================================
 // منظومة الهدايا/المجانيات (٢٧/٧/٢٦، هجرة 0116) — الوارد (IN: صفر تكلفة، تخفيف WAVG، بلا دين مورّد)
 // + الصادر (OUT: قيد GIFT_OUT، revenue=0 profit=-cost، بلا invoiceId، حوكمة SOD فوق العتبة).
@@ -11981,6 +12123,13 @@ export const journalLines = mysqlTable(
       { onDelete: "restrict" },
     ),
     digitalWalletId: bigint("digitalWalletId", { mode: "number" }),
+    /** لقطة إصدار الامتثال والحساب النظامي وقت الترحيل؛ لا JOIN حي يعيد تصنيف التاريخ. */
+    statutoryProfileId: bigint("statutoryProfileId", {
+      mode: "number",
+    }),
+    statutoryAccountId: bigint("statutoryAccountId", {
+      mode: "number",
+    }),
     debit: decimal("debit", { precision: 15, scale: 2 }).default("0").notNull(),
     credit: decimal("credit", { precision: 15, scale: 2 })
       .default("0")
@@ -11995,6 +12144,20 @@ export const journalLines = mysqlTable(
     deliveryPartyIdx: index("idx_journal_line_delivery_party").on(t.deliveryPartyId),
     exchangeHouseIdx: index("idx_journal_line_exchange_house").on(t.exchangeHouseId),
     digitalWalletIdx: index("idx_journal_line_digital_wallet").on(t.digitalWalletId),
+    statutoryIdx: index("idx_journal_line_statutory").on(
+      t.statutoryProfileId,
+      t.statutoryAccountId,
+    ),
+    statutoryProfileFk: foreignKey({
+      name: "fk_journal_line_stat_profile",
+      columns: [t.statutoryProfileId],
+      foreignColumns: [statutoryAccountingProfiles.id],
+    }).onDelete("restrict"),
+    statutoryAccountFk: foreignKey({
+      name: "fk_journal_line_stat_account",
+      columns: [t.statutoryAccountId],
+      foreignColumns: [statutoryAccounts.id],
+    }).onDelete("restrict"),
   }),
 );
 export type JournalLineRow = typeof journalLines.$inferSelect;

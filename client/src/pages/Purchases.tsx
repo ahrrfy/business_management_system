@@ -1,11 +1,10 @@
 import { Link } from "wouter";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { allocateLineTax } from "@/components/invoice";
 import { PurchaseIntegrityPanel } from "@/components/purchases/PurchaseIntegrityPanel";
 import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
@@ -58,9 +57,6 @@ const SETTLEMENT_CLASS: Record<string, string> = {
   CREDIT: "badge-status-pending",
 };
 
-const selectCls =
-  "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
 /** حجم صفحة القائمة — الخادم يُرقّم. */
 const PAGE_SIZE = 50;
 
@@ -88,13 +84,7 @@ export default function Purchases() {
 
   // البحث خادمي الآن (q ممهَّل) ⇒ يطابق رقم الأمر/اسم المورد/الملاحظات عبر كل النتائج لا الصفحة فقط.
   const dq = useDebouncedValue(f.q, 250);
-  const statusArg = (f.status || undefined) as
-    | "DRAFT"
-    | "SENT"
-    | "CONFIRMED"
-    | "RECEIVED"
-    | "CANCELLED"
-    | undefined;
+  const statusArg = (f.status || undefined) as "DRAFT" | "SENT" | "CONFIRMED" | "RECEIVED" | "CANCELLED" | undefined;
 
   const me = trpc.auth.me.useQuery();
   // فلتر الفرع وعموده — للمرتفعين العابرين للفروع فقط (الخادم يتجاهل branchId لغيرهم أصلاً:
@@ -106,23 +96,12 @@ export default function Purchases() {
   // هنا: **الدور** (لا `moduleAccessAllowed`). حين يُحدَّث الوجهةُ لتحترم reports، ترجع
   // البوّابةُ إليها؛ إلى ذلك الحين نُطابق `managerOnly` بالحرف.
   const canOpenSupplierStatement = isElevated;
-  const canViewIntegrity =
-    me.data?.role === "admin" ||
-    me.data?.role === "manager" ||
-    me.data?.role === "purchasing";
-  const integrityBranchId =
-    me.data?.role === "admin"
-      ? f.branchId
-        ? Number(f.branchId)
-        : undefined
-      : undefined;
+  const canViewIntegrity = me.data?.role === "admin" || me.data?.role === "manager" || me.data?.role === "purchasing";
+  const integrityBranchId = me.data?.role === "admin" ? (f.branchId ? Number(f.branchId) : undefined) : undefined;
   const branches = trpc.branches.list.useQuery(undefined, {
     enabled: isElevated,
   });
-  const branchNames = useMemo(
-    () => new Map((branches.data ?? []).map((b) => [b.id, b.name])),
-    [branches.data],
-  );
+  const branchNames = useMemo(() => new Map((branches.data ?? []).map((b) => [b.id, b.name])), [branches.data]);
   const showBranchCol = isElevated && !f.branchId;
 
   const listInput = useMemo(
@@ -138,18 +117,10 @@ export default function Purchases() {
   );
 
   // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
-  const activeFilterCount = [
-    f.from || f.to,
-    f.supplierId,
-    f.status,
-    isElevated ? f.branchId : "",
-  ].filter(Boolean).length;
+  const activeFilterCount = [f.from || f.to, f.supplierId, f.status, isElevated ? f.branchId : ""].filter(Boolean).length;
 
   const suppliers = trpc.suppliers.list.useQuery();
-  const supplierContacts = useMemo(
-    () => new Map((suppliers.data ?? []).map((s) => [Number(s.id), s])),
-    [suppliers.data],
-  );
+  const supplierContacts = useMemo(() => new Map((suppliers.data ?? []).map((s) => [Number(s.id), s])), [suppliers.data]);
   const query = trpc.purchases.list.useQuery({
     ...listInput,
     limit: PAGE_SIZE,
@@ -197,11 +168,7 @@ export default function Purchases() {
   }
 
   // إلغاء أمر شراء لم يُستلم منه شيء — الحارس النهائي في الخادم (يرفض أي أمر استُلمت منه بضاعة).
-  async function cancelOrder(p: {
-    id: number;
-    poNumber: string;
-    total: string;
-  }) {
+  async function cancelOrder(p: { id: number; poNumber: string; total: string }) {
     const ok = await confirm({
       variant: "danger",
       title: "إلغاء أمر الشراء",
@@ -228,21 +195,9 @@ export default function Purchases() {
         String(d.taxAmount ?? "0"),
         round2(D(d.subtotal ?? "0")).toFixed(2),
       );
-      const statusColor =
-        d.status === "RECEIVED"
-          ? "#0D6B52"
-          : d.status === "CANCELLED"
-            ? "#8A1F11"
-            : "#92400E";
+      const statusColor = d.status === "RECEIVED" ? "#0D6B52" : d.status === "CANCELLED" ? "#8A1F11" : "#92400E";
       // QR حقيقي ببيانات الأمر (كان القالب يطبع placeholder زخرفياً غير قابل للمسح).
-      const qrSvg = await qrCodeSvg(
-        [
-          CO.sub,
-          `أمر شراء: ${d.poNumber}`,
-          `الإجمالي: ${fmt(d.total ?? 0)} د.ع`,
-        ].join("\n"),
-        { size: 88, margin: 1 },
-      ).catch(() => "");
+      const qrSvg = await qrCodeSvg([CO.sub, `أمر شراء: ${d.poNumber}`, `الإجمالي: ${fmt(d.total ?? 0)} د.ع`].join("\n"), { size: 88, margin: 1 }).catch(() => "");
       printPurchaseInvoiceV2({
         qrSvg: qrSvg || null,
         invoiceNumber: d.poNumber,
@@ -271,23 +226,12 @@ export default function Purchases() {
   }
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="المشتريات"
-        description="أوامر الشراء وحالتها. أنشئ أمراً ثم استلمه ليُضاف للمخزون وتُسجَّل الذمم."
-      />
-      {canViewIntegrity && (
-        <PurchaseIntegrityPanel
-          branchId={integrityBranchId}
-          requiresBranchSelection={
-            me.data?.role === "admin" && integrityBranchId == null
-          }
-        />
-      )}
-      <Card>
-        <CardHeader>
+    <div className="space-y-2.5">
+      <Card className="gap-0 py-0">
+        <CardHeader className="p-0">
           <ListToolbar
-            title="القائمة"
+            title="المشتريات"
+            pageTitle
             count={total}
             loading={query.isLoading}
             search={{
@@ -304,70 +248,42 @@ export default function Purchases() {
                 {/* E (١٢/٨): FilterField يُظهر التسمية دائماً — Placeholder وحده يختفي عند الاختيار
                     فيضيع معنى الحقل. صندوق الفلاتر الموحّد (ListToolbar) يوفّر المساحة الآن. */}
                 <FilterField label="من تاريخ">
-                  <Input
-                    type="date"
-                    dir="ltr"
-                    className="h-8 w-36"
-                    value={f.from}
-                    onChange={(e) => setF({ from: e.target.value })}
-                  />
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={f.from} onChange={(e) => setF({ from: e.target.value })} />
                 </FilterField>
                 <FilterField label="إلى تاريخ">
-                  <Input
-                    type="date"
-                    dir="ltr"
-                    className="h-8 w-36"
-                    value={f.to}
-                    onChange={(e) => setF({ to: e.target.value })}
-                  />
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} />
                 </FilterField>
                 <FilterField label="المورد">
-                  <select
-                    className={selectCls}
-                    value={f.supplierId}
-                    onChange={(e) => setF({ supplierId: e.target.value })}
-                  >
-                    <option value="">— كل الموردين —</option>
+                  <AppSelect size="sm" value={f.supplierId || "ALL"} onValueChange={(supplierId) => setF({ supplierId: supplierId === "ALL" ? "" : supplierId })}>
+                    <option value="ALL">— كل الموردين —</option>
                     {(suppliers.data ?? []).map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
-                        {balanceOptionText(
-                          (s as { currentBalance?: string | null })
-                            .currentBalance,
-                          "supplier",
-                        )}
+                        {balanceOptionText((s as { currentBalance?: string | null }).currentBalance, "supplier")}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="الحالة">
-                  <select
-                    className={selectCls}
-                    value={f.status}
-                    onChange={(e) => setF({ status: e.target.value })}
-                  >
-                    <option value="">— كل الحالات —</option>
+                  <AppSelect size="sm" value={f.status || "ALL"} onValueChange={(status) => setF({ status: status === "ALL" ? "" : status })}>
+                    <option value="ALL">— كل الحالات —</option>
                     {Object.entries(PO_STATUS).map(([k, v]) => (
                       <option key={k} value={k}>
                         {v}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 {isElevated && (
                   <FilterField label="الفرع">
-                    <select
-                      className={selectCls}
-                      value={f.branchId}
-                      onChange={(e) => setF({ branchId: e.target.value })}
-                    >
-                      <option value="">— كل الفروع —</option>
+                    <AppSelect size="sm" value={f.branchId || "ALL"} onValueChange={(branchId) => setF({ branchId: branchId === "ALL" ? "" : branchId })}>
+                      <option value="ALL">— كل الفروع —</option>
                       {(branches.data ?? []).map((b) => (
                         <option key={b.id} value={b.id}>
                           {b.name}
                         </option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                 )}
               </>
@@ -376,13 +292,7 @@ export default function Purchases() {
               filename: "المشتريات",
               rows,
               fetchAll: () =>
-                fetchAllPaged<PurchaseRow>(
-                  (offset, limit) =>
-                    utils.purchases.list
-                      .fetch({ ...listInput, limit, offset })
-                      .then((arr) => ({ rows: (arr ?? []) as PurchaseRow[] })),
-                  { pageSize: 500 },
-                ),
+                fetchAllPaged<PurchaseRow>((offset, limit) => utils.purchases.list.fetch({ ...listInput, limit, offset }).then((arr) => ({ rows: (arr ?? []) as PurchaseRow[] })), { pageSize: 500 }),
               columns: [
                 { key: "poNumber", header: "رقم الأمر" },
                 { key: "supplierName", header: "المورد" },
@@ -414,8 +324,7 @@ export default function Purchases() {
                 {
                   key: "settlementType",
                   header: "التسوية",
-                  map: (r) =>
-                    SETTLEMENT_TYPE[r.settlementType] ?? r.settlementType,
+                  map: (r) => SETTLEMENT_TYPE[r.settlementType] ?? r.settlementType,
                 },
                 {
                   key: "status",
@@ -428,7 +337,7 @@ export default function Purchases() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
+          <ScrollTableShell bordered={false} showColumnVisibility={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
@@ -448,17 +357,11 @@ export default function Purchases() {
               </thead>
               <tbody>
                 {rows.map((p) => {
-                  const terminal =
-                    p.status === "RECEIVED" || p.status === "CANCELLED";
-                  const needsConfirmation =
-                    p.status === "DRAFT" || p.status === "SENT";
+                  const terminal = p.status === "RECEIVED" || p.status === "CANCELLED";
+                  const needsConfirmation = p.status === "DRAFT" || p.status === "SENT";
                   const fr = rowProps(p.id);
                   return (
-                    <tr
-                      key={p.id}
-                      ref={fr.ref}
-                      className={`border-t ${fr.className}`}
-                    >
+                    <tr key={p.id} ref={fr.ref} className={`border-t ${fr.className}`}>
                       <td className="p-2">
                         <CopyInline value={p.poNumber} />
                       </td>
@@ -469,37 +372,24 @@ export default function Purchases() {
                             {p.supplierName}
                           </Link>
                         ) : (
-                          p.supplierName ?? "—"
+                          (p.supplierName ?? "—")
                         )}
                       </td>
-                      {showBranchCol && (
-                        <td className="p-2">
-                          {branchNames.get(p.branchId ?? -1) ?? "—"}
-                        </td>
-                      )}
-                      <td
-                        className="p-2 whitespace-nowrap tabular-nums"
-                        dir="ltr"
-                      >
+                      {showBranchCol && <td className="p-2">{branchNames.get(p.branchId ?? -1) ?? "—"}</td>}
+                      <td className="p-2 whitespace-nowrap tabular-nums" dir="ltr">
                         {fmtDate(p.orderDate)}
                       </td>
                       <td className="p-2 text-right tabular-nums" dir="ltr">
                         {fmt(p.total)}
                       </td>
                       <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {p.agreedCurrency === "USD"
-                          ? `${fmt(p.usdTotal)} $`
-                          : `${fmt(p.total)} د.ع`}
+                        {p.agreedCurrency === "USD" ? `${fmt(p.usdTotal)} $` : `${fmt(p.total)} د.ع`}
                       </td>
                       <td className="p-2 text-right tabular-nums" dir="ltr">
                         {p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—"}
                       </td>
                       {/* ٢٤/٨ (تدقيق): `title` يشرح صيغة الرقم — «المتبقّي = الإجمالي − المدفوع». */}
-                      <td
-                        className="p-2 text-right font-bold tabular-nums"
-                        dir="ltr"
-                        title="المتبقّي = الإجمالي − المدفوع"
-                      >
+                      <td className="p-2 text-right font-bold tabular-nums" dir="ltr" title="المتبقّي = الإجمالي − المدفوع">
                         {p.agreedCurrency === "USD"
                           ? `${D(p.usdTotal ?? 0)
                               .minus(D(p.paidUsd ?? 0))
@@ -513,18 +403,14 @@ export default function Purchases() {
                         </span>
                       </td>
                       <td className="p-2">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[p.status] ?? "badge-status-pending"}`}>
-                          {PO_STATUS[p.status] ?? p.status}
-                        </span>
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[p.status] ?? "badge-status-pending"}`}>{PO_STATUS[p.status] ?? p.status}</span>
                       </td>
                       <td className="p-2 text-center">
                         <RowActions
                           mode="auto"
                           contact={{
-                            whatsapp: supplierContacts.get(Number(p.supplierId))
-                              ?.whatsapp,
-                            phone: supplierContacts.get(Number(p.supplierId))
-                              ?.phone,
+                            whatsapp: supplierContacts.get(Number(p.supplierId))?.whatsapp,
+                            phone: supplierContacts.get(Number(p.supplierId))?.phone,
                             label: `واتساب ${p.supplierName ?? "المورّد"}`,
                             message: buildOperationalContactMessage({
                               entityLabel: "أمر شراء",
@@ -533,10 +419,7 @@ export default function Purchases() {
                               title: `إجمالي الأمر: ${fmt(p.total)} د.ع`,
                               dueAt: p.orderDate,
                               status: PO_STATUS[p.status] ?? p.status,
-                              nextAction:
-                                p.status === "CONFIRMED"
-                                  ? "يرجى تأكيد موعد تجهيز الطلب."
-                                  : undefined,
+                              nextAction: p.status === "CONFIRMED" ? "يرجى تأكيد موعد تجهيز الطلب." : undefined,
                             }),
                             gate: { module: "purchases", level: "READ" },
                           }}
@@ -584,11 +467,7 @@ export default function Purchases() {
                               gate: terminal
                                 ? { module: "purchases", level: "READ" }
                                 : {
-                                    roles: [
-                                      "warehouse",
-                                      "manager",
-                                      "purchasing",
-                                    ],
+                                    roles: ["warehouse", "manager", "purchasing"],
                                     module: "purchases",
                                     level: "FULL",
                                   },
@@ -614,9 +493,7 @@ export default function Purchases() {
                               label: "مرتجع شراء",
                               href: `/purchase-returns/new?po=${encodeURIComponent(p.poNumber)}`,
                               // الإرجاع للمورد ممكن فقط بعد استلام البضاعة فعلياً.
-                              hidden:
-                                p.status !== "RECEIVED" &&
-                                p.status !== "CONFIRMED",
+                              hidden: p.status !== "RECEIVED" && p.status !== "CONFIRMED",
                               gate: {
                                 roles: ["manager", "purchasing"],
                                 module: "purchases",
@@ -629,9 +506,7 @@ export default function Purchases() {
                               label: "إلغاء الأمر",
                               variant: "destructive",
                               // الحارس النهائي خادمي (يرفض المستلَم جزئياً) — رسالته العربية تظهر عبر notify.err.
-                              hidden:
-                                p.status === "RECEIVED" ||
-                                p.status === "CANCELLED",
+                              hidden: p.status === "RECEIVED" || p.status === "CANCELLED",
                               disabled: cancelMut.isPending,
                               disabledReason: "توجد عملية إلغاء قيد التنفيذ",
                               onSelect: () =>
@@ -654,10 +529,7 @@ export default function Purchases() {
                 })}
                 {!query.isLoading && rows.length === 0 && (
                   <tr>
-                    <td
-                      colSpan={showBranchCol ? 11 : 10}
-                      className="p-6 text-center text-muted-foreground"
-                    >
+                    <td colSpan={showBranchCol ? 11 : 10} className="p-6 text-center text-muted-foreground">
                       لا أوامر شراء مطابقة.
                     </td>
                   </tr>
@@ -666,15 +538,9 @@ export default function Purchases() {
             </table>
           </ScrollTableShell>
         </CardContent>
-        <TablePager
-          page={page}
-          onPageChange={setPage}
-          pageSize={PAGE_SIZE}
-          rowsOnPage={rows.length}
-          total={total}
-          isLoading={query.isFetching}
-        />
+        <TablePager page={page} onPageChange={setPage} pageSize={PAGE_SIZE} rowsOnPage={rows.length} total={total} isLoading={query.isFetching} />
       </Card>
+      {canViewIntegrity && <PurchaseIntegrityPanel branchId={integrityBranchId} requiresBranchSelection={me.data?.role === "admin" && integrityBranchId == null} />}
     </div>
   );
 }

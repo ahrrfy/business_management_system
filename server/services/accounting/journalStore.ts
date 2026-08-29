@@ -7,8 +7,8 @@
 // **حدٌّ مقصود:** هذا المخزن **يرمي** عند الخلل (قيدٌ غير متوازن، ازدواج). ابتلاعُ الرمية مسؤوليةُ
 // الخطّاف وحده — فهو الذي يعرف أنّه في وضع الظلّ وأنّ سلامة عملية الأعمال تسبق سلامة القيد.
 // لو ابتلع المخزنُ الأخطاءَ لصار الخللُ غيرَ مرئيٍّ في وضع ACTIVE أيضاً، وهو ما لا يُقبَل.
-import { eq, isNotNull } from "drizzle-orm";
-import { accountingEntries, accounts, doubleEntrySettings, journalEntries, journalLines } from "../../../drizzle/schema";
+import { eq } from "drizzle-orm";
+import { accountingEntries, doubleEntrySettings, journalEntries, journalLines } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, round2 } from "../money";
@@ -20,27 +20,9 @@ import {
   POSTING_POLICY_HASH,
   type PostingProfile,
 } from "./postingEngine";
+import { snapshotJournalLines } from "./statutoryAccounting";
 
 const accountRoleSet: ReadonlySet<string> = new Set(ACCOUNT_ROLES);
-
-/**
- * Tier-2 #5 (٢٦/٨): يبني خريطة `role → accountId` من `accounts.systemRole`.
- * استعلامٌ واحد لكل استدعاء كتابةِ يومية — رخيصٌ (جدولٌ صغير مفهرَس). صفوفٌ بلا
- * `systemRole` لا تدخل الخريطة (حسابٌ مخصّص) — الأسطر التي لا تُطابق تبقى بـ`accountId=null`
- * (الحقل nullable في المخطّط، والـFK يقبل NULL) وتُطبَع لاحقاً بحدثِ backfill عند تعديل
- * الحساب. لا انحدار على الكتابة القائمة.
- */
-async function loadAccountIdByRole(tx: Tx): Promise<Map<string, number>> {
-  const rows = await tx
-    .select({ id: accounts.id, systemRole: accounts.systemRole })
-    .from(accounts)
-    .where(isNotNull(accounts.systemRole));
-  const map = new Map<string, number>();
-  for (const row of rows) {
-    if (row.systemRole) map.set(row.systemRole, Number(row.id));
-  }
-  return map;
-}
 
 function assertValidLines(
   lines: readonly JournalLine[],
@@ -188,6 +170,7 @@ export async function writeJournal(
   }
   assertValidLines(lines, `الحدث ${entryId}`);
   assertBalanced(lines, `الحدث ${entryId}`);
+  const snapshottedLines = await snapshotJournalLines(tx, lines);
 
   const res = await tx.insert(journalEntries).values({
     entryId,
@@ -199,7 +182,6 @@ export async function writeJournal(
   });
   const journalId = extractInsertId(res);
 
-  const accountIdByRole = await loadAccountIdByRole(tx);
   // Tier-3 #2/#4 (٢٧/٨): أبعاد الطرف من رأس القيد المصدريّ `accountingEntries`. استعلامٌ
   // مفردٌ لكل كتابة — رخيصٌ (PK lookup). كل سطر يرث الأبعاد نفسها لأنّ الرأس هو المصدر.
   const [srcRow] = await tx
@@ -220,16 +202,18 @@ export async function writeJournal(
     digitalWalletId: srcRow?.digitalWalletId ?? null,
   };
   await tx.insert(journalLines).values(
-    lines.map((l) => ({
+    snapshottedLines.map((line) => ({
       journalId,
-      role: l.role,
-      accountId: accountIdByRole.get(l.role) ?? null,
+      role: line.role,
+      accountId: line.accountId,
+      statutoryProfileId: line.statutoryProfileId,
+      statutoryAccountId: line.statutoryAccountId,
       // Tier-2 #6: البعد التحليليّ على السطر يأخذ فرع الرأس افتراضياً — أدوات المستقبل
       // (تقسيمُ قيدٍ على فروع) قد تمرّر فرعاً لكل سطر إن دُعم في `JournalLine`.
       branchId,
       ...dims,
-      debit: l.debit,
-      credit: l.credit,
+      debit: line.debit,
+      credit: line.credit,
     })),
   );
 }
@@ -269,6 +253,7 @@ export async function writeShadowOpeningJournal(
   }
   assertValidLines(input.lines, input.sourceKey);
   assertBalanced(input.lines, input.sourceKey);
+  const snapshottedLines = await snapshotJournalLines(tx, input.lines);
   const result = await tx.insert(journalEntries).values({
     entryId: null,
     sourceType: "SHADOW_OPENING",
@@ -280,12 +265,13 @@ export async function writeShadowOpeningJournal(
     status: "POSTED",
   });
   const journalId = extractInsertId(result);
-  const accountIdByRole = await loadAccountIdByRole(tx);
   await tx.insert(journalLines).values(
-    input.lines.map((line) => ({
+    snapshottedLines.map((line) => ({
       journalId,
       role: line.role,
-      accountId: accountIdByRole.get(line.role) ?? null,
+      accountId: line.accountId,
+      statutoryProfileId: line.statutoryProfileId,
+      statutoryAccountId: line.statutoryAccountId,
       branchId: input.branchId,
       debit: line.debit,
       credit: line.credit,

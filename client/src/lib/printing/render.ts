@@ -404,11 +404,11 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
   return imageDataToRaster({ width: widthPx, height, data: img.data });
 }
 
-export function printHtml(html: string): void {
-  if (typeof window === "undefined") return;
+export function printHtml(html: string): boolean {
+  if (typeof window === "undefined") return false;
   const w = window.open("", "_blank", "width=380,height=640");
-  if (w) {
-    w.document.write(html);
-    w.document.close();
-  }
+  if (!w) return false;
+  w.document.write(html);
+  w.document.close();
+  return true;
 }

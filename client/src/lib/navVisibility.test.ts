@@ -2,7 +2,72 @@
 // الخلل المُعالَج: بوّابة module-only كانت تعيد true فراغياً (roleOk صحيح فراغياً بلا قيود دور)
 // فتُظهر التبويب لكل الأدوار وإن رفضها الخادم بـ403؛ ولم تكن تستشير قالب الدور (المنح الصريح فقط).
 import { describe, expect, it } from "vitest";
+import { getMobileBottomNavItems } from "@/components/MobileBottomNav";
 import { canSeeGate, RECONCILE_CONTROL_GATE } from "./navVisibility";
+
+function mobileHrefs(
+  role: string,
+  permissionsOverride: Record<string, "NONE" | "READ" | "FULL"> | null = null,
+) {
+  return getMobileBottomNavItems(role, permissionsOverride).flatMap(
+    (item) => item.href ?? [],
+  );
+}
+
+describe("MobileBottomNav — عقود صلاحيات الأدوار", () => {
+  it("لا يعرض للمندوب المهام المحجوبة قالبياً، ويعرضها عند منحها صراحةً", () => {
+    expect(mobileHrefs("courier")).toEqual(["/my-deliveries"]);
+    expect(mobileHrefs("courier", { tasks: "READ" })).toEqual([
+      "/my-deliveries",
+      "/tasks",
+    ]);
+  });
+
+  it("يحترم المنع الصريح لوحدات أمين المخزن", () => {
+    expect(
+      mobileHrefs("warehouse", {
+        inventory: "NONE",
+        purchases: "READ",
+        tasks: "NONE",
+      }),
+    ).toEqual(["/my-stocktake", "/purchases"]);
+  });
+
+  it("يرشّح شريط الكاشير المخصّص قبل حدّ العناصر الأربعة", () => {
+    expect(
+      mobileHrefs("cashier", {
+        pos: "NONE",
+        sales: "NONE",
+        workorders: "FULL",
+        tasks: "NONE",
+      }),
+    ).toEqual(["/pos", "/invoices", "/work-orders", "/delivery"]);
+  });
+
+  it("يخفي التوصيل عند المنع الصريح لوحدة المتجر", () => {
+    expect(mobileHrefs("cashier", { store: "NONE" })).not.toContain("/delivery");
+  });
+
+  it("لا يعرض الخزينة أو المطبعة للأدوار العامة التي لا تملك وحداتهما", () => {
+    expect(mobileHrefs("print_operator")).toEqual([
+      "/",
+      "/invoices",
+      "/work-orders",
+    ]);
+    expect(mobileHrefs("purchasing")).toEqual(["/"]);
+  });
+
+  it("يحترم المنع الصريح حتى للدور الإداري واسع الصلاحيات", () => {
+    expect(
+      mobileHrefs("manager", {
+        sales: "NONE",
+        workorders: "NONE",
+        pos: "NONE",
+        treasury: "NONE",
+      }),
+    ).toEqual(["/"]);
+  });
+});
 
 describe("canSeeGate — قيود الدور", () => {
   it("بلا بوّابة ⇒ مرئي للكل", () => {

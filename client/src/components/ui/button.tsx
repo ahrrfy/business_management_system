@@ -20,15 +20,15 @@ const buttonVariants = cva(
           "hover:bg-accent dark:hover:bg-accent/50",
         link: "text-primary underline-offset-4 hover:underline",
         /* — variants دلاليّة (٢٥/٨/٢٦) —
-           استعمل كلٌّ منها بدل نمط `className="bg-[var(--sem-*)] hover:opacity-90"` أو
-           `hover:bg-[var(--sem-*)]/90` — الأوّل **لا يُلغي** `hover:bg-primary/90` من variant
+           استعمل كلٌّ منها بدل تركيب صنف الخلفية من اسم التوكن أو تقليل hover بألفا؛ الأوّل
+           **لا يُلغي** `hover:bg-primary/90` من variant
            default (Codex #801 ×3)، والثاني يقصر اللون بألفا فيُسقط التباين إلى ~3.5:1 على
            cream background (Codex #814 P2). و`text-white` وحدها تسقط تحت 2.18:1 في الغامق
            (Codex #800/#812/#813).
            الحلّ الثلاثيّ:
-             (١) `bg-[var(--sem-*)]` = التعبئة (تُقلَب حسب الوضع)
+             (١) صنف التعبئة الدلالي المكتمل (يُقلَب حسب الوضع)
              (٢) `text-background` = النصّ يعكس الوضع دائماً ⇒ تباين WCAG صحيح
-             (٣) `hover:bg-[var(--sem-*-hover)]` = تعبئة opaque مختلفة (أغمق في الفاتح، أفتح
+             (٣) صنف hover الدلالي المكتمل = تعبئة opaque مختلفة (أغمق في الفاتح، أفتح
                   في الغامق) — بلا ألفا يقصر التباين. */
         success:
           "bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)]",

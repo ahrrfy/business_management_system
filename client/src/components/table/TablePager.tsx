@@ -12,9 +12,12 @@
 //   • وضع الإجمالي (total معلوم) ⇒ «عرض ١–٥٠ من ١٢٣» + تعطيل «التالي» عند آخر صفحة.
 //   • وضع hasMore (بلا COUNT — keyset) ⇒ «عرض ١–٥٠» + «التالي» يعتمد hasMore.
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import * as React from "react";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { fmtInt } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
 
 export function TablePager({
   page,
@@ -24,6 +27,8 @@ export function TablePager({
   total,
   hasMore,
   isLoading = false,
+  status,
+  actions,
   className,
 }: {
   /** رقم الصفحة الحالية بدءاً من ٠. */
@@ -37,6 +42,10 @@ export function TablePager({
   /** هل بعد هذه الصفحة المزيد — يُستعمل حين لا إجمالي (keyset). */
   hasMore?: boolean;
   isLoading?: boolean;
+  /** حالة تشغيلية إضافية (مثل عدد الصفوف المحددة). */
+  status?: ReactNode;
+  /** أدوات مرتبطة بالجدول تُوضَع في شريط الحالة (الأعمدة/الكثافة مثلاً). */
+  actions?: ReactNode;
   className?: string;
 }) {
   const offset = page * pageSize;
@@ -47,43 +56,56 @@ export function TablePager({
   const canNext = knownTotal ? page + 1 < (pages as number) : Boolean(hasMore);
   const canPrev = page > 0;
 
-  // لا تعرض شيئاً حين لا صفوف أصلاً ولا صفحة سابقة (الجدول الفارغ له رسالته الخاصة).
-  if (rowsOnPage === 0 && !canPrev) return null;
+  const emptyFirstPage = rowsOnPage === 0 && !canPrev;
+  const emptyLaterPage = rowsOnPage === 0 && canPrev;
+  // لا نُكرّر رسالة الفراغ ما لم توجد حالة أو أدوات لازمة (مثل إعادة ضبط الأعمدة المخفية).
+  if (emptyFirstPage && !actions && !status) return null;
 
   const first = rowsOnPage > 0 ? offset + 1 : 0;
   const last = offset + rowsOnPage;
 
   return (
-    <div
-      className={cn("flex flex-wrap items-center justify-between gap-2 border-t p-3", className)}
-      role="navigation"
-      aria-label="ترقيم الصفحات"
-    >
-      <span className="text-xs text-muted-foreground" aria-live="polite">
-        عرض {fmtInt(first)}–{fmtInt(last)}
-        {knownTotal ? <> من {fmtInt(total)}</> : null}
-        {pages && pages > 1 ? <> · صفحة {fmtInt(page + 1)} من {fmtInt(pages)}</> : null}
+    <WorkspaceStatusBar className={cn("h-auto flex-wrap gap-1 py-1 sm:flex-nowrap", className)} role="navigation" aria-label="ترقيم الصفحات">
+      <span className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs text-muted-foreground [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="status" aria-live="polite">
+        {emptyFirstPage ? (
+          status ?? "لا بيانات"
+        ) : emptyLaterPage ? (
+          <>
+            لا بيانات في هذه الصفحة
+            {pages && pages > 1 ? <> · صفحة {fmtInt(Math.min(page + 1, pages))} من {fmtInt(pages)}</> : null}
+            {status ? <> · {status}</> : null}
+          </>
+        ) : (
+          <>
+            عرض {fmtInt(first)}–{fmtInt(last)}
+            {knownTotal ? <> من {fmtInt(total)}</> : null}
+            {pages && pages > 1 ? (
+              <>
+                {" "}
+                · صفحة {fmtInt(page + 1)} من {fmtInt(pages)}
+              </>
+            ) : null}
+            {status ? <> · {status}</> : null}
+          </>
+        )}
       </span>
-      <div className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!canPrev || isLoading}
-          onClick={() => onPageChange(Math.max(0, page - 1))}
-        >
-          السابق
-          <ChevronRight aria-hidden className="size-4" />
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!canNext || isLoading}
-          onClick={() => onPageChange(page + 1)}
-        >
-          <ChevronLeft aria-hidden className="size-4" />
-          التالي
-        </Button>
+      <div className="ms-auto min-w-0 max-w-full overflow-x-auto">
+        <div className="flex min-w-max items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">
+          {actions}
+          {!emptyFirstPage && (
+            <>
+            <Button variant="outline" size="sm" disabled={!canPrev || isLoading} onClick={() => onPageChange(Math.max(0, page - 1))}>
+              السابق
+              <ChevronRight aria-hidden className="size-4" />
+            </Button>
+            <Button variant="outline" size="sm" disabled={!canNext || isLoading} onClick={() => onPageChange(page + 1)}>
+              <ChevronLeft aria-hidden className="size-4" />
+              التالي
+            </Button>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+    </WorkspaceStatusBar>
   );
 }
