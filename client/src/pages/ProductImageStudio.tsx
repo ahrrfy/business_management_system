@@ -31,6 +31,35 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
+
+/**
+ * حفظُ آخر تبويبٍ اختاره المستخدم (٢٩/٨) — يخصّه هو (لا يُشارَك مع مستخدمٍ آخر على نفس
+ * الجهاز)، ويُخزَّن في localStorage. `defaultStudioScope(dashboard)` يظلّ الاحتياطيّ
+ * الوحيد إن لم يُختَر تبويبٌ بعد. النسخة v1 تسمح ترقيةً لاحقة بلا كسر: أيّ قيمةٍ غير
+ * معروفة تُقابَل بعودةٍ صامتةٍ للافتراضيّ.
+ */
+const STUDIO_LAST_TAB_KEY = "studio.dashboard.last-tab.v1";
+const STUDIO_SCOPES: readonly Scope[] = ["QUEUE", "MINE", "REVIEW", "HISTORY"] as const;
+
+function loadPersistedStudioScope(): Scope | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(STUDIO_LAST_TAB_KEY);
+    if (!raw) return null;
+    return STUDIO_SCOPES.includes(raw as Scope) ? (raw as Scope) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistStudioScope(scope: Scope): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STUDIO_LAST_TAB_KEY, scope);
+  } catch {
+    // تخطٍّ صامت (Safari Private).
+  }
+}
 type StudioTask = RouterOutputs["productStudio"]["tasks"]["items"][number];
 const CameraScanner = lazy(() =>
   import("@/components/scan/CameraScanner").then((module) => ({
@@ -754,7 +783,10 @@ export default function ProductImageStudio() {
 
   useEffect(() => {
     if (!dashboard.data || scopeInitialized) return;
-    setScope(defaultStudioScope(dashboard.data));
+    // ٢٩/٨: التبويبُ المحفوظ (اختيار المستخدم السابق) يعلو على `defaultStudioScope` —
+    // من فتح «HISTORY» وخرج، يعود ليجده كما تركه بدل «MINE» الافتراضيّ.
+    const persisted = loadPersistedStudioScope();
+    setScope(persisted ?? defaultStudioScope(dashboard.data));
     setSelectedId(null);
     setScopeInitialized(true);
   }, [dashboard.data, scopeInitialized]);
@@ -2018,7 +2050,10 @@ export default function ProductImageStudio() {
       <Tabs
         value={scope}
         onValueChange={(value) => {
-          setScope(value as Scope);
+          const next = value as Scope;
+          setScope(next);
+          // ٢٩/٨: نحفظ التبويب المُختار كي يعود المستخدم إليه في الجلسة التالية.
+          persistStudioScope(next);
           setSelectedId(null);
           setOfflineSelectedDraft(null);
           // العرض المحفوظ يخصّ مساره؛ إبقاؤه مطبَّقاً على مسارٍ جديد يُخفي صفوفاً
