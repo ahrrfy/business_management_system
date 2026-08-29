@@ -59,30 +59,17 @@ function formatZodErrors(zodError: ZodFieldErrors | null | undefined): string | 
   return text || null;
 }
 
-// المصدر الافتراضيّ للـtRPC حين لا نمرّر رسالةً مخصّصة (نتجنّب عرضها للمستخدم).
-const GENERIC_TRPC_FALLBACKS = new Set([
-  "BAD_REQUEST",
-  "PRECONDITION_FAILED",
-  "TIMEOUT",
-  "INTERNAL_SERVER_ERROR",
-  "TOO_MANY_REQUESTS",
-  "FORBIDDEN",
-]);
-
-function meaningfulServerMessage(message: string | undefined): string | null {
-  if (!message) return null;
-  const trimmed = message.trim();
-  if (!trimmed) return null;
-  if (GENERIC_TRPC_FALLBACKS.has(trimmed)) return null;
-  // «رمز المتابعة: xxx» يُضاف من errorFormatter — يُعرَض كما هو.
-  return trimmed;
-}
+// ⛔ عقد الأمان (يحرسه aiProductError.test.ts): candidate.message خامٌّ من الخادم قد يحمل
+// مفاتيح API أو مسار قاعدة أو نصّ تفصيلٍ من Gemini يذكر «secret/password/database» ⇒ **لا
+// يُسرَّب إلى المستخدم أبداً**. الاستثناء الوحيد المصرَّح به: كشفٌ سلوكيٌّ بمفتاحٍ عربيٍّ معلوم
+// (مثل «سقف الاستخدام اليومي») نستعمله لاختيار نصٍّ ثابتٍ من عندنا — لا نطبع نصّ الخادم نفسه.
+// الاستثناء الآخر المفيد: `data.zodError.fieldErrors` — أسماء حقولٍ معرَّفةٌ في السكيمة، لا
+// قيم مدخلات، فتُترجَم عربياً بأمان (النمط formatZodErrors أعلاه).
 
 export function describeAiError(error: unknown): AiErrorPresentation {
   const candidate = (error ?? {}) as MutationErrorLike;
   const code = candidate.data?.code ?? "";
   const zodDetail = formatZodErrors(candidate.data?.zodError);
-  const serverMsg = meaningfulServerMessage(candidate.message);
 
   switch (code) {
     case "PRECONDITION_FAILED":
@@ -98,7 +85,6 @@ export function describeAiError(error: unknown): AiErrorPresentation {
       return {
         title: "مساعد الذكاء الاصطناعي غير مفعّل",
         message:
-          serverMsg ??
           "تحقق من إعداد مزود الذكاء الاصطناعي ومفتاحه أو اطلب من المدير تفعيله.",
         action: "لم يتم تغيير المنتج.",
         retryable: false,
@@ -112,20 +98,19 @@ export function describeAiError(error: unknown): AiErrorPresentation {
     case "TOO_MANY_REQUESTS":
       return {
         title: "تم بلوغ الحد المؤقت للطلبات",
-        message: serverMsg ?? "انتظر قليلاً ثم أعد المحاولة. لم يتم تغيير المنتج.",
+        message: "انتظر قليلاً ثم أعد المحاولة. لم يتم تغيير المنتج.",
         retryable: true,
       };
     case "TIMEOUT":
       return {
         title: "تأخر مزود الذكاء الاصطناعي",
         message:
-          serverMsg ??
           "لم يصل الرد في الوقت المحدد. أعد المحاولة، وسيبقى المنتج دون تغيير.",
         retryable: true,
       };
     case "BAD_REQUEST": {
-      // زودErr هو المسبّب الأشيع (حقلٌ في `facts` رُفض) — نُظهر الحقل بالضبط.
-      // وإلّا فرسالةُ الخادم قد تكون تفصيل رفضٍ من Gemini (يحملها الراوتر خامةً).
+      // zodError آمنٌ عرضياً (أسماء حقول من السكيمة، لا قيم مستخدم) — يحوّل الرسالة العامّة
+      // إلى تشخيصٍ محدَّد: «وحدات البيع ← #1 ← معامل التحويل» بدل «راجع الحقول».
       if (zodDetail) {
         return {
           title: "بيانات المنتج بحاجة لتصحيح قبل التوليد",
@@ -133,14 +118,6 @@ export function describeAiError(error: unknown): AiErrorPresentation {
           action:
             "راجع الحقول أعلاه وتأكّد من صحّة القيم (خصوصاً معامل التحويل: نقطة عشرية لا فاصلة).",
           retryable: false,
-        };
-      }
-      if (serverMsg) {
-        return {
-          title: "رفض مزود الذكاء الاصطناعي الطلب",
-          message: serverMsg,
-          action: "إن استمرّ الخطأ فأرسل الرسالة كاملةً لمسؤول النظام.",
-          retryable: true,
         };
       }
       return {
@@ -156,7 +133,6 @@ export function describeAiError(error: unknown): AiErrorPresentation {
       return {
         title: "تعذر تجهيز مسودة المحتوى",
         message:
-          serverMsg ??
           "حدث خطأ داخلي أثناء قراءة رد مزود الذكاء الاصطناعي. أعد المحاولة لاحقاً.",
         retryable: true,
       };
@@ -164,7 +140,6 @@ export function describeAiError(error: unknown): AiErrorPresentation {
       return {
         title: "تعذر توليد محتوى المنتج",
         message:
-          serverMsg ??
           "حدث خطأ غير متوقع. لم يتم تغيير المنتج؛ أعد المحاولة أو تواصل مع مسؤول النظام.",
         retryable: true,
       };
