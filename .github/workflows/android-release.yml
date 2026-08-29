@@ -129,6 +129,7 @@ jobs:
           test -s "$aab"
           apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           aapt_path="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          aapt2_path="$(find "$ANDROID_HOME/build-tools" -type f -name aapt2 | sort -V | tail -n 1)"
           "$apksigner_path" verify --verbose "$apk"
           # The Play upload certificate is intentionally self-signed. `-strict` returns exit code 4
           # for that valid certificate chain, so verify the JAR signature itself and require the
@@ -138,6 +139,17 @@ jobs:
           "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='10' versionName='1.0.2'"
           unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/native-classes.dex"
           grep -aFq 'https://srv1548487.hstgr.cloud' "$RUNNER_TEMP/native-classes.dex"
+          "$aapt2_path" dump xmltree --file res/xml/network_security_config.xml "$apk" > "$RUNNER_TEMP/network-security-config.txt"
+          grep -Fq "T: 'srv1548487.hstgr.cloud'" "$RUNNER_TEMP/network-security-config.txt"
+          grep -Fq 'A: includeSubdomains=false' "$RUNNER_TEMP/network-security-config.txt"
+          grep -Fq 'A: expiration="2027-08-01"' "$RUNNER_TEMP/network-security-config.txt"
+          pin_count=0
+          while IFS= read -r expected_pin; do
+            test -n "$expected_pin"
+            grep -Fq "T: '$expected_pin'" "$RUNNER_TEMP/network-security-config.txt"
+            pin_count=$((pin_count + 1))
+          done < <(sed -n 's@.*<pin digest="SHA-256">\([^<]*\)</pin>.*@\1@p' android-native/app/src/main/res/xml/network_security_config.xml)
+          test "$pin_count" -eq 2
           actual="$("$apksigner_path" verify --print-certs "$apk" | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
           aab_actual="$(keytool -printcert -jarfile "$aab" | sed -n 's/^[[:space:]]*SHA256: //p' | head -n 1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
           expected="$(printf '%s' "$EXPECTED_UPLOAD_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"

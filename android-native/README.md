@@ -6,7 +6,7 @@ depend on a WebView, Custom Tab, Chrome, Bubblewrap, or Trusted Web Activity.
 ## Runtime contract
 
 - Native Kotlin and Jetpack Compose UI for phone and tablet.
-- HTTPS-only connection to `https://srv1548487.hstgr.cloud`.
+- HTTPS-only connection to `https://srv1548487.hstgr.cloud`, with production SHA-256 SPKI pinning.
 - Existing server authentication rules are preserved, including account state, lockout, and 2FA.
 - The server session cookie is stored encrypted with an Android Keystore AES-GCM key.
 - Biometric or device-credential unlock is available only after a successful server login.
@@ -27,8 +27,12 @@ to `devDebug`, `stagingDebug`, and `prodRelease`; a debuggable build cannot use 
 Override the HTTPS endpoints with `ALRUEYA_DEV_BASE_URL`, `ALRUEYA_STAGING_BASE_URL`, and
 `ALRUEYA_PROD_BASE_URL`, or their camel-case Gradle property equivalents.
 
-The Play update keeps the package ID `online.alarabiya.store`, `versionName 1.0.0`, and
-`versionCode 7`. Only debug builds add the `.debug` application ID suffix. A signed production
+The production pin set is exact-host only and contains the reviewed live leaf and Let's Encrypt
+`YE1` intermediate keys. Its inventory, expiry, extraction, and no-downtime rotation procedure are
+documented in [`docs/certificate-pinning.md`](docs/certificate-pinning.md).
+
+The v10 Play update keeps the package ID `online.alarabiya.store`, `versionName 1.0.2`, and
+`versionCode 10`. Only debug builds add the `.debug` application ID suffix. A signed production
 build reads signing values from environment variables or Gradle properties; never commit them:
 
 - `ANDROID_KEYSTORE_PATH` / `androidKeystorePath`

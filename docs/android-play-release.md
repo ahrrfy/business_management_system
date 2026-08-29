@@ -22,8 +22,8 @@
 
 `versionName` (مثل `1.0.0`) يبقى كما هو ما لم تُرِد إصداراً معلَناً جديداً. تحقّق محلياً: `pnpm check:mobile-release`.
 
-> نقطةٌ زمنية (لا تُعمَّم): آخر إصدارٍ مبنيّ حتى ٢٣/٨/٢٠٢٦ = **versionCode 8 · versionName 1.0.0** (#722).
-> الرقم التالي = الأعلى المرفوع إلى Play + 1. في بقيّة الدليل `N` = رقم إصدارك الحاليّ.
+> عقد المصدر الحاليّ لإصدار v10 في ٢٩/٨/٢٠٢٦ = **versionCode 10 · versionName 1.0.2** (#869).
+> الرقم التالي دائماً = الأعلى المرفوع إلى Play + 1. في بقيّة الدليل `N` = رقم إصدارك الحاليّ.
 
 ---
 
@@ -52,7 +52,8 @@ gh run watch "$RUN_ID" --exit-status
 - ⚠️ **لا تستعمل `gh run list --limit 1` وحده** لتحديد الـrun: قد يلتقط بناءً سابقاً إن تأخّر ظهور الجديد أو أُطلق إصدارٌ آخر — طابِق `headSha` كما أعلاه.
 
 الـworkflow يبني ويوقّع ويتحقّق (الحزمة + `versionCode` + نقطة النهاية `https://srv1548487.hstgr.cloud`
-+ بصمة مفتاح الرفع `ANDROID_UPLOAD_SIGNING_SHA256`)، ثم يمسح بيانات التوقيع. **`release-gate` يشترط أن
++ عقد SPKI pinning الحقيقي + بصمة مفتاح الرفع `ANDROID_UPLOAD_SIGNING_SHA256`)، ثم يمسح بيانات
+التوقيع. **`release-gate` يشترط أن
 يكون SHA الجاري إصداره أخضرَ بالكامل؛ إن دُمج PR آخر أثناء ذلك تحرّك `main` وقد يفشل البابُ ⇒ أعِد
 الالتقاط والتشغيل على الـSHA الجديد.**
 
@@ -115,6 +116,10 @@ gh run download "$RUN_ID" -n "super-alarabiya-native-$SHA" -D ./release-artifact
 ## ٦. تحقّقٌ بعد الرفع
 
 - **Play Console → Internal testing**: الإصدار بحالة **Available to testers** وبـ`versionCode` الجديد (`N`).
+- على جهازٍ حقيقيّ ثبّت تحديث Play نفسه، ثم اختبر تسجيل الدخول و2FA وتحميل مساحة العمل. نجاح المتصفح
+  وحده لا يثبت أن APK اجتاز pinning.
+- استخرج السلسلة الحيّة ثانيةً وأثبت أن واحدة على الأقل من قيم SPKI تطابق المجموعة الموزعة، وفق
+  [`android-native/docs/certificate-pinning.md`](../android-native/docs/certificate-pinning.md).
 - على جهاز مختبِر: بعد التحديث، افتح **المنتجات** وابحث عن منتجٍ له بديلٌ حقيقيّ ⇒ تظهر شارة **«ماركة مختلفة»** تحت اسم الصنف.
 
 ---
@@ -126,6 +131,7 @@ gh run download "$RUN_ID" -n "super-alarabiya-native-$SHA" -D ./release-artifact
 | «Version code N has already been used» | ارفع `versionCode` (§١) وأعد البناء. |
 | فشل `release-gate` في الـworkflow | فحوص `main` ليست خضراء بعد على نفس الـSHA — انتظر اكتمالها ثم أعد التشغيل. |
 | `Unexpected production version contract` أثناء البناء | تأكيد §١-٢ لا يطابق الرقم الجديد — طابقهما ثم `pnpm check:mobile-release`. |
+| `SSLHandshakeException` على جهاز حقيقي | السلسلة الحية لا تطابق pins الموزعة؛ أعد السلسلة السابقة فوراً واتبع بروتوكول التدوير قبل إصدار تطبيق جديد. |
 | الأثر غير موجود للتنزيل | مرّت ١٤ يوماً (انتهت مدّة الاحتفاظ) — أعد تشغيل الـworkflow. |
 
 > **مرجع:** بنية التطبيق في [`docs/mobile-super-app-architecture.md`](mobile-super-app-architecture.md)؛ وعقد تزامن الإصدار في [`scripts/verify-mobile-release-env.mjs`](../scripts/verify-mobile-release-env.mjs).
