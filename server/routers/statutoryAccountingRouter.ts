@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAuditTx } from "../services/auditService";
 import {
@@ -10,14 +11,93 @@ import {
   replaceStatutoryMappings,
 } from "../services/accounting/statutoryAccounting";
 import {
+  getStatutoryAccountLedger,
+  getStatutoryAccountLedgerExport,
+  getStatutoryAccountantPack,
+  getStatutoryBalanceSheet,
   getStatutoryGeneralJournal,
+  getStatutoryIncomeStatement,
   getStatutoryTrialBalance,
 } from "../services/accounting/statutoryReports";
+import { companyBranchScope } from "../services/companyBranchScope";
 import { withTx } from "../services/tx";
 import { reportViewerProcedure, reportsAdminProcedure, router } from "../trpc";
 
-const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ YYYY-MM-DD");
+const ymd = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ YYYY-MM-DD")
+  .refine((value) => {
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return (
+      date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month - 1 &&
+      date.getUTCDate() === day
+    );
+  }, "التاريخ غير صالح تقويمياً");
+const hasExclusiveProfileSelection = (value: {
+  profileId?: number;
+  profileScope?: "ACTIVE" | "ALL_APPROVED";
+}) => !(value.profileId != null && value.profileScope != null);
+const reportPeriod = z
+  .object({
+    from: ymd,
+    to: ymd,
+    profileId: z.number().int().positive().optional(),
+    profileScope: z.enum(["ACTIVE", "ALL_APPROVED"]).optional(),
+  })
+  .refine((value) => value.from <= value.to, {
+    path: ["to"],
+    message: "تاريخ النهاية يجب ألا يسبق البداية",
+  })
+  .refine(hasExclusiveProfileSelection, {
+    path: ["profileScope"],
+    message: "لا يمكن جمع profileId مع profileScope",
+  });
 const accountType = z.enum(["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"]);
+const accountLedgerPeriod = z
+  .object({
+    from: ymd,
+    to: ymd,
+    accountId: z.number().int().positive(),
+    profileId: z.number().int().positive().optional(),
+  })
+  .refine((value) => value.from <= value.to, {
+    path: ["to"],
+    message: "تاريخ النهاية يجب ألا يسبق البداية",
+  });
+const journalPeriod = z
+  .object({
+    from: ymd,
+    to: ymd,
+    profileId: z.number().int().positive().optional(),
+    profileScope: z.enum(["ACTIVE", "ALL_APPROVED"]).optional(),
+  })
+  .refine((value) => value.from <= value.to, {
+    path: ["to"],
+    message: "تاريخ النهاية يجب ألا يسبق البداية",
+  })
+  .refine(hasExclusiveProfileSelection, {
+    path: ["profileScope"],
+    message: "لا يمكن جمع profileId مع profileScope",
+  });
+
+const STATUTORY_EXPORT_ROW_LIMIT = 10_000;
+
+export function requireCompleteExport<
+  T extends { available: true; pagination: { hasMore: boolean } },
+>(report: T, entityLabel: string) {
+  if (report.pagination.hasMore) {
+    throw new TRPCError({
+      code: "PAYLOAD_TOO_LARGE",
+      message: `${entityLabel} يتجاوز ${STATUTORY_EXPORT_ROW_LIMIT.toLocaleString("en-US")} سطر؛ قسّم الفترة ثم أعد التصدير.`,
+    });
+  }
+  return {
+    ...report,
+    export: { complete: true as const, rowLimit: STATUTORY_EXPORT_ROW_LIMIT },
+  };
+}
 
 export const statutoryAccountingRouter = router({
   readiness: reportViewerProcedure.query(() => getStatutoryActivationReadiness()),
@@ -26,25 +106,72 @@ export const statutoryAccountingRouter = router({
     .input(z.object({ profileId: z.number().int().positive() }))
     .query(({ input }) => getStatutoryProfileDetail(input.profileId)),
   trialBalance: reportViewerProcedure
+    .input(reportPeriod)
+    .query(({ input, ctx }) =>
+      getStatutoryTrialBalance({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
+    ),
+  incomeStatement: reportViewerProcedure
+    .input(reportPeriod)
+    .query(({ input, ctx }) =>
+      getStatutoryIncomeStatement({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
+    ),
+  balanceSheet: reportViewerProcedure
     .input(
       z.object({
-        from: ymd,
-        to: ymd,
+        asOf: ymd,
         profileId: z.number().int().positive().optional(),
+        profileScope: z.enum(["ACTIVE", "ALL_APPROVED"]).optional(),
+      }).refine(hasExclusiveProfileSelection, {
+        path: ["profileScope"],
+        message: "لا يمكن جمع profileId مع profileScope",
       }),
     )
-    .query(({ input }) => getStatutoryTrialBalance(input)),
-  generalJournal: reportViewerProcedure
+    .query(({ input, ctx }) =>
+      getStatutoryBalanceSheet({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
+    ),
+  accountLedger: reportViewerProcedure
     .input(
-      z.object({
-        from: ymd,
-        to: ymd,
-        profileId: z.number().int().positive().optional(),
+      z.intersection(accountLedgerPeriod, z.object({
         limit: z.number().int().min(1).max(500).optional(),
         offset: z.number().int().min(0).optional(),
+      })),
+    )
+    .query(({ input, ctx }) =>
+      getStatutoryAccountLedger({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
+    ),
+  accountLedgerExport: reportViewerProcedure
+    .input(accountLedgerPeriod)
+    .query(async ({ input, ctx }) => {
+      const report = await getStatutoryAccountLedgerExport({
+        ...input,
+        branchId: companyBranchScope(ctx.user).branchId,
+      });
+      if (!report.available) return report;
+      return requireCompleteExport(report, "كشف الحساب");
+    }),
+  generalJournal: reportViewerProcedure
+    .input(
+      z.intersection(journalPeriod, z.object({
+        limit: z.number().int().min(1).max(500).optional(),
+        offset: z.number().int().min(0).optional(),
+      })),
+    )
+    .query(({ input, ctx }) =>
+      getStatutoryGeneralJournal({ ...input, branchId: companyBranchScope(ctx.user).branchId }),
+    ),
+  accountantPack: reportViewerProcedure
+    .input(
+      z.object({ from: ymd, to: ymd }).refine((value) => value.from <= value.to, {
+        path: ["to"],
+        message: "تاريخ النهاية يجب ألا يسبق البداية",
       }),
     )
-    .query(({ input }) => getStatutoryGeneralJournal(input)),
+    .query(({ input, ctx }) =>
+      getStatutoryAccountantPack({
+        ...input,
+        branchId: companyBranchScope(ctx.user).branchId,
+      }),
+    ),
 
   createProfile: reportsAdminProcedure
     .input(

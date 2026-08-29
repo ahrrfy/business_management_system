@@ -373,9 +373,30 @@ async function profileReadiness(executor: DbExecutor, profileId: number) {
   };
 }
 
-async function contentHash(executor: DbExecutor, profileId: number) {
-  const statRows = await executor
+async function approvedMappingRows(executor: DbExecutor, profileId: number) {
+  return executor
     .select({
+      internalAccountId: accounts.id,
+      internalCode: accounts.code,
+      role: accounts.systemRole,
+      statutoryAccountId: statutoryAccounts.id,
+      statutoryCode: statutoryAccounts.code,
+      statutoryName: statutoryAccounts.name,
+    })
+    .from(statutoryAccountMappings)
+    .innerJoin(accounts, eq(accounts.id, statutoryAccountMappings.internalAccountId))
+    .innerJoin(
+      statutoryAccounts,
+      eq(statutoryAccounts.id, statutoryAccountMappings.statutoryAccountId),
+    )
+    .where(eq(statutoryAccountMappings.profileId, profileId))
+    .orderBy(asc(accounts.code));
+}
+
+async function statutoryAccountSnapshotRows(executor: DbExecutor, profileId: number) {
+  return executor
+    .select({
+      id: statutoryAccounts.id,
       code: statutoryAccounts.code,
       name: statutoryAccounts.name,
       type: statutoryAccounts.type,
@@ -387,23 +408,95 @@ async function contentHash(executor: DbExecutor, profileId: number) {
     .from(statutoryAccounts)
     .where(eq(statutoryAccounts.profileId, profileId))
     .orderBy(asc(statutoryAccounts.code));
-  const mappingRows = await executor
-    .select({
-      internalCode: accounts.code,
-      role: accounts.systemRole,
-      statutoryCode: statutoryAccounts.code,
-    })
-    .from(statutoryAccountMappings)
-    .innerJoin(accounts, eq(accounts.id, statutoryAccountMappings.internalAccountId))
-    .innerJoin(
-      statutoryAccounts,
-      eq(statutoryAccounts.id, statutoryAccountMappings.statutoryAccountId),
-    )
-    .where(eq(statutoryAccountMappings.profileId, profileId))
-    .orderBy(asc(accounts.code));
-  return createHash("sha256")
-    .update(JSON.stringify({ accounts: statRows, mappings: mappingRows }))
-    .digest("hex");
+}
+
+async function contentSnapshot(executor: DbExecutor, profileId: number) {
+  const accountSnapshotRows = await statutoryAccountSnapshotRows(executor, profileId);
+  const accountRows = accountSnapshotRows.map(
+    ({ code, name, type, normalBalance, parentId, isPosting, sortOrder }) => ({
+      code,
+      name,
+      type,
+      normalBalance,
+      parentId,
+      isPosting,
+      sortOrder,
+    }),
+  );
+  const rawMappingRows = await approvedMappingRows(executor, profileId);
+  const mappingRows = rawMappingRows.map(
+    ({ internalCode, role, statutoryCode }) => ({
+      internalCode,
+      role,
+      statutoryCode,
+    }),
+  );
+  return {
+    accountSnapshotRows,
+    rawMappingRows,
+    hash: createHash("sha256")
+      .update(JSON.stringify({ accounts: accountRows, mappings: mappingRows }))
+      .digest("hex"),
+  };
+}
+
+async function contentHash(executor: DbExecutor, profileId: number) {
+  return (await contentSnapshot(executor, profileId)).hash;
+}
+
+/**
+ * يعيد بيانات الإصدارات المعتمدة من نفس لقطة قاعدة البيانات بعد التحقق من أن
+ * الدليل والخريطة الحيّين ما زالا يطابقان البصمة المثبّتة وقت الاعتماد.
+ */
+export async function getVerifiedStatutoryProfileDetails(
+  executor: DbExecutor,
+  profileIds: number[],
+) {
+  const details = [];
+  for (const profileId of Array.from(new Set(profileIds))) {
+    const readiness = await profileReadiness(executor, profileId);
+    if (
+      !readiness ||
+      readiness.profile.status === "DRAFT" ||
+      !readiness.profile.contentHash
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `الإصدار النظامي ${profileId} غير معتمد ولا يمكن تضمينه في حزمة التدقيق.`,
+      });
+    }
+    const snapshot = await contentSnapshot(executor, profileId);
+    if (snapshot.hash !== readiness.profile.contentHash) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `تغيّر محتوى الإصدار النظامي ${readiness.profile.version} بعد اعتماده؛ أنشئ إصداراً جديداً وأعد المصادقة قبل التصدير.`,
+      });
+    }
+    const codeById = new Map(
+      snapshot.accountSnapshotRows.map((row) => [Number(row.id), row.code]),
+    );
+    const approvedAccounts = snapshot.accountSnapshotRows.map((row) => ({
+      statutoryAccountId: Number(row.id),
+      code: row.code,
+      name: row.name,
+      type: row.type,
+      normalBalance: row.normalBalance,
+      parentId: row.parentId == null ? null : Number(row.parentId),
+      parentCode:
+        row.parentId == null ? null : (codeById.get(Number(row.parentId)) ?? null),
+      isPosting: row.isPosting,
+      sortOrder: row.sortOrder,
+    }));
+    const approvedMappings = snapshot.rawMappingRows.map(
+      (row) => ({
+        ...row,
+        internalAccountId: Number(row.internalAccountId),
+        statutoryAccountId: Number(row.statutoryAccountId),
+      }),
+    );
+    details.push({ ...readiness, approvedAccounts, approvedMappings });
+  }
+  return details;
 }
 
 export async function approveStatutoryProfile(
