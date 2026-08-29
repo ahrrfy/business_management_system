@@ -11,6 +11,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.model.storeadmin.*
+import online.alarabiya.superapp.ui.ArabicDatePicker
 
 @Composable
 fun StoreAdminRoute(viewModel: StoreAdminViewModel, capabilities: StoreAdminCapabilities, modifier: Modifier = Modifier) {
@@ -95,8 +96,8 @@ private fun InitialLoadError(message: String?, onRetry: () -> Unit) {
             item { OutlinedTextField(value.ctaUrl, { actions.editor(value.copy(ctaUrl = it)) }, Modifier.fillMaxWidth(), label = { Text("المسار الداخلي، مثال /store") }, enabled = !locked) }
             item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) { BannerPlacement.entries.forEach { p -> FilterChip(value.placement == p, { actions.editor(value.copy(placement = p)) }, label = { Text(p.label) }, enabled = !locked) } } }
             item { OutlinedTextField(value.sortOrder, { actions.editor(value.copy(sortOrder = it)) }, Modifier.fillMaxWidth(), label = { Text("الترتيب") }, enabled = !locked, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)) }
-            item { OutlinedTextField(value.effectiveFrom, { actions.editor(value.copy(effectiveFrom = it)) }, Modifier.fillMaxWidth(), label = { Text("البداية YYYY-MM-DD") }, enabled = !locked) }
-            item { OutlinedTextField(value.effectiveTo, { actions.editor(value.copy(effectiveTo = it)) }, Modifier.fillMaxWidth(), label = { Text("النهاية YYYY-MM-DD") }, enabled = !locked) }
+            item { ArabicDatePicker(value.effectiveFrom, { actions.editor(value.copy(effectiveFrom = it)) }, "البداية", enabled = !locked) }
+            item { ArabicDatePicker(value.effectiveTo, { actions.editor(value.copy(effectiveTo = it)) }, "النهاية", enabled = !locked) }
             item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("نشط"); Switch(value.active, { actions.editor(value.copy(active = it)) }, enabled = !locked) } }
         }
     }, confirmButton = { Button(actions::saveBanner, enabled = !locked) { Text("حفظ") } }, dismissButton = { TextButton(actions::closeEditor, enabled = !locked) { Text("إلغاء") } })

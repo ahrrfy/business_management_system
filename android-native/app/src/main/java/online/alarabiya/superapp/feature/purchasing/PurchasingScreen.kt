@@ -70,6 +70,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderDetail
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderDraftLine
@@ -399,7 +400,7 @@ private fun PurchasingComposerDialog(composer: PurchasingComposer, capabilities:
                     is PurchasingComposer.Receive -> item { ReceiveFields(composer.draft) { onChange(PurchasingComposer.Receive(it)) } }
                     is PurchasingComposer.Skip -> item {
                         OutlinedTextField(composer.reason, { onChange(composer.copy(reason = it.take(255))) }, label = { Text("سبب التأجيل") })
-                        OutlinedTextField(composer.promisedDate, { onChange(composer.copy(promisedDate = it.take(10))) }, label = { Text("تاريخ الوعد YYYY-MM-DD") })
+                        ArabicDatePicker(composer.promisedDate, { onChange(composer.copy(promisedDate = it)) }, "تاريخ الوعد")
                     }
                 }
             }

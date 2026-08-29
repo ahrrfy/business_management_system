@@ -1,5 +1,6 @@
 package online.alarabiya.superapp.ui
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
@@ -9,14 +10,16 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import java.time.Instant
 import java.time.LocalDate
-import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -28,10 +31,16 @@ import java.util.Locale
  *    canSubmit في كثيرٍ من الشاشات يشترط YYYY-MM-DD ⇒ المستخدم يعجز عن إعادة بناء
  *    التاريخ بعد المسح، فيبقى زرّ الحفظ معطَّلاً. الحلّ الجذريّ: منتقي تقويم بدل حقل نصّ.
  *  - قرار المالك (ذاكرة `feedback-latin-digits-always.md`، ٢٥/٨): كلّ رقمٍ يعرضه النظامُ
- *    لاتينيّ. نُنسّق التاريخ بـ ISO (`YYYY-MM-DD`) بأرقامٍ لاتينية دائماً.
- *  - Baghdad TZ (Asia/Baghdad = UTC+3، بلا DST): نحوّل epochMillis إلى تقويمٍ محلّيّ
- *    (Zone Baghdad) قبل عرض `LocalDate`، وإلا فاختيار «١ كانون الثاني» بتوقيت الجهاز
- *    قد يُخزَّن ٣١ كانون الأوّل على الخادم.
+ *    لاتينيّ. نُنسّق التاريخ بـ ISO (`YYYY-MM-DD`) بأرقامٍ لاتينية دائماً — ونُلبِس التقويم
+ *    نفسه Locale `ar-IQ-u-nu-latn` عبر CompositionLocalProvider ⇒ الأرقام داخل شبكة
+ *    الأيام والسنوات تخرج لاتينية على أجهزة locale عربيّ (Codex P2 ٢٩/٨).
+ *
+ * ملاحظة زمنيّة حاسمة (Codex P1 ٢٩/٨):
+ *  Material3 `DatePickerState.initialSelectedDateMillis` و`selectedDateMillis` يفسّران
+ *  epoch بـ**UTC calendar** لا بمنطقة الجهاز — التقويم ذاتُه بلا وقت. حساب midnight
+ *  بمنطقة بغداد كان يُرجع «2026-08-29 Baghdad = 2026-08-28T21:00Z» فيُبرز الحوارُ
+ *  اليومَ السابق، وتأكيدُه يحفظ تاريخاً خاطئاً. الحلّ: تحويلٌ `LocalDate ↔ UTC midnight
+ *  epoch` مباشرةً، بلا زمنيّة إطلاقاً — التقويم لا يعرض ولا يستقبل ساعة.
  *
  * مسموحٌ التمرير على الشاشات الحاليّة على مراحل: كل استدعاء يُبدل OutlinedTextField
  * بحقلٍ للقراءة + زرّ يفتح Dialog. القيمة تُخزَّن نصّاً YYYY-MM-DD كما تتوقّعها الخدمات.
@@ -54,7 +63,6 @@ fun ArabicDatePicker(
 ) {
   var dialogOpen by remember { mutableStateOf(false) }
   val parsedInitial = remember(value) { parseIsoDate(value) }
-  val zone = remember { ZoneId.of("Asia/Baghdad") }
 
   OutlinedTextField(
     value = value,
@@ -74,32 +82,40 @@ fun ArabicDatePicker(
 
   if (dialogOpen) {
     val state = androidx.compose.material3.rememberDatePickerState(
-      initialSelectedDateMillis = parsedInitial?.atStartOfDay(zone)?.toInstant()?.toEpochMilli(),
+      // UTC midnight — Material3 يعامل هذا الحقل بحسابٍ تقويميّ UTC (لا وقت).
+      initialSelectedDateMillis = parsedInitial?.let { localDateToUtcMillis(it) },
     )
-    DatePickerDialog(
-      onDismissRequest = { dialogOpen = false },
-      confirmButton = {
-        Button(onClick = {
-          val millis = state.selectedDateMillis
-          if (millis != null) {
-            val picked = Instant.ofEpochMilli(millis).atZone(zone).toLocalDate()
-            onValue(picked.format(ISO_FORMATTER))
-          }
-          dialogOpen = false
-        }) { Text("موافق") }
-      },
-      dismissButton = {
-        if (allowClear && value.isNotBlank()) {
-          OutlinedButton(onClick = {
-            onValue("")
+    val baseConfig = LocalConfiguration.current
+    // Locale ar-IQ-u-nu-latn ⇒ أرقام لاتينيّة داخل التقويم على أجهزة locale عربيّ أيضاً.
+    val latinConfig = remember(baseConfig) {
+      Configuration(baseConfig).apply { setLocale(LATIN_ARABIC_LOCALE) }
+    }
+    CompositionLocalProvider(LocalConfiguration provides latinConfig) {
+      DatePickerDialog(
+        onDismissRequest = { dialogOpen = false },
+        confirmButton = {
+          Button(onClick = {
+            val millis = state.selectedDateMillis
+            if (millis != null) {
+              val picked = utcMillisToLocalDate(millis)
+              onValue(picked.format(ISO_FORMATTER))
+            }
             dialogOpen = false
-          }) { Text("مسح") }
-        } else {
-          OutlinedButton(onClick = { dialogOpen = false }) { Text("رجوع") }
-        }
-      },
-    ) {
-      DatePicker(state = state)
+          }) { Text("موافق") }
+        },
+        dismissButton = {
+          if (allowClear && value.isNotBlank()) {
+            OutlinedButton(onClick = {
+              onValue("")
+              dialogOpen = false
+            }) { Text("مسح") }
+          } else {
+            OutlinedButton(onClick = { dialogOpen = false }) { Text("رجوع") }
+          }
+        },
+      ) {
+        DatePicker(state = state)
+      }
     }
   }
 }
@@ -107,6 +123,17 @@ fun ArabicDatePicker(
 /** Locale-neutral ISO formatter — أرقام لاتينية دائماً (قرار المالك ٢٥/٨). */
 private val ISO_FORMATTER: DateTimeFormatter =
   DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.US)
+
+/** ar-IQ with Latin numbering — نُلبسه التقويمَ عبر LocalConfiguration. */
+private val LATIN_ARABIC_LOCALE: Locale = Locale.forLanguageTag("ar-IQ-u-nu-latn")
+
+/** LocalDate → UTC midnight epoch millis (عقد Material3 DatePickerState). */
+private fun localDateToUtcMillis(date: LocalDate): Long =
+  date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
+/** UTC midnight epoch millis → LocalDate (عكس localDateToUtcMillis). */
+private fun utcMillisToLocalDate(millis: Long): LocalDate =
+  Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate()
 
 /**
  * Parse `YYYY-MM-DD`. أي شكلٍ آخر (نص، أرقام هندية، ISO 8601 بوقت) ⇒ `null`
@@ -121,11 +148,3 @@ private fun parseIsoDate(raw: String): LocalDate? {
     null
   }
 }
-
-/**
- * Placeholder — for legacy fields whose values you can't parse but you want the
- * picker to open blank. Not exported yet; keep in case a screen needs it later.
- */
-@Suppress("unused")
-private fun todayInBaghdadIso(): String =
-  LocalDate.now(ZoneId.of("Asia/Baghdad")).format(ISO_FORMATTER)

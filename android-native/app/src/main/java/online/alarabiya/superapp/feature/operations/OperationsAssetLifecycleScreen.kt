@@ -100,6 +100,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import online.alarabiya.superapp.core.scanner.NativeScanField
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.operations.AssetCategory
 import online.alarabiya.superapp.model.operations.AssetDetail
 import online.alarabiya.superapp.model.operations.AssetDisposalInput
@@ -475,7 +476,7 @@ private fun AssetEditorDialog(detail: AssetDetail?, state: OperationsUiState, vi
         OutlinedTextField(location, { location = it.take(255) }, Modifier.fillMaxWidth(), label = { Text("الموقع") }, singleLine = true)
         OutlinedTextField(condition, { condition = it.take(255) }, Modifier.fillMaxWidth(), label = { Text("الحالة الفنية") }, singleLine = true)
         Text("الشراء والإهلاك", style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
-        OutlinedTextField(purchaseDate, { purchaseDate = it.take(10) }, Modifier.fillMaxWidth(), label = { Text("تاريخ الشراء *") }, placeholder = { Text("YYYY-MM-DD") }, singleLine = true)
+        ArabicDatePicker(purchaseDate, { purchaseDate = it }, "تاريخ الشراء *")
         OutlinedTextField(
             purchaseValue,
             { purchaseValue = decimalInput(it) },
@@ -510,7 +511,7 @@ private fun AssetEditorDialog(detail: AssetDetail?, state: OperationsUiState, vi
                 )
             }
         }
-        OutlinedTextField(warrantyEnd, { warrantyEnd = it.take(10) }, Modifier.fillMaxWidth(), label = { Text("نهاية الكفالة") }, placeholder = { Text("YYYY-MM-DD") }, singleLine = true)
+        ArabicDatePicker(warrantyEnd, { warrantyEnd = it }, "نهاية الكفالة")
         LifecycleValue("القسط السنوي التقديري", assetMoney(annualDepreciation(input)))
         validation?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
         if (editing) {
@@ -593,7 +594,7 @@ private fun AssetDisposalDialog(detail: AssetDetail, viewModel: OperationsViewMo
                 FilterChip(status == option, { statusWire = option.wire }, label = { Text(option.label) }, modifier = Modifier.weight(1f))
             }
         }
-        OutlinedTextField(date, { date = it.take(10) }, Modifier.fillMaxWidth(), label = { Text("التاريخ *") }, placeholder = { Text("YYYY-MM-DD") }, singleLine = true)
+        ArabicDatePicker(date, { date = it }, "التاريخ *")
         if (status == AssetStatus.Disposed) {
             OutlinedTextField(
                 value,

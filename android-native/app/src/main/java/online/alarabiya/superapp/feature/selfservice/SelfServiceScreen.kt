@@ -83,6 +83,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import online.alarabiya.superapp.core.notifications.NotificationPermissionController
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.UserIdentity
 import online.alarabiya.superapp.model.selfservice.AttendanceEntry
 import online.alarabiya.superapp.model.selfservice.NotificationPreferences
@@ -841,8 +842,8 @@ fun LeaveRequestsScreen(
                         FilterChip(selected = leaveType == type, onClick = { leaveType = type }, label = { Text(type) })
                     }
                 }
-                OutlinedTextField(fromDate, { fromDate = it }, label = { Text("من YYYY-MM-DD") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(toDate, { toDate = it }, label = { Text("إلى YYYY-MM-DD") }, modifier = Modifier.fillMaxWidth())
+                ArabicDatePicker(fromDate, { fromDate = it }, "من")
+                ArabicDatePicker(toDate, { toDate = it }, "إلى")
                 OutlinedTextField(reason, { reason = it }, label = { Text("السبب (اختياري)") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
                 if (touchedDates && leaveIssue != null) {
                     Text(leaveIssue.userMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
