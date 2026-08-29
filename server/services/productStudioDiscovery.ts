@@ -220,13 +220,16 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
       name: products.name,
       categoryId: products.categoryId,
       isBundle: products.isBundle,
-      approvedImages: approvedImagesSql,
-      variantCount: variantCountSql,
-      variantsWithImages: variantsWithImagesSql,
+      // ⚠️ `.as('name')` صريحٌ على كلّ حقلٍ من `sql<number>` (Codex/بلاغ إنتاج ٢٩/٨):
+      // درizzle 0.45 يرفض الإشارة إلى raw SQL field من subquery خارج نطاقه بلا alias
+      // معلَن. مفتاح الكائن وحده لا يكفي — كان الاستدعاء `desc(inner.variantsMissing)`
+      // يرمي: «You tried to reference X field from a subquery, which is a raw SQL field,
+      // but it doesn't have an alias declared». الحلّ: `.as('name')` على كلٍّ منها.
+      approvedImages: approvedImagesSql.as("approvedImages"),
+      variantCount: variantCountSql.as("variantCount"),
+      variantsWithImages: variantsWithImagesSql.as("variantsWithImages"),
       // عمودٌ مستقلّ للفرز — الحسابُ داخل الـsubquery حيث الـcorrelated subqueries صالحةٌ.
-      // بلا هذا: `sql\`(${inner.variantCount} - ${inner.variantsWithImages})\`` كان يُوسّع
-      // النصَّ الخامَّ للـsubquery في ORDER BY الخارجيّ فيَشتكي MySQL من `products.id` غير معروف.
-      variantsMissing: sql<number>`greatest(0, (${variantCountSql}) - (${variantsWithImagesSql}))`,
+      variantsMissing: sql<number>`greatest(0, (${variantCountSql}) - (${variantsWithImagesSql}))`.as("variantsMissing"),
       health,
     })
     .from(products)
