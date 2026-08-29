@@ -20,7 +20,7 @@
  *   · `DELIVERED`/`CANCELLED`: مرفوض (الفاتورة صدرت أو الأمر أُغلق).
  *
  * ثوابت مستنسَخة من `startWorkOrder` عمداً (لا تُبسَّط):
- *   · ترتيب القفل: `branchStock` ثمّ `productVariants`، تصاعدياً بـvariantId — منع deadlock مع
+ *   · ترتيب القفل: `productVariants` ثمّ `branchStock`، تصاعدياً بـvariantId — منع deadlock مع
  *     الشراء/WAVG والبيع.
  *   · تجميع الكمية لكل صنف قبل الحركة (صفّان لنفس الصنف = حركةٌ واحدة).
  *   · بضاعة الأمانة مرفوضة مادةً (حصّة المودِع لا تُستهلك في إنتاجنا).
@@ -37,6 +37,7 @@ import {
 } from "../../../drizzle/schema";
 import { createPostingIntent, signedPostingLines } from "../accounting/postingEngine";
 import { applyMovement } from "../inventoryService";
+import { lockInventoryVariants } from "../inventory/stockLock";
 import { postEntry } from "../ledgerService";
 import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
@@ -145,7 +146,8 @@ export async function setWorkOrderMaterials(
     const desiredIds = Array.from(desiredQty.keys()).sort((a, b) => a - b);
     const costMap = new Map<number, Decimal>();
     if (desiredIds.length) {
-      // ترتيب القفل الحاكم مع الشراء/WAVG والبيع: branchStock ثمّ productVariants، تصاعدياً.
+      await lockInventoryVariants(tx, consumed ? touchedIds : desiredIds);
+      // ترتيب القفل الحاكم مع الشراء/WAVG والبيع: productVariants ثمّ branchStock، تصاعدياً.
       // نضمن وجود صفّ الرصيد أولاً لأنّ FOR UPDATE لا يقفل صفاً مفقوداً.
       if (consumed) {
         const lockIds = touchedIds;

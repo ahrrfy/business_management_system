@@ -1873,7 +1873,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/catalogAnomaliesRouter.ts:194"
+      "loc": "server/routers/catalogAnomaliesRouter.ts:198"
     },
     {
       "surface": "trpc",
@@ -1890,7 +1890,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: override",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/catalogAnomaliesRouter.ts:173"
+      "loc": "server/routers/catalogAnomaliesRouter.ts:177"
     },
     {
       "surface": "trpc",
@@ -1907,7 +1907,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/catalogAnomaliesRouter.ts:28"
+      "loc": "server/routers/catalogAnomaliesRouter.ts:32"
     },
     {
       "surface": "trpc",
@@ -1924,7 +1924,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/catalogAnomaliesRouter.ts:143"
+      "loc": "server/routers/catalogAnomaliesRouter.ts:147"
     },
     {
       "surface": "trpc",
@@ -1941,7 +1941,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/catalogAnomaliesRouter.ts:110"
+      "loc": "server/routers/catalogAnomaliesRouter.ts:114"
     },
     {
       "surface": "trpc",
@@ -1958,7 +1958,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/catalogAnomaliesRouter.ts:233"
+      "loc": "server/routers/catalogAnomaliesRouter.ts:275"
     },
     {
       "surface": "trpc",

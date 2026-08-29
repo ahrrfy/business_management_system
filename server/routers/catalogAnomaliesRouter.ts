@@ -16,6 +16,10 @@ import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { catalogAnomaliesReadProcedure, catalogAnomaliesManagerProcedure, router } from "../trpc";
 import { detectAll } from "../services/catalogAnomalies/detectors";
+import {
+  COST_CHANGE_REVERT_WINDOW_DAYS,
+  revertCatalogCostChange,
+} from "../services/catalogAnomalies/revertCostChange";
 import { logAudit } from "../services/auditService";
 
 const codeSchema = z.enum(["L1", "L2", "L3", "L4", "L5", "L6"]);
@@ -210,7 +214,27 @@ export const catalogAnomaliesRouter = router({
       const rows = await d.execute(sql`
         SELECT pal.id, pal.variantId, pal.changeKind, pal.oldValue, pal.newValue, pal.severity,
                pal.reason, pal.actorUserId, u.name AS actorName, pal.reverted, pal.revertedAt, pal.createdAt,
-               v.sku, p.name AS productName
+               v.sku, p.name AS productName,
+               CASE
+                 WHEN pal.changeKind <> 'cost' THEN 0
+                 WHEN pal.createdAt < DATE_SUB(NOW(), INTERVAL ${COST_CHANGE_REVERT_WINDOW_DAYS} DAY) THEN 0
+                 WHEN p.isConsignment = TRUE THEN 1
+                 WHEN EXISTS (
+                   SELECT 1 FROM branchStock bs
+                   WHERE bs.variantId = pal.variantId AND bs.quantity <> 0
+                 ) THEN 0
+                 ELSE 1
+               END AS directRevertAllowed,
+               CASE
+                 WHEN pal.changeKind <> 'cost' THEN 'NON_COST'
+                 WHEN pal.createdAt < DATE_SUB(NOW(), INTERVAL ${COST_CHANGE_REVERT_WINDOW_DAYS} DAY) THEN 'EXPIRED'
+                 WHEN p.isConsignment = TRUE THEN NULL
+                 WHEN EXISTS (
+                   SELECT 1 FROM branchStock bs
+                   WHERE bs.variantId = pal.variantId AND bs.quantity <> 0
+                 ) THEN 'STOCK_ON_HAND'
+                 ELSE NULL
+               END AS revertBlockReason
         FROM priceAnomalyLog pal
         LEFT JOIN productVariants v ON v.id = pal.variantId
         LEFT JOIN products p ON p.id = v.productId
@@ -221,45 +245,43 @@ export const catalogAnomaliesRouter = router({
         ORDER BY pal.createdAt DESC
         LIMIT ${input.limit}
       `);
-      return (rows as unknown as [Array<{ id: number; variantId: number; changeKind: string; oldValue: string; newValue: string; severity: string; reason: string | null; actorUserId: number | null; actorName: string | null; reverted: number; revertedAt: Date | string | null; createdAt: Date; sku: string | null; productName: string | null }>, unknown])[0];
+      return (rows as unknown as [Array<{
+        id: number;
+        variantId: number;
+        changeKind: string;
+        oldValue: string;
+        newValue: string;
+        severity: string;
+        reason: string | null;
+        actorUserId: number | null;
+        actorName: string | null;
+        reverted: number;
+        revertedAt: Date | string | null;
+        createdAt: Date;
+        sku: string | null;
+        productName: string | null;
+        directRevertAllowed: number;
+        revertBlockReason: "NON_COST" | "EXPIRED" | "STOCK_ON_HAND" | null;
+      }>, unknown])[0];
     }),
 
   /**
-   * **L3.5:** استعادة قيمة سابقة من `priceAnomalyLog` — يُطبَّق UPDATE على `productVariants.costPrice`
-   * إلى `oldValue`، ويعلَّم صفّ السجلّ `reverted=TRUE`. الحدود:
+   * **L3.5:** استعادة قيمة سابقة من `priceAnomalyLog` عبر خدمةٍ ذرية تمرّ بحارس حوكمة
+   * `costPrice`. صفريّ الرصيد يُستعاد مع تدقيق قبل/بعد؛ وذو المخزون يُوجَّه لمسار طلب إعادة
+   * التقييم كي لا يتجاوز القيد أو حارس الفترة. الحدود:
    *  - يعمل خلال ٣٠ يوماً من التغيير فقط.
    *  - لا يعمل إن كان الصفّ مُعاداً مسبقاً.
    */
   revertChange: catalogAnomaliesManagerProcedure
     .input(z.object({ logId: z.number().int().positive() }))
-    .mutation(async ({ input, ctx }) => {
-      const d = getDb();
-      if (!d) throw new Error("DB unavailable");
-      const rows = await d.execute(sql`
-        SELECT id, variantId, changeKind, oldValue, newValue, reverted, createdAt
-        FROM priceAnomalyLog WHERE id = ${input.logId}
-      `);
-      const row = (rows as unknown as [Array<{ id: number; variantId: number; changeKind: string; oldValue: string; newValue: string; reverted: number; createdAt: Date }>, unknown])[0][0];
-      if (!row) throw new Error("سجلّ الأثر غير موجود");
-      if (row.reverted) throw new Error("هذا التغيير مُعادٌ مسبقاً");
-      const ageDays = (Date.now() - new Date(row.createdAt).getTime()) / (1000 * 60 * 60 * 24);
-      if (ageDays > 30) throw new Error("انقضت مهلة الاستعادة (٣٠ يوماً)");
-      if (row.changeKind !== "cost") throw new Error("الاستعادة تدعم حالياً تكلفة فقط (L3 توسعة قادمة)");
-      // نطبّق قيمة الاستعادة. Trigger سيلتقط هذا التغيير كسجلٍّ جديد (منطقيّاً).
-      await d.execute(sql`
-        UPDATE productVariants SET costPrice = ${row.oldValue} WHERE id = ${row.variantId}
-      `);
-      // نُعلّم الصفّ الأصليّ محفوظاً كي لا يُستعاد مجدداً.
-      await d.execute(sql`
-        UPDATE priceAnomalyLog SET reverted = TRUE, revertedAt = NOW() WHERE id = ${input.logId}
-      `);
-      await logAudit(ctx, {
-        action: "catalogAnomaly.revertCostChange",
-        entityType: "productVariant",
-        entityId: row.variantId,
-        oldValue: { costPrice: row.newValue },
-        newValue: { costPrice: row.oldValue, revertedLogId: input.logId },
-      });
-      return { ok: true };
-    }),
+    .mutation(({ input, ctx }) =>
+      revertCatalogCostChange(input.logId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId,
+        ipAddress:
+          (ctx.req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
+          ctx.req?.ip ??
+          null,
+      }),
+    ),
 });

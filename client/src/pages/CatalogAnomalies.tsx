@@ -23,6 +23,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 type Severity = "blocker" | "warning" | "info";
 type LensCode = "L1" | "L2" | "L3" | "L4" | "L5" | "L6";
@@ -60,7 +61,13 @@ export default function CatalogAnomalies() {
 
   const utils = trpc.useUtils();
   const meQ = trpc.auth.me.useQuery();
-  const canWrite = meQ.data?.role === "admin" || meQ.data?.role === "manager";
+  const canWrite = !!meQ.data?.role && moduleAccessAllowed(
+    meQ.data.role as RoleKey,
+    (meQ.data.permissionsOverride ?? null) as PermissionMap | null,
+    "catalogAnomalies",
+    "FULL",
+    ["manager"],
+  );
   const filterInput = {
     includeOverridden,
     codes: codeFilter ? [codeFilter] : undefined,
@@ -299,7 +306,8 @@ export default function CatalogAnomalies() {
 
 /**
  * **L3.4/L3.5:** سجلّ تغيّرات التكلفة الأخيرة — يستهلك `changeLog` و`revertChange` من الراوتر.
- * كل صفٍّ يعرض قبل/بعد + نسبة + الفاعل + الوقت، مع زرّ استعادة (للـmanager) خلال ٣٠ يوماً.
+ * كل صفٍّ يعرض قبل/بعد + نسبة + الفاعل + الوقت؛ الاستعادة المباشرة تظهر فقط حين يسمح
+ * الحارس، وذو المخزون يُوجَّه إلى طلب إعادة التقييم المحاسبيّ.
  */
 function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
   const [minSeverity, setMinSeverity] = useState<"info" | "warning" | "blocker" | "catastrophic">("warning");
@@ -365,7 +373,7 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
                       <td className="p-2 text-xs">
                         {row.reverted ? (
                           <Badge variant="secondary" className="text-[10px]">مستعادٌ سابقاً</Badge>
-                        ) : canWrite ? (
+                        ) : canWrite && Number(row.directRevertAllowed) === 1 ? (
                           <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={async () => {
                             const ok = await confirm({
                               variant: "warning",
@@ -377,6 +385,14 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
                           }}>
                             <RotateCcw className="size-3 me-1" aria-hidden /> استعادة
                           </Button>
+                        ) : canWrite && row.revertBlockReason === "STOCK_ON_HAND" ? (
+                          <Link href="/inventory" className="text-xs text-primary underline-offset-4 hover:underline">
+                            طلب إعادة تقييم
+                          </Link>
+                        ) : canWrite && row.revertBlockReason === "EXPIRED" ? (
+                          <span className="text-muted-foreground">انتهت المهلة</span>
+                        ) : canWrite && row.revertBlockReason === "NON_COST" ? (
+                          <span className="text-muted-foreground">غير مدعوم</span>
                         ) : (
                           <span className="text-muted-foreground">نشط</span>
                         )}

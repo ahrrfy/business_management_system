@@ -6,7 +6,10 @@ import type { Tx } from "../db";
 import type { DecimalInput } from "./money";
 import { extractInsertId } from "../lib/insertId";
 import { loadVariantAvailability } from "./catalog/variantAvailability";
+import { lockInventoryVariants } from "./inventory/stockLock";
 import { assertPeriodOpen } from "./periodLockService";
+
+export { ensureBranchStockRows } from "./inventory/stockLock";
 
 /** يَتحقّق إن كان المُتغيّر يَنتمي لمُنتج خِدمي (لا مَخزون). يُستعمَل لِتجاوز inventoryMovements/branchStock. */
 export async function isServiceVariant(tx: Tx, variantId: number): Promise<boolean> {
@@ -167,6 +170,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   if (!Number.isInteger(a.baseQuantity) || a.baseQuantity <= 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً" });
   }
+  await lockInventoryVariants(tx, [a.variantId]);
 
   // مُنتج خِدمي: لا تَتبُّع مَخزون. التَحويل بين الفُروع مَمنوع منطقياً (الخَدمة لا تُحَوَّل
   // كَأنها بِضاعة). البَيع/الشِراء/المُرتجَع/التَسوية: نَخرج بِنَتيجة اصطناعية بِلا حركة ولا
@@ -196,13 +200,13 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   // عند شحن A. allowNegative=true محجوز لوقائع خرجت فعلاً (offline/material consumption)
   // ويجب تسجيلها ولو كشفت عجزاً؛ المسارات الحيّة لا تتجاوز هذا الحارس.
   const lockedAvailability = DEDUCTING.has(a.movementType)
-    ? (await loadVariantAvailability(tx, a.branchId, [a.variantId], {
+      ? (await loadVariantAvailability(tx, a.branchId, [a.variantId], {
         lock: true,
         excludeOnlineOrderId: a.onlineOrderAllocationExemptionId,
       })).get(a.variantId)
     : undefined;
 
-  // اضمن وجود صفّ الرصيد قبل القفل — FOR UPDATE لا يقفل شيئاً على صفّ غير موجود (يتسرّب بيعٌ زائد/فقدُ تحديث).
+  // اضمن وجود صفّ الرصيد بعد mutex المتغيّر، ثم اقفله.
   await tx
     .insert(branchStock)
     .values({ variantId: a.variantId, branchId: a.branchId, quantity: 0 })
@@ -375,6 +379,7 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
   if (!Number.isInteger(a.targetQuantity) || (a.targetQuantity < 0 && !a.allowNegativeTarget)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
   }
+  await lockInventoryVariants(tx, [a.variantId]);
   // مُنتج خِدمي: لا تَسوية مَخزون لـ«ما لا مَخزون له». نَتجاهل بِنَتيجة اصطناعية.
   if (await isServiceVariant(tx, a.variantId)) {
     return { movementId: 0, newQuantity: 0, delta: 0 };
@@ -457,6 +462,7 @@ export async function transferBetweenBranches(tx: Tx, a: TransferArgs) {
   if (a.fromBranchId === a.toBranchId) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التحويل لنفس الفرع" });
   }
+  await lockInventoryVariants(tx, [a.variantId]);
   // Lock both branch rows in ascending branchId order to avoid deadlocks.
   const [lo, hi] = [a.fromBranchId, a.toBranchId].sort((x, y) => x - y);
   await tx

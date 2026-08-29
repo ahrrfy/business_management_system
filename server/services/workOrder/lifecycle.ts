@@ -8,6 +8,7 @@ import { canCrossBranches } from "../../lib/branchAuthority";
 import { hasModuleAccess } from "@shared/permissions";
 import { logAuditTx } from "../auditService";
 import { applyMovement } from "../inventoryService";
+import { lockInventoryVariants } from "../inventory/stockLock";
 import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2 } from "../money";
@@ -66,9 +67,10 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
     // Deterministic lock order: ascending variantId.
     mats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
 
-    // ترتيب القفل الحاكم مع الشراء/WAVG: branchStock ثم productVariants، وكلاهما تصاعدي. نضمن
+    // ترتيب القفل الحاكم مع الشراء/WAVG: productVariants ثم branchStock، وكلاهما تصاعدي. نضمن
     // وجود صفّ الرصيد أولاً لأن FOR UPDATE لا يقفل صفاً مفقوداً، ثم نحجز لقطة التكلفة حتى الترحيل.
     const variantIds = Array.from(new Set(mats.map((m) => Number(m.variantId)))).sort((a, b) => a - b);
+    await lockInventoryVariants(tx, variantIds);
     if (variantIds.length > 0) {
       await tx
         .insert(branchStock)

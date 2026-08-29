@@ -7,7 +7,8 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { accountingEntries, branchStock, expenses, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
-import { applyMovement } from "../inventoryService";
+import { applyMovement, ensureBranchStockRows } from "../inventoryService";
+import { lockInventoryVariants } from "../inventory/stockLock";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
@@ -332,6 +333,10 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       }
     }
 
+    // mutex المتغيّرات قبل أي صف فرع؛ يمنع تجزئة نطاق الفروع بين استلام وإعادة تقييم.
+    await lockInventoryVariants(tx, variantIds);
+    await ensureBranchStockRows(tx, variantIds, Number(po.branchId));
+
     // قفل صفوف branchStock للمتغيّرات المعنية قبل قراءة الـSUM:
     // يَسَلْسِل receive مع أي sale متزامن على نفس المتغيّرات (تلك تأخذ قفلاً على نفس الصفوف
     // عبر applyMovement). بدون هذا القفل، يمكن لـsale متزامن أن يُغيّر الكميات بين قراءة
@@ -341,6 +346,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       .select({ id: branchStock.id })
       .from(branchStock)
       .where(inArray(branchStock.variantId, variantIds))
+      .orderBy(branchStock.variantId)
       .for("update");
 
     // Read existing stock per variant (sum across all branches) AFTER the row lock.

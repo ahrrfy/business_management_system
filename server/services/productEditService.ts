@@ -18,6 +18,7 @@ import type { VariantKind } from "../../shared/variantDisplay";
 import { assertBaseUnitStable } from "./catalog/baseUnitGuard";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { postCostRevaluation } from "./costRevaluation";
+import { lockInventoryVariants } from "./inventory/stockLock";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
 import {
   assertNoActiveOnlineOrderUnitChanges,
@@ -600,6 +601,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
     const requestedProductType = input.productType?.trim() || null;
     const effectiveProductType = effectiveShowInPrintPos ? "PRINT_SERVICE" : requestedProductType;
 
+    await lockInventoryVariants(tx, existingVariantIds);
     await tx
       .update(products)
       .set({
@@ -640,7 +642,15 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       throw new TRPCError({ code: "BAD_REQUEST", message: "اسم بديلٍ مكرَّر داخل المنتج — لكلّ بديلٍ اسمٌ مميّز." });
     }
 
-    for (const v of input.variants) {
+    // المتغيّرات القائمة أولاً وبترتيب المعرّف الحاكم لأقفال WAVG؛ الجديدة لا تتشارك
+    // صفوفاً بعد، ونرتبها بالـSKU لتبقى الكتابة حتمية.
+    const variantsInLockOrder = [...input.variants].sort((a, b) => {
+      if (a.id != null && b.id != null) return Number(a.id) - Number(b.id);
+      if (a.id != null) return -1;
+      if (b.id != null) return 1;
+      return a.sku.localeCompare(b.sku);
+    });
+    for (const v of variantsInLockOrder) {
       const variantKind: VariantKind = v.variantKind === "ALTERNATIVE" ? "ALTERNATIVE" : "VARIANT";
       const variantName = v.variantName?.trim() || null;
       // م٣: البديل منتجٌ حقيقيٌّ مستقلّ ⇒ يلزمه اسمٌ مميّز، ولا بديلَ بلا باركود (يُهدم الجرد بالمسح).
@@ -673,19 +683,17 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       const colorHexPatch = v.colorHex !== undefined ? { colorHex: v.colorHex?.trim() || null } : {};
       let variantId: number;
       if (v.id) {
-        // .for("update"): نقفل صفّ المتغيّر قبل قراءة التكلفة القديمة وتحديثها، فيتسلسل تعديلان متزامنان
-        // ولا يُسجَّل «قبل» بائتٌ في أثر التكلفة (Codex — تعديلان 100→150 ثمّ 150→200 لا 100→200).
-        const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1).for("update"))[0];
+        // الحارس أدناه يملك ترتيب القفل الحاكم variant→branchStock ويتحقّق أن هذه اللقطة
+        // ما زالت حيّة، فلا «قبل» بائت ولا طمس لـWAVG متزامن.
+        const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1))[0];
         if (!owned) throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
         variantId = v.id;
         // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): وحدة الأساس **ثابتةٌ** لمتغيّرٍ قائم — يُرفَض تبديلها
         // أو إعادة تسميتها (مسار القالب يُدرِج صفّاً جديداً ويُعطّل القديم عند تغيّر الاسم ⇒ تفسيرٌ مقلوبٌ
         // للكمّيات أو مراجع وحدةٍ متدلّية في العروض/الطلبات). مقارنةٌ ساكنةٌ بلا قفل — التصحيح بمتغيّرٍ جديد.
         await assertBaseUnitStable(tx, variantId, { by: "name", unitName: newBaseName });
-        await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
-        // H3 (تدقيق ٢٧/٧): تغيّر التكلفة على صنفٍ له رصيد يُعيد تقييم المخزون ⇒ قيد إعادة تقييم يفسّر
-        // حركة حقوق الملكية في قائمة الدخل ويمرّ على حارس الفترة (صفريّ الأثر إن كان الفرق/الرصيد صفراً).
         await postCostRevaluation(tx, variantId, owned.costPrice, vals.costPrice, actor, v.costChangeReason);
+        await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
       } else {
         const res = await tx.insert(productVariants).values({ productId: input.productId, ...vals, colorHex: v.colorHex?.trim() || null });
         variantId = extractInsertId(res);

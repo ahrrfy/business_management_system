@@ -15,6 +15,7 @@ import {
 } from "../../../drizzle/schema";
 import { hashPassword, verifyPassword } from "../../auth/password";
 import { setStock } from "../inventoryService";
+import { lockInventoryVariants } from "../inventory/stockLock";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, toDbMoney } from "../money";
@@ -153,6 +154,7 @@ export async function approveStocktake(
         )
         .orderBy(asc(stocktakeItems.variantId))
     ).map((r) => Number(r.variantId));
+    await lockInventoryVariants(tx, lockIds);
     for (const part of chunk(lockIds)) {
       await tx
         .select({ id: branchStock.id })
@@ -167,7 +169,7 @@ export async function approveStocktake(
         .for("update");
     }
 
-    // ترتيب الأقفال الحاكم: session → branchStock → productVariants. للجرد الافتتاحي نثبت
+    // ترتيب الأقفال الحاكم: session → productVariants → branchStock. للجرد الافتتاحي نثبت
     // تكاليف الكتالوج حتى نهاية المعاملة، فلا يمكن أن يمر اعتماد على خليط تكاليف قديم/جديد.
     if (isOpening) await lockOpeningValuationVariants(tx, sessionId);
 
