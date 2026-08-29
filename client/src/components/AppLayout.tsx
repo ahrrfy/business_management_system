@@ -1,5 +1,6 @@
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { DisplayScaleControl } from "@/components/DisplayScaleControl";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -21,17 +22,14 @@ import {
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  Menu, Search, Home, ScanLine, Receipt,
-  ShoppingCart, Package, Printer, Boxes, Server,
-  Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
-  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards, ClipboardCheck,
-  History, Star, Images, FileCheck2, Sparkles,
-  type LucideIcon,
+  Menu, Search, Home, Printer, UserCircle2, ChevronLeft, LogOut, Check,
+  ClipboardCheck, History, Star,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { CASHIER_NAV_PATHS, INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
 import { ROLE_LABEL } from "@/lib/roles";
+import { APPLICATION_MODULES as NAV_LINKS } from "@/lib/moduleRegistry";
 import {
   NAV_FAVORITES_LIMIT,
   loadNavWorkspace,
@@ -74,8 +72,6 @@ function PrinterStatusButton({
   );
 }
 
-type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
-
 // تَنقّل الشريط الجانبي — مُسطَّح بالكامل (الموجة ٢، يونيو ٢٠٢٦): كل وَحدة = مَدخل واحد يَفتح
 // شاشة الوحدة، وتبويباتها الثانوية أعلى الشاشة (أزرار). لا مَجموعات قابلة للطيّ، لا تَمرير مُملّ.
 //  - لوحة التحكم تَبقى رابطاً مُستقلّاً أعلى القائمة.
@@ -89,66 +85,6 @@ type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
 //   ‏(ب) يومي مالي/تشغيلي: الخزينة ← التوصيل ← المخزون.
 //   ‏(ج) دوري (أسبوعي/عند الحاجة): المشتريات ← الموردون ← التقارير.
 //   ‏(د) متخصّص/نادر: الصيرفة ← الأصول ← الموارد ← الإقفال ← الإدارة والإعدادات (في الأسفل دائماً).
-const NAV_LINKS: NavLink[] = [
-  // (أ) الأكثر استعمالاً يومياً — تشغيل الواجهة الأمامية
-  { href: "/pos", label: "نقطة البيع", icon: ShoppingCart },
-  { href: "/price-checker", label: "قارئ الأسعار", icon: ScanLine },
-  { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer, module: "workorders" },
-  { href: "/crm", label: "CRM والعلاقات", icon: Users, module: "crm" },
-  // نظام المهام الموحّد (S2/T2.3) — module فقط (بلا roles) ⇒ مرآة hasModuleAccess تماماً كبوّابة
-  // الخادم tasksReadProcedure (requireModule("tasks","READ") — لا قائمة أدوار صريحة هناك أيضاً).
-  // ش٦ (١٩/٨): سطحُ «ما ينتظره منّي العمل». بلا بوّابة وحدة (protectedProcedure) — والمحتوى
-  // يُصفّى خادمياً بصلاحية كل مصدرٍ على حِدة، فلا يرى أحدٌ قراراً لا يملكه.
-  { href: "/my-work", label: "مطلوب مني الآن", icon: ClipboardCheck },
-  { href: "/tasks", label: "المهام والتذاكر", icon: ListChecks, module: "tasks" },
-  { href: "/invoices", label: "المبيعات", icon: Receipt, ...INVOICE_LIST_GATE },
-  // (ب) يومي مالي/تشغيلي
-  // الخزينة: كل تبويباتها مُقيَّدة (treasury/expenses ≥ READ في TreasuryHub) — بلا قيدٍ هنا يهبط
-  // أمين المخزن/الفني على hub بلا تبويبات = صفحة فارغة (نفس مبدأ الأصول/الموارد أدناه).
-  { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
-  // حساب البطاقة/البنك: رصيد أموال البطاقة (منفصل عن الدرج) — ماليّ يُحجَب عن الكاشير (module=reports كخدمته).
-  { href: "/card-account", label: "حساب البطاقة/البنك", icon: CreditCard, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
-  { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
-  // شاشة المندوب الذاتية — courier فقط (admin يراها عبر canSeeGate؛ المدير يدير عبر /delivery).
-  { href: "/my-deliveries", label: "توصيلاتي", icon: PackageCheck, roles: ["courier"], module: "courier" },
-  { href: "/store-admin", label: "طلبات المتجر", icon: Store, roles: ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"], module: "store" },
-  // ٢٩/٨ (بلاغ مالك): بندٌ واحدٌ فقط للاستوديو — دُمج «حملات التصوير» ضمنه بعد أن أُفرد
-  // في ٢٨/٨. المدير يجد إدارةَ الحملات عبر زرٍّ بارزٍ داخل شاشة الاستوديو، ولا حاجةَ
-  // لبندٍ منفصلٍ يضاعف طول القائمة الجانبية. المسار الفنّيّ `/catalog/image-studio/campaigns`
-  // يبقى محفوظاً — يُوصَل إليه من داخل الاستوديو ومن أيّ رابطٍ خارجيّ.
-  { href: "/catalog/image-studio", label: "استوديو المنتجات", icon: Images, roles: ["admin", "manager", "print_operator", "auditor"], module: "productStudio" },
-  // ٢٩/٨ — طابور المسودّات المولَّدة تلقائياً بعد اعتماد صور الاستوديو (الهجين). زرٌّ بجانب
-  // الاستوديو منطقيّ: تعمل الشاشتان في تسلسلٍ واحد — يعتمد صورةً هناك، فتنتظره مسودّة هنا.
-  { href: "/products/content-drafts", label: "مسودّات المحتوى", icon: Sparkles, roles: ["admin", "manager"], module: "products" },
-  { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
-  // (ج) دوري — أسبوعي/عند الحاجة
-  { href: "/purchases", label: "المشتريات", icon: Package },
-  { href: "/suppliers", label: "الموردون", icon: Building2 },
-  { href: "/gifts", label: "الهدايا والمجانيات", icon: Gift, roles: ["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"], module: "gifts" },
-  { href: "/digital-cards", label: "البطاقات الرقمية", icon: WalletCards, roles: ["admin", "manager", "accountant", "auditor"], module: "digital_cards" },
-  { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },
-  { href: "/chart-of-accounts", label: "شجرة الحسابات", icon: Landmark, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
-  { href: "/statutory-accounting", label: "الدليل المحاسبي النظامي", icon: FileCheck2, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
-  // (د) متخصّص/نادر — الإعدادات في الأسفل دائماً
-  // الصيرفة تتبع وحدة «الخزينة» (راوترها يسمح لـmanager/accountant + منح صريح) — والمحاسب
-  // القالبيّ يظهر عبر قائمة الأدوار، والمنح الصريح لغيره عبر module (تبويبات الصيرفة غير مُقيَّدة).
-  { href: "/exchange", label: "الصيرفة", icon: DollarSign, roles: ["admin", "manager", "accountant"], module: "treasury" },
-  // الأصول/الإعدادات: محاور بتبويبات managerOnly داخلها ⇒ لا نفتحها بمنح وحدة (وإلا
-  // وصل المستخدم لمحور بلا تبويبات مرئية = صفحة فارغة، مراجعة Codex). تبقى مديرية بالكامل.
-  { href: "/assets", label: "الأصول الثابتة", icon: Server, managerOnly: true },
-  // الموارد البشرية: تبويباتها صارت مرآة الخادم (HrHub) ⇒ تُفتح كبوّابته requireModule("hr","READ")
-  // — أدوار القالب (accountant/auditor قالباهما hr=READ) + المنح الصريح عبر module.
-  { href: "/hr", label: "الموارد البشرية", icon: Briefcase, roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
-  {
-    href: "/closing",
-    label: "الإقفال والرَقابة",
-    icon: Lock,
-    roles: ["admin", "manager", "accountant", "auditor"],
-    module: "reports",
-  },
-  { href: "/settings", label: "الإدارة والإعدادات", icon: Settings, managerOnly: true },
-];
-
 // نشِط = المسار يطابق الوَحدة أو يقع تحتها (تبويب ?tab أو شاشة تفصيل ‎/x/…). الحارس ‎+"/" يَمنع
 // التقاط بادئة خاطئة (‎/inventory لا يَلتقط ‎/inventory-movements).
 function isModuleActive(loc: string, href: string): boolean {
@@ -495,6 +431,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-0.5">
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
+            <DisplayScaleControl />
             <ThemeToggle />
           </div>
         </div>
@@ -518,6 +455,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-0.5">
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
+            <DisplayScaleControl />
             <ThemeToggle />
           </div>
         </header>

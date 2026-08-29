@@ -3,6 +3,7 @@ import { balanceOptionText } from "@/components/BalanceBadge";
 import { allocateLineTax } from "@/components/invoice";
 import { PurchaseIntegrityPanel } from "@/components/purchases/PurchaseIntegrityPanel";
 import { CopyInline } from "@/components/CopyButton";
+import { ActorCell } from "@/components/data-table/ActorCell";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
@@ -296,6 +297,7 @@ export default function Purchases() {
               columns: [
                 { key: "poNumber", header: "رقم الأمر" },
                 { key: "supplierName", header: "المورد" },
+                { key: "createdByName", header: "منشئ الأمر", map: (r) => r.createdByName ?? (r.createdBy ? `مستخدم #${r.createdBy}` : "بيانات قديمة") },
                 {
                   key: "orderDate",
                   header: "التاريخ",
@@ -352,6 +354,7 @@ export default function Purchases() {
                   <th className="p-2 text-right">المتبقي</th>
                   <th className="p-2">التسوية</th>
                   <th className="p-2">الحالة</th>
+                  <th className="p-2">منشئ الأمر</th>
                   <th className="p-2 text-center">إجراء</th>
                 </tr>
               </thead>
@@ -404,6 +407,9 @@ export default function Purchases() {
                       </td>
                       <td className="p-2">
                         <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[p.status] ?? "badge-status-pending"}`}>{PO_STATUS[p.status] ?? p.status}</span>
+                      </td>
+                      <td className="p-2">
+                        <ActorCell actor={{ userId: p.createdBy, name: p.createdByName, source: p.createdBy == null ? "legacy" : "user" }} />
                       </td>
                       <td className="p-2 text-center">
                         <RowActions
@@ -529,7 +535,10 @@ export default function Purchases() {
                 })}
                 {!query.isLoading && rows.length === 0 && (
                   <tr>
-                    <td colSpan={showBranchCol ? 11 : 10} className="p-6 text-center text-muted-foreground">
+                    <td
+                      colSpan={showBranchCol ? 12 : 11}
+                      className="p-6 text-center text-muted-foreground"
+                    >
                       لا أوامر شراء مطابقة.
                     </td>
                   </tr>
