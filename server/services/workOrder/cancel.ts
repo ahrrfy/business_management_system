@@ -5,6 +5,7 @@ import { accountingEntries, customers, orderPayments, receipts, shifts, users, w
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { applyMovement } from "../inventoryService";
+import { lockInventoryVariants } from "../inventory/stockLock";
 import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
@@ -186,6 +187,12 @@ export async function cancelWorkOrder(
       }
 
       let returnedCost = money(0);
+      await lockInventoryVariants(
+        tx,
+        mats
+          .filter((material) => (decisions.get(Number(material.id))?.returnBase ?? Number(material.baseQuantity)) > 0)
+          .map((material) => Number(material.variantId)),
+      );
       for (const m of mats) {
         const consumed = Number(m.baseQuantity);
         const d = decisions.get(Number(m.id)) ?? { returnBase: consumed, wasteBase: 0 };

@@ -13,6 +13,7 @@ import { branches, branchStock, inventoryMovements, productVariants, products, s
 import type { Tx } from "../db";
 import { getDb } from "../db";
 import { applyMovement } from "./inventoryService";
+import { lockInventoryVariants } from "./inventory/stockLock";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
@@ -68,7 +69,7 @@ export interface CreateTransferArgs {
  * الأخرى لا تدخل حساب هذا السند إطلاقاً.
  *
  * الترتيب التصاعديّ يبقى إلزامياً (لا يُمَسّ): هو ما يمنع `ER_LOCK_DEADLOCK` بين سندين
- * متزامنين يمسكان الأصناف نفسها، ويحفظ تسلسل «الرصيد ثمّ صفّ التكلفة» المتّبع في الشراء والإنتاج.
+ * متزامنين يمسكان الأصناف نفسها؛ mutex المتغيّر يُؤخذ قبل هذا القفل في كل مستدعٍ.
  */
 async function lockTransferBranchStock(
   tx: Tx,
@@ -153,7 +154,8 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   // ترتيب حتمي بالمتغيّر ⇒ سندان متزامنان يقفلان الصفوف بنفس الترتيب (لا deadlock).
   const sorted = [...a.items].sort((x, y) => x.variantId - y.variantId);
   const sortedVariantIds = sorted.map((it) => it.variantId);
-  // نفس ترتيب أقفال WAVG في الشراء/الإنتاج: أرصدة الصنف عالمياً ثم صف التكلفة.
+  await lockInventoryVariants(tx, sortedVariantIds);
+  // نفس ترتيب أقفال WAVG في الشراء/الإنتاج: mutex الصنف ثم أرصدة الفروع.
   // بذلك تكون لقطة الإرسال هي التكلفة الفعلية لحظة خروج البضاعة، لا قراءة سبقت استلاماً متزامناً.
   await lockTransferBranchStock(tx, sortedVariantIds, [a.fromBranchId, a.toBranchId]);
   const costRows = await tx
@@ -268,6 +270,7 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
   }
 
   const docLines = await tx.select().from(stockTransferLines).where(eq(stockTransferLines.transferId, a.transferId));
+  await lockInventoryVariants(tx, docLines.map((line) => Number(line.variantId)));
   const byId = new Map(docLines.map((l) => [Number(l.id), l]));
   if (a.lines.length !== docLines.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "يجب تسجيل كمية مستلَمة لكل أسطر السند (المطابقة الكاملة شرط الإقفال)" });
@@ -348,8 +351,8 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
         });
       }
     }
-    // لقطة القيمة نفسها من الإرسال، لكن الملكية تُحسم تحت قفل بعد أقفال branchStock التي أخذتها
-    // حركات الاستلام. هذا يحافظ على ترتيب WAVG (stock ثم variant) ويمنع تبديل وسم الأمانة أثناء القيد.
+    // لقطة القيمة نفسها من الإرسال؛ mutex المتغيّرات مأخوذ قبل حركات الاستلام، فتُحسم
+    // الملكية بلا عكسٍ لترتيب WAVG ولا تبديل وسم الأمانة أثناء القيد.
     const ownershipRows = await tx
       .select({
         variantId: productVariants.id,
@@ -495,6 +498,7 @@ export async function cancelStockTransfer(tx: Tx, a: { transferId: number; actor
   }
 
   const docLines = await tx.select().from(stockTransferLines).where(eq(stockTransferLines.transferId, a.transferId));
+  await lockInventoryVariants(tx, docLines.map((line) => Number(line.variantId)));
   const sorted = [...docLines].sort((x, y) => Number(x.variantId) - Number(y.variantId));
   for (const dl of sorted) {
     await applyMovement(tx, {

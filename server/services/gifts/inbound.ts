@@ -2,7 +2,7 @@
 // المتوسّط الجديد = القيمة الدفترية القديمة ÷ الكمية بعد الإضافة، لأنّ المجّاني يضيف قيمةً صفراً)، **بلا قيد
 // PURCHASE ولا دين للمورّد**. الوحدة تُحوَّل لوحدة الأساس؛ يُرفَض البكج/الخدميّ (لا مخزون ذاتيّ). ذرّيّ تحت قفل.
 import { TRPCError } from "@trpc/server";
-import { eq, inArray, sql } from "drizzle-orm";
+import { asc, eq, inArray, sql } from "drizzle-orm";
 import { branches, branchStock, giftVoucherLines, giftVouchers, productVariants, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { applyMovement, convertToBaseQuantity, isBundleVariant, isServiceVariant } from "../inventoryService";
@@ -103,6 +103,13 @@ export async function receiveInboundGift(input: ReceiveInboundGiftInput, actor: 
     if (sellable) {
       // ضمان صفّ الرصيد + قفله قبل قراءة الـSUM (يمنع سباق المتغيّر الجديد + يوحّد ترتيب القفل — تدقيق Codex P1).
       await ensureAndLockBranchStock(tx, variantIds, input.branchId);
+      // WAVG عالمي: بعد mutex المتغيّرات نقفل أرصدتها في **كل** الفروع، لا فرع الهدية فقط.
+      await tx
+        .select({ id: branchStock.id })
+        .from(branchStock)
+        .where(inArray(branchStock.variantId, variantIds))
+        .orderBy(asc(branchStock.variantId), asc(branchStock.branchId))
+        .for("update");
       // إجمالي المخزون لكل صنف عبر كل الفروع (WAVG صفة عالمية للصنف ⇒ الوزن بالإجمالي).
       const stockRows = await tx
         .select({ variantId: branchStock.variantId, totalQty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })

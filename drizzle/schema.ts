@@ -3842,7 +3842,10 @@ export const productStudioCampaigns = mysqlTable(
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
-    status: mysqlEnum("status", ["DRAFT", "ACTIVE", "COMPLETED", "CANCELLED"])
+    // PAUSED = «تجميد ذكيّ» بقرار المالك ٢٨/٨: تختفي الحملة من مسار المصوّر (فلترُ ACTIVE
+    // القائم يكفي)، وتبقى المهام المُسنَدة سلفاً قابلةً للإتمام والاعتماد — لا نطمس عمل
+    // بدأه موظف تبعاً لقرارٍ إداريّ مؤقّت. الاستئناف بضغطةِ زرّ (PAUSED→ACTIVE).
+    status: mysqlEnum("status", ["DRAFT", "ACTIVE", "PAUSED", "COMPLETED", "CANCELLED"])
       .default("DRAFT")
       .notNull(),
     startsAt: timestamp("startsAt"),

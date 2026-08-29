@@ -11,6 +11,7 @@ import {
   reservationStock,
 } from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
+import { lockInventoryVariants } from "../inventory/stockLock";
 
 /**
  * لقطة المخزون الحاكمة لكل (variant × branch).
@@ -67,12 +68,37 @@ export interface BundleCapacity {
 
 type QueryDb = DB | Tx;
 
+/** يوسّع اتحاد البكجات ومكوّناتها قبل أول mutex، كي لا نقفل bundle ثم مكوّناً أدنى. */
+async function availabilityVariantClosure(db: QueryDb, seedIds: number[]): Promise<number[]> {
+  const all = new Set<number>();
+  let frontier = Array.from(new Set(seedIds)).sort((a, b) => a - b);
+  while (frontier.length) {
+    const current = frontier.filter((id) => !all.has(id));
+    if (!current.length) break;
+    current.forEach((id) => all.add(id));
+    const bundles = await db
+      .select({ variantId: productVariants.id })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(and(inArray(productVariants.id, current), eq(products.isBundle, true)));
+    if (!bundles.length) break;
+    const components = await db
+      .select({ componentVariantId: bundleComponents.componentVariantId })
+      .from(bundleComponents)
+      .where(inArray(bundleComponents.bundleVariantId, bundles.map((row) => Number(row.variantId))));
+    frontier = components.map((row) => Number(row.componentVariantId));
+  }
+  return Array.from(all).sort((a, b) => a - b);
+}
+
 export interface LoadVariantAvailabilityOptions {
   /**
    * قراءة حاليّة مع قفل حتمي للمتغيّرات. تستعملها كتابة الطلب الإلكتروني كي تتسلسل
    * محاولتان على آخر قطعة حتى لو بدأت كلتاهما قبل التزام الأخرى تحت REPEATABLE READ.
    */
   lock?: boolean;
+  /** داخلي: استدعاء الجذر قفل اتحاد البكج/المكوّنات مسبقاً. */
+  lockVariantsPrelocked?: boolean;
   /** الطلب الجاري إدراجه يخصّص مخزونه في صفوفه؛ نستثنيه عند فحصه الذاتي فقط. */
   excludeOnlineOrderId?: number;
 }
@@ -263,8 +289,11 @@ export async function loadVariantAvailability(
   ancestry: ReadonlySet<number> = new Set(),
 ): Promise<Map<number, VariantAvailability>> {
   const ids = Array.from(new Set(variantIds.map(Number).filter((id) =>
-    Number.isSafeInteger(id) && id > 0 && !ancestry.has(id))));
+    Number.isSafeInteger(id) && id > 0 && !ancestry.has(id)))).sort((a, b) => a - b);
   if (!ids.length) return new Map();
+  if (options.lock && !options.lockVariantsPrelocked) {
+    await lockInventoryVariants(db as Tx, await availabilityVariantClosure(db, ids));
+  }
 
   const directQuery = db
     .select({
@@ -286,8 +315,8 @@ export async function loadVariantAvailability(
     )
     .where(inArray(productVariants.id, ids))
     .orderBy(asc(productVariants.id));
-  // قفل productVariants المضمون الوجود بترتيب id هو mutex الحتمي لكل محاولات
-  // تخصيص المتجر، حتى عندما لا يوجد branchStock بعد. القراءة القافلة Current Read.
+  // productVariants المضمون الوجود هو mutex الحاكم، بترتيب id؛ بعده فقط تُقفل أرصدة
+  // الفروع في مسارات الحركة/WAVG. القراءة القافلة Current Read.
   const directRows = options.lock ? await directQuery.for("update") : await directQuery;
   const onlineAllocated = await loadOnlineAllocatedBase(db, branchId, ids, options);
 
@@ -327,7 +356,13 @@ export async function loadVariantAvailability(
   const nextAncestry = new Set(ancestry);
   for (const bundleId of bundleIds) nextAncestry.add(bundleId);
   const componentAvailability = componentIds.length
-    ? await loadVariantAvailability(db, branchId, componentIds, options, nextAncestry)
+    ? await loadVariantAvailability(
+        db,
+        branchId,
+        componentIds,
+        { ...options, lockVariantsPrelocked: true },
+        nextAncestry,
+      )
     : new Map<number, VariantAvailability>();
   // بطاقة تعريف المكوّن: تُقرأ مرّةً واحدةً لكل الصفحة (لا N+1) كي يقول التفسير **أيّ صنفٍ**
   // يحدّ البكج — الرقم وحده لا يخبر الموظّف بماذا يشتري ليُطلق البكج.

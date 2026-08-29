@@ -7,6 +7,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { assertValidUnitFactors } from "./unitFactors";
 import { toDbMoney } from "../money";
 import { postCostRevaluation } from "../costRevaluation";
+import { lockInventoryVariants } from "../inventory/stockLock";
 import type { PriceTier } from "../pricing";
 import { type Actor, withTx } from "../tx";
 import {
@@ -100,6 +101,7 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       .map((unit) => unit.id);
     await assertNoActiveOnlineOrderUnitChanges(tx, protectedUnitIds);
 
+    await lockInventoryVariants(tx, input.variants.map((variant) => variant.id));
     await tx
       .update(products)
       .set({
@@ -117,7 +119,10 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       })
       .where(eq(products.id, input.productId));
 
-    for (const v of input.variants) {
+    // أقفال التكلفة متعددة المتغيّرات بترتيب المعرّف نفسه في الشراء/WAVG؛ ترتيب الطلب
+    // واجهيّ ولا يجوز أن يصنع دورة أقفال مع طلب آخر معكوس.
+    const variantsInLockOrder = [...input.variants].sort((a, b) => a.id - b.id);
+    for (const v of variantsInLockOrder) {
       // Codex جولة٧ P1: ارفض معرّفَ/اسمَ وحدةٍ مكرّراً في الطلب **قبل** أيّ فحص — وإلّا كتب المُحدِّث الصفّ
       // نفسه مرّتين (الثانية تَجُبّ الأولى) فيُفقَد الأساس رغم اجتياز فحص «أساسٍ واحد» والحارس.
       const submittedIds = v.units.filter((u) => u.id != null).map((u) => Number(u.id));
@@ -149,11 +154,14 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       // by:"id" — هذا المسار يُحدِّث بالمعرّف (إعادة تسميةٍ في مكانها آمنة)؛ فغيابُ المعرّف (صفٌّ جديد)
       // استبدالٌ يُرفَض، ولا نرجع لمقارنة الاسم (Codex جولة٥ P1).
       const baseU = v.units.find((u) => u.isBaseUnit);
+      // H3 (تدقيق ٢٧/٧): الحارس يملك ترتيب القفل الحاكم variant→branchStock، ويتحقّق
+      // ذرّياً أن لقطة «قبل» ما زالت حيّة قبل أن يسمح بالكتابة. استدعاؤه قبل UPDATE يمنع
+      // طمس WAVG متزامن ولا يعكس ترتيب أقفال الشراء/الإنتاج.
+      const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1))[0];
+      // المتغيّرات كلّها مقفولة أعلاه، لذا نحافظ على أولوية تشخيص وحدة الأساس بلا
+      // إنشاء ترتيب أقفال موازٍ لمسارات WAVG.
       await assertBaseUnitStable(tx, v.id, { by: "id", unitId: baseU?.id ?? null });
-
-      // Variant header. H3 (تدقيق ٢٧/٧): نلتقط التكلفة القديمة قبل التحديث لإصدار قيد إعادة تقييم.
-      // .for("update"): قفل صفّ المتغيّر قبل قراءة/تحديث التكلفة ⇒ لا «قبل» بائتٌ في أثر التكلفة عند التزامن (Codex).
-      const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1).for("update"))[0];
+      await postCostRevaluation(tx, v.id, oldV?.costPrice, toDbMoney(v.costPrice), actor, v.costChangeReason);
       await tx
         .update(productVariants)
         .set({
@@ -164,9 +172,6 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
           costPrice: toDbMoney(v.costPrice),
         })
         .where(eq(productVariants.id, v.id));
-      // تغيّر التكلفة على صنفٍ له رصيد ⇒ قيد إعادة تقييم (يفسّر حركة الحقوق + حارس الفترة)؛ صفريّ الأثر إن كان الفرق/الرصيد صفراً.
-      await postCostRevaluation(tx, v.id, oldV?.costPrice, toDbMoney(v.costPrice), actor, v.costChangeReason);
-
       // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١.
       assertValidUnitFactors(v.units);
 

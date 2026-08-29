@@ -1840,28 +1840,35 @@
 			"idx": 283,
 			"version": "5",
 			"when": 1788052335000,
-			"tag": "0283_work_order_events",
+			"tag": "0283_add_paused_studio_campaign_status",
 			"breakpoints": true
 		},
 		{
 			"idx": 284,
 			"version": "5",
 			"when": 1788052336000,
-			"tag": "0284_delivery_pricing_rules",
+			"tag": "0284_work_order_events",
 			"breakpoints": true
 		},
 		{
 			"idx": 285,
 			"version": "5",
 			"when": 1788052337000,
-			"tag": "0285_courier_commission_rules",
+			"tag": "0285_delivery_pricing_rules",
 			"breakpoints": true
 		},
 		{
 			"idx": 286,
 			"version": "5",
 			"when": 1788052338000,
-			"tag": "0286_invoice_events",
+			"tag": "0286_courier_commission_rules",
+			"breakpoints": true
+		},
+		{
+			"idx": 287,
+			"version": "5",
+			"when": 1788052339000,
+			"tag": "0287_invoice_events",
 			"breakpoints": true
 		}
 	]

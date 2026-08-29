@@ -4,6 +4,7 @@ import Decimal from "decimal.js";
 import { asc, eq, inArray, sql } from "drizzle-orm";
 import { branchStock, productVariants, productionLines, productionOrders } from "../../../drizzle/schema";
 import { applyMovement } from "../inventoryService";
+import { lockInventoryVariants } from "../inventory/stockLock";
 import { postEntry } from "../ledgerService";
 import {
   createPostingIntent,
@@ -25,6 +26,7 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
     const lines = await tx.select().from(productionLines).where(eq(productionLines.productionOrderId, productionOrderId));
     const outs = lines.filter((l: any) => l.direction === "OUTPUT").sort((a: any, b: any) => Number(a.variantId) - Number(b.variantId));
     const ins = lines.filter((l: any) => l.direction === "INPUT").sort((a: any, b: any) => Number(a.variantId) - Number(b.variantId));
+    await lockInventoryVariants(tx, outs.concat(ins).map((line: any) => Number(line.variantId)));
 
     // اجمع مساهمة كل مخرَج في وعاء WAVG. الصيغة العكسية:
     // oldValue = currentQty*currentCost - producedAllocatedCost؛ oldCost = oldValue/(currentQty-producedQty).

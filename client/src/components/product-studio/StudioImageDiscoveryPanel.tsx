@@ -102,8 +102,10 @@ export function StudioImageDiscoveryPanel({
           </div>
         )}
 
-        {/* عدّادات KPI — نقرةٌ لتفعيل/إبطال الحالة كفلتر */}
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        {/* عدّادات KPI — نقرةٌ لتفعيل/إبطال الحالة كفلتر. مضغوطةٌ (p-2 + text-base) بعد
+            بلاغ المالك «حجم البطاقات كبيرة» ٢٨/٨: البطاقة أزرارٌ وليست بيانات رأس، فالكثافة
+            أهمّ من الحضور. min-h-11 محفوظ لبقاء منطقة النقر ضمن معيار اللمس (٤٤px). */}
+        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
           {kpiCards.map((k) => {
             const active = selectedStates.includes(k.state);
             return (
@@ -111,12 +113,12 @@ export function StudioImageDiscoveryPanel({
                 key={k.state}
                 type="button"
                 onClick={() => setSelectedStates((cur) => (active ? cur.filter((s) => s !== k.state) : [...cur, k.state]))}
-                className={`min-h-11 rounded-md border p-3 text-start transition-colors ${active ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}
+                className={`min-h-11 rounded-md border p-2 text-start transition-colors ${active ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}
               >
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                   {k.icon} {k.label}
                 </div>
-                <div className="mt-1 text-xl font-bold">{k.value}</div>
+                <div className="mt-0.5 text-base font-bold">{k.value}</div>
               </button>
             );
           })}
@@ -261,7 +263,14 @@ export function StudioImageDiscoveryPanel({
                     />
                     <div className="min-w-0 flex-1 space-y-1">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="min-w-0 truncate text-sm font-medium">{item.name}</span>
+                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                          <span className="min-w-0 truncate text-sm font-medium">{item.name}</span>
+                          {item.isBundle && (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400" title="بكج مركَّب من مكوّناتٍ متعدّدة">
+                              <Package aria-hidden className="size-3" /> بكج
+                            </span>
+                          )}
+                        </span>
                         <Badge variant={STATE_VARIANT[item.state]}>{STATE_LABEL[item.state]}</Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">
@@ -273,7 +282,6 @@ export function StudioImageDiscoveryPanel({
                             {item.variantsMissing > 0 && <span className="text-[var(--sem-warn)]"> · {item.variantsMissing} بدون</span>}
                           </>
                         )}
-                        {item.isBundle && <> · بكج</>}
                       </p>
                     </div>
                   </li>

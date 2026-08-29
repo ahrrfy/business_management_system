@@ -193,7 +193,7 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
     // يرمي فوراً إن كانت الحملة مغلقة/غير موجودة، ويحفظ الميزانيّة لفحصها في المرحلة ٢ بعد حساب التكلفة.
     const campaignBudget = input.campaignId != null ? await lockCampaignRow(tx, input.campaignId) : null;
 
-    // قفل branchStock قبل productVariants (توحيد الترتيب مع الوارد/الشراء ⇒ لا deadlock — تدقيق Codex P1).
+    // mutex المتغيّرات ثم branchStock (الترتيب الحاكم مع الوارد/الشراء).
     await ensureAndLockBranchStock(tx, variantIds, input.branchId);
     const costMap = await lockCosts(tx, variantIds);
 
@@ -302,7 +302,7 @@ export async function approveGift(giftId: number, actor: Actor): Promise<Approve
     const lineRows = await tx.select().from(giftVoucherLines).where(eq(giftVoucherLines.giftVoucherId, giftId));
     if (!lineRows.length) throw new TRPCError({ code: "BAD_REQUEST", message: "سند الهدية بلا أسطر" });
     const variantIds = Array.from(new Set(lineRows.map((l) => Number(l.variantId)))).sort((a, b) => a - b);
-    // قفل branchStock قبل productVariants (توحيد الترتيب — تدقيق Codex P1).
+    // mutex المتغيّرات ثم branchStock (الترتيب الحاكم).
     await ensureAndLockBranchStock(tx, variantIds, Number(gift.branchId));
     const costMap = await lockCosts(tx, variantIds);
 

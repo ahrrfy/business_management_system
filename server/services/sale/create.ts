@@ -24,6 +24,7 @@ import {
 } from "../bundleService";
 import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
+import { lockInventoryVariants } from "../inventory/stockLock";
 import { resolveContractPrices } from "../contractPriceService";
 import {
   getProductCategoryIds,
@@ -237,15 +238,14 @@ export async function createSaleInTx(
 
     // 4. Price/cost/convert each line.
     // D1 (٣٠/٦): حلّ N+1 — قراءة كل المتغيّرات بـinArray دفعةً واحدةً قبل الحلقة بدل
-    // round-trip لكل سطر. لا قفل (.for("update")) هنا (نقرأ تكلفة + isActive فقط — متغيّرات
-    // الأسعار/التفعيل لا تتعارض مع البيع؛ الأقفال الفعليّة للمخزون لاحقاً عبر applyMovement).
+    // round-trip لكل سطر. التكلفة لا تُقرأ هنا؛ تُلتقط لاحقاً بعد قفل اتحاد الأصناف
+    // ومكوّنات البكج ومواد الخدمة، كي تطابق COGS حركة المخزون ذاتها.
     // قبل: ٢٠ سطر = ٢٠ استعلاماً متسلسلاً. بعد: استعلام واحد ⇒ زمن المعاملة ينخفض دراماتيكياً
     // ونافذة الأقفال على shifts/customers تَنكمش (انكماش هذه النافذة = أقلّ تنافس عند الذروة).
     const uniqueVariantIds = Array.from(new Set(input.lines.map((l) => l.variantId)));
     const variantRows = await tx
       .select({
         id: productVariants.id,
-        costPrice: productVariants.costPrice,
         isActive: productVariants.isActive,
         productType: products.productType,
         productName: products.name,
@@ -261,7 +261,7 @@ export async function createSaleInTx(
     const variantById = new Map<number, { costPrice: string; isActive: boolean | null; productType: string | null; productActive: boolean | null; productName: string; invoiceLabel: string | null; shortTitle: string | null }>();
     for (const r of variantRows) {
       variantById.set(Number(r.id), {
-        costPrice: String(r.costPrice),
+        costPrice: "0",
         isActive: r.isActive,
         productType: r.productType ?? null,
         productActive: r.productActive,
@@ -309,7 +309,7 @@ export async function createSaleInTx(
     const kindByVariant: Map<number, VariantKind> = await classifyVariants(tx, uniqueVariantIds);
     const bundleVariantIds = uniqueVariantIds.filter((vid) => kindByVariant.get(vid) === "BUNDLE");
     const bundleDefs = await getBundleDefinitions(tx, bundleVariantIds);
-    const bundleUnitCosts = await computeBundleUnitCosts(tx, bundleVariantIds, bundleDefs);
+    let bundleUnitCosts = new Map<number, string>();
 
     // الخدمات في مسار البيع المتقدّم (١٢/٨/٢٦): الخدمة لا تملك مخزوناً ذاتياً — تكلفتها = مجموع
     // كلفة موادها المُستهلَكة، ومخزون كل مادة يُخصم بحركة OUT مستقلّة (allowNegative=true،
@@ -318,6 +318,7 @@ export async function createSaleInTx(
     const serviceVariantIds = uniqueVariantIds.filter((vid) => kindByVariant.get(vid) === "SERVICE");
     const serviceRecipe = new Map<number, Array<{ inputVariantId: number; qtyPerOutputBase: string }>>();
     const materialCostByVariant = new Map<number, string>();
+    const serviceMaterialIds = new Set<number>();
     if (serviceVariantIds.length) {
       const recipeHeads = await tx
         .select({ id: productionRecipes.id, outputVariantId: productionRecipes.outputVariantId })
@@ -351,15 +352,39 @@ export async function createSaleInTx(
         if (rid != null) serviceRecipe.set(svid, linesByRecipe.get(rid) ?? []);
       }
       // كلفة كل مادة (snapshot لحظة البيع من productVariants.costPrice، نمط printSaleService).
-      const materialIds = new Set<number>();
-      for (const lines of Array.from(serviceRecipe.values())) for (const rl of lines) materialIds.add(rl.inputVariantId);
-      if (materialIds.size) {
-        const matRows = await tx
-          .select({ id: productVariants.id, cost: productVariants.costPrice })
-          .from(productVariants)
-          .where(inArray(productVariants.id, Array.from(materialIds)));
-        for (const r of matRows) materialCostByVariant.set(Number(r.id), String(r.cost ?? "0"));
+      for (const lines of Array.from(serviceRecipe.values())) {
+        for (const rl of lines) serviceMaterialIds.add(rl.inputVariantId);
       }
+    }
+
+    const bundleComponentIds = new Set<number>();
+    for (const defs of Array.from(bundleDefs.values())) {
+      for (const component of defs) bundleComponentIds.add(component.componentVariantId);
+    }
+    await lockInventoryVariants(
+      tx,
+      uniqueVariantIds
+        .concat(Array.from(bundleComponentIds))
+        .concat(Array.from(serviceMaterialIds)),
+    );
+
+    // كل لقطات التكلفة بعد mutex الحاكم: لا تستطيع إعادة تقييم أو WAVG أن تقع بين COGS
+    // وبين خصم المخزون في الفاتورة نفسها.
+    const lockedLineCosts = await tx
+      .select({ id: productVariants.id, cost: productVariants.costPrice })
+      .from(productVariants)
+      .where(inArray(productVariants.id, uniqueVariantIds));
+    for (const r of lockedLineCosts) {
+      const current = variantById.get(Number(r.id));
+      if (current) current.costPrice = String(r.cost ?? "0");
+    }
+    bundleUnitCosts = await computeBundleUnitCosts(tx, bundleVariantIds, bundleDefs);
+    if (serviceMaterialIds.size) {
+      const matRows = await tx
+        .select({ id: productVariants.id, cost: productVariants.costPrice })
+        .from(productVariants)
+        .where(inArray(productVariants.id, Array.from(serviceMaterialIds)));
+      for (const r of matRows) materialCostByVariant.set(Number(r.id), String(r.cost ?? "0"));
     }
     // حارس صحّة: كل بكجٍ ورد كسطر بيع يجب أن يملك وصفة (على الأقل مكوّناً واحداً) — منتج بلا وصفة
     // مسجَّل isBundle=true بحادثة سيّئة (ملفَّق يدوياً أو حالة سباق). نرفض البيع صراحةً بدل حساب صفر.
@@ -905,7 +930,11 @@ export async function createSaleInTx(
       aggregated.set(op.variantId, (aggregated.get(op.variantId) ?? 0) + op.baseQuantity);
     }
     const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
-
+    const serviceMaterialAgg = new Map<number, number>();
+    for (const op of serviceMaterialOps) {
+      serviceMaterialAgg.set(op.variantId, (serviceMaterialAgg.get(op.variantId) ?? 0) + op.baseQuantity);
+    }
+    const serviceMaterialVariantIds = Array.from(serviceMaterialAgg.keys()).sort((a, b) => a - b);
     // «وضع الافتتاح» (ش٢ ١٩/٧): بيعٌ مسدّد بالكامل نقداً أو بالبطاقة من قناة POS
     // يُسمح له بالنزول تحت الصفر للصنف. البطاقة سداد فوري كامل مثل النقد، لكن أثرها
     // المالي يبقى في خزينة البطاقة ولا يدخل درج الكاشير.
@@ -1013,13 +1042,8 @@ export async function createSaleInTx(
     //      variantId تصاعدياً (ثبات الأقفال). التجميع per-variant يمنع حركتين لنفس المادة من
     //      خدمتين مختلفتين. المرجع INVOICE مطابق للأصناف — كشف الأعمار/الأعمار الحمراء يجدها.
     if (serviceMaterialOps.length) {
-      const matAgg = new Map<number, number>();
-      for (const op of serviceMaterialOps) {
-        matAgg.set(op.variantId, (matAgg.get(op.variantId) ?? 0) + op.baseQuantity);
-      }
-      const matVids = Array.from(matAgg.keys()).sort((a, b) => a - b);
-      for (const vid of matVids) {
-        const qty = matAgg.get(vid)!;
+      for (const vid of serviceMaterialVariantIds) {
+        const qty = serviceMaterialAgg.get(vid)!;
         if (qty <= 0) continue;
         await applyMovement(tx, {
           variantId: vid,
