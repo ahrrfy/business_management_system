@@ -4,22 +4,19 @@
 //     exportSpec={{ filename: "العملاء", rows, columns: [...] }}
 //     onImport={() => setImportOpen(true)} add={{ href: "/customers/new", label: "عميل جديد" }} />
 import * as React from "react";
-import { FileSpreadsheet, Loader2, Plus, Printer, RefreshCcw, Search, SlidersHorizontal, Upload, X } from "lucide-react";
+import { FileSpreadsheet, Loader2, MoreHorizontal, Plus, Printer, RefreshCcw, Search, SlidersHorizontal, Upload, X } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { notify } from "@/lib/notify";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { cn } from "@/lib/utils";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
+import { WorkspaceBar } from "@/components/workspace/OperationalWorkspace";
 
 export type ExportSpec<T> = {
   filename: string;
@@ -38,9 +35,17 @@ export type ExportSpec<T> = {
 };
 
 type AddSpec = { label?: string } & ({ href: string } | { onClick: () => void });
+type SecondaryAction = {
+  label: string;
+  onSelect: () => void;
+  icon?: React.ReactNode;
+  disabled?: boolean;
+};
 
 export type ListToolbarProps<T> = {
   title?: React.ReactNode;
+  /** يرسم عنوان الشريط كعنوان الصفحة الدلالي حين يكون هو الرأس الوحيد للشاشة. */
+  pageTitle?: boolean;
   count?: number;
   loading?: boolean;
   search?: {
@@ -53,6 +58,8 @@ export type ListToolbarProps<T> = {
     /** ٢٤/٨ — تركيزٌ تلقائيّ عند تركيب الشاشة. مفيدٌ للشاشات المفتوحة يومياً للكتابة الفوريّة. */
     autoFocus?: boolean;
   };
+  /** فلاتر عالية التكرار تبقى في الصف الثاني (فترة/فرع مثلاً)؛ البقية داخل اللوحة الجانبية. */
+  quickFilters?: React.ReactNode;
   filters?: React.ReactNode;
   /** عدد الفلاتر المفعّلة حالياً، من دون حقل البحث. */
   activeFilterCount?: number;
@@ -68,14 +75,18 @@ export type ListToolbarProps<T> = {
   refreshing?: boolean;
   refreshLabel?: string;
   add?: AddSpec;
+  /** أوامر قليلة التكرار تُدمج مع قائمة «المزيد» بدلاً من مزاحمة الإجراء الأساسي. */
+  secondaryActions?: SecondaryAction[];
   children?: React.ReactNode;
 };
 
 export function ListToolbar<T>({
   title,
+  pageTitle = false,
   count,
   loading,
   search,
+  quickFilters,
   filters,
   activeFilterCount = 0,
   onResetFilters,
@@ -89,19 +100,17 @@ export function ListToolbar<T>({
   refreshing = false,
   refreshLabel = "تحديث",
   add,
+  secondaryActions,
   children,
 }: ListToolbarProps<T>) {
   const formats = exportSpec?.formats ?? ["xlsx"];
   const [exporting, setExporting] = React.useState(false);
   const [filtersOpen, setFiltersOpen] = React.useState(false);
-  const filtersId = React.useId();
-  const barcodeInput = useBarcodeInput(
-    (code) => search?.onChange(code),
-    { enabled: Boolean(search?.barcode) },
-  );
+  const barcodeInput = useBarcodeInput((code) => search?.onChange(code), {
+    enabled: Boolean(search?.barcode),
+  });
   // مع fetchAll نُتيح التصدير حتى لو كانت الصفحة الحالية فارغة (قد توجد نتائج في صفحات أخرى).
-  const exportDisabled =
-    !exportSpec || exporting || (!exportSpec.fetchAll && exportSpec.rows.length === 0);
+  const exportDisabled = !exportSpec || exporting || (!exportSpec.fetchAll && exportSpec.rows.length === 0);
 
   /**
    * كشف الفقدان الصامت: القائمة مُصفَّحة خادمياً (`count > rows.length`) ولا `fetchAll`.
@@ -109,11 +118,7 @@ export function ListToolbar<T>({
    * كامل المطابقات — بلاغ المالك ٦/٨: «فاتورة ٢٠١ من سقف ٢٠٠ لا تُرى ولا تُصدَّر ولا تُبحَث».
    * نعرض شارة توضّح النطاق ونصّاً في tooltip. أفضل: مرّر `fetchAll` للتصدير الكامل.
    */
-  const willExportPartial = Boolean(
-    exportSpec?.fetchAll == null &&
-      count != null &&
-      count > (exportSpec?.rows.length ?? 0),
-  );
+  const willExportPartial = Boolean(exportSpec?.fetchAll == null && count != null && count > (exportSpec?.rows.length ?? 0));
   const partialExportHint = willExportPartial
     ? `سيُصدَّر ${(exportSpec?.rows.length ?? 0).toLocaleString("ar-IQ-u-nu-latn")} من ${(count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} — الصفحة المعروضة فقط.`
     : undefined;
@@ -154,173 +159,149 @@ export function ListToolbar<T>({
     exportRows(() => fetchAll().finally(() => setExporting(false)), opts);
   }
 
-  // إعادة التصميم (١٢/٨/٢٦): صفَّان بنيوياً — عنوان+إجراءات فوق، صندوق فلاتر مؤطَّر تحت. زرّ
-  // «الفلاتر» المنسدل السابق كان يكتب `data-open` بلا CSS ⇒ منسدلٌ موهوم لا أثر له. الآن
-  // الفلاتر ظاهرة داخل قسمها الخاصّ بشكلٍ متّسق. زرّ الطيّ يظهر على sm فأدنى فقط (مساحة الشاشة
-  // ضيقة)، ومسحُ الفلاتر داخل القسم لا يزاحم الإجراءات.
-  const hasFilterSection = Boolean(search || filters || activeFilterCount > 0 || onResetFilters);
-  const [filtersCollapsed, setFiltersCollapsed] = React.useState(false);
-  void filtersOpen; void setFiltersOpen; void filtersId; // — أُبقيَ الـuseState/useId للتوافق مع المستهلكين.
-
+  // عقد مساحة العمل: صف أوامر واحد + صف بحث/فلاتر واحد. الفلاتر الثانوية داخل Sheet ولا
+  // تُنشئ صفوفاً إضافية فوق البيانات، والإجراءات الأقل تكراراً داخل قائمة «المزيد».
+  const hasFilterSection = Boolean(search || quickFilters || filters || activeFilterCount > 0 || onResetFilters);
   const showResetButton = onResetFilters && (activeFilterCount > 0 || Boolean(search?.value.trim()));
+  const hasSecondaryActions = Boolean(onImport || onRefresh || exportSpec || onPrint || secondaryActions?.length);
 
   return (
-    <div className="flex flex-col gap-2.5">
-      {/* الصفّ ١: عنوان+عدد ⟵ إجراءات (استيراد/تحديث/تصدير/طباعة/إضافة). البحث والفلاتر انتقلا للصفّ ٢. */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          {title != null && <span className="text-base font-semibold">{title}</span>}
-          {(count != null || loading) && (
-            <span className="text-xs text-muted-foreground">
-              {loading ? "جارٍ التحميل…" : `${(count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} صفّ`}
-            </span>
-          )}
+    <div className="flex flex-col gap-2" data-operational-toolbar>
+      <WorkspaceBar variant="command" label="أوامر القائمة" className="justify-between overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex min-w-0 shrink-0 items-center gap-2">
+          {title != null && (pageTitle ? <h1 className="text-base font-semibold">{title}</h1> : <span className="text-base font-semibold">{title}</span>)}
+          {(count != null || loading) && <span className="shrink-0 text-xs text-muted-foreground">{loading ? "جارٍ التحميل…" : `${(count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} صفّ`}</span>}
         </div>
-        <div className="list-toolbar-actions flex flex-wrap items-center gap-2">
-          {onImport && (
-            <Button variant="outline" size="sm" onClick={onImport}>
-              <Upload className="size-4" />
-              {importLabel}
-            </Button>
-          )}
-          {onRefresh && (
-            <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
-              <RefreshCcw aria-hidden className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
-              {refreshing ? "جارٍ التحديث…" : refreshLabel}
-            </Button>
-          )}
-          {exportSpec &&
-            (formats.length > 1 ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" disabled={exportDisabled} title={partialExportHint}>
-                    {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
-                    {exporting ? "جارٍ التحضير…" : "تصدير"}
-                    {willExportPartial && (
-                      <span className="ms-1 rounded bg-[var(--sem-warn-bg)] px-1 text-[10px] font-bold text-[var(--sem-warn)]">جزئي</span>
-                    )}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  {formats.includes("xlsx") && (
-                    <DropdownMenuItem onSelect={() => doExport("xlsx")}>Excel (.xlsx)</DropdownMenuItem>
-                  )}
-                  {formats.includes("csv") && (
-                    <DropdownMenuItem onSelect={() => doExport("csv")}>CSV (.csv)</DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={exportDisabled}
-                onClick={() => doExport(formats[0])}
-                title={partialExportHint}
-              >
-                {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
-                {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
-                {willExportPartial && (
-                  <span className="ms-1 rounded bg-[var(--sem-warn-bg)] px-1 text-[10px] font-bold text-[var(--sem-warn)]">جزئي</span>
-                )}
-              </Button>
-            ))}
-          {onPrint && (
-            <Button variant="outline" size="sm" onClick={onPrint} disabled={printDisabled}>
-              <Printer className="size-4" />
-              {printLabel}
-            </Button>
-          )}
+        <div className="list-toolbar-actions flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">
           {add &&
             ("href" in add ? (
-              <Button asChild size="sm">
+              <Button asChild size="sm" className="h-8">
                 <Link href={add.href}>
                   <Plus className="size-4" />
                   {add.label ?? "إضافة"}
                 </Link>
               </Button>
             ) : (
-              <Button size="sm" onClick={add.onClick}>
+              <Button size="sm" className="h-8" onClick={add.onClick}>
                 <Plus className="size-4" />
                 {add.label ?? "إضافة"}
               </Button>
             ))}
           {children}
+          {hasSecondaryActions && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8" aria-label="المزيد من إجراءات القائمة">
+                  {exporting || refreshing ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <MoreHorizontal aria-hidden className="size-4" />}
+                  المزيد
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-52">
+                <DropdownMenuLabel>إجراءات القائمة</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {onRefresh && (
+                  <DropdownMenuItem disabled={refreshing} onSelect={() => onRefresh()}>
+                    <RefreshCcw aria-hidden className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+                    {refreshing ? "جارٍ التحديث…" : refreshLabel}
+                  </DropdownMenuItem>
+                )}
+                {secondaryActions?.map((action) => (
+                  <DropdownMenuItem key={action.label} disabled={action.disabled} onSelect={() => action.onSelect()}>
+                    {action.icon}
+                    {action.label}
+                  </DropdownMenuItem>
+                ))}
+                {onImport && (
+                  <DropdownMenuItem onSelect={() => onImport()}>
+                    <Upload aria-hidden className="size-4" />
+                    {importLabel}
+                  </DropdownMenuItem>
+                )}
+                {exportSpec && formats.includes("xlsx") && (
+                  <DropdownMenuItem disabled={exportDisabled} onSelect={() => doExport("xlsx")} title={partialExportHint}>
+                    <FileSpreadsheet aria-hidden className="size-4" />
+                    {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
+                    {willExportPartial && <span className="ms-auto text-2xs text-[var(--sem-warn)]">الصفحة الحالية</span>}
+                  </DropdownMenuItem>
+                )}
+                {exportSpec && formats.includes("csv") && (
+                  <DropdownMenuItem disabled={exportDisabled} onSelect={() => doExport("csv")} title={partialExportHint}>
+                    <FileSpreadsheet aria-hidden className="size-4" />
+                    {exporting ? "جارٍ التحضير…" : "تصدير CSV"}
+                    {willExportPartial && <span className="ms-auto text-2xs text-[var(--sem-warn)]">الصفحة الحالية</span>}
+                  </DropdownMenuItem>
+                )}
+                {onPrint && (
+                  <DropdownMenuItem disabled={printDisabled} onSelect={() => onPrint()}>
+                    <Printer aria-hidden className="size-4" />
+                    {printLabel}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
-      </div>
+      </WorkspaceBar>
 
-      {/* الصفّ ٢: صندوق فلاتر مؤطَّر (يظهر فقط عند وجود بحث/فلاتر). طيّة اختياريّة على mobile فقط
-          كي لا يبتلع الفلاتر الشاشة الصغيرة، وعلى sm فأعلى يبقى ظاهراً دائماً. */}
       {hasFilterSection && (
-        <div className="list-toolbar-filter-panel rounded-lg border border-border/60 bg-muted/30 p-2.5">
-          <div className="flex items-center justify-between gap-2 sm:hidden">
-            <button
-              type="button"
-              onClick={() => setFiltersCollapsed((v) => !v)}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground"
-              aria-expanded={!filtersCollapsed}
-            >
-              <SlidersHorizontal aria-hidden className="size-3.5" />
-              الفلاتر
-              {activeFilterCount > 0 && (
-                <span className="rounded-md bg-primary/15 px-1.5 py-0.5 text-primary">
-                  {activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")}
-                </span>
-              )}
-            </button>
-            {showResetButton && (
-              <Button variant="ghost" size="sm" onClick={onResetFilters} className="h-7 gap-1 text-muted-foreground">
-                <X aria-hidden className="size-3.5" /> مسح
-              </Button>
-            )}
-          </div>
-          <div className={cn("flex flex-wrap items-end gap-x-3 gap-y-2", filtersCollapsed && "hidden sm:flex")}>
-            {search && (
-              <div className={cn("relative min-w-48 flex-1 sm:flex-none", search.barcode && "w-full sm:min-w-80")}>
-                <Search
-                  className={cn(
-                    "pointer-events-none absolute top-1/2 size-4 -translate-y-1/2 text-muted-foreground",
-                    search.barcode ? "left-2" : "right-2",
+        <WorkspaceBar variant="filters" label="البحث والفلاتر" className="list-toolbar-filter-panel overflow-hidden">
+          {search && (
+            <div className={cn("relative min-w-0 flex-1 sm:min-w-40", search.barcode && "sm:min-w-64")}>
+              <Search className={cn("pointer-events-none absolute top-1/2 size-4 -translate-y-1/2 text-muted-foreground", search.barcode ? "left-2" : "right-2")} />
+              <Input
+                type="search"
+                autoFocus={search.autoFocus}
+                value={search.value}
+                onChange={(e) => search.onChange(search.barcode ? normalizeKnownSystemBarcode(e.target.value) : e.target.value)}
+                onKeyDown={(e) => barcodeInput.handleKeyDown(e, search.onChange)}
+                placeholder={search.placeholder ?? "بحث…"}
+                aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
+                className={cn("h-8 w-full pr-8", search.barcode && `pl-8 ${barcodeSearchInputClass}`)}
+              />
+              {search.barcode && <BarcodeSearchCue />}
+            </div>
+          )}
+          {quickFilters && <div className="hidden min-w-0 overflow-x-auto sm:block [&>div]:!flex-nowrap">{quickFilters}</div>}
+          {(filters || quickFilters || activeFilterCount > 0) && (
+            <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
+              <SheetTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 shrink-0">
+                  <SlidersHorizontal aria-hidden className="size-3.5" />
+                  الفلاتر
+                  {activeFilterCount > 0 && <span className="rounded bg-primary px-1.5 text-2xs font-bold text-primary-foreground">{activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")}</span>}
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="left" className="w-[min(92vw,34rem)] sm:max-w-lg">
+                <SheetHeader className="border-b">
+                  <SheetTitle>فلاتر القائمة</SheetTitle>
+                  <SheetDescription>الفلاتر الثانوية محفوظة خارج مساحة البيانات وتظهر نتائجها فوراً.</SheetDescription>
+                </SheetHeader>
+                <div className="grid min-h-0 flex-1 grid-cols-1 content-start gap-3 overflow-y-auto p-4 sm:grid-cols-2">
+                  {quickFilters && <div className="sm:hidden">{quickFilters}</div>}
+                  {filters}
+                </div>
+                <SheetFooter className="flex-row border-t">
+                  {showResetButton && (
+                    <Button type="button" variant="ghost" onClick={onResetFilters}>
+                      مسح الفلاتر
+                    </Button>
                   )}
-                />
-                <Input
-                  type="search"
-                  autoFocus={search.autoFocus}
-                  value={search.value}
-                  onChange={(e) => search.onChange(
-                    search.barcode ? normalizeKnownSystemBarcode(e.target.value) : e.target.value,
-                  )}
-                  onKeyDown={(e) => barcodeInput.handleKeyDown(e, search.onChange)}
-                  placeholder={search.placeholder ?? "بحث…"}
-                  aria-label={search.ariaLabel ?? search.placeholder ?? "بحث في القائمة"}
-                  className={cn(
-                    "h-8 w-full pr-8 sm:w-64",
-                    search.barcode && `pl-8 sm:w-80 ${barcodeSearchInputClass}`,
-                  )}
-                />
-                {search.barcode && <BarcodeSearchCue />}
-              </div>
-            )}
-            {filters}
-            {activeFilterCount > 0 && (
-              <span className="hidden sm:inline-flex h-8 items-center gap-1 rounded-md bg-primary/10 px-2.5 text-xs font-semibold text-primary">
-                <SlidersHorizontal aria-hidden className="size-3.5" />
-                {activeFilterCount.toLocaleString("ar-IQ-u-nu-latn")} فلاتر
-              </span>
-            )}
-            {showResetButton && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onResetFilters}
-                className="hidden sm:inline-flex text-muted-foreground"
-              >
-                <X aria-hidden className="size-4" />
-                مسح الفلاتر
-              </Button>
-            )}
-          </div>
-        </div>
+                  <SheetClose asChild>
+                    <Button type="button" className="ms-auto">
+                      عرض النتائج
+                    </Button>
+                  </SheetClose>
+                </SheetFooter>
+              </SheetContent>
+            </Sheet>
+          )}
+          {showResetButton && (
+            <Button variant="ghost" size="sm" onClick={onResetFilters} className="h-8 shrink-0 text-muted-foreground">
+              <X aria-hidden className="size-3.5" />
+              مسح
+            </Button>
+          )}
+        </WorkspaceBar>
       )}
     </div>
   );

@@ -1,13 +1,35 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
+import {
+  CHUNK_SIZE_WARNING_LIMIT_KB,
+  chunkBudgetViolation,
+  EXCEL_CHUNK_NAME,
+  resolveViteEnvDir,
+} from "./scripts/vite-build-contract.mjs";
+
+const projectRoot = path.resolve(import.meta.dirname);
+
+function enforceBuildContracts(): Plugin {
+  return {
+    name: "enforce-build-contracts",
+    apply: "build",
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        const violation = chunkBudgetViolation(output);
+        if (violation) this.error(violation);
+      }
+    },
+  };
+}
 
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    enforceBuildContracts(),
     VitePWA({
       // الإصدار الجديد يثبت في الخلفية ويبقى waiting. هذا السلوك يمنع خلط حزم
       // إصدارين ويصون الإدخال الجاري؛ PwaUpdateManager يطلب قرار الموظف ثم
@@ -108,16 +130,21 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@": path.resolve(import.meta.dirname, "client", "src"),
-      "@shared": path.resolve(import.meta.dirname, "shared"),
+      "@": path.resolve(projectRoot, "client", "src"),
+      "@shared": path.resolve(projectRoot, "shared"),
     },
   },
-  envDir: path.resolve(import.meta.dirname),
-  root: path.resolve(import.meta.dirname, "client"),
-  publicDir: path.resolve(import.meta.dirname, "client", "public"),
+  // مرشح النشر يرث VITE_* العامة صراحةً من المتحكّم، ولا يطلب من Vite قراءة
+  // ملف إنتاج يحوي NODE_ENV وأسرار الخادم. التطوير المحلي يبقى على السلوك المعتاد.
+  envDir: resolveViteEnvDir(process.env, projectRoot),
+  root: path.resolve(projectRoot, "client"),
+  publicDir: path.resolve(projectRoot, "client", "public"),
   build: {
-    outDir: path.resolve(import.meta.dirname, "dist/public"),
+    outDir: path.resolve(projectRoot, "dist/public"),
     emptyOutDir: true,
+    // ExcelJS حزمة تصدير اختيارية معزولة (~937KB). نرفع تحذير Vite العام لها فقط عملياً،
+    // بينما enforceBuildContracts يبقي كل حزمة أخرى تحت 500KB وExcel تحت 950KB.
+    chunkSizeWarningLimit: CHUNK_SIZE_WARNING_LIMIT_KB,
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -125,8 +152,11 @@ export default defineConfig({
           // منفصلة ⇒ كل صفحة تطلب عشرات ملفات الأصول دفعةً واحدة، فتُشبع خادم الأصول
           // (Express + compression على threadpool ٤ خيوط) وتتعلّق الطلبات على «جار التحميل».
           if (id.includes("node_modules/lucide-react")) return "icons";
+          // الرسوم البيانية (~400KB) تُستعمل عند فتح لوحات التحليل فقط. عزل Recharts
+          // يمنع ابتلاعها داخل حزمة صفحة الخزينة وتجاوز سقف 500KB لبقية الشاشات.
+          if (id.includes("node_modules/recharts")) return "charts";
           // حزمة Excel ضخمة (~936KB) ومطلوبة فقط عند التصدير ⇒ افصلها كي لا تُثقل أي صفحة أخرى.
-          if (id.includes("node_modules/exceljs")) return "exceljs";
+          if (id.includes("node_modules/exceljs")) return EXCEL_CHUNK_NAME;
           // مكتبات البنية المشتركة تتغير بوتيرة أبطأ من شيفرة النظام. فصلها يقلل
           // حجم الحزمة الأساسية ويحافظ على كاش المتصفح عند نشر تعديلات الشاشات.
           if (

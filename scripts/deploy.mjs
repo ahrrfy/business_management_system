@@ -30,6 +30,8 @@ const WEB_ARTIFACT_ID = /^web-[a-z0-9][a-z0-9._-]{0,126}$/;
 const WEB_ARTIFACT_RETENTION = 3;
 const WEB_CANDIDATE_ID = /^candidate-[a-z0-9][a-z0-9._-]{0,122}$/;
 const WEB_ACTIVATION_JOURNAL = "web-activation-pending.json";
+const VITE_DISABLE_DOTENV_ENV_KEY = "ERP_VITE_DISABLE_DOTENV";
+const VITE_DISABLE_DOTENV_ENV_VALUE = "1";
 const WEB_FORBIDDEN_ENVIRONMENT_KEYS = Object.freeze([
   "DB_ROOT_PW",
   "DB_CONTAINER",
@@ -437,10 +439,19 @@ function ensureWebCandidateRoot(projectRoot) {
   return { projectRoot: resolvedRoot, candidatesRoot };
 }
 
-function defaultWebCandidateOperations(projectRoot) {
+export function defaultWebCandidateOperations(
+  projectRoot,
+  viteBuildEnvironment = {},
+  options = {},
+) {
+  const executeFile = options.execFileSync ?? execFileSync;
+  const parentEnvironment = options.parentEnvironment ?? process.env;
+  const publicViteBuildEnvironment = normalizeViteBuildEnvironment(
+    viteBuildEnvironment,
+  );
   return Object.freeze({
     createWorktree: (sourceRoot, expectedSha) =>
-      execFileSync(
+      executeFile(
         "git",
         ["worktree", "add", "--detach", sourceRoot, expectedSha],
         {
@@ -462,13 +473,18 @@ function defaultWebCandidateOperations(projectRoot) {
       fs.symlinkSync(environment, path.join(sourceRoot, ".env"), "file");
     },
     build: (sourceRoot) =>
-      execFileSync("pnpm", ["build"], {
+      executeFile("pnpm", ["build"], {
         cwd: sourceRoot,
         stdio: "inherit",
         timeout: 10 * 60_000,
+        env: {
+          ...controlSubprocessEnvironment(parentEnvironment),
+          ...publicViteBuildEnvironment,
+          [VITE_DISABLE_DOTENV_ENV_KEY]: VITE_DISABLE_DOTENV_ENV_VALUE,
+        },
       }),
     removeWorktree: (sourceRoot) =>
-      execFileSync("git", ["worktree", "remove", "--force", sourceRoot], {
+      executeFile("git", ["worktree", "remove", "--force", sourceRoot], {
         cwd: projectRoot,
         stdio: "ignore",
         timeout: 60_000,
@@ -507,7 +523,11 @@ export function prepareWebCandidate(projectRoot, options = {}) {
   const candidateDirectory = path.join(roots.candidatesRoot, id);
   const sourceRoot = path.join(candidateDirectory, "source");
   const operations =
-    options.operations ?? defaultWebCandidateOperations(roots.projectRoot);
+    options.operations ??
+    defaultWebCandidateOperations(
+      roots.projectRoot,
+      options.viteBuildEnvironment,
+    );
   if (fs.existsSync(candidateDirectory))
     throw codedError("WEB_CANDIDATE_EXISTS");
   fs.mkdirSync(candidateDirectory, { mode: 0o700 });
@@ -1635,7 +1655,7 @@ function stopBridge(policy) {
   throw new Error("PM2_BRIDGE_DELETE_TIMEOUT");
 }
 
-function controlSubprocessEnvironment() {
+function controlSubprocessEnvironment(environment = process.env) {
   const keys = [
     "HOME",
     "PM2_HOME",
@@ -1653,8 +1673,8 @@ function controlSubprocessEnvironment() {
   ];
   return Object.fromEntries(
     keys
-      .filter((key) => typeof process.env[key] === "string")
-      .map((key) => [key, process.env[key]]),
+      .filter((key) => typeof environment[key] === "string")
+      .map((key) => [key, environment[key]]),
   );
 }
 
@@ -1701,8 +1721,7 @@ function readDeploymentEnvironmentFile(dotenvConfig) {
   return parsed;
 }
 
-function readBridgeDeploymentEnvironment(policy, dotenvConfig) {
-  const parsed = readDeploymentEnvironmentFile(dotenvConfig);
+function normalizeBridgeDeploymentEnvironment(policy, parsed) {
   const environment = {};
   for (const key of policy.allowedEnvironmentKeys) {
     if (typeof parsed[key] === "string") environment[key] = parsed[key];
@@ -1742,6 +1761,16 @@ export function normalizeWebHealthEnvironment(parsed) {
     REQUIRE_INTERNAL_PROXY_SECRET: requireSecret,
     ...(requireSecret === "1" ? { INTERNAL_PROXY_SECRET: secret } : {}),
   };
+}
+
+export function normalizeViteBuildEnvironment(parsed) {
+  const environment = {};
+  for (const [key, value] of Object.entries(parsed ?? {})) {
+    if (/^VITE_[A-Z0-9_]+$/.test(key) && typeof value === "string") {
+      environment[key] = value;
+    }
+  }
+  return environment;
 }
 
 function reloadWebProcess() {
@@ -2028,11 +2057,19 @@ async function deploy(expectedHead) {
       }),
     );
     const dotenvModule = await import("dotenv");
-    const deploymentEnvironment = readBridgeDeploymentEnvironment(
-      policy,
+    const parsedDeploymentEnvironment = readDeploymentEnvironmentFile(
       dotenvModule.config,
     );
-    const webHealthEnvironment = readWebHealthEnvironment(dotenvModule.config);
+    const deploymentEnvironment = normalizeBridgeDeploymentEnvironment(
+      policy,
+      parsedDeploymentEnvironment,
+    );
+    const webHealthEnvironment = normalizeWebHealthEnvironment(
+      parsedDeploymentEnvironment,
+    );
+    const viteBuildEnvironment = normalizeViteBuildEnvironment(
+      parsedDeploymentEnvironment,
+    );
     let webArtifact = null;
     let webCandidate = null;
     let candidate = null;
@@ -2043,6 +2080,7 @@ async function deploy(expectedHead) {
       step("2/12 بناء مرشح الويب المعزول ثم حفظ الإصدار السابق", () => {
         webCandidate = prepareWebCandidate(PROJECT_ROOT, {
           expectedSha: expectedHead,
+          viteBuildEnvironment,
         });
         webArtifact = snapshotWebArtifact(PROJECT_ROOT, {
           id: `web-${Date.now()}-${expectedHead.slice(0, 12)}`,

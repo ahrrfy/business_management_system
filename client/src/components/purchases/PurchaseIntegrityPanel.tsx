@@ -1,7 +1,9 @@
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useState } from "react";
+import { ShieldCheck } from "lucide-react";
+import { WorkspaceBar } from "@/components/workspace/OperationalWorkspace";
 
 type IntegrityReport = RouterOutputs["purchases"]["integrityReport"];
 type Finding = IntegrityReport["findings"][number];
@@ -50,13 +52,7 @@ function downloadReport(report: IntegrityReport) {
   URL.revokeObjectURL(url);
 }
 
-export function PurchaseIntegrityPanel({
-  branchId,
-  requiresBranchSelection,
-}: {
-  branchId?: number;
-  requiresBranchSelection: boolean;
-}) {
+export function PurchaseIntegrityPanel({ branchId, requiresBranchSelection }: { branchId?: number; requiresBranchSelection: boolean }) {
   const [open, setOpen] = useState(false);
   const [offset, setOffset] = useState(0);
 
@@ -73,71 +69,41 @@ export function PurchaseIntegrityPanel({
   const data = report.data;
 
   return (
-    <Card className="border-slate-300">
-      <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
-        <div>
-          <CardTitle className="text-base">تقرير سلامة المشتريات</CardTitle>
-          <p className="mt-1 text-xs text-muted-foreground">
-            قراءة فقط من القيود المحاسبية؛ لا تصحيح تلقائياً ولا تغيير للبيانات.
-          </p>
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => setOpen((v) => !v)}
-        >
-          {open ? "إغلاق التقرير" : "فتح التقرير"}
+    <Card className="gap-0 overflow-hidden border-slate-300 py-0">
+      <WorkspaceBar variant="filters" label="سلامة المشتريات" className="rounded-none border-0">
+        <ShieldCheck aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 text-sm font-semibold">سلامة المشتريات</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">تدقيق قرائي للقيود المحاسبية من دون تغيير البيانات</span>
+        <Button type="button" variant="outline" size="sm" onClick={() => setOpen((v) => !v)} className="h-8 shrink-0">
+          {open ? "إغلاق" : "فتح التدقيق"}
         </Button>
-      </CardHeader>
+      </WorkspaceBar>
 
       {open && (
         <CardContent className="space-y-4 border-t pt-4">
           {requiresBranchSelection ? (
             <p className="rounded border border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]">
-              اختر فرعاً محدداً من فلتر القائمة لتشغيل التقرير. القراءة المجمعة
-              لكل الفروع ممنوعة.
+              اختر فرعاً محدداً من فلتر القائمة لتشغيل التقرير. القراءة المجمعة لكل الفروع ممنوعة.
             </p>
           ) : report.isLoading ? (
-            <p className="text-sm text-muted-foreground">
-              جارٍ فحص أوامر الشراء في الفرع…
-            </p>
+            <p className="text-sm text-muted-foreground">جارٍ فحص أوامر الشراء في الفرع…</p>
           ) : report.error ? (
-            <p className="rounded border border-[var(--sem-neg)] bg-[var(--sem-neg-bg)] p-3 text-sm text-[var(--sem-neg)]">
-              تعذّر تشغيل التقرير: {report.error.message}
-            </p>
+            <p className="rounded border border-[var(--sem-neg)] bg-[var(--sem-neg-bg)] p-3 text-sm text-[var(--sem-neg)]">تعذّر تشغيل التقرير: {report.error.message}</p>
           ) : data ? (
             <>
               <div className="flex flex-wrap items-center gap-2">
-                {(["CRITICAL", "HIGH", "MEDIUM", "INFO"] as const).map(
-                  (severity) => (
-                    <span
-                      key={severity}
-                      className={`rounded border px-3 py-1 text-xs font-semibold ${SEVERITY_CLASS[severity]}`}
-                    >
-                      {SEVERITY_LABEL[severity]}:{" "}
-                      {data.summary.severityCounts[severity]}
-                    </span>
-                  ),
-                )}
+                {(["CRITICAL", "HIGH", "MEDIUM", "INFO"] as const).map((severity) => (
+                  <span key={severity} className={`rounded border px-3 py-1 text-xs font-semibold ${SEVERITY_CLASS[severity]}`}>
+                    {SEVERITY_LABEL[severity]}: {data.summary.severityCounts[severity]}
+                  </span>
+                ))}
                 <span className="text-xs text-muted-foreground">
-                  الأوامر المتأثرة: {data.summary.affectedOrderCount} · النتائج:{" "}
-                  {data.summary.findingCount}
+                  الأوامر المتأثرة: {data.summary.affectedOrderCount} · النتائج: {data.summary.findingCount}
                 </span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void report.refetch()}
-                >
+                <Button type="button" variant="outline" size="sm" onClick={() => void report.refetch()}>
                   تحديث
                 </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => downloadReport(data)}
-                >
+                <Button type="button" variant="outline" size="sm" onClick={() => downloadReport(data)}>
                   تنزيل JSON
                 </Button>
               </div>
@@ -157,35 +123,20 @@ export function PurchaseIntegrityPanel({
                     {data.findings.map((finding) => (
                       <tr key={finding.id} className="border-t align-top">
                         <td className="p-2">
-                          <span
-                            className={`inline-block rounded border px-2 py-0.5 text-xs ${SEVERITY_CLASS[finding.severity]}`}
-                          >
-                            {SEVERITY_LABEL[finding.severity]}
-                          </span>
+                          <span className={`inline-block rounded border px-2 py-0.5 text-xs ${SEVERITY_CLASS[finding.severity]}`}>{SEVERITY_LABEL[finding.severity]}</span>
                         </td>
                         <td className="p-2 font-medium" dir="ltr">
                           {finding.poNumber}
                         </td>
+                        <td className="p-2">{finding.supplierName ?? `#${finding.supplierId}`}</td>
                         <td className="p-2">
-                          {finding.supplierName ?? `#${finding.supplierId}`}
-                        </td>
-                        <td className="p-2">
-                          <div className="font-medium">
-                            {CODE_LABEL[finding.code]}
-                          </div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {finding.summaryAr}
-                          </div>
+                          <div className="font-medium">{CODE_LABEL[finding.code]}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">{finding.summaryAr}</div>
                         </td>
                         <td className="p-2">
                           <details>
-                            <summary className="cursor-pointer text-xs font-medium">
-                              عرض الدليل الخام
-                            </summary>
-                            <pre
-                              className="mt-2 max-w-[34rem] overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 text-[11px] text-slate-100"
-                              dir="ltr"
-                            >
+                            <summary className="cursor-pointer text-xs font-medium">عرض الدليل الخام</summary>
+                            <pre className="mt-2 max-w-[34rem] overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 text-[11px] text-slate-100" dir="ltr">
                               {JSON.stringify(finding.evidence, null, 2)}
                             </pre>
                           </details>
@@ -194,10 +145,7 @@ export function PurchaseIntegrityPanel({
                     ))}
                     {data.findings.length === 0 && (
                       <tr>
-                        <td
-                          colSpan={5}
-                          className="p-6 text-center text-muted-foreground"
-                        >
+                        <td colSpan={5} className="p-6 text-center text-muted-foreground">
                           لا توجد نتائج في هذه الصفحة.
                         </td>
                       </tr>
@@ -208,28 +156,13 @@ export function PurchaseIntegrityPanel({
 
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>
-                  فُحص {data.page.scannedOrderCount} أمر · المصدر: القيود
-                  المحاسبية · الصفحة تبدأ من {data.page.offset + 1}
+                  فُحص {data.page.scannedOrderCount} أمر · المصدر: القيود المحاسبية · الصفحة تبدأ من {data.page.offset + 1}
                 </span>
                 <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={offset === 0}
-                    onClick={() =>
-                      setOffset((value) => Math.max(0, value - PAGE_SIZE))
-                    }
-                  >
+                  <Button type="button" variant="outline" size="sm" disabled={offset === 0} onClick={() => setOffset((value) => Math.max(0, value - PAGE_SIZE))}>
                     السابق
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!data.page.hasMore}
-                    onClick={() => setOffset(data.page.nextOffset ?? offset)}
-                  >
+                  <Button type="button" variant="outline" size="sm" disabled={!data.page.hasMore} onClick={() => setOffset(data.page.nextOffset ?? offset)}>
                     التالي
                   </Button>
                 </div>

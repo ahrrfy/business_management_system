@@ -39,6 +39,8 @@ export interface MobileDataCardProps {
   primaryAction?: MobileDataCardAction;
   secondaryActions?: MobileDataCardAction[];
   onClick?: () => void;
+  /** Accessible name for the card-wide action. Defaults to the text title when possible. */
+  ariaLabel?: string;
   className?: string;
   children?: React.ReactNode;
 }
@@ -52,18 +54,36 @@ export function MobileDataCard({
   primaryAction,
   secondaryActions = [],
   onClick,
+  ariaLabel,
   className,
   children,
 }: MobileDataCardProps) {
+  const cardActionLabel = ariaLabel ??
+    (typeof title === "string" || typeof title === "number"
+      ? `فتح تفاصيل ${title}`
+      : "فتح التفاصيل");
+
   return (
     <Card
       onClick={onClick}
       className={cn(
         "relative p-3.5 bg-card border border-border/70 rounded-2xl shadow-xs transition-all active:scale-[0.99] touch-manipulation",
-        onClick && "cursor-pointer hover:border-primary/40 hover:shadow-sm",
+        onClick && "isolate cursor-pointer hover:border-primary/40 hover:shadow-sm",
         className
       )}
     >
+      {onClick && (
+        <button
+          type="button"
+          aria-label={cardActionLabel}
+          onClick={(event) => {
+            event.stopPropagation();
+            onClick();
+          }}
+          className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        />
+      )}
+
       {/* رأس الكرت: العنوان + الشارة + المبلغ */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -134,7 +154,7 @@ export function MobileDataCard({
 
       {/* شريط الإجراءات السريعة (Actions) */}
       {(primaryAction || secondaryActions.length > 0 || onClick) && (
-        <div className="flex items-center justify-between gap-2 mt-3 pt-2 border-t border-border/40">
+        <div className="relative z-10 flex items-center justify-between gap-2 mt-3 pt-2 border-t border-border/40">
           <div className="flex items-center gap-1.5 flex-wrap">
             {secondaryActions.map((action, idx) => {
               const ActionIcon = action.icon;
@@ -176,7 +196,7 @@ export function MobileDataCard({
               </Button>
             )}
             {onClick && !primaryAction && (
-              <div className="flex items-center text-xs text-primary font-medium">
+              <div className="flex items-center text-xs text-primary font-medium" aria-hidden="true">
                 <span>التفاصيل</span>
                 <ChevronLeft className="size-4 ms-0.5" aria-hidden />
               </div>

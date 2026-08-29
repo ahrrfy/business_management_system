@@ -30,9 +30,7 @@ export function ScrollTableShell({
 }) {
   const tableRef = React.useRef<HTMLDivElement>(null);
   return (
-    <div
-      className={cn("space-y-2", className)}
-    >
+    <div className={cn("space-y-2", className)}>
       {showColumnVisibility && <TableColumnVisibility containerRef={tableRef} />}
       <div
         ref={tableRef}

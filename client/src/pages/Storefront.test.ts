@@ -18,6 +18,7 @@ import {
   storefrontCheckoutFingerprint,
   storefrontCategoryCount,
   storefrontMediaUrls,
+  storefrontVariantMedia,
   clampStorefrontZoomPoint,
   recommendationActionLabel,
   shouldAutoLoadStorefrontNextPage,
@@ -95,6 +96,34 @@ describe("storefront media sources", () => {
       "/two.webp",
       "/three.webp",
     ]);
+  });
+
+  it("يربط معرض التفاصيل بالبديل المختار ويرجع للمعرض العام عند غيابه", () => {
+    const product = {
+      imageUrl: "/product.webp",
+      imageUrls: ["/product.webp", "/shared.webp"],
+      variants: [
+        {
+          variantId: 11,
+          imageUrl: "/red.webp",
+          imageUrls: ["/red.webp", "/shared.webp"],
+        },
+        {
+          variantId: 12,
+          imageUrl: "/blue.webp",
+          imageUrls: ["/blue.webp", "/shared.webp"],
+        },
+      ],
+    };
+
+    expect(storefrontVariantMedia(product, 12)).toEqual({
+      urls: ["/blue.webp", "/shared.webp"],
+      fallbackUrl: "/blue.webp",
+    });
+    expect(storefrontVariantMedia(product, 999)).toEqual({
+      urls: ["/product.webp", "/shared.webp"],
+      fallbackUrl: "/product.webp",
+    });
   });
 });
 

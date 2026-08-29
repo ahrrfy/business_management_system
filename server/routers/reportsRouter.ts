@@ -1312,7 +1312,7 @@ export const reportsRouter = router({
       const [details, doubleEntry, activation] = await Promise.all([
         getFinancialReconciliationDetails(),
         reconcileDoubleEntry({ month, branchId: input?.branchId ?? null }),
-        canActivate(),
+        canActivate({ requireStatutoryCompliance: true }),
       ]);
       return { ...details, doubleEntry, activation };
     }),

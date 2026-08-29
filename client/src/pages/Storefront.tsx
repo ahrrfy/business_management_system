@@ -576,6 +576,28 @@ export function storefrontMediaUrls(urls: string[] | undefined, fallbackUrl: str
   return Array.from(new Set([...(urls ?? []), fallbackUrl].filter((url): url is string => Boolean(url)))).slice(0, limit);
 }
 
+type StorefrontVariantMediaSource = {
+  imageUrl: string | null;
+  imageUrls?: string[];
+  variants?: Array<{
+    variantId: number;
+    imageUrl: string | null;
+    imageUrls?: string[];
+  }>;
+};
+
+/** يختار معرض البديل النشط، ويرجع لمعرض المنتج العام إن لم يوجد البديل في العقد. */
+export function storefrontVariantMedia(
+  product: StorefrontVariantMediaSource,
+  selectedVariantId: number | null | undefined,
+): { urls: string[] | undefined; fallbackUrl: string | null } {
+  const variant = product.variants?.find((candidate) => candidate.variantId === selectedVariantId);
+  return {
+    urls: variant?.imageUrls?.length ? variant.imageUrls : product.imageUrls,
+    fallbackUrl: variant?.imageUrl ?? product.imageUrl,
+  };
+}
+
 export function clampStorefrontZoomPoint(
   point: { x: number; y: number },
   width: number,
@@ -620,7 +642,8 @@ function CardMediaCarousel({
   const reducedMotion = usePrefersReducedMotion();
   const [index, setIndex] = useState(0);
   const [active, setActive] = useState(false);
-  useEffect(() => setIndex((current) => Math.min(current, Math.max(0, sources.length - 1))), [sources.join("|")]);
+  // عند تبدّل المصادر نبدأ من الصورة الرئيسية، لا من فهرسٍ يعود لمعرض سابق.
+  useEffect(() => setIndex(0), [sources.join("|")]);
   useEffect(() => {
     if (sources.length < 2 || !active || reducedMotion) return;
     const timer = window.setInterval(() => setIndex((current) => (current + 1) % sources.length), 1500);
@@ -669,7 +692,8 @@ function ProductGallery({
   useEffect(() => () => {
     if (zoomFrameRef.current != null) window.cancelAnimationFrame(zoomFrameRef.current);
   }, []);
-  useEffect(() => setIndex((current) => Math.min(current, Math.max(0, sources.length - 1))), [sources.join("|")]);
+  // تبديل البديل يعيد المعرض إلى صورته الرئيسية ولا يُبقي فهرساً من معرضٍ سابق.
+  useEffect(() => setIndex(0), [sources.join("|")]);
   useEffect(() => {
     if (sources.length < 2 || !hovered || reducedMotion) return;
     const timer = window.setInterval(() => setIndex((current) => (current + 1) % sources.length), 2600);
@@ -1652,6 +1676,10 @@ function StorefrontContent() {
       stockLeft: product.stockLeft,
     };
   }, [detailQ.data, detailVariant, selectedStoreUnitId]);
+  const detailMedia = useMemo(
+    () => detailQ.data ? storefrontVariantMedia(detailQ.data, detailVariant?.variantId) : { urls: undefined, fallbackUrl: null },
+    [detailQ.data, detailVariant],
+  );
   const customizationPreviewMode = import.meta.env.DEV && new URLSearchParams(window.location.search).get("preview") === "customization";
   const previewCustomizationTemplate = customizationPreviewMode && detailQ.data?.category === "المطبوعات التجارية"
     ? {
@@ -2058,7 +2086,7 @@ function StorefrontContent() {
           productUnitId: unit.productUnitId,
           productId: detailQ.data.productId,
           productName: detailQ.data.productName,
-          imageUrl: detailQ.data.imageUrl,
+          imageUrl: variant.imageUrl ?? detailQ.data.imageUrl,
           unitName: unit.unitName,
           variantLabel: variant.label,
           customization,
@@ -2071,7 +2099,7 @@ function StorefrontContent() {
     if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((previous) => addStorefrontCartLines(previous, selections));
-    triggerCartFlight(sourceElement, detailQ.data.imageUrl);
+    triggerCartFlight(sourceElement, detailMedia.fallbackUrl);
     setSelectedId(null);
   }
   function addSelectedUnit(sourceElement?: HTMLElement | null) {
@@ -2083,7 +2111,7 @@ function StorefrontContent() {
       productUnitId: detailUnit.productUnitId,
       productId: detailQ.data.productId,
       productName: detailQ.data.productName,
-      imageUrl: detailQ.data.imageUrl,
+      imageUrl: detailVariant?.imageUrl ?? detailQ.data.imageUrl,
       unitName: detailUnit.unitName,
       variantLabel: detailVariant?.label,
       customization: selectedCustomization(),
@@ -2093,7 +2121,7 @@ function StorefrontContent() {
     if (hasStorefrontAnalyticsConsent()) trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((previous) => addStorefrontCartLines(previous, [selection]));
-    triggerCartFlight(sourceElement, detailQ.data.imageUrl);
+    triggerCartFlight(sourceElement, detailMedia.fallbackUrl);
     setSelectedId(null);
   }
   function setQty(cartKey: string, qty: number) {
@@ -2452,11 +2480,7 @@ function StorefrontContent() {
             ) : detailQ.data ? (
               <div>
                 <div className="space-y-4">
-                  <ProductGallery
-                    urls={detailQ.data.imageUrls}
-                    fallbackUrl={detailQ.data.imageUrl}
-                    alt={detailQ.data.productName}
-                  />
+                  <ProductGallery urls={detailMedia.urls} fallbackUrl={detailMedia.fallbackUrl} alt={detailQ.data.productName} />
                   <div className="min-w-0">
                     {detailQ.data.brand && <p className="text-xs font-medium text-slate-400">{detailQ.data.brand}</p>}
                     <h3 className="text-base font-extrabold leading-snug text-slate-900 dark:text-white">{detailQ.data.productName}</h3>
@@ -2492,9 +2516,9 @@ function StorefrontContent() {
                                         <span className="mt-0.5 block text-[10px] font-extrabold text-[var(--sem-pos)]">{priceLabel(unit.salePrice ?? unit.price)}{!unit.inStock && " · نفد"}</span>
                                       </button>
                                       <div className="flex shrink-0 items-center gap-1.5">
-                                        <button type="button" aria-label={`إنقاص ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity === 0} onClick={() => setVariantQuantity(unit.productUnitId, quantity - 1)} className="flex size-6 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"><Minus aria-hidden className="size-3" /></button>
+                                        <button type="button" aria-label={`إنقاص ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity === 0} onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(unit.productUnitId); setVariantQuantity(unit.productUnitId, quantity - 1); }} className="flex size-6 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"><Minus aria-hidden className="size-3" /></button>
                                         <span className="w-5 text-center text-sm font-extrabold tabular-nums">{quantity}</span>
-                                        <button type="button" aria-label={`زيادة ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity >= stockLimit} onClick={() => setVariantQuantity(unit.productUnitId, quantity + 1)} className="flex size-6 items-center justify-center rounded-full bg-[var(--sem-pos)] text-background disabled:cursor-not-allowed disabled:opacity-40"><Plus aria-hidden className="size-3" /></button>
+                                        <button type="button" aria-label={`زيادة ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity >= stockLimit} onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(unit.productUnitId); setVariantQuantity(unit.productUnitId, quantity + 1); }} className="flex size-6 items-center justify-center rounded-full bg-[var(--sem-pos)] text-background disabled:cursor-not-allowed disabled:opacity-40"><Plus aria-hidden className="size-3" /></button>
                                       </div>
                                     </div>
                                   );

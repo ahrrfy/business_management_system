@@ -36,6 +36,7 @@ import {
   type SystemPaymentRequest,
 } from "../voucher/create";
 import { money } from "../money";
+import { getStatutoryActivationReadiness } from "./statutoryAccounting";
 
 export const REQUIRED_SHADOW_DAYS = 30;
 const DAY_MS = 86_400_000;
@@ -104,6 +105,7 @@ export type ActivationBlockerKey =
   | "RECONCILIATION_DRIFT"
   | "JOURNAL_IMBALANCE"
   | "VOUCHER_CATEGORY_MAPPING"
+  | "STATUTORY_COMPLIANCE"
   | "CRITICAL_MANIFEST";
 
 export interface ActivationBlocker {
@@ -178,6 +180,9 @@ export interface ActivationGateResult {
   journalImbalance: string;
   imbalancedJournalCount: number;
   voucherCategoryMappingIssueCount: number;
+  statutoryCompliance: Awaited<
+    ReturnType<typeof getStatutoryActivationReadiness>
+  > | null;
   blockers: ActivationBlocker[];
 }
 
@@ -195,6 +200,7 @@ function blocker(
 export async function canActivate(options?: {
   tx?: Tx;
   now?: Date;
+  requireStatutoryCompliance?: boolean;
 }): Promise<ActivationGateResult> {
   const committedDb = getDb();
   // `activateDoubleEntry` already holds the exclusive settings row lock. Its
@@ -1031,6 +1037,22 @@ export async function canActivate(options?: {
   const voucherCategoryMappingIssueCount =
     voucherCategoryMappingIssues.length + unclassifiedOtherReceiptIds.length;
   const blockers: ActivationBlocker[] = [];
+  const statutoryCompliance =
+    options?.requireStatutoryCompliance !== true || !executor
+      ? null
+      : await getStatutoryActivationReadiness(executor);
+
+  if (statutoryCompliance && !statutoryCompliance.ok) {
+    blockers.push(
+      blocker(
+        "STATUTORY_COMPLIANCE",
+        "جاهزية الدليل المحاسبي النظامي",
+        statutoryCompliance.summary,
+        "دليل نظامي معتمد وتغطية كاملة",
+        statutoryCompliance.detail,
+      ),
+    );
+  }
 
   if (voucherCategoryMappingIssueCount > 0) {
     const categoryDetails = voucherCategoryMappingIssues
@@ -1304,6 +1326,7 @@ export async function canActivate(options?: {
     journalImbalance: reconciliation?.journalImbalance ?? "0.00",
     imbalancedJournalCount: reconciliation?.imbalancedJournalCount ?? 0,
     voucherCategoryMappingIssueCount,
+    statutoryCompliance,
     blockers,
   };
 }

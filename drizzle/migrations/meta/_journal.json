@@ -1830,31 +1830,38 @@
 			"breakpoints": true
 		},
 		{
-			"idx": 278,
+			"idx": 282,
 			"version": "5",
-			"when": 1788052330000,
-			"tag": "0278_work_order_events",
+			"when": 1788052334000,
+			"tag": "0282_statutory_accounting_compliance",
 			"breakpoints": true
 		},
 		{
-			"idx": 279,
+			"idx": 283,
 			"version": "5",
-			"when": 1788052331000,
-			"tag": "0279_delivery_pricing_rules",
+			"when": 1788052335000,
+			"tag": "0283_work_order_events",
 			"breakpoints": true
 		},
 		{
-			"idx": 280,
+			"idx": 284,
 			"version": "5",
-			"when": 1788052332000,
-			"tag": "0280_courier_commission_rules",
+			"when": 1788052336000,
+			"tag": "0284_delivery_pricing_rules",
 			"breakpoints": true
 		},
 		{
-			"idx": 281,
+			"idx": 285,
 			"version": "5",
-			"when": 1788052333000,
-			"tag": "0281_invoice_events",
+			"when": 1788052337000,
+			"tag": "0285_courier_commission_rules",
+			"breakpoints": true
+		},
+		{
+			"idx": 286,
+			"version": "5",
+			"when": 1788052338000,
+			"tag": "0286_invoice_events",
 			"breakpoints": true
 		}
 	]
