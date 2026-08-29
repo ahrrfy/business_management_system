@@ -18,8 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { CheckCircle2, ImageOff, Layers, Package, Search, Sparkles, TrendingDown } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowUpDown, CheckCircle2, ImageOff, Info, Layers, Package, Search, Sparkles, TrendingDown } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 type Health = RouterOutputs["productStudio"]["discoverImageGaps"]["items"][number]["state"];
 
@@ -41,6 +41,69 @@ const STATE_VARIANT: Record<Health, "danger" | "warning" | "info" | "success" | 
   HEALTHY: "success",
 };
 
+/**
+ * تلميحاتٌ توضيحية لبطاقات KPI — يعرض المدير الجديدُ معنى كل حالة ومسار إصلاحها فوراً
+ * بلا فتح توثيقٍ خارجيّ. يُقرأ عبر السمة `title` على البطاقة (تعطيه المتصفح كتلميح hover)
+ * بالإضافة إلى إمكانية عرضه في وضع تفصيليّ لاحقاً.
+ */
+const STATE_TOOLTIP: Record<Health, string> = {
+  NO_IMAGES: "منتجٌ نشط بلا أيّ صورةٍ معتمَدة — أنشئ حملة تصوير أو ارفع صورةً محلياً.",
+  BUNDLE_NO_IMAGE: "بكجٌ (منتجٌ مركَّب) بلا صورة موحَّدة — يمكن رفعُ صورةٍ خاصّةٍ به أو التركيب من صور مكوّناته لاحقاً.",
+  SINGLE_IMAGE: "منتجٌ بصورةٍ واحدةٍ فقط — أضف زوايا/تفاصيل إضافية إن كان يستحقّ معرضاً أوسع.",
+  PARENT_ONLY_HAS_VARIANTS: "الأمّ لها صورة لكنّ بعض البدائل بلا صورةٍ خاصّة — أنشئ حملةً بديلاً-بديلاً.",
+  VARIANTS_INCOMPLETE: "أحد بدائل هذا المنتج ينقصه صورةٌ خاصّة — أنشئ حملةً تشمله.",
+  HEALTHY: "المنتج مكتمل صوراً بحسب توجيه الحملة الحاليّ. لا فعلَ مطلوب.",
+};
+
+/** خيارات فرز جدول الفجوات. القيمة الافتراضية «الأقلّ صوراً» تُبرز الأحوج للعمل. */
+type SortOption = "MISSING_MOST" | "NAME_ASC" | "APPROVED_ASC" | "VARIANTS_MISSING_MOST";
+const SORT_LABEL: Record<SortOption, string> = {
+  MISSING_MOST: "الأحوج (بدائل ناقصة أولاً)",
+  APPROVED_ASC: "الأقلّ صوراً معتمَدة",
+  NAME_ASC: "الاسم أ ↔ ي",
+  VARIANTS_MISSING_MOST: "الأكثر بدائلَ بلا صور",
+};
+
+/**
+ * مفتاحُ التخزين المحلّي لحفظ فلاتر الكاشف. النسخة (v1) تسمح بترقيةٍ لاحقة إن غيّرنا
+ * شكلَ الحالة (إضافة/إزالة حقول) بلا كسرِ مستخدم يحمل شكلاً قديماً — نعيد الافتراضيّ
+ * بصمت. المفتاح خاصٌّ بالكاشف؛ لا نلوّث namespace التطبيق.
+ */
+const STORAGE_KEY = "studio.discovery.filters.v1";
+type PersistedFilters = { states: Health[]; search: string; bundleOnly: boolean; sort: SortOption };
+const DEFAULT_FILTERS: PersistedFilters = {
+  states: ["NO_IMAGES", "BUNDLE_NO_IMAGE"],
+  search: "",
+  bundleOnly: false,
+  sort: "MISSING_MOST",
+};
+
+function loadPersistedFilters(): PersistedFilters {
+  if (typeof window === "undefined") return DEFAULT_FILTERS;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return DEFAULT_FILTERS;
+    const parsed = JSON.parse(raw) as Partial<PersistedFilters>;
+    // تحقّقٌ ضيّق: مصدرٌ خارجيّ (localStorage) قد يحمل شكلاً غير صحيح — نرفض بلا كسر.
+    const states = Array.isArray(parsed.states) ? parsed.states.filter((s): s is Health => typeof s === "string" && s in STATE_LABEL) : DEFAULT_FILTERS.states;
+    const search = typeof parsed.search === "string" ? parsed.search.slice(0, 80) : "";
+    const bundleOnly = parsed.bundleOnly === true;
+    const sort = typeof parsed.sort === "string" && parsed.sort in SORT_LABEL ? (parsed.sort as SortOption) : DEFAULT_FILTERS.sort;
+    return { states, search, bundleOnly, sort };
+  } catch {
+    return DEFAULT_FILTERS;
+  }
+}
+
+function persistFilters(filters: PersistedFilters): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(filters));
+  } catch {
+    // Storage قد يكون معطَّلاً (Private mode/Safari) — تخطٍّ صامت (النقطة ليست حاسمة).
+  }
+}
+
 export function StudioImageDiscoveryPanel({
   onCreateCampaignFromProducts,
   onCreateCampaignFromCategory,
@@ -48,10 +111,19 @@ export function StudioImageDiscoveryPanel({
   onCreateCampaignFromProducts: (productIds: number[]) => void;
   onCreateCampaignFromCategory: (categoryId: number) => void;
 }) {
-  const [selectedStates, setSelectedStates] = useState<Health[]>(["NO_IMAGES", "BUNDLE_NO_IMAGE"]);
-  const [search, setSearch] = useState("");
-  const [bundleOnly, setBundleOnly] = useState(false);
+  // فلاتر مُحمَّلةٌ من التخزين المحلّي مرّةً واحدةً عند التركيب (`useState(loader)` يُحسَب مرّة).
+  // بدون هذا كان المدير يُعيد ضبط الفلاتر كل زيارة، ما يُضيّع الوقت على مسحٍ يوميّ للحالة نفسها.
+  const initialFilters = useMemo(() => loadPersistedFilters(), []);
+  const [selectedStates, setSelectedStates] = useState<Health[]>(initialFilters.states);
+  const [search, setSearch] = useState(initialFilters.search);
+  const [bundleOnly, setBundleOnly] = useState(initialFilters.bundleOnly);
+  const [sort, setSort] = useState<SortOption>(initialFilters.sort);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // أثرُ الحفظ: يُطلَق كلّما تغيّر أيٌّ من الفلاتر. `selectedIds` **لا يُحفَظ** — التحديد
+  // مرتبطٌ بالجلسة الحاليّة، وإعادةُ فتح المتصفح لاحقاً لا تعني نفس نيّة العمل.
+  useEffect(() => {
+    persistFilters({ states: selectedStates, search, bundleOnly, sort });
+  }, [selectedStates, search, bundleOnly, sort]);
 
   const counts = trpc.productStudio.imageHealthCounts.useQuery(undefined, { staleTime: 60_000 });
   const topCategories = trpc.productStudio.topGapCategories.useQuery({ limit: 8 }, { staleTime: 120_000 });
@@ -65,7 +137,30 @@ export function StudioImageDiscoveryPanel({
     { staleTime: 30_000, placeholderData: (prev) => prev },
   );
 
-  const items = gaps.data?.items ?? [];
+  // الفرز يُطبَّق على الواجهة (الخادم يُرجع بترتيبه الافتراضيّ). مسحٌ محلّيٌّ على ١٠٠ صفّاً
+  // كحدٍّ أقصى — تكلفةٌ لا تُذكَر. الترتيب مُستقرّ: `productId` كحلٍّ للتعادل يمنع اهتزاز
+  // الصفوف بين إعادات التحميل حين يتساوى المفتاح الأساسيّ.
+  const items = useMemo(() => {
+    const rows = gaps.data?.items ?? [];
+    const copy = rows.slice();
+    switch (sort) {
+      case "NAME_ASC":
+        copy.sort((a, b) => a.name.localeCompare(b.name, "ar") || a.productId - b.productId);
+        break;
+      case "APPROVED_ASC":
+        copy.sort((a, b) => a.approvedImages - b.approvedImages || a.productId - b.productId);
+        break;
+      case "VARIANTS_MISSING_MOST":
+        copy.sort((a, b) => b.variantsMissing - a.variantsMissing || a.productId - b.productId);
+        break;
+      case "MISSING_MOST":
+      default:
+        // «الأحوج»: تركيبةُ الأولوية = بدائل ناقصة أوّلاً، ثمّ الأقلّ صوراً معتمَدة، ثمّ الاسم.
+        copy.sort((a, b) => (b.variantsMissing - a.variantsMissing) || (a.approvedImages - b.approvedImages) || a.name.localeCompare(b.name, "ar"));
+        break;
+    }
+    return copy;
+  }, [gaps.data, sort]);
   const allShownSelected = items.length > 0 && items.every((i) => selectedIds.has(i.productId));
 
   const kpiCards: Array<{ label: string; value: number; state: Health; icon: React.ReactNode }> = useMemo(() => {
@@ -113,10 +208,13 @@ export function StudioImageDiscoveryPanel({
                 key={k.state}
                 type="button"
                 onClick={() => setSelectedStates((cur) => (active ? cur.filter((s) => s !== k.state) : [...cur, k.state]))}
+                title={STATE_TOOLTIP[k.state]}
+                aria-label={`${k.label} — ${STATE_TOOLTIP[k.state]}`}
                 className={`min-h-11 rounded-md border p-2 text-start transition-colors ${active ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}
               >
                 <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  {k.icon} {k.label}
+                  {k.icon} <span className="truncate">{k.label}</span>
+                  <Info aria-hidden className="ms-auto size-3 shrink-0 opacity-50" />
                 </div>
                 <div className="mt-0.5 text-base font-bold">{k.value}</div>
               </button>
@@ -151,8 +249,9 @@ export function StudioImageDiscoveryPanel({
           </div>
         )}
 
-        {/* فلاترُ البحث */}
-        <div className="grid gap-3 md:grid-cols-3">
+        {/* فلاترُ البحث والفرز — تُحفَظ في localStorage عند التغيير وتُستعاد عند فتح الشاشة
+            لاحقاً كي لا يُعيد المدير ضبطها كلّ زيارة (مسحٌ يوميّ للحالة نفسها). */}
+        <div className="grid gap-3 md:grid-cols-4">
           <div className="space-y-1.5 md:col-span-2">
             <Label htmlFor="discovery-search">بحث باسم المنتج</Label>
             <div className="relative">
@@ -171,6 +270,23 @@ export function StudioImageDiscoveryPanel({
             >
               <Package aria-hidden className="size-4" /> البكج فقط{bundleOnly ? " (مفعَّل)" : ""}
             </Button>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="discovery-sort" className="flex items-center gap-1">
+              <ArrowUpDown aria-hidden className="size-3" /> فرز
+            </Label>
+            {/* select عاديّ لأنّ AppSelect (Radix) يفتح popup داخل الـCard يُقصّ أحياناً؛
+                الفرز على الواجهة فقط، فلا حاجةَ للـkeyboard type-ahead المتقدّم. */}
+            <select
+              id="discovery-sort"
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortOption)}
+              className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+            >
+              {(Object.keys(SORT_LABEL) as SortOption[]).map((k) => (
+                <option key={k} value={k}>{SORT_LABEL[k]}</option>
+              ))}
+            </select>
           </div>
         </div>
 
