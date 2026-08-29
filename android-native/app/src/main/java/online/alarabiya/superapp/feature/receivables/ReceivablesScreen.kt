@@ -75,6 +75,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import online.alarabiya.superapp.ui.ArabicDatePicker
 import online.alarabiya.superapp.model.receivables.AccountGroup
 import online.alarabiya.superapp.model.receivables.CardDirection
 import online.alarabiya.superapp.model.receivables.CardFilters
@@ -310,8 +311,8 @@ private fun InstallmentFilterPanel(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     ReceivableCodeField(filter.customerId, { value -> onChange { copy(customerId = value.filter(Char::isDigit)) } }, "معرّف العميل", Modifier.fillMaxWidth(), KeyboardType.Number)
                     if (policy.canFilterBranch) ReceivableCodeField(filter.branchId, { value -> onChange { copy(branchId = value) } }, "الفرع", Modifier.fillMaxWidth(), KeyboardType.Number)
-                    ReceivableCodeField(filter.from, { value -> onChange { copy(from = value.take(10)) } }, "من YYYY-MM-DD", Modifier.fillMaxWidth(), KeyboardType.Ascii)
-                    ReceivableCodeField(filter.to, { value -> onChange { copy(to = value.take(10)) } }, "إلى YYYY-MM-DD", Modifier.fillMaxWidth(), KeyboardType.Ascii)
+                    ArabicDatePicker(filter.from, { value -> onChange { copy(from = value) } }, "من", Modifier.fillMaxWidth())
+                    ArabicDatePicker(filter.to, { value -> onChange { copy(to = value) } }, "إلى", Modifier.fillMaxWidth())
                     Button(onClick = onApply, modifier = Modifier.fillMaxWidth()) { Text("تطبيق") }
                 }
             } else {
@@ -322,8 +323,8 @@ private fun InstallmentFilterPanel(
                         Button(onClick = onApply) { Text("تطبيق") }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ReceivableCodeField(filter.from, { value -> onChange { copy(from = value.take(10)) } }, "من YYYY-MM-DD", Modifier.weight(1f), KeyboardType.Ascii)
-                        ReceivableCodeField(filter.to, { value -> onChange { copy(to = value.take(10)) } }, "إلى YYYY-MM-DD", Modifier.weight(1f), KeyboardType.Ascii)
+                        ArabicDatePicker(filter.from, { value -> onChange { copy(from = value) } }, "من", Modifier.weight(1f))
+                        ArabicDatePicker(filter.to, { value -> onChange { copy(to = value) } }, "إلى", Modifier.weight(1f))
                     }
                 }
             }
@@ -1144,7 +1145,7 @@ private fun ActionDialog(
                             Text("يتطلب الإرسال قالباً وتكاملاً وموافقة صالحة. اضغط تأكيد مرة واحدة.")
                         } else {
                             OutlinedTextField(draft.reason, { value -> onUpdate { action.copy(draft = draft.copy(reason = value.take(255))) } }, Modifier.fillMaxWidth(), label = { Text("سبب التأجيل أو التخطّي") })
-                            OutlinedTextField(draft.promisedDate, { value -> onUpdate { action.copy(draft = draft.copy(promisedDate = value.take(10))) } }, Modifier.fillMaxWidth(), label = { Text("موعد متابعة YYYY-MM-DD (اختياري)") })
+                            ArabicDatePicker(draft.promisedDate, { value -> onUpdate { action.copy(draft = draft.copy(promisedDate = value)) } }, "موعد متابعة (اختياري)")
                         }
                     }
                     is ReceivablesPendingAction.Reconcile -> ReconciliationFields(action.draft) { draft -> onUpdate { action.copy(draft = draft) } }
