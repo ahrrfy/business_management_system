@@ -74,19 +74,26 @@ type InTransitRow = RouterOutputs["delivery"]["inTransit"]["rows"][number];
 type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 
 /** إيصال تسوية توصيل حراري عند التوريد. */
-function printRemittanceReceipt(partyName: string, r: { remittanceNumber: string | null; collectedTotal: string; feesTotal: string; netRemitted: string; shortfallTotal: string }) {
+function printRemittanceReceipt(partyName: string, r: { remittanceNumber: string | null; collectedTotal: string; feesTotal: string; netRemitted: string; shortfallTotal: string; courierCommissionAmount?: string | null }) {
   if (!r.remittanceNumber) return; // كشف إثبات محض بلا سند توريد ⇒ لا إيصال.
+  // Slice H (٢٩/٨/٢٦): سطرُ العمولة يظهر على الإيصال حين تكون للجهة قاعدةٌ فعّالة — إعلاميّ للمقارنة.
+  const totals: Array<{ label: string; value: string }> = [
+    { label: "إجمالي التحصيل", value: `${fmt(r.collectedTotal)} د.ع` },
+    { label: "مستحقات الجهة (الأجور)", value: `${fmt(r.feesTotal)} د.ع` },
+  ];
+  if (r.courierCommissionAmount != null) {
+    totals.push({ label: "عمولة القاعدة (تقديريّة)", value: `${fmt(r.courierCommissionAmount)} د.ع` });
+  }
+  totals.push(
+    { label: "صافٍ للمكتبة", value: `${fmt(r.netRemitted)} د.ع` },
+    { label: "عجز يبقى عهدة", value: `${fmt(r.shortfallTotal)} د.ع` },
+  );
   void printDoc({
     kind: "zreport",
     title: "إيصال تسوية توصيل",
     subtitle: r.remittanceNumber,
     meta: [`الجهة: ${partyName}`, fmtDateTime(new Date())],
-    totals: [
-      { label: "إجمالي التحصيل", value: `${fmt(r.collectedTotal)} د.ع` },
-      { label: "مستحقات الجهة (الأجور)", value: `${fmt(r.feesTotal)} د.ع` },
-      { label: "صافٍ للمكتبة", value: `${fmt(r.netRemitted)} د.ع` },
-      { label: "عجز يبقى عهدة", value: `${fmt(r.shortfallTotal)} د.ع` },
-    ],
+    totals,
     footer: "تسوية تحصيلات المندوب",
   });
 }
@@ -1142,7 +1149,14 @@ function SettleTab() {
 
   const remit = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
-      notify.ok("سُجِّل التوريد", `${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع${Number(r.shortfallTotal) > 0 ? ` (عجز ${fmt(r.shortfallTotal)})` : ""}`);
+      // Slice H (٢٩/٨/٢٦): إشعارٌ يشمل العمولة إن حُسِبت + فارقُها عن الأجرة الفعلية (نتيجةُ القاعدة).
+      const commissionNote = r.courierCommissionAmount != null
+        ? ` · عمولة القاعدة ${fmt(r.courierCommissionAmount)} (فرقٌ ${fmt(String(Number(r.feesTotal) - Number(r.courierCommissionAmount)))})`
+        : "";
+      notify.ok(
+        "سُجِّل التوريد",
+        `${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع${Number(r.shortfallTotal) > 0 ? ` (عجز ${fmt(r.shortfallTotal)})` : ""}${commissionNote}`,
+      );
       const partyName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "";
       printRemittanceReceipt(partyName, r);
       resetAfterSettle();

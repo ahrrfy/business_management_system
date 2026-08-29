@@ -1870,6 +1870,13 @@
 			"when": 1788052339000,
 			"tag": "0287_invoice_events",
 			"breakpoints": true
+		},
+		{
+			"idx": 288,
+			"version": "5",
+			"when": 1788052340000,
+			"tag": "0288_add_courier_commission_to_remittance",
+			"breakpoints": true
 		}
 	]
 }
