@@ -569,16 +569,20 @@ export const catalogRouter = router({
     .query(({ input }) => checkBarcodesTaken(input.codes)),
 
   // product-content-ai: يولّد مسودة محتوى فقط من حقائق مرسلة ومتحقق منها؛ لا يكتب المنتجات مباشرة.
+  // productId اختياريّ (وضع التعديل): الخدمة تحمّل صور المنتج المعتمَدة بنفسها وتُغذّي Gemini vision.
+  // ⛔ العميل لا يمرّر معرّفات صور — الخدمة تختار من DB بشرط APPROVED (منعُ تسريبٍ لصورةٍ لم تُعتمَد).
   generateContentDraft: productsManagerProcedure
     .input(
       z.object({
         facts: productFactsSchema,
         forceRefresh: z.boolean().optional(),
+        productId: z.number().int().positive().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) =>
       generateProductContentDraft(input.facts, {
         forceRefresh: input.forceRefresh,
+        productId: input.productId,
         actor: { userId: ctx.user.id, branchId: ctx.user.branchId ?? null },
       }),
     ),

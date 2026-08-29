@@ -144,3 +144,65 @@ describe("normalizeConversionFactor", () => {
     expect(normalizeConversionFactor("1/2")).toBe("1/2");
   });
 });
+
+describe("vision evidence (image.N keys)", () => {
+  it("accepts image.N in evidenceKeys through the schema", () => {
+    expect(() =>
+      aiProductDraftSchema.parse({
+        ...validDraft,
+        claims: [
+          { text: "بحجم A5", evidenceKeys: ["modelName"] },
+          // ادّعاء بصريّ خالص — بلا دليلٍ نصّيّ في الحقائق.
+          { text: "لون أزرق ظاهر", evidenceKeys: ["image.0"] },
+          // ادّعاء مختلط — دليلٌ نصّيّ + بصريّ.
+          { text: "دفتر ملاحظات أزرق", evidenceKeys: ["productType", "image.0"] },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects malformed image keys (image.abc, image., image, images.0)", () => {
+    for (const bad of ["image.abc", "image.", "image", "images.0", "image.-1"]) {
+      expect(() =>
+        aiProductDraftSchema.parse({
+          ...validDraft,
+          claims: [{ text: "أزرق", evidenceKeys: [bad] }],
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("image-only claim is accepted without textual grounding", () => {
+    // «لون أزرق» لا يظهر في أيّ حقلٍ نصّيّ (facts.variants[0].color = 'أزرق' حاضر لكن كوّناً مستقلاً).
+    // الادّعاء المستند إلى image.0 يجب ألّا يخضع لفحص «التطابق النصّيّ» — البروتوكول البصريّ في
+    // البرومبت + مراجعة المدير هما الحارسان.
+    const draft = aiProductDraftSchema.parse({
+      ...validDraft,
+      claims: [
+        { text: "بحجم A5", evidenceKeys: ["modelName"] },
+        { text: "شعار روتا ظاهر أعلى الغلاف", evidenceKeys: ["image.0"] },
+      ],
+    });
+    const result = validateAiProductDraft(draft, facts);
+    expect(result.ok).toBe(true);
+    // لا حاصر عن الادّعاء البصريّ (رقم ٢).
+    expect(result.blockers.some((b) => b.includes("رقم 2"))).toBe(false);
+  });
+
+  it("mixed claim still requires textual evidence to match", () => {
+    // ادّعاء يحمل دليلاً نصّياً غير مطابقٍ + دليلاً بصريّاً ⇒ يفشل على النصّيّ (لا يُغني عنه البصريّ).
+    const draft = aiProductDraftSchema.parse({
+      ...validDraft,
+      claims: [
+        { text: "بحجم A5", evidenceKeys: ["modelName"] },
+        // «سلك حديد» ليس في modelName (الذي يحمل «سلك A5») + دليلٌ بصريّ ⇒ يفشل على النصّيّ.
+        { text: "سلك حديد", evidenceKeys: ["modelName", "image.0"] },
+      ],
+    });
+    const result = validateAiProductDraft(draft, facts);
+    expect(result.ok).toBe(false);
+    expect(
+      result.blockers.some((b) => b.includes("رقم 2") && b.includes("لا يتطابق")),
+    ).toBe(true);
+  });
+});

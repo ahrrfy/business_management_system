@@ -1,11 +1,17 @@
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
+import { and, asc, desc, eq } from "drizzle-orm";
+import { productImages } from "../../drizzle/schema";
 import { getAiStudioRuntime } from "./imageStudioSettingsService";
 import {
   ImageStudioGuardError,
   imageStudioGuardErrorMessageAr,
   runGuardedImageStudioCall,
 } from "./imageStudioUsageGuard";
+import { requireDb } from "./tx";
+import { getImageStore } from "../lib/imageStore";
+import { decodeDataUrl } from "../imageRoute";
+import { logger } from "../logger";
 import {
   aiProductDraftSchema,
   canonicalJson,
@@ -20,10 +26,15 @@ const GEMINI_API_BASE = (
   "https://generativelanguage.googleapis.com/v1beta"
 ).replace(/\/+$/, "");
 const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
-const PROMPT_VERSION = "product-content-ar-v2";
+const TEXT_PROMPT_VERSION = "product-content-ar-v2";
+const VISION_PROMPT_VERSION = "product-content-ar-v3-vision";
 const MAX_RESPONSE_BYTES = 512 * 1024;
 const TIMEOUT_MS = 25_000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+// ٤ صور كسقفٍ عمليّ: 4 × 900KB = 3.6MB (بعيدٌ عن حدّ Gemini ~20MB) + انتباه بصريّ مركّز
+// بلا ازدحام يذوّب الاختلاف بين الصور. الأولوية لـisPrimary ثمّ sortOrder.
+const MAX_VISION_IMAGES = 4;
+const MAX_IMAGE_BYTES = 900_000;
 
 type TextFetch = typeof fetch;
 
@@ -59,6 +70,30 @@ finalProductName وinputDescription هما مدخل الصياغة الذي كت
 إذا كانت البيانات غير كافية، أعد نصاً محافظاً وأضف السبب إلى warnings أو unsupportedClaims.
 استخدم عربية واضحة مناسبة للعراق بلا تشكيل ولا كشيدة.
 أعد JSON فقط مطابقاً للمخطط المطلوب.`;
+
+// بروتوكول الأدلّة البصريّة — يُلحَق بالبرومبت فقط عند إرسال صور معتمَدة مع الطلب. الصور
+// تُعنوَن image.0, image.1, ... بترتيب ورودها في parts. الادّعاء البصريّ يجب أن يحمل مفتاح
+// image.N في evidenceKeys ليُميَّز عن الادّعاء النصّيّ المدعوم بحقلٍ مُنظَّم.
+const VISUAL_PROTOCOL = `PRODUCT_IMAGES:
+الصور المرفقة معتمَدة (مرت مراجعة الاستوديو) وترقيمها image.0, image.1, image.2, ... حسب ترتيب ورودها قبل النصّ.
+
+يُسمح استنتاجه بصرياً — وثّق مصدره بمفتاح image.N في evidenceKeys:
+- اللون الظاهر (أخضر، أزرق داكن، ذهبيّ…)
+- النوع العام المرئيّ (كتاب، دفتر ملاحظات، قلم، علبة أقلام…)
+- شعار أو نصّ ماركة مقروء (اكتب النصّ كما هو ظاهر بلا ترجمة)
+- عدد قطعٍ ظاهرة بوضوحٍ داخل تغليفٍ شفّاف
+- الشكل العام (مستطيل، دائريّ، مجلَّد بسلك، أسطوانيّ…)
+- وجود تغليفٍ من عدمه، ولون التغليف
+
+يُحظَر استنتاجه بصرياً — أضفه إلى unsupportedClaims إن ورَد بلا حقلٍ مقابل في VERIFIED_PRODUCT_FACTS:
+- المادّة (ورق/بلاستيك/معدن…) ما لم يكن مطبوعاً واضحاً على العلبة
+- عدد الصفحات، السماكة، الأبعاد بالسنتيمترات، الوزن
+- بلد الصنع، الشهادات، الضمان، تاريخ إنتاج
+- سعرٌ أو تخفيض
+- كلّ ادّعاءٍ عن الجودة/المتانة/الأمان
+
+إن تعارضت الصورة مع حقلٍ مُنظَّم فالأولوية للحقل المُنظَّم.
+لا تخترع أرقاماً مصدرها الصورة (عدد الصفحات، قياس بالمليمترات، وزن…) — الأرقام في المخرَج يجب أن تأتي من حقلٍ مُنظَّم فقط.`;
 
 const OUTPUT_JSON_SCHEMA = {
   type: "object",
@@ -186,18 +221,98 @@ export type ProductContentDraftResult = {
   model: string;
   promptVersion: string;
   cacheHit: boolean;
+  // عدد الصور المعتمَدة التي دخلت البرومبت البصريّ فعلاً (0 ⇒ توليدٌ نصّيّ خالص).
+  // الواجهة تعرضه لتُبيّن للموظّف/المدير أنّ الاقتراح استفاد من الصور.
+  imagesUsed: number;
 };
+
+type VisualCacheContext = { imageHashes: string[] } | null;
 
 export function productContentCacheKey(
   facts: ProductFacts,
   model: string,
+  visual: VisualCacheContext = null,
 ): string {
+  // نسخة البرومبت تختلف بحسب وجود الصور ⇒ لا تصادم كاش بين المسارَين حتى مع نفس الحقائق.
+  const promptVersion = visual ? VISION_PROMPT_VERSION : TEXT_PROMPT_VERSION;
   return createHash("sha256")
     .update(
-      canonicalJson({ facts, model, promptVersion: PROMPT_VERSION }),
+      canonicalJson({ facts, model, promptVersion, visual }),
       "utf8",
     )
     .digest("hex");
+}
+
+type VisionImage = {
+  index: number;
+  mime: string;
+  data: string; // base64
+  contentHash: string;
+};
+
+/**
+ * يحمّل حتى ٤ صور معتمَدة (`reviewStatus='APPROVED'`) لمنتجٍ ما بترتيب: `isPrimary` ثمّ `sortOrder`.
+ * الصورة من R2 عبر `imageStore.getBuffer` (كائنٌ معنون-بالمحتوى)، أو من `url` كـdata-URL موروث.
+ * فشل صورةٍ منفردة يُتجاهَل بصمتٍ (سنستعمل الباقي) — لا يُعطَّل التوليد من أجل صورةٍ واحدة تالفة.
+ * ⛔ لا نُثِق بمعرّفات صورٍ يمرّرها العميل: الخدمة تختار بنفسها من DB بشرط الاعتماد.
+ */
+async function loadProductImagesForVision(
+  productId: number,
+): Promise<VisionImage[]> {
+  const rows = await requireDb()
+    .select({
+      id: productImages.id,
+      mime: productImages.mime,
+      bytes: productImages.bytes,
+      objectKey: productImages.objectKey,
+      contentHash: productImages.contentHash,
+      url: productImages.url,
+    })
+    .from(productImages)
+    .where(
+      and(
+        eq(productImages.productId, productId),
+        eq(productImages.reviewStatus, "APPROVED"),
+      ),
+    )
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder))
+    .limit(MAX_VISION_IMAGES);
+
+  const out: VisionImage[] = [];
+  const store = getImageStore();
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx];
+    try {
+      let bytes: Buffer | null = null;
+      let mime = row.mime ?? "";
+      if (row.objectKey && row.contentHash) {
+        // R2: نُقيّد القراءة بـMAX_IMAGE_BYTES منعاً لتضخّم غير متوقّع (row.bytes قد يكذب في بيانات
+        // موروثة؛ الحدّ العلويّ الصلب هنا حاسم قبل إرسال البايتات إلى Gemini).
+        const expected = Math.min(row.bytes ?? MAX_IMAGE_BYTES, MAX_IMAGE_BYTES);
+        bytes = await store.getBuffer(row.objectKey, expected);
+      } else if (row.url) {
+        // موروث: data-URL في العمود نصّاً. decodeDataUrl يحقّق الصيغة وقائمة mime البيضاء.
+        const decoded = decodeDataUrl(row.url);
+        if (decoded && decoded.bytes.length <= MAX_IMAGE_BYTES) {
+          bytes = decoded.bytes;
+          mime = decoded.mime;
+        }
+      }
+      if (!bytes || bytes.length === 0 || !mime) continue;
+      out.push({
+        index: idx,
+        mime,
+        data: bytes.toString("base64"),
+        contentHash: row.contentHash ?? createHash("sha256").update(bytes).digest("hex"),
+      });
+    } catch (err) {
+      logger.warn(
+        { err, productId, imageId: row.id },
+        "vision: skipping image (load failed)",
+      );
+    }
+  }
+  return out;
 }
 
 export async function generateProductContentDraft(
@@ -207,6 +322,11 @@ export async function generateProductContentDraft(
     timeoutMs?: number;
     forceRefresh?: boolean;
     actor?: { userId: number; branchId?: number | null };
+    // productId اختياريّ: إن وُجد وله صور معتمَدة، ينفّذ المسار البصريّ (Gemini vision).
+    // إن غاب أو لم يجد صوراً، يظلّ المسار نصّياً بحتاً — لا فشل صامت، لا تعطيل ميزة قائمة.
+    productId?: number;
+    // لحقن صورٍ في الاختبار دون الحاجة إلى R2/DB فعليَّين.
+    imagesOverride?: VisionImage[];
   } = {},
 ): Promise<ProductContentDraftResult> {
   const facts = productFactsSchema.parse(rawFacts);
@@ -238,7 +358,22 @@ export async function generateProductContentDraft(
   const model = runtime.model.includes("image")
     ? DEFAULT_TEXT_MODEL
     : runtime.model;
-  const cacheKey = productContentCacheKey(facts, model);
+
+  // نحمّل الصور المعتمَدة **قبل** حساب مفتاح الكاش ⇒ مسارٌ نصّيّ ومسارٌ بصريّ لهما مفتاحان
+  // مختلفان، وإعادة رفع صورةٍ (contentHash جديد) تُبطل الكاش تلقائياً.
+  // ⛔ لا نطلب الصور من العميل: الخدمة تختار بنفسها بشرط APPROVED.
+  const images: VisionImage[] =
+    opts.imagesOverride ??
+    (opts.productId && Number.isSafeInteger(opts.productId) && opts.productId > 0
+      ? await loadProductImagesForVision(opts.productId)
+      : []);
+  const visualContext: VisualCacheContext =
+    images.length > 0 ? { imageHashes: images.map((i) => i.contentHash).sort() } : null;
+  const promptVersionUsed = visualContext
+    ? VISION_PROMPT_VERSION
+    : TEXT_PROMPT_VERSION;
+  const cacheKey = productContentCacheKey(facts, model, visualContext);
+
   pruneDraftCache();
   if (!opts.forceRefresh) {
     const cached = draftCache.get(cacheKey);
@@ -258,15 +393,20 @@ export async function generateProductContentDraft(
       opts.timeoutMs ?? TIMEOUT_MS,
     );
 
+    // ترتيب parts متعمَّد: الصور أوّلاً (يزيد انتباه النموذج للبصريّ) والنصّ آخراً بحيث ترد
+    // التعليمات النهائية مباشرةً قبل التوليد. البروتوكول البصريّ يُلحَق فقط عند وجود صور.
+    const imageParts = images.map((img) => ({
+      inlineData: { mimeType: img.mime, data: img.data },
+    }));
+    const textPrompt = visualContext
+      ? `${SYSTEM_PROMPT}\n\n${VISUAL_PROTOCOL}\n\nVERIFIED_PRODUCT_FACTS:\n${JSON.stringify(facts)}\n\nأعد مسودة المنتج الآن مستنداً إلى الحقائق المُنظَّمة والصور المرفقة.`
+      : `${SYSTEM_PROMPT}\n\nVERIFIED_PRODUCT_FACTS:\n${JSON.stringify(facts)}\n\nأعد مسودة المنتج الآن.`;
+
     const payload = {
       contents: [
         {
           role: "user",
-          parts: [
-            {
-              text: `${SYSTEM_PROMPT}\n\nVERIFIED_PRODUCT_FACTS:\n${JSON.stringify(facts)}\n\nأعد مسودة المنتج الآن.`,
-            },
-          ],
+          parts: [...imageParts, { text: textPrompt }],
         },
       ],
       generationConfig: {
@@ -359,8 +499,9 @@ export async function generateProductContentDraft(
         validation,
         cacheKey,
         model,
-        promptVersion: PROMPT_VERSION,
+        promptVersion: promptVersionUsed,
         cacheHit: false,
+        imagesUsed: images.length,
       };
     } finally {
       clearTimeout(timeout);

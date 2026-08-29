@@ -59,7 +59,7 @@ export type ProductChannelContentInput = z.infer<typeof productChannelContentSch
 const evidenceKey = z
   .string()
   .regex(
-    /^(category|productType|brand|modelName|attributes\.[a-zA-Z0-9_.-]+|variants\.[0-9]+\.(color|size)|saleUnits\.[0-9]+\.(name|conversionFactor)|verifiedClaims\.[0-9]+|audience)$/,
+    /^(category|productType|brand|modelName|attributes\.[a-zA-Z0-9_.-]+|variants\.[0-9]+\.(color|size)|saleUnits\.[0-9]+\.(name|conversionFactor)|verifiedClaims\.[0-9]+|audience|image\.[0-9]+)$/,
   )
   .max(120);
 
@@ -227,18 +227,24 @@ export function validateAiProductDraft(
   const warnings = [...draft.warnings];
 
   draft.claims.forEach((claim, index) => {
-    const evidenceValues: string[] = [];
+    const textEvidenceValues: string[] = [];
     claim.evidenceKeys.forEach((key) => {
+      // مفاتيح image.N: البروتوكول البصريّ في البرومبت يعنونها (image.0 = الصورة الأولى…) ومراجعة
+      // المدير تحكمها. لا factMap لها ولا تطابق نصّيٍّ ممكن — لكنّها **دليلٌ مقبول** ما دام الادّعاء
+      // بصريّاً بحتاً. إن اختلط بصريّ ونصّيّ، يبقى فحص التطابق نافذاً على النصّيّ فقط.
+      if (/^image\.\d+$/.test(key)) return;
       const evidence = factMap.get(key);
-      if (!evidence)
+      if (!evidence) {
         blockers.push(
           `الادعاء رقم ${index + 1} يستخدم دليلاً غير موجود: ${key}`,
         );
-      else evidenceValues.push(evidence);
+        return;
+      }
+      textEvidenceValues.push(evidence);
     });
     if (
-      evidenceValues.length > 0 &&
-      !claimIsGrounded(claim.text, evidenceValues)
+      textEvidenceValues.length > 0 &&
+      !claimIsGrounded(claim.text, textEvidenceValues)
     ) {
       blockers.push(
         `الادعاء رقم ${index + 1} لا يتطابق نصياً مع القيم التي استند إليها`,
