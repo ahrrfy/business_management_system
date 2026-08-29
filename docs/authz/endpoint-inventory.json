@@ -17921,7 +17921,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:302"
+      "loc": "server/routers/voucherRouter.ts:298"
     },
     {
       "surface": "trpc",
@@ -17938,7 +17938,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:157"
+      "loc": "server/routers/voucherRouter.ts:153"
     },
     {
       "surface": "trpc",
@@ -17955,7 +17955,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:758"
+      "loc": "server/routers/voucherRouter.ts:754"
     },
     {
       "surface": "trpc",
@@ -17972,7 +17972,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:258"
+      "loc": "server/routers/voucherRouter.ts:254"
     },
     {
       "surface": "trpc",
@@ -17989,7 +17989,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:83"
+      "loc": "server/routers/voucherRouter.ts:84"
     },
     {
       "surface": "trpc",
@@ -18006,7 +18006,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:441"
+      "loc": "server/routers/voucherRouter.ts:437"
     },
     {
       "surface": "trpc",
@@ -18023,7 +18023,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:310"
+      "loc": "server/routers/voucherRouter.ts:306"
     },
     {
       "surface": "trpc",
@@ -18040,7 +18040,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:282"
+      "loc": "server/routers/voucherRouter.ts:278"
     },
     {
       "surface": "trpc",
@@ -18057,7 +18057,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:412"
+      "loc": "server/routers/voucherRouter.ts:408"
     },
     {
       "surface": "trpc",
@@ -18074,7 +18074,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:635"
+      "loc": "server/routers/voucherRouter.ts:631"
     },
     {
       "surface": "trpc",
@@ -18091,7 +18091,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:321"
+      "loc": "server/routers/voucherRouter.ts:317"
     },
     {
       "surface": "trpc",
@@ -18108,7 +18108,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:187"
+      "loc": "server/routers/voucherRouter.ts:183"
     },
     {
       "surface": "trpc",
@@ -18125,7 +18125,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:497"
+      "loc": "server/routers/voucherRouter.ts:493"
     },
     {
       "surface": "trpc",
@@ -18142,7 +18142,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:216"
+      "loc": "server/routers/voucherRouter.ts:212"
     },
     {
       "surface": "trpc",
@@ -18159,7 +18159,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:596"
+      "loc": "server/routers/voucherRouter.ts:592"
     },
     {
       "surface": "trpc",
@@ -18176,7 +18176,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:78"
+      "loc": "server/routers/voucherRouter.ts:79"
     },
     {
       "surface": "trpc",
@@ -18193,7 +18193,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:706"
+      "loc": "server/routers/voucherRouter.ts:702"
     },
     {
       "surface": "trpc",
@@ -18210,7 +18210,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:513"
+      "loc": "server/routers/voucherRouter.ts:509"
     },
     {
       "surface": "trpc",

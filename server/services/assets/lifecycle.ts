@@ -278,6 +278,7 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
       await tx.update(fixedAssets).set({ status: "maintenance" }).where(eq(fixedAssets.id, assetId));
     }
   });
+  // ن-٢-هـ: إشعارُ المُعتمِدين مركزيّ في createSystemPaymentRequestTx (tx.ts.enqueuePostCommit).
   const asset = await getAsset(assetId, scope);
   return asset
     ? { ...asset, paymentPending: paymentRequestReceiptId != null, paymentRequestReceiptId }

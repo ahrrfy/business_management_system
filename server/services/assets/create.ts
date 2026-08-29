@@ -306,6 +306,8 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
     }
     return newId;
   });
+  // ن-٢-هـ: إشعارُ المُعتمِدين مُعالَجٌ مركزياً داخل createSystemPaymentRequestTx
+  // عبر enqueuePostCommit (راجع voucher/create.ts + services/tx.ts).
   const asset = await getAsset(id, scope);
   return asset;
 }
