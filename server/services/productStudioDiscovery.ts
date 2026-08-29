@@ -196,26 +196,37 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
   // ⚠️ الفرز يُطبَّق على الاستعلام **الخارجيّ** (Codex P2 على PR #865): الفرز على الواجهة
   // كان يمسّ ١٠٠ صفٍّ فقط، فيُقصّ الأولويّ إن كان معرّفه فوق المائة. `variantCount` و
   // `variantsWithImages` محسوبان في subquery داخليّ فيسهل الوصول إليهما بالاسم في الخارج.
+  // بدائلُ الحسابات كأعمدةٍ مستقلّةٍ في الـsubquery الداخليّ. الحسابُ الحسابيّ داخل `sql``
+  // على `inner.variantCount` كان يُدخل الـsubquery الصلبيّ الخام (يشير إلى `products.id`
+  // خارج نطاقه) في ORDER BY الخارجيّ ⇒ Unknown column على الإنتاج (بلاغ ٢٩/٨).
+  // الحسابُ هنا في السطر يضمن أن يظهر كعمودٍ مسمّى في alias `d`، فالمرجع من الخارج آمن.
+  const approvedImagesSql = sql<number>`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED')`;
+  const variantCountSql = sql<number>`(select count(*) from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1)`;
+  const variantsWithImagesSql = sql<number>`(
+    select count(distinct ${productVariants.id})
+    from ${productVariants}
+    where ${productVariants.productId} = ${products.id}
+      and ${productVariants.isActive} = 1
+      and exists (
+        select 1 from ${productImages}
+        where ${productImages.productId} = ${products.id}
+          and ${productImages.variantId} = ${productVariants.id}
+          and ${productImages.reviewStatus} = 'APPROVED'
+      )
+  )`;
   const inner = db
     .select({
       id: products.id,
       name: products.name,
       categoryId: products.categoryId,
       isBundle: products.isBundle,
-      approvedImages: sql<number>`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED')`,
-      variantCount: sql<number>`(select count(*) from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1)`,
-      variantsWithImages: sql<number>`(
-        select count(distinct ${productVariants.id})
-        from ${productVariants}
-        where ${productVariants.productId} = ${products.id}
-          and ${productVariants.isActive} = 1
-          and exists (
-            select 1 from ${productImages}
-            where ${productImages.productId} = ${products.id}
-              and ${productImages.variantId} = ${productVariants.id}
-              and ${productImages.reviewStatus} = 'APPROVED'
-          )
-      )`,
+      approvedImages: approvedImagesSql,
+      variantCount: variantCountSql,
+      variantsWithImages: variantsWithImagesSql,
+      // عمودٌ مستقلّ للفرز — الحسابُ داخل الـsubquery حيث الـcorrelated subqueries صالحةٌ.
+      // بلا هذا: `sql\`(${inner.variantCount} - ${inner.variantsWithImages})\`` كان يُوسّع
+      // النصَّ الخامَّ للـsubquery في ORDER BY الخارجيّ فيَشتكي MySQL من `products.id` غير معروف.
+      variantsMissing: sql<number>`greatest(0, (${variantCountSql}) - (${variantsWithImagesSql}))`,
       health,
     })
     .from(products)
@@ -226,17 +237,16 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
     .limit(limit + 1)
     .as("d");
   const sort: DiscoverySort = input.sort ?? "MISSING_MOST";
-  // نبني تعبير الفرز الخارجيّ بأعمدة الـsubquery. `productId` كتعادلٍ مستقرّ يمنع اهتزاز
-  // الترتيب بين إعادات التحميل حين تتساوى المفاتيح الأساسيّة.
-  const missingCount = sql`(${inner.variantCount} - ${inner.variantsWithImages})`;
+  // نستهلك `inner.variantsMissing` كعمودٍ مسمّى على alias `d` — درizzle helpers (asc/desc)
+  // يعرفون توليدَ `d.variantsMissing` بأمانٍ، بلا توسيع النصّ الأصليّ.
   const orderBy = sort === "NAME_ASC"
     ? [asc(inner.name), asc(inner.id)]
     : sort === "APPROVED_ASC"
       ? [asc(inner.approvedImages), asc(inner.name), asc(inner.id)]
       : sort === "VARIANTS_MISSING_MOST"
-        ? [desc(missingCount), asc(inner.name), asc(inner.id)]
+        ? [desc(inner.variantsMissing), asc(inner.name), asc(inner.id)]
         // MISSING_MOST (افتراضيّ): «الأحوج» = بدائل ناقصة أوّلاً ثمّ الأقلّ صوراً معتمَدة ثمّ الاسم.
-        : [desc(missingCount), asc(inner.approvedImages), asc(inner.name), asc(inner.id)];
+        : [desc(inner.variantsMissing), asc(inner.approvedImages), asc(inner.name), asc(inner.id)];
   const rows = await db
     .select()
     .from(inner)
