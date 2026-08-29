@@ -218,6 +218,9 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       status,
       paidAmount: toDbMoney(totalPaid),
       paymentMethod: input.payment?.method ?? null,
+      // Codex #854 P2: نشرُ paymentMode من الأمر إلى الفاتورة عند التسليم — الأمرُ ومستنده
+      // التجاريّ يجب أن يتّفقا على «كيف حُصِّل الرصيد».
+      paymentMode: woPaymentMode,
       paymentDate: totalPaid.gt(0) ? new Date() : null,
       notes: `طلب خدمة ${wo.orderNumber}: ${wo.title}`,
       salespersonNameSnapshot,

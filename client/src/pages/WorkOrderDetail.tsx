@@ -24,6 +24,8 @@ import { Printer, MessageCircle, Truck } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
 import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineCard";
+import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
+import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -216,6 +218,22 @@ export default function WorkOrderDetail() {
     },
     onError: (e) => setError(e.message),
   });
+  // Slice C (٢٩/٨/٢٦) — الإسناد المتأخّر: زرّ «تغيير طريقة التسليم» يظهر قبل التسليم/الإرسال ⇒
+  // موظّف الاستقبال يقلب استلاماً⇄توصيلاً من هذه الشاشة نفسها بلا العودة للطابور (بلاغ المالك:
+  // «الإسناد يحتوي على مشكلة، يسند الطلب منذ البداية ولا نعلم هل الشركة أم المندوب»). المكوّن
+  // نفسه المُستعمَل في ReceptionOrderQueue (حارس أمانة الأجرة موحَّد بين الشاشتَين).
+  const [reclassifyOpen, setReclassifyOpen] = useState(false);
+  const setDeliveryMethodMut = trpc.workOrders.setDeliveryMethod.useMutation({
+    onSuccess: async (r) => {
+      notify.ok(
+        "حُدِّثت طريقة التسليم",
+        Number(r.refundedFee) > 0 ? `رُدّت أمانة الأجرة ${fmtAr(r.refundedFee)} د.ع نقداً للزبون` : undefined,
+      );
+      setReclassifyOpen(false);
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
+  });
   const cancel = trpc.workOrders.cancel.useMutation({
     onSuccess: async (result) => {
       const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
@@ -318,6 +336,10 @@ export default function WorkOrderDetail() {
               quantity: data.quantity,
               dueDate: data.dueDate ? String(data.dueDate) : null,
               amountDue: remainingDue.toFixed(2),
+              // Slice E (٢٩/٨/٢٦): إجماليّ التوصيل صريحٌ في الرسالة عند الجهوزيّة.
+              hasDelivery: data.hasDelivery,
+              deliveryFee: data.deliveryCost ?? "0",
+              deliveryFeeCollection: data.deliveryFeeCollection ?? "COURIER",
             }))}
           >
             <MessageCircle className="h-3.5 w-3.5" />
@@ -462,6 +484,29 @@ export default function WorkOrderDetail() {
 
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="سعر البيع" value={data.salePrice} strong />
+              {D(data.deposit ?? 0).gt(0) && (
+                <SummaryRow label="العربون المقبوض" value={`−${fmt(data.deposit ?? "0")}`} />
+              )}
+              {/* Slice D (٢٩/٨/٢٦): إظهار «إجمالي ما سيدفعه العميل» شاملاً التوصيل في بطاقة الأمر —
+                  بلاغ المالك: «يجب أن يعلم الزبون بالمبلغ الكلي النهائي شاملاً التوصيل». يظهر عند
+                  التوصيل بأجرةٍ موجبة، ويُحسَب بحسب `feeCollection`: COURIER يجمع، COUNTER/SHOP لا. */}
+              {data.hasDelivery && D(data.deliveryCost ?? 0).gt(0) && (() => {
+                const feeCollection = (data.deliveryFeeCollection ?? "COURIER") as "COURIER" | "COUNTER" | "SHOP";
+                const feeLabel = feeCollection === "COURIER" ? "أجرة التوصيل (المندوب يقبضها)"
+                  : feeCollection === "COUNTER" ? "أجرة التوصيل (قُبضت أمانةً)"
+                  : "أجرة التوصيل (تتحمّلها المكتبة)";
+                const remaining = Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0));
+                const customerPays = feeCollection === "COURIER" ? remaining + Number(data.deliveryCost ?? 0) : remaining;
+                return (
+                  <>
+                    <SummaryRow label={feeLabel} value={data.deliveryCost ?? "0"} />
+                    <div className="flex justify-between border-t border-[var(--sem-info)] pt-2 text-base font-black text-[var(--sem-info)]">
+                      <span>يدفعه العميل</span>
+                      <span dir="ltr" className="tabular-nums">{fmt(String(customerPays))} د.ع</span>
+                    </div>
+                  </>
+                );
+              })()}
               {showCost && <SummaryRow label="كلفة المواد" value={data.materialsCost} />}
               {showCost && <SummaryRow label="كلفة العمالة" value={data.laborCost} />}
             </div>
@@ -774,6 +819,14 @@ export default function WorkOrderDetail() {
             {deliver.isPending ? "جارٍ…" : "تسليم وإصدار فاتورة"}
           </Button>
         )}
+        {/* Slice C: زرّ «تغيير طريقة التسليم» يظهر لكاشير/مدير قبل التسليم/الإرسال (لا إرسالية حيّة).
+            إذا كان الطلب مسنَداً لمندوب فعلياً (consignmentId) يُخفى — التحويل يمرّ من إلغاء الإسناد أوّلاً. */}
+        {canDeliverWorkOrder && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && !data.consignmentId && (
+          <Button variant="outline" onClick={() => setReclassifyOpen(true)} disabled={setDeliveryMethodMut.isPending}>
+            <Truck aria-hidden className="me-1 size-4" />
+            {data.hasDelivery ? "تحويل لاستلامٍ مباشر" : "تحويل إلى توصيل"}
+          </Button>
+        )}
         {canCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
@@ -859,6 +912,22 @@ export default function WorkOrderDetail() {
           </div>
         </div>
       )}
+
+      <ReclassifyDeliveryDialog
+        order={reclassifyOpen ? {
+          id: workOrderId,
+          orderNumber: data.orderNumber,
+          title: data.title,
+          hasDelivery: data.hasDelivery,
+          deliveryAddress: data.deliveryAddress,
+          deliveryPhone: data.deliveryPhone,
+          deliveryCost: data.deliveryCost,
+          customerPhone: data.customerPhone,
+        } : null}
+        pending={setDeliveryMethodMut.isPending}
+        onClose={() => setReclassifyOpen(false)}
+        onConfirm={(payload) => setDeliveryMethodMut.mutate({ workOrderId, ...payload })}
+      />
 
       <CancelWorkOrderDialog
         open={cancelOpen}

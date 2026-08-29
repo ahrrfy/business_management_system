@@ -9222,6 +9222,208 @@ export const deliveryOutbox = mysqlTable(
 );
 export type DeliveryOutboxRow = typeof deliveryOutbox.$inferSelect;
 
+/**
+ * سجلّ أحداث دورة حياة أمر الشغل (Slice 6، ٢٨/٨/٢٦، هجرة 0278).
+ *
+ * تعميمُ النموذج المرجعيّ `deliveryEvents` على أمر الشغل — المحور ١ من تدقيق ٢٨/٨/٢٦:
+ * كان `workOrderRouter.timeline` يقرأ من `auditLogs` وحده، وهو سجلٌّ عامٌّ بأعمدة JSON
+ * (`oldValue`/`newValue`) صعبةِ الاستعلام والفهرسة. `workOrderEvents` يُضاف كطبقةٍ ثانيةٍ
+ * منظَّمة: `fromStatus`/`toStatus` أعمدةٌ مُنمَّطة قابلة للفلترة والفهرسة، و`eventKey`
+ * فريدٌ يمنع الازدواج (idempotency على مستوى القاعدة).
+ *
+ * **Dual-write أثناء الفترة الانتقاليّة:** المسارات الحاليّة تبقى تكتب `logAuditTx` (لا كسر
+ * لـtimeline القائم)، وتضيف `recordWorkOrderEvent` على التوازي. بمرور الوقت وبعد إثبات
+ * موثوقيّة السجلّ الجديد، يمكن الاستغناء عن الكتابة المزدوجة.
+ *
+ * **الفرق عن deliveryEvents:** كيانٌ مختلف (workOrder بدل consignment)، والحالة واحدةٌ
+ * (status) لا اثنتان (parcelStatus/moneyStatus).
+ */
+export const workOrderEvents = mysqlTable(
+  "workOrderEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /**
+     * مفتاحٌ فريدٌ لكلّ حدث — يمنع الازدواج على مستوى القاعدة. الاصطلاح:
+     * `wo:<workOrderId>:<eventType>:<seq?>` — seq اختياريّ للأحداث التي قد تتكرّر
+     * (assign/release/materials-update). للأحداث الأحاديّة (start/markReady/deliver/cancel)
+     * لا حاجة لـseq.
+     */
+    eventKey: varchar("eventKey", { length: 160 }).notNull().unique(),
+    workOrderId: bigint("workOrderId", { mode: "number" })
+      .notNull()
+      .references(() => workOrders.id, { onDelete: "cascade" }),
+    /** نوع الحدث (مطابق لـ`shared/workOrderEventType.ts` — enumerated للاستقرار). */
+    eventType: varchar("eventType", { length: 60 }).notNull(),
+    /** انتقالُ الحالة الاختياريّ (null للأحداث بلا نقلةٍ كـassign/materials-update). */
+    fromStatus: varchar("fromStatus", { length: 30 }),
+    toStatus: varchar("toStatus", { length: 30 }),
+    /** حمولة إضافيّة للحدث (مواد، أسباب، مبالغ، مستندات مرجعيّة). */
+    payload: json("payload"),
+    actorUserId: int("actorUserId").references(() => users.id),
+    /** الفرع لأثرِ العزل التقريريّ — بدونه استعلامات الأعمار تحتاج JOIN مع workOrders. */
+    branchId: bigint("branchId", { mode: "number" }),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    workOrderTimeIdx: index("idx_wo_event_wo_time").on(
+      table.workOrderId,
+      table.occurredAt,
+    ),
+    eventTypeIdx: index("idx_wo_event_type").on(table.eventType),
+  }),
+);
+export type WorkOrderEvent = typeof workOrderEvents.$inferSelect;
+
+/**
+ * سجلّ أحداث الفاتورة (Slice 9، ٢٨/٨/٢٦، هجرة 0281) — مرآةُ `workOrderEvents`.
+ *
+ * الفاتورةُ تعبُر مسار حياتها بأحداثٍ متعدّدة: إنشاء، تعديل، تصحيح (SUPERSEDED)، إلغاء،
+ * مرتجع، سداد. اليوم مسارُ auditLogs يعرض بعضها، لكنّه مبعثرٌ بلا `fromStatus/toStatus`
+ * مُنمَّطة. هذا السجلّ يوفّر الطبقة الثانية المنظَّمة (كنمط deliveryEvents).
+ *
+ * **Dual-write:** كسائر السجلّات الجديدة — المسارات الحرِجة تكتب هنا بالتوازي مع
+ * السلوك القائم بلا كسر.
+ */
+export const invoiceEvents = mysqlTable(
+  "invoiceEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** `inv:<invoiceId>:<eventType>[:<seq>]` — نفس اصطلاح workOrderEvents. */
+    eventKey: varchar("eventKey", { length: 160 }).notNull().unique(),
+    invoiceId: bigint("invoiceId", { mode: "number" })
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    eventType: varchar("eventType", { length: 60 }).notNull(),
+    fromStatus: varchar("fromStatus", { length: 30 }),
+    toStatus: varchar("toStatus", { length: 30 }),
+    payload: json("payload"),
+    actorUserId: int("actorUserId").references(() => users.id),
+    branchId: bigint("branchId", { mode: "number" }),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    invoiceTimeIdx: index("idx_invoice_event_inv_time").on(
+      table.invoiceId,
+      table.occurredAt,
+    ),
+    eventTypeIdx: index("idx_invoice_event_type").on(table.eventType),
+  }),
+);
+export type InvoiceEvent = typeof invoiceEvents.$inferSelect;
+
+/**
+ * مناطق التوصيل (Slice 7، ٢٨/٨/٢٦، هجرة 0279) — يُنقل التسعير من ثابتٍ في الكود
+ * (`shared/governorates.ts`) إلى **بيانات محكومة** يعدّلها المدير بلا نشر.
+ *
+ * البذرة: ١٨ محافظة عراقية بنفس الأجرة التقديريّة القائمة — لا كسر للسلوك الحاليّ.
+ * المصدر يبقى `shared/governorates.ts` كـfallback حتى تُملأ الجداول (backwards-compat).
+ */
+export const deliveryZones = mysqlTable(
+  "deliveryZones",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** رمزٌ مستقرٌّ (مثل `baghdad`/`basra`) — يُطابق `Governorate.id` للربط بلا اجتهاد. */
+    code: varchar("code", { length: 60 }).notNull().unique(),
+    name: varchar("name", { length: 120 }).notNull(),
+    /**
+     * الفرعُ المفضَّل الذي يخدم هذه المنطقة (اختياريّ). إن كان `null` تعني: كلّ الفروع.
+     * يُستعمل مستقبلاً لتوجيه الطلب للفرع الأقرب.
+     */
+    preferredBranchId: bigint("preferredBranchId", { mode: "number" }),
+    isActive: boolean("isActive").default(true).notNull(),
+    displayOrder: int("displayOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+);
+export type DeliveryZone = typeof deliveryZones.$inferSelect;
+
+/**
+ * قواعد تسعير التوصيل (Slice 7، ٢٨/٨/٢٦، هجرة 0279).
+ *
+ * صفٌّ لكلّ (zoneId × ruleType) — الحدّ الأدنى FLAT_FEE فقط في هذه الشريحة، يمكن إضافة
+ * PER_KM/WEIGHT_TIER لاحقاً بلا كسر (varchar بدل enum مُغلَق).
+ *
+ * ⚠️ **حبيبة السعر:** بالدينار العراقي **الصحيح** (لا كسور — قرار المالك ٦/٨/٢٦: تقريب
+ * نقديّ ٢٥٠). العمود decimal(15,2) للتوافق مع تنسيق المال الحاليّ، القيم عمليّاً صحيحة.
+ */
+export const deliveryPricingRules = mysqlTable(
+  "deliveryPricingRules",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    zoneId: bigint("zoneId", { mode: "number" })
+      .notNull()
+      .references(() => deliveryZones.id, { onDelete: "cascade" }),
+    ruleType: varchar("ruleType", { length: 30 }).default("FLAT_FEE").notNull(),
+    /** الأجرة الأساس. مطلوبةٌ لكلّ ruleType (حتى PER_KM يبدأ من `baseFee` ثمّ يزيد). */
+    baseFee: decimal("baseFee", { precision: 15, scale: 2 }).notNull(),
+    /** ⚙️ حقولٌ اختياريّة لتوسّعٍ مستقبليّ (PER_KM: perKmFee؛ WEIGHT: perKgFee). */
+    perKmFee: decimal("perKmFee", { precision: 15, scale: 2 }),
+    perKgFee: decimal("perKgFee", { precision: 15, scale: 2 }),
+    minFee: decimal("minFee", { precision: 15, scale: 2 }),
+    maxFee: decimal("maxFee", { precision: 15, scale: 2 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    /** فرعُ المصدر إن كان التسعير مختلفاً بحسب فرع البدء. `null` = كلّ الفروع. */
+    branchId: bigint("branchId", { mode: "number" }),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    zoneIdx: index("idx_delivery_pricing_zone").on(table.zoneId, table.isActive),
+  }),
+);
+export type DeliveryPricingRule = typeof deliveryPricingRules.$inferSelect;
+
+/**
+ * قواعدُ عمولة جهة التوصيل (Slice 8، ٢٨/٨/٢٦، هجرة 0280) — الغرض:
+ *
+ * كان تسعير عمولة المندوب/الشركة يجري باجتهاد التسوية اليدويّة (deliveryLedgerEntries) —
+ * لا قاعدةٌ صريحةٌ محكومة. الآن جدولٌ مصدرُ الحقيقة لكيفيّة حساب العمولة لكلّ جهة (أو
+ * افتراضيّاً بلا partyId ⇒ يُطبَّق على كلّ الجهات التي لا قاعدةَ خاصّةً لها).
+ *
+ * **الأنماط المدعومة الآن:**
+ *   • `FLAT_PER_DELIVERY`  — مبلغٌ ثابتٌ لكلّ إرساليّة (أشيع نموذج في العراق).
+ *   • `PERCENT_OF_FEE`     — نسبةٌ من أجرة التوصيل نفسها (إذا كانت الأجرة عالية).
+ *   • `PERCENT_OF_ORDER`   — نسبةٌ من قيمة الطلب المُحصَّل (نموذج «التاكسي التسليم»).
+ *   • `HYBRID`             — الأنسب: ثابتٌ + نسبة.
+ *
+ * ⚠️ **صفر أثرٍ ماليّ في هذه الشريحة** — هذا الأساسُ فقط. الاستهلاك (auto-posting +
+ * auto-settlement عند إغلاق الوردية) يأتي في شريحةٍ لاحقة بعد قرارٍ صريحٍ من المالك
+ * على نموذج العمولة الأنسب لعملياته.
+ */
+export const courierCommissionRules = mysqlTable(
+  "courierCommissionRules",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** الجهةُ المخصَّصة. `null` = قاعدةٌ افتراضيّةٌ لكلّ الجهات (يُطبَّق حين لا قاعدةَ خاصّة). */
+    partyId: bigint("partyId", { mode: "number" }).references(() => deliveryParties.id, {
+      onDelete: "cascade",
+    }),
+    ruleType: varchar("ruleType", { length: 30 }).notNull(),
+    /** المبلغُ الثابت لكلّ إرساليّة (يُقرأ بـFLAT_PER_DELIVERY و HYBRID). */
+    flatAmount: decimal("flatAmount", { precision: 15, scale: 2 }),
+    /** نسبة العمولة (0-100). يُقرأ بـPERCENT_OF_FEE و PERCENT_OF_ORDER و HYBRID. */
+    percentValue: decimal("percentValue", { precision: 5, scale: 2 }),
+    /** حدٌّ أدنى مضمون للمندوب (كلَّ إرساليّة). حِمايةً للمندوب في السلال الصغيرة. */
+    minGuarantee: decimal("minGuarantee", { precision: 15, scale: 2 }),
+    /** حدٌّ أعلى لكلّ إرساليّة. حِمايةً للمكتبة في الطلبات الكبيرة. */
+    maxCap: decimal("maxCap", { precision: 15, scale: 2 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    /** الفرع الذي تسري عليه القاعدة. `null` = كلّ الفروع. */
+    branchId: bigint("branchId", { mode: "number" }),
+    effectiveFrom: timestamp("effectiveFrom"),
+    effectiveTo: timestamp("effectiveTo"),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    partyIdx: index("idx_courier_commission_party").on(table.partyId, table.isActive),
+  }),
+);
+export type CourierCommissionRule = typeof courierCommissionRules.$inferSelect;
+
 /** إعدادات الضريبة (صفّ singleton واحد id=1): افتراضي تفعيل الضريبة على الفاتورة الجديدة +
  *  نسبتها + الرقم الضريبي للشركة (يُطبَع على الفاتورة). العراق VAT=0% افتراضياً — enabledByDefault
  *  يبقى false ما لم يُفعِّله المدير صراحةً. يُنشَأ الصفّ كسولاً (get-or-create) عند أول قراءة. */

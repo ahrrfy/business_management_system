@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "wouter";
 import {
   AlertTriangle,
@@ -36,6 +36,7 @@ import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestBu
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
+import { playReadyBeep } from "@/lib/notifyBeep";
 import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -163,6 +164,39 @@ function DispatchTab() {
   const [target, setTarget] = useState<ReadyOrder | null>(null);
   const [query, setQuery] = useState("");
 
+  // كشفُ الطلبات الجديدة بين استعلامَين متتاليَين (Slice A، ٢٩/٨/٢٦) — بلاغ المالك: «الطلب انجزة
+  // فني المطبعة وحوّله لجاهز، لا شي يظهر ولا شي يلاحظه موظّفو الاستقبال والتوصيل». تبويب Dispatch
+  // يعتمد `readyForDispatch` (READY + hasDelivery ولا إرسالية بعد) — أي طلبٍ يظهر فيه لأوّل مرّة
+  // هو *بالتحديد* حالةٌ تحتاج فعلاً بشرياً. نفس نمط ReceptionOrderQueue حرفياً.
+  const knownReadyRef = useRef<Set<number>>(new Set());
+  const firstLoadRef = useRef<boolean>(true);
+  useEffect(() => {
+    const rows = ready.data;
+    if (!rows) return;
+    const currentIds = new Set<number>();
+    for (const r of rows) currentIds.add(Number(r.id));
+    if (firstLoadRef.current) {
+      knownReadyRef.current = currentIds;
+      firstLoadRef.current = false;
+      return;
+    }
+    const freshIds: number[] = [];
+    Array.from(currentIds).forEach((id) => {
+      if (!knownReadyRef.current.has(id)) freshIds.push(id);
+    });
+    knownReadyRef.current = currentIds;
+    if (freshIds.length > 0) {
+      const freshRows = rows.filter((r) => freshIds.includes(Number(r.id)));
+      const first = freshRows[0]!;
+      const suffix = freshRows.length > 1 ? ` (و${freshRows.length - 1} طلب/طلبات أخرى)` : "";
+      notify.info(
+        `طلب جاهز للإرسال: ${first.orderNumber}${suffix}`,
+        first.customerName ? `العميل: ${first.customerName}` : undefined,
+      );
+      playReadyBeep();
+    }
+  }, [ready.data]);
+
   const dispatch = trpc.delivery.dispatch.useMutation({
     onSuccess: (r) => {
       notify.ok("أُرسل عبر المندوب", `إرسالية ${r.consignmentNumber} — COD ${fmt(r.codAmount)} د.ع`);
@@ -253,6 +287,10 @@ function DispatchTab() {
                             quantity: o.quantity,
                             dueDate: o.dueDate ? String(o.dueDate) : null,
                             amountDue: cod,
+                            // Slice E (٢٩/٨/٢٦): تمرير الأجرة وطريقة القبض ⇒ رسالةٌ صادقة عن الإجماليّ.
+                            hasDelivery: o.hasDelivery,
+                            deliveryFee: o.deliveryCost ?? "0",
+                            deliveryFeeCollection: o.deliveryFeeCollection ?? "COURIER",
                           }),
                           gate: { module: "store", level: "READ" },
                         }}

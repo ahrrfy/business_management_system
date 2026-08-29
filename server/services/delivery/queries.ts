@@ -92,6 +92,11 @@ export async function listReadyForDispatch(branchId: number | null) {
       deliveryPhone: workOrders.deliveryPhone,
       hasDelivery: workOrders.hasDelivery,
       dueDate: workOrders.dueDate,
+      // Slice B (٢٩/٨/٢٦) — لعرض «إجمالي ما يدفعه العميل» في DispatchDialog صراحةً:
+      // COURIER ⇒ COD + fee (المندوب يجمعهما)، COUNTER ⇒ COD فقط (الأجرة قُبضت أمانةً في الاستقبال)،
+      // SHOP ⇒ COD فقط (المكتبة تدفع للمندوب). ولحقلٍ اقتراحيّ للأجرة كذلك (deliveryCost سلفاً محدَّد).
+      deliveryFeeCollection: workOrders.deliveryFeeCollection,
+      deliveryCost: workOrders.deliveryCost,
     })
     .from(workOrders)
     .leftJoin(customers, eq(workOrders.customerId, customers.id))

@@ -1,6 +1,6 @@
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Package, Store, Truck, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Check, Clock, Package, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,13 +14,16 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog, type DispatchParty } from "@/components/delivery/DispatchDialog";
 import { MarkPickedUpDialog } from "@/components/delivery/MarkPickedUpDialog";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { playReadyBeep } from "@/lib/notifyBeep";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } from "@shared/workOrderDeliveryState";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
+import { computeStateAgeMinutes, formatAgeShort, slaLevel, slaLevelChipClass } from "@shared/orderSla";
 import { cn } from "@/lib/utils";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
@@ -33,42 +36,7 @@ type PartialPickup = { row: QueueRow; payment?: PickupPayment; message: string; 
 const FULFILL_GATE: RoleGate = { roles: ["cashier", "manager"], module: "workorders", level: "FULL" };
 const DISPATCH_GATE: RoleGate = { roles: ["cashier", "manager"] };
 
-/**
- * صافرةُ إشعارِ جاهزيّة (Web Audio API) — 660Hz لـ150ms ثمّ 880Hz لـ200ms. لا ملفَّ صوتٍ ولا
- * أصلَ إضافيّ. تفشل مغلقةً في السياقات بلا user-gesture: بعض المتصفّحات تحظر إنشاء AudioContext
- * قبل أوّل نقرة، فنحاول بلا throw. Toast يبقى ظاهراً للمعتِمِد بصرياً وحده. لا نُخزّن Context
- * عالمياً كي لا نحتفظ بحلقاتٍ مفتوحة بين تبويبات — دورةُ حياةٍ لكل صفارة.
- */
-function playReadyBeep(): void {
-  try {
-    const AC: typeof AudioContext | undefined =
-      (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
-      ?? (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AC) return;
-    const ctx = new AC();
-    const now = ctx.currentTime;
-    const beep = (freq: number, start: number, dur: number) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.frequency.value = freq;
-      osc.type = "sine";
-      gain.gain.setValueAtTime(0, now + start);
-      gain.gain.linearRampToValueAtTime(0.15, now + start + 0.01);
-      gain.gain.linearRampToValueAtTime(0, now + start + dur);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(now + start);
-      osc.stop(now + start + dur);
-    };
-    beep(660, 0, 0.15);
-    beep(880, 0.18, 0.2);
-    // إغلاق AudioContext بعد نهاية آخر نغمة (منع تسريب)؛ فشلُ الإغلاق لا يهمّ.
-    setTimeout(() => {
-      try { ctx.close(); } catch { /* ignore */ }
-    }, 500);
-  } catch {
-    /* المتصفّح بلا صوت — Toast يفي (ولا نُفشل تجربة الاستقبال). */
-  }
-}
+// صافرة الجاهزيّة استُخرجت إلى @/lib/notifyBeep — تُستعمل هنا وفي DeliveryHub معاً (Slice A، ٢٩/٨/٢٦).
 
 /**
  * اِستقبال (تكامل التوصيل، ٤/٨): طابور طلبات الاستقبال — الفجوة التي أبلغ عنها المالك («بعد إكمال
@@ -311,7 +279,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         }}
       />
 
-      <ReclassifyDialog
+      <ReclassifyDeliveryDialog
         order={reclassifyTarget}
         pending={setDeliveryMethod.isPending}
         onClose={() => setReclassifyTarget(null)}
@@ -409,7 +377,11 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
 }) {
   const isReady = r.status === "READY";
   const isFinal = r.status === "DELIVERED" || r.status === "CANCELLED";
-  // ١٨/٨: حالة التوصيل المشتقّة — مصدرها المشترك، فلا تُعاد تسميتها هنا.
+  // Slice 5 (٢٨/٨/٢٦): عمرُ الحالة الحاليّة — يظهر شارةً بجانب الحالة. Polling كل ١٥ث في هذا
+  // الطابور يُحدِّث القيمة تلقائياً بلا حاجة لـsetInterval محلّيّ. الحقول تأتي من workOrders.list
+  // (workStartedAt/workSeconds مُضافان في Slice 5). الحسابُ على العميل (لا استعلام إضافيّ).
+  const ageMin = computeStateAgeMinutes(r as never);
+  const ageLevel = slaLevel(r.status, ageMin);
   const deliveryState = deriveWoDeliveryState(r.consignmentStatus, r.parcelStatus);
   const hasLiveConsignment = deliveryState !== "NONE";
   const actions: RowAction[] = [];
@@ -431,6 +403,15 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-bold", workOrderStatusBadgeCls(r.status))}>{workOrderStatusLabel(r.status)}</span>
+          {ageLevel !== "UNKNOWN" && ageMin != null && (
+            <span
+              className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-bold", slaLevelChipClass(ageLevel))}
+              title={ageLevel === "BREACHED" ? "تجاوز عتبة الـSLA — يحتاج تحرّكاً فورياً" : ageLevel === "WARNING" ? "اقترب من عتبة الـSLA" : "ضمن الوقت المتوقّع"}
+            >
+              <Clock aria-hidden className="size-3" />
+              {formatAgeShort(ageMin)}
+            </span>
+          )}
           {r.hasDelivery ? (
             <span className="inline-flex items-center gap-1 rounded bg-[var(--sem-info-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-info)]">
               <Truck aria-hidden className="size-3" /> توصيل
@@ -501,160 +482,5 @@ function PartialPickupConfirmDialog({ state, pending, onClose, onConfirm }: { st
   );
 }
 
-// ───────────────────────── حوار إعادة التصنيف ─────────────────────────
-function ReclassifyDialog({ order, pending, onClose, onConfirm }: {
-  order: QueueRow | null;
-  pending: boolean;
-  onClose: () => void;
-  onConfirm: (payload: { hasDelivery: boolean; deliveryAddress?: string | null; deliveryPhone?: string | null; deliveryCost?: string | null; confirmFeeRefund?: boolean; refundShiftId?: number | null }) => void;
-}) {
-  const [hasDelivery, setHasDelivery] = useState(false);
-  const [address, setAddress] = useState("");
-  const [phone, setPhone] = useState("");
-  const [cost, setCost] = useState("0");
-  const [confirmRefund, setConfirmRefund] = useState(false);
-  const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
-
-  // أمانة أجرة التوصيل (COUNTER) المحتجزة نقداً — تُقرأ لإظهار الردّ وطلب تأكيد صرفه للزبون قبل
-  // التحوّل لاستلامٍ مباشر (لا حركة نقدٍ صامتة — مراجعة Codex على PR #531).
-  const feeHeldQ = trpc.workOrders.deliveryFeeHeld.useQuery(
-    { workOrderId: order?.id ?? 0 },
-    { enabled: !!order, staleTime: 0 },
-  );
-  const heldNet = Number(feeHeldQ.data?.net ?? "0");
-  const branchId = feeHeldQ.data?.branchId ?? null;
-
-  useEffect(() => {
-    if (order) {
-      setHasDelivery(!!order.hasDelivery);
-      setAddress(order.deliveryAddress ?? "");
-      setPhone(order.deliveryPhone ?? order.customerPhone ?? "");
-      setCost(order.deliveryCost ?? "0");
-      setConfirmRefund(false);
-      setRefundShiftId(null);
-    }
-  }, [order?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // التحوّل من توصيل ⇒ استلام مباشر مع أمانةٍ محتجزة يستلزم ردّها نقداً للزبون (تأكيدٌ إلزاميّ).
-  const mustRefundFee = !hasDelivery && heldNet > 0;
-  const openShiftsQ = trpc.treasury.getOpenShifts.useQuery(
-    { branchId: branchId ?? 0 },
-    { enabled: mustRefundFee && branchId != null },
-  );
-  const drawerShifts = openShiftsQ.data ?? [];
-  const needShiftPick = mustRefundFee && drawerShifts.length > 1;
-
-  if (!order) return null;
-  const originalHasDelivery = !!order.hasDelivery;
-  const originalCost = order.deliveryCost ?? "0";
-  // تنبيهٌ للموظف فقط (قرار المالك) — لا تعديل تلقائي لسعر البيع الإجمالي عند إعادة التصنيف.
-  const priceMayHaveChanged = hasDelivery !== originalHasDelivery || (hasDelivery && cost !== originalCost);
-
-  const submit = () => {
-    if (hasDelivery && !address.trim()) { notify.err("عنوان التوصيل مطلوب عند تفعيل التوصيل"); return; }
-    if (mustRefundFee && !confirmRefund) { notify.err("أكّد تسليم أمانة الأجرة للزبون أولاً"); return; }
-    if (needShiftPick && refundShiftId == null) { notify.err("اختر درج الردّ النقديّ"); return; }
-    onConfirm({
-      hasDelivery,
-      deliveryAddress: hasDelivery ? address.trim() : null,
-      deliveryPhone: phone.trim() || null,
-      deliveryCost: hasDelivery ? (cost || "0") : "0",
-      confirmFeeRefund: mustRefundFee ? true : undefined,
-      refundShiftId: mustRefundFee ? (refundShiftId ?? undefined) : undefined,
-    });
-  };
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" dir="rtl" onClick={onClose}>
-      <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="mb-1 text-lg font-extrabold">تغيير طريقة التسليم</h3>
-        <p className="mb-4 text-xs text-muted-foreground">{order.orderNumber} — {order.title}</p>
-
-        <div className="mb-4 grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={() => setHasDelivery(false)}
-            className={cn(
-              "flex items-center justify-center gap-1.5 rounded-lg border-2 py-2.5 text-sm font-bold transition-colors",
-              !hasDelivery ? "border-primary bg-primary/10 text-primary" : "border-transparent bg-muted text-muted-foreground hover:bg-muted/70",
-            )}
-          >
-            <Store aria-hidden className="size-4" /> استلام مباشر
-          </button>
-          <button
-            type="button"
-            onClick={() => setHasDelivery(true)}
-            className={cn(
-              "flex items-center justify-center gap-1.5 rounded-lg border-2 py-2.5 text-sm font-bold transition-colors",
-              hasDelivery ? "border-primary bg-primary/10 text-primary" : "border-transparent bg-muted text-muted-foreground hover:bg-muted/70",
-            )}
-          >
-            <Truck aria-hidden className="size-4" /> توصيل
-          </button>
-        </div>
-
-        {hasDelivery && (
-          <div className="mb-3 space-y-3">
-            <div className="space-y-1">
-              <Label htmlFor="reclassify-address">عنوان التوصيل</Label>
-              <Input id="reclassify-address" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="العنوان التفصيلي" />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1">
-                <Label>هاتف المستلم</Label>
-                <IntlPhoneInput value={phone} onChange={setPhone} ariaLabel="هاتف المستلم" />
-              </div>
-              <div className="space-y-1">
-                <Label>أجرة التوصيل التقديرية</Label>
-                <MoneyInput value={cost} onChange={setCost} ariaLabel="أجرة التوصيل" />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {priceMayHaveChanged && (
-          <p className="mb-4 flex items-start gap-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs text-[var(--sem-warn)]">
-            <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-            <span>هذا التغيير لا يُعدِّل سعر بيع الأمر تلقائياً — راجع السعر مع العميل إن استلزم فرق التوصيل تعديلاً.</span>
-          </p>
-        )}
-
-        {/* أمانة أجرة توصيل COUNTER مقبوضة نقداً: التحوّل لاستلامٍ مباشر يردّها للزبون — نُظهر المبلغ
-            ونطلب تأكيد صرفه صراحةً قبل الحفظ (لا حركة نقدٍ صامتة تُحدث عجز درجٍ عند الإقفال). */}
-        {mustRefundFee && (
-          <div className="mb-4 space-y-2.5 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3">
-            <p className="flex items-start gap-1.5 text-xs text-[var(--sem-warn)]">
-              <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-              <span>على هذا الطلب أمانة أجرة توصيل <b className="tabular-nums" dir="ltr">{fmt(heldNet)}</b> د.ع مقبوضة نقداً — بالحفظ تُردّ نقداً من الدرج. <b>سلّمها للزبون.</b></span>
-            </p>
-            {needShiftPick && (
-              <div className="space-y-1">
-                <Label className="text-[11px] text-[var(--sem-warn)]">أكثر من درجٍ مفتوح — من أيّ درجٍ يخرج النقد؟</Label>
-                <select
-                  aria-label="درج ردّ الأمانة النقدي"
-                  className="h-9 w-full rounded-md border bg-card px-2 text-xs font-bold"
-                  value={refundShiftId != null ? String(refundShiftId) : ""}
-                  onChange={(e) => setRefundShiftId(e.target.value ? Number(e.target.value) : null)}
-                >
-                  <option value="">اختر الدرج…</option>
-                  {drawerShifts.map((sh) => (
-                    <option key={sh.shiftId} value={String(sh.shiftId)}>{sh.userName} — وردية #{sh.shiftId}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            <label className="flex items-center gap-2 text-xs font-bold text-[var(--sem-warn)]">
-              <input type="checkbox" checked={confirmRefund} onChange={(e) => setConfirmRefund(e.target.checked)} className="size-4 accent-amber-600" aria-label="تأكيد تسليم أمانة الأجرة للزبون" />
-              سلّمتُ مبلغ الأمانة للزبون نقداً
-            </label>
-          </div>
-        )}
-
-        <div className="flex gap-2.5">
-          <Button variant="outline" className="flex-1" onClick={onClose} disabled={pending}>إلغاء</Button>
-          <Button className="flex-1" onClick={submit} disabled={pending || (mustRefundFee && !confirmRefund)}>{pending ? "جارٍ…" : "حفظ"}</Button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// حوار إعادة التصنيف استُخرِج إلى @/components/workorder/ReclassifyDeliveryDialog (Slice C، ٢٩/٨/٢٦)
+// — يُستعمَل هنا وفي WorkOrderDetail معاً.

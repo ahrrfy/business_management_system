@@ -20,6 +20,9 @@ export interface DispatchableOrder {
   deposit?: string | null;
   deliveryAddress?: string | null;
   deliveryPhone?: string | null;
+  /** مَن يقبض الأجرة (Slice B، ٢٩/٨/٢٦): يحدّد ما يدفعه الزبون للمندوب صراحةً في المُلخّص. */
+  deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+  deliveryCost?: string | null;
 }
 
 export interface DispatchParty {
@@ -66,7 +69,10 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
   useMemo(() => {
     if (order) {
       setPartyId("");
-      setFee("0");
+      // الأجرة المُثبَّتة على الطلب سلفاً (سعر المكتبة للعميل) تسبق سعر المندوب — يبقى قابلاً للتعديل
+      // إن اتّفق الاثنان على غيره لهذه الرحلة تحديداً.
+      const preset = Number(order.deliveryCost ?? 0);
+      setFee(preset > 0 ? String(preset) : "0");
       setRecipientName(order.customerName?.trim() || "");
       setRecipientPhone(order.deliveryPhone?.trim() || order.customerPhone?.trim() || "");
       setAssignedUserId("");
@@ -76,6 +82,17 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
 
   if (!order) return null;
   const cod = Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0));
+  const feeNum = Math.max(0, Number(fee) || 0);
+  const feeCollection = order.deliveryFeeCollection ?? "COURIER";
+  // «الكلي الذي سيدفعه العميل للمندوب» — تغيَّر بمَن قبض الأجرة (بلاغ المالك ٢٨/٨/٢٦):
+  //   COURIER: المندوب يقبض COD + الأجرة معاً.
+  //   COUNTER: الأجرة قُبضت أمانةً في الاستقبال ⇒ للمندوب COD فقط.
+  //   SHOP: المكتبة تدفع للمندوب ⇒ للمندوب COD فقط.
+  const customerPaysCourier = feeCollection === "COURIER" ? cod + feeNum : cod;
+  const feeCollectionLabel =
+    feeCollection === "COURIER" ? "المندوب يقبض الأجرة"
+    : feeCollection === "COUNTER" ? "الأجرة قُبضت مسبقاً في الاستقبال"
+    : "المكتبة تتحمّل الأجرة";
 
   const pickParty = (id: string) => {
     setPartyId(id);
@@ -131,7 +148,16 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
         <div className="mb-4 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(order.salePrice)} د.ع</span></div>
           {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-[var(--sem-pos)]">−{fmt(order.deposit ?? "0")} د.ع</span></div>}
-          <div className="flex justify-between border-t pt-1 font-bold"><span>مبلغ التحصيل (COD)</span><span dir="ltr" className="tabular-nums">{fmt(String(cod))} د.ع</span></div>
+          <div className="flex justify-between border-t pt-1"><span className="text-muted-foreground">مبلغ التحصيل (COD)</span><span dir="ltr" className="tabular-nums">{fmt(String(cod))} د.ع</span></div>
+          {/* Slice B (٢٩/٨/٢٦): «إجمالي ما يدفعه الزبون للمندوب» = COD (+ الأجرة إن كان المندوب يقبضها).
+             بلاغ المالك: «يجب أن يعلم الزبون بالمبلغ الكلي النهائي شاملاً التوصيل». يُقرأ للزبون قبل الإرسال. */}
+          {feeNum > 0 && (
+            <div className="flex justify-between text-xs"><span className="text-muted-foreground">أجرة التوصيل — {feeCollectionLabel}</span><span dir="ltr" className="tabular-nums">{fmt(String(feeNum))} د.ع</span></div>
+          )}
+          <div className="flex justify-between border-t border-[var(--sem-info)] pt-2 mt-1 text-base font-black text-[var(--sem-info)]">
+            <span>يدفعه العميل للمندوب</span>
+            <span dir="ltr" className="tabular-nums">{fmt(String(customerPaysCourier))} د.ع</span>
+          </div>
         </div>
         {selectedParty?.partyType === "COMPANY" && (selectedParty.drivers?.length ?? 0) > 0 && (
           <div className="mb-3">

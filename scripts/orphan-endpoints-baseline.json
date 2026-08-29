@@ -7,6 +7,7 @@
     "inventory.stockByBranch",
     "inventory.transfer",
     "salesPromotions.activeToday",
-    "storefront.customerBenefitsPrivate"
+    "storefront.customerBenefitsPrivate",
+    "workOrders.eventTimeline"
   ]
 }
