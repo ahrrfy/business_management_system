@@ -92,6 +92,8 @@ export default defineConfig({
       "client/src/lib/__tests__/intlPhone.test.ts",
       "client/src/lib/__tests__/invoiceNavGate.test.ts",
       "client/src/lib/__tests__/cashierNavReachability.test.ts",
+      "client/src/lib/statutoryAccountingExport.test.ts",
+      "client/src/lib/statutoryAccountingImport.test.ts",
       "shared/priceWaveRule.test.ts",
       "shared/deliveryAging.test.ts",
       "shared/consignmentView.test.ts",

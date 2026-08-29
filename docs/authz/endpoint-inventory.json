@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1107,
+    "trpcTotal": 1112,
     "byKind": {
       "mutation": 582,
-      "query": 525
+      "query": 530
     },
     "byAuthority": {
-      "module-gate": 550,
+      "module-gate": 555,
       "module-map": 339,
       "admin": 67,
       "none": 53,
@@ -21,14 +21,14 @@
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 523,
+      "LOW": 527,
       "MEDIUM": 427,
-      "HIGH": 157
+      "HIGH": 158
     },
     "byModule": {
       "(none)": 193,
       "hr": 100,
-      "reports": 94,
+      "reports": 99,
       "store": 81,
       "digital_cards": 75,
       "inventory": 70,
@@ -64,7 +64,7 @@
     },
     "flagCounts": {
       "LOCAL_GATE": 190,
-      "SENSITIVE_ACTION": 157,
+      "SENSITIVE_ACTION": 158,
       "NO_BRANCH_SCOPE": 145,
       "ADMIN_ONLY": 71,
       "RAW_ROLE_GATE": 56,
@@ -77,10 +77,10 @@
     "expressMounts": 12,
     "jobs": 22,
     "routerFiles": 96,
-    "proposedPermissions": 923,
+    "proposedPermissions": 928,
     "proposedDomains": {
       "hr": 106,
-      "reports": 97,
+      "reports": 102,
       "treasury": 88,
       "inventory": 86,
       "catalog": 81,
@@ -14849,6 +14849,57 @@
     {
       "surface": "trpc",
       "router": "statutoryAccountingRouter",
+      "proposedPermission": "reports.statutory_accounting.accountant_pack",
+      "name": "accountantPack",
+      "kind": "query",
+      "procedure": "reportViewerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "READ",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/statutoryAccountingRouter.ts:162"
+    },
+    {
+      "surface": "trpc",
+      "router": "statutoryAccountingRouter",
+      "proposedPermission": "reports.statutory_accounting.account_ledger",
+      "name": "accountLedger",
+      "kind": "query",
+      "procedure": "reportViewerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "READ",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/statutoryAccountingRouter.ts:132"
+    },
+    {
+      "surface": "trpc",
+      "router": "statutoryAccountingRouter",
+      "proposedPermission": "reports.statutory_accounting.account_ledger_export",
+      "name": "accountLedgerExport",
+      "kind": "query",
+      "procedure": "reportViewerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "READ",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "أثر خارجي: export",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/statutoryAccountingRouter.ts:142"
+    },
+    {
+      "surface": "trpc",
+      "router": "statutoryAccountingRouter",
       "proposedPermission": "reports.statutory_accounting.approve",
       "name": "approveProfile",
       "kind": "mutation",
@@ -14861,7 +14912,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/statutoryAccountingRouter.ts:139"
+      "loc": "server/routers/statutoryAccountingRouter.ts:266"
+    },
+    {
+      "surface": "trpc",
+      "router": "statutoryAccountingRouter",
+      "proposedPermission": "reports.statutory_accounting.balance_sheet",
+      "name": "balanceSheet",
+      "kind": "query",
+      "procedure": "reportViewerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "READ",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/statutoryAccountingRouter.ts:118"
     },
     {
       "surface": "trpc",
@@ -14878,7 +14946,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/statutoryAccountingRouter.ts:49"
+      "loc": "server/routers/statutoryAccountingRouter.ts:176"
     },
     {
       "surface": "trpc",
@@ -14895,7 +14963,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/statutoryAccountingRouter.ts:25"
+      "loc": "server/routers/statutoryAccountingRouter.ts:105"
     },
     {
       "surface": "trpc",
@@ -14912,7 +14980,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/statutoryAccountingRouter.ts:37"
+      "loc": "server/routers/statutoryAccountingRouter.ts:152"
+    },
+    {
+      "surface": "trpc",
+      "router": "statutoryAccountingRouter",
+      "proposedPermission": "reports.statutory_accounting.income_statement",
+      "name": "incomeStatement",
+      "kind": "query",
+      "procedure": "reportViewerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "READ",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/statutoryAccountingRouter.ts:113"
     },
     {
       "surface": "trpc",
@@ -14929,7 +15014,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/statutoryAccountingRouter.ts:24"
+      "loc": "server/routers/statutoryAccountingRouter.ts:104"
     },
     {
       "surface": "trpc",
@@ -14946,7 +15031,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/statutoryAccountingRouter.ts:23"
+      "loc": "server/routers/statutoryAccountingRouter.ts:103"
     },
     {
       "surface": "trpc",
@@ -14963,7 +15048,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/statutoryAccountingRouter.ts:72"
+      "loc": "server/routers/statutoryAccountingRouter.ts:199"
     },
     {
       "surface": "trpc",
@@ -14980,7 +15065,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/statutoryAccountingRouter.ts:106"
+      "loc": "server/routers/statutoryAccountingRouter.ts:233"
     },
     {
       "surface": "trpc",
@@ -14997,7 +15082,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/statutoryAccountingRouter.ts:28"
+      "loc": "server/routers/statutoryAccountingRouter.ts:108"
     },
     {
       "surface": "trpc",
