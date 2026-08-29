@@ -903,5 +903,5 @@ private fun productLabel(product: ConsignorProduct): String = listOfNotNull(
 
 private fun formatMoney(value: String): String {
     val amount = value.toDoubleOrNull() ?: return "$value د.ع"
-    return "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).format(amount)} د.ع"
+    return "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ-u-nu-latn")).format(amount)} د.ع"
 }

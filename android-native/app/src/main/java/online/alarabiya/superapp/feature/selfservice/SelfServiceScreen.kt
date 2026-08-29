@@ -1108,7 +1108,7 @@ private val PersonalTaskAction.label: String
         PersonalTaskAction.Comment -> "تعليق"
     }
 
-private val numberFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).apply {
+private val numberFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ-u-nu-latn")).apply {
     maximumFractionDigits = 0
 }
 private fun formatMoney(raw: String): String = raw.toDoubleOrNull()?.let { "${numberFormat.format(it)} د.ع" } ?: raw

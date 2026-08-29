@@ -4196,7 +4196,7 @@ private object HomeHeaderShape : Shape {
     }
 }
 
-private val numberFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).apply { maximumFractionDigits = 0 }
+private val numberFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ-u-nu-latn")).apply { maximumFractionDigits = 0 }
 
 private fun formatMoney(raw: String): String = runCatching {
     numberFormat.format(raw.toDouble()) + " د.ع"

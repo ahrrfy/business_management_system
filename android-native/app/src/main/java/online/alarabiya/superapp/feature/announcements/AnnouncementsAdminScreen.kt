@@ -725,5 +725,5 @@ private fun priorityColors(priority: AnnouncementPriority): Pair<Color, Color> =
 }
 
 private fun formatDate(value: String): String = runCatching {
-    OffsetDateTime.parse(value).format(DateTimeFormatter.ofPattern("d MMM yyyy، h:mm a", Locale.forLanguageTag("ar")))
+    OffsetDateTime.parse(value).format(DateTimeFormatter.ofPattern("d MMM yyyy، h:mm a", Locale.forLanguageTag("ar-IQ-u-nu-latn")))
 }.getOrDefault(value)

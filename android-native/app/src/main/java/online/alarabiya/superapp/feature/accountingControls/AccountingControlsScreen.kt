@@ -867,7 +867,7 @@ private fun FinancialReconciliationAxis.icon(): ImageVector = when (this) {
 private fun formatReconciliationRunAt(raw: String): String = runCatching {
     val instant = runCatching { Instant.parse(raw) }
         .getOrElse { OffsetDateTime.parse(raw).toInstant() }
-    DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ"))
+    DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ-u-nu-latn"))
         .withZone(ZoneId.of("Asia/Baghdad"))
         .format(instant)
 }.getOrDefault(raw)

@@ -419,7 +419,7 @@ private fun EmptyFeed(text: String) {
 }
 
 private val announcementDateFormatter: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("d MMM yyyy، h:mm a", Locale.forLanguageTag("ar"))
+    DateTimeFormatter.ofPattern("d MMM yyyy، h:mm a", Locale.forLanguageTag("ar-IQ-u-nu-latn"))
 
 private fun formatDate(iso: String?): String {
     if (iso.isNullOrBlank()) return "—"

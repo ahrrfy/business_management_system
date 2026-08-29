@@ -298,7 +298,7 @@ private fun KpiGrid(kpis: List<Kpi>, tablet: Boolean) {
 
 private fun money(raw: String): String = runCatching {
     val value = BigDecimal(raw)
-    "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).format(value)} د.ع"
+    "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ-u-nu-latn")).format(value)} د.ع"
 }.getOrElse { "غير متاح" }
 
 private fun freshness(raw: String): String = formatExecutiveTimestamp(raw)?.let(::rtlIsolate) ?: "محدث الآن"
@@ -307,7 +307,7 @@ internal fun formatExecutiveTimestamp(raw: String, zoneId: ZoneId = ZoneId.of("A
     val instant = runCatching { Instant.parse(raw) }
         .recoverCatching { OffsetDateTime.parse(raw).toInstant() }
         .getOrNull() ?: return null
-    val formatter = DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ"))
+    val formatter = DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ-u-nu-latn"))
         .withZone(zoneId)
     return formatter.format(instant)
 }

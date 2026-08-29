@@ -1160,5 +1160,5 @@ private fun confirmationText(action: StoreOrderAction): String = when (action) {
 
 private fun formatMoney(value: String): String {
     val amount = runCatching { BigDecimal(value.trim()) }.getOrNull() ?: return "$value د.ع"
-    return "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).format(amount)} د.ع"
+    return "${NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ-u-nu-latn")).format(amount)} د.ع"
 }

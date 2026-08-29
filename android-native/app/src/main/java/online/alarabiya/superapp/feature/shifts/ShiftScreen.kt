@@ -685,7 +685,7 @@ internal fun formatShiftTimestamp(raw: String, zoneId: ZoneId = ZoneId.of("Asia/
     val instant = runCatching { Instant.parse(raw) }.getOrNull()
         ?: runCatching { OffsetDateTime.parse(raw).toInstant() }.getOrNull()
         ?: return raw
-    val formatter = DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ"))
+    val formatter = DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ-u-nu-latn"))
         .withZone(zoneId)
     return ltrIsolate(formatter.format(instant))
 }

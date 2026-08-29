@@ -751,7 +751,7 @@ private val CommerceSection.icon: ImageVector
         CommerceSection.Approvals -> Icons.Rounded.FactCheck
     }
 
-private val moneyFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ")).apply { maximumFractionDigits = 0 }
+private val moneyFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("ar-IQ-u-nu-latn")).apply { maximumFractionDigits = 0 }
 private fun formatMoney(raw: String): String = raw.toDoubleOrNull()?.let { "${moneyFormat.format(it)} د.ع" } ?: raw
 private fun giftStatusLabel(value: String) = when (value) {
     "PENDING_APPROVAL" -> "بانتظار الاعتماد"

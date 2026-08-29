@@ -880,7 +880,7 @@ internal fun backupDisplayTime(
     val instant = runCatching { Instant.parse(raw) }
         .recoverCatching { OffsetDateTime.parse(raw).toInstant() }
         .getOrNull() ?: return null
-    return DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ"))
+    return DateTimeFormatter.ofPattern("dd MMM yyyy، HH:mm", Locale.forLanguageTag("ar-IQ-u-nu-latn"))
         .withZone(zoneId)
         .format(instant)
 }
