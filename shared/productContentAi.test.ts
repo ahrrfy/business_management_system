@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   aiProductDraftSchema,
+  normalizeConversionFactor,
   productFactsSchema,
   validateAiProductDraft,
 } from "./productContentAi";
@@ -104,5 +105,42 @@ describe("productContentAi", () => {
     const result = validateAiProductDraft(draft, facts);
     expect(result.ok).toBe(false);
     expect(result.blockers.some((item) => item.includes("أفضل"))).toBe(true);
+  });
+});
+
+describe("normalizeConversionFactor", () => {
+  const cases: Array<[string | null | undefined, string]> = [
+    ["12", "12"],
+    ["1.5", "1.5"],
+    ["1,5", "1.5"],
+    ["1٫5", "1.5"],
+    ["١٢", "12"],
+    ["٠١٢", "12"],
+    ["12.", "12"],
+    ["12.0", "12"],
+    ["12.50", "12.5"],
+    ["  12  ", "12"],
+    ["", "1"],
+    [null, "1"],
+    [undefined, "1"],
+  ];
+  cases.forEach(([input, expected]) => {
+    it(`normalizes ${JSON.stringify(input)} → ${JSON.stringify(expected)}`, () => {
+      const normalized = normalizeConversionFactor(input);
+      expect(normalized).toBe(expected);
+      // مرور السكيمة على القيمة المُطبَّعة (الاختبار الحاسم — لأنّ الخادم يرفض ما يخالف الregex).
+      expect(() =>
+        productFactsSchema.parse({
+          finalProductName: "منتج",
+          saleUnits: [{ name: "درزن", conversionFactor: normalized }],
+        }),
+      ).not.toThrow();
+    });
+  });
+
+  it("leaves malformed input unchanged (server-side rejection surfaces exact reason)", () => {
+    // مدخل غير مفهوم يظلّ كما هو، فيرفضه الخادم برسالةٍ عن الحقل ⇒ أوضح من تحويلٍ صامتٍ خاطئ.
+    expect(normalizeConversionFactor("abc")).toBe("abc");
+    expect(normalizeConversionFactor("1/2")).toBe("1/2");
   });
 });

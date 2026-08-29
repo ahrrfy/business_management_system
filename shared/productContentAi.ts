@@ -295,6 +295,22 @@ export function validateAiProductDraft(
   };
 }
 
+/**
+ * يُطبِّع مُدخَل «معامل التحويل» ليطابق regex السكيمة على الخادم:
+ * أرقام عربية/فارسية ⇒ لاتينية · فاصلة عشرية ⇒ نقطة · إسقاط نقطةٍ زائدة/أصفارٍ بادئة.
+ * السبب: النموذج يقبل «١٢» أو «1,5» من الموظّف، والخادم يرفضهما ⇒ BAD_REQUEST غامض.
+ */
+export function normalizeConversionFactor(value: string | null | undefined): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "1";
+  const latin = normalizeDigits(raw).replace(/[،٫]/g, ".").replace(/,/g, ".");
+  const match = latin.match(/^0*(\d+)(?:\.(\d*?)0*)?\.?$/);
+  if (!match) return raw; // نُبقيه كما هو ⇒ يُحمَّر الحقل خادمياً برسالةٍ واضحة
+  const intPart = match[1] || "0";
+  const frac = match[2] ?? "";
+  return frac.length > 0 ? `${intPart}.${frac}` : intPart;
+}
+
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;

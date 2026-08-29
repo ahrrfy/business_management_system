@@ -26,6 +26,7 @@ import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/l
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
 import { checkVariantSanity } from "@shared/priceSanity";
+import { normalizeConversionFactor } from "@shared/productContentAi";
 
 /**
  * SimpleProductEditForm — تحرير «سلعة بسيطة» (متغيّر واحد بلا لون/قياس) بنفس نظافة شاشة الإضافة.
@@ -197,7 +198,7 @@ export default function SimpleProductEditForm({
       .filter((u) => u.name.trim())
       .map((u) => ({
         name: u.name.trim(),
-        conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
+        conversionFactor: u.isBase ? "1" : normalizeConversionFactor(u.factor),
       })),
     verifiedClaims: [],
     audience: null,

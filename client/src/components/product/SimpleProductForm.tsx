@@ -22,6 +22,7 @@ import { ConsignmentField, type ConsignmentValue } from "@/components/product/Co
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
 import { checkVariantSanity } from "@shared/priceSanity";
+import { normalizeConversionFactor } from "@shared/productContentAi";
 
 /**
  * SimpleProductForm — إضافة «سلعة بسيطة» بلا ألوان/قياسات: منتجٌ واحد (متغيّر واحد) بعدّة وحدات.
@@ -134,7 +135,7 @@ export default function SimpleProductForm() {
     modelName: modelName.trim() || null,
     attributes: {},
     variants: [{ color: null, size: null }],
-    saleUnits: units.filter((u) => u.name.trim()).map((u) => ({ name: u.name.trim(), conversionFactor: u.isBase ? "1" : u.factor.trim() || "1" })),
+    saleUnits: units.filter((u) => u.name.trim()).map((u) => ({ name: u.name.trim(), conversionFactor: u.isBase ? "1" : normalizeConversionFactor(u.factor) })),
     verifiedClaims: [],
     audience: null,
   }), [brand, categoriesQ.data, categoryId, modelName, productType, units]);
