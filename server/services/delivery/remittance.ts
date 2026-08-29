@@ -134,6 +134,8 @@ export async function recordDeliveryRemittance(
         remittanceNumber: rm.remittanceNumber,
         collectedTotal: String(rm.collectedTotal),
         feesTotal: String(rm.feesTotal),
+        // Slice H: يُعاد في مسار replay كي يظل شكلُ العائد متطابقاً (ULV: نفس المفاتيح).
+        courierCommissionAmount: rm.courierCommissionAmount != null ? String(rm.courierCommissionAmount) : null,
         netRemitted: String(rm.netRemitted),
         shortfallTotal: String(rm.shortfallTotal),
         status: rm.status,
@@ -426,6 +428,31 @@ export async function recordDeliveryRemittance(
     // درج المُستلِم (RECEPTION افتراضياً): صافي النقد (collected − fee) يدخله فعلياً.
     const remittanceNumber = await nextRemittanceNumber(tx, input.branchId);
 
+    // Slice H (٢٩/٨/٢٦) — عمولة المندوب: إن كانت للجهة قاعدةٌ فعّالة، تُحسَب بحسبها لكل الأسطر
+    // المشمولة بهذا التوريد وتُخزَّن على السجلّ. **حاليّاً informational فقط** — لا تُغيّر التدفّق
+    // النقديّ (feesTotal + مسار payPartyDeliveryFees القائم بلا مساس). المدير يرى الرقم في تسوية
+    // المندوب ويقارنه بالأجرة الفعلية قبل أيّ ضبطٍ يدويّ. القيدُ التلقائيّ الكاملُ يأتي في مرحلةٍ
+    // لاحقة بعد اطلاع المالك على أرقامٍ حقيقيّةٍ من ميدانه.
+    let courierCommissionAmount: Decimal | null = null;
+    try {
+      const { previewCommission } = await import("./commissionRules");
+      // نستعمل fee-total الوسيط للجهة كأجرة توصيلٍ لمعاينة PERCENT_OF_FEE، وorder=collectedTotal لـPERCENT_OF_ORDER.
+      // لـFLAT_PER_DELIVERY (المتوقّع): يُضرَب flatAmount في عدد الأسطر.
+      const perLineQuotes = await Promise.all(
+        input.lines.map(async () => {
+          return previewCommission(tx as never, Number(input.partyId), Number(feesTotal.toFixed(2)) / Math.max(1, input.lines.length), Number(collectedTotal.toFixed(2)) / Math.max(1, input.lines.length));
+        }),
+      );
+      const validQuotes = perLineQuotes.filter((q): q is NonNullable<typeof q> => q != null);
+      if (validQuotes.length > 0) {
+        const total = validQuotes.reduce((sum, q) => sum.plus(q.commission), new Decimal(0));
+        courierCommissionAmount = round2(total);
+      }
+    } catch {
+      // فشل معاينة العمولة لا يُبطل التوريد — informational فقط.
+      courierCommissionAmount = null;
+    }
+
     const rmRes = await tx.insert(deliveryRemittances).values({
       remittanceNumber,
       branchId: input.branchId,
@@ -433,6 +460,7 @@ export async function recordDeliveryRemittance(
       shiftId,
       collectedTotal: toDbMoney(collectedTotal),
       feesTotal: toDbMoney(feesTotal),
+      courierCommissionAmount: courierCommissionAmount != null ? toDbMoney(courierCommissionAmount) : null,
       netRemitted: toDbMoney(netRemitted),
       shortfallTotal: toDbMoney(
         shortfallTotal.lt(0) ? new Decimal(0) : shortfallTotal,
@@ -664,6 +692,8 @@ export async function recordDeliveryRemittance(
       remittanceNumber,
       collectedTotal: collectedTotal.toFixed(2),
       feesTotal: feesTotal.toFixed(2),
+      // Slice H — يُعاد للواجهة كي تُظهره في تقرير التسوية جانبَ الأجرة الفعلية (مقارنةٌ سريعة).
+      courierCommissionAmount: courierCommissionAmount != null ? courierCommissionAmount.toFixed(2) : null,
       netRemitted: netRemitted.toFixed(2),
       shortfallTotal: (shortfallTotal.lt(0)
         ? new Decimal(0)

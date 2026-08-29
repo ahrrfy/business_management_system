@@ -8869,6 +8869,12 @@ export const deliveryRemittances = mysqlTable(
       .default("0")
       .notNull(),
     netRemitted: decimal("netRemitted", { precision: 15, scale: 2 }).notNull(), // collectedTotal − feesTotal
+    /**
+     * Slice H (٢٩/٨/٢٦، هجرة 0288) — عمولة المندوب المحسوبة بحسب قاعدة `courierCommissionRules`
+     * الفعّالة (FLAT_PER_DELIVERY افتراضياً). تُخزَّن لغرض العرض والمقارنة مع `feesTotal` — لا تُحرِّك
+     * التدفّق النقديّ الحاليّ. NULL حين لا قاعدةَ فعّالةٌ للجهة (السلوك السابق).
+     */
+    courierCommissionAmount: decimal("courierCommissionAmount", { precision: 15, scale: 2 }),
     shortfallTotal: decimal("shortfallTotal", { precision: 15, scale: 2 })
       .default("0")
       .notNull(), // عجز يبقى عهدة (D4)
