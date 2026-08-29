@@ -287,6 +287,10 @@ function DispatchTab() {
                             quantity: o.quantity,
                             dueDate: o.dueDate ? String(o.dueDate) : null,
                             amountDue: cod,
+                            // Slice E (٢٩/٨/٢٦): تمرير الأجرة وطريقة القبض ⇒ رسالةٌ صادقة عن الإجماليّ.
+                            hasDelivery: o.hasDelivery,
+                            deliveryFee: o.deliveryCost ?? "0",
+                            deliveryFeeCollection: o.deliveryFeeCollection ?? "COURIER",
                           }),
                           gate: { module: "store", level: "READ" },
                         }}

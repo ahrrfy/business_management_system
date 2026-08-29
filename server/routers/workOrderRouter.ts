@@ -489,6 +489,9 @@ export const workOrderRouter = router({
           deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
           deliveryCost: workOrders.deliveryCost,
+          // Slice E (٢٩/٨/٢٦): رسالة واتساب من قائمة الطلبات تحتاج مَن يقبض الأجرة لتصرّح
+          // بإجماليّ ما يدفعه العميل للمندوب (COURIER يجمع، COUNTER/SHOP لا).
+          deliveryFeeCollection: workOrders.deliveryFeeCollection,
           // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — لطابور الاستقبال («جاهز» ⇐ تحت التسليم/الإرسال
           // ⇐ مُرسَل لجهة X). NULL طبيعي لأغلب الصفوف (لم تُرسَل بعد). تُحجب أدناه بحسب canSeeDeliveryForUser.
           consignmentId: deliveryConsignments.id,

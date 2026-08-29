@@ -445,21 +445,38 @@ export interface WorkOrderStatusMessageData {
   quantity?: number | null;
   /** الموعد المتوقّع (YYYY-MM-DD) — يُذكَر للحالات ما قبل التسليم فقط. */
   dueDate?: string | null;
-  /** الرصيد المستحق عند الاستلام (اختياري) — تذكير لطيف بالمبلغ في حالة READY فقط. */
+  /** الرصيد المستحق عند الاستلام (اختياري) — تذكير لطيف بالمبلغ في حالة READY فقط.
+   *  عند التوصيل: هو مبلغ COD (سعر البيع − العربون) بلا الأجرة. */
   amountDue?: string | number | null;
+  /** Slice E (٢٩/٨/٢٦): إن كان الطلب توصيلاً، الرسالة تُغيَّر نبرتَها وتُظهر الإجمالي شاملاً الأجرة. */
+  hasDelivery?: boolean | null;
+  /** أجرة التوصيل — تُظهَر مفصولةً عن COD (شفافيّةٌ للعميل: يعرف كم للطلب وكم للتوصيل). */
+  deliveryFee?: string | number | null;
+  /** مَن يقبض الأجرة (COURIER يجمعها مع COD، COUNTER/SHOP لا يزيد على العميل). */
+  deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
 }
 
 /**
  * رسالة تحديث حالة أمر الشغل للعميل — نبرة `buildInvoiceMessage`. تُخبر بالحالة الحالية + الموعد
  * المتوقّع، وتُذكّر بالرصيد المستحق عند الجهوزية. يدوية عبر wa.me (لا cron، لا سجلّ إرسال —
  * أمر الشغل يحفظ تاريخ التحديث أصلاً). بلا إيموجي — تُنظَّف عبر sanitizeForWhatsApp في openWhatsApp.
+ *
+ * Slice E (٢٩/٨/٢٦): بلاغ المالك «يجب أن يعلم الزبون بالمبلغ الكلي شاملاً التوصيل» — الرسالة تتكيّف:
+ * - استلام مباشر: النبرة الحاليّة («جاهز للاستلام»)، ورصيدُ الجهوزيّة سطرٌ واحد.
+ * - توصيل: النبرة تصير «سيصلكم قريباً»، وتُذكر أجرةُ التوصيل صراحةً + إجماليّ ما يدفعه العميل للمندوب.
  */
 export function buildWorkOrderStatusMessage(d: WorkOrderStatusMessageData): string {
+  const isDelivery = !!d.hasDelivery;
+  const readyLine = isDelivery
+    ? "طلبكم *جاهز* — سيتواصل معكم المندوب قريباً لتحديد موعد التسليم."
+    : "طلبكم *جاهز للاستلام*! يسعدنا استقبالكم لاستلامه.";
   const statusLine: Record<string, string> = {
     RECEIVED: "تمّ *استلام* طلبكم وهو في قائمة الانتظار.",
     IN_PROGRESS: "طلبكم الآن *قيد التنفيذ*.",
-    READY: "طلبكم *جاهز للاستلام*! يسعدنا استقبالكم لاستلامه.",
-    DELIVERED: "تمّ *تسليم* طلبكم بنجاح. شكراً لتعاملكم معنا.",
+    READY: readyLine,
+    DELIVERED: isDelivery
+      ? "تمّ *توصيل* طلبكم بنجاح. شكراً لتعاملكم معنا."
+      : "تمّ *تسليم* طلبكم بنجاح. شكراً لتعاملكم معنا.",
     CANCELLED: "نأسف، تمّ *إلغاء* طلبكم. لمزيد من التفاصيل تواصلوا معنا.",
   };
   const line = statusLine[d.status] ?? `حالة طلبكم الحالية: ${d.status}`;
@@ -477,7 +494,19 @@ export function buildWorkOrderStatusMessage(d: WorkOrderStatusMessageData): stri
     L.push(`الموعد المتوقّع: ${String(d.dueDate).slice(0, 10)}`);
   }
   if (d.status === "READY" && d.amountDue != null && Number(d.amountDue) > 0) {
-    L.push(`الرصيد المستحق عند الاستلام: ${fmtMoney(d.amountDue)} د.ع.`);
+    const codD = Number(d.amountDue);
+    const feeD = Number(d.deliveryFee ?? 0);
+    const feeCollection = d.deliveryFeeCollection ?? "COURIER";
+    // للتوصيل + أجرةٍ موجبة + يجمعها المندوب: أظهِر الأجرة سطراً ثمّ الإجماليّ صراحةً.
+    if (isDelivery && feeD > 0 && feeCollection === "COURIER") {
+      L.push(`قيمة الطلب: ${fmtMoney(codD)} د.ع`);
+      L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+      L.push(`*الإجماليّ للمندوب: ${fmtMoney(codD + feeD)} د.ع*`);
+    } else if (isDelivery) {
+      L.push(`المبلغ المستحق للمندوب عند الاستلام: ${fmtMoney(codD)} د.ع.`);
+    } else {
+      L.push(`الرصيد المستحق عند الاستلام: ${fmtMoney(codD)} د.ع.`);
+    }
   }
   L.push("", `للاستفسار تواصلوا معنا — ${COMPANY_NAME}`);
   return L.join("\n");

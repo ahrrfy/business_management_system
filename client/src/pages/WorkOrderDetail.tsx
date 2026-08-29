@@ -336,6 +336,10 @@ export default function WorkOrderDetail() {
               quantity: data.quantity,
               dueDate: data.dueDate ? String(data.dueDate) : null,
               amountDue: remainingDue.toFixed(2),
+              // Slice E (٢٩/٨/٢٦): إجماليّ التوصيل صريحٌ في الرسالة عند الجهوزيّة.
+              hasDelivery: data.hasDelivery,
+              deliveryFee: data.deliveryCost ?? "0",
+              deliveryFeeCollection: data.deliveryFeeCollection ?? "COURIER",
             }))}
           >
             <MessageCircle className="h-3.5 w-3.5" />

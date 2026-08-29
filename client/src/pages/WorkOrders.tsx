@@ -154,6 +154,9 @@ function workOrderContactMessage(o: {
   dueDate: unknown;
   salePrice?: string | number | null;
   deposit?: string | number | null;
+  hasDelivery?: boolean | null;
+  deliveryCost?: string | number | null;
+  deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
 }) {
   return buildWorkOrderStatusMessage({
     orderNumber: o.orderNumber,
@@ -163,6 +166,10 @@ function workOrderContactMessage(o: {
     quantity: o.quantity,
     dueDate: o.dueDate ? String(o.dueDate) : null,
     amountDue: o.status === "READY" ? D(o.salePrice ?? 0).minus(D(o.deposit ?? 0)).toString() : null,
+    // Slice E (٢٩/٨/٢٦): للتوصيل — الرسالة تُصرّح بالأجرة وبالإجماليّ الذي يدفعه العميل للمندوب.
+    hasDelivery: o.hasDelivery,
+    deliveryFee: o.deliveryCost ?? "0",
+    deliveryFeeCollection: o.deliveryFeeCollection ?? "COURIER",
   });
 }
 
