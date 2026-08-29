@@ -82,6 +82,7 @@ const StoreHub = lazy(() => import("@/pages/StoreHub"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
+const ProductContentDrafts = lazy(() => import("@/pages/ProductContentDrafts"));
 const ProductImageStudio = lazy(() => import("@/pages/ProductImageStudio"));
 const StudioCampaignsManager = lazy(() => import("@/pages/StudioCampaignsManager"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
@@ -340,6 +341,9 @@ export default function App() {
       {/* أُدمجت في وحدة المخزون (InventoryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
+      {/* الهجين (٢٩/٨): طابور مسودّات المحتوى المولَّدة تلقائياً بعد اعتماد صور الاستوديو —
+          أسبق من `/products/:id/edit` لأنّ wouter يطابق بالنصّ (وإلّا ابتلعت :id هذه الشاشة). */}
+      <Route path="/products/content-drafts"><Shell><RequireRole roles={["admin","manager"]} module="products" level="FULL"><ProductContentDrafts /></RequireRole></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
       {/* ٢٨/٨: شاشة إدارة الحملات المستقلّة — أسبقُ من `/catalog/image-studio` في الترتيب
           لأنّها أكثر تخصّصاً (wouter يطابق الترتيب النصّيّ). */}

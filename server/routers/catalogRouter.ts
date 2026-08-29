@@ -62,7 +62,9 @@ import {
   generateProductContentDraft,
 } from "../services/productContentAiService";
 import {
+  applyContentDraft,
   decideProductContentDraft,
+  listPendingContentDrafts,
   listProductContentDrafts,
   saveProductContentDraft,
 } from "../services/productContentGovernanceService";
@@ -641,6 +643,22 @@ export const catalogRouter = router({
   listContentDrafts: productsManagerProcedure
     .input(z.object({ productId: z.number().int().positive(), limit: z.number().int().positive().max(100).optional() }).strict())
     .query(({ input }) => listProductContentDrafts(input.productId, input.limit)),
+
+  // هجين — طابور المسودّات المولَّدة تلقائياً بعد اعتماد صور الاستوديو. المدير يفتحه في شاشةٍ
+  // موحّدة يعتمد فيها العشرات دفعةً بدل الدوران على كل منتج.
+  listPendingContentDrafts: productsManagerProcedure
+    .input(z.object({ limit: z.number().int().positive().max(500).optional() }).strict())
+    .query(({ input }) => listPendingContentDrafts(input.limit)),
+
+  // هجين — التطبيق الذرّيّ لمسودّةٍ (اعتماد + كتابة على أعمدة المنتج + تعليم APPLIED).
+  applyContentDraft: productsManagerProcedure
+    .input(z.object({ draftId: z.number().int().positive() }).strict())
+    .mutation(({ input, ctx }) =>
+      applyContentDraft(input.draftId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? null,
+      }),
+    ),
 
   decideContentDraft: productsManagerProcedure
     .input(z.object({

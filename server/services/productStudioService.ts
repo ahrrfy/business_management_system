@@ -22,6 +22,7 @@ import { canCrossBranches } from "../lib/branchAuthority";
 import { utcDayStart, utcNextDayStart } from "./businessDay";
 import { reserveStudioSubmitQuotaInTx, studioPayloadBytes } from "./productStudioSubmitQuota";
 import { createAppNotification } from "./appNotificationService";
+import { generateAndSaveContentDraftForProduct } from "./productContentAiService";
 
 const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
 const MAX_STUDIO_THUMBNAIL_DIMENSION = 320;
@@ -4470,11 +4471,38 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       revision: nextRevision(task),
       assigneeRole,
       productName: product.name ?? null,
+      productId: Number(task.productId),
     };
   }).then(async (out) => {
     if (out.assignedTo != null) {
       await notifyStudioApproval(taskId, Number(out.assignedTo), out.revision, out.assigneeRole, out.productName);
     }
+    // هوك «الهجين»: بعد اعتماد صورة استوديو، ولّد مسودّة محتوى بصريّاً تلقائياً في الخلفية.
+    // fire-and-forget بحقّ: لا await ⇒ لا يُبطئ ردّ الاستوديو، ولا خطأٌ فيه يُفشِل الاعتماد
+    // (اعتماد الصورة نفسه قد التزم في DB). الفشل يُسجَّل بمستوى info/warn — الزرّ اليدويّ يبقى
+    // البديل النهائيّ للحالات التي يتجاوز فيها الحدّ اليوميّ أو يفشل التحقّق.
+    setImmediate(() => {
+      void generateAndSaveContentDraftForProduct(out.productId, {
+        userId: actor.userId,
+        branchId: actor.branchId ?? null,
+      })
+        .then((outcome) => {
+          if (outcome.draftId) {
+            logger.info(
+              { productId: out.productId, draftId: outcome.draftId, taskId },
+              "auto content draft created after studio approval",
+            );
+          } else {
+            logger.info(
+              { productId: out.productId, taskId, reason: outcome.reason, detail: "detail" in outcome ? outcome.detail : undefined },
+              "auto content draft skipped",
+            );
+          }
+        })
+        .catch((err) => {
+          logger.warn({ err, productId: out.productId, taskId }, "auto content draft crashed unexpectedly");
+        });
+    });
     return out.response;
   });
 }

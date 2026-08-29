@@ -25,7 +25,7 @@ import {
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
   UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards, ClipboardCheck,
-  History, Star, Images, FileCheck2,
+  History, Star, Images, FileCheck2, Sparkles,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -117,6 +117,9 @@ const NAV_LINKS: NavLink[] = [
   // لبندٍ منفصلٍ يضاعف طول القائمة الجانبية. المسار الفنّيّ `/catalog/image-studio/campaigns`
   // يبقى محفوظاً — يُوصَل إليه من داخل الاستوديو ومن أيّ رابطٍ خارجيّ.
   { href: "/catalog/image-studio", label: "استوديو المنتجات", icon: Images, roles: ["admin", "manager", "print_operator", "auditor"], module: "productStudio" },
+  // ٢٩/٨ — طابور المسودّات المولَّدة تلقائياً بعد اعتماد صور الاستوديو (الهجين). زرٌّ بجانب
+  // الاستوديو منطقيّ: تعمل الشاشتان في تسلسلٍ واحد — يعتمد صورةً هناك، فتنتظره مسودّة هنا.
+  { href: "/products/content-drafts", label: "مسودّات المحتوى", icon: Sparkles, roles: ["admin", "manager"], module: "products" },
   { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
   // (ج) دوري — أسبوعي/عند الحاجة
   { href: "/purchases", label: "المشتريات", icon: Package },

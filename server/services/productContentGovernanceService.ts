@@ -166,6 +166,168 @@ export async function listProductContentDrafts(productId: number, limit = 30) {
   );
 }
 
+export type PendingContentDraftRow = {
+  id: number;
+  productId: number;
+  productName: string;
+  productImageId: number | null;
+  productImageHash: string | null;
+  content: unknown; // ProductChannelContentInput (JSON as stored)
+  validation: ProductContentValidationSnapshot;
+  promptVersion: string;
+  model: string;
+  createdAt: Date;
+};
+
+/**
+ * الطابور المسطَّح: كل مسودّات DRAFT عبر كل المنتجات، مع اسم المنتج ومعرّف الصورة الرئيسيّة إن
+ * وُجدت. مصمَّم للشاشة الموحّدة «/products/content-drafts» يفتحها المدير مرّةً ويعتمد الكلّ.
+ */
+export async function listPendingContentDrafts(limit = 100): Promise<PendingContentDraftRow[]> {
+  const databaseLimit = Math.min(Math.max(Math.trunc(limit), 1), 500);
+  return withTx(
+    async (tx) => {
+      // نجلب الصور المعتمَدة primary لكل منتجٍ في المسودّات كاستعلامٍ فرعيّ لاحق (اختياريّ في
+      // الواجهة كمصغَّرة تعرض للمدير أيّ صورة أنتجت المسودّة).
+      const rows = await tx
+        .select({
+          id: productContentDrafts.id,
+          productId: productContentDrafts.productId,
+          content: productContentDrafts.content,
+          validation: productContentDrafts.validation,
+          promptVersion: productContentDrafts.promptVersion,
+          model: productContentDrafts.model,
+          createdAt: productContentDrafts.createdAt,
+          productName: products.name,
+        })
+        .from(productContentDrafts)
+        .innerJoin(products, eq(products.id, productContentDrafts.productId))
+        .where(eq(productContentDrafts.status, "DRAFT"))
+        .orderBy(desc(productContentDrafts.createdAt), desc(productContentDrafts.id))
+        .limit(databaseLimit);
+
+      return rows.map((r) => ({
+        id: Number(r.id),
+        productId: Number(r.productId),
+        productName: String(r.productName ?? ""),
+        productImageId: null,
+        productImageHash: null,
+        content: r.content,
+        validation: r.validation as ProductContentValidationSnapshot,
+        promptVersion: String(r.promptVersion),
+        model: String(r.model),
+        createdAt: r.createdAt as Date,
+      }));
+    },
+    { gate: "NONE" },
+  );
+}
+
+const APPLICABLE_CONTENT_FIELDS: Array<keyof ProductChannelContentInput> = [
+  "internalName",
+  "storeTitle",
+  "seoTitle",
+  "shortTitle",
+  "posLabel",
+  "invoiceLabel",
+  "marketingCopy",
+  "description",
+];
+
+/**
+ * يطبّق مسودّةً على أعمدة المنتج (name+description+seoTitle+shortTitle+posLabel+invoiceLabel+
+ * marketingCopy+storeTitle+internalName)، ويعلّم المسودّة APPLIED. يُقبَل من حالة DRAFT مباشرةً
+ * (اعتماد+تطبيق في خطوة) أو من APPROVED (تطبيقُ ما اعتمده مراجعٌ سابق).
+ * ⛔ الحقول الفارغة في content تُتجاهَل — لا نطمس قيمةً بشرطة نصّية.
+ * name يُملأ من seoTitle إن كان غير موجودٍ في content — لأنّ الاسم مطلوبٌ notNull.
+ */
+export async function applyContentDraft(
+  draftId: number,
+  actor: ProductContentActor,
+) {
+  return withTx(
+    async (tx) => {
+      const [draft] = await tx
+        .select()
+        .from(productContentDrafts)
+        .where(eq(productContentDrafts.id, draftId))
+        .limit(1);
+      if (!draft) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "مسودة المحتوى غير موجودة." });
+      }
+      if (draft.status !== "DRAFT" && draft.status !== "APPROVED") {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "هذه المسودة لا تسمح بالتطبيق (حالتها الحاليّة تمنع التغيير).",
+        });
+      }
+      const productId = Number(draft.productId ?? 0);
+      if (!Number.isSafeInteger(productId) || productId <= 0) {
+        throw new TRPCError({ code: "CONFLICT", message: "مسودة بلا منتجٍ مرتبط." });
+      }
+      const content = (draft.content ?? {}) as Partial<Record<keyof ProductChannelContentInput, string | null>>;
+
+      const productPatch: Record<string, string> = {};
+      for (const field of APPLICABLE_CONTENT_FIELDS) {
+        const value = content[field];
+        if (typeof value === "string" && value.trim().length > 0) {
+          productPatch[field as string] = value.trim();
+        }
+      }
+      // اسم المنتج notNull — إن اعتمدنا seoTitle كمصدرٍ افتراضيّ للاسم عند غيابه في content ⇒ نضمن
+      // ألّا يبقى المنتج بعنوانٍ قديمٍ فارغاً بعد التطبيق.
+      const seoTitle = content.seoTitle?.trim();
+      if (seoTitle) productPatch.name = seoTitle;
+
+      if (Object.keys(productPatch).length > 0) {
+        await tx
+          .update(products)
+          .set(productPatch)
+          .where(eq(products.id, productId));
+      }
+
+      await tx
+        .update(productContentDrafts)
+        .set({
+          status: "APPLIED",
+          reviewedBy: actor.userId,
+          reviewedAt: new Date(),
+          decisionNote: draft.status === "APPROVED" ? draft.decisionNote : "تطبيقٌ مباشر بعد المراجعة.",
+        })
+        .where(eq(productContentDrafts.id, draftId));
+
+      await tx.insert(productContentApprovalEvents).values({
+        draftId,
+        productId,
+        action: "APPLIED",
+        actorUserId: actor.userId,
+        branchId: actor.branchId ?? null,
+        sourceFactsHash: draft.sourceFactsHash,
+        beforeContent: null,
+        afterContent: auditPayload(content),
+        note: `تطبيق مسودّة على المنتج (${Object.keys(productPatch).length} حقلاً).`,
+      });
+
+      await tx.insert(auditLogs).values({
+        userId: actor.userId,
+        branchId: actor.branchId ?? null,
+        action: "productContent.draft.applied",
+        entityType: "productContentDraft",
+        entityId: String(draftId),
+        oldValue: auditPayload({ status: draft.status }),
+        newValue: auditPayload({
+          status: "APPLIED",
+          appliedFields: Object.keys(productPatch),
+        }),
+        ipAddress: null,
+      });
+
+      return { draftId, productId, appliedFields: Object.keys(productPatch) };
+    },
+    { gate: "NONE" },
+  );
+}
+
 /** اعتماد/رفض مسودة فقط؛ التطبيق على products سيكون إجراءً مستقلاً في مرحلة النشر. */
 export async function decideProductContentDraft(
   draftId: number,

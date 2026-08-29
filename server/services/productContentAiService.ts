@@ -1,7 +1,14 @@
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
-import { productImages } from "../../drizzle/schema";
+import {
+  categories,
+  productImages,
+  productUnits,
+  productVariants,
+  products,
+} from "../../drizzle/schema";
+import { saveProductContentDraft } from "./productContentGovernanceService";
 import { getAiStudioRuntime } from "./imageStudioSettingsService";
 import {
   ImageStudioGuardError,
@@ -811,5 +818,147 @@ export async function extractProductFactsFromImage(
       });
     }
     throw error;
+  }
+}
+
+// ── هجين: توليدٌ تلقائيّ يُشغَّل بعد اعتماد صورة استوديو (fire-and-forget) ────────────
+
+export type AutoContentDraftOutcome =
+  | { draftId: number; reason: "created" }
+  | {
+      draftId: null;
+      reason:
+        | "product-not-found"
+        | "no-images"
+        | "validation-failed"
+        | "budget-exhausted"
+        | "generate-failed"
+        | "save-failed";
+      detail?: string;
+    };
+
+/**
+ * يبني حقائق منتجٍ ما مباشرةً من قاعدة البيانات كما تراها الشاشة: اسم، وصف، فئة، نوع، ماركة،
+ * موديل، وحدات البيع من variant الأوّل. الغرض: تغذية الاستدعاء التلقائيّ لـgenerate بعد اعتماد
+ * صورةٍ في الاستوديو — لا ينتظر من الموظّف كتابة أيّ شيء إضافيّ.
+ */
+async function buildProductFactsFromDb(
+  productId: number,
+): Promise<ProductFacts | null> {
+  const db = requireDb();
+  const [row] = await db
+    .select({
+      name: products.name,
+      description: products.description,
+      productType: products.productType,
+      brand: products.brand,
+      modelName: products.modelName,
+      categoryName: categories.name,
+    })
+    .from(products)
+    .leftJoin(categories, eq(categories.id, products.categoryId))
+    .where(eq(products.id, productId))
+    .limit(1);
+  if (!row) return null;
+
+  const [variant] = await db
+    .select({ id: productVariants.id })
+    .from(productVariants)
+    .where(eq(productVariants.productId, productId))
+    .orderBy(asc(productVariants.id))
+    .limit(1);
+  const units = variant
+    ? await db
+        .select({
+          unitName: productUnits.unitName,
+          conversionFactor: productUnits.conversionFactor,
+        })
+        .from(productUnits)
+        .where(eq(productUnits.variantId, variant.id))
+        .orderBy(asc(productUnits.isBaseUnit))
+    : [];
+
+  return productFactsSchema.parse({
+    finalProductName: row.name?.trim() || null,
+    inputDescription: row.description?.trim() || null,
+    category: row.categoryName?.trim() || null,
+    productType: row.productType?.trim() || null,
+    brand: row.brand?.trim() || null,
+    modelName: row.modelName?.trim() || null,
+    attributes: {},
+    variants: [],
+    saleUnits: units.map((u) => ({
+      name: u.unitName,
+      conversionFactor: String(u.conversionFactor ?? "1"),
+    })),
+    verifiedClaims: [],
+    audience: null,
+  });
+}
+
+/**
+ * الهجين — يُستدعى **بعد** اعتماد صورةٍ في استوديو المنتجات (بعد commit المعاملة، fire-and-forget).
+ * يبني الحقائق ⇒ يولّد بالمسار البصريّ (م٢) ⇒ يحفظ مسودّةً DRAFT عبر حوكمة المحتوى القائمة.
+ * لا يرمي أبداً: كلّ فشلٍ عن سببه في النتيجة، فيُسجّلها المستدعي بلا إفشال اعتماد الاستوديو.
+ * حالاتٌ حميدة معلَنة (لا صور مطابقة، تجاوز الميزانية، سقوط التحقّق) — يمكن للمشغّل قراءتها.
+ */
+export async function generateAndSaveContentDraftForProduct(
+  productId: number,
+  actor: { userId: number; branchId?: number | null },
+): Promise<AutoContentDraftOutcome> {
+  const facts = await buildProductFactsFromDb(productId).catch(() => null);
+  if (!facts) return { draftId: null, reason: "product-not-found" };
+
+  let result: ProductContentDraftResult;
+  try {
+    result = await generateProductContentDraft(facts, {
+      productId,
+      actor,
+    });
+  } catch (err: any) {
+    const msg = String(err?.message ?? "");
+    // الحوكمة القائمة تُرجع PRECONDITION_FAILED مع نصّ «سقف» عند نضوب الميزانية اليوميّة.
+    if (err?.code === "PRECONDITION_FAILED" && msg.includes("سقف")) {
+      return { draftId: null, reason: "budget-exhausted", detail: msg };
+    }
+    return { draftId: null, reason: "generate-failed", detail: msg };
+  }
+
+  // لا صور معتمَدة مرتبطة بالمنتج ⇒ النتيجة نصّية بحتة، ولا فائدة من مسودّةٍ تلقائيّة (المستخدم
+  // يستطيع طلب التوليد النصّي يدوياً وقت الحاجة). هذا يمنع ملء الطابور بمسودّاتٍ ضعيفة عند
+  // اعتماد صورةٍ لمنتجٍ آخر (سباق) أو حين تُلغى الصورة بين الاستدعاء والقراءة.
+  if (result.imagesUsed === 0) return { draftId: null, reason: "no-images" };
+
+  if (!result.validation.ok) return { draftId: null, reason: "validation-failed" };
+
+  try {
+    const saved = await saveProductContentDraft(
+      {
+        productId,
+        sourceFacts: facts as unknown as Record<string, unknown>,
+        sourceFactsHash: result.cacheKey,
+        content: {
+          internalName: null,
+          storeTitle: result.draft.seoTitle,
+          seoTitle: result.draft.seoTitle,
+          shortTitle: result.draft.shortTitle,
+          posLabel: result.draft.posLabel,
+          invoiceLabel: result.draft.invoiceLabel,
+          marketingCopy: result.draft.marketingCopy,
+          description: result.draft.description,
+        },
+        validation: result.validation,
+        promptVersion: result.promptVersion,
+        model: result.model,
+      },
+      actor,
+    );
+    return { draftId: saved.draftId, reason: "created" };
+  } catch (err: any) {
+    return {
+      draftId: null,
+      reason: "save-failed",
+      detail: String(err?.message ?? ""),
+    };
   }
 }
