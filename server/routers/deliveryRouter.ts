@@ -884,4 +884,99 @@ export const deliveryRouter = router({
         return previewCommission(tx as never, input.partyId, input.deliveryFee, input.orderTotal);
       });
     }),
+
+  // ─── قواعد تسعير التوصيل بالمنطقة (Slice I، ٢٩/٨/٢٦) ─── الجدول والحسابيّة موجودان
+  // منذ Slice 7 (هجرة 0279)، هذه الطبقة تُغلق الفجوة بواجهةٍ إدارية للمدير.
+  listZones: deliveryReadProcedure.query(async () => {
+    const db = getDb();
+    if (!db) return [];
+    return db.transaction(async (tx) => {
+      const { listDeliveryZones } = await import("../services/delivery/pricingRules");
+      return listDeliveryZones(tx as never);
+    });
+  }),
+
+  listPricingRules: deliveryReadProcedure
+    .input(z.object({ zoneId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return [];
+      return db.transaction(async (tx) => {
+        const { listPricingRulesForZone } = await import("../services/delivery/pricingRules");
+        return listPricingRulesForZone(tx as never, input.zoneId);
+      });
+    }),
+
+  saveZone: deliveryManagerProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive().nullish(),
+        code: z.string().min(1).max(60),
+        name: z.string().min(1).max(120),
+        preferredBranchId: z.number().int().positive().nullish(),
+        isActive: z.boolean().optional(),
+        displayOrder: z.number().int().min(0).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { saveDeliveryZone } = await import("../services/delivery/pricingRules");
+      const res = await saveDeliveryZone(input);
+      await logAudit(ctx, { action: input.id ? "delivery.updateZone" : "delivery.createZone", entityType: "deliveryZone", entityId: res.id, newValue: input as never });
+      return res;
+    }),
+
+  deleteZone: deliveryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const { deleteDeliveryZone } = await import("../services/delivery/pricingRules");
+      const res = await deleteDeliveryZone(input.id);
+      await logAudit(ctx, { action: "delivery.deleteZone", entityType: "deliveryZone", entityId: input.id, newValue: null });
+      return res;
+    }),
+
+  savePricingRule: deliveryManagerProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive().nullish(),
+        zoneId: z.number().int().positive(),
+        ruleType: z.enum(["FLAT_FEE", "PER_KM", "WEIGHT"]),
+        baseFee: moneyStr,
+        perKmFee: moneyStr.nullish(),
+        perKgFee: moneyStr.nullish(),
+        minFee: moneyStr.nullish(),
+        maxFee: moneyStr.nullish(),
+        isActive: z.boolean().optional(),
+        notes: z.string().max(500).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { savePricingRule } = await import("../services/delivery/pricingRules");
+      const res = await savePricingRule(input);
+      await logAudit(ctx, { action: input.id ? "delivery.updatePricingRule" : "delivery.createPricingRule", entityType: "deliveryPricingRule", entityId: res.id, newValue: input as never });
+      return res;
+    }),
+
+  deletePricingRule: deliveryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const { deletePricingRule } = await import("../services/delivery/pricingRules");
+      const res = await deletePricingRule(input.id);
+      await logAudit(ctx, { action: "delivery.deletePricingRule", entityType: "deliveryPricingRule", entityId: input.id, newValue: null });
+      return res;
+    }),
+
+  previewDeliveryQuote: deliveryReadProcedure
+    .input(z.object({
+      zoneId: z.number().int().positive(),
+      distanceKm: z.number().nullish(),
+      weightKg: z.number().nullish(),
+    }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return null;
+      return db.transaction(async (tx) => {
+        const { previewDeliveryQuote } = await import("../services/delivery/pricingRules");
+        return previewDeliveryQuote(tx as never, input.zoneId, input.distanceKm, input.weightKg);
+      });
+    }),
 });
