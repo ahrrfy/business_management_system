@@ -821,4 +821,65 @@ export const deliveryRouter = router({
       await logAudit(ctx, { action: "delivery.recoverWriteOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount } });
       return res;
     }),
+
+  // ─── قواعد عمولة المندوب (Slice G، ٢٩/٨/٢٦) ─── بلاغ المالك: «محاسبياً لا تتم التسوية على
+  // المندوب والشركة يجب أن يكون كل شيء مؤتمتاً تلقائياً». هذه الطبقة الأولى: إدخال القاعدة
+  // ومعاينة العمولة لكلّ إرسالية. القيدُ المحاسبيّ التلقائيّ يأتي في Slice I بعد إذن المالك.
+  listCommissionRules: deliveryManagerProcedure
+    .input(z.object({ partyId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return [];
+      return db.transaction(async (tx) => {
+        const { listCommissionRulesForParty } = await import("../services/delivery/commissionRules");
+        return listCommissionRulesForParty(tx as never, input.partyId);
+      });
+    }),
+
+  saveCommissionRule: deliveryManagerProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive().nullish(),
+        partyId: z.number().int().positive().nullish(),
+        ruleType: z.enum(["FLAT_PER_DELIVERY", "PERCENT_OF_FEE", "PERCENT_OF_ORDER", "HYBRID"]),
+        flatAmount: moneyStr.nullish(),
+        percentValue: z.string().regex(/^\d+(\.\d{1,2})?$/).nullish(),
+        minGuarantee: moneyStr.nullish(),
+        maxCap: moneyStr.nullish(),
+        isActive: z.boolean().optional(),
+        notes: z.string().max(500).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (input.partyId) await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const { saveCommissionRule } = await import("../services/delivery/commissionRules");
+      const res = await saveCommissionRule(input);
+      await logAudit(ctx, {
+        action: input.id ? "delivery.updateCommissionRule" : "delivery.createCommissionRule",
+        entityType: "courierCommissionRule",
+        entityId: res.id,
+        newValue: input as never,
+      });
+      return res;
+    }),
+
+  deleteCommissionRule: deliveryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const { deleteCommissionRule } = await import("../services/delivery/commissionRules");
+      const res = await deleteCommissionRule(input.id);
+      await logAudit(ctx, { action: "delivery.deleteCommissionRule", entityType: "courierCommissionRule", entityId: input.id, newValue: null });
+      return res;
+    }),
+
+  previewCommission: deliveryReadProcedure
+    .input(z.object({ partyId: z.number().int().positive(), deliveryFee: z.number(), orderTotal: z.number() }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return null;
+      return db.transaction(async (tx) => {
+        const { previewCommission } = await import("../services/delivery/commissionRules");
+        return previewCommission(tx as never, input.partyId, input.deliveryFee, input.orderTotal);
+      });
+    }),
 });

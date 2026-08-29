@@ -14,6 +14,8 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { EmptyState } from "@/components/EmptyState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -115,7 +117,7 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
     "FULL",
     ["manager"],
   );
-  const [tab, setTab] = useState<"consignments" | "remittances" | "statement" | "members" | "settings">("consignments");
+  const [tab, setTab] = useState<"consignments" | "remittances" | "statement" | "members" | "commission" | "settings">("consignments");
 
   return (
     <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/70 p-3 backdrop-blur-sm md:p-8" dir="rtl" onClick={onClose}>
@@ -147,6 +149,7 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
           <button className={tabBtn(tab === "remittances")} onClick={() => setTab("remittances")}>سجل التوريدات</button>
           <button className={tabBtn(tab === "statement")} onClick={() => setTab("statement")}>كشف الحساب</button>
           <button className={tabBtn(tab === "members")} onClick={() => setTab("members")}>حسابات الشركة والمندوبين</button>
+          <button className={tabBtn(tab === "commission")} onClick={() => setTab("commission")}>قاعدة العمولة</button>
           <button className={tabBtn(tab === "settings")} onClick={() => setTab("settings")}>بيانات الجهة</button>
         </div>
 
@@ -154,6 +157,7 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
         {tab === "remittances" && <RemittancesTab partyId={party.id} />}
         {tab === "statement" && <StatementTab party={party} />}
         {tab === "members" && <PartyMembersTab partyId={party.id} canEdit={isManager} />}
+        {tab === "commission" && <CommissionRuleTab partyId={party.id} canEdit={isManager} />}
         {tab === "settings" && <SettingsTab party={party} isManager={isManager} canRecover={canRecover} onChanged={onChanged} />}
       </div>
     </div>
@@ -506,6 +510,212 @@ function StatementTab({ party }: { party: PartyRow }) {
             {(from || to) && " — الجدول أعلاه محصور بالفترة المختارة."}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ───────────────────────── قاعدة العمولة (Slice G، ٢٩/٨/٢٦) ─────────────────────────
+// بلاغ المالك: «محاسبياً لا تتم التسوية على المندوب والشركة يجب أن يكون كل شيء مؤتمتاً تلقائياً».
+// هذه الطبقة الأولى: إدخال قاعدةٍ لكلّ جهةٍ ومعاينة العمولة المتوقّعة قبل ربطها بقيدٍ محاسبيّ آليّ
+// (يأتي في Slice I بعد إذن المالك على النموذج). القاعدة الافتراضية المُقترَحة FLAT_PER_DELIVERY
+// (أكثر النماذج شيوعاً في العراق: مبلغٌ ثابتٌ لكلّ توصيلٍ بصرف النظر عن الأجرة).
+const RULE_TYPE_LABEL: Record<string, string> = {
+  FLAT_PER_DELIVERY: "ثابت لكل توصيل",
+  PERCENT_OF_FEE: "نسبة من أجرة التوصيل",
+  PERCENT_OF_ORDER: "نسبة من قيمة الطلب",
+  HYBRID: "ثابت + نسبة",
+};
+function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boolean }) {
+  const utils = trpc.useUtils();
+  const list = trpc.delivery.listCommissionRules.useQuery({ partyId });
+  // معاينة حيّة: أدخِل أجرةً وقيمة طلبٍ افتراضيّة ← احسب العمولة التي ستُصرف بحسب القواعد الفعّالة.
+  const [previewFee, setPreviewFee] = useState("5000");
+  const [previewOrder, setPreviewOrder] = useState("50000");
+  const preview = trpc.delivery.previewCommission.useQuery(
+    { partyId, deliveryFee: Number(previewFee) || 0, orderTotal: Number(previewOrder) || 0 },
+    { enabled: !!(list.data && list.data.length > 0) },
+  );
+  const [form, setForm] = useState<{
+    id: number | null;
+    ruleType: "FLAT_PER_DELIVERY" | "PERCENT_OF_FEE" | "PERCENT_OF_ORDER" | "HYBRID";
+    flatAmount: string;
+    percentValue: string;
+    minGuarantee: string;
+    maxCap: string;
+    notes: string;
+  }>({ id: null, ruleType: "FLAT_PER_DELIVERY", flatAmount: "2000", percentValue: "", minGuarantee: "", maxCap: "", notes: "" });
+  const save = trpc.delivery.saveCommissionRule.useMutation({
+    onSuccess: () => {
+      notify.ok(form.id ? "حُدِّثت قاعدة العمولة" : "أُنشئت قاعدة العمولة");
+      utils.delivery.listCommissionRules.invalidate({ partyId });
+      setForm({ id: null, ruleType: "FLAT_PER_DELIVERY", flatAmount: "2000", percentValue: "", minGuarantee: "", maxCap: "", notes: "" });
+    },
+    onError: (e) => notify.err(e),
+  });
+  const del = trpc.delivery.deleteCommissionRule.useMutation({
+    onSuccess: () => { notify.ok("حُذفت القاعدة"); utils.delivery.listCommissionRules.invalidate({ partyId }); },
+    onError: (e) => notify.err(e),
+  });
+  const rows = list.data ?? [];
+  const needsFlat = form.ruleType === "FLAT_PER_DELIVERY" || form.ruleType === "HYBRID";
+  const needsPercent = form.ruleType !== "FLAT_PER_DELIVERY";
+  const submit = () => {
+    if (needsFlat && !Number(form.flatAmount)) { notify.err("أدخل مبلغاً ثابتاً موجباً"); return; }
+    if (needsPercent && !Number(form.percentValue)) { notify.err("أدخل نسبةً موجبة"); return; }
+    save.mutate({
+      id: form.id,
+      partyId,
+      ruleType: form.ruleType,
+      flatAmount: needsFlat ? form.flatAmount : null,
+      percentValue: needsPercent ? form.percentValue : null,
+      minGuarantee: form.minGuarantee || null,
+      maxCap: form.maxCap || null,
+      notes: form.notes || null,
+      isActive: true,
+    });
+  };
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border bg-[var(--sem-info-bg)] p-3 text-xs text-[var(--sem-info)]">
+        قاعدة العمولة تُقيَّم لكلّ إرساليّة عند التسوية. حاليّاً <b>معاينةٌ فقط</b> — القيدُ المحاسبيّ التلقائيّ
+        سيُفعَّل في مرحلةٍ لاحقة بعد موافقة المالك على النموذج.
+      </div>
+
+      {rows.length > 0 && (
+        <div className="rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-right">النمط</TableHead>
+                <TableHead className="text-left">القيم</TableHead>
+                <TableHead className="text-left">الحدود</TableHead>
+                <TableHead className="text-center">الحالة</TableHead>
+                <TableHead className="text-center">إجراء</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((r) => (
+                <TableRow key={r.id}>
+                  <TableCell className="font-bold">{RULE_TYPE_LABEL[r.ruleType] ?? r.ruleType}</TableCell>
+                  <TableCell className="text-left text-xs tabular-nums" dir="ltr">
+                    {r.flatAmount ? `ثابت: ${fmt(r.flatAmount)} د.ع` : ""}
+                    {r.flatAmount && r.percentValue ? " + " : ""}
+                    {r.percentValue ? `${r.percentValue}%` : ""}
+                  </TableCell>
+                  <TableCell className="text-left text-xs tabular-nums" dir="ltr">
+                    {r.minGuarantee ? `≥ ${fmt(r.minGuarantee)}` : ""}
+                    {r.minGuarantee && r.maxCap ? " · " : ""}
+                    {r.maxCap ? `≤ ${fmt(r.maxCap)}` : ""}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {r.isActive
+                      ? <Badge variant="secondary" className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">فعّالة</Badge>
+                      : <Badge variant="outline">معطَّلة</Badge>}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {canEdit && (
+                      <div className="flex justify-center gap-1">
+                        <Button size="sm" variant="outline" onClick={() => setForm({
+                          id: Number(r.id),
+                          ruleType: r.ruleType as never,
+                          flatAmount: String(r.flatAmount ?? ""),
+                          percentValue: String(r.percentValue ?? ""),
+                          minGuarantee: String(r.minGuarantee ?? ""),
+                          maxCap: String(r.maxCap ?? ""),
+                          notes: r.notes ?? "",
+                        })}>تعديل</Button>
+                        <Button size="sm" variant="destructive" onClick={() => del.mutate({ id: Number(r.id) })} disabled={del.isPending}>حذف</Button>
+                      </div>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      {rows.length === 0 && !list.isLoading && (
+        <EmptyState icon={Banknote} title="لا قاعدة عمولة بعد" description="أَضِف قاعدةً كي يحسب النظام العمولة المتوقّعة لكلّ إرساليّة." />
+      )}
+
+      {rows.length > 0 && (
+        <div className="rounded-lg border p-4">
+          <h4 className="mb-3 text-sm font-extrabold">معاينة العمولة</h4>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="space-y-1">
+              <label className="text-xs font-bold">أجرة التوصيل (د.ع)</label>
+              <MoneyInput value={previewFee} onChange={setPreviewFee} ariaLabel="أجرة التوصيل للمعاينة" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold">قيمة الطلب (COD)</label>
+              <MoneyInput value={previewOrder} onChange={setPreviewOrder} ariaLabel="قيمة الطلب للمعاينة" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold">العمولة المحسوبة</label>
+              <div className="flex h-9 items-center rounded-md border bg-muted/30 px-3 text-base font-black tabular-nums text-[var(--sem-pos)]" dir="ltr">
+                {preview.data ? `${fmt(preview.data.commission)} د.ع` : preview.isLoading ? "…" : "—"}
+              </div>
+            </div>
+          </div>
+          {preview.data && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {preview.data.breakdown.minApplied ? "طُبِّق الحدّ الأدنى المضمون." : preview.data.breakdown.maxApplied ? "طُبِّق الحدّ الأعلى." : "احتساب مباشر بلا حدود."}
+            </p>
+          )}
+        </div>
+      )}
+
+      {canEdit && (
+        <div className="rounded-lg border p-4">
+          <h4 className="mb-3 text-sm font-extrabold">{form.id ? "تعديل القاعدة" : "قاعدة جديدة"}</h4>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <label className="text-xs font-bold">النمط</label>
+              <AppSelect
+                value={form.ruleType}
+                onValueChange={(v) => setForm((f) => ({ ...f, ruleType: v as never }))}
+                placeholder="اختر النمط"
+              >
+                <option value="FLAT_PER_DELIVERY">ثابت لكل توصيل (الأكثر شيوعاً)</option>
+                <option value="PERCENT_OF_FEE">نسبة من أجرة التوصيل</option>
+                <option value="PERCENT_OF_ORDER">نسبة من قيمة الطلب</option>
+                <option value="HYBRID">ثابت + نسبة</option>
+              </AppSelect>
+            </div>
+            {needsFlat && (
+              <div className="space-y-1">
+                <label className="text-xs font-bold">المبلغ الثابت (د.ع)</label>
+                <MoneyInput value={form.flatAmount} onChange={(v) => setForm((f) => ({ ...f, flatAmount: v }))} ariaLabel="المبلغ الثابت" />
+              </div>
+            )}
+            {needsPercent && (
+              <div className="space-y-1">
+                <label className="text-xs font-bold">النسبة (%)</label>
+                <Input value={form.percentValue} onChange={(e) => setForm((f) => ({ ...f, percentValue: e.target.value }))} placeholder="30" />
+              </div>
+            )}
+            <div className="space-y-1">
+              <label className="text-xs font-bold">حدّ أدنى مضمون (اختياري)</label>
+              <MoneyInput value={form.minGuarantee} onChange={(v) => setForm((f) => ({ ...f, minGuarantee: v }))} ariaLabel="حدّ أدنى" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold">حدّ أعلى (اختياري)</label>
+              <MoneyInput value={form.maxCap} onChange={(v) => setForm((f) => ({ ...f, maxCap: v }))} ariaLabel="حدّ أعلى" />
+            </div>
+            <div className="space-y-1 sm:col-span-2">
+              <label className="text-xs font-bold">ملاحظات</label>
+              <Input value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="اختياريّ — وصفٌ أو استثناء" />
+            </div>
+          </div>
+          <div className="mt-3 flex gap-2">
+            <Button onClick={submit} disabled={save.isPending}>{save.isPending ? "جارٍ…" : (form.id ? "حفظ" : "إضافة قاعدة")}</Button>
+            {form.id && (
+              <Button variant="outline" onClick={() => setForm({ id: null, ruleType: "FLAT_PER_DELIVERY", flatAmount: "2000", percentValue: "", minGuarantee: "", maxCap: "", notes: "" })}>إلغاء</Button>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

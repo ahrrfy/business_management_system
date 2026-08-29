@@ -16,6 +16,7 @@ import {
   serviceTypes,
   shifts,
   tasks,
+  workOrderEvents,
   workOrderImages,
   workOrderMaterials,
   workOrders,
@@ -473,6 +474,10 @@ export const workOrderRouter = router({
           deposit: workOrders.deposit,
           dueDate: workOrders.dueDate,
           createdAt: workOrders.createdAt,
+          // SLA age (Slice 5، ٢٨/٨/٢٦): يُحسَب على العميل من هذه الحقول عبر
+          // `computeStateAgeMinutes` (shared/orderSla.ts) — READY = workStartedAt + workSeconds.
+          workStartedAt: workOrders.workStartedAt,
+          workSeconds: workOrders.workSeconds,
           createdBy: workOrders.createdBy,
           createdByName: workOrderCreatorDisplayName,
           assignedTo: workOrders.assignedTo,
@@ -484,6 +489,9 @@ export const workOrderRouter = router({
           deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
           deliveryCost: workOrders.deliveryCost,
+          // Slice E (٢٩/٨/٢٦): رسالة واتساب من قائمة الطلبات تحتاج مَن يقبض الأجرة لتصرّح
+          // بإجماليّ ما يدفعه العميل للمندوب (COURIER يجمع، COUNTER/SHOP لا).
+          deliveryFeeCollection: workOrders.deliveryFeeCollection,
           // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — لطابور الاستقبال («جاهز» ⇐ تحت التسليم/الإرسال
           // ⇐ مُرسَل لجهة X). NULL طبيعي لأغلب الصفوف (لم تُرسَل بعد). تُحجب أدناه بحسب canSeeDeliveryForUser.
           consignmentId: deliveryConsignments.id,
@@ -641,6 +649,9 @@ export const workOrderRouter = router({
           deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
           deliveryCost: workOrders.deliveryCost,
+          // Slice D (٢٩/٨/٢٦) — «إجمالي ما يدفعه العميل» يُعرَض في بطاقة الأمر ⇒ يلزمه معرفة مَن
+          // يقبض الأجرة (نفس منطق DispatchDialog): COURIER يجمعها فوق COD، COUNTER/SHOP لا يزيد.
+          deliveryFeeCollection: workOrders.deliveryFeeCollection,
           assignedTo: workOrders.assignedTo,
           assigneeName: users.name,
           createdBy: workOrders.createdBy,
@@ -945,6 +956,41 @@ export const workOrderRouter = router({
     return rows;
   }),
 
+  /**
+   * eventTimeline (Slice 6، ٢٨/٨/٢٦، هجرة 0278) — يقرأ من `workOrderEvents` (السجلّ الجديد
+   * المُنمَّط) بدل `auditLogs` العامّ. أعمدةٌ منظَّمة: fromStatus/toStatus/eventType/payload
+   * قابلةُ الفلترة والفهرسة (`idx_wo_event_wo_time`). يُستهلَك مباشرةً من `EntityTimeline`
+   * الجديد بلا فكّ JSON عند العرض.
+   *
+   * `timeline` القديم يبقى مؤقّتاً (dual-write) — لا كسر للمستهلكين. بعد إثبات موثوقيّة
+   * السجلّ الجديد يمكن الاستغناء عن الكتابة المزدوجة والقارئ القديم.
+   */
+  eventTimeline: workordersReadProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+    const db = getDb();
+    if (!db) return [];
+    const wo = (
+      await db.select({ branchId: workOrders.branchId }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
+    )[0];
+    if (!wo) return [];
+    if (ctx.scopedBranchId != null && Number(wo.branchId) !== ctx.scopedBranchId) return [];
+    const rows = await db
+      .select({
+        id: workOrderEvents.id,
+        eventType: workOrderEvents.eventType,
+        fromStatus: workOrderEvents.fromStatus,
+        toStatus: workOrderEvents.toStatus,
+        payload: workOrderEvents.payload,
+        actorUserId: workOrderEvents.actorUserId,
+        actorName: users.name,
+        occurredAt: workOrderEvents.occurredAt,
+      })
+      .from(workOrderEvents)
+      .leftJoin(users, eq(workOrderEvents.actorUserId, users.id))
+      .where(eq(workOrderEvents.workOrderId, input.workOrderId))
+      .orderBy(asc(workOrderEvents.occurredAt));
+    return rows;
+  }),
+
   /** نقطة الالتزام الوحيدة لشاشة الاستقبال: كل مستندات السلة المختلطة في معاملة واحدة. */
   receptionCheckout: workordersCashierProcedure
     .input(receptionCheckoutSchema)
@@ -1082,6 +1128,9 @@ export const workOrderRouter = router({
         priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
         deposit: nonNegMoneyString.nullish(),
         paymentMethod: receptionPaymentMethod.nullish(),
+        // Slice 3 (٢٨/٨/٢٦، هجرة 0276): نمط الدفع — يُخزَّن على workOrders.paymentMode.
+        // COD يفتح مسار الزبون الجديد بلا حاجز ائتمان (الحماية: التحصيل الكامل عند التسليم).
+        paymentMode: z.enum(["PREPAID", "COD", "CREDIT"]).nullish(),
         paymentReference: z.string().max(100).nullish(),
         paymentReceiptUrl: z.string().nullish(),
         hasDelivery: z.boolean().nullish(),
@@ -1135,6 +1184,15 @@ export const workOrderRouter = router({
         });
       }
       await assertWorkOrderCustomerReady(input.customerId);
+      // Codex #854 P1: COD يشترط توصيلاً على الخادم — بلا هذا الحارس، عميلٌ نقديٌّ (creditLimit=0)
+      // يمكن أن يمرَّر paymentMode='COD' مع hasDelivery=false ⇒ deliverWorkOrder يتخطّى فحص الائتمان
+      // ويُدرج المتبقّي على currentBalance فيصير ديناً مسموحاً به بلا مندوبٍ يُحصّله.
+      if (input.paymentMode === "COD" && !input.hasDelivery) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "نمط COD يتطلّب توصيلاً (المندوب يُحصِّل عند التسليم) — للاستلام المباشر استعمل PREPAID أو CREDIT",
+        });
+      }
       const enforcedInput = { ...input, branchId: effectiveBranchId };
 
       // أعد المحاولة على سباق idempotency (طلبان متزامنان بنفس المفتاح ⇒ الثاني يُعيد الأول).
