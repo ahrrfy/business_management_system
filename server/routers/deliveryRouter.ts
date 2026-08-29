@@ -3,7 +3,7 @@ import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
 import { deliveryOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { cashierProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
+import { cashierProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, managerProcedure, reportViewerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
@@ -983,47 +983,29 @@ export const deliveryRouter = router({
   // ─── تقرير مقارنة العمولة (Slice K، ٢٩/٨/٢٦) ─── يساعد المالكَ على اتّخاذ قرار تفعيل H2
   // لكلّ جهةٍ: يقارن الأجرة الفعليّة المدفوعة بالعمولة التقديريّة (المخزَّنة منذ Slice H) في نافذةٍ
   // زمنيّة. الفرق الموجب = وفر متوقَّع للمكتبة عند التفعيل. مؤشّرٌ نصّيّ فقط — لا قيدَ محاسبيّ.
-  commissionComparison: deliveryReadProcedure
+  // Codex P2 #5 (٢٩/٨): ماليٌّ حسّاس ⇒ `reportViewerProcedure` (admin/manager/accountant/auditor
+  // + `reports:READ`). الكاشير كان يحمل `store:READ` FULL افتراضياً ⇒ يستطيع الاستدعاء المباشر.
+  // Codex P2 #6: نقل المنطق كلّه إلى خدمة `commissionComparison` (البنية router↔service).
+  // Codex P2 #7: التاريخ المقلوب مرفوضٌ برسالةٍ صريحة (لا نتيجةٌ فارغة تُضلّل).
+  commissionComparison: reportViewerProcedure
     .input(z.object({
-      fromDate: z.string().nullish(),  // YYYY-MM-DD
-      toDate: z.string().nullish(),
-    }).optional())
-    .query(async ({ input }) => {
-      const db = getDb();
-      if (!db) return [];
-      const { deliveryRemittances, deliveryParties } = await import("../../drizzle/schema");
-      const { sum: sqlSum, count: sqlCount, eq: eqOp, and: andOp, isNotNull, gte, lt } = await import("drizzle-orm");
-      const { utcDayStart, utcNextDayStart } = await import("../services/businessDay");
-      const conds = [isNotNull(deliveryRemittances.courierCommissionAmount)];
-      if (input?.fromDate) conds.push(gte(deliveryRemittances.receivedAt, utcDayStart(input.fromDate)));
-      // نافذةٌ نصف مفتوحة `[from, toNext)` بحدود UTC — لا انزياحٌ بحسب TZ المستعمل.
-      if (input?.toDate) conds.push(lt(deliveryRemittances.receivedAt, utcNextDayStart(input.toDate)));
-      const rows = await db
-        .select({
-          partyId: deliveryRemittances.partyId,
-          partyName: deliveryParties.name,
-          useCommission: deliveryParties.useCommissionForSettlement,
-          feesTotal: sqlSum(deliveryRemittances.feesTotal).mapWith(String),
-          commissionTotal: sqlSum(deliveryRemittances.courierCommissionAmount).mapWith(String),
-          remittanceCount: sqlCount(deliveryRemittances.id).mapWith(Number),
-        })
-        .from(deliveryRemittances)
-        .innerJoin(deliveryParties, eqOp(deliveryRemittances.partyId, deliveryParties.id))
-        .where(andOp(...conds))
-        .groupBy(deliveryRemittances.partyId, deliveryParties.name, deliveryParties.useCommissionForSettlement);
-      // إثراء بحقل الفرق (لا داعي للحساب على الواجهة — نضمن الدقّة كسلسلةٍ نصيّة).
-      return rows.map((r) => {
-        const fees = Number(r.feesTotal ?? 0);
-        const commission = Number(r.commissionTotal ?? 0);
-        return {
-          partyId: Number(r.partyId),
-          partyName: r.partyName ?? "—",
-          useCommission: !!r.useCommission,
-          feesTotal: (r.feesTotal ?? "0").toString(),
-          commissionTotal: (r.commissionTotal ?? "0").toString(),
-          delta: (fees - commission).toFixed(2),
-          remittanceCount: r.remittanceCount ?? 0,
-        };
+      fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+      toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+    }).optional().refine(
+      (v) => !v || !v.fromDate || !v.toDate || v.fromDate <= v.toDate,
+      { message: "نطاق التاريخ مقلوب: «من» أكبر من «إلى»" },
+    ))
+    .query(async ({ input, ctx }) => {
+      const { commissionComparison } = await import("../services/delivery/commissionComparison");
+      // `reportViewerProcedure` لا يوفّر `scopedBranchId` صراحةً — نشتقّه بنفس مبدأ
+      // `scopedBranchOf` (المالك/الأدمن يعبُران، غيرهم مثبَّت على فرعهم).
+      const scopedBranchId = ctx.user.role === "admin"
+        ? null
+        : (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+      return commissionComparison({
+        scopedBranchId,
+        fromDate: input?.fromDate,
+        toDate: input?.toDate,
       });
     }),
 });

@@ -7,8 +7,8 @@
       "query": 525
     },
     "byAuthority": {
-      "module-gate": 550,
-      "module-map": 339,
+      "module-gate": 551,
+      "module-map": 338,
       "admin": 67,
       "none": 53,
       "raw-role": 46,
@@ -28,8 +28,8 @@
     "byModule": {
       "(none)": 193,
       "hr": 100,
-      "reports": 94,
-      "store": 81,
+      "reports": 95,
+      "store": 80,
       "digital_cards": 75,
       "inventory": 70,
       "treasury": 64,
@@ -80,11 +80,11 @@
     "proposedPermissions": 923,
     "proposedDomains": {
       "hr": 106,
-      "reports": 97,
+      "reports": 98,
       "treasury": 88,
       "inventory": 86,
       "catalog": 81,
-      "store": 81,
+      "store": 80,
       "sales": 49,
       "productstudio": 44,
       "iam": 42,
@@ -4428,19 +4428,19 @@
     {
       "surface": "trpc",
       "router": "deliveryRouter",
-      "proposedPermission": "store.delivery.commission_comparison",
+      "proposedPermission": "reports.delivery.commission_comparison",
       "name": "commissionComparison",
       "kind": "query",
-      "procedure": "deliveryReadProcedure",
-      "authority": "module-map",
-      "module": "store",
+      "procedure": "reportViewerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
       "level": "READ",
-      "roles": "",
-      "branch": "scoped",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/deliveryRouter.ts:986"
+      "loc": "server/routers/deliveryRouter.ts:990"
     },
     {
       "surface": "trpc",

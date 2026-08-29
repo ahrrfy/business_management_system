@@ -252,7 +252,7 @@
 "trpc","deliveryLegacyRepairRouter","report","reports.delivery_legacy_repair.view","query","reportsAdminProcedure","module-gate","reports","FULL","admin","none","LOW","قراءة","","server/routers/deliveryLegacyRepairRouter.ts:13"
 "trpc","deliveryRouter","addPartyMember","store.delivery.create","mutation","deliveryManagerProcedure","module-gate","store","FULL","manager","required","MEDIUM","كتابة","","server/routers/deliveryRouter.ts:128"
 "trpc","deliveryRouter","cancelAssignment","store.delivery.void","mutation","deliveryManagerProcedure","module-gate","store","FULL","manager","required","HIGH","فعل حسّاس: cancel","SENSITIVE_ACTION","server/routers/deliveryRouter.ts:164"
-"trpc","deliveryRouter","commissionComparison","store.delivery.commission_comparison","query","deliveryReadProcedure","module-map","store","READ","","scoped","LOW","قراءة","","server/routers/deliveryRouter.ts:986"
+"trpc","deliveryRouter","commissionComparison","reports.delivery.commission_comparison","query","reportViewerProcedure","module-gate","reports","READ","manager|accountant|auditor","asserted","LOW","قراءة","","server/routers/deliveryRouter.ts:990"
 "trpc","deliveryRouter","consignments","store.delivery.consignments","query","deliveryReadProcedure","module-map","store","READ","","scoped","LOW","قراءة","","server/routers/deliveryRouter.ts:281"
 "trpc","deliveryRouter","consignmentTimeline","store.delivery.consignment_timeline","query","deliveryReadProcedure","module-map","store","READ","","scoped","LOW","قراءة","","server/routers/deliveryRouter.ts:313"
 "trpc","deliveryRouter","courierAccounts","delivery.delivery.courier_accounts","query","managerProcedure","raw-role","","","manager","none","LOW","قراءة","RAW_ROLE_GATE","server/routers/deliveryRouter.ts:119"
