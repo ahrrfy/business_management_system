@@ -296,6 +296,9 @@ export default function ProductImageStudio() {
   }, []);
   const [savedView, setSavedView] = useState<"ALL" | "UNASSIGNED" | "OVERDUE" | "PENDING_REVIEW" | "MISSING_IMAGE">("ALL");
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<"ALL" | "LOW" | "NORMAL" | "HIGH" | "URGENT">("ALL");
+  // ٢٩/٨ (بلاغ مالك): افتراضياً نخفي مهامَّ الحملات المغلقة كي لا تُشوّش القائمة بعد
+  // إلغاء أو إكمال حملة. المدير يستطيع إظهارَها لمراجعةٍ أو تصريفٍ يدويٍّ حين يشاء.
+  const [hideClosedCampaigns, setHideClosedCampaigns] = useState(true);
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [selectedPriority, setSelectedPriority] = useState<"LOW" | "NORMAL" | "HIGH" | "URGENT">("NORMAL");
   const [selectedDueAt, setSelectedDueAt] = useState("");
@@ -392,6 +395,9 @@ export default function ProductImageStudio() {
       campaignId: selectedCampaignId ?? undefined,
       search: debouncedTaskSearch || undefined,
       assigneeId: assigneeFilter === "ALL" ? undefined : Number(assigneeFilter),
+      // إن انتقى المدير حملةً بعينها من dropdown، لا نُخفي حملتها حتى لو كانت مغلقة —
+      // المدير طلبها صراحةً. الإخفاء الافتراضيّ يخصّ العرض العامّ فقط.
+      hideClosedCampaigns: selectedCampaignId ? undefined : hideClosedCampaigns,
     },
     {
       enabled: !offline,
@@ -2111,6 +2117,18 @@ export default function ProductImageStudio() {
             <AlertTriangle aria-hidden className="size-4" />
             المتأخرة فقط
           </Button>
+          {/* ٢٩/٨ (بلاغ مالك): مهام الحملات المغلقة تُخفى افتراضياً من العرض العامّ.
+              يُعطّل الزرّ إن كانت الحملةُ محدَّدةً صراحةً — الطلبُ الصريح يعلو على الإخفاء. */}
+          <Button
+            type="button"
+            variant={hideClosedCampaigns ? "default" : "outline"}
+            className="min-h-11"
+            disabled={selectedCampaignId != null}
+            onClick={() => setHideClosedCampaigns((v) => !v)}
+            title={selectedCampaignId != null ? "الفلتر معطَّل — اخترتَ حملةً محدَّدة أعلاه" : "أخفِ مهامَّ الحملات المغلقة أو الملغاة من العرض العامّ"}
+          >
+            {hideClosedCampaigns ? "إخفاء الحملات المغلقة (مفعَّل)" : "إظهار كل الحملات"}
+          </Button>
         </div>
         {savedView === "MISSING_IMAGE" && <div className="mt-3 rounded-md border p-3 text-sm">{selectedCampaignId ? `المنتجات النشطة بلا صورة معتمدة ولا مهمة نشطة: ${campaignPreview.data?.count ?? 0}` : "اختر حملة من لوحة الحملات لتحديد الفرع ثم عاين المنتجات الناقصة."}</div>}
         {(["QUEUE", "MINE", "REVIEW", "HISTORY"] as Scope[]).map((tab) => (
@@ -2267,6 +2285,15 @@ export default function ProductImageStudio() {
                         {/* ASSIGNED بلا منفّذ = «في الطابور»، لا «مسندة». الوسم القديم كان يناقض
                             السطر التالي مباشرةً («المسؤول: غير مسند»). */}
                         <Badge variant={isQueuedStudioTask(task) ? "warning" : STATUS_VARIANT[task.status]}>{isQueuedStudioTask(task) ? "في الطابور" : STATUS_LABEL[task.status]}</Badge>
+                        {/* ٢٩/٨: حالةُ الحملة تُبرز على البطاقة كي يفهم المدير أنّ المهمّة
+                            «يتيمةٌ» من حملةٍ نهائيّة/موقوفة. المهام بلا حملة (`campaignId`
+                            null على الخادم) لا تُبرز شيئاً. القاموس والألوان من المصدر
+                            المشترك — تجنّبٌ لتعريفٍ محلّيٍّ يُبعده الحرّاس عن الاتّساق. */}
+                        {task.campaignStatus && (task.campaignStatus === "PAUSED" || task.campaignStatus === "COMPLETED" || task.campaignStatus === "CANCELLED") && (
+                          <Badge variant={STUDIO_CAMPAIGN_STATUS_VARIANT[task.campaignStatus]} className="text-[10px]">
+                            حملة {STUDIO_CAMPAIGN_STATUS_AR[task.campaignStatus]}
+                          </Badge>
+                        )}
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">المسؤول: {task.assigneeName ?? "غير مسند"}</div>
                       <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">

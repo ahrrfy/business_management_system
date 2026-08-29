@@ -94,6 +94,8 @@ export const productStudioRouter = router({
         campaignId: campaignId.optional(),
         unassigned: z.boolean().optional(),
         search: z.string().trim().max(80).optional(),
+        // ٢٩/٨: يُخفي المهامَّ التي حملتُها في حالةٍ نهائيّة (مغلقة/ملغاة) — PAUSED تبقى.
+        hideClosedCampaigns: z.boolean().optional(),
       }),
     )
     .query(({ ctx, input }) => listStudioTasks(actor(ctx), input)),
