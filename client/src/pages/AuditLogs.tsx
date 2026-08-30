@@ -1,16 +1,15 @@
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { FilterField } from "@/components/list/FilterField";
-import { ErrorState, TableEmptyRow, TableSkeleton } from "@/components/PageState";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDateTime } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
+import type { ColumnDef } from "@tanstack/react-table";
 import { useMemo } from "react";
 
 type AuditRow = RouterOutputs["audit"]["list"]["rows"][number];
@@ -383,8 +382,34 @@ const ACTION_AR: Record<string, string> = {
   "push.unsubscribed": "إلغاء الاشتراك بالإشعارات",
 };
 
-/** ترجمة فعل — احتياط لفعلٍ أحدث من الخريطة أعلاه: نستبدل النقاط بفاصلٍ مقروء بدل عرض كودٍ متلاصق. */
+const ENTITY_AR: Record<string, string> = {
+  accounting: "المحاسبة", announcements: "الإعلانات", auth: "الهوية والجلسات", branch: "فرع", branches: "الفروع",
+  cardAccount: "حساب البطاقة", catalog: "المنتجات", customer: "عميل", customers: "العملاء", delivery: "التوصيل",
+  expense: "مصروف", expenses: "المصاريف", exchange: "الصيرفة", inventory: "المخزون", invoice: "فاتورة",
+  invoices: "الفواتير", payroll: "الرواتب", product: "منتج", purchase: "مشتريات", purchases: "المشتريات",
+  reports: "التقارير", return: "مرتجع", role: "دور وصلاحيات", sale: "مبيعات", shifts: "الورديات",
+  stocktake: "الجرد", supplier: "مورّد", system: "النظام", task: "مهمّة", tasks: "المهام", treasury: "الخزينة",
+  user: "مستخدم", users: "المستخدمون", voucher: "سند", workOrder: "طلب خدمة", workOrders: "طلبات الخدمة",
+};
+const RPC_VERB_AR: Record<string, string> = {
+  acknowledge: "تأكيد الاطلاع", approve: "اعتماد", assign: "إسناد", cancel: "إلغاء", close: "إغلاق",
+  collect: "تحصيل", complete: "إكمال", create: "إنشاء", delete: "حذف", import: "استيراد", markRead: "تحديد كمقروء",
+  open: "فتح", pay: "تسديد", receive: "استلام", reject: "رفض", remove: "إزالة", restore: "استعادة",
+  reverse: "عكس", save: "حفظ", send: "إرسال", setActive: "تغيير حالة التفعيل", settle: "تسوية",
+  submit: "إرسال للمراجعة", sync: "مزامنة", update: "تعديل",
+};
+function entityLabel(type: string): string {
+  return ENTITY_AR[type] ?? type.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[._-]+/g, " ");
+}
+/** ترجمة فعل — يشمل تلقائياً كل حركة جديدة يلتقطها العقد العام rpc.module.method. */
 function actionLabel(a: string): string {
+  if (a.startsWith("rpc.")) {
+    const parts = a.slice(4).split(".").filter(Boolean);
+    const moduleKey = parts[0] ?? "operation";
+    const method = parts.at(-1) ?? "mutation";
+    const verb = RPC_VERB_AR[method] ?? method.replace(/([a-z])([A-Z])/g, "$1 $2");
+    return `${verb} — ${entityLabel(moduleKey)}`;
+  }
   return ACTION_AR[a] ?? a.replace(/\./g, " › ");
 }
 
@@ -394,8 +419,9 @@ function exportColumns() {
     { key: "createdAt", header: "التاريخ والوقت", map: (r: AuditRow) => dt(r.createdAt as unknown as string) },
     { key: "userName", header: "المستخدم", map: (r: AuditRow) => r.userName ?? (r.userId ? `#${r.userId}` : "") },
     { key: "action", header: "الفعل", map: (r: AuditRow) => actionLabel(r.action) },
-    { key: "entityType", header: "الكيان" },
+    { key: "entityType", header: "الكيان", map: (r: AuditRow) => entityLabel(r.entityType) },
     { key: "entityId", header: "المعرّف", map: (r: AuditRow) => r.entityId ?? "" },
+    { key: "branchName", header: "الفرع", map: (r: AuditRow) => r.branchName ?? (r.branchId ? `#${r.branchId}` : "") },
     { key: "oldValue", header: "القيمة القديمة", map: (r: AuditRow) => jsonStr(r.oldValue) },
     { key: "newValue", header: "القيمة الجديدة", map: (r: AuditRow) => jsonStr(r.newValue) },
     { key: "ipAddress", header: "IP", map: (r: AuditRow) => r.ipAddress ?? "" },
@@ -434,7 +460,7 @@ export default function AuditLogs() {
   // فلاتر الشاشة محفوظة في الرابط (useUrlFilters) — نمط Users.tsx نفسه: تعيش مع فتح التفاصيل
   // والرجوع، وقابلة للمشاركة. كل القيم نصوص، نشتقّ الأنواع الفعلية أدناه.
   const [f, setF, resetF] = useUrlFilters({
-    action: "", entityType: "", userId: "", branchId: "", from: "", to: "", page: "0",
+    action: "", entityType: "", entityId: "", userId: "", branchId: "", from: "", to: "", page: "0",
   });
   const userId = f.userId ? Number(f.userId) : undefined;
   const branchId = f.branchId ? Number(f.branchId) : undefined;
@@ -451,12 +477,13 @@ export default function AuditLogs() {
     () => ({
       action: f.action || undefined,
       entityType: f.entityType || undefined,
+      entityId: f.entityId.trim() || undefined,
       userId,
       branchId,
       from: f.from || undefined,
       to: f.to || undefined,
     }),
-    [f.action, f.entityType, userId, branchId, f.from, f.to],
+    [f.action, f.entityType, f.entityId, userId, branchId, f.from, f.to],
   );
 
   const facets = trpc.audit.facets.useQuery();
@@ -464,8 +491,45 @@ export default function AuditLogs() {
   const list = trpc.audit.list.useQuery({ ...filterInput, limit, offset: page * limit });
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
-  const pages = Math.max(1, Math.ceil(total / limit));
-  const activeFilterCount = [f.action, f.entityType, f.userId, f.branchId, f.from, f.to].filter(Boolean).length;
+  const activeFilterCount = [f.action, f.entityType, f.entityId, f.userId, f.branchId, f.from, f.to].filter(Boolean).length;
+
+  const columns = useMemo<ColumnDef<AuditRow, unknown>[]>(() => [
+    {
+      id: "change", header: "تفاصيل التغيير", accessorFn: (row) => shortValue(row.newValue ?? row.oldValue),
+      cell: ({ row }) => {
+        const record = row.original;
+        const detail = record.oldValue && record.newValue
+          ? `قديم: ${shortValue(record.oldValue)} ← جديد: ${shortValue(record.newValue)}`
+          : record.newValue ? shortValue(record.newValue) : record.oldValue ? `قديم: ${shortValue(record.oldValue)}` : "لا تفاصيل إضافية";
+        const fullTitle = record.oldValue || record.newValue
+          ? `قديم: ${jsonStr(record.oldValue)}\nجديد: ${jsonStr(record.newValue)}` : detail;
+        return <span className="block max-w-80 whitespace-normal text-xs text-muted-foreground [overflow-wrap:anywhere]" title={fullTitle}>{detail}</span>;
+      },
+      enableSorting: false, meta: { kind: "text", width: "wide", wrap: true },
+    },
+    {
+      accessorKey: "branchName", header: "الفرع",
+      cell: ({ row }) => row.original.branchName ?? (row.original.branchId ? `فرع #${row.original.branchId}` : "غير محدد"),
+      enableSorting: false, meta: { kind: "text" },
+    },
+    {
+      accessorKey: "ipAddress", header: "عنوان الجهاز IP", cell: ({ row }) => row.original.ipAddress ?? "غير متاح",
+      enableSorting: false, meta: { kind: "code" },
+    },
+  ], []);
+
+  const operation = useMemo(() => ({
+    mode: "columns" as const,
+    getOperation: (row: AuditRow) => ({
+      actor: row.userId != null
+        ? { userId: Number(row.userId), name: row.userName, source: "user" as const }
+        : row.action.startsWith("system.") ? { source: "system" as const } : { name: "هوية غير مؤكدة", source: "legacy" as const },
+      action: { code: row.action, label: actionLabel(row.action) },
+      subject: { type: row.entityType, label: entityLabel(row.entityType), id: row.entityId },
+      at: row.createdAt,
+    }),
+    labels: { actor: "من قام", action: "ماذا فعل", subject: "على ماذا", time: "متى" },
+  }), []);
 
   return (
     <div className="space-y-4">
@@ -509,6 +573,16 @@ export default function AuditLogs() {
                       <option key={t} value={t}>{t}</option>
                     ))}
                   </AppSelect>
+                </FilterField>
+                <FilterField label="معرّف الهدف">
+                  <Input
+                    value={f.entityId}
+                    onChange={(e) => { setF({ entityId: e.target.value }); setPage(0); }}
+                    placeholder="رقم السجل"
+                    className="h-8 w-28"
+                    dir="ltr"
+                    aria-label="معرّف الهدف"
+                  />
                 </FilterField>
                 <FilterField label="المستخدم">
                   <AppSelect
@@ -577,67 +651,21 @@ export default function AuditLogs() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2">التاريخ والوقت</th>
-                <th className="p-2">المستخدم</th>
-                <th className="p-2">الفعل</th>
-                <th className="p-2">الكيان</th>
-                <th className="p-2">المعرّف</th>
-                <th className="p-2">التفاصيل</th>
-                <th className="p-2">IP</th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.isLoading && <TableSkeleton rows={8} cols={7} />}
-              {!list.isLoading && rows.map((r) => {
-                const detail =
-                  r.oldValue && r.newValue
-                    ? `قديم: ${shortValue(r.oldValue)} ← جديد: ${shortValue(r.newValue)}`
-                    : r.newValue
-                    ? shortValue(r.newValue)
-                    : r.oldValue
-                    ? `قديم: ${shortValue(r.oldValue)}`
-                    : "—";
-                const fullTitle =
-                  r.oldValue || r.newValue
-                    ? `قديم: ${jsonStr(r.oldValue)}\nجديد: ${jsonStr(r.newValue)}`
-                    : "";
-                return (
-                  <tr key={Number(r.id)} className="border-t align-top">
-                    <td className="p-2 text-xs whitespace-nowrap" dir="ltr">{dt(r.createdAt as unknown as string)}</td>
-                    <td className="p-2 text-xs">{r.userName ?? (r.userId ? `#${r.userId}` : "—")}</td>
-                    <td className="p-2 text-xs font-medium">{actionLabel(r.action)}</td>
-                    <td className="p-2 text-xs">{r.entityType}</td>
-                    <td className="p-2 text-xs font-mono" dir="ltr">{r.entityId ?? "—"}</td>
-                    <td className="p-2 text-xs text-muted-foreground max-w-[22rem] truncate" dir="ltr" title={fullTitle}>
-                      {detail}
-                    </td>
-                    <td className="p-2 text-xs font-mono" dir="ltr">{r.ipAddress ?? "—"}</td>
-                  </tr>
-                );
-              })}
-              {list.isError && (
-                <tr><td colSpan={7} className="p-0"><ErrorState message="تعذّر تحميل سجلّ التدقيق." onRetry={() => list.refetch()} /></td></tr>
-              )}
-              {!list.isLoading && !list.isError && rows.length === 0 && (
-                <TableEmptyRow colSpan={7} message="لا سجلّات مطابقة." />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          <DataTable
+            columns={columns}
+            data={rows}
+            operation={operation}
+            searchable={false}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: "تعذّر تحميل سجلّ التدقيق.", onRetry: () => void list.refetch() }}
+            emptyText="لا سجلّات مطابقة."
+            viewKey="audit-log"
+            getRowId={(row) => String(row.id)}
+            serverPagination={{ page, onPageChange: setPage, pageSize: limit, total }}
+          />
         </CardContent>
       </Card>
 
-      {pages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-          <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
-          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
-        </div>
-      )}
     </div>
   );
 }

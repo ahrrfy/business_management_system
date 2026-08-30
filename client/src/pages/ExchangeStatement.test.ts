@@ -24,7 +24,8 @@ describe("ExchangeStatement financial presentation", () => {
 
   it("يعرض المورد والمنفذ ويسجل طلب طباعة الصيرفة", () => {
     expect(source).toContain('header: "المورد / الطرف"');
-    expect(source).toContain('accessorKey: "createdByName"');
+    expect(source).toContain("operation={operation}");
+    expect(source).toContain('label: "تتبّع العملية"');
     expect(source).toContain('documentType: "EXCHANGE_TRANSACTION"');
     expect(source).toContain("printRequestedAt");
   });

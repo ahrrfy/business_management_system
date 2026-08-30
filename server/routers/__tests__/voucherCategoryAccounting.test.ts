@@ -80,10 +80,10 @@ describe("voucher category accounting router contract", () => {
       "utf8",
     );
     expect(trpcSource).toMatch(
-      /treasuryGlobalProcedure = t\.procedure\.use\(\s*requireModuleGate\(\["manager", "accountant"\], "treasury", "FULL"\)/,
+      /treasuryGlobalProcedure = auditedProcedure\.use\(\s*requireModuleGate\(\["manager", "accountant"\], "treasury", "FULL"\)/,
     );
     expect(trpcSource).toMatch(
-      /treasuryGlobalReadProcedure = t\.procedure\.use\(\s*requireModuleGate\(\["manager", "accountant"\], "treasury", "READ"\)/,
+      /treasuryGlobalReadProcedure = auditedProcedure\.use\(\s*requireModuleGate\(\["manager", "accountant"\], "treasury", "READ"\)/,
     );
   });
 

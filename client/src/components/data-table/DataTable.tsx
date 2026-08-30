@@ -41,6 +41,16 @@ import { cn } from "@/lib/utils";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
 import { ActorCell, type OperationActor } from "@/components/data-table/ActorCell";
+import {
+  OperationActionCell,
+  OperationAttributionCell,
+  OperationSubjectCell,
+  OperationTimeCell,
+  operationActionLabel,
+  operationSubjectLabel,
+  operationTimeLabel,
+  type OperationAttribution,
+} from "@/components/data-table/OperationAttribution";
 import { columnPresentationClass, columnUsesLtrIsolate } from "@/components/data-table/columnContract";
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
@@ -116,6 +126,16 @@ type DataTableProps<T, K = string> = {
   actor?: {
     getActor: (row: T) => OperationActor | null | undefined;
     label?: string;
+  };
+  /**
+   * عقد الحركة الكامل. compact يربط «من/ماذا/على ماذا/متى» في خلية واحدة للجداول التشغيلية،
+   * وcolumns يفصلها إلى أربعة أعمدة في سجلات التدقيق والتحقيق.
+   */
+  operation?: {
+    getOperation: (row: T) => OperationAttribution;
+    mode?: "compact" | "columns";
+    label?: string;
+    labels?: Partial<Record<"actor" | "action" | "subject" | "time", string>>;
   };
   /** حجم الصفحة لِلتَرقيم المحلّي (افتِراضياً ٥٠). مَرِّر Infinity لِتَعطيل التَرقيم (عَرض الكُل).
    *  يُتجاهَل مَع serverPagination (حجم الصفحة عندئذٍ من الخادم). */
@@ -219,6 +239,7 @@ export function DataTable<T, K = string>({
   rowClickSelects = false,
   getRowClassName,
   actor,
+  operation,
   pageSize = 50,
   bounded = true,
   maxHeightClass,
@@ -228,6 +249,62 @@ export function DataTable<T, K = string>({
   serverSorting,
 }: DataTableProps<T, K>) {
   const effectiveColumns = useMemo<ColumnDef<T, unknown>[]>(() => {
+    if (operation) {
+      if (operation.mode !== "columns") {
+        return [
+          ...columns,
+          {
+            id: "operationAttribution",
+            header: operation.label ?? "سجلّ العملية",
+            accessorFn: (row) => {
+              const value = operation.getOperation(row);
+              return [operationActionLabel(value), operationSubjectLabel(value.subject), operationTimeLabel(value.at)].join(" ");
+            },
+            cell: ({ row }) => <OperationAttributionCell operation={operation.getOperation(row.original)} />,
+            enableSorting: false,
+            meta: { kind: "text", width: "wide", wrap: true },
+          },
+        ];
+      }
+      return [
+        ...columns,
+        {
+          id: "operationActor",
+          header: operation.labels?.actor ?? "من قام",
+          accessorFn: (row) => {
+            const value = operation.getOperation(row).actor;
+            return value?.name ?? value?.userId ?? value?.source ?? "";
+          },
+          cell: ({ row }) => <ActorCell actor={operation.getOperation(row.original).actor} />,
+          enableSorting: false,
+          meta: { kind: "actor" },
+        },
+        {
+          id: "operationAction",
+          header: operation.labels?.action ?? "ماذا فعل",
+          accessorFn: (row) => operationActionLabel(operation.getOperation(row)),
+          cell: ({ row }) => <OperationActionCell operation={operation.getOperation(row.original)} />,
+          enableSorting: false,
+          meta: { kind: "text", width: "wide", wrap: true },
+        },
+        {
+          id: "operationSubject",
+          header: operation.labels?.subject ?? "على ماذا",
+          accessorFn: (row) => operationSubjectLabel(operation.getOperation(row).subject),
+          cell: ({ row }) => <OperationSubjectCell subject={operation.getOperation(row.original).subject} />,
+          enableSorting: false,
+          meta: { kind: "text", width: "wide" },
+        },
+        {
+          id: "operationTime",
+          header: operation.labels?.time ?? "متى",
+          accessorFn: (row) => operationTimeLabel(operation.getOperation(row).at),
+          cell: ({ row }) => <OperationTimeCell at={operation.getOperation(row.original).at} />,
+          enableSorting: false,
+          meta: { kind: "text", align: "center", width: "date" },
+        },
+      ];
+    }
     if (!actor) return columns;
     return [
       ...columns,
@@ -243,7 +320,7 @@ export function DataTable<T, K = string>({
         meta: { kind: "actor" },
       },
     ];
-  }, [actor, columns]);
+  }, [actor, columns, operation]);
   const storageKey = useMemo(() => {
     const scope = viewKey || (typeof window !== "undefined" ? window.location.pathname : "table");
     const ids = effectiveColumns.map((column, index) => columnIdentity(column as ColumnDef<unknown, unknown>, index)).join("|");

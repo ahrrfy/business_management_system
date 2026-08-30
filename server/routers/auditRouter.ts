@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { auditLogs, users } from "../../drizzle/schema";
+import { auditLogs, branches, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { protectedProcedure, router } from "../trpc";
@@ -23,6 +23,7 @@ export const auditRouter = router({
         .object({
           userId: z.number().int().positive().optional(),
           entityType: z.string().optional(),
+          entityId: z.string().trim().min(1).max(50).optional(),
           action: z.string().optional(),
           // فلتر فرع اختياري (شاشة سجلّ التدقيق) — auditReadProcedure أصلاً بلا عزل فروع (أدمن/مدقّق
           // يريان كل الفروع)، فلا حارس صلاحية إضافي هنا.
@@ -43,6 +44,7 @@ export const auditRouter = router({
       const conds: SQL[] = [];
       if (i.userId) conds.push(eq(auditLogs.userId, i.userId));
       if (i.entityType) conds.push(eq(auditLogs.entityType, i.entityType));
+      if (i.entityId) conds.push(eq(auditLogs.entityId, i.entityId));
       if (i.branchId) conds.push(eq(auditLogs.branchId, i.branchId));
       if (i.action?.trim()) {
         const pat = `%${escLike(i.action.trim())}%`;
@@ -94,6 +96,7 @@ export const auditRouter = router({
               userId: auditLogs.userId,
               userName: users.name,
               branchId: auditLogs.branchId,
+              branchName: branches.name,
               action: auditLogs.action,
               entityType: auditLogs.entityType,
               entityId: auditLogs.entityId,
@@ -104,6 +107,7 @@ export const auditRouter = router({
             })
             .from(auditLogs)
             .leftJoin(users, eq(auditLogs.userId, users.id))
+            .leftJoin(branches, eq(auditLogs.branchId, branches.id))
             .where(inArray(auditLogs.id, ordered));
 
           const byId = new Map(fetched.map((r) => [Number(r.id), r]));

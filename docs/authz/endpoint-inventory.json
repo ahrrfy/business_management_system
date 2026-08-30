@@ -1006,7 +1006,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE|LOCAL_GATE",
-      "loc": "server/routers/auditRouter.ts:122"
+      "loc": "server/routers/auditRouter.ts:126"
     },
     {
       "surface": "trpc",

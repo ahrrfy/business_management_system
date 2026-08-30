@@ -50,7 +50,7 @@
 "trpc","attendanceRouter","settings","hr.attendance.update","query","hrRead","module-map","hr","READ","","scoped","LOW","قراءة","LOCAL_GATE","server/routers/attendanceRouter.ts:53"
 "trpc","attendanceRouter","summary","hr.attendance.view","query","hrRead","module-map","hr","READ","","scoped","LOW","قراءة","LOCAL_GATE","server/routers/attendanceRouter.ts:95"
 "trpc","attendanceRouter","updateSettings","admin.attendance.update","mutation","settingsWrite","module-map","settings","FULL","","scoped","MEDIUM","كتابة","LOCAL_GATE","server/routers/attendanceRouter.ts:65"
-"trpc","auditRouter","facets","audit.audit.list","query","auditReadProcedure","raw-role","","","admin|auditor","none","LOW","قراءة","RAW_ROLE_GATE|LOCAL_GATE","server/routers/auditRouter.ts:122"
+"trpc","auditRouter","facets","audit.audit.list","query","auditReadProcedure","raw-role","","","admin|auditor","none","LOW","قراءة","RAW_ROLE_GATE|LOCAL_GATE","server/routers/auditRouter.ts:126"
 "trpc","auditRouter","list","audit.audit.list","query","auditReadProcedure","raw-role","","","admin|auditor","none","LOW","قراءة","RAW_ROLE_GATE|LOCAL_GATE","server/routers/auditRouter.ts:20"
 "trpc","authRouter","changePassword","iam.auth.change_password","mutation","protectedProcedure","none","","","","none","MEDIUM","كتابة","WRITE_WITHOUT_MODULE_GATE","server/routers/authRouter.ts:730"
 "trpc","authRouter","login","iam.auth.authenticate","mutation","publicProcedure","none","","","","none","MEDIUM","كتابة","WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED","server/routers/authRouter.ts:235"

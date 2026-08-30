@@ -12,6 +12,7 @@ import { isCurrentNativeClient } from "./auth/deviceProof";
 import { isCryptoReady } from "./services/cryptoService";
 import { canCrossBranches } from "./lib/branchAuthority";
 import { logger } from "./logger";
+import { buildAutomaticAuditData, logAudit, withMutationAuditScope } from "./services/auditService";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -78,7 +79,27 @@ function providerCategoryFrom(cause: unknown): AiProviderErrorCategory | null {
 
 export const router = t.router;
 export const middleware = t.middleware;
-export const publicProcedure = t.procedure;
+/**
+ * العقد العام لتتبّع الحركات: كل mutation ناجحة لم تكتب سجلاً متخصصاً تحصل على أثرٍ آمن
+ * تلقائياً. السجل المتخصص (logAudit/logAuditTx) يغلب دائماً، فلا ازدواج في سجل المستخدم.
+ * القراءة لا تُسجّل هنا، والكتابة العامة بلا هوية لا تُنسب زوراً إلى «النظام».
+ */
+const auditSuccessfulMutation = t.middleware(async ({ ctx, type, path, input, getRawInput, next }) => {
+  if (type !== "mutation" || !ctx.user) return next();
+
+  // الجذر يسبق محلّل input في سلسلة tRPC؛ نقرأ الخام المخبّأ كي لا نفقد معرّف هدف update/delete.
+  const auditInput = input === undefined ? await getRawInput() : input;
+  const { value: result, specializedAuditWritten } = await withMutationAuditScope(() => next());
+  if (result.ok && !specializedAuditWritten) {
+    await logAudit(ctx, buildAutomaticAuditData(path, auditInput, result.data));
+  }
+  return result;
+});
+
+/** الجذر الوحيد لبناء الإجراءات؛ يحرسه اختبار عقدي كي لا تظهر mutation خارج التدقيق العام. */
+const auditedProcedure = t.procedure.use(auditSuccessfulMutation);
+
+export const publicProcedure = auditedProcedure;
 
 // بوابة رمز استعادة كلمة المرور: تظل عامة لأن صاحب الحساب خارج الجلسة، لكنها لا تمرر
 // أي طلب إلى قاعدة البيانات ما لم يحمل الشكل المشفّر الكامل للرمز أحادي الاستخدام.
@@ -98,7 +119,7 @@ const requirePasswordResetTokenShape = t.middleware(async ({ getRawInput, next }
   return next();
 });
 
-export const passwordResetTokenProcedure = t.procedure.use(requirePasswordResetTokenShape);
+export const passwordResetTokenProcedure = auditedProcedure.use(requirePasswordResetTokenShape);
 
 /**
  * Credential-free bootstrap boundary for the native Android client. This does not authenticate
@@ -112,7 +133,7 @@ const requireNativeBootstrapClient = t.middleware(async ({ ctx, next }) => {
   return next({ ctx });
 });
 
-export const nativeBootstrapProcedure = t.procedure.use(requireNativeBootstrapClient);
+export const nativeBootstrapProcedure = auditedProcedure.use(requireNativeBootstrapClient);
 
 // ─── M9 (تدقيق ٣/٨): إلزام 2FA خادمياً للمدير/المشرف ─────────────────────────
 // كانت راية `mustEnroll2FA` توجيهاً واجهياً فقط (ForceTwoFactorEnroll يحجب الشاشة)، فعميلٌ
@@ -156,7 +177,7 @@ const requireUser = t.middleware(async ({ ctx, next, path }) => {
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
-export const protectedProcedure = t.procedure.use(requireUser);
+export const protectedProcedure = auditedProcedure.use(requireUser);
 
 /**
  * بوابة المالك الموثّق. هذه قراءة مبكرة لراية الجلسة لتحسين الرفض عند حدود API؛
@@ -185,14 +206,14 @@ const requireStorefrontPublicPath = t.middleware(({ path, next }) => {
   return next();
 });
 
-export const storefrontPublicReadProcedure = t.procedure.use(requireStorefrontPublicPath);
+export const storefrontPublicReadProcedure = auditedProcedure.use(requireStorefrontPublicPath);
 
 /**
  * كتابة المتجر العامة المنخفضة المخاطر فقط: الحماية الإلزامية تبقى داخل كل معالج
  * (Firebase ID token، Turnstile أحادي الاستخدام، أو رمز جهاز Expo مضبوط) مع حد المعدل
  * الشامل لمسار storefront في index.ts. لا تُستعمل للبيانات الإدارية أو التسعير أو البيع المالي.
  */
-export const storefrontPublicWriteProcedure = t.procedure.use(requireStorefrontPublicPath);
+export const storefrontPublicWriteProcedure = auditedProcedure.use(requireStorefrontPublicPath);
 
 /**
  * Self-service boundary for the mobile workspace. Handlers using this
@@ -223,7 +244,7 @@ const requireAdmin = t.middleware(async ({ ctx, next, path }) => {
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
-export const adminProcedure = t.procedure.use(requireAdmin);
+export const adminProcedure = auditedProcedure.use(requireAdmin);
 
 // ─── مدير المنصّة (تعدّد الشركات) — منفصل تماماً عن أدوار أي شركة ──────────
 const requirePlatformAdmin = t.middleware(async ({ ctx, next }) => {
@@ -231,7 +252,7 @@ const requirePlatformAdmin = t.middleware(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, platformAdmin: ctx.platformAdmin } });
 });
 
-export const platformAdminProcedure = t.procedure.use(requirePlatformAdmin);
+export const platformAdminProcedure = auditedProcedure.use(requirePlatformAdmin);
 
 // ─── تفويض الأدوار (RBAC) ───────────────────────────────────────────────
 const FORBIDDEN_MSG = "صلاحيات غير كافية لهذا الإجراء.";
@@ -291,17 +312,17 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
 }
 
 /** إدارة هويات المستخدمين: admin فعلي + بوابة users/FULL صريحة لأدوات الجرد الساكن. */
-export const usersAdminProcedure = t.procedure
+export const usersAdminProcedure = auditedProcedure
   .use(requireAdmin)
   .use(requireModuleGate(["admin"], "users", "FULL"));
 
 /** إعدادات حاكمة على مستوى الشركة: admin فعلي + settings/FULL + 2FA، لا مدير فرع ولو مُنح override. */
-export const settingsAdminProcedure = t.procedure
+export const settingsAdminProcedure = auditedProcedure
   .use(requireAdmin)
   .use(requireModuleGate(["admin"], "settings", "FULL"));
 
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
-export const managerProcedure = t.procedure.use(requireRole("manager"));
+export const managerProcedure = auditedProcedure.use(requireRole("manager"));
 
 /**
  * RBAC-REPORTS (تدقيق ٢/٧ + ٦/٧): بوّابة الوحدة الموحّدة على التقارير — تُعامَل «reports»
@@ -313,7 +334,7 @@ export const managerProcedure = t.procedure.use(requireRole("manager"));
  * فيخرق ثابت «حجب التكلفة عن غير أدواره» (§٥، مراجعة عدائية ٦/٧). القائمة تُبقي القالب الافتراضي
  * لتلك الأدوار محجوباً، ويظلّ المنح الصريح قرار المالك الواعي (لا وحدة «تكلفة» منفصلة في المصفوفة).
  */
-export const reportViewerProcedure = t.procedure
+export const reportViewerProcedure = auditedProcedure
   .use(requireModuleGate(["manager", "accountant", "auditor"], "reports", "READ"))
   .use(async ({ ctx, getRawInput, next }) => {
     // عزل الفرع: المالك/الأدمن يعبُران أي فرع؛ غير العابر (بما فيه مدير الفرع) يُرفَض إن طلب فرعاً
@@ -357,9 +378,9 @@ const requireOwnBranch = t.middleware(async ({ ctx, next }) => {
 });
 
 /** عمليات البيع/الصندوق: الكاشير فأعلى (مع فحص branchId إلزامي لغير المدير). */
-export const cashierProcedure = t.procedure.use(requireRole("cashier", "manager")).use(requireOwnBranch);
+export const cashierProcedure = auditedProcedure.use(requireRole("cashier", "manager")).use(requireOwnBranch);
 /** عمليات المخزون: أمين المخزن فأعلى (مع فحص branchId إلزامي لغير المدير). */
-export const warehouseProcedure = t.procedure.use(requireRole("warehouse", "manager")).use(requireOwnBranch);
+export const warehouseProcedure = auditedProcedure.use(requireRole("warehouse", "manager")).use(requireOwnBranch);
 // ش٢: حُذف `workOrderExecProcedure` (المفرد) — كان مُصدَّراً ميّتاً (مرجعه الوحيد تعليقٌ في
 // workOrderRouter.ts:391، صفر استعمال فعليّ). المستعمَل هو `workordersExecProcedure` (الجمع، عبر
 // moduleProcedure/workorders). إبقاء ميّتٍ يمنح cashier/print_operator وصولاً ثابتاً يتجاوز خريطة
@@ -429,7 +450,7 @@ export const branchScopedProcedure = protectedProcedure.use(({ ctx, next }) => {
 
 /** بوّابة وحدة + إلزام فرع مُسنَد لغير admin/manager (G3) — الأساس لكل إجراءات الكتابة أدناه. */
 function moduleProcedure(allowedRoles: readonly string[], moduleKey: string, minLevel: AccessLevel) {
-  return t.procedure.use(requireModuleGate(allowedRoles, moduleKey, minLevel)).use(requireOwnBranch);
+  return auditedProcedure.use(requireModuleGate(allowedRoles, moduleKey, minLevel)).use(requireOwnBranch);
 }
 
 // pos (نقطة بيع خدمات الطباعة — printPos)
@@ -597,7 +618,7 @@ export const storeManagerProcedure = moduleProcedure(["manager"], "store", "FULL
 // بالفرع، والمندوب قد يخدم عدّة فروع (عابرٌ لفروع طلباته) فيُنشأ أحياناً بلا فرع مُسنَد — فرضُ الفرع
 // كان يقفل الميزة كلّها عليه (مراجعة عدائية ١٢/٧). الدور courier فقط (admin يعبُر البوّابة لكنه بلا
 // جهة مرتبطة ⇒ النقاط الذاتية تعيد linked:false برشاقة).
-export const courierProcedure = t.procedure.use(requireModuleGate(["courier"], "courier", "FULL"));
+export const courierProcedure = auditedProcedure.use(requireModuleGate(["courier"], "courier", "FULL"));
 // قراءات مركز التوصيل (/delivery) — مقيّدة بوحدة store: كل مستعملي الشاشة (manager/cashier FULL،
 // accountant/auditor READ، admin يعبُر) يملكون store≥READ، بينما courier=NONE ⇒ محجوبٌ من قراءة
 // عهدة/بيانات جهات أخرى وPII زبائن الإرساليات (مراجعة عدائية ١٢/٧: branchScoped وحده لا يستشير
@@ -657,7 +678,7 @@ export const expensesManagerProcedure = moduleProcedure(["manager"], "expenses",
  * الصريح. نظير `treasuryGlobal*` لفئات السندات — راجع تعليقها لسبب فصل «العامّ» عن المقصور بالفرع.
  */
 export const expensesGlobalReadProcedure = protectedProcedure.use(requireModule("expenses", "READ"));
-export const expensesGlobalProcedure = t.procedure.use(
+export const expensesGlobalProcedure = auditedProcedure.use(
   requireModuleGate(["manager", "accountant"], "expenses", "FULL"),
 );
 // workorders (خدمة العملاء)
@@ -684,10 +705,10 @@ export const treasuryCashierProcedure = moduleProcedure(["cashier", "manager"], 
  * تخفيف — الفارق الوحيد إسقاطُ شرطٍ لا معنى له لبيانات غير مقصورة بفرع.
  * ⚠️ لا تستعملها لأيّ إجراءٍ يقرأ/يكتب `receipts` (المعالجة التاريخية والدمج يبقيان مقصورين).
  */
-export const treasuryGlobalProcedure = t.procedure.use(
+export const treasuryGlobalProcedure = auditedProcedure.use(
   requireModuleGate(["manager", "accountant"], "treasury", "FULL"),
 );
-export const treasuryGlobalReadProcedure = t.procedure.use(
+export const treasuryGlobalReadProcedure = auditedProcedure.use(
   requireModuleGate(["manager", "accountant"], "treasury", "READ"),
 );
 

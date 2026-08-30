@@ -4,6 +4,7 @@
 // التصميم: best-effort على مستوى الراوتر (لا يُلَفّ في tx العملية لتجنّب تمرير ctx
 // عبر كل الخدمات). فشل التسجيل لا يكسر العملية إطلاقاً (يُسجَّل تحذيراً فقط).
 import { auditLogs } from "../../drizzle/schema";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { TrpcContext } from "../context";
 import { getDb } from "../db";
 import { logger } from "../logger";
@@ -16,6 +17,93 @@ export type AuditData = {
   oldValue?: unknown;
   newValue?: unknown;
 };
+
+type MutationAuditScope = { writes: number };
+
+/**
+ * نطاقٌ معزول لكل استدعاء tRPC. يسمح للطبقة العامة أن تعرف هل كتبت الحركة سجلاً متخصصاً
+ * بالفعل، كي لا تضيف سطراً عاماً مكرراً. AsyncLocalStorage مهم هنا لأن طلبات batch قد تعمل
+ * بالتوازي على كائن req واحد؛ علامة على req كانت ستخلط حركتين مستقلتين.
+ */
+const mutationAuditScope = new AsyncLocalStorage<MutationAuditScope>();
+
+function noteAuditWrite(): void {
+  const scope = mutationAuditScope.getStore();
+  if (scope) scope.writes += 1;
+}
+export async function withMutationAuditScope<T>(work: () => Promise<T>): Promise<{
+  value: T;
+  specializedAuditWritten: boolean;
+}> {
+  return mutationAuditScope.run({ writes: 0 }, async () => {
+    const value = await work();
+    return { value, specializedAuditWritten: (mutationAuditScope.getStore()?.writes ?? 0) > 0 };
+  });
+}
+
+const ACTOR_ID_KEYS = new Set([
+  "actorId",
+  "approvedBy",
+  "approverId",
+  "assignedTo",
+  "branchId",
+  "createdBy",
+  "performedBy",
+  "requestedBy",
+  "reviewerId",
+  "updatedBy",
+]);
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function auditId(value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "bigint") return null;
+  const normalized = String(value).trim();
+  return normalized && normalized.length <= 50 ? normalized : null;
+}
+
+function firstTargetId(value: unknown, entityType: string): string | null {
+  const record = recordOf(value);
+  if (!record) return null;
+  const singular = entityType.endsWith("s") ? entityType.slice(0, -1) : entityType;
+  const preferred = ["entityId", "id", `${singular}Id`, `${entityType}Id`];
+  for (const key of preferred) {
+    const found = auditId(record[key]);
+    if (found) return found;
+  }
+  for (const [key, candidate] of Object.entries(record)) {
+    if (!key.endsWith("Id") || ACTOR_ID_KEYS.has(key)) continue;
+    const found = auditId(candidate);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * يبني الحد الأدنى الآمن لسجل الحركة العام: لا ينسخ input/result إطلاقاً، بل اسم الإجراء
+ * ومعرّف الهدف فقط. بهذا تغطي الطبقة كل mutation من دون تسريب كلمة مرور أو مرفق أو ملاحظة.
+ */
+export function buildAutomaticAuditData(path: string, input: unknown, result: unknown): AuditData {
+  const normalizedPath = path.trim() || "unknown.mutation";
+  const entityType = normalizedPath.split(".")[0]?.slice(0, 50) || "operation";
+  const entityId = firstTargetId(result, entityType) ?? firstTargetId(input, entityType);
+  const action = `rpc.${normalizedPath}`.slice(0, 100);
+  return {
+    action,
+    entityType,
+    entityId,
+    newValue: {
+      _auditContract: "operation.v1",
+      procedure: normalizedPath,
+      outcome: "SUCCESS",
+      target: entityId ? { entityType, entityId } : { entityType },
+    },
+  };
+}
 
 /**
  * ═══ تعقيم قيم التدقيق — حارسٌ مركزيّ، لا تجميل ═══
@@ -117,10 +205,10 @@ export function redactAuditValue(value: unknown): unknown {
 }
 
 /** يكتب سطر تدقيق. لا يرمي أبداً — السجلّ لا يجب أن يُسقط عمليةً ناجحة. */
-export async function logAudit(ctx: Pick<TrpcContext, "user" | "req">, data: AuditData): Promise<void> {
+export async function logAudit(ctx: Pick<TrpcContext, "user" | "req">, data: AuditData): Promise<boolean> {
   try {
     const db = getDb();
-    if (!db) return;
+    if (!db) return false;
     const ip =
       (ctx.req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
       ctx.req?.ip ??
@@ -135,8 +223,11 @@ export async function logAudit(ctx: Pick<TrpcContext, "user" | "req">, data: Aud
       newValue: redactAuditValue(data.newValue),
       ipAddress: ip,
     });
+    noteAuditWrite();
+    return true;
   } catch (e) {
     logger.warn({ err: e, action: data.action }, "تعذّر كتابة سجلّ التدقيق");
+    return false;
   }
 }
 
@@ -163,4 +254,5 @@ export async function logAuditTx(
     newValue: redactAuditValue(data.newValue),
     ipAddress: ip,
   });
+  noteAuditWrite();
 }
