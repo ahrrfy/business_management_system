@@ -171,6 +171,7 @@ export default defineConfig({
       "scripts/provision-worker-runtime-policy.test.ts",
       "scripts/__tests__/hrBridgeIntentLock.test.ts",
       "scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts",
+      "scripts/__tests__/rawSelectGuard.test.ts",
     ],
   },
 });

@@ -1,5 +1,9 @@
 import { NOT_ADMIN_ERR_MSG, TWO_FACTOR_REQUIRED_ROLES, UNAUTHED_ERR_MSG } from "@shared/const";
 import { GENERIC_INTERNAL_AR, mysqlCodeFrom, toArabicMessage } from "@shared/errorMap.ar";
+import {
+  AI_PROVIDER_ERROR_CATEGORIES,
+  type AiProviderErrorCategory,
+} from "@shared/productContentAi";
 import { canSeeCost as _canSeeCost, canUseStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
@@ -37,9 +41,40 @@ const t = initTRPC.context<TrpcContext>().create({
       );
     }
     // dbCode: رمز خطأ MySQL (إن وُجد) — يتيح للواجهة تمييز نوع الفشل برمجياً (تكرار/قفل/اتصال).
-    return { ...shape, message: arabic, data: { ...shape.data, correlationId, dbCode: mysqlCodeFrom(error.cause) } };
+    // providerCategory: فئةُ خطأ مزوّد الذكاء (MODEL_NOT_FOUND/SAFETY/QUOTA/...) — يتيح للعميل
+    // إظهار رسالةٍ خاصّةٍ بالفئة (AI_PROVIDER_ERROR_PRESENTATION) بدل رسالةٍ عامّة، بلا تسريب
+    // نصّ الخادم الخام (السلامة محفوظة). راجع productContentAiService.ts → AiProviderError.
+    return {
+      ...shape,
+      message: arabic,
+      data: {
+        ...shape.data,
+        correlationId,
+        dbCode: mysqlCodeFrom(error.cause),
+        providerCategory: providerCategoryFrom(error.cause),
+      },
+    };
   },
 });
+
+const AI_PROVIDER_CATEGORY_SET = new Set<string>(AI_PROVIDER_ERROR_CATEGORIES);
+
+/** يستخرج AiProviderErrorCategory من سلسلة cause (يمشي حتى ٥ مستويات). Duck-typing بلا استيرادٍ
+ *  متبادل بين server/trpc.ts وproductContentAiService.ts (الأخير يُنشئ AiProviderError داخلياً). */
+function providerCategoryFrom(cause: unknown): AiProviderErrorCategory | null {
+  let e: any = cause;
+  for (let i = 0; i < 5 && e; i++) {
+    if (
+      e?.name === "AiProviderError" &&
+      typeof e.category === "string" &&
+      AI_PROVIDER_CATEGORY_SET.has(e.category)
+    ) {
+      return e.category as AiProviderErrorCategory;
+    }
+    e = e?.cause;
+  }
+  return null;
+}
 
 export const router = t.router;
 export const middleware = t.middleware;

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  AI_PROVIDER_ERROR_CATEGORIES,
+  AI_PROVIDER_ERROR_PRESENTATION,
   aiProductDraftSchema,
+  classifyGeminiError,
   extractedProductFactsSchema,
   normalizeConversionFactor,
   productFactsSchema,
@@ -268,5 +271,41 @@ describe("vision evidence (image.N keys)", () => {
     expect(
       result.blockers.some((b) => b.includes("رقم 2") && b.includes("لا يتطابق")),
     ).toBe(true);
+  });
+});
+
+describe("classifyGeminiError", () => {
+  const cases: Array<[number, string | null, string]> = [
+    [401, "invalid api key", "AUTH"],
+    [403, "permission denied", "AUTH"],
+    [429, "rate limit", "QUOTA_EXCEEDED"],
+    [500, "internal error", "SERVER_TRANSIENT"],
+    [503, "service unavailable", "SERVER_TRANSIENT"],
+    [404, "not found", "MODEL_NOT_FOUND"],
+    [400, "model gemini-2.5-flash was not found for the requested location", "MODEL_NOT_FOUND"],
+    [400, "safety filter blocked content", "SAFETY_BLOCK"],
+    [400, "the content was blocked due to harm", "SAFETY_BLOCK"],
+    [400, "invalid image data", "INVALID_INPUT"],
+    [418, "teapot", "UNKNOWN"],
+    [400, null, "INVALID_INPUT"],
+    [400, "", "INVALID_INPUT"],
+  ];
+  cases.forEach(([status, detail, expected]) => {
+    it(`${status} + ${JSON.stringify(detail)} → ${expected}`, () => {
+      expect(classifyGeminiError(status, detail)).toBe(expected);
+    });
+  });
+
+  it("كلّ فئةٍ من الفهرس المُعلَن لها عرضٌ عربيٌّ مكتمل (title/message/retryable)", () => {
+    for (const cat of AI_PROVIDER_ERROR_CATEGORIES) {
+      const p = AI_PROVIDER_ERROR_PRESENTATION[cat];
+      expect(p, `presentation missing for ${cat}`).toBeDefined();
+      expect(p.title, `title empty for ${cat}`).toBeTruthy();
+      expect(p.message, `message empty for ${cat}`).toBeTruthy();
+      // اللغة عربيّة (يحتوي حرفاً عربياً على الأقل) — يمنع تسرّب رسالةٍ إنجليزيّة.
+      expect(/[؀-ۿ]/.test(p.title)).toBe(true);
+      expect(/[؀-ۿ]/.test(p.message)).toBe(true);
+      expect(typeof p.retryable).toBe("boolean");
+    }
   });
 });

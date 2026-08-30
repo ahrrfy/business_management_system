@@ -20,12 +20,15 @@ import { getImageStore } from "../lib/imageStore";
 import { decodeDataUrl } from "../imageRoute";
 import { logger } from "../logger";
 import {
+  AI_PROVIDER_ERROR_PRESENTATION,
   aiProductDraftSchema,
   canonicalJson,
+  classifyGeminiError,
   extractedProductFactsSchema,
   productFactsSchema,
   validateAiProductDraft,
   type AiProductDraft,
+  type AiProviderErrorCategory,
   type ExtractedProductFacts,
   type ProductFacts,
 } from "../../shared/productContentAi";
@@ -34,7 +37,68 @@ const GEMINI_API_BASE = (
   process.env.GEMINI_API_BASE ??
   "https://generativelanguage.googleapis.com/v1beta"
 ).replace(/\/+$/, "");
-const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
+
+// ── نماذج المحتوى (نصّ/بصريّ) — منفصلةٌ صراحةً عن نماذج توليد الصور ────────────────
+// السبب: `runtime.model` من إعدادات الاستوديو يشير في العادة إلى نموذج **توليد صور**
+// (aiPrompt.ts: gemini-2.5-flash-image). الاستعمال هنا مختلف: نطلب مخرَج JSON مُهيكَلاً
+// (نصّاً/بصريّاً). النماذج الصوريّة لا تلبّي هذا العقد ⇒ نتجاوزها بمجموعةٍ صريحة، لا
+// بمطابقة نصّيّة هشّة كـ`.includes("image")` كانت تفوت imagen-3.0 أو نماذج مستقبليّة.
+const DEFAULT_CONTENT_MODEL = "gemini-2.5-flash";
+/** نموذجٌ احتياطيٌّ مستقرٌّ (متاح منذ ٢٠٢٤) — نلجأ إليه حين يفشل النموذج الأساسيّ بـMODEL_NOT_FOUND. */
+const CONTENT_MODEL_FALLBACK = "gemini-1.5-flash";
+const IMAGE_GENERATION_MODELS = new Set<string>([
+  "gemini-2.5-flash-image",
+  "gemini-2.5-flash-image-preview",
+  "imagen-3.0-generate-001",
+  "imagen-3.0-generate-002",
+]);
+
+/** يحلّ نموذج المحتوى المستعمَل — يتجاوز نماذج توليد الصور صراحةً بمجموعة معلَنة. */
+function resolveContentModel(configuredModel: string | null | undefined): string {
+  const normalized = (configuredModel ?? "").trim();
+  if (!normalized) return DEFAULT_CONTENT_MODEL;
+  if (IMAGE_GENERATION_MODELS.has(normalized)) return DEFAULT_CONTENT_MODEL;
+  return normalized;
+}
+
+/** خطأٌ مصنَّفٌ من مزوّد الذكاء — يحمل الفئة والتفصيل الأصليّ للتسجيل التشغيليّ.
+ *  يُحوَّل إلى TRPCError برسالةٍ عربيّة موحّدة عند حدود المعالج (toTRPCError). */
+class AiProviderError extends Error {
+  constructor(
+    public readonly category: AiProviderErrorCategory,
+    public readonly httpStatus: number,
+    public readonly detail: string | undefined,
+  ) {
+    super(`${category}${detail ? ": " + detail.slice(0, 120) : ""}`);
+    this.name = "AiProviderError";
+  }
+}
+
+/** خريطةُ فئات المزوّد إلى رموز tRPC — مركزيّةٌ لضمان الاتّساق بين الاستدعاءات. */
+const CATEGORY_TO_TRPC_CODE: Record<
+  AiProviderErrorCategory,
+  "PRECONDITION_FAILED" | "BAD_REQUEST" | "TOO_MANY_REQUESTS" | "INTERNAL_SERVER_ERROR" | "TIMEOUT"
+> = {
+  MODEL_NOT_FOUND: "PRECONDITION_FAILED",
+  SAFETY_BLOCK: "BAD_REQUEST",
+  QUOTA_EXCEEDED: "TOO_MANY_REQUESTS",
+  INVALID_INPUT: "BAD_REQUEST",
+  AUTH: "PRECONDITION_FAILED",
+  SERVER_TRANSIENT: "INTERNAL_SERVER_ERROR",
+  TIMEOUT: "TIMEOUT",
+  UNKNOWN: "INTERNAL_SERVER_ERROR",
+};
+
+/** يحوّل AiProviderError إلى TRPCError بالرسالة العربيّة الموحّدة للفئة، مع إبقاء الخطأ
+ *  الأصليّ في cause كي يظهر providerCategory في shape.data.providerCategory (server/trpc.ts). */
+function toTRPCError(err: AiProviderError): TRPCError {
+  const presentation = AI_PROVIDER_ERROR_PRESENTATION[err.category];
+  return new TRPCError({
+    code: CATEGORY_TO_TRPC_CODE[err.category],
+    message: presentation.message,
+    cause: err,
+  });
+}
 const TEXT_PROMPT_VERSION = "product-content-ar-v2";
 const VISION_PROMPT_VERSION = "product-content-ar-v3-vision";
 const MAX_RESPONSE_BYTES = 512 * 1024;
@@ -46,6 +110,128 @@ const MAX_VISION_IMAGES = 4;
 const MAX_IMAGE_BYTES = 900_000;
 
 type TextFetch = typeof fetch;
+
+// ────────────────────────────────────────────────────────────────────────────────
+// نداءُ Gemini الموحَّد — يجمع: fetch + timeout + تصنيف الأخطاء + fallback بين النماذج +
+// تسجيلٌ تشغيليٌّ (info للنجاح، warn للفشل). كلّ الاستدعاءات لـGemini تمرّ عبره —
+// دالّةٌ واحدة تُصلَح مرّةً وتنعكس على كلّ المسارات (generate + extract + مستقبلٌ آخر).
+// ────────────────────────────────────────────────────────────────────────────────
+async function callGeminiWithFallback(opts: {
+  runtime: { apiKey: string; model: string };
+  payload: unknown;
+  fetchImpl: TextFetch;
+  timeoutMs: number;
+  callName: string; // مثل "generateContentDraft" — يُطبع في السجلّ للتصفية
+  actor?: { userId: number; branchId?: number | null };
+}): Promise<{ body: any; modelUsed: string; fellBack: boolean }> {
+  const primary = resolveContentModel(opts.runtime.model);
+  // لا نجرّب fallback إن كان الأساسيّ هو الاحتياطيّ نفسه — تجنّبٌ لدائرةٍ لا تفيد.
+  const fallback = primary === CONTENT_MODEL_FALLBACK ? null : CONTENT_MODEL_FALLBACK;
+
+  const attempt = async (model: string): Promise<any> => {
+    const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), opts.timeoutMs);
+    const startMs = Date.now();
+    let response: Response;
+    try {
+      response = await opts.fetchImpl(url, {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": opts.runtime.apiKey,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(opts.payload),
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      clearTimeout(timeout);
+      const detail = err?.name === "AbortError" ? "aborted (client timeout)" : String(err?.message ?? "network");
+      throw new AiProviderError("TIMEOUT", 0, detail);
+    }
+    try {
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const errorBody = JSON.parse(await readBoundedText(response, 32 * 1024));
+          detail = String(errorBody?.error?.message ?? "").slice(0, 250);
+        } catch {
+          detail = "";
+        }
+        const category = classifyGeminiError(response.status, detail);
+        throw new AiProviderError(category, response.status, detail);
+      }
+      const body = JSON.parse(await readBoundedText(response, MAX_RESPONSE_BYTES));
+      logger.info(
+        {
+          model,
+          callName: opts.callName,
+          durationMs: Date.now() - startMs,
+          userId: opts.actor?.userId,
+          branchId: opts.actor?.branchId ?? null,
+        },
+        "ai.gemini.call_ok",
+      );
+      return body;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  try {
+    const body = await attempt(primary);
+    return { body, modelUsed: primary, fellBack: false };
+  } catch (err) {
+    // MODEL_NOT_FOUND: النموذج المضبوط لا يخدمه المفتاح ⇒ حاول بالاحتياطيّ مرّةً واحدة.
+    // بقيّة الفئات (AUTH/SAFETY/QUOTA/...) لا يفيدها fallback — قطعٌ فوريّ.
+    if (err instanceof AiProviderError && err.category === "MODEL_NOT_FOUND" && fallback) {
+      logger.warn(
+        {
+          primary,
+          fallback,
+          detail: err.detail,
+          callName: opts.callName,
+          userId: opts.actor?.userId,
+        },
+        "ai.gemini.model_fallback",
+      );
+      try {
+        const body = await attempt(fallback);
+        return { body, modelUsed: fallback, fellBack: true };
+      } catch (err2) {
+        if (err2 instanceof AiProviderError) {
+          logger.warn(
+            {
+              primary,
+              fallback,
+              category: err2.category,
+              httpStatus: err2.httpStatus,
+              detail: err2.detail,
+              callName: opts.callName,
+            },
+            "ai.gemini.fallback_failed",
+          );
+        }
+        throw err2;
+      }
+    }
+    if (err instanceof AiProviderError) {
+      logger.warn(
+        {
+          model: primary,
+          category: err.category,
+          httpStatus: err.httpStatus,
+          detail: err.detail,
+          callName: opts.callName,
+          userId: opts.actor?.userId,
+        },
+        "ai.gemini.call_failed",
+      );
+    }
+    throw err;
+  }
+}
 
 type CachedDraft = { result: ProductContentDraftResult; expiresAt: number };
 const draftCache = new Map<string, CachedDraft>();
@@ -364,9 +550,10 @@ export async function generateProductContentDraft(
     });
   }
 
-  const model = runtime.model.includes("image")
-    ? DEFAULT_TEXT_MODEL
-    : runtime.model;
+  // النموذج المستعمَل يُحسم داخل callGeminiWithFallback (resolveContentModel + احتياطيّ عند
+  // MODEL_NOT_FOUND). هنا نبني الكاش على النموذج **الأساسيّ** المشتقّ فقط — بدون fallback:
+  // كاشُ ناتجٍ بواسطة نموذج مختلف لا يمثّل ناتج النموذج المضبوط، فيُخفي المشكلة عن المدير.
+  const cacheModel = resolveContentModel(runtime.model);
 
   // نحمّل الصور المعتمَدة **قبل** حساب مفتاح الكاش ⇒ مسارٌ نصّيّ ومسارٌ بصريّ لهما مفتاحان
   // مختلفان، وإعادة رفع صورةٍ (contentHash جديد) تُبطل الكاش تلقائياً.
@@ -381,7 +568,7 @@ export async function generateProductContentDraft(
   const promptVersionUsed = visualContext
     ? VISION_PROMPT_VERSION
     : TEXT_PROMPT_VERSION;
-  const cacheKey = productContentCacheKey(facts, model, visualContext);
+  const cacheKey = productContentCacheKey(facts, cacheModel, visualContext);
 
   pruneDraftCache();
   if (!opts.forceRefresh) {
@@ -394,14 +581,6 @@ export async function generateProductContentDraft(
   }
 
   const generate = async (): Promise<ProductContentDraftResult> => {
-    const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
-    const fetchImpl = opts.fetchImpl ?? fetch;
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      opts.timeoutMs ?? TIMEOUT_MS,
-    );
-
     // ترتيب parts متعمَّد: الصور أوّلاً (يزيد انتباه النموذج للبصريّ) والنصّ آخراً بحيث ترد
     // التعليمات النهائية مباشرةً قبل التوليد. البروتوكول البصريّ يُلحَق فقط عند وجود صور.
     const imageParts = images.map((img) => ({
@@ -425,96 +604,47 @@ export async function generateProductContentDraft(
       },
     };
 
-    let response: Response;
+    // نداءُ Gemini الموحَّد: fetch + timeout + تصنيف الأخطاء + fallback + تسجيل.
+    let body: any;
+    let modelUsed: string;
     try {
-      response = await fetchImpl(url, {
-        method: "POST",
-        headers: {
-          "x-goog-api-key": runtime.apiKey,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
+      const result = await callGeminiWithFallback({
+        runtime: { apiKey: runtime.apiKey, model: runtime.model },
+        payload,
+        fetchImpl: opts.fetchImpl ?? fetch,
+        timeoutMs: opts.timeoutMs ?? TIMEOUT_MS,
+        callName: "generateContentDraft",
+        actor: opts.actor,
       });
-    } catch (error: any) {
-      clearTimeout(timeout);
-      if (error?.name === "AbortError")
-        throw new TRPCError({
-          code: "TIMEOUT",
-          message: "تأخر مزود الذكاء الاصطناعي؛ أعد المحاولة لاحقاً.",
-        });
+      body = result.body;
+      modelUsed = result.modelUsed;
+    } catch (err) {
+      if (err instanceof AiProviderError) throw toTRPCError(err);
+      throw err;
+    }
+
+    let draft: AiProductDraft;
+    try {
+      draft = aiProductDraftSchema.parse(
+        JSON.parse(stripCodeFence(textFromGeminiResponse(body))),
+      );
+    } catch {
       throw new TRPCError({
-        code: "TIMEOUT",
-        message: "تعذر الوصول إلى مزود الذكاء الاصطناعي.",
+        code: "INTERNAL_SERVER_ERROR",
+        message: "مسودة الذكاء الاصطناعي لا تطابق مخطط المحتوى المطلوب.",
       });
     }
 
-    try {
-      if (!response.ok) {
-        let detail = "";
-        try {
-          const body = JSON.parse(await readBoundedText(response, 32 * 1024));
-          detail = String(body?.error?.message ?? "").slice(0, 250);
-        } catch {
-          detail = "";
-        }
-        if (response.status === 401 || response.status === 403) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: "مفتاح مزود الذكاء الاصطناعي غير صالح أو بلا صلاحية.",
-          });
-        }
-        const code =
-          response.status === 429
-            ? "TOO_MANY_REQUESTS"
-            : response.status >= 500
-              ? "INTERNAL_SERVER_ERROR"
-              : "BAD_REQUEST";
-        throw new TRPCError({
-          code,
-          message:
-            code === "INTERNAL_SERVER_ERROR"
-              ? "تعذر الوصول إلى مزود الذكاء الاصطناعي مؤقتاً."
-              : detail || "فشل توليد مسودة محتوى المنتج.",
-        });
-      }
-
-      let body: any;
-      try {
-        body = JSON.parse(await readBoundedText(response, MAX_RESPONSE_BYTES));
-      } catch {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "ردّ مزود الذكاء الاصطناعي غير صالح.",
-        });
-      }
-
-      let draft: AiProductDraft;
-      try {
-        draft = aiProductDraftSchema.parse(
-          JSON.parse(stripCodeFence(textFromGeminiResponse(body))),
-        );
-      } catch {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "مسودة الذكاء الاصطناعي لا تطابق مخطط المحتوى المطلوب.",
-        });
-      }
-
-      const validation = validateAiProductDraft(draft, facts);
-      return {
-        draft,
-        validation,
-        cacheKey,
-        model,
-        promptVersion: promptVersionUsed,
-        cacheHit: false,
-        imagesUsed: images.length,
-      };
-    } finally {
-      clearTimeout(timeout);
-    }
+    const validation = validateAiProductDraft(draft, facts);
+    return {
+      draft,
+      validation,
+      cacheKey,
+      model: modelUsed,
+      promptVersion: promptVersionUsed,
+      cacheHit: false,
+      imagesUsed: images.length,
+    };
   };
 
   const pending = runGuardedImageStudioCall({
@@ -684,19 +814,7 @@ export async function extractProductFactsFromImage(
     });
   }
 
-  const model = runtime.model.includes("image")
-    ? DEFAULT_TEXT_MODEL
-    : runtime.model;
-
   const extract = async (): Promise<ExtractProductFactsResult> => {
-    const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
-    const fetchImpl = opts.fetchImpl ?? fetch;
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      opts.timeoutMs ?? TIMEOUT_MS,
-    );
-
     const contextLine = input.contextName
       ? `\n\nCONTEXT (ما كتبه الموظّف حتى الآن، للاسترشاد لا للنسخ): ${input.contextName.slice(0, 160)}`
       : "";
@@ -717,87 +835,38 @@ export async function extractProductFactsFromImage(
       },
     };
 
-    let response: Response;
+    // نداءُ Gemini الموحَّد: fetch + timeout + تصنيف الأخطاء + fallback + تسجيل.
+    let body: any;
+    let modelUsed: string;
     try {
-      response = await fetchImpl(url, {
-        method: "POST",
-        headers: {
-          "x-goog-api-key": runtime.apiKey,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
+      const result = await callGeminiWithFallback({
+        runtime: { apiKey: runtime.apiKey, model: runtime.model },
+        payload,
+        fetchImpl: opts.fetchImpl ?? fetch,
+        timeoutMs: opts.timeoutMs ?? TIMEOUT_MS,
+        callName: "extractProductFactsFromImage",
+        actor: opts.actor,
       });
-    } catch (error: any) {
-      clearTimeout(timeout);
-      if (error?.name === "AbortError")
-        throw new TRPCError({
-          code: "TIMEOUT",
-          message: "تأخر مزود الذكاء الاصطناعي؛ أعد المحاولة لاحقاً.",
-        });
+      body = result.body;
+      modelUsed = result.modelUsed;
+    } catch (err) {
+      if (err instanceof AiProviderError) throw toTRPCError(err);
+      throw err;
+    }
+
+    let facts: ExtractedProductFacts;
+    try {
+      facts = extractedProductFactsSchema.parse(
+        JSON.parse(stripCodeFence(textFromGeminiResponse(body))),
+      );
+    } catch {
       throw new TRPCError({
-        code: "TIMEOUT",
-        message: "تعذر الوصول إلى مزود الذكاء الاصطناعي.",
+        code: "INTERNAL_SERVER_ERROR",
+        message: "نتيجة الاستخراج لا تطابق المخطط المطلوب.",
       });
     }
 
-    try {
-      if (!response.ok) {
-        let detail = "";
-        try {
-          const body = JSON.parse(await readBoundedText(response, 32 * 1024));
-          detail = String(body?.error?.message ?? "").slice(0, 250);
-        } catch {
-          detail = "";
-        }
-        if (response.status === 401 || response.status === 403) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: "مفتاح مزود الذكاء الاصطناعي غير صالح أو بلا صلاحية.",
-          });
-        }
-        const code =
-          response.status === 429
-            ? "TOO_MANY_REQUESTS"
-            : response.status >= 500
-              ? "INTERNAL_SERVER_ERROR"
-              : "BAD_REQUEST";
-        throw new TRPCError({
-          code,
-          message:
-            code === "INTERNAL_SERVER_ERROR"
-              ? "تعذر الوصول إلى مزود الذكاء الاصطناعي مؤقتاً."
-              : detail || "فشل استخراج حقائق المنتج من الصورة.",
-        });
-      }
-
-      let body: any;
-      try {
-        body = JSON.parse(await readBoundedText(response, MAX_RESPONSE_BYTES));
-      } catch {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "ردّ مزود الذكاء الاصطناعي غير صالح.",
-        });
-      }
-
-      let facts: ExtractedProductFacts;
-      try {
-        facts = extractedProductFactsSchema.parse(
-          JSON.parse(stripCodeFence(textFromGeminiResponse(body))),
-        );
-      } catch {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "نتيجة الاستخراج لا تطابق المخطط المطلوب.",
-        });
-      }
-
-      return { facts, model, promptVersion: EXTRACTION_PROMPT_VERSION };
-    } finally {
-      clearTimeout(timeout);
-    }
+    return { facts, model: modelUsed, promptVersion: EXTRACTION_PROMPT_VERSION };
   };
 
   try {
