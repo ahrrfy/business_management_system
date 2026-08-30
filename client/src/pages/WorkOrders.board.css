@@ -246,6 +246,49 @@
 .wob-card.wob-kanban-blocked { border-inline-start-color: var(--sem-neg); }
 .wob-card.wob-kanban-ready { border-inline-start-color: var(--sem-pos); }
 
+/* ─── الموجة ٣ (٣٠/٨/٢٦) — رقاقات فلاتر معلَّبة ─── */
+
+/* الرقاقة الافتراضية: زرٌّ ممتلئٌ بلمسة hover — يُظهر الحالة ON/OFF بلون واضح.
+   `aria-pressed` هو مصدر الحقيقة للـa11y (نمط toggle قياسيّ). */
+.wob-qf {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  color: var(--muted-fg);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.wob-qf:hover { background: var(--border); color: var(--fg); }
+.wob-qf-on { color: var(--fg); }
+.wob-qf-on.wob-qf-late { background: var(--sem-neg-bg); color: var(--sem-neg); border-color: var(--sem-neg); }
+.wob-qf-on.wob-qf-today { background: var(--sem-warn-bg); color: var(--sem-warn); border-color: var(--sem-warn); }
+.wob-qf-on.wob-qf-unassigned { background: var(--sem-info-bg); color: var(--sem-info); border-color: var(--sem-info); }
+.wob-qf-on.wob-qf-blocked { background: var(--sem-neg-bg); color: var(--sem-neg); border-color: var(--sem-neg); }
+.wob-qf-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: var(--card);
+  font-size: 10.5px;
+  font-weight: 800;
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid currentColor;
+}
+
 @media (max-width: 900px) {
   .wob-stats { grid-template-columns: repeat(2, 1fr); }
 }

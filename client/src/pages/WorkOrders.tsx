@@ -1263,7 +1263,7 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage" });
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -1392,16 +1392,36 @@ export default function WorkOrders() {
   // المُبطَّأ (debounce) — استجابة لحظية بلا وميض نتائج قديمة.
   const filtered = useMemo(() => {
     const needle = f.q.trim().toLowerCase();
+    // الموجة ٣ — فلاتر معلَّبة: كلٌّ منها URL-toggle، والانفصال العميلي هنا (سريع، تفاعليّ).
+    // «اليوم» بحدود UTC — dueDate عمود DATE يقارَن نصّياً بحتمية (نفس آلية counts خادمياً).
+    const todayUtc = new Date().toISOString().slice(0, 10);
     return all.filter((o) => {
       if (f.pri !== "all" && o.priority !== f.pri) return false;
       if (f.ch !== "all" && o.receptionChannel !== f.ch) return false;
+      // الفلاتر السريعة تطبِّق على النشطة فقط — تسليمٌ فائتُ الموعد ليس «متأخّراً» (خرج من الدورة).
+      if (f.late === "1") {
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+        if (!o.dueDate) return false;
+        const d = String(o.dueDate).slice(0, 10);
+        if (d >= todayUtc) return false;
+      }
+      if (f.unassigned === "1" && o.assignedTo != null) return false;
+      if (f.dueToday === "1") {
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+        const d = o.dueDate ? String(o.dueDate).slice(0, 10) : "";
+        if (d !== todayUtc) return false;
+      }
+      if (f.blocked === "1") {
+        const ks = (o as unknown as { kanbanState?: string | null }).kanbanState;
+        if (ks !== "BLOCKED") return false;
+      }
       if (needle) {
         const hay = [o.orderNumber, o.title, o.customerName ?? ""].join(" ").toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     });
-  }, [all, f.q, f.pri, f.ch]);
+  }, [all, f.q, f.pri, f.ch, f.late, f.unassigned, f.dueToday, f.blocked]);
 
   /** تصدير كامل عبر cursor (الشكل مصفوفة صرفة): صفحات 200 حتى صفحة ناقصة، بسقف أمان. */
   async function fetchAllForExport(): Promise<WO[]> {
@@ -1583,7 +1603,7 @@ export default function WorkOrders() {
     cancel.mutate({ workOrderId: d.id, clientRequestId });
   }
 
-  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch";
+  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1";
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
 
@@ -1704,19 +1724,50 @@ export default function WorkOrders() {
         >
           لم يحضر أصحابها
         </button>
-        {/* ١٩/٨ (طلب المالك: «استثمار رأس الشاشة») — شريطُ الإحصاءات الخمس زال: أربعةٌ منه
-            كانت تكرّر عدّادات الأعمدة حرفياً (نشطة/قيد التنفيذ/جاهز/مُسلَّم) فتأكل صفّاً
-            كاملاً من ارتفاع اللوحة بلا خبر. بقي **المتأخّر** وحده لأنّه الوحيد الذي لا
-            يقوله عمودٌ — ويُخفى عند الصفر. */}
-        {(serverCounts?.late ?? 0) > 0 && (
-          <span
-            className="inline-flex flex-none items-center gap-1.5 rounded-lg border border-[var(--sem-neg)] bg-[var(--sem-neg-bg)] px-2.5 py-1.5 text-xs font-extrabold text-[var(--sem-neg)]"
-            title="أوامر تجاوزت تاريخ استحقاقها"
-          >
-            <Timer aria-hidden className="size-3.5" />
-            {fmtInt(serverCounts?.late ?? 0)} متأخّر
-          </span>
-        )}
+        {/* الموجة ٣ (٣٠/٨/٢٦) — فلاتر معلَّبة (نمط Odoo): بديلٌ عن حقولٍ متفرّقة يفهمها
+            الموظّف بأسمائها لا بالفلترة اليدويّة. كلٌّ منها URL-toggle قابلة للنسخ.
+            الشارة السابقة «متأخّر» صارت فلتراً تفاعليّاً: تعرض العدّاد وتحصر عند النقر. */}
+        <button
+          type="button"
+          aria-pressed={f.late === "1"}
+          onClick={() => setF({ late: f.late === "1" ? "" : "1" })}
+          className={`wob-qf${f.late === "1" ? " wob-qf-on wob-qf-late" : ""}`}
+          title="أوامرُ فات موعد استحقاقها"
+        >
+          <Timer aria-hidden className="size-3.5" />
+          متأخّر
+          {(serverCounts?.late ?? 0) > 0 && <span className="wob-qf-badge">{fmtInt(serverCounts?.late ?? 0)}</span>}
+        </button>
+        <button
+          type="button"
+          aria-pressed={f.dueToday === "1"}
+          onClick={() => setF({ dueToday: f.dueToday === "1" ? "" : "1" })}
+          className={`wob-qf${f.dueToday === "1" ? " wob-qf-on wob-qf-today" : ""}`}
+          title="أوامرُ تستحقّ التسليم اليوم"
+        >
+          <Calendar aria-hidden className="size-3.5" />
+          يستحقّ اليوم
+        </button>
+        <button
+          type="button"
+          aria-pressed={f.unassigned === "1"}
+          onClick={() => setF({ unassigned: f.unassigned === "1" ? "" : "1" })}
+          className={`wob-qf${f.unassigned === "1" ? " wob-qf-on wob-qf-unassigned" : ""}`}
+          title="طابورٌ مشترك — أوامرُ لم تُسنَد لفنّيّ بعد"
+        >
+          <Wrench aria-hidden className="size-3.5" />
+          بلا فنّيّ
+        </button>
+        <button
+          type="button"
+          aria-pressed={f.blocked === "1"}
+          onClick={() => setF({ blocked: f.blocked === "1" ? "" : "1" })}
+          className={`wob-qf${f.blocked === "1" ? " wob-qf-on wob-qf-blocked" : ""}`}
+          title="أوامرٌ أشار الفنّيّ إلى تعطّلها — سببها في تلميح البطاقة"
+        >
+          <AlertTriangle aria-hidden className="size-3.5" />
+          معطَّل
+        </button>
         <div className="wob-search">
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>
           <input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث (رقم / عنوان / عميل)" />
