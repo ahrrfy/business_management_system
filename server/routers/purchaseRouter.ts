@@ -44,7 +44,7 @@ import {
   purchasesWarehouseProcedure,
   router,
 } from "../trpc";
-import { isDupEntry } from "@shared/errorMap.ar";
+import { pauseIfRetryableDbError } from "../lib/retryDup";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 /**
@@ -468,7 +468,7 @@ export const purchaseRouter = router({
           });
           return res;
         } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue;
+          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
           if (e instanceof TRPCError) throw e;
           failOpaque(e, {
             op: "purchases.receive",

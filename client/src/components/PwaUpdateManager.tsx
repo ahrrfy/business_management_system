@@ -215,6 +215,17 @@ async function checkRegistrationForUpdate(
  * ثم — وفقط عندها — نعيد فتح الصفحة. clientsClaim يبقى معطلاً كي لا يفرض
  * التحديث على تبويبات أخرى فيها إدخالات غير محفوظة.
  */
+/** سطح زائر المتجر على الدومين العام (فحص الحمل ٣٠/٨ — الجذر يُحوَّل إلى /store، و/apply عامة كذلك). */
+function isStorefrontSurfacePath(pathname: string): boolean {
+  return (
+    pathname === "/" ||
+    pathname === "/store" ||
+    pathname.startsWith("/store/") ||
+    pathname === "/apply" ||
+    pathname.startsWith("/apply/")
+  );
+}
+
 export function PwaUpdateManager() {
   const [pathname] = useLocation();
   const [ready, setReady] = useState(false);
@@ -229,6 +240,40 @@ export function PwaUpdateManager() {
   const autoAttemptVersionRef = useRef<string | null>(null);
   const pathnameRef = useRef(pathname);
   pathnameRef.current = pathname;
+
+  /**
+   * قرار تسجيل عامل الخدمة — كسولٌ ويُقفَل مرّةً واحدة (فحص الحمل + مراجعة عدائية ٣٠/٨):
+   * - زائر المتجر/التوظيف على الدومين العام لا يُسجَّل له (التسجيل كان يسحب precache حزمة
+   *   ERP كاملة ~417 ملفاً/9MB لكل زائرٍ مجهول ويعيد سحبها كل نشرة).
+   * - تطبيق المناديب TWA المنشور يُقلع من "/" على الدومين نفسه ⇒ لا نقرّر بلقطة مسار
+   *   الإقلاع: أول وصولٍ لمسارٍ غير متجريّ (/my-deliveries…) يرفع المزلاج فيُسجَّل حينها.
+   * - متصفّحٌ يحمل تسجيلاً قائماً (مندوبٌ عائد، أو زائرٌ من قبل هذا التغيير) يُبقى ويُحدَّث
+   *   كالمعتاد — **لا unregister إطلاقاً**: إلغاء التسجيل يقتل اشتراكات الإشعارات ويترك
+   *   قشرةً مثبَّتة لا تتحدّث أبداً.
+   */
+  const [swEnabled, setSwEnabled] = useState(false);
+  useEffect(() => {
+    if (swEnabled) return;
+    if (!import.meta.env.PROD) {
+      setSwEnabled(true);
+      return;
+    }
+    if (!("serviceWorker" in navigator)) return;
+    if (!(isPublicHost(window.location.hostname) && isStorefrontSurfacePath(pathname))) {
+      setSwEnabled(true);
+      return;
+    }
+    let cancelled = false;
+    void navigator.serviceWorker
+      .getRegistration()
+      .then((registration) => {
+        if (!cancelled && registration) setSwEnabled(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [swEnabled, pathname]);
 
   const queueAutomaticUpdate = async (
     registration: ServiceWorkerRegistration,
@@ -307,6 +352,7 @@ export function PwaUpdateManager() {
   };
 
   useEffect(() => {
+    if (!swEnabled) return;
     if (!import.meta.env.PROD) {
       const resetKey = "storefront-preview-sw-reset-v2";
       if (sessionStorage.getItem(resetKey) !== "1") {
@@ -361,7 +407,7 @@ export function PwaUpdateManager() {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [swEnabled]);
 
   // onNeedRefresh قد يصل بينما الزائر على الجذر العام ثم يحوّله الراوتر إلى /store؛ أعد تقييم
   // السياسة عند انتقال SPA بدل إبقاء العامل القديم منتظراً حتى إعادة تحميل يدوية.

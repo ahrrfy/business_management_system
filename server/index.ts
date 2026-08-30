@@ -57,6 +57,7 @@ import {
   createOverloadGuard,
   startLagMonitor,
 } from "./middleware/overloadGuard";
+import { classifyRequestLane } from "./middleware/requestPriority";
 import { printRouter } from "./printRoute";
 import { imageRouter } from "./imageRoute";
 import { backupRouter } from "./backupRoutes";
@@ -321,27 +322,59 @@ async function startServer() {
     }),
   );
 
-  // ── حماية الحِمل الزائد (load shedding) ────────────────────────────────────────────────
+  // ── حماية الحِمل الزائد (load shedding) بحارات أولوية ─────────────────────────────────
   // بعد حدّ المعدّل، قبل المعالجة الثقيلة: إن تشبّعت حلقة أحداث هذا العامل (تأخّرٌ > العتبة)
-  // نتنازل عن الطلب بـ503 سريعاً بدل مراكمةٍ تُعلّق الجميع. عتبةٌ عاليةٌ محافظة (env-tunable،
-  // 0=مُعطَّل)، ويُستثنى /healthz و/assets و/api/webhooks. لكلّ عاملٍ مرقابه (per-worker).
+  // نتنازل عن الطلب بـ503 سريعاً بدل مراكمةٍ تُعلّق الجميع. ويُستثنى /healthz و/assets
+  // و/api/webhooks. لكلّ عاملٍ مرقابه (per-worker).
+  //
+  // فحص معمارية الحمل ٣٠/٨/٢٦ — ثلاث حارات بدل عتبةٍ واحدة (requestPriority.ts):
+  // «زوّار المتجر يُخفَّفون أولاً، والكاشير آخر مَن يسقط»: العتبة الواحدة كانت تُسقط
+  // `sales.create` بـ503 أمام زبونٍ واقف حين يضغط زوّار المتجر — انقلاب أولوية تجارية.
+  // critical = 5× العتبة (سقفٌ صلبٌ يبقى لحماية العملية)، storefront = 0.6× (يُخفَّف أولاً).
+  // قيمة env تالفة = الافتراضي (لا تُعطَّل حارةٌ صامتاً بخطأ كتابة)؛ والصفر الصريح يُحترم
+  // (للأساس = تعطيل الحارس كلّه، ولحارةٍ = لا حجب لها).
+  const lagEnvValue = (name: string, fallback: number): number => {
+    const raw = process.env[name];
+    if (raw == null || raw.trim() === "") return fallback;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : fallback;
+  };
+  const maxLagMs = lagEnvValue("EVENT_LOOP_MAX_LAG_MS", 500);
+  const criticalMaxLagMs = lagEnvValue(
+    "EVENT_LOOP_CRITICAL_MAX_LAG_MS",
+    Math.round(maxLagMs * 5),
+  );
+  const storefrontMaxLagMs = lagEnvValue(
+    "EVENT_LOOP_STOREFRONT_MAX_LAG_MS",
+    Math.max(1, Math.round(maxLagMs * 0.6)),
+  );
   const lagMonitor = startLagMonitor();
   let lastShedLogAt = 0;
   app.use(
     createOverloadGuard({
       lagMs: lagMonitor.lagMs,
-      maxLagMs: Number(process.env.EVENT_LOOP_MAX_LAG_MS ?? 500),
+      maxLagMs,
       skip: (req) =>
         req.path === "/healthz" ||
         req.path.startsWith("/assets/") ||
         req.path.startsWith("/api/webhooks"),
+      thresholdFor: (req) => {
+        const lane = classifyRequestLane(req.path, req.hostname);
+        if (lane === "critical") return criticalMaxLagMs;
+        if (lane === "storefront") return storefrontMaxLagMs;
+        return maxLagMs;
+      },
       onShed: (req, res) => {
         // سجلّ مقنَّن (مرّة/٥ث) كي لا يُغرِق السجلّ تحت تشبّعٍ مستمرّ.
         const now = Date.now();
         if (now - lastShedLogAt > 5000) {
           lastShedLogAt = now;
           logger.warn(
-            { lagMs: Math.round(lagMonitor.lagMs()), path: req.path },
+            {
+              lagMs: Math.round(lagMonitor.lagMs()),
+              path: req.path,
+              lane: classifyRequestLane(req.path, req.hostname),
+            },
             "حماية الحِمل الزائد: تشبّع حلقة الأحداث — تنازلٌ عن طلبات (503).",
           );
         }

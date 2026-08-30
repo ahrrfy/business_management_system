@@ -54,6 +54,14 @@ export async function nextCounterValue(tx: Tx, counterKey: string): Promise<numb
  *
  * `branchId` يبقى في التوقيع (مستدعون كثر يمرّرونه) وإن لم يعد يدخل الرقم: العدّاد عالميّ
  * لأنّ `invoices.invoiceNumber` قيدُه الفريد عالميّ أصلاً — عدّادٌ لكل فرعٍ كان سيتصادم.
+ *
+ * ⚠️ **ترتيب الأقفال القانوني (فحص الحمل ٣٠/٨/٢٦):** صفّ العدّاد قفلٌ X **عالميّ مشترك** بين
+ * كل مسارات الترقيم ويبقى محجوزاً حتى COMMIT. لذلك أيّ مسارٍ سيقفل/يحدّث صفّ `customers`
+ * (أو أيّ صفٍّ مشتركٍ آخر) في نفس المعاملة يجب أن يقفله **قبل** استدعاء هذه الدالة، لا بعدها —
+ * قلبُ الترتيب أنتج ABBA deadlock فعلياً بين البيع (عميل ← عدّاد) وتوزيع التوصيل (عدّاد ← عميل).
+ * المواضع المُقوَّمة: sale/create.ts وprintSaleService.ts (أصلاً صحيحة: وردية ← عميل ← عدّاد)،
+ * وworkOrder/deliver.ts (أُعيد ترتيبه كاملاً على نفس النظام)، وdelivery/dispatch.ts
+ * (قفل عميلٍ صريحٍ قبل الترقيم؛ ورديته تُقرأ بلا قفل أصلاً).
  */
 export async function nextInvoiceNumber(tx: Tx, _branchId: number): Promise<string> {
   return String(await nextCounterValue(tx, "invoice"));

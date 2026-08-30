@@ -6,6 +6,8 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { branches, storeSettings } from "../../../drizzle/schema";
 import { getDb, type DB, type Tx } from "../../db";
+import { createTtlCache } from "../../lib/ttlCache";
+import { getCurrentCompanyId } from "../../tenancy/context";
 import { withTx } from "../tx";
 import { hasReadyStorefrontCatalog } from "./storefrontReadinessService";
 import { getPublicStorefrontTurnstileSettings } from "../storefrontTurnstile";
@@ -47,12 +49,32 @@ async function hasReadyCatalog(
   return hasReadyStorefrontCatalog(db, branchId);
 }
 
+/**
+ * فحص معمارية الحمل ٣٠/٨/٢٦: `hasReadyStorefrontCatalog` مشيٌ متدرّج على الكتالوج
+ * (دفعات 256 + فحص توفّرٍ لكلٍّ منها، وأسوأ حالاته مسحُ الكتالوج كاملاً) — وكان يُنفَّذ
+ * على **كل** نداء `storefront.settings`، وهو أول ما يطلبه كل زائرٍ مجهول. كاشٌ قصير
+ * أحادي الرحلة لمسار القراءة العام وحده؛ مسار الكتابة الإداري (updateStoreSettings)
+ * يبقى على الفحص الطازج كي لا تحجب نتيجةٌ قديمة فتحَ المتجر، ويُبطل الكاشَ بعد كل تحديث.
+ * المفتاح يتضمّن companyId درءاً لتسريبٍ بين الشركات إن فُعِّل تعدّدها.
+ */
+const CATALOG_READINESS_TTL_MS = 60_000;
+const catalogReadinessCache = createTtlCache<string, boolean>({ ttlMs: CATALOG_READINESS_TTL_MS, maxEntries: 50 });
+
+async function hasReadyCatalogCached(db: DB | Tx, branchId: number): Promise<boolean> {
+  if (process.env.NODE_ENV === "test") return hasReadyCatalog(db, branchId);
+  const key = `${getCurrentCompanyId() ?? 0}:${branchId}`;
+  return catalogReadinessCache.get(key, () => hasReadyCatalog(db, branchId));
+}
+
 export async function getStoreSettings(): Promise<StoreSettingsValue> {
   const db = getDb();
   if (!db) return DEFAULTS;
   // لقطة واحدة حقيقية: لا نقرأ storeSettings هنا ثم نعيد قراءته داخل context primitive.
-  // تحت REPEATABLE READ تظل حالة الفتح والفرع والجاهزية من نفس نقطة الزمن؛ لذلك لا
-  // يمكن لسباق إغلاق/تبديل الفرع أن يركّب isOpen قديمة على فرع جديد.
+  // تحت REPEATABLE READ تظل حالة الفتح والفرع من نفس نقطة الزمن؛ لذلك لا يمكن لسباق
+  // إغلاق/تبديل الفرع أن يركّب isOpen قديمة على فرع جديد.
+  // استثناء موثَّق (٣٠/٨): `catalogReady` وحدها قد تأتي من كاشٍ عمره ≤60ث (أدناه) — منطق
+  // الفتح/الفرع يبقى لقطةً حيّة، والجاهزية بوليانٌ متسامحٌ مع التأخّر بحكم TTL؛ ومحمّل
+  // الكاش يستعمل tx المستدعي الأوّل فقط أثناء انتظاره داخل معاملته المفتوحة (لا يعيش بعدها).
   return db.transaction(async (tx) => {
     const row = (
       await tx
@@ -82,7 +104,7 @@ export async function getStoreSettings(): Promise<StoreSettingsValue> {
     const branchActive = branch?.isActive === true;
     const catalogReady =
       branch && branchActive
-        ? await hasReadyCatalog(tx, Number(branch.id))
+        ? await hasReadyCatalogCached(tx, Number(branch.id))
         : false;
     return {
       isOpen: row.isOpen === true,
@@ -196,6 +218,8 @@ export async function updateStoreSettings(
         .insert(storeSettings)
         .values({ id: 1, ...next, updatedBy: userId });
     }
+    // تحديث الإعدادات قد يغيّر فرع التنفيذ ⇒ أبطل كاش الجاهزية كي يرى الزوّار الحالة الجديدة فوراً.
+    catalogReadinessCache.clear();
     return {
       ...next,
       fulfillmentBranchName,

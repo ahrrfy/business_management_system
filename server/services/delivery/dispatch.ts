@@ -4,6 +4,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull, notLike, or, sql } from "drizzle-orm";
 import {
+  customers,
   deliveryConsignments,
   deliveryParties,
   deliveryPartyMembers,
@@ -265,6 +266,19 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       }
     }
 
+    // ترتيب الأقفال القانوني (فحص الحمل ٣٠/٨/٢٦): صفّ العميل يُقفَل **قبل** عدّاد الترقيم —
+    // هذا المسار كان الوحيد الذي يقلب الاتجاه دائماً (عدّاد ٢٧٢ ← تحديث رصيد العميل ٣٨٢ بلا
+    // أيّ قفلٍ مسبق) مقابل البيع (عميل ← عدّاد) ⇒ ABBA deadlock بين كاشيرٍ يبيع للعميل
+    // ومُرسِلٍ يوزّع طلبه في اللحظة نفسها. القفل هنا بعد قفل الفاتورة القائمة (invoices ← customers
+    // يطابق sale/payment وreverseDelivery) وقبل العدّاد.
+    if (wo.customerId != null) {
+      await tx
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.id, Number(wo.customerId)))
+        .for("update")
+        .limit(1);
+    }
     // الفاتورة تبقى منسوبة إلى عميل أمر الشغل كي تظهر في كشفه وأعمار الذمم. جهة التوصيل
     // هي حائز النقد/الطرد، وليست بديلاً عن هوية العميل على المستند التجاري.
     const invoiceNumber = reusingInvoice

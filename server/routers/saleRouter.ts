@@ -39,7 +39,7 @@ import { randomUUID } from "node:crypto";
 import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
-import { isDupEntry } from "@shared/errorMap.ar";
+import { pauseIfRetryableDbError } from "../lib/retryDup";
 import { withTx } from "../services/tx";
 import { confirmExternalPaymentAttempt, createConfirmedPosSale, initiateExternalPaymentAttempt, type PosExternalPaymentMethod } from "../services/posExternalPayment";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
@@ -527,7 +527,7 @@ export const saleRouter = router({
           }
           return res;
         } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue;
+          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
           if (e instanceof TRPCError) throw e;
           // لا نبتلع السبب الجذري: نُسجّله كاملاً (رسالة + كود SQL + الاستعلام) قبل
           // إرجاع رسالة عامة للواجهة — وإلا صار تشخيص أعطال الإنتاج تخميناً (درس ١٢/٦:
@@ -608,7 +608,7 @@ export const saleRouter = router({
           await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });
           return res;
         } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue;
+          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
           if (e instanceof TRPCError) throw e;
           failOpaque(e, {
             op: "sales.pay",
@@ -793,7 +793,7 @@ export const saleRouter = router({
           }
           return res;
         } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue;
+          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
           if (e instanceof TRPCError) throw e;
           logger.error(
             { err: { message: e?.message, code: e?.code, sqlMessage: e?.sqlMessage, sql: e?.sql }, userId: actor.userId, originalInvoiceId: input.originalInvoiceId },
@@ -1276,7 +1276,7 @@ export const saleRouter = router({
           }
           return res;
         } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue; // سباق مفتاح idempotency ⇒ إعادة المحاولة تُعيد النتيجة الأولى.
+          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue; // سباق مفتاح idempotency/جمود ⇒ إعادة المحاولة تُعيد النتيجة الأولى.
           if (e instanceof TRPCError) throw e;
           logger.error(
             { err: { message: e?.message, code: e?.code, sqlMessage: e?.sqlMessage, sql: e?.sql }, invoiceId: input.invoiceId },

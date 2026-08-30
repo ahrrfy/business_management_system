@@ -25,7 +25,7 @@ describe("tenant DB connection budget", () => {
   it("keeps the default two-worker deployment below MySQL's default capacity", () => {
     for (const key of KEYS) delete process.env[key];
     const policy = tenantPoolPolicy();
-    expect(policy).toMatchObject({ connectionLimit: 5, maxPoolsPerWorker: 10, webWorkers: 2 });
+    expect(policy).toMatchObject({ connectionLimit: 10, maxPoolsPerWorker: 5, webWorkers: 2 });
     expect(validateTenantConnectionBudget(policy)).toEqual({ projected: 100, available: 131 });
   });
 

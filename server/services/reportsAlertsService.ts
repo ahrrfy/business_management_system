@@ -10,6 +10,8 @@
 import { sql } from "drizzle-orm";
 import { DELIVERY_AGE_DANGER_HOURS } from "@shared/deliveryAging";
 import { getDb } from "../db";
+import { createTtlCache } from "../lib/ttlCache";
+import { getCurrentCompanyId } from "../tenancy/context";
 import { toDbMoney, money } from "./money";
 import { getStockStatus } from "./reportsInventoryService";
 import { getCreditExposure } from "./reportsCreditExposureService";
@@ -55,10 +57,37 @@ export interface ManagementAlertsResult {
 const SEV_ORDER: Record<AlertSeverity, number> = { critical: 0, warning: 1, info: 2 };
 
 /**
+ * كاش قصير أحادي الرحلة (فحص الحمل ٣٠/٨/٢٦): الحساب أدناه يطلق ~30-40 استعلاماً شبه متزامن
+ * (أثقل قارئ في النظام كلّه)، ومدخلاته (branchId، isAdmin) لا شيء شخصيّ فيها ⇒ مديران يفتحان
+ * «النظرة العامة» معاً كانا يضاعفان الانفجار بلا أي فائدة. TTL 30 ثانية يوازن حداثة التنبيهات
+ * (الواجهة أصلاً staleTime=60s) مع حماية مجمّع الاتصالات؛ والرحلة الواحدة تجمع المتزامنين.
+ * المفتاح يتضمّن companyId درءاً لتسريبٍ بين الشركات إن فُعِّل تعدّدها يوماً.
+ *
+ * قرار مقصود (مراجعة عدائية ٣٠/٨): نتيجةٌ فيها sourceErrors **تُكيَّش أيضاً** — التدهور
+ * معلَنٌ داخلها بصفّ تنبيهٍ حرِج ظاهرٍ للمدير، وعدمُ كيّشها كان سيعيد إطلاق انفجار الاستعلامات
+ * الأربعين تحديداً لحظةَ العجز عنه (thundering herd على مصدرٍ فاشل).
+ */
+const MANAGEMENT_ALERTS_TTL_MS = 30_000;
+const managementAlertsCache = createTtlCache<string, ManagementAlertsResult>({
+  ttlMs: MANAGEMENT_ALERTS_TTL_MS,
+  maxEntries: 40,
+});
+
+export async function getManagementAlerts(opts: {
+  branchId?: number;
+  isAdmin?: boolean;
+}): Promise<ManagementAlertsResult> {
+  // الاختبارات تتحقّق من محتوى التنبيهات بعد كتاباتها مباشرةً — الكاش يعمى عنها.
+  if (process.env.NODE_ENV === "test") return computeManagementAlerts(opts);
+  const key = `${getCurrentCompanyId() ?? 0}:${opts.branchId ?? 0}:${opts.isAdmin === true}`;
+  return managementAlertsCache.get(key, () => computeManagementAlerts(opts));
+}
+
+/**
  * يبني قائمة تنبيهات الإدارة المعزولة بالفرع. `isAdmin` يُفعّل تنبيه انحراف reconcile (admin فقط).
  * كل مصدر مستقلّ ⇒ يُشغَّل بالتوازي. أي مصدر يفشل لا يُسقط الكوكبِت (يُتجاوز بصمت).
  */
-export async function getManagementAlerts(opts: {
+async function computeManagementAlerts(opts: {
   branchId?: number;
   isAdmin?: boolean;
 }): Promise<ManagementAlertsResult> {
