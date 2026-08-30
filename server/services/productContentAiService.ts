@@ -43,21 +43,41 @@ const GEMINI_API_BASE = (
 // (aiPrompt.ts: gemini-2.5-flash-image). الاستعمال هنا مختلف: نطلب مخرَج JSON مُهيكَلاً
 // (نصّاً/بصريّاً). النماذج الصوريّة لا تلبّي هذا العقد ⇒ نتجاوزها بمجموعةٍ صريحة، لا
 // بمطابقة نصّيّة هشّة كـ`.includes("image")` كانت تفوت imagen-3.0 أو نماذج مستقبليّة.
-const DEFAULT_CONTENT_MODEL = "gemini-2.5-flash";
-/** نموذجٌ احتياطيٌّ مستقرٌّ (متاح منذ ٢٠٢٤) — نلجأ إليه حين يفشل النموذج الأساسيّ بـMODEL_NOT_FOUND. */
-const CONTENT_MODEL_FALLBACK = "gemini-1.5-flash";
+//
+// ⭐ اختيار الاسم — دَرسٌ اشتراه سجلّ الإنتاج في ٣٠/٨/٢٦:
+// كنّا نستعمل الاسم المرقَّم `gemini-2.5-flash` فردَّ Google 404 برسالةٍ صريحة: «هذا
+// النموذج لم يعد متاحاً للمستعملين الجدد»، ثمّ سقط الاحتياطيّ `gemini-1.5-flash` بـ«غير
+// موجودٍ في v1beta لـgenerateContent». أرقامُ الإصدارات تشيخ خلال شهور — أسماءُ `-latest`
+// اسمٌ ثابتٌ تصونه Google ويعيد الربطَ إلى النسخة المستقرّة الحالية بلا نشرٍ من طرفنا.
+// وأيّ طوارئ (Google تُغيّر عقد الاسم، أو نموذجٌ محدَّد يعمل أفضل لحالتنا) يعالجها
+// المتغيّران البيئيّان أدناه بلا نشرٍ ولا تعديل شيفرة.
+const DEFAULT_CONTENT_MODEL =
+  process.env.PRODUCT_CONTENT_MODEL?.trim() || "gemini-flash-latest";
+/** نموذجٌ احتياطيٌّ — نلجأ إليه حين يفشل الأساسيّ بـMODEL_NOT_FOUND. اسمُ `-latest` مصونٌ من الهجر. */
+const CONTENT_MODEL_FALLBACK =
+  process.env.PRODUCT_CONTENT_MODEL_FALLBACK?.trim() || "gemini-flash-lite-latest";
+/** نماذجُ توليد الصور — لا تُنتج JSON مُهيكَلاً؛ نتجاوزها بنيوياً إن ضُبطت في الاستوديو. */
 const IMAGE_GENERATION_MODELS = new Set<string>([
   "gemini-2.5-flash-image",
   "gemini-2.5-flash-image-preview",
   "imagen-3.0-generate-001",
   "imagen-3.0-generate-002",
 ]);
+/** نماذجٌ أثبت الإنتاج هجرَها ⇒ نتجاوزها صراحةً حتى لو بقيت مضبوطةً في الاستوديو،
+ *  فلا نبدأ محاولةً محكومٌ عليها بـ404 قبل أن نلجأ إلى الاحتياطيّ. */
+const DEPRECATED_CONTENT_MODELS = new Set<string>([
+  "gemini-2.5-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+  "gemini-pro",
+]);
 
-/** يحلّ نموذج المحتوى المستعمَل — يتجاوز نماذج توليد الصور صراحةً بمجموعة معلَنة. */
+/** يحلّ نموذج المحتوى المستعمَل — يتجاوز نماذج الصور والنماذج المهجورة إلى الافتراضيّ. */
 function resolveContentModel(configuredModel: string | null | undefined): string {
   const normalized = (configuredModel ?? "").trim();
   if (!normalized) return DEFAULT_CONTENT_MODEL;
   if (IMAGE_GENERATION_MODELS.has(normalized)) return DEFAULT_CONTENT_MODEL;
+  if (DEPRECATED_CONTENT_MODELS.has(normalized)) return DEFAULT_CONTENT_MODEL;
   return normalized;
 }
 
