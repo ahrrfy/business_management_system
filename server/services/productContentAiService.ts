@@ -290,9 +290,14 @@ const VISUAL_PROTOCOL = `PRODUCT_IMAGES:
 إن تعارضت الصورة مع حقلٍ مُنظَّم فالأولوية للحقل المُنظَّم.
 لا تخترع أرقاماً مصدرها الصورة (عدد الصفحات، قياس بالمليمترات، وزن…) — الأرقام في المخرَج يجب أن تأتي من حقلٍ مُنظَّم فقط.`;
 
+// ⚠️ Gemini responseSchema يقبل مجموعةً فرعيّةً من OpenAPI 3.0 لا JSON Schema الكامل:
+// - `additionalProperties` غير مدعوم ⇒ محذوف من كل مستوى (كان يرمي 400 Invalid JSON payload).
+// - `type: ["string", "null"]` (array form) غير مدعوم ⇒ نستعمل `type: "string", nullable: true`.
+// - المتاح: type, properties, required, items, enum, format, description, nullable, minimum,
+//   maximum, minItems, maxItems, minLength, maxLength.
+// وثائق Google: https://ai.google.dev/gemini-api/docs/structured-output#supported-schemas
 const OUTPUT_JSON_SCHEMA = {
   type: "object",
-  additionalProperties: false,
   required: [
     "seoTitle",
     "shortTitle",
@@ -323,7 +328,6 @@ const OUTPUT_JSON_SCHEMA = {
       maxItems: 10,
       items: {
         type: "object",
-        additionalProperties: false,
         required: ["text", "evidenceKeys"],
         properties: {
           text: { type: "string" },
@@ -341,7 +345,6 @@ const OUTPUT_JSON_SCHEMA = {
       maxItems: 10,
       items: {
         type: "object",
-        additionalProperties: false,
         required: ["text", "reason"],
         properties: {
           text: { type: "string" },
@@ -712,9 +715,11 @@ const EXTRACTION_PROMPT = `أنت محلّل صور منتجات لكتالوج 
 
 أعد JSON فقط مطابقاً لمخطط المخرَج.`;
 
+// ⚠️ نفس قيود Gemini OpenAPI subset المذكورة أعلى OUTPUT_JSON_SCHEMA:
+// - بلا `additionalProperties` (غير مدعوم على أيّ مستوى)
+// - بلا `type: ["string", "null"]` — نستعمل `type: "string", nullable: true` بدلاً عنه.
 const EXTRACTION_JSON_SCHEMA = {
   type: "object",
-  additionalProperties: false,
   required: [
     "suggestedName",
     "productType",
@@ -726,10 +731,10 @@ const EXTRACTION_JSON_SCHEMA = {
     "unsupportedGuesses",
   ],
   properties: {
-    suggestedName: { type: ["string", "null"] },
-    productType: { type: ["string", "null"] },
-    brand: { type: ["string", "null"] },
-    modelHint: { type: ["string", "null"] },
+    suggestedName: { type: "string", nullable: true },
+    productType: { type: "string", nullable: true },
+    brand: { type: "string", nullable: true },
+    modelHint: { type: "string", nullable: true },
     description: { type: "string" },
     keywords: {
       type: "array",
@@ -742,7 +747,6 @@ const EXTRACTION_JSON_SCHEMA = {
       maxItems: 10,
       items: {
         type: "object",
-        additionalProperties: false,
         required: ["text", "reason"],
         properties: {
           text: { type: "string" },
