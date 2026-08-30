@@ -1,5 +1,6 @@
 // عميل جسر الطباعة على الخادم. يكتشف إن كان الجسر مفعّلاً، ويرسل بايتات ESC/POS للخادم ليطبعها صامتاً.
 // العربية تُرسَّم نقطياً (raster) على Canvas في المتصفّح ثم تُرسَل بايتاتها كما هي ⇒ الخادم مجرّد ناقل.
+import { screenAttributionHeaders } from "@/lib/screenAttribution";
 
 let cachedEnabled: boolean | null = null;
 
@@ -43,7 +44,7 @@ export async function sendRawToServer(bytes: Uint8Array): Promise<void> {
   const res = await fetch("/api/print/raw", {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json", "X-ERP-CSRF": "1" },
+    headers: { "Content-Type": "application/json", "X-ERP-CSRF": "1", ...screenAttributionHeaders() },
     body: JSON.stringify({ bytesB64: bytesToBase64(bytes) }),
   });
   if (!res.ok) {
@@ -59,7 +60,7 @@ export async function serverPrintTest(): Promise<{ ok: boolean; error?: string }
     const res = await fetch("/api/print/test", {
       method: "POST",
       credentials: "include",
-      headers: { "X-ERP-CSRF": "1" },
+      headers: { "X-ERP-CSRF": "1", ...screenAttributionHeaders() },
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, error: data?.error ?? `خطأ ${res.status}` };

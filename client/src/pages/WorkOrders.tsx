@@ -1189,10 +1189,24 @@ function OrdersTable({
     },
   ], [isManager, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
 
+  const operation = useMemo(() => ({
+    getOperation: (order: WO) => ({
+      actor: {
+        name: order.createdByName,
+        source: order.createdByName ? "user" as const : "legacy" as const,
+      },
+      action: { code: "workOrder.create", label: "إنشاء طلب خدمة" },
+      subject: { type: "workOrder", label: "طلب", id: order.orderNumber },
+      at: order.createdAt,
+    }),
+    label: "تتبّع الإنشاء",
+  }), []);
+
   return (
     <DataTable
       columns={columns}
       data={rows}
+      operation={operation}
       searchable={false}
       emptyText="لا طلبات مطابقة للبحث/الفلاتر الحالية."
       viewKey="work-orders-list"

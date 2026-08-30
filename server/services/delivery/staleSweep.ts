@@ -12,10 +12,9 @@ import { and, eq, sql } from "drizzle-orm";
 import { DELIVERY_AGE_ESCALATE_HOURS } from "@shared/deliveryAging";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { deliveryConsignments } from "../../../drizzle/schema";
-import { getDb, isMultiTenantModeActive } from "../../db";
+import { getDb } from "../../db";
 import { logger } from "../../logger";
-import { getCurrentCompanyId } from "../../tenancy/context";
-import { runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
 import { withTx } from "../tx";
 import { appendDeliveryEvent } from "./lifecycle";
 
@@ -42,7 +41,7 @@ export async function sweepStaleConsignments(
   opts: { now?: Date; escalateHours?: number } = {},
 ): Promise<StaleSweepResult> {
   // نفس تعميم sweepDeliveryOutboxOnce متعدّد الشركات: الاستدعاء بلا سياق شركةٍ يمسح الجميع.
-  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+  if (!isBackgroundOperationActive("delivery_stale_sweep")) {
     const runs = await runAcrossActiveTenants("delivery_stale_sweep", () => sweepStaleConsignments(opts));
     return {
       escalated: runs.reduce((s, r) => s + r.escalated, 0),

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { actorLabel } from "@/components/data-table/ActorCell";
+import {
+  operationActionLabel,
+  operationSubjectLabel,
+  operationTimeLabel,
+} from "@/components/data-table/OperationAttribution";
 import { DISPLAY_SCALES, isDisplayScale } from "@/lib/displayScale";
 import { APPLICATION_MODULES } from "@/lib/moduleRegistry";
 
@@ -41,8 +46,53 @@ describe("بيان منفّذ العملية", () => {
     expect(actorLabel(undefined)).toBe("غير موثّق");
     expect(actorLabel({ source: "legacy" })).toBe("بيانات قديمة");
     expect(actorLabel({ source: "system" })).toBe("النظام");
+    expect(actorLabel({ source: "external" })).toBe("جهة خارجية");
+    expect(actorLabel({ source: "device" })).toBe("جهاز");
+    expect(actorLabel({ source: "platform" })).toBe("مدير المنصّة");
     expect(actorLabel({ userId: 42 })).toBe("مستخدم #42");
     expect(actorLabel({ userId: 42, name: "  أحمد  " })).toBe("أحمد");
+  });
+
+  it("يفرض العقد الكامل: من قام، ماذا فعل، على ماذا، ومتى", () => {
+    const operation = {
+      actor: { userId: 7, name: "أحمد" },
+      action: { code: "sale.create", label: "إنشاء فاتورة" },
+      subject: { type: "invoice", label: "فاتورة", id: "INV-22" },
+      at: null,
+    };
+    expect(operationActionLabel(operation)).toBe("إنشاء فاتورة");
+    expect(operationSubjectLabel(operation.subject)).toBe("فاتورة #INV-22");
+    expect(operationTimeLabel(operation.at)).toBe("وقت غير موثّق");
+  });
+
+  it("يطبّق العقد الموحد على السجلات التشغيلية والمالية الأساسية", () => {
+    const table = readFileSync("client/src/components/data-table/DataTable.tsx", "utf8");
+    const audit = readFileSync("client/src/pages/AuditLogs.tsx", "utf8");
+    const invoices = readFileSync("client/src/pages/Invoices.tsx", "utf8");
+    const workOrders = readFileSync("client/src/pages/WorkOrders.tsx", "utf8");
+    const exchange = readFileSync("client/src/pages/ExchangeStatement.tsx", "utf8");
+    const ledger = readFileSync("client/src/pages/GeneralLedger.tsx", "utf8");
+    const broadcasts = readFileSync("client/src/pages/WaBroadcasts.tsx", "utf8");
+    expect(table).toContain('mode?: "compact" | "columns"');
+    expect(table).toContain("OperationAttributionCell");
+    expect(audit).toContain('mode: "columns" as const');
+    expect(invoices).toContain("operation={invoiceOperation}");
+    expect(workOrders).toContain("operation={operation}");
+    expect(exchange).toContain("operation={operation}");
+    expect(ledger).toContain("operation={operation}");
+    expect(broadcasts).toContain("operation={operation}");
+  });
+
+  it("يوصل سجل الشاشة إلى كل المسارات المحمية ويعرض سجل المنصّة المستقل", () => {
+    const app = readFileSync("client/src/App.tsx", "utf8");
+    const launcher = readFileSync("client/src/components/audit/OperationAuditAccess.tsx", "utf8");
+    const audit = readFileSync("client/src/pages/AuditLogs.tsx", "utf8");
+    const platform = readFileSync("client/src/pages/PlatformAdmin.tsx", "utf8");
+    expect(app).toContain("<OperationAuditAccess />");
+    expect(app).toContain('path="/audit"');
+    expect(launcher).toContain("screenPath=");
+    expect(audit).toContain("auditOperationMeta");
+    expect(platform).toContain("<PlatformAuditTable />");
   });
 });
 

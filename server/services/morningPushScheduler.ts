@@ -13,9 +13,8 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { branches, pushSubscriptions, users } from "../../drizzle/schema";
-import { getDb, isMultiTenantModeActive } from "../db";
-import { getCurrentCompanyId } from "../tenancy/context";
-import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
+import { getDb } from "../db";
+import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { getDashboardMetrics, getMyTaskBriefCounts } from "./reports/dashboard";
 import {
   claimDailyPushSlot,
@@ -83,7 +82,7 @@ export interface MorningPushRunResult {
  * تُرجع تفصيلاً كافياً للتشخيص. أخطاء الإرسال الفردية لا تُوقف الدورة.
  */
 export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
-  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+  if (!isBackgroundOperationActive("morning_push")) {
     const runs = await runAcrossActiveTenants("morning_push", runMorningBriefPush);
     return runs.reduce<MorningPushRunResult>(
       (sum, run) => ({

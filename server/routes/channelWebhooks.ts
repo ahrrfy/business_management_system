@@ -5,6 +5,7 @@ import pino from "pino";
 import { channelIntegrations } from "../../drizzle/schema";
 import { getDb, isMultiTenantModeActive } from "../db";
 import { decryptSecret } from "../services/cryptoService";
+import { logAudit } from "../services/auditService";
 import { addMessage, upsertConversation } from "../services/conversationService";
 import { findIntegrationByVerifyToken } from "../services/integrationService";
 import { persistWaEvent, processWaEvent } from "../services/whatsapp/webhookProcessor";
@@ -184,11 +185,41 @@ export function channelWebhooksRouter(): Router {
         payload = JSON.parse(raw.toString("utf8"));
       } catch (e: any) {
         log.warn({ err: e?.message, branchId: match.branchId }, "WhatsApp webhook POST: JSON غَير صالِح");
+        await logAudit(
+          { user: null, req },
+          {
+            action: "external.whatsapp.webhook.receive",
+            entityType: "waWebhookEvent",
+            branchId: match.branchId,
+            actor: { source: "external", label: "WhatsApp" },
+            outcome: "FAILURE",
+          },
+        );
         return res.status(200).send("ok");
       }
       const { id: eventId } = await persistWaEvent(payload, integrationId);
       await processWaEvent(eventId);
+      await logAudit(
+        { user: null, req },
+        {
+          action: "external.whatsapp.webhook.receive",
+          entityType: "waWebhookEvent",
+          entityId: eventId,
+          branchId: match.branchId,
+          actor: { source: "external", label: "WhatsApp" },
+        },
+      );
     } catch (e: any) {
+      await logAudit(
+        { user: null, req },
+        {
+          action: "external.whatsapp.webhook.receive",
+          entityType: "waWebhookEvent",
+          branchId: match.branchId,
+          actor: { source: "external", label: "WhatsApp" },
+          outcome: "FAILURE",
+        },
+      );
       // processWaEvent لا تَرمي عادةً (تَلتقط استثناءها داخلياً وتُعلِّم الحدث FAILED)؛ هذا التقاطٌ
       // دِفاعيّ إضافي (مَثلاً فَشل persistWaEvent نَفسها — اِتصال DB) كَي لا يَنكسِر الرَدّ أبداً.
       log.error({ err: e?.message, branchId: match.branchId }, "WhatsApp webhook: فَشل حِفظ/مُعالَجة الحَدث");
@@ -223,11 +254,32 @@ export function channelWebhooksRouter(): Router {
           const conv = await upsertConversation({
             branchId: match.branchId, channel: "INSTAGRAM", channelHandle: senderId,
           });
-          await addMessage({ conversationId: conv.id, direction: "IN", body, externalId });
+          const received = await addMessage({ conversationId: conv.id, direction: "IN", body, externalId });
+          await logAudit(
+            { user: null, req },
+            {
+              action: "external.instagram.message.receive",
+              entityType: "conversationMessage",
+              entityId: received.messageId,
+              branchId: match.branchId,
+              actor: { source: "external", label: "Instagram" },
+              newValue: { deduped: received.deduped },
+            },
+          );
         }
       }
       return res.status(200).send("ok");
     } catch (e: any) {
+      await logAudit(
+        { user: null, req },
+        {
+          action: "external.instagram.message.receive",
+          entityType: "conversationMessage",
+          branchId: match.branchId,
+          actor: { source: "external", label: "Instagram" },
+          outcome: "FAILURE",
+        },
+      );
       // لا نُقرّ بالنجاح عند فشل الحفظ: 503 يطلب إعادة الإرسال، وexternalId يمنع التكرار عند وصوله لاحقاً.
       log.error({ err: e?.message, branchId: match.branchId }, "Instagram webhook: فَشل");
       return res.status(503).send("temporary failure");
@@ -249,16 +301,49 @@ export function channelWebhooksRouter(): Router {
       const customerHandle = String(payload?.customer?.id ?? payload?.customer?.email ?? payload?.customer_id ?? "");
       const externalId = String(payload?.id ?? payload?.event_id ?? "");
       const body = payload?.note ?? payload?.message ?? `طَلب جَديد #${payload?.order_number ?? payload?.id}`;
-      if (!customerHandle || !externalId) return res.status(400).send("missing fields");
+      if (!customerHandle || !externalId) {
+        await logAudit(
+          { user: null, req },
+          {
+            action: "external.store.message.receive",
+            entityType: "conversationMessage",
+            branchId: matchedBranchId,
+            actor: { source: "external", label: "متجر متكامل" },
+            outcome: "FAILURE",
+          },
+        );
+        return res.status(400).send("missing fields");
+      }
       const conv = await upsertConversation({
         branchId: matchedBranchId,
         channel: "STORE",
         channelHandle: customerHandle,
         displayName: payload?.customer?.name ?? null,
       });
-      await addMessage({ conversationId: conv.id, direction: "IN", body, externalId });
+      const received = await addMessage({ conversationId: conv.id, direction: "IN", body, externalId });
+      await logAudit(
+        { user: null, req },
+        {
+          action: "external.store.message.receive",
+          entityType: "conversationMessage",
+          entityId: received.messageId,
+          branchId: matchedBranchId,
+          actor: { source: "external", label: "متجر متكامل" },
+          newValue: { deduped: received.deduped },
+        },
+      );
       return res.status(200).send("ok");
     } catch (e: any) {
+      await logAudit(
+        { user: null, req },
+        {
+          action: "external.store.message.receive",
+          entityType: "conversationMessage",
+          branchId: matchedBranchId,
+          actor: { source: "external", label: "متجر متكامل" },
+          outcome: "FAILURE",
+        },
+      );
       // لا نُقرّ بالنجاح عند فشل الحفظ: 503 يطلب إعادة الإرسال، وexternalId يمنع التكرار عند وصوله لاحقاً.
       log.error({ err: e?.message, branchId: matchedBranchId }, "Store webhook: فَشل");
       return res.status(503).send("temporary failure");

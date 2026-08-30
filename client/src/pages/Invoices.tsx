@@ -774,13 +774,18 @@ export default function Invoices() {
     ],
     [printingReceiptId, showBranchCol, branchNames, canOpenStatement],
   );
-  const invoiceActor = useMemo(() => ({
-    getActor: (invoice: Row) => ({
-      userId: invoice.createdBy,
-      name: invoice.salespersonName,
-      source: invoice.createdBy == null ? "legacy" as const : "user" as const,
+  const invoiceOperation = useMemo(() => ({
+    getOperation: (invoice: Row) => ({
+      actor: {
+        userId: invoice.createdBy,
+        name: invoice.salespersonName,
+        source: invoice.createdBy == null ? "legacy" as const : "user" as const,
+      },
+      action: { code: "sale.create", label: "إنشاء فاتورة مبيعات" },
+      subject: { type: "invoice", label: "فاتورة", id: invoice.invoiceNumber },
+      at: invoice.createdAt,
     }),
-    label: "منشئ الفاتورة",
+    label: "تتبّع الإنشاء",
   }), []);
 
   // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
@@ -1012,7 +1017,7 @@ export default function Invoices() {
       <DataTable
         columns={columns}
         data={data}
-        actor={invoiceActor}
+        operation={invoiceOperation}
         searchable={false}
         loading={rows.isLoading}
         // صدق الخطأ: الرفض ٤٠٣/انقطاع الشبكة كان يُعرَض «لا فواتير مطابقة» فيُقرأ «لا فواتير لي».

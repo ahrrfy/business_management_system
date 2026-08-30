@@ -140,7 +140,6 @@ export default function ExchangeStatement() {
       { header: "الرقم", accessorKey: "txnNumber", cell: ({ row }) => <span dir="ltr" className="text-xs">{row.original.txnNumber}</span> },
       { header: "النوع", accessorKey: "type", cell: ({ row }) => TYPE_AR[row.original.type] ?? row.original.type },
       { header: "المورد / الطرف", accessorKey: "supplierName", cell: ({ row }) => <span className="text-xs font-medium">{row.original.supplierName ?? "—"}</span> },
-      { header: "المنفّذ", accessorKey: "createdByName", cell: ({ row }) => <span className="text-xs">{row.original.createdByName ?? "غير موثق"}</span> },
       { header: "مبلغ ديناري / قيمة دفترية (د.ع)", accessorKey: "iqdAmount", cell: ({ row }) => <span dir="ltr" className="tabular-nums">{D(row.original.iqdAmount).isZero() ? "—" : fmtAr(row.original.iqdAmount)}</span> },
       { header: "دولار", accessorKey: "usdAmount", cell: ({ row }) => <span dir="ltr" className="tabular-nums">{D(row.original.usdAmount).isZero() ? "—" : fmtAr(row.original.usdAmount)}</span> },
       {
@@ -191,6 +190,25 @@ export default function ExchangeStatement() {
       },
     ],
     [doReverse, doPrint, reverseMut.isPending],
+  );
+
+  const operation = useMemo(
+    () => ({
+      getOperation: (transaction: TxnRow) => ({
+        actor: {
+          name: transaction.createdByName,
+          source: transaction.createdByName ? ("user" as const) : ("legacy" as const),
+        },
+        action: {
+          code: `exchange.${transaction.type.toLowerCase()}`,
+          label: TYPE_AR[transaction.type] ?? transaction.type,
+        },
+        subject: { type: "exchangeTransaction", label: "عملية صيرفة", id: transaction.txnNumber },
+        at: transaction.createdAt,
+      }),
+      label: "تتبّع العملية",
+    }),
+    [],
   );
 
   const sum = st.data?.summary;
@@ -283,6 +301,7 @@ export default function ExchangeStatement() {
           <DataTable
             data={(st.data?.transactions ?? []) as TxnRow[]}
             columns={cols}
+            operation={operation}
             loading={st.isLoading && houseId > 0}
             emptyText={houseId === 0 ? "اختر صيرفة لعرض كشفها." : "لا حركات في النطاق المحدّد."}
             searchable={false}

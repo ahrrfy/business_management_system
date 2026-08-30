@@ -7,16 +7,47 @@
  * شركة جديدة (طابور — التوفير الفعلي ينفّذه عامل منفصل بصلاحيات مرتفعة، راجع تعليق
  * platformAdminRouter.ts.companies.requestCreate).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
 import { AlertTriangle, CheckCircle2, CopyIcon, XCircle } from "lucide-react";
 import { fmtDate, fmtDateTime } from "@/lib/date";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import type { ColumnDef } from "@tanstack/react-table";
+
+type PlatformAuditRow = RouterOutputs["platformAdmin"]["audit"]["list"]["rows"][number];
+
+const PLATFORM_ACTION_LABELS: Record<string, string> = {
+  login: "تسجيل دخول",
+  logout: "تسجيل خروج",
+  "company.setActive": "تغيير حالة شركة",
+  "company.requestCreate": "طلب توفير شركة",
+};
+
+function platformAuditDetails(row: PlatformAuditRow): Record<string, unknown> {
+  return row.details !== null && typeof row.details === "object" && !Array.isArray(row.details)
+    ? row.details as Record<string, unknown>
+    : {};
+}
+
+function platformAuditDetailLabel(row: PlatformAuditRow): string {
+  const details = platformAuditDetails(row);
+  if (row.action === "company.setActive" && typeof details.isActive === "boolean") {
+    return details.isActive ? "تفعيل الشركة" : "تعطيل الشركة";
+  }
+  if (row.action === "company.requestCreate") {
+    return [details.name, details.code, details.requestId != null ? `طلب #${details.requestId}` : null]
+      .filter((value) => value != null && String(value).trim())
+      .map(String)
+      .join(" · ") || "طلب توفير شركة";
+  }
+  return "لا تفاصيل إضافية";
+}
 
 function PlatformAdminLoginForm({ onSuccess }: { onSuccess: () => void }) {
   const [email, setEmail] = useState("");
@@ -223,6 +254,80 @@ function NewCompanyForm() {
   );
 }
 
+function PlatformAuditTable() {
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+  const audit = trpc.platformAdmin.audit.list.useQuery({ limit: pageSize, offset: page * pageSize });
+  const columns = useMemo<ColumnDef<PlatformAuditRow, unknown>[]>(() => [
+    {
+      accessorKey: "success",
+      header: "النتيجة",
+      cell: ({ row }) => (
+        <span className={row.original.success ? "font-medium text-money-positive" : "font-medium text-destructive"}>
+          {row.original.success ? "نجحت" : "فشلت"}
+        </span>
+      ),
+      meta: { kind: "status", align: "center" },
+    },
+    {
+      accessorKey: "ipAddress",
+      header: "IP",
+      cell: ({ row }) => row.original.ipAddress ?? "غير متاح",
+      meta: { kind: "code" },
+    },
+    {
+      id: "details",
+      header: "التفاصيل",
+      accessorFn: platformAuditDetailLabel,
+      cell: ({ row }) => <span className="whitespace-normal text-sm">{platformAuditDetailLabel(row.original)}</span>,
+      meta: { kind: "text", width: "wide", wrap: true },
+    },
+  ], []);
+  const operation = useMemo(() => ({
+    mode: "columns" as const,
+    getOperation: (row: PlatformAuditRow) => {
+      const details = platformAuditDetails(row);
+      const subjectId = row.companyId ?? details.requestId ?? details.code;
+      return {
+        actor: { name: row.actorEmail, source: "platform" as const },
+        action: {
+          code: row.action,
+          label: row.action === "company.setActive" && typeof details.isActive === "boolean"
+            ? (details.isActive ? "تفعيل شركة" : "تعطيل شركة")
+            : PLATFORM_ACTION_LABELS[row.action] ?? row.action,
+        },
+        subject: { type: "company", label: "شركة/طلب", id: subjectId as string | number | null | undefined },
+        at: row.createdAt,
+      };
+    },
+  }), []);
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-base">سجلّ حركات إدارة المنصّة</CardTitle></CardHeader>
+      <CardContent className="p-0">
+        <DataTable
+          data={audit.data?.rows ?? []}
+          columns={columns}
+          operation={operation}
+          loading={audit.isLoading}
+          errorState={{ isError: audit.isError, message: "تعذّر تحميل سجلّ المنصّة.", onRetry: () => void audit.refetch() }}
+          searchable={false}
+          emptyText="لا حركات مسجّلة بعد."
+          viewKey="platform-audit"
+          getRowId={(row) => String(row.id)}
+          serverPagination={{
+            page,
+            onPageChange: setPage,
+            pageSize,
+            total: audit.data?.total ?? 0,
+          }}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
 function CompaniesDashboard() {
   const utils = trpc.useUtils();
   const companies = trpc.platformAdmin.companies.list.useQuery();
@@ -341,6 +446,8 @@ function CompaniesDashboard() {
             )}
           </CardContent>
         </Card>
+
+        <PlatformAuditTable />
       </div>
     </div>
   );

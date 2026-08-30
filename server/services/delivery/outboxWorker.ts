@@ -1,10 +1,9 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { deliveryConsignments, deliveryEvents, deliveryOutbox, deliveryPartyMembers, users } from "../../../drizzle/schema";
-import { getDb, isMultiTenantModeActive } from "../../db";
+import { getDb } from "../../db";
 import { logger } from "../../logger";
-import { getCurrentCompanyId } from "../../tenancy/context";
-import { runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
 import { createAppNotification } from "../appNotificationService";
 import { withTx } from "../tx";
 import { STALE_ESCALATED_EVENT, sweepStaleConsignments } from "./staleSweep";
@@ -158,7 +157,7 @@ async function processRow(id: number): Promise<void> {
 }
 
 export async function sweepDeliveryOutboxOnce(): Promise<{ claimed: number }> {
-  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+  if (!isBackgroundOperationActive("delivery_outbox")) {
     const runs = await runAcrossActiveTenants("delivery_outbox", sweepDeliveryOutboxOnce);
     return { claimed: runs.reduce((sum, r) => sum + r.claimed, 0) };
   }

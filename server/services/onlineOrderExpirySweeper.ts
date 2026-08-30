@@ -1,11 +1,9 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { onlineOrders } from "../../drizzle/schema";
-import { isMultiTenantModeActive } from "../db";
 import { extractAffectedRows } from "../lib/insertId";
 import { logger } from "../logger";
-import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
-import { getCurrentCompanyId } from "../tenancy/context";
+import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { withTx } from "./tx";
 
 const DEFAULT_BATCH = 200;
@@ -16,7 +14,7 @@ export async function sweepExpiredOnlineOrdersOnce(
   now?: Date,
   limit = DEFAULT_BATCH,
 ): Promise<{ cancelled: number }> {
-  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+  if (!isBackgroundOperationActive("online_order_reservation_expiry")) {
     const runs = await runAcrossActiveTenants(
       "online_order_reservation_expiry",
       () => sweepExpiredOnlineOrdersOnce(now, limit),

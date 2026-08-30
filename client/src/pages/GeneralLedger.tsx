@@ -255,12 +255,29 @@ export default function GeneralLedger() {
         header: "الفرع",
         cell: ({ row }) => row.original.branchName ?? "عام",
       },
-      {
-        accessorKey: "createdByName",
-        header: "المنفّذ",
-        cell: ({ row }) => row.original.createdByName ?? "غير موثّق",
-      },
     ],
+    [],
+  );
+
+  const operation = useMemo(
+    () => ({
+      getOperation: (row: Row) => ({
+        actor: {
+          name: row.createdByName,
+          source: row.createdByName ? ("user" as const) : ("legacy" as const),
+        },
+        action: {
+          code: `accounting.${row.entryType}`,
+          label: ENTRY_LABEL[row.entryType] ?? row.entryType,
+        },
+        subject: {
+          type: "accountingEntry",
+          label: sourceView(row).label,
+        },
+        at: row.createdAt,
+      }),
+      label: "تتبّع القيد",
+    }),
     [],
   );
 
@@ -494,6 +511,7 @@ export default function GeneralLedger() {
               <DataTable
                 columns={columns}
                 data={result?.rows ?? []}
+                operation={operation}
                 loading={q.isLoading || accounts.isLoading}
                 searchable={false}
                 emptyText={

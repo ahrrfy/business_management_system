@@ -67,6 +67,7 @@ describe("تدقيق أحداث الهوية/المصادقة", () => {
     expect(row).toBeTruthy();
     expect(Number(row.entityId)).toBe(1);
     expect(Number(row.userId)).toBe(1);
+    expect(row.operation).toMatchObject({ outcome: "SUCCESS", actor: { source: "user" } });
   });
 
   it("auth.login.failed يُسجَّل عند كلمة مرور خاطئة (مع السبب بلا كلمة المرور)", async () => {
@@ -76,6 +77,8 @@ describe("تدقيق أحداث الهوية/المصادقة", () => {
     const row = await lastAudit("auth.login.failed");
     expect(row).toBeTruthy();
     expect((row.newValue as any)?.reason).toBe("invalid_credentials");
+    expect(row.operation).toMatchObject({ outcome: "FAILURE", actor: { source: "user" } });
+    expect((row.newValue as any)?._operation).toBeUndefined();
     expect(JSON.stringify(row.newValue ?? {})).not.toContain("wrongpass1");
   });
 

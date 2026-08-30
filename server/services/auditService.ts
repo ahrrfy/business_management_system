@@ -4,6 +4,7 @@
 // التصميم: best-effort على مستوى الراوتر (لا يُلَفّ في tx العملية لتجنّب تمرير ctx
 // عبر كل الخدمات). فشل التسجيل لا يكسر العملية إطلاقاً (يُسجَّل تحذيراً فقط).
 import { auditLogs } from "../../drizzle/schema";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { TrpcContext } from "../context";
 import { getDb } from "../db";
 import { logger } from "../logger";
@@ -15,7 +16,188 @@ export type AuditData = {
   entityId?: string | number | null;
   oldValue?: unknown;
   newValue?: unknown;
+  /** منفّذ غير تابع لجدول users: عامل النظام، جهاز، مزوّد خارجي، أو سجل قديم. */
+  actor?: AuditActorDescriptor;
+  /** فرع معلوم من قناة خارجية/جهاز حتى مع غياب مستخدم جلسة. */
+  branchId?: number | null;
+  /** نجاح أو فشل المحاولة؛ الافتراضي SUCCESS للسجلات المتخصصة القديمة. */
+  outcome?: "SUCCESS" | "FAILURE";
+  /** مسار شاشة صريح؛ وإلا يُشتق من Referer مطابق لمضيف الطلب ومن دون query أو بيانات حساسة. */
+  screenPath?: string | null;
 };
+
+export type AuditActorSource = "user" | "system" | "external" | "device" | "platform" | "legacy";
+
+export type AuditActorDescriptor = {
+  source: AuditActorSource;
+  label?: string | null;
+};
+
+export type OperationAuditEnvelope = {
+  version: "operation.v2";
+  actor: AuditActorDescriptor;
+  outcome: "SUCCESS" | "FAILURE";
+  screenPath?: string;
+};
+
+type AuditContext = {
+  user?: TrpcContext["user"];
+  req?: TrpcContext["req"];
+};
+
+type MutationAuditScope = { writes: number };
+
+/**
+ * نطاقٌ معزول لكل استدعاء tRPC. يسمح للطبقة العامة أن تعرف هل كتبت الحركة سجلاً متخصصاً
+ * بالفعل، كي لا تضيف سطراً عاماً مكرراً. AsyncLocalStorage مهم هنا لأن طلبات batch قد تعمل
+ * بالتوازي على كائن req واحد؛ علامة على req كانت ستخلط حركتين مستقلتين.
+ */
+const mutationAuditScope = new AsyncLocalStorage<MutationAuditScope>();
+
+function noteAuditWrite(): void {
+  const scope = mutationAuditScope.getStore();
+  if (scope) scope.writes += 1;
+}
+export async function withMutationAuditScope<T>(work: () => Promise<T>): Promise<{
+  value: T;
+  specializedAuditWritten: boolean;
+}> {
+  return mutationAuditScope.run({ writes: 0 }, async () => {
+    const value = await work();
+    return { value, specializedAuditWritten: (mutationAuditScope.getStore()?.writes ?? 0) > 0 };
+  });
+}
+
+const ACTOR_ID_KEYS = new Set([
+  "actorId",
+  "approvedBy",
+  "approverId",
+  "assignedTo",
+  "branchId",
+  "createdBy",
+  "performedBy",
+  "requestedBy",
+  "reviewerId",
+  "updatedBy",
+]);
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function auditId(value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "bigint") return null;
+  const normalized = String(value).trim();
+  return normalized && normalized.length <= 50 ? normalized : null;
+}
+
+function firstTargetId(value: unknown, entityType: string): string | null {
+  const record = recordOf(value);
+  if (!record) return null;
+  const singular = entityType.endsWith("s") ? entityType.slice(0, -1) : entityType;
+  const preferred = ["entityId", "id", `${singular}Id`, `${entityType}Id`];
+  for (const key of preferred) {
+    const found = auditId(record[key]);
+    if (found) return found;
+  }
+  for (const [key, candidate] of Object.entries(record)) {
+    if (!key.endsWith("Id") || ACTOR_ID_KEYS.has(key)) continue;
+    const found = auditId(candidate);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * يبني الحد الأدنى الآمن لسجل الحركة العام: لا ينسخ input/result إطلاقاً، بل اسم الإجراء
+ * ومعرّف الهدف فقط. بهذا تغطي الطبقة كل mutation من دون تسريب كلمة مرور أو مرفق أو ملاحظة.
+ */
+export function buildAutomaticAuditData(
+  path: string,
+  input: unknown,
+  result: unknown,
+  options: { outcome?: "SUCCESS" | "FAILURE"; actor?: AuditActorDescriptor } = {},
+): AuditData {
+  const normalizedPath = path.trim() || "unknown.mutation";
+  const entityType = normalizedPath.split(".")[0]?.slice(0, 50) || "operation";
+  const entityId = firstTargetId(result, entityType) ?? firstTargetId(input, entityType);
+  const action = `rpc.${normalizedPath}`.slice(0, 100);
+  const outcome = options.outcome ?? "SUCCESS";
+  return {
+    action,
+    entityType,
+    entityId,
+    actor: options.actor,
+    outcome,
+    newValue: {
+      _auditContract: "operation.v1",
+      procedure: normalizedPath,
+      outcome,
+      target: entityId ? { entityType, entityId } : { entityType },
+    },
+  };
+}
+
+/**
+ * الإسناد الآلي لا يستطيع إثبات هوية قناة عامة من namespace وحده. الهوية الدقيقة (جهاز/تكليف)
+ * يمرّرها المعالج بعد نجاح مصادقته؛ وإلا نعرض بصدق أنها قناة عامة غير مؤكدة.
+ */
+export function automaticActorForProcedure(path: string, authenticated: boolean): AuditActorDescriptor {
+  if (authenticated) return { source: "user" };
+  return { source: "external", label: "قناة عامة غير مؤكدة" };
+}
+
+function normalizedScreenPath(value: string | null | undefined): string | null {
+  const path = value?.trim();
+  if (!path?.startsWith("/")) return null;
+  return path.split(/[?#]/, 1)[0]!.slice(0, 255);
+}
+
+/**
+ * يلتقط pathname فقط؛ query قد يحمل بحثاً أو معرّفات لا حاجة لها في أثر الشاشة.
+ * Referer إفادةٌ من العميل لا حقيقةٌ سلطوية، لذلك لا نقبله إلا إذا طابق مضيف الطلب الذي
+ * مرّره الوكيل العكسي. اسم إجراء tRPC يبقى المصدر الحاكم لما نُفّذ فعلاً.
+ */
+export function auditScreenPath(req: AuditContext["req"]): string | null {
+  const reported = req?.headers?.["x-erp-screen-path"];
+  if (typeof reported === "string") {
+    const path = normalizedScreenPath(reported);
+    if (path) return path;
+  }
+  const raw = req?.headers?.referer;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  try {
+    const url = new URL(raw);
+    const forwardedHost = req?.headers?.["x-forwarded-host"];
+    const expectedHost = (
+      (typeof forwardedHost === "string" ? forwardedHost.split(",", 1)[0] : undefined) ??
+      req?.headers?.host
+    )?.trim().toLowerCase();
+    if (!expectedHost || url.host.toLowerCase() !== expectedHost) return null;
+    return normalizedScreenPath(url.pathname);
+  } catch {
+    return null;
+  }
+}
+
+function operationEnvelope(ctx: AuditContext, data: AuditData): OperationAuditEnvelope {
+  const rawActor = data.actor ?? (ctx.user ? { source: "user" as const } : ctx.req ? { source: "external" as const } : { source: "system" as const });
+  const actor = {
+    source: rawActor.source,
+    ...(rawActor.label?.trim() ? { label: rawActor.label.trim().slice(0, 255) } : {}),
+  };
+  const screenPath = normalizedScreenPath(
+    data.screenPath === undefined ? auditScreenPath(ctx.req) : data.screenPath,
+  );
+  return {
+    version: "operation.v2",
+    actor,
+    outcome: data.outcome ?? "SUCCESS",
+    ...(screenPath ? { screenPath } : {}),
+  };
+}
 
 /**
  * ═══ تعقيم قيم التدقيق — حارسٌ مركزيّ، لا تجميل ═══
@@ -117,26 +299,30 @@ export function redactAuditValue(value: unknown): unknown {
 }
 
 /** يكتب سطر تدقيق. لا يرمي أبداً — السجلّ لا يجب أن يُسقط عمليةً ناجحة. */
-export async function logAudit(ctx: Pick<TrpcContext, "user" | "req">, data: AuditData): Promise<void> {
+export async function logAudit(ctx: AuditContext, data: AuditData): Promise<boolean> {
   try {
     const db = getDb();
-    if (!db) return;
-    const ip =
-      (ctx.req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
-      ctx.req?.ip ??
-      null;
+    if (!db) return false;
+    const operation = operationEnvelope(ctx, data);
+    // req.ip وحده يحترم إعداد Express trust proxy=1؛ قراءة أول XFF مباشرة تسمح بالتزوير.
+    const ip = ctx.req?.ip ?? null;
     await db.insert(auditLogs).values({
       userId: ctx.user?.id ?? null,
-      branchId: ctx.user?.branchId ?? null,
+      branchId: data.branchId ?? ctx.user?.branchId ?? null,
       action: data.action,
       entityType: data.entityType,
       entityId: data.entityId != null ? String(data.entityId) : null,
       oldValue: redactAuditValue(data.oldValue),
       newValue: redactAuditValue(data.newValue),
-      ipAddress: ip,
+      operation,
+      screenPath: operation.screenPath ?? null,
+      ipAddress: ip ? String(ip).slice(0, 45) : null,
     });
+    noteAuditWrite();
+    return true;
   } catch (e) {
     logger.warn({ err: e, action: data.action }, "تعذّر كتابة سجلّ التدقيق");
+    return false;
   }
 }
 
@@ -146,21 +332,23 @@ export async function logAudit(ctx: Pick<TrpcContext, "user" | "req">, data: Aud
  */
 export async function logAuditTx(
   tx: Tx,
-  ctx: Pick<TrpcContext, "user" | "req">,
+  ctx: AuditContext,
   data: AuditData,
 ): Promise<void> {
-  const ip =
-    (ctx.req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
-    ctx.req?.ip ??
-    null;
+  const operation = operationEnvelope(ctx, data);
+  const ip = ctx.req?.ip ?? null;
   await tx.insert(auditLogs).values({
     userId: ctx.user?.id ?? null,
-    branchId: ctx.user?.branchId ?? null,
+    branchId: data.branchId ?? ctx.user?.branchId ?? null,
     action: data.action,
     entityType: data.entityType,
     entityId: data.entityId != null ? String(data.entityId) : null,
     oldValue: redactAuditValue(data.oldValue),
     newValue: redactAuditValue(data.newValue),
+    operation,
+    screenPath: operation.screenPath ?? null,
+    // داخل المعاملة لا نُخفي فشل قيمة غير صالحة: رفض السجل يجب أن يُرجع حركة العمل كلها.
     ipAddress: ip,
   });
+  noteAuditWrite();
 }

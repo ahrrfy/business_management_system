@@ -746,12 +746,13 @@ async function startServer() {
     // **لا يمسّ المموّلة أبداً** (المال في receipts — I14). لا cron في بيئة الاختبار.
     if (process.env.NODE_ENV !== "test") {
       const { sweepExpiredDrafts } = await import("./services/reception");
+      const { runAcrossActiveTenants } = await import("./tenancy/backgroundTenants");
       const cron = (await import("node-cron")).default;
-      void sweepExpiredDrafts().catch(() => {
+      void runAcrossActiveTenants("reception_draft_sweep", sweepExpiredDrafts).catch(() => {
         /* الكنّاس لا يُسقط الإقلاع */
       });
       cron.schedule("15 1 * * *", () => {
-        void sweepExpiredDrafts().catch(() => {
+        void runAcrossActiveTenants("reception_draft_sweep", sweepExpiredDrafts).catch(() => {
           /* دورة قادمة */
         });
       });

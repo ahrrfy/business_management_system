@@ -13,9 +13,7 @@ import {
   reservations,
 } from "../../../drizzle/schema";
 import { normalizeIraqPhoneE164 } from "../../lib/phone";
-import { isMultiTenantModeActive } from "../../db";
-import { runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
-import { getCurrentCompanyId } from "../../tenancy/context";
+import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
 import { requireDb } from "../tx";
 import {
   createFlowNotifyCycleCache,
@@ -94,7 +92,7 @@ function summarizeItems(items: string[], maxLength = 900): string {
 export async function notifyNearExpiryReservations(
   options: NotifyNearExpiryOptions = {},
 ): Promise<NotifyNearExpiryResult> {
-  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+  if (!isBackgroundOperationActive("reservation_near_expiry")) {
     const runs = await runAcrossActiveTenants(
       "reservation_near_expiry",
       () => notifyNearExpiryReservations(options),

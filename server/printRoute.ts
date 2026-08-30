@@ -10,6 +10,7 @@ import {
   getConfiguredTarget, describeTarget, isBridgeEnabled, sendToPrinter, buildTestTicket,
 } from "./services/printService";
 import { getOpenShift } from "./services/shiftService";
+import { logAudit } from "./services/auditService";
 import { logger } from "./logger";
 
 // حدّ base64 لطلب الطباعة الخام: ١٤M حرف ≈ ١٠MB ثنائي (base64 يضخّم ~4/3).
@@ -80,8 +81,26 @@ export function printRouter(): Router {
     }
     try {
       const target = await sendToPrinter(bytes);
+      await logAudit(
+        { user, req },
+        {
+          action: "print.raw",
+          entityType: "printer",
+          entityId: target.kind,
+          newValue: { bytes: bytes.length },
+        },
+      );
       res.json({ ok: true, via: "server", target: target.kind, bytes: bytes.length });
     } catch (e) {
+      await logAudit(
+        { user, req },
+        {
+          action: "print.raw",
+          entityType: "printer",
+          outcome: "FAILURE",
+          newValue: { bytes: bytes.length },
+        },
+      );
       // تدقيق ٣/٨: رسالة عامّة للعميل + التفصيل في السجلّ فقط — كان `e.message` الخام قد يكشف
       // عنوان/منفذ الطابعة أو تفاصيل شبكة داخلية (نمط imageRoute/waMedia).
       logger.error({ err: e }, "print bridge raw failed");
@@ -99,8 +118,16 @@ export function printRouter(): Router {
     }
     try {
       const target = await sendToPrinter(buildTestTicket());
+      await logAudit(
+        { user, req },
+        { action: "print.test", entityType: "printer", entityId: target.kind },
+      );
       res.json({ ok: true, via: "server", target: target.kind });
     } catch (e) {
+      await logAudit(
+        { user, req },
+        { action: "print.test", entityType: "printer", outcome: "FAILURE" },
+      );
       // تدقيق ٣/٨: رسالة عامّة للعميل + التفصيل في السجلّ فقط (كأعلاه).
       logger.error({ err: e }, "print bridge test failed");
       res.status(502).json({ ok: false, error: "فشل اختبار الطباعة." });

@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { screenAttributionHeaders } from "@/lib/screenAttribution";
 import { getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
 import { saveFileAs } from "@/lib/export";
 import { fmtDateTime } from "@/lib/date";
@@ -218,6 +219,7 @@ export default function Settings() {
             Authorization: `Bearer ${authorization.ticket}`,
             "Content-Type": "application/sql",
             "X-ERP-CSRF": "1",
+            ...screenAttributionHeaders(),
           },
           body: danger.file,
         });

@@ -880,19 +880,6 @@ export default function WaBroadcasts() {
         cell: ({ row }) => <span className="tabular-nums" dir="ltr">{formatIqd(row.original.costEstimate)}</span>,
       },
       {
-        header: "منشئها",
-        accessorKey: "createdBy",
-        cell: ({ row }) => {
-          const uid = row.original.createdBy;
-          return <span className="text-xs">{uid == null ? "—" : usersMap.get(uid) ?? (myId === uid ? "أنت" : `#${uid}`)}</span>;
-        },
-      },
-      {
-        header: "التاريخ",
-        accessorKey: "createdAt",
-        cell: ({ row }) => <span className="text-xs text-muted-foreground whitespace-nowrap">{fmtDateTime(row.original.createdAt)}</span>,
-      },
-      {
         header: "تفاصيل",
         id: "actions",
         cell: ({ row }) => (
@@ -901,6 +888,27 @@ export default function WaBroadcasts() {
       },
     ],
     [templatesMap, usersMap, myId],
+  );
+
+  const operation = useMemo(
+    () => ({
+      getOperation: (broadcast: BroadcastRow) => ({
+        actor: {
+          userId: broadcast.createdBy,
+          name:
+            broadcast.createdBy == null
+              ? null
+              : usersMap.get(Number(broadcast.createdBy)) ??
+                (myId === Number(broadcast.createdBy) ? "أنت" : null),
+          source: broadcast.createdBy == null ? ("legacy" as const) : ("user" as const),
+        },
+        action: { code: "broadcast.create", label: "إنشاء حملة بث" },
+        subject: { type: "broadcast", label: "حملة", id: broadcast.id },
+        at: broadcast.createdAt,
+      }),
+      label: "تتبّع الإنشاء",
+    }),
+    [myId, usersMap],
   );
 
   return (
@@ -928,7 +936,7 @@ export default function WaBroadcasts() {
       {list.isLoading && <LoadingState />}
       {list.isError && <ErrorState message="تعذّر تحميل الحملات." onRetry={() => list.refetch()} />}
       {!list.isLoading && !list.isError && (
-        <DataTable data={rows} columns={columns} emptyText="لا حملات بثّ بعد." searchPlaceholder="ابحث بالاسم…" pageSize={20} />
+        <DataTable data={rows} columns={columns} operation={operation} emptyText="لا حملات بثّ بعد." searchPlaceholder="ابحث بالاسم…" pageSize={20} />
       )}
 
       {showNew && (

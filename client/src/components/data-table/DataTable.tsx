@@ -40,7 +40,17 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { cn } from "@/lib/utils";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
-import { ActorCell, type OperationActor } from "@/components/data-table/ActorCell";
+import { ActorCell } from "@/components/data-table/ActorCell";
+import {
+  OperationActionCell,
+  OperationAttributionCell,
+  OperationSubjectCell,
+  OperationTimeCell,
+  operationActionLabel,
+  operationSubjectLabel,
+  operationTimeLabel,
+  type OperationAttribution,
+} from "@/components/data-table/OperationAttribution";
 import { columnPresentationClass, columnUsesLtrIsolate } from "@/components/data-table/columnContract";
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
@@ -112,10 +122,15 @@ type DataTableProps<T, K = string> = {
   rowClickSelects?: boolean;
   /** صنف بصري اختياري للصف مشتق من بياناته (تمييز حالات تشغيلية مهمة). */
   getRowClassName?: (row: T) => string | undefined;
-  /** بيان موحّد لمن أنشأ/نفّذ العملية، يُضاف كعمود أخير من دون تكراره في كل شاشة. */
-  actor?: {
-    getActor: (row: T) => OperationActor | null | undefined;
+  /**
+   * عقد الحركة الكامل. compact يربط «من/ماذا/على ماذا/متى» في خلية واحدة للجداول التشغيلية،
+   * وcolumns يفصلها إلى أربعة أعمدة في سجلات التدقيق والتحقيق.
+   */
+  operation?: {
+    getOperation: (row: T) => OperationAttribution;
+    mode?: "compact" | "columns";
     label?: string;
+    labels?: Partial<Record<"actor" | "action" | "subject" | "time", string>>;
   };
   /** حجم الصفحة لِلتَرقيم المحلّي (افتِراضياً ٥٠). مَرِّر Infinity لِتَعطيل التَرقيم (عَرض الكُل).
    *  يُتجاهَل مَع serverPagination (حجم الصفحة عندئذٍ من الخادم). */
@@ -218,7 +233,7 @@ export function DataTable<T, K = string>({
   mobileCardRenderer,
   rowClickSelects = false,
   getRowClassName,
-  actor,
+  operation,
   pageSize = 50,
   bounded = true,
   maxHeightClass,
@@ -228,22 +243,64 @@ export function DataTable<T, K = string>({
   serverSorting,
 }: DataTableProps<T, K>) {
   const effectiveColumns = useMemo<ColumnDef<T, unknown>[]>(() => {
-    if (!actor) return columns;
-    return [
-      ...columns,
-      {
-        id: "operationActor",
-        header: actor.label ?? "من قام بالعملية",
-        accessorFn: (row) => {
-          const value = actor.getActor(row);
-          return value?.name ?? value?.userId ?? value?.source ?? "";
+    if (operation) {
+      if (operation.mode !== "columns") {
+        return [
+          ...columns,
+          {
+            id: "operationAttribution",
+            header: operation.label ?? "سجلّ العملية",
+            accessorFn: (row) => {
+              const value = operation.getOperation(row);
+              return [operationActionLabel(value), operationSubjectLabel(value.subject), operationTimeLabel(value.at)].join(" ");
+            },
+            cell: ({ row }) => <OperationAttributionCell operation={operation.getOperation(row.original)} />,
+            enableSorting: false,
+            meta: { kind: "text", width: "wide", wrap: true },
+          },
+        ];
+      }
+      return [
+        ...columns,
+        {
+          id: "operationActor",
+          header: operation.labels?.actor ?? "من قام",
+          accessorFn: (row) => {
+            const value = operation.getOperation(row).actor;
+            return value?.name ?? value?.userId ?? value?.source ?? "";
+          },
+          cell: ({ row }) => <ActorCell actor={operation.getOperation(row.original).actor} />,
+          enableSorting: false,
+          meta: { kind: "actor" },
         },
-        cell: ({ row }) => <ActorCell actor={actor.getActor(row.original)} />,
-        enableSorting: false,
-        meta: { kind: "actor" },
-      },
-    ];
-  }, [actor, columns]);
+        {
+          id: "operationAction",
+          header: operation.labels?.action ?? "ماذا فعل",
+          accessorFn: (row) => operationActionLabel(operation.getOperation(row)),
+          cell: ({ row }) => <OperationActionCell operation={operation.getOperation(row.original)} />,
+          enableSorting: false,
+          meta: { kind: "text", width: "wide", wrap: true },
+        },
+        {
+          id: "operationSubject",
+          header: operation.labels?.subject ?? "على ماذا",
+          accessorFn: (row) => operationSubjectLabel(operation.getOperation(row).subject),
+          cell: ({ row }) => <OperationSubjectCell subject={operation.getOperation(row.original).subject} />,
+          enableSorting: false,
+          meta: { kind: "text", width: "wide" },
+        },
+        {
+          id: "operationTime",
+          header: operation.labels?.time ?? "متى",
+          accessorFn: (row) => operationTimeLabel(operation.getOperation(row).at),
+          cell: ({ row }) => <OperationTimeCell at={operation.getOperation(row.original).at} />,
+          enableSorting: false,
+          meta: { kind: "text", align: "center", width: "date" },
+        },
+      ];
+    }
+    return columns;
+  }, [columns, operation]);
   const storageKey = useMemo(() => {
     const scope = viewKey || (typeof window !== "undefined" ? window.location.pathname : "table");
     const ids = effectiveColumns.map((column, index) => columnIdentity(column as ColumnDef<unknown, unknown>, index)).join("|");
@@ -466,6 +523,14 @@ export function DataTable<T, K = string>({
             {!loading && visibleRows.map((row, idx) => (
               <div key={row.id}>
                 {mobileCardRenderer(row.original, idx)}
+                {operation && (
+                  <div className="mt-1.5 rounded-lg border border-border/70 bg-card px-3 py-2.5">
+                    <OperationAttributionCell
+                      operation={operation.getOperation(row.original)}
+                      className="min-w-0"
+                    />
+                  </div>
+                )}
               </div>
             ))}
             {!loading && visibleRows.length === 0 && (

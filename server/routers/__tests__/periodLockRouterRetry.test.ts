@@ -22,7 +22,8 @@ vi.mock("../../services/tx", () => ({
   withTx: mocks.withTx,
   withGovernanceTx: mocks.withTx,
 }));
-vi.mock("../../services/auditService", () => ({
+vi.mock("../../services/auditService", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../services/auditService")>()),
   logAuditTx: mocks.logAuditTx,
 }));
 vi.mock("../../services/reports/monthCloseRequest", () => ({

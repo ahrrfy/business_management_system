@@ -387,8 +387,42 @@ describe("voucher category exact double-entry", () => {
       .select()
       .from(s.auditLogs)
       .where(eq(s.auditLogs.entityId, 90));
-    expect(audits).toHaveLength(1);
-    expect(audits[0]!.action).toBe("voucherCategory.remediateHistorical");
+    const remediationAudit = audits.find(
+      (row) => row.action === "voucherCategory.remediateHistorical",
+    );
+    const replayAudit = audits.find(
+      (row) => row.action.startsWith("rpc.") && row.action.endsWith("assignHistoricalCategory"),
+    );
+    expect(audits).toHaveLength(2);
+    expect(remediationAudit).toMatchObject({
+      userId: 1,
+      branchId: 1,
+      entityType: "receipt",
+      entityId: "90",
+      newValue: {
+        voucherCategoryId: 11,
+      },
+      operation: {
+        version: "operation.v2",
+        actor: { source: "user" },
+        outcome: "SUCCESS",
+      },
+    });
+    expect(replayAudit).toMatchObject({
+      userId: 1,
+      branchId: 1,
+      entityId: "90",
+      newValue: {
+        _auditContract: "operation.v1",
+        procedure: expect.stringMatching(/(^|\.)assignHistoricalCategory$/),
+        outcome: "SUCCESS",
+      },
+      operation: {
+        version: "operation.v2",
+        actor: { source: "user" },
+        outcome: "SUCCESS",
+      },
+    });
   });
 
   it("يسمح بدمج فئة legacy ذات postingRole NULL في هدف متوافق مصنف", async () => {

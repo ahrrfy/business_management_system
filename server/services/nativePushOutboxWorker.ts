@@ -1,8 +1,7 @@
 import type { RowDataPacket } from "mysql2";
-import { getDb, getPool, isMultiTenantModeActive } from "../db";
+import { getDb, getPool } from "../db";
 import { logger } from "../logger";
-import { getCurrentCompanyId } from "../tenancy/context";
-import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import {
   isNativePushConfigured,
   NativePushValidationError,
@@ -197,7 +196,7 @@ export async function runNativePushOutboxBatch(
   batchSize = DEFAULT_BATCH_SIZE,
   options: NativePushOutboxRunOptions = {},
 ): Promise<NativePushOutboxRunResult> {
-  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+  if (!isBackgroundOperationActive("native_push_outbox")) {
     const runs = await runAcrossActiveTenants(
       "native_push_outbox",
       () => runNativePushOutboxBatch(batchSize, options),

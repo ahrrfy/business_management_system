@@ -5,13 +5,16 @@ export type OperationActor = {
   userId?: number | null;
   name?: string | null;
   at?: string | Date | null;
-  source?: "user" | "system" | "legacy";
+  source?: "user" | "system" | "external" | "device" | "platform" | "legacy";
 };
 
 export function actorLabel(actor: OperationActor | null | undefined): string {
   if (!actor) return "غير موثّق";
   if (actor.name?.trim()) return actor.name.trim();
   if (actor.source === "system") return "النظام";
+  if (actor.source === "external") return "جهة خارجية";
+  if (actor.source === "device") return "جهاز";
+  if (actor.source === "platform") return "مدير المنصّة";
   if (actor.userId != null) return `مستخدم #${actor.userId}`;
   return actor.source === "legacy" ? "بيانات قديمة" : "غير موثّق";
 }
