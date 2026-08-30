@@ -13,8 +13,8 @@
 // (بعض المكوّنات المخصّصة تلفّ `<select>` عمداً لسبب معيّن — تلك تُقيَّم فرديّاً).
 //
 // خطّ الأساس النصّي القديم مجمَّد في `scripts/raw-select-baseline.json` ولا يُوسَّع. القياس
-// الحاكم دقيقٌ عبر AST ويقارن الشجرة الحالية بـorigin/main: الدين الموروث يمرّ ما لم يزد، وأيّ
-// زيادة جديدة تفشل، بما فيها `<select` متعدد الأسطر أو عدة tags في السطر نفسه.
+// الحاكم دقيقٌ عبر AST ويقارن الشجرة الحالية بقاعدة دمجها مع origin/main: الدين الموروث يمرّ
+// ما لم يزد، وأيّ زيادة جديدة تفشل، بما فيها `<select` متعدد الأسطر أو عدة tags في السطر نفسه.
 // `--update-baseline` يخفض الخطّ القديم فقط، ولا يضيف سماحاً جديداً.
 
 import assert from "node:assert/strict";
@@ -196,6 +196,27 @@ function git(args) {
   });
 }
 
+/**
+ * يثبّت ratchet على قاعدة دمج الفرع لا رأس main الحيّ.
+ *
+ * في CI تنتظر check-test-build شرائح الاختبار قبل أن تبدأ. قد يتقدّم origin/main في تلك
+ * الأثناء (وقع في #878 و#879 حين خفّض #876 دين <select> من 4 إلى 2)، بينما HEAD يبقى مرجع
+ * دمج GitHub القديم. المقارنة المباشرة برأس main الجديد تنسب خفض main إلى الـPR كزيادة كاذبة.
+ */
+function comparisonBase(ref) {
+  try {
+    const sha = git(["merge-base", "HEAD", ref]).trim();
+    if (!sha) throw new Error("git merge-base أعاد نتيجة فارغة");
+    return sha;
+  } catch (error) {
+    const detail =
+      error?.stderr?.toString().trim() || error?.message || String(error);
+    throw new Error(
+      `تعذّر تثبيت قاعدة دمج ratchet من «${ref}». نفّذ git fetch origin main ثم أعد الحارس.\n${detail}`,
+    );
+  }
+}
+
 function baseFiles(ref) {
   try {
     return new Set(
@@ -242,8 +263,9 @@ if (UPDATE) {
   process.exit(0);
 }
 
-const baseFileSet = baseFiles(BASE_REF);
-const changed = changedFilesFrom(BASE_REF);
+const COMPARISON_BASE = comparisonBase(BASE_REF);
+const baseFileSet = baseFiles(COMPARISON_BASE);
+const changed = changedFilesFrom(COMPARISON_BASE);
 const baseCounts = new Map();
 for (const [file, count] of current) {
   if (!baseFileSet.has(file)) {
@@ -252,7 +274,7 @@ for (const [file, count] of current) {
     // الملف مطابق للمرجع؛ لا حاجة إلى git show/parse لمئات الملفات الموروثة.
     baseCounts.set(file, count);
   } else {
-    const baseSource = git(["show", `${BASE_REF}:${file}`]);
+    const baseSource = git(["show", `${COMPARISON_BASE}:${file}`]);
     baseCounts.set(file, countRawSelects(baseSource, file));
   }
 }
@@ -272,7 +294,10 @@ const reducedBy = [...current].reduce(
 );
 
 if (findings.length === 0) {
-  console.log(`✓ اعتماد AppSelect محفوظ — لا زيادة فوق ${BASE_REF}.`);
+  console.log(
+    `✓ اعتماد AppSelect محفوظ — لا زيادة فوق قاعدة الدمج ${COMPARISON_BASE.slice(0, 12)} ` +
+      `(من ${BASE_REF}).`,
+  );
   console.log(
     `  القياس الدقيق: ${exactFiles} ملفاً · ${exactTotal} <select> ` +
       `(الخطّ النصّي الموروث بلا توسيع: ${baselineFiles} ملفاً · ${baselineTotal}).`,
@@ -283,7 +308,8 @@ if (findings.length === 0) {
 }
 
 console.error(
-  `✗ استعمال <select> جديد فوق ${BASE_REF} — ${findings.length} ملف مخالف:\n`,
+  `✗ استعمال <select> جديد فوق قاعدة الدمج ${COMPARISON_BASE.slice(0, 12)} ` +
+    `(من ${BASE_REF}) — ${findings.length} ملف مخالف:\n`,
 );
 for (const finding of findings) {
   console.error(
