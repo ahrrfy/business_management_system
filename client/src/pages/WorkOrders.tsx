@@ -1263,7 +1263,7 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "" });
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: "normal" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -1787,6 +1787,21 @@ export default function WorkOrders() {
             <option value="priority">حسب الأولويّة</option>
           </AppSelect>
         )}
+        {/* الموجة ٤ (٣٠/٨/٢٦) — كثافة العرض (نمط Odoo): الكاشير يفضّل «مضغوطاً» ليرى ٤٠
+            بطاقة بدل ٦؛ المدير يفضّل «مفصّلاً». يُحفَظ في URL — الفنّيّ يفتح الرابط
+            بكثافته المعتادة بلا إعادة ضبط. */}
+        {view === "board" && (
+          <AppSelect
+            value={f.d}
+            onValueChange={(v) => setF({ d: v })}
+            className="w-auto min-w-32"
+            aria-label="كثافة العرض"
+          >
+            <option value="compact">مضغوط</option>
+            <option value="normal">عاديّ</option>
+            <option value="detailed">مفصَّل</option>
+          </AppSelect>
+        )}
         {canCrossBranches && (
           <AppSelect
             value={f.branch}
@@ -1857,7 +1872,7 @@ export default function WorkOrders() {
         ) : boardEmpty ? (
           <div className="wob-empty-board">{anyFilter ? "لا طلبات مطابقة للبحث/الفلاتر الحالية." : "لا أوامر شغل بعد. تُنشأ الطلبات من شاشة الاستقبال الموحدة."}</div>
         ) : (
-          <div className="wob-board">
+          <div className={`wob-board wob-d-${f.d === "compact" ? "compact" : f.d === "detailed" ? "detailed" : "normal"}`}>
             {dynColumns.map((s) => {
               const list = byCol[s.key] ?? [];
               // D&D يعمل فقط في «حسب المرحلة» (`groupBy=stage`): الأخرى تحتاج mutations

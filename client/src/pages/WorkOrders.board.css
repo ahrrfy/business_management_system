@@ -289,6 +289,33 @@
   border: 1px solid currentColor;
 }
 
+/* ─── الموجة ٤ (٣٠/٨/٢٦) — كثافة العرض (مضغوط ↔ عاديّ ↔ مفصَّل) ─── */
+
+/* «مضغوط» — للكاشير الذي يحتاج رؤيةَ ٤٠ بطاقة بدل ٦: يخفي الصورة المصغّرة وشريطَ
+   التقدّم والنسخةَ المطبوعة من التخصيص، ويضغط الحواف والفواصل. تبقى المعلومة
+   الحاكمة (رقم، عنوان، عميل، سعر، موعد، إشارة كانبان، فنّيّ) ظاهرةً. */
+.wob-board.wob-d-compact .wob-card { padding: 6px 8px; }
+.wob-board.wob-d-compact .wob-thumb { display: none; }
+.wob-board.wob-d-compact .wob-card-title { font-size: 12.5px; margin-bottom: 2px; }
+.wob-board.wob-d-compact .wob-cust { font-size: 11.5px; }
+.wob-board.wob-d-compact .wob-cust-phone { display: none; }
+.wob-board.wob-d-compact .wob-card-specs { display: none; }
+.wob-board.wob-d-compact .wob-prog { display: none; }
+.wob-board.wob-d-compact .wob-foot { margin-top: 5px; padding-top: 5px; }
+.wob-board.wob-d-compact .wob-avatar { width: 22px; height: 22px; font-size: 10px; }
+.wob-board.wob-d-compact .wob-wa { min-width: 60px; height: 26px; font-size: 10.5px; padding-inline: 7px; }
+.wob-board.wob-d-compact .wob-wa svg { width: 14px; height: 14px; }
+.wob-board.wob-d-compact .wob-card-delivery { font-size: 10.5px; margin-top: 4px; }
+.wob-board.wob-d-compact .wob-col-body { gap: 6px; }
+
+/* «مفصَّل» — للمدير الذي يحتاج كل التفاصيل بلا نقر على البطاقة: يوسّع التخصيص
+   إلى ٤ أسطر (بدل ٢) ويكبّر خطّ العنوان ويزيد الفواصل. */
+.wob-board.wob-d-detailed .wob-card { padding: 12px 14px; }
+.wob-board.wob-d-detailed .wob-card-title { font-size: 15.5px; }
+.wob-board.wob-d-detailed .wob-card-specs { -webkit-line-clamp: 4; font-size: 12px; padding: 8px 10px; }
+.wob-board.wob-d-detailed .wob-col-body { gap: 12px; }
+.wob-board.wob-d-detailed .wob-thumb { flex-basis: 56px; width: 56px; height: 56px; }
+
 @media (max-width: 900px) {
   .wob-stats { grid-template-columns: repeat(2, 1fr); }
 }
