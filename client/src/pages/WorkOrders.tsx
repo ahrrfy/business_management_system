@@ -1429,6 +1429,11 @@ export default function WorkOrders() {
         if (d !== 0) return false;
       }
       if (f.blocked === "1") {
+        // Codex #5 (الجولة ٢): مسارُ التسليم/الإلغاء لا يمسح `kanbanState` — أمرٌ وُسم
+        // BLOCKED ثمّ سُلّم يبقى محتفظاً بالقيمة، فيعيده فلترُ «معطَّل» من نافذة deliveredQ
+        // بينما `isKanbanStateApplicable` يعدّ DELIVERED نهاية ويُخفي نقطته على البطاقة.
+        // الحلّ الاتّساقيّ: نستبعد النهائيات هنا كما يفعل `late` و`dueToday`.
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
         const ks = (o as unknown as { kanbanState?: string | null }).kanbanState;
         if (ks !== "BLOCKED") return false;
       }
@@ -1584,10 +1589,12 @@ export default function WorkOrders() {
     const move = (ev: PointerEvent) => {
       const dr = dragRef.current; if (!dr) return;
       if (!dr.moved && Math.hypot(ev.clientX - dr.startX, ev.clientY - dr.startY) < 6) return;
-      dr.moved = true;
-      // الموجة ٢ — D&D يعمل في «حسب المرحلة» فقط. باقي التجميعات تفتح Drawer عند النقر
-      // بلا نقلٍ بين الأعمدة (لأنّ mutations الإسناد/الأولويّة/القناة تختلف عن الانتقال).
+      // Codex #6 (الجولة ٢): وسمُ `moved=true` **قبل** فحص `dndEnabled` كان يعطّل النقر
+      // على البطاقات في تجميعاتٍ غير stage — حركةٌ لمسٍ طفيفة (>6px) تنتج pointerup
+      // بحالة `moved=true` فلا يُفتح Drawer، ولا نقلٍ يحدث لأنّ مفاتيح `tech:*` ليست في
+      // COLUMNS ⇒ نقرةٌ ضائعة. الحلّ: نتخطّى في تجميعاتٍ غير stage قبل الوسم.
       if (!dndEnabled) return;
+      dr.moved = true;
       document.body.style.userSelect = "none";
       setDrag({ order: dr.order, x: ev.clientX - dr.ox, y: ev.clientY - dr.oy, overCol: hitCol(ev.clientX, ev.clientY) });
     };
@@ -1740,11 +1747,14 @@ export default function WorkOrders() {
             الموظّف بأسمائها لا بالفلترة اليدويّة. كلٌّ منها URL-toggle قابلة للنسخ.
             الشارة السابقة «متأخّر» صارت فلتراً تفاعليّاً: تعرض العدّاد وتحصر عند النقر. */}
         {(() => {
-          // Codex #4: عدّاد الخادم `serverCounts.late` **لا يقبل** فلاتر العميل (pri/ch)،
-          // فحين يُفعَّل أحدها تكذب الشارة («10 متأخر» وعلى الشاشة بطاقتان). حين يُفعَّل
-          // فلترٌ عميليّ، نُعيد الحساب من `filtered` نفسه (نفس مصدر البطاقات)، وإلّا نأخذ
-          // العدّ الخادميّ (أدقّ على مجموعة أوسع من نافذة النشطة الحاليّة).
-          const clientFilterActive = f.pri !== "all" || f.ch !== "all";
+          // Codex #4 (الجولة ١) + #3 (الجولة ٢): عدّاد الخادم `serverCounts.late` لا يقبل
+          // أيّ فلترٍ عميليّ، فحين يُفعَّل أحدها تكذب الشارة («10 متأخّر» وعلى الشاشة بطاقتان).
+          // نُعيد الحساب من `filtered` نفسه (نفس مصدر البطاقات). `late` نفسه لا يُدرَج —
+          // لا يغيّر معنى «كم متأخّر»؛ لكن `dueToday/unassigned/blocked` تُغيّر مجموعة العرض
+          // ⇒ إغفالُها كان يُنتج شارةً موجبة فوق لوحةٍ فارغة (late × dueToday متنافيان).
+          const clientFilterActive =
+            f.pri !== "all" || f.ch !== "all" ||
+            f.dueToday === "1" || f.unassigned === "1" || f.blocked === "1";
           const lateBadge = clientFilterActive
             ? filtered.filter((o) => {
                 if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
@@ -1911,8 +1921,14 @@ export default function WorkOrders() {
               // كلاهما RECEIVED فتظهر لهما نفس أرقام الحالة — قرارٌ مقصود: KPIs مالٍ/تأخّرٍ
               // تُحدَّد على الحالة الحقيقية، والانقسام العرضي بحسب الإسناد.
               // في التجميع غير stage: KPIs الخادم لا تُطابق ⇒ نُخفيها (تُشتقّ لاحقاً بمجموعِ list).
-              const colStats = groupBy === "stage" ? serverCounts?.stats?.[s.status] : null;
-              const showValue = groupBy === "stage" && f.pri === "all" && f.ch === "all" && colStats != null;
+              // Codex #4 (الجولة ٢): وأيضاً حين يُفعَّل أيّ فلترٍ عميليّ (pri/ch/dueToday/
+              // unassigned/blocked) — رأس العمود كان يعرض قيماً على كامل الحالة فوق بطاقاتٍ
+              // مرشَّحة سريعاً (تقاطعٌ أصغر) ⇒ الرقم يخالف ما تراه العين.
+              const anyClientFilter =
+                f.pri !== "all" || f.ch !== "all" ||
+                f.dueToday === "1" || f.unassigned === "1" || f.blocked === "1" || f.late === "1";
+              const colStats = groupBy === "stage" && !anyClientFilter ? serverCounts?.stats?.[s.status] : null;
+              const showValue = colStats != null;
               return (
                 <div className="wob-col" style={colVars(s.hue)} key={s.key}>
                   <div className="wob-col-head">

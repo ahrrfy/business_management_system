@@ -98,7 +98,11 @@ export async function setWorkOrderKanbanState(
       fromStatus: wo.status,
       toStatus: wo.status,
       actorUserId: actor.userId,
-      branchId: actor.branchId ?? Number(wo.branchId),
+      // فرعُ الحدث = فرعُ **الأمر** لا فرعُ الفاعل (Codex #2). الفاعل قد يكون admin بلا
+      // `branchId` مضبوطٍ، والراوتر يمرّر `?? 1` كنمطٍ موروث (لا يستطيع تمرير null لأنّ
+      // `Actor.branchId: number` غير nullable). فرعُ الأمر صحيحٌ دائماً وأدلّ لتقارير
+      // العزل: `workOrderEvents.branchId` تُستعمل في تجميع الأداء والحمل حسب الفرع.
+      branchId: Number(wo.branchId),
       payload: {
         from: wo.kanbanState,
         to: kanbanState,
