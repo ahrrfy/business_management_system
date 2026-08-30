@@ -1891,6 +1891,13 @@
 			"when": 1788052342000,
 			"tag": "0290_seed_iraq_delivery_zones",
 			"breakpoints": true
+		},
+		{
+			"idx": 292,
+			"version": "5",
+			"when": 1788052344000,
+			"tag": "0292_add_work_order_kanban_state",
+			"breakpoints": true
 		}
 	]
 }

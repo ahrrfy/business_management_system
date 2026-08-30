@@ -81,6 +81,7 @@ export default defineConfig({
       "shared/invoiceChannel.test.ts",
       "shared/invoiceStatus.test.ts",
       "shared/workOrderStatus.test.ts",
+      "shared/workOrderKanban.test.ts",
       "shared/onlineOrderStatus.test.ts",
       "shared/orderSla.test.ts",
       "shared/workOrderEventType.test.ts",

@@ -43,6 +43,8 @@ import { reverseWorkOrderDelivery } from "../services/workOrder/reverseDelivery"
 import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
+import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
+import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
 import { requestDesignApproval } from "../services/workOrder/approval";
 import { setWorkOrderDesign } from "../services/workOrder/design";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
@@ -468,6 +470,9 @@ export const workOrderRouter = router({
           customizationText: workOrders.customizationText,
           quantity: workOrders.quantity,
           status: workOrders.status,
+          // الموجة ١ (0292): إشارةُ الفنّيّ داخل المرحلة — تُعرض كنقطةٍ ملوّنة على البطاقة.
+          kanbanState: workOrders.kanbanState,
+          blockedReason: workOrders.blockedReason,
           priority: workOrders.priority,
           receptionChannel: workOrders.receptionChannel,
           salePrice: workOrders.salePrice,
@@ -568,8 +573,26 @@ export const workOrderRouter = router({
         .optional()
     )
     .query(async ({ input, ctx }) => {
+      const emptyStats = { count: 0, totalValue: "0", late: 0, blocked: 0 };
       const db = getDb();
-      if (!db) return { received: 0, inProgress: 0, ready: 0, delivered: 0, cancelled: 0, late: 0 };
+      if (!db) {
+        return {
+          received: 0,
+          inProgress: 0,
+          ready: 0,
+          delivered: 0,
+          cancelled: 0,
+          late: 0,
+          // الموجة ١ (٣٠/٨/٢٦) — «العمود يخبرك بالاختناق»: KPIs لكل عمود لبطاقة رأس اللوحة.
+          stats: {
+            RECEIVED: emptyStats,
+            IN_PROGRESS: emptyStats,
+            READY: emptyStats,
+            DELIVERED: emptyStats,
+            CANCELLED: emptyStats,
+          },
+        };
+      }
       // نفس عزل list حرفياً: الفرع مُجبَر لغير المرتفعين، وعزل الموظف (منشئ/مُسنَد) لغير المدير.
       const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
       const branchCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
@@ -585,7 +608,12 @@ export const workOrderRouter = router({
         .select({
           status: workOrders.status,
           c: sql<number>`count(*)`,
+          // الموجة ١: مجموع قيمة العمل الجاري في العمود — «مسحوبٌ منه ٥ملايين» يبيّن التركّز.
+          // salePrice decimal ⇒ mysql2 يُرجعه نصّاً؛ نبقيه نصّاً ونحوّله في العرض بـmoney utils.
+          totalValue: sql<string>`COALESCE(SUM(${workOrders.salePrice}), 0)`,
           lateC: sql<number>`sum(case when ${workOrders.dueDate} is not null and ${workOrders.dueDate} < ${todayUtc} then 1 else 0 end)`,
+          // إشارةُ الفنّيّ BLOCKED — تُعرض بجانب العدّ لتفسير الاختناق («٩ منها ٤ معطَّلة»).
+          blockedC: sql<number>`sum(case when ${workOrders.kanbanState} = 'BLOCKED' then 1 else 0 end)`,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -593,6 +621,15 @@ export const workOrderRouter = router({
         .groupBy(workOrders.status);
       const by = new Map(rows.map((r) => [String(r.status), r]));
       const num = (s: string) => Number(by.get(s)?.c ?? 0);
+      const readStats = (s: string) => {
+        const r = by.get(s);
+        return {
+          count: Number(r?.c ?? 0),
+          totalValue: String(r?.totalValue ?? "0"),
+          late: Number(r?.lateC ?? 0),
+          blocked: Number(r?.blockedC ?? 0),
+        };
+      };
       // «متأخّرة» = استحقاق فائت وحالة نشطة (المُسلَّم/الملغى ليسا متأخّرين بحكم التعريف).
       const late = (WO_ACTIVE_STATUSES as readonly string[]).reduce((acc, s) => acc + Number(by.get(s)?.lateC ?? 0), 0);
       return {
@@ -602,6 +639,14 @@ export const workOrderRouter = router({
         delivered: num("DELIVERED"),
         cancelled: num("CANCELLED"),
         late,
+        // الحقول القديمة تبقى للتوافق؛ الشاشة تقرأ `stats` للـKPIs الجديدة.
+        stats: {
+          RECEIVED: readStats("RECEIVED"),
+          IN_PROGRESS: readStats("IN_PROGRESS"),
+          READY: readStats("READY"),
+          DELIVERED: readStats("DELIVERED"),
+          CANCELLED: readStats("CANCELLED"),
+        },
       };
     }),
 
@@ -927,6 +972,34 @@ export const workOrderRouter = router({
         branchId: ctx.user.branchId ?? 1,
         role: ctx.user.role,
       }),
+    ),
+
+  /**
+   * الموجة ١ (٣٠/٨/٢٦) — إشارةُ الفنّيّ داخل المرحلة: NORMAL/READY/BLOCKED.
+   * `Exec`: صاحبُ الأمر (print_operator المُسنَد) أو الأدوار الأعلى.
+   * لا أثر ماليّ ولا مخزنيّ — الخدمة تحرس الفرع/المحطة/الحالة النشطة والسبب لـBLOCKED.
+   */
+  setKanbanState: workordersExecProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        kanbanState: z.enum(WO_KANBAN_STATES),
+        blockedReason: z.string().max(255).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      setWorkOrderKanbanState(
+        {
+          workOrderId: input.workOrderId,
+          kanbanState: input.kanbanState,
+          blockedReason: input.blockedReason ?? null,
+        },
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId ?? 1,
+          role: ctx.user.role,
+        },
+      ),
     ),
 
   /**

@@ -25,6 +25,9 @@ export const WORK_ORDER_EVENT_TYPES = [
   "REVERSED",
   "DESIGN_APPROVED",
   "DESIGN_REJECTED",
+  // الموجة ١ (٣٠/٨/٢٦) — إشارةُ الفنّيّ داخل المرحلة (NORMAL/READY/BLOCKED).
+  // متعامدةٌ على `status` (لا `fromStatus/toStatus` مختلفان) — قيمة الانتقال في `payload`.
+  "KANBAN_STATE_CHANGED",
 ] as const;
 
 export type WorkOrderEventType = (typeof WORK_ORDER_EVENT_TYPES)[number];
@@ -44,6 +47,7 @@ export const WORK_ORDER_EVENT_LABEL: Record<WorkOrderEventType, string> = {
   REVERSED: "عُكس التسليم",
   DESIGN_APPROVED: "أُقرّ التصميم",
   DESIGN_REJECTED: "رُفض التصميم",
+  KANBAN_STATE_CHANGED: "تغيّرت إشارةُ الفنّيّ",
 };
 
 /** فارغ/مجهول ⇒ يُرجع النوع الخام (لا نرمي — العرض لا ينكسر). */

@@ -3385,6 +3385,20 @@ export const workOrders = mysqlTable(
       .default("RECEIVED")
       .notNull(),
     /**
+     * الموجة ١ (0292، ٣٠/٨/٢٦) — إشارةُ الفنّيّ **داخل** المرحلة، متعامدةٌ على `status`.
+     * NORMAL = افتراض · READY = «جاهز للانتقال للتالية» · BLOCKED = «معطَّل + سبب».
+     * ⛔ ليست حاكماً مالياً — القراراتُ المحاسبية تبقى على `status` وحدها.
+     * القاموس الحاكم: [`shared/workOrderKanban.ts`](../shared/workOrderKanban.ts).
+     */
+    // اسمُ العمود مطابقٌ للـSQL في الهجرة (`kanbanState` بلا بادئة `wo`) — أوّل معامل
+    // `mysqlEnum` هو اسم العمود لا اسم النوع، وانحرافُه يُسقط على الإنتاج وحده (يمسكه
+    // `check:schema-drift`). لا تعارض: لا جدول آخر يحمل عموداً بهذا الاسم.
+    kanbanState: mysqlEnum("kanbanState", ["NORMAL", "READY", "BLOCKED"])
+      .default("NORMAL")
+      .notNull(),
+    /** يُفرض غير-فارغ في `setKanbanState` حين kanbanState = BLOCKED. */
+    blockedReason: varchar("blockedReason", { length: 255 }),
+    /**
      * ش٤ (0219) — سببُ الإلغاء ووقتُه وفاعله. نظيرُها موجودٌ في `receptionDrafts` و
      * `onlineOrders` وكان غائباً عن `workOrders` وحده، فيذوب «لم يحضر العميل» في إلغاءٍ
      * مجهول السبب. ⛔ ولا عمودَ **رمزٍ** ثانٍ: تقرير «لم يحضر أصحابها» يُشتقّ من عمر
@@ -3431,6 +3445,8 @@ export const workOrders = mysqlTable(
     branchIdx: index("idx_wo_branch").on(table.branchId),
     customerIdx: index("idx_wo_customer").on(table.customerId),
     statusIdx: index("idx_wo_status").on(table.status),
+    // الموجة ١ (0292): KPIs العمود تجمع `count + sum + late` مقسّمةً على (status, kanbanState).
+    statusKanbanIdx: index("idx_wo_status_kanban").on(table.status, table.kanbanState),
     // commissions (٦/٧/٢٦): يقسّي علاقة 1:1 أمر شغل↔فاتورة التسليم التي يعتمدها الإسناد الذكي
     // (فاتورة WORKORDER تُنسَب لمنشئ أمر الشغل عبر join على invoiceId) — تعدّد NULL مسموح.
     // ⚠ invoiceId عمود FK — drizzle-kit قد يُسقط UNIQUE عليه صامتاً؛ دقّق هجرة 0051 يدوياً.

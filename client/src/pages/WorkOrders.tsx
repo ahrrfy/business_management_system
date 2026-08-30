@@ -6,6 +6,14 @@ import {
   workOrderStatusLabel,
   workOrderTimelineLabel,
 } from "@shared/workOrderStatus";
+import {
+  isKanbanStateApplicable,
+  isWorkOrderKanbanState,
+  nextKanbanStateInCycle,
+  workOrderKanbanDotCls,
+  workOrderKanbanStateLabel,
+  type WorkOrderKanbanState,
+} from "@shared/workOrderKanban";
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -46,6 +54,7 @@ import { deriveWoDeliveryState, woDeliveryStateLabel } from "@shared/workOrderDe
 import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice } from "@/lib/workOrderRefundPolicy";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   Dialog,
   DialogContent,
@@ -240,7 +249,7 @@ function printWoThermalFromCard(o: WO) {
   });
 }
 
-function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending, onOpenCustomer }: {
+function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending, onOpenCustomer, onCycleKanban, kanbanBusy }: {
   o: WO;
   onPointerDown?: (e: React.PointerEvent) => void;
   dragging?: boolean;
@@ -251,6 +260,9 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
   staff?: { id: number; name: string | null; role: string; openLoad?: number; overdueLoad?: number; onShift?: boolean }[];
   assignPending?: boolean;
   onOpenCustomer?: (customerId: number) => void;
+  /** الموجة ١ — نقر نقطة الكانبان يدور إشارةَ الفنّيّ (NORMAL→READY→BLOCKED→NORMAL). */
+  onCycleKanban?: (orderId: number, current: WorkOrderKanbanState) => void;
+  kanbanBusy?: boolean;
 }) {
   const pr = progressOf(o.status);
   const di = dueInfo(o);
@@ -258,7 +270,19 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
   const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   const hue = workOrderStatusHue(o.status);
   const late = di.state === "late";
-  const cls = ["wob-card", late ? "wob-late" : "", dragging ? "wob-dragging" : "", ghost ? "wob-ghost" : ""].filter(Boolean).join(" ");
+  // إشارةُ الفنّيّ (الموجة ١) — تُعرض في الحالات النشطة فقط (المُسلَّم/الملغى نهايةٌ لا حاجةَ لإشارة).
+  const kanbanRaw = (o as unknown as { kanbanState?: string | null }).kanbanState;
+  const blockedReason = (o as unknown as { blockedReason?: string | null }).blockedReason ?? null;
+  const kanban: WorkOrderKanbanState = isWorkOrderKanbanState(kanbanRaw) ? kanbanRaw : "NORMAL";
+  const showKanbanDot = isKanbanStateApplicable(o.status);
+  const cls = [
+    "wob-card",
+    late ? "wob-late" : "",
+    dragging ? "wob-dragging" : "",
+    ghost ? "wob-ghost" : "",
+    showKanbanDot && kanban === "BLOCKED" ? "wob-kanban-blocked" : "",
+    showKanbanDot && kanban === "READY" ? "wob-kanban-ready" : "",
+  ].filter(Boolean).join(" ");
   // حالة محلّية لاختيار الفنّي في شريط الإسناد — لكل بطاقة على حِدة.
   const [pickedStaff, setPickedStaff] = useState<string>("");
   return (
@@ -281,6 +305,31 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
           <ChannelMark channel={o.receptionChannel} />
           <span className="wob-ch-chip-l">{chLabel}</span>
         </span>
+        {/* الموجة ١ — إشارةُ الفنّيّ داخل المرحلة: نقرةٌ تدور NORMAL→READY→BLOCKED→NORMAL.
+            الحالاتُ النهائية (DELIVERED/CANCELLED) تُخفي النقطة — لا معنى لإشارةٍ بعد الخروج من الدورة. */}
+        {showKanbanDot && !ghost && onCycleKanban && (
+          <button
+            type="button"
+            className={`wob-kanban-dot ${workOrderKanbanDotCls(kanban)}`}
+            title={
+              kanban === "BLOCKED" && blockedReason
+                ? `معطَّل — ${blockedReason} (اضغط لتغيير الإشارة)`
+                : `إشارةُ الفنّيّ: ${workOrderKanbanStateLabel(kanban)} — اضغط لتغييرها`
+            }
+            aria-label={`إشارةُ الفنّيّ الحاليّة: ${workOrderKanbanStateLabel(kanban)}`}
+            disabled={kanbanBusy}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onCycleKanban(o.id, kanban); }}
+          />
+        )}
+        {/* في وضع الشبح (السحب) أو حين لا يُمكن التبديل: نعرض النقطةَ عرضاً لا زرّاً. */}
+        {showKanbanDot && (ghost || !onCycleKanban) && kanban !== "NORMAL" && (
+          <span
+            className={`wob-kanban-dot ${workOrderKanbanDotCls(kanban)}`}
+            title={workOrderKanbanStateLabel(kanban)}
+            aria-hidden
+          />
+        )}
         <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>
         {!ghost && (
           // إيقاف انتشار pointer/click كي لا يلتقطها محرّك السحب أو فتح الـDrawer
@@ -418,6 +467,70 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
 // ─────────────── الإحصاءات ───────────────
 // من عدّ الخادم (workOrders.counts) لا من صفوف الشاشة: القائمة تجلب النشطة كاملةً لكن «مُسلَّم»
 // محدودة بالأحدث، فالعدّ من الصفوف كان سيَعرض نافذة العرض لا الحقيقة.
+
+// ─────────────── حوار سبب التعطيل (الموجة ١ — إشارةُ الفنّيّ) ───────────────
+/**
+ * حوارٌ صغير لالتقاط سببِ التعطيل حين ينقل الفنّيّ إشارةَ الكانبان إلى BLOCKED.
+ * لا مخزون ولا مال — الخادم يحفظ الإشارةَ + السبب في `workOrders.blockedReason`
+ * وحدَثاً في `workOrderEvents`. يُغلَق تلقائياً عند نجاح الحفظ (onSuccess).
+ */
+function BlockedReasonDialog({
+  target,
+  onClose,
+  onConfirm,
+  pending,
+}: {
+  target: { id: number; orderNumber: string; title: string } | null;
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+  pending: boolean;
+}) {
+  const [reason, setReason] = useState("");
+  useEffect(() => { if (target) setReason(""); }, [target?.id]); // eslint-disable-line
+  if (!target) return null;
+  const trimmed = reason.trim();
+  const tooLong = trimmed.length > 255;
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>تعطيل الأمر — سبب مطلوب</DialogTitle>
+          <DialogDescription>
+            الأمر «{target.title}» ({target.orderNumber}) — اكتب سبب التعطّل موجزاً.
+            سيظهر في تلميح البطاقة وفي سجلّ أحداث الأمر.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-2 py-1">
+          <Label htmlFor="wob-blocked-reason">سبب التعطّل</Label>
+          <Textarea
+            id="wob-blocked-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="مثال: بانتظار موافقة العميل على التصميم، أو نفاد لون خامّ، أو عطل الطابعة…"
+            rows={3}
+            maxLength={255}
+            autoFocus
+          />
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>{trimmed.length}/255</span>
+            {tooLong && <span className="text-[var(--sem-neg)]">أقصاه ٢٥٥ حرفاً</span>}
+          </div>
+        </div>
+        <DialogFooter>
+          <button type="button" className="wob-btn" onClick={onClose} disabled={pending}>تراجع</button>
+          <button
+            type="button"
+            className="wob-btn wob-btn-primary"
+            disabled={pending || !trimmed || tooLong}
+            onClick={() => onConfirm(trimmed)}
+          >
+            {pending ? ACTION_LABELS.saving : "وسْم كمعطَّل"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // ─────────────── حوار التسليم (مالي — تأكيد صريح) ───────────────
 const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -1249,6 +1362,29 @@ export default function WorkOrders() {
     onSuccess: () => { notify.ok("تم تحديث الإسناد"); invalidateAll(); },
     onError: (e) => { notify.err(e); invalidateAll(); },
   });
+  // الموجة ١ (٣٠/٨/٢٦) — إشارةُ الفنّيّ داخل المرحلة (NORMAL/READY/BLOCKED).
+  const [blockTarget, setBlockTarget] = useState<{ id: number; orderNumber: string; title: string } | null>(null);
+  const setKanban = trpc.workOrders.setKanbanState.useMutation({
+    onSuccess: () => { setBlockTarget(null); invalidateAll(); },
+    onError: (e) => { notify.err(e); },
+  });
+  /**
+   * دورةُ نقر النقطة: NORMAL → READY → BLOCKED (بحوار سبب) → NORMAL.
+   * BLOCKED بلا سببٍ يعني علامةً خاويةً لا تُساعد المدير — الخادم يرفضها والواجهة تسأل.
+   */
+  const onCycleKanbanState = (orderId: number, current: WorkOrderKanbanState) => {
+    const next = nextKanbanStateInCycle(current);
+    if (next === "BLOCKED") {
+      const row = all.find((o) => o.id === orderId);
+      setBlockTarget({
+        id: orderId,
+        orderNumber: row?.orderNumber ?? String(orderId),
+        title: row?.title ?? "",
+      });
+      return;
+    }
+    setKanban.mutate({ workOrderId: orderId, kanbanState: next });
+  };
   const busy = start.isPending || markReady.isPending || deliver.isPending || cancel.isPending || assign.isPending;
 
   const all = useMemo(() => [...(activeQ.data ?? []), ...(deliveredQ.data ?? [])], [activeQ.data, deliveredQ.data]);
@@ -1603,6 +1739,12 @@ export default function WorkOrders() {
             {COLUMNS.map((s) => {
               const list = byCol[s.key] ?? [];
               const isOver = drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
+              // الموجة ١ — KPIs الرأس: العدّاد كما كان، ونضيف مجموع القيمة و«معطَّل» و«متأخّر».
+              // ⚠️ KPIs مقياسها الحالة الحاكمة `s.status` (وليس ColKey): «طابور وارد»/«مسحوب»
+              // كلاهما RECEIVED فتظهر لهما نفس أرقام الحالة — قرارٌ مقصود: KPIs مالٍ/تأخّرٍ
+              // تُحدَّد على الحالة الحقيقية، والانقسام العرضي بحسب الإسناد.
+              const colStats = serverCounts?.stats?.[s.status];
+              const showValue = f.pri === "all" && f.ch === "all" && colStats != null;
               return (
                 <div className="wob-col" style={colVars(s.hue)} key={s.key}>
                   <div className="wob-col-head">
@@ -1610,6 +1752,23 @@ export default function WorkOrders() {
                     <div className="wob-col-head-txt">
                       <div className="wob-col-title">{s.label}</div>
                       <div className="wob-col-hint">{s.hint}</div>
+                      {showValue && Number(colStats.totalValue) > 0 && (
+                        <div className="wob-col-kpis">
+                          <span className="wob-col-kpi wob-col-kpi-value" title="مجموع قيمة العمل الجاري في هذا العمود">
+                            {fmtAr(colStats.totalValue)} <span className="wob-ml">د.ع</span>
+                          </span>
+                          {colStats.late > 0 && s.status !== "DELIVERED" && (
+                            <span className="wob-col-kpi wob-col-kpi-late" title="أوامرُ فات موعد استحقاقها">
+                              <Timer aria-hidden className="size-3" /> {fmtInt(colStats.late)} متأخّر
+                            </span>
+                          )}
+                          {colStats.blocked > 0 && s.status !== "DELIVERED" && (
+                            <span className="wob-col-kpi wob-col-kpi-blocked" title="أوامرٌ أشار الفنّيّ إلى تعطّلها">
+                              <AlertTriangle aria-hidden className="size-3" /> {fmtInt(colStats.blocked)} معطَّل
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     {/* عمود «مُسلَّم» يعرض نافذة الأحدث فقط — العدّاد من الخادم يحمل الإجمالي الحقيقي.
                         يُستعمل فقط حين لا ترشيح عميلي (أولوية/قناة) وإلا خالف العدّادُ المحتوى المعروض. */}
@@ -1638,6 +1797,8 @@ export default function WorkOrders() {
                         staff={s.key === "INBOX" && isManager ? assignableStaff.data : undefined}
                         assignPending={assign.isPending}
                         onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
+                        onCycleKanban={(orderId, current) => onCycleKanbanState(orderId, current)}
+                        kanbanBusy={setKanban.isPending}
                       />
                     ))}
                     {list.length === 0 && <div className="wob-col-empty">— لا أوامر —</div>}
@@ -1698,6 +1859,15 @@ export default function WorkOrders() {
         workOrderId={editTarget}
         onClose={() => setEditTarget(null)}
         onSaved={() => { setEditTarget(null); invalidateAll(); }}
+      />
+      <BlockedReasonDialog
+        target={blockTarget}
+        pending={setKanban.isPending}
+        onClose={() => setBlockTarget(null)}
+        onConfirm={(reason) => {
+          if (!blockTarget) return;
+          setKanban.mutate({ workOrderId: blockTarget.id, kanbanState: "BLOCKED", blockedReason: reason });
+        }}
       />
       {canReadCustomerContext && customerContextId != null && (
         <Contact360Panel
