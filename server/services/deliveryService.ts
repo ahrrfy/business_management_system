@@ -56,6 +56,7 @@ export type {
   ManualDeliveryProofInput,
 } from "./delivery/companyStatement";
 export {
+  countReadyForDispatch,
   listReadyForDispatch,
   listInTransitConsignments,
   listOpenConsignments,

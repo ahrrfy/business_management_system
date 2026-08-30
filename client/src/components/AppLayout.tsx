@@ -28,6 +28,7 @@ import {
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
+import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
 import { APPLICATION_MODULES as NAV_LINKS } from "@/lib/moduleRegistry";
 import {
@@ -115,6 +116,44 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     enabled: !coldStudio && Boolean(me.data),
     refetchInterval: 30_000,
   });
+  // ٢٩/٨ (بلاغ المالك): «الفنيّ حوّله لجاهز — لا شي يظهر ولا يلاحظه موظفو الاستقبال». Slice A كان
+  // إشعاراً داخل شاشة الطابور فقط (يعمل حين تكون مفتوحة). هنا شارةٌ عالميّة على /work-orders
+  // و/delivery تظهر عدد الطلبات الجاهزة بصرف النظر عن أيّ شاشة يفتحها الموظف.
+  //
+  // Codex P2 (٢٩/٨) — الاستعلامان محكومان بأذونات الوحدة لا بقائمة أدوارٍ ثابتة:
+  //  - workorders:READ للـ workOrders.counts
+  //  - store:READ لـ readyForDispatchCount
+  // بلا هذا: محاسبٌ قالبه `workorders:NONE` يُصدر FORBIDDEN متكرّراً رغم إخفاء الرابط.
+  //
+  // Codex P1 (٢٩/٨) — للـsupervisors (workorders:FULL): تمرير `branchQueue: true` كي يُلغى
+  // `scopedOwnerId` ⇒ الشارة تعدّ طابور الفرع كاملاً (الأمر الجاهز الذي أنشأه زميل يظهر أيضاً،
+  // وهو سيناريو تسليم الوردية الذي صُمّمت له الشارة أصلاً).
+  const roleForGate = me.data?.role ?? "";
+  const overrideForGate = (me.data?.permissionsOverride ?? null) as
+    | import("@shared/permissions").PermissionMap
+    | null;
+  const canReadWorkOrders = !coldStudio && Boolean(me.data)
+    && hasModuleAccess(roleForGate, overrideForGate, "workorders", "READ");
+  const canReadDelivery = !coldStudio && Boolean(me.data)
+    && hasModuleAccess(roleForGate, overrideForGate, "store", "READ");
+  const canBranchQueueWorkOrders = canReadWorkOrders
+    && hasModuleAccess(roleForGate, overrideForGate, "workorders", "FULL");
+  const woCounts = trpc.workOrders.counts.useQuery(
+    canBranchQueueWorkOrders ? { branchQueue: true } : {},
+    {
+      enabled: canReadWorkOrders,
+      refetchInterval: 20_000,
+      refetchOnWindowFocus: true,
+    },
+  );
+  // Codex P2 (٢٩/٨) — نستهلك عدّاداً خفيفاً بدل الصفوف الكاملة (شارة تحتاج `.length` فقط).
+  const deliveryReadyCountQ = trpc.delivery.readyForDispatchCount.useQuery(undefined, {
+    enabled: canReadDelivery,
+    refetchInterval: 20_000,
+    refetchOnWindowFocus: true,
+  });
+  const workOrderReadyCount = woCounts.data?.ready ?? 0;
+  const deliveryReadyCount = deliveryReadyCountQ.data ?? 0;
   const printer = usePrinterConnection();
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
@@ -336,6 +375,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             const active = isModuleActive(loc, m.href);
             const favorite = favoritePaths.has(m.href);
             const Icon = m.icon;
+            // شارة العدّ (٢٩/٨): الجاهز لأمر الشغل → /work-orders، الجاهز للإرسال → /delivery.
+            const badge = m.href === "/work-orders" ? workOrderReadyCount
+              : m.href === "/delivery" ? deliveryReadyCount
+              : 0;
+            // Codex P2 (٢٩/٨): الأرقام لاتينيّة دائماً (قاعدة i18n)؛ التجاوز يعرض «99+» لا «+٩٩».
+            const badgeLabel = badge > 99 ? "99+" : String(badge);
             return (
               <div key={m.href} className="group relative">
                 <Link
@@ -349,6 +394,19 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 >
                   <Icon className="size-4 shrink-0" aria-hidden />
                   <span className="truncate">{m.label}</span>
+                  {badge > 0 && (
+                    <span
+                      aria-label={m.href === "/delivery"
+                        ? `${badge} إرسالية جاهزة`
+                        : `${badge} أمر جاهز`}
+                      title={m.href === "/delivery"
+                        ? `${badge} إرسالية جاهزة للتوصيل`
+                        : `${badge} أمر شغل جاهز للتسليم`}
+                      className="ms-auto inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-[var(--sem-warn)] px-1.5 py-0.5 text-[10px] font-black text-background tabular-nums"
+                    >
+                      {badgeLabel}
+                    </span>
+                  )}
                 </Link>
                 <button
                   type="button"
@@ -476,6 +534,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           role={role}
           permsOverride={permsOverride}
           onOpenMenu={() => setNavOpen(true)}
+          // Codex P2 (٢٩/٨) — الشارات على الجوال أيضاً: القائمة الجانبية مخفيّة أقلَّ من lg،
+          // فبلا هذا لا يرى موظّفو الاستقبال على الهاتف/التابلت أيَّ إعلانٍ للجاهز.
+          workOrderReadyCount={workOrderReadyCount}
+          deliveryReadyCount={deliveryReadyCount}
         />
       )}
     </div>
