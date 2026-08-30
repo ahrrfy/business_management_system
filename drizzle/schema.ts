@@ -10057,6 +10057,64 @@ export const nativePushOutbox = mysqlTable(
 export type NativePushOutboxRow = typeof nativePushOutbox.$inferSelect;
 export type InsertNativePushOutbox = typeof nativePushOutbox.$inferInsert;
 
+/**
+ * Transactional outbox for creating the durable in-app notification itself.
+ *
+ * Producers insert a row in the same transaction as their domain change. The reconciler then
+ * calls `createAppNotification`, whose own transaction atomically creates `appNotifications` and
+ * `nativePushOutbox`. A failed call remains PENDING with a leased `availableAt`; the unique
+ * `eventKey` closes the crash window between notification creation and marking this row DELIVERED.
+ */
+export const appNotificationOutbox = mysqlTable(
+  "appNotificationOutbox",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    recipientUserId: int("recipientUserId")
+      .notNull()
+      .references(() => users.id),
+    streamKey: varchar("streamKey", { length: 190 }).notNull(),
+    occurrenceId: varchar("occurrenceId", { length: 80 }).notNull(),
+    eventKey: varchar("eventKey", { length: 190 }).notNull().unique(),
+    payload: json("payload").notNull(),
+    status: mysqlEnum("status", ["PENDING", "DELIVERED", "INVALID"])
+      .default("PENDING")
+      .notNull(),
+    attemptCount: int("attemptCount").default(0).notNull(),
+    availableAt: timestamp("availableAt").defaultNow().notNull(),
+    processedAt: timestamp("processedAt"),
+    lastError: varchar("lastError", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    dueIdx: index("idx_app_notice_outbox_due").on(
+      table.status,
+      table.availableAt,
+      table.id,
+    ),
+    occurrenceIdx: index("idx_app_notice_outbox_occurrence").on(
+      table.occurrenceId,
+      table.status,
+      table.availableAt,
+      table.id,
+    ),
+    streamIdx: index("idx_app_notice_outbox_stream").on(
+      table.streamKey,
+      table.status,
+      table.id,
+    ),
+    branchDueIdx: index("idx_app_notice_outbox_branch_due").on(
+      table.branchId,
+      table.status,
+      table.availableAt,
+      table.id,
+    ),
+  }),
+);
+export type AppNotificationOutboxRow = typeof appNotificationOutbox.$inferSelect;
+export type InsertAppNotificationOutbox = typeof appNotificationOutbox.$inferInsert;
+
 /** صندوق الإشعارات داخل السوبر تطبيق — مصدر دائم قابل للقراءة والتدقيق، مستقل عن Web Push.
  *  `eventKey` يجعل إدراج الحدث idempotent حتى لو أعاد العامل/الـwebhook المحاولة. */
 export const appNotifications = mysqlTable(

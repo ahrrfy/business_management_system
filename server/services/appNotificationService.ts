@@ -19,18 +19,21 @@ import {
 } from "./nativePushService";
 import { requireDb } from "./tx";
 
-export type AppNotificationKind =
-  | "TASK_ASSIGNED"
-  | "PAYROLL_READY"
-  | "ATTENDANCE"
-  | "LEAVE_STATUS"
-  | "APPROVAL_REQUIRED"
-  | "ANNOUNCEMENT"
+export const APP_NOTIFICATION_KINDS = [
+  "TASK_ASSIGNED",
+  "PAYROLL_READY",
+  "ATTENDANCE",
+  "LEAVE_STATUS",
+  "APPROVAL_REQUIRED",
+  "ANNOUNCEMENT",
   // ن-٢-د (٢٥/٨) — إشعارُ إدارةٍ لدخول/خروج/إبطالِ جلسةٍ لموظّف. مُنفصلٌ عن SYSTEM حتى
   // يحصل على push فعليّ عبر pushKindFor + nativeDestinationFor (كان SYSTEM لا يُنتج إلا
   // إدراجاً في الصندوق، فيبقى المدير جاهلاً حتى يفتحه يدويّاً — Codex P1).
-  | "SESSION_EVENT"
-  | "SYSTEM";
+  "SESSION_EVENT",
+  "SYSTEM",
+] as const;
+export type AppNotificationKind = (typeof APP_NOTIFICATION_KINDS)[number];
+export const APP_NOTIFICATION_EVENT_KEY_MAX_LENGTH = 190;
 
 export interface NotificationPreferencesInput {
   taskAssigned: boolean;
@@ -217,10 +220,10 @@ function nativeDestinationFor(
     // مهمة، فتوجيهها إلى `/module/tasks/view/N` يفتح مهمّةً غير موجودة (مراجعة Codex P2
     // على PR #862). التمييز بـ`entityType` فقط — إبقاء kind واحداً يحفظ تفضيلاتِ الإشعار
     // (المصوّر الذي يقبل مهام يقبل الاثنين). وحتى تدعم المحطة العميقة صراحةً استوديو
-    // الحملات على أندرويد، نُوجّه إلى وحدة الاستوديو كسقفٍ آمن — نفس المصوّر يجد التغيّرات
-    // من المنصّة، لا شاشةَ مهمّةٍ خاطئة.
+    // الحملات على أندرويد، نُوجّه إلى دليل الوحدات المعتمد على العميل والخادم — لا إلى
+    // شاشةَ مهمّةٍ خاطئة ولا إلى وحدةٍ أصليةٍ غير مسجّلة فتفشل كتابةُ الإشعار كلّها.
     if (input.entityType === "productStudioCampaign") {
-      return "alrueya://app/module/productStudio";
+      return "alrueya://app/modules";
     }
     return entity
       ? `alrueya://app/module/tasks/view/${entity}`
@@ -315,7 +318,7 @@ export async function createAppNotification(
 ): Promise<{ created: boolean }> {
   const db = requireDb();
   const route = safeInternalRoute(input.route);
-  const eventKey = input.eventKey.trim().slice(0, 190);
+  const eventKey = input.eventKey.trim().slice(0, APP_NOTIFICATION_EVENT_KEY_MAX_LENGTH);
   const normalizedInput = { ...input, eventKey };
   const webPayload = webPushPayloadFor(normalizedInput, route);
   const nativePayload = nativePayloadFor(normalizedInput);

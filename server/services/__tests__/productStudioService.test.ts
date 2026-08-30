@@ -6,12 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { createAppNotification } from "../appNotificationService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const PNG_1X1_ALT = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nH0AAAAASUVORK5CYII=";
 const WEBP_1X1 = "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
+const PAST_DB_TIMESTAMP = new Date("2000-01-01T00:00:00.000Z");
 /** JPEG أساسيّ ١×١ صالح البصمة والبنية (يبدأ FFD8FF وينتهي FFD9) — لفحص توحيد image/jpg. */
 const JPEG_1X1 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
 
@@ -279,6 +281,199 @@ describe("product studio governed workflow", () => {
       campaignId: cancellable.campaignId,
       status: "CANCELLED",
     })).resolves.toMatchObject({ status: "CANCELLED" });
+  });
+
+  it("يحفظ نوايا انتقال الحملة ذرّياً ويعيد الفاشل وحده بعد نجاح جزئي", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة إشعار موثوق",
+      status: "ACTIVE",
+      assigneeIds: [worker.userId, otherWorker.userId],
+    });
+    const selectiveNotificationWriter = vi.fn(async (input: Parameters<typeof createAppNotification>[0]) => {
+      if (input.userId === worker.userId) throw new Error("createAppNotification unavailable");
+      return createAppNotification(input);
+    });
+
+    await expect(transitionStudioCampaign(
+      manager,
+      { campaignId: campaign.campaignId, status: "PAUSED" },
+      selectiveNotificationWriter,
+    )).resolves.toMatchObject({ status: "PAUSED" });
+    expect(selectiveNotificationWriter).toHaveBeenCalledTimes(2);
+    expect((await db().select().from(s.productStudioCampaigns).where(eq(s.productStudioCampaigns.id, campaign.campaignId)))[0]).toMatchObject({ status: "PAUSED" });
+    expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId))).toEqual([]);
+    expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, otherWorker.userId))).toHaveLength(1);
+
+    const intents = await db().select().from(s.appNotificationOutbox);
+    const campaignIntents = intents.filter((row) => row.eventKey.includes(`studio.campaign.transition:${campaign.campaignId}:`));
+    expect(campaignIntents).toHaveLength(2);
+    expect(campaignIntents.find((row) => row.recipientUserId === worker.userId)).toMatchObject({ status: "PENDING", attemptCount: 1 });
+    expect(campaignIntents.find((row) => row.recipientUserId === otherWorker.userId)).toMatchObject({ status: "DELIVERED", attemptCount: 1 });
+
+    await db()
+      .update(s.appNotificationOutbox)
+      .set({ availableAt: PAST_DB_TIMESTAMP })
+      .where(and(eq(s.appNotificationOutbox.recipientUserId, worker.userId), eq(s.appNotificationOutbox.status, "PENDING")));
+
+    await expect(reconcileStudioCampaignTransitionNotifications(manager)).resolves.toMatchObject({ createdCount: 1, claimedCount: 1 });
+    await expect(reconcileStudioCampaignTransitionNotifications(manager)).resolves.toMatchObject({ createdCount: 0, claimedCount: 0 });
+
+    const [notice] = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
+    expect(notice).toMatchObject({
+      title: "حملة تصوير موقوفة مؤقّتاً",
+      entityType: "productStudioCampaign",
+      entityId: campaign.campaignId,
+      requiresAction: false,
+    });
+    expect(notice.eventKey).toBe(campaignIntents.find((row) => row.recipientUserId === worker.userId)?.eventKey);
+    expect((await db().select().from(s.appNotificationOutbox).where(eq(s.appNotificationOutbox.eventKey, notice.eventKey)))[0]).toMatchObject({ status: "DELIVERED", attemptCount: 2 });
+  });
+
+  it("يمنع عاملين متزامنين من مضاعفة إشعار الانتقال نفسه", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة سباق المصالحة",
+      status: "ACTIVE",
+      assigneeIds: [worker.userId],
+    });
+    await transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "PAUSED" }, async () => {
+      throw new Error("defer delivery");
+    });
+    await db().update(s.appNotificationOutbox).set({ availableAt: PAST_DB_TIMESTAMP }).where(eq(s.appNotificationOutbox.status, "PENDING"));
+
+    const results = await Promise.all([
+      reconcileStudioCampaignTransitionNotifications(manager),
+      reconcileStudioCampaignTransitionNotifications(manager),
+    ]);
+
+    expect(results.reduce((sum, result) => sum + result.createdCount, 0)).toBe(1);
+    const notices = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
+    expect(notices).toHaveLength(1);
+    expect(await db().select().from(s.nativePushOutbox).where(eq(s.nativePushOutbox.eventKey, notices[0].eventKey))).toHaveLength(1);
+  });
+
+  it("لا يختم النية إذا أعاد الكاتب duplicate بلا إشعار تطبيق دائم", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة تعارض ناقص",
+      status: "ACTIVE",
+      assigneeIds: [worker.userId],
+    });
+
+    await transitionStudioCampaign(
+      manager,
+      { campaignId: campaign.campaignId, status: "PAUSED" },
+      async () => ({ created: false }),
+    );
+
+    const [intent] = await db().select().from(s.appNotificationOutbox);
+    expect(intent).toMatchObject({ status: "PENDING", attemptCount: 1 });
+    expect(intent.lastError).toContain("without matching durable app notification");
+    expect(await db().select().from(s.appNotifications)).toEqual([]);
+
+    await db().update(s.appNotificationOutbox).set({ availableAt: PAST_DB_TIMESTAMP }).where(eq(s.appNotificationOutbox.id, intent.id));
+    await expect(reconcileStudioCampaignTransitionNotifications(manager)).resolves.toMatchObject({ createdCount: 1, claimedCount: 1, failedCount: 0 });
+    expect((await db().select().from(s.appNotificationOutbox).where(eq(s.appNotificationOutbox.id, intent.id)))[0]).toMatchObject({ status: "DELIVERED", attemptCount: 2 });
+  });
+
+  it("لا يسمح لاستئنافٍ أحدث أن يتجاوز إشعار إيقافٍ فشل قبله", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة ترتيب الاستعادة",
+      status: "ACTIVE",
+      assigneeIds: [worker.userId],
+    });
+    await transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "PAUSED" }, async () => {
+      throw new Error("pause delivery unavailable");
+    });
+
+    await transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "ACTIVE" });
+    expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId))).toEqual([]);
+    const pending = await db()
+      .select()
+      .from(s.appNotificationOutbox)
+      .where(eq(s.appNotificationOutbox.status, "PENDING"))
+      .orderBy(s.appNotificationOutbox.id);
+    expect(pending).toHaveLength(2);
+    expect(new Set(pending.map((row) => row.streamKey))).toEqual(new Set([`studio.campaign:${campaign.campaignId}:user:${worker.userId}`]));
+
+    await db().update(s.appNotificationOutbox).set({ availableAt: PAST_DB_TIMESTAMP }).where(eq(s.appNotificationOutbox.id, pending[0].id));
+    await expect(reconcileStudioCampaignTransitionNotifications(manager)).resolves.toMatchObject({ createdCount: 2, claimedCount: 2, failedCount: 0 });
+
+    const delivered = await db()
+      .select()
+      .from(s.appNotifications)
+      .where(eq(s.appNotifications.userId, worker.userId))
+      .orderBy(s.appNotifications.id);
+    expect(delivered.map((notice) => notice.title)).toEqual([
+      "حملة تصوير موقوفة مؤقّتاً",
+      "استُؤنفت حملة تصوير",
+    ]);
+  });
+
+  it("لا تُجوّع دفعة فاشلة بالكامل تدفّقاً أحدث خارج حد السحب", async () => {
+    const eventKeys = [0, 1, 2].map((index) => `studio.outbox.saturation:${index}`);
+    await db().insert(s.appNotificationOutbox).values(eventKeys.map((eventKey, index) => ({
+      branchId: 1,
+      recipientUserId: worker.userId,
+      streamKey: `studio.outbox.saturation.stream:${index}`,
+      occurrenceId: `saturation-${index}`,
+      eventKey,
+      payload: {
+        userId: worker.userId,
+        kind: "TASK_ASSIGNED",
+        title: `اختبار طابور ${index}`,
+        body: "اختبار عدم تجويع التدفقات اللاحقة",
+        route: "/catalog/image-studio",
+        eventKey,
+        entityType: "productStudioCampaign",
+        entityId: 9000 + index,
+        requiresAction: false,
+      },
+    })));
+    const writer = vi.fn(async (input: Parameters<typeof createAppNotification>[0]) => {
+      if (input.eventKey !== eventKeys[2]) throw new Error("persistent writer failure");
+      return createAppNotification(input);
+    });
+
+    await expect(reconcileStudioCampaignTransitionNotifications(manager, { limit: 2, notificationWriter: writer }))
+      .resolves.toMatchObject({ createdCount: 0, claimedCount: 2, failedCount: 2 });
+    const [firstRetry] = await db()
+      .select()
+      .from(s.appNotificationOutbox)
+      .where(eq(s.appNotificationOutbox.eventKey, eventKeys[0]));
+    expect(firstRetry.attemptCount).toBe(1);
+    expect(firstRetry.availableAt.getTime() - Date.now()).toBeGreaterThan(4 * 60_000);
+    expect(firstRetry.availableAt.getTime() - Date.now()).toBeLessThan(6 * 60_000);
+    await db()
+      .update(s.appNotificationOutbox)
+      .set({ availableAt: PAST_DB_TIMESTAMP })
+      .where(and(eq(s.appNotificationOutbox.status, "PENDING"), eq(s.appNotificationOutbox.attemptCount, 1)));
+    await expect(reconcileStudioCampaignTransitionNotifications(manager, { limit: 2, notificationWriter: writer }))
+      .resolves.toMatchObject({ createdCount: 0, claimedCount: 2, failedCount: 2 });
+
+    await expect(reconcileStudioCampaignTransitionNotifications(manager, { limit: 2, notificationWriter: writer }))
+      .resolves.toMatchObject({ createdCount: 1, claimedCount: 1, failedCount: 0 });
+    expect((await db().select().from(s.appNotificationOutbox).where(eq(s.appNotificationOutbox.eventKey, eventKeys[2])))[0]).toMatchObject({ status: "DELIVERED", attemptCount: 1 });
+  });
+
+  it("يُنشئ إشعاراً فريداً لكل انتقال متكرر ولا تضاعفه المصالحة", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة انتقالات متكررة",
+      status: "ACTIVE",
+      assigneeIds: [worker.userId],
+    });
+
+    for (const status of ["PAUSED", "ACTIVE", "PAUSED", "ACTIVE"] as const) {
+      await expect(transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status })).resolves.toMatchObject({ status });
+    }
+
+    const notices = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
+    const transitionNotices = notices.filter((row) => row.entityType === "productStudioCampaign");
+    expect(transitionNotices).toHaveLength(4);
+    expect(new Set(transitionNotices.map((row) => row.eventKey)).size).toBe(4);
+    expect(transitionNotices.filter((row) => row.title === "حملة تصوير موقوفة مؤقّتاً")).toHaveLength(2);
+    expect(transitionNotices.filter((row) => row.title === "استُؤنفت حملة تصوير")).toHaveLength(2);
+
+    await expect(reconcileStudioCampaignTransitionNotifications(manager)).resolves.toMatchObject({ createdCount: 0, claimedCount: 0 });
+    expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId))).toHaveLength(4);
   });
 
   it("deduplicates automatic assignment and rejection notifications by event key", async () => {

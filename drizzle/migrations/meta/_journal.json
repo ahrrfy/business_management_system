@@ -1893,6 +1893,13 @@
 			"breakpoints": true
 		},
 		{
+			"idx": 291,
+			"version": "5",
+			"when": 1788052343000,
+			"tag": "0291_studio_campaign_notification_outbox",
+			"breakpoints": true
+		},
+		{
 			"idx": 292,
 			"version": "5",
 			"when": 1788052344000,
