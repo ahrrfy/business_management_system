@@ -603,6 +603,10 @@ function verifySourceContract() {
     path.join(root, "android-native/app/src/main/res/xml/network_security_config.xml"),
     "utf8",
   );
+  const gradleProperties = fs.readFileSync(
+    path.join(root, "android-native/gradle.properties"),
+    "utf8",
+  );
   const nativeCi = fs.readFileSync(path.join(root, ".github/workflows/android-native-ci.yml"), "utf8");
   const releaseCi = fs.readFileSync(path.join(root, ".github/workflows/android-release.yml"), "utf8");
   const releaseWorkflowGate = fs.readFileSync(
@@ -661,6 +665,13 @@ function verifySourceContract() {
   ];
   for (const fragment of requiredGradleFragments) {
     if (!gradle.includes(fragment)) fail("native Gradle release identity/policy is incomplete");
+  }
+  if (
+    !/^android\.experimental\.testOptions\.managedDevices\.allowOldApiLevelDevices=true$/m.test(
+      gradleProperties,
+    )
+  ) {
+    fail("API 26 managed-device smoke requires the explicit old-API opt-in");
   }
   verifyNetworkSecurityPinning(networkSecurityConfig);
   const applicationIdSuffixes = [...gradle.matchAll(/applicationIdSuffix\s*=\s*"([^"]+)"/g)]
