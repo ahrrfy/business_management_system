@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1113,
+    "trpcTotal": 1114,
     "byKind": {
       "mutation": 582,
-      "query": 531
+      "query": 532
     },
     "byAuthority": {
       "module-gate": 556,
-      "module-map": 339,
+      "module-map": 340,
       "admin": 67,
       "none": 53,
       "raw-role": 46,
@@ -21,7 +21,7 @@
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 528,
+      "LOW": 529,
       "MEDIUM": 427,
       "HIGH": 158
     },
@@ -29,7 +29,7 @@
       "(none)": 193,
       "reports": 100,
       "hr": 100,
-      "store": 81,
+      "store": 82,
       "digital_cards": 75,
       "inventory": 70,
       "treasury": 64,
@@ -83,8 +83,8 @@
       "reports": 103,
       "treasury": 88,
       "inventory": 86,
+      "store": 82,
       "catalog": 81,
-      "store": 81,
       "sales": 49,
       "productstudio": 44,
       "iam": 42,
@@ -4440,7 +4440,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/deliveryRouter.ts:996"
+      "loc": "server/routers/deliveryRouter.ts:1018"
     },
     {
       "surface": "trpc",
@@ -4883,6 +4883,23 @@
       "sensitivityWhy": "قراءة",
       "flags": "",
       "loc": "server/routers/deliveryRouter.ts:974"
+    },
+    {
+      "surface": "trpc",
+      "router": "deliveryRouter",
+      "proposedPermission": "store.delivery.view",
+      "name": "previewDeliveryQuoteByGovernorate",
+      "kind": "query",
+      "procedure": "deliveryReadProcedure",
+      "authority": "module-map",
+      "module": "store",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/deliveryRouter.ts:992"
     },
     {
       "surface": "trpc",

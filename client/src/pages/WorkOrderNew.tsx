@@ -25,6 +25,9 @@ import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/Bar
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { GOVERNORATES } from "@shared/governorates";
+import { notify } from "@/lib/notify";
 
 /**
  * طلب خدمة جديد — v3 add-screens (شاشة احترافية متكاملة).
@@ -216,6 +219,9 @@ export default function WorkOrderNew() {
   const [hasDelivery, setHasDelivery] = useState(false);
   const [deliveryAddress, setDeliveryAddress] = useState("");
   const [deliveryCost, setDeliveryCost] = useState("");
+  // Slice L (٣٠/٨/٢٦): اختيار المحافظة يجلب الأجرة الاقتراحية تلقائياً من قاعدة `deliveryPricingRules`
+  // (Slice I + H4). الكاشير يعتمدها بضغطة أو يعدّلها يدوياً — مصدر الحقيقة الوحيد لأجور التوصيل.
+  const [governorate, setGovernorate] = useState<string>("");
 
   // ── (٧) الدفع ──────────────────────────────────────────────────
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "CARD">("CASH");
@@ -242,6 +248,23 @@ export default function WorkOrderNew() {
     if (paymentMode !== suggested) setPaymentMode(suggested);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasDelivery, deposit, paymentModeOverridden]);
+
+  // Slice L (٣٠/٨/٢٦): تلقائيّاً — عند اختيار محافظة + التوصيل مفعَّل، استعلم عن الأجرة من
+  // جدول تسعير المكتبة (Slice I + H4). إن كانت للجهة قاعدة ⇒ أجرة القاعدة. لا ⇒ null فتبقى فارغة
+  // ويكتبها الكاشير يدوياً كما كان. لا نستبدل قيمةً كتبها المستعمل يدوياً بعد الجلب.
+  const quoteQ = trpc.delivery.previewDeliveryQuoteByGovernorate.useQuery(
+    { governorate },
+    { enabled: hasDelivery && !!governorate, staleTime: 60_000 },
+  );
+  const suggestedFee = quoteQ.data?.fee ?? null;
+  useEffect(() => {
+    if (!hasDelivery || !governorate) return;
+    if (suggestedFee == null) return;
+    // نملأ فقط إذا كان الحقل فارغاً/صفراً كي لا نطمس تعديلَ الكاشير.
+    if (!deliveryCost || D(deliveryCost).isZero()) {
+      setDeliveryCost(String(suggestedFee));
+    }
+  }, [suggestedFee, hasDelivery, governorate]);
 
   // ── الحسابات ──────────────────────────────────────────────────
   const cartSubtotal = useMemo(
@@ -839,9 +862,36 @@ export default function WorkOrderNew() {
                 <Textarea id="da" rows={2} value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} placeholder="بغداد، الكرادة، شارع …" />
               </div>
               <div className="space-y-1">
+                <Label htmlFor="gov">المحافظة</Label>
+                <AppSelect
+                  value={governorate}
+                  onValueChange={setGovernorate}
+                  placeholder="اختر المحافظة لاقتراح الأجرة"
+                >
+                  {GOVERNORATES.map((g) => (
+                    <option key={g.id} value={g.id}>{g.name}</option>
+                  ))}
+                </AppSelect>
+                <p className="text-[11px] text-muted-foreground">اختيارها يقترح الأجرة تلقائياً من جدول تسعير المكتبة.</p>
+              </div>
+              <div className="space-y-1">
                 <Label htmlFor="dc">تكلفة خدمة التوصيل (د.ع)</Label>
                 <MoneyInput id="dc" value={deliveryCost} onChange={setDeliveryCost} ariaLabel="تكلفة التوصيل" />
-                <p className="text-[11px] text-muted-foreground">تُضاف للإجمالي النهائي.</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] text-muted-foreground">تُضاف للإجمالي النهائي.</p>
+                  {suggestedFee != null && String(suggestedFee) !== deliveryCost && (
+                    <button
+                      type="button"
+                      className="text-[11px] font-bold text-[var(--sem-info)] hover:underline"
+                      onClick={() => {
+                        setDeliveryCost(String(suggestedFee));
+                        notify.ok(`طُبِّقت الأجرة الاقتراحية ${fmt(String(suggestedFee))} د.ع`);
+                      }}
+                    >
+                      استعمل الاقتراح: {fmt(String(suggestedFee))} د.ع
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </CardContent>
