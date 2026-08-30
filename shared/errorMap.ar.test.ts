@@ -7,7 +7,34 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { toArabicMessage, UNIQUE_AR } from "./errorMap.ar";
+import { isDeadlock, isDupEntry, mysqlCodeFrom, toArabicMessage, UNIQUE_AR } from "./errorMap.ar";
+
+// فحص معمارية الحمل ٣٠/٨/٢٦: التطبيع بالرقم/sqlState — بعض الأغلفة تُسقط `code` النصّي وتُبقي
+// `errno` فقط، فكانت كواشف الإعادة تعمى عن deadlock قابلٍ للإعادة ويصل المستخدم 500.
+describe("mysqlCodeFrom — التطبيع بالرمز والرقم وsqlState عبر سلسلة cause", () => {
+  it("code نصّي مباشر", () => {
+    expect(mysqlCodeFrom({ code: "ER_DUP_ENTRY" })).toBe("ER_DUP_ENTRY");
+  });
+  it("errno وحده يُطبَّع إلى الرمز (1213/1205/1062)", () => {
+    expect(mysqlCodeFrom({ errno: 1213 })).toBe("ER_LOCK_DEADLOCK");
+    expect(mysqlCodeFrom({ errno: 1205 })).toBe("ER_LOCK_WAIT_TIMEOUT");
+    expect(mysqlCodeFrom({ errno: 1062 })).toBe("ER_DUP_ENTRY");
+  });
+  it("sqlState 40001 = ضحية deadlock", () => {
+    expect(mysqlCodeFrom({ sqlState: "40001" })).toBe("ER_LOCK_DEADLOCK");
+  });
+  it("يمشي على سلسلة cause (غلاف Drizzle) لكل الأشكال الثلاثة", () => {
+    expect(mysqlCodeFrom({ cause: { cause: { errno: 1213 } } })).toBe("ER_LOCK_DEADLOCK");
+    expect(isDeadlock(new Error("x", { cause: { errno: 1205 } }))).toBe(true);
+    expect(isDupEntry({ cause: { code: "ER_DUP_ENTRY" } })).toBe(true);
+  });
+  it("errno غير معروف أو خطأ عاديّ ⇒ null ولا إعادة", () => {
+    expect(mysqlCodeFrom({ errno: 1064 })).toBe(null);
+    expect(mysqlCodeFrom(new Error("boom"))).toBe(null);
+    expect(isDeadlock(new Error("boom"))).toBe(false);
+    expect(isDupEntry({ errno: 1213 })).toBe(false);
+  });
+});
 
 /** يحاكي DrizzleQueryError: رسالة خام «Failed query: …» تلفّ خطأ mysql2 في cause. */
 function dbErr(code: string, sqlMessage: string) {

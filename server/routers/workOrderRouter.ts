@@ -55,6 +55,7 @@ import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { money } from "../services/money";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
+import { pauseIfRetryableDbError } from "../lib/retryDup";
 import { withTx } from "../services/tx";
 import { workOrderFeeHeldNet } from "../services/workOrder/deliveryFeeRefund";
 import { checkoutReception } from "../services/receptionCheckoutService";
@@ -1299,7 +1300,7 @@ export const workOrderRouter = router({
           }
           return res;
         } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue;
+          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
           if (e instanceof TRPCError) throw e;
           failOpaque(e, {
             op: "workOrders.create",
@@ -1564,14 +1565,15 @@ export const workOrderRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // ER_DUP_ENTRY على invoiceNumber ممكن تحت تزامن POS+WO ⇒ أعد المحاولة ٣ مرات كـsaleRouter.
+      // ER_DUP_ENTRY على invoiceNumber ممكن تحت تزامن POS+WO، وكذلك ضحيّة deadlock
+      // (تسليم WO يتقاطع قفلياً مع البيع على customers/documentCounters) ⇒ أعد المحاولة كـsaleRouter.
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await deliverWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
           await logAudit(ctx, { action: "workOrder.deliver", entityType: "workOrder", entityId: input.workOrderId });
           return res;
         } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue;
+          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
           if (e instanceof TRPCError) throw e;
           failOpaque(e, {
             op: "workOrders.deliver",

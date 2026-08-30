@@ -1,7 +1,7 @@
 // READY → DELIVERED: إنشاء فاتورة (sourceType=WORKORDER) + دفعة اختيارية + قيد SALE + تسوية الذمم.
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, isNull, notLike, or } from "drizzle-orm";
-import { invoiceItems, invoices, productUnits, productVariants, products, receipts, shifts, workOrders } from "../../../drizzle/schema";
+import { customers, invoiceItems, invoices, productUnits, productVariants, products, receipts, shifts, workOrders } from "../../../drizzle/schema";
 import { assertCreditLimit } from "../../lib/credit";
 import { requiresFullPaymentAtHandover, COD_PICKUP_PAYMENT_ERROR_AR, type CodPaymentMode } from "@shared/codHandoverPolicy";
 import { extractInsertId } from "../../lib/insertId";
@@ -166,27 +166,6 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         message: COD_PICKUP_PAYMENT_ERROR_AR(unpaidPortion.toFixed(2)),
       });
     }
-    if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
-      await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);
-    }
-
-    // Invoice number — reuse the invoice numbering (per-branch daily seq).
-    const { nextInvoiceNumber } = await import("../numbering");
-    const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
-    const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
-    const sourceId = `WO-${wo.id}`;
-    /**
-     * **نسبة البيع لمنشئ الطلب لا للمُسلِّم** (١٩/٨ — قاعدة #638: «العمولة تتبع البائع
-     * الأصليّ»). فاتورة أمر الشغل تُنشأ لحظة التسليم، وقد ينفّذه كاشيرٌ آخر عن الذي استقبل
-     * الطلب وباعه فعلاً — فكان `createdBy = actor` ينسب البيعَ والعمولةَ للمُسلِّم، وتقارير
-     * الموظفين تعرض اسمه، بينما البائع الحقيقيّ لا أثر له.
-     *
-     * وأثرُ المُسلِّم **يبقى كاملاً بلا عمودٍ جديد**: إيصال القبض بـ`createdBy = actor`،
-     * والفاتورة تُختم بوردية المُسلِّم (`deliveryShiftId` أدناه) ⇒ النقد والدرج وZ كلّها
-     * عليه — وهو الصحيح مالياً: النقد في درجه هو.
-     */
-    const sellerUserId = wo.createdBy != null ? Number(wo.createdBy) : actor.userId;
-    const salespersonNameSnapshot = await userNameSnapshot(tx, sellerUserId);
     // ش١ (٥/٨): فاتورة التسليم تنتمي لوردية مُسلِّمها — كانت تُنشأ بلا shiftId فتسقط خارج
     // طابور فواتير المحطة (innerJoin shifts) وخارج نطاق reception.collectOnInvoice، بينما هي
     // **الحالة الأولى** لتسديد المتبقّي (عربونٌ مقبوض والباقي عند الاستلام). تُحلّ مبكراً وتُعاد
@@ -194,6 +173,14 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // مراجعة عدائية (٥/٨): الختم بوردية **RECEPTION حصراً** — openShiftIdTx المرن كان يلتقط
     // وردية RETAIL/PRINT_SERVICES الوحيدة فتسقط الفاتورة من طابور المحطة (innerJoin RECEPTION)
     // وتتضخّم Z تلك الوردية بمبيعاتٍ ليست لها. غيابها ⇒ null (سلوك ما قبل ش١، دلالة نظيفة).
+    //
+    // ⚠️ **موضعه هنا مُلزَمٌ بترتيب الأقفال** (فحص الحمل ٣٠/٨/٢٦ + مراجعة Codex على #901):
+    // كان بعد العدّاد، ثم نُقل إلى ما بعد حارس الائتمان — وكلاهما خطأ لأنّ `assertCreditLimit`
+    // **يقفل صفّ العميل**، فينتج ترتيب «عميل ← وردية» مقابل ترتيب البيع «وردية ← عميل»
+    // (sale/create) ⇒ ABBA حين يتشارك بيعٌ وتسليمٌ متزامنان وردية الاستقبال نفسها والعميل نفسه.
+    // الترتيب القانوني الوحيد: **وردية ← عميل ← عدّاد**، فيسبق هذا القفلُ كلَّ ما يمسّ العميل.
+    // (أثرٌ جانبيّ مقصود: من لا وردية استقبالٍ له ويتجاوز سقف الائتمان معاً يرى رسالة الوردية
+    // أوّلاً بدل رسالة الائتمان — كلتاهما حاجزٌ مشروع ولا أثر ماليّ للترتيب بينهما.)
     const receptionShiftRow = (
       await tx
         .select({ id: shifts.id })
@@ -214,6 +201,42 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         message: "افتح وردية RECEPTION قبل قبض دفعة أمر الشغل نقداً؛ لا يجوز DRAWER بلا وردية استقبال مقفلة",
       });
     }
+
+    if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
+      await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);
+    }
+
+    // ترتيب الأقفال القانوني (فحص الحمل ٣٠/٨/٢٦): صفّ العميل يُقفَل **قبل** عدّاد الترقيم دائماً،
+    // كما في sale/create (وردية ثم العميل ثم العدّاد). كان القفل هنا مشروطاً بحارس الائتمان أعلاه،
+    // فإذا تخطّاه المسار (نافذة الافتتاح أو COD) انقلب الترتيب: عدّاد ← عميل (adjustCustomerBalance
+    // أدناه) مقابل بيعٍ متزامنٍ عميل ← عدّاد ⇒ ABBA deadlock حتميّ الاحتمال. قفلٌ غير مشروط
+    // يوحّد الاتجاه؛ وإن سبقه حارسُ الائتمان فالصفّ محجوز أصلاً والقفل هنا لا يكلف شيئاً.
+    if (wo.customerId) {
+      await tx
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.id, Number(wo.customerId)))
+        .for("update")
+        .limit(1);
+    }
+
+    // Invoice number — reuse the invoice numbering (per-branch daily seq).
+    const { nextInvoiceNumber } = await import("../numbering");
+    const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
+    const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
+    const sourceId = `WO-${wo.id}`;
+    /**
+     * **نسبة البيع لمنشئ الطلب لا للمُسلِّم** (١٩/٨ — قاعدة #638: «العمولة تتبع البائع
+     * الأصليّ»). فاتورة أمر الشغل تُنشأ لحظة التسليم، وقد ينفّذه كاشيرٌ آخر عن الذي استقبل
+     * الطلب وباعه فعلاً — فكان `createdBy = actor` ينسب البيعَ والعمولةَ للمُسلِّم، وتقارير
+     * الموظفين تعرض اسمه، بينما البائع الحقيقيّ لا أثر له.
+     *
+     * وأثرُ المُسلِّم **يبقى كاملاً بلا عمودٍ جديد**: إيصال القبض بـ`createdBy = actor`،
+     * والفاتورة تُختم بوردية المُسلِّم (`deliveryShiftId` أدناه) ⇒ النقد والدرج وZ كلّها
+     * عليه — وهو الصحيح مالياً: النقد في درجه هو.
+     */
+    const sellerUserId = wo.createdBy != null ? Number(wo.createdBy) : actor.userId;
+    const salespersonNameSnapshot = await userNameSnapshot(tx, sellerUserId);
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",

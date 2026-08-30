@@ -669,11 +669,23 @@ const TRPC_CODE_AR: Record<string, string> = {
  *  (رفض قواعد الأعمال برسالة عربية مفهومة لا يحتاج دعماً؛ إلحاق الرمز بكل شيء = ضجيج). */
 export const GENERIC_INTERNAL_AR = TRPC_CODE_AR.INTERNAL_SERVER_ERROR;
 
-/** يحاول استخراج رمز خطأ MySQL من سلسلة الأسباب. */
+/** أرقام أخطاء MySQL التي تُطبَّع إلى رمزها النصّي حين يصل الخطأ بلا `code` نصّي —
+ *  بعض الأغلفة تُبقي `errno`/`sqlState` فقط، فيعمى كاشفا الإعادة (isDupEntry/isDeadlock)
+ *  عن خطأ قابلٍ للإعادة ويصل المستخدمَ 500 بدل محاولةٍ ثانية صامتة (فحص الحمل ٣٠/٨/٢٦). */
+const MYSQL_ERRNO_TO_CODE: Record<number, string> = {
+  1062: "ER_DUP_ENTRY",
+  1213: "ER_LOCK_DEADLOCK",
+  1205: "ER_LOCK_WAIT_TIMEOUT",
+};
+
+/** يحاول استخراج رمز خطأ MySQL من سلسلة الأسباب (code نصّي ← errno رقمي ← sqlState). */
 export function mysqlCodeFrom(err: unknown): string | null {
   let e: any = err;
   for (let i = 0; i < 5 && e; i++) {
     if (typeof e?.code === "string" && (MYSQL_AR[e.code] || /^ER_|^E[A-Z]+$/.test(e.code))) return e.code;
+    if (typeof e?.errno === "number" && MYSQL_ERRNO_TO_CODE[e.errno]) return MYSQL_ERRNO_TO_CODE[e.errno];
+    // SQLSTATE 40001 = فشل تسلسل (ضحية deadlock) بحسب المعيار — يعادل ER_LOCK_DEADLOCK.
+    if (e?.sqlState === "40001") return "ER_LOCK_DEADLOCK";
     e = e?.cause;
   }
   return null;

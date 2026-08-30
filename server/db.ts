@@ -26,13 +26,20 @@ export interface TenantPoolPolicy {
 }
 
 /**
- * A bounded, explicit connection budget. The defaults fit the bundled two-worker PM2
- * deployment under MySQL's default 151 connections while retaining a healthy reserve.
+ * A bounded, explicit connection budget under MySQL's default 151 connections,
+ * retaining a healthy reserve.
+ *
+ * فحص معمارية الحمل ٣٠/٨/٢٦: الافتراضي القديم 5 لكل عامل جعل سقف النظام كلّه
+ * (٣ عمّال × ٥) = ١٥ استعلاماً متزامناً من أصل ١٥١ تسمح بها القاعدة — لوحة إدارة
+ * واحدة (~٤٥ استعلاماً متزامناً) كانت تبتلع ثلاثة أضعافه والكاشير ينتظر في الطابور.
+ * الافتراضي الجديد 10 ⇒ (٣ × ١٠) = ٣٠ اتصالاً، وما زال ثلثَ السعة تقريباً.
+ * (مسار تعدّد الشركات المعطَّل يوازن بخفض DB_MAX_TENANT_POOLS_PER_WORKER إلى 5 —
+ * أيّ نشرٍ متعدّد الشركات الحقيقيّ يضبط الميزانية صراحةً بمتغيّرات البيئة أصلاً.)
  */
 export function tenantPoolPolicy(): TenantPoolPolicy {
   return {
-    connectionLimit: boundedIntEnv("DB_POOL_LIMIT", 5, 1, 50),
-    maxPoolsPerWorker: boundedIntEnv("DB_MAX_TENANT_POOLS_PER_WORKER", 10, 1, 100),
+    connectionLimit: boundedIntEnv("DB_POOL_LIMIT", 10, 1, 50),
+    maxPoolsPerWorker: boundedIntEnv("DB_MAX_TENANT_POOLS_PER_WORKER", 5, 1, 100),
     idleMs: boundedIntEnv("DB_TENANT_POOL_IDLE_MS", 15 * 60_000, 60_000, 24 * 60 * 60_000),
     webWorkers: boundedIntEnv("WEB_INSTANCES", 2, 1, 32),
     mysqlMaxConnections: boundedIntEnv("MYSQL_MAX_CONNECTIONS", 151, 20, 100_000),
@@ -381,8 +388,31 @@ export function getDb(): DB | null {
     const url = process.env.DATABASE_URL;
     if (!url) return null;
     _single = createDb(url);
+    warnSingleTenantBudgetOnce();
   }
   return _single.db;
+}
+
+// المسار الأحادي (الحيّ فعلياً) لم يكن له أيّ فحص ميزانية — الفاحص أعلاه يخصّ مسار
+// تعدّد الشركات المعطَّل. تحذيرٌ لا رمي: النشر الأحادي يجب ألّا يسقط عند الإقلاع
+// بسبب معايرة، لكن يجب ألّا يتجاوز سعة MySQL بصمت أيضاً (فحص الحمل ٣٠/٨/٢٦).
+let _singleBudgetWarned = false;
+function warnSingleTenantBudgetOnce(): void {
+  if (_singleBudgetWarned) return;
+  _singleBudgetWarned = true;
+  try {
+    const policy = tenantPoolPolicy();
+    const projected = policy.connectionLimit * policy.webWorkers;
+    const available = policy.mysqlMaxConnections - policy.connectionReserve;
+    if (projected > available) {
+      logger.warn(
+        { projected, available, connectionLimit: policy.connectionLimit, webWorkers: policy.webWorkers },
+        "ميزانية اتصالات القاعدة تتجاوز السعة: خفّض DB_POOL_LIMIT أو WEB_INSTANCES، أو ارفع MYSQL_MAX_CONNECTIONS بعد التحقّق من إعداد الخادم",
+      );
+    }
+  } catch {
+    // فشل قراءة السياسة (env غير صالح) سيظهر في مساره الأصلي — لا نكسر الإقلاع من هنا.
+  }
 }
 
 /** Raw pool for test helpers that need a dedicated connection (e.g. TRUNCATE with FK_CHECKS).

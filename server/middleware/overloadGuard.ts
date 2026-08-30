@@ -37,17 +37,23 @@ export function startLagMonitor(sampleMs = 500): {
 /**
  * وسيط الحِمل الزائد — نقيّ وقابل للاختبار بحقن `lagMs`. عند تجاوز التأخّر العتبة يستدعي
  * `onShed` (الردّ يختلف حسب سطح tRPC)، وإلّا يمرّر. `maxLagMs ≤ 0` ⇒ مُعطَّل تماماً.
+ *
+ * `thresholdFor` (٣٠/٨/٢٦): عتبةٌ فعّالة لكل طلبٍ — بها تُبنى حارات الأولوية (عمليات الصندوق
+ * الحرجة تتحمّل أكثر، والمتجر العام يُخفَّف أولاً) دون أن يفقد الحارس نقاءه أو اختباريته.
+ * غيابها = سلوك العتبة الواحدة القديم حرفياً.
  */
 export function createOverloadGuard(opts: {
   lagMs: () => number;
   maxLagMs: number;
   onShed: (req: Request, res: Response) => void;
   skip?: (req: Request) => boolean;
+  thresholdFor?: (req: Request) => number;
 }) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (opts.maxLagMs <= 0) return next(); // مُعطَّل
     if (opts.skip?.(req)) return next(); // فحص صحّة/أصول/ويبهوكس لا تُحجَب
-    if (opts.lagMs() > opts.maxLagMs) {
+    const threshold = opts.thresholdFor ? opts.thresholdFor(req) : opts.maxLagMs;
+    if (threshold > 0 && opts.lagMs() > threshold) {
       opts.onShed(req, res);
       return;
     }

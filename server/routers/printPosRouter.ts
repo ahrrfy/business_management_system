@@ -7,7 +7,7 @@ import { createPrintSale } from "../services/printSaleService";
 import { verifyManagerApproval } from "./saleRouter";
 import { posCashierProcedure, router } from "../trpc";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
-import { isDupEntry } from "@shared/errorMap.ar";
+import { pauseIfRetryableDbError } from "../lib/retryDup";
 import { confirmExternalPaymentAttempt, initiateExternalPaymentAttempt, type PosExternalPaymentMethod } from "../services/posExternalPayment";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
@@ -132,7 +132,7 @@ export const printPosRouter = router({
           if (res.priceOverride) await logAudit(ctx, { action: "printPos.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
           return res;
         } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue;
+          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
           if (e instanceof TRPCError) throw e;
           // لا نبتلع السبب الجذري — نُسجّله كاملاً قبل رسالة عامة (درس ١٢/٦).
           logger.error(

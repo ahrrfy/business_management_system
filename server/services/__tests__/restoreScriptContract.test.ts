@@ -196,8 +196,8 @@ describe("restore script streaming contract", () => {
       "utf8",
     );
     expect(sample).toContain("WEB_INSTANCES=2");
-    expect(sample).toContain("DB_POOL_LIMIT=5");
-    expect(sample).toContain("DB_MAX_TENANT_POOLS_PER_WORKER=10");
+    expect(sample).toContain("DB_POOL_LIMIT=10");
+    expect(sample).toContain("DB_MAX_TENANT_POOLS_PER_WORKER=5");
     expect(sample).toContain("MYSQL_MAX_CONNECTIONS=151");
     expect(sample).toContain("DB_CONNECTION_RESERVE=20");
     expect(sample).toContain("CONTROL_DB_POOL_LIMIT=5");

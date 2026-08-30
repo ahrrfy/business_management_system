@@ -30,7 +30,13 @@ async function readSettingsRow(db: QueryDb, lock: boolean) {
     .from(storeSettings)
     .where(eq(storeSettings.id, 1))
     .limit(1);
-  return (lock ? await query.for("update") : await query)[0];
+  // فحص الحمل ٣٠/٨/٢٦: كان القفل هنا FOR UPDATE ⇒ **قفلٌ حصريّ عالميّ** على صفّ الإعدادات
+  // الوحيد يحمله كلُّ طلب متجرٍ حتى COMMIT، فيتسلسل كل طلبات المتجر خلف أبطئها (انقلاب أولوية:
+  // كاشير بطيء يجمّد المتجر كلّه). الضمانة المطلوبة — «تثبيت اختيار الفرع/الفتح طوال الطلب» —
+  // يحقّقها FOR SHARE بلا تسلسل: الطلبات قارئة لا تكتب الصفّ أبداً (الكاتب الوحيد
+  // updateStoreSettings يأخذ X خاصّته فيُحجَب حتى تلتزم الطلبات الحاملة S، وS يمنع X أثناءها).
+  // ولا خطر ترقية S→X هنا لأن معاملات الطلب لا تكتب storeSettings إطلاقاً.
+  return (lock ? await query.for("share") : await query)[0];
 }
 
 type RowLock = false | "update" | "share";
