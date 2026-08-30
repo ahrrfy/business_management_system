@@ -4083,7 +4083,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:280"
+      "loc": "server/routers/customerRouter.ts:292"
     },
     {
       "surface": "trpc",
@@ -4100,7 +4100,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: remove",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/customerRouter.ts:358"
+      "loc": "server/routers/customerRouter.ts:370"
     },
     {
       "surface": "trpc",
@@ -4117,7 +4117,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:344"
+      "loc": "server/routers/customerRouter.ts:356"
     },
     {
       "surface": "trpc",
@@ -4134,7 +4134,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:307"
+      "loc": "server/routers/customerRouter.ts:319"
     },
     {
       "surface": "trpc",
@@ -4151,7 +4151,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:312"
+      "loc": "server/routers/customerRouter.ts:324"
     },
     {
       "surface": "trpc",
@@ -4168,7 +4168,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:323"
+      "loc": "server/routers/customerRouter.ts:335"
     },
     {
       "surface": "trpc",
@@ -4185,7 +4185,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:174"
+      "loc": "server/routers/customerRouter.ts:186"
     },
     {
       "surface": "trpc",
@@ -4202,7 +4202,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:272"
+      "loc": "server/routers/customerRouter.ts:284"
     },
     {
       "surface": "trpc",
@@ -4219,7 +4219,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: delete",
       "flags": "RAW_ROLE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/customerRouter.ts:290"
+      "loc": "server/routers/customerRouter.ts:302"
     },
     {
       "surface": "trpc",
@@ -4355,7 +4355,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:223"
+      "loc": "server/routers/customerRouter.ts:235"
     },
     {
       "surface": "trpc",

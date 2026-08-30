@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
-import { buildCourierAssignmentMessage, buildWorkOrderStatusMessage, openWhatsApp } from "@/lib/whatsapp";
+import { buildCourierAssignmentMessage, buildCustomerDispatchMessage, buildWorkOrderStatusMessage, openWhatsApp } from "@/lib/whatsapp";
 import {
   CONSIGNMENT_VIEW_AR,
   CONSIGNMENT_VIEW_CLS,
@@ -237,6 +237,40 @@ function DispatchTab() {
             }
           : undefined,
       );
+      // Slice N (٣٠/٨/٢٦): توست ثانٍ للعميل — يعرف مَن يُوصِل طلبَه ورقم هاتفه (لا يفاجَأ برقم غريب).
+      // ينفصل عن التوست الأوّل كي لا نُفقد الموظّف زرَّ المندوب حين يُغلق العميل من غير عمد.
+      const customerPhone = dispatchedOrder?.deliveryPhone ?? dispatchedOrder?.customerPhone;
+      if (customerPhone && dispatchedParty && dispatchedOrder) {
+        notify.info(
+          "أعلم العميل بالمندوب",
+          `اضغط للإرسال — ${dispatchedOrder.customerName ?? "العميل"} يعرف مَن يُوصِل طلبَه`,
+        );
+        // نمرّر الزرّ في التوست الثاني (info بدل ok كي يتمايز بصرياً — الأوّل نجاح، الثاني إجراءٌ اختياريّ).
+        setTimeout(() => {
+          notify.ok(
+            `أعلم ${dispatchedOrder.customerName ?? "العميل"} بالمندوب`,
+            `${dispatchedParty.name} — ${dispatchedParty.phone ?? "بلا هاتف"}`,
+            {
+              label: "أرسل واتساب للعميل",
+              onClick: () => {
+                openWhatsApp(
+                  customerPhone,
+                  buildCustomerDispatchMessage({
+                    orderNumber: dispatchedOrder.orderNumber,
+                    title: dispatchedOrder.title,
+                    customerName: dispatchedOrder.customerName,
+                    courierName: dispatchedParty.name,
+                    courierPhone: dispatchedParty.phone,
+                    codAmount: r.codAmount,
+                    deliveryFee: variables.deliveryFee ?? "0",
+                    feeCollection: dispatchedOrder.deliveryFeeCollection ?? "COURIER",
+                  }),
+                );
+              },
+            },
+          );
+        }, 400);
+      }
       setTarget(null);
       utils.delivery.readyForDispatch.invalidate();
       utils.delivery.listParties.invalidate();
