@@ -1986,14 +1986,16 @@ export async function approveVoucher(
     // داخل فترة مُقفَلة. voucherDate عمود DATE (drizzle يُصنّفه string لكن mysql2 يعيد Date) ⇒ new Date
     // يعمل للحالتين، وtoDateStr = toISOString.slice(0,10) مطابق لدلالة assertPeriodOpen.
     if (partyType === "CUSTOMER" && partyId) {
-      await adjustCustomerBalance(
-        tx,
-        partyId,
-        direction === "IN" ? amount.neg() : amount,
-      );
       // تخصيص السند لفاتورته عند **الاعتماد** لا الطلب (الأثر المالي كلّه هنا). حالةُ الفاتورة
       // تُعاد فحصها داخل allocateVoucherToInvoiceTx تحت القفل: بين الطلب والاعتماد قد تُلغى
       // الفاتورة أو تُصحَّح فيصير تخصيص المال لها نسبةً لمستندٍ ميت.
+      //
+      // ⚠️ **يسبق تعديل رصيد العميل** — مرآةُ `voucher/create.ts` حرفياً (٣١/٨/٢٦): التخصيص
+      // يقفل صفّ الفاتورة والتعديلُ يقفل صفّ العميل ضمنياً، فالترتيب القانونيّ «فاتورة ← عميل»
+      // كما في sale/payment وdelivery/dispatch وreturnService. **الإنشاء والاعتماد يجب أن
+      // يتحرّكا معاً**: تقويمُ أحدهما وحده يصنع ABBA بينهما — محاسبٌ يعتمد سنداً معلَّقاً على
+      // فاتورة، وكاشيرٌ يسجّل سنداً مباشراً على نفس الفاتورة والعميل في اللحظة ذاتها. وخطرُه
+      // غيرُ متكافئ: `createVoucher` محميّ بـ`withMysqlDeadlockRetry` بينما الاعتماد بلا غلاف.
       if (r.invoiceId != null) {
         await allocateVoucherToInvoiceTx(tx, {
           invoiceId: Number(r.invoiceId),
@@ -2002,6 +2004,11 @@ export async function approveVoucher(
           paymentMethod,
         });
       }
+      await adjustCustomerBalance(
+        tx,
+        partyId,
+        direction === "IN" ? amount.neg() : amount,
+      );
     } else if (
       partyType === "SUPPLIER" &&
       partyId &&

@@ -10,7 +10,8 @@ import {
   type ProductStudioActor,
 } from "./productStudioService";
 
-export const PRODUCT_STUDIO_NOTIFICATION_CRON = "*/5 * * * *";
+// إزاحة طور (فحص الحمل ٣١/٨/٢٦): الثانية ١٥ — تباعدٌ عن انتهاء الحجوزات (٣٥) وانتهاء طلبات المتجر (٥٥).
+export const PRODUCT_STUDIO_NOTIFICATION_CRON = "15 */5 * * * *";
 
 const SYSTEM_ACTOR: ProductStudioActor = {
   userId: 0,

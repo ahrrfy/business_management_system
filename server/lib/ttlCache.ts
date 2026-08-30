@@ -42,7 +42,15 @@ export function createTtlCache<K, V>(opts: { ttlMs: number; maxEntries?: number 
   return {
     async get(key: K, loader: () => Promise<V>): Promise<V> {
       const hit = values.get(key);
-      if (hit && Date.now() - hit.at <= ttlMs) return hit.value;
+      if (hit && Date.now() - hit.at <= ttlMs) {
+        // إعادة الإدراج عند الإصابة ⇒ الطرد بأقلّ استعمالاً حديثاً (LRU) لا بأقدم إدراج (FIFO).
+        // بـFIFO كان المفتاح **الأسخن** يُطرد بعد `maxEntries` مفتاحاً جديداً مهما كثرت قراءاته
+        // — وحيث يكون جزءٌ من المفتاح مُدخَلاً من الجمهور (نصّ بحث)، يكفي زاحفٌ ببضع مئات
+        // مصطلحاتٍ ليُبقي الكاش فارغاً دائماً فيعود كلّ طلبٍ إلى المسح الكامل (٣١/٨/٢٦).
+        values.delete(key);
+        values.set(key, hit);
+        return hit.value;
+      }
       const pending = inFlight.get(key);
       if (pending) return pending;
       const startEpoch = epoch;

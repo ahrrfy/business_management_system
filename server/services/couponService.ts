@@ -36,15 +36,23 @@ function dateYmd(value: Date | string | null): string | null {
   return value.toISOString().slice(0, 10);
 }
 
-/** يقفل الكوبون وبرنامجه داخل معاملة البيع؛ لذلك لا يمكن لطلبين استهلاك آخر استخدام معاً. */
+/**
+ * يقفل الكوبون وبرنامجه داخل معاملة البيع؛ لذلك لا يمكن لطلبين استهلاك آخر استخدام معاً.
+ *
+ * `options.lock = false` (فحص الحمل ٣١/٨/٢٦) للمسار **القارئ فقط** (تسعيرة المتجر المجهولة):
+ * كل الفحوص أدناه تبقى كما هي، لكن بلا `FOR UPDATE`. القفل الحصريّ في مسار قراءةٍ كان يُسلسل
+ * كلّ زائرٍ يكتب الرمز نفسه خلف الآخر على صفٍّ واحد بلا أيّ استهلاكٍ يحميه — والحماية الحقيقية
+ * من الاستهلاك المزدوج تقع في مسار الإنشاء وحده (حيث يبقى القفل افتراضياً).
+ */
 export async function lockCouponForSale(
   tx: Tx,
   input: { code: string; branchId: number; customerId: number | null; todayYmd: string },
+  options: { lock?: boolean } = {},
 ): Promise<LockedCoupon> {
   const normalized = normalizeCouponCode(input.code);
   if (!normalized) throw new TRPCError({ code: "BAD_REQUEST", message: "رمز الكوبون مطلوب" });
 
-  const row = (await tx.select({
+  const couponQuery = tx.select({
     coupon: coupons,
     program: couponPrograms,
     promotion: promotions,
@@ -52,8 +60,8 @@ export async function lockCouponForSale(
     .innerJoin(couponPrograms, eq(coupons.programId, couponPrograms.id))
     .innerJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
     .where(eq(coupons.codeHash, hashCouponCode(normalized)))
-    .for("update")
-    .limit(1))[0];
+    .limit(1);
+  const row = (options.lock === false ? await couponQuery : await couponQuery.for("update"))[0];
 
   if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "رمز الكوبون غير صحيح" });
   if (row.coupon.status !== "ACTIVE") throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون مستخدم أو ملغى" });

@@ -324,9 +324,16 @@ export function startStorefrontPushCampaignWorker(): boolean {
     running = true;
     try { await runStorefrontPushDeliveryBatch(); } finally { running = false; }
   };
-  timer = setInterval(() => void tick(), 5_000);
+  // إزاحة طور (فحص الحمل ٣١/٨/٢٦): عاملُ دفع الإشعارات الأصيلة يدقّ كل ٥ث أيضاً وكلاهما يبدأ
+  // في اللحظة نفسها من index.ts، فيتصادمان في كل دقّة. نصفُ الدورة (٢.٥ث) يوزّعهما بالتناوب.
+  // `timer` يحمل المؤقّت الأوّل ثم الدوريّ — و`clearInterval` في Node يُلغي كليهما، فالإيقاف
+  // أثناء نافذة الإزاحة يمنع بدء الدورية أصلاً.
+  timer = setTimeout(() => {
+    timer = setInterval(() => void tick(), 5_000);
+    timer.unref();
+    void tick();
+  }, 2_500);
   timer.unref();
-  void tick();
   return true;
 }
 

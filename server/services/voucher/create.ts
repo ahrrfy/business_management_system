@@ -940,6 +940,25 @@ export async function createVoucherTx(
       entryDate: new Date(voucherDate),
     });
 
+    // تخصيص السند لفاتورته: الربط قرارُ تخصيصٍ ماليّ لا حاشية توثيقية (انظر invoiceAllocation.ts).
+    // بلا هذا كانت الفاتورة تعرض «المدفوع: ٠» فوق سجلّ دفعاتٍ يحوي هذا الإيصال نفسه، و`sales.pay`
+    // يشتقّ المتبقّي من `paidAmount` وحده ⇒ يُحصَّل المبلغ مرّةً ثانية بلا أيّ حارس.
+    //
+    // ⚠️ **يسبق تعديل رصيد الطرف عمداً** (فحص الحمل ٣١/٨/٢٦ — إتمام تقويم ترتيب الأقفال):
+    // التخصيص يأخذ `FOR UPDATE` على صفّ الفاتورة، وتعديلُ الرصيد يأخذ X ضمنياً على صفّ العميل.
+    // كان الترتيب «عميل ← فاتورة» بينما كل نظائره تأخذ «فاتورة ← عميل» (sale/payment،
+    // delivery/dispatch، returnService) ⇒ ABBA بين محاسبٍ يخصّص سنداً على فاتورةٍ حيّة وكاشيرٍ
+    // يقبض عليها في اللحظة نفسها. الكتابتان مستقلّتان (التخصيص لا يقرأ العميل ولا يمسّه) فالتبديل
+    // لا يغيّر أثراً ماليّاً — ويبقى كلاهما في معاملةٍ واحدة تتراجع كاملةً عند أيّ رمي.
+    if (input.partyType === "CUSTOMER" && input.invoiceId != null) {
+      await allocateVoucherToInvoiceTx(tx, {
+        invoiceId: input.invoiceId,
+        amount,
+        direction,
+        paymentMethod: input.paymentMethod,
+      });
+    }
+
     if (input.partyType === "CUSTOMER" && input.partyId) {
       await adjustCustomerBalance(
         tx,
@@ -948,18 +967,6 @@ export async function createVoucherTx(
       );
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
-    }
-
-    // تخصيص السند لفاتورته: الربط قرارُ تخصيصٍ ماليّ لا حاشية توثيقية (انظر invoiceAllocation.ts).
-    // بلا هذا كانت الفاتورة تعرض «المدفوع: ٠» فوق سجلّ دفعاتٍ يحوي هذا الإيصال نفسه، و`sales.pay`
-    // يشتقّ المتبقّي من `paidAmount` وحده ⇒ يُحصَّل المبلغ مرّةً ثانية بلا أيّ حارس.
-    if (input.partyType === "CUSTOMER" && input.invoiceId != null) {
-      await allocateVoucherToInvoiceTx(tx, {
-        invoiceId: input.invoiceId,
-        amount,
-        direction,
-        paymentMethod: input.paymentMethod,
-      });
     }
 
     // البَصمة بَعد كل الكتابات ⇒ تَختم السند بكل عناصره المُستقرّة.

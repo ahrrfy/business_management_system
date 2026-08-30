@@ -1120,12 +1120,32 @@ export default function POS() {
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd(""); setSaleError(null);
     },
     onError: (e) => {
-      const code = (e.data as unknown as { code?: string })?.code;
+      const errData = e.data as unknown as { code?: string; httpStatus?: number } | null | undefined;
+      const code = errData?.code;
       // ش٣ أوفلاين — تدهور سلس: فشل نقل (لا كود tRPC بنيوي = الطلب لم يصل أصلاً) في أول بيعة
       // بعد انقطاعٍ لم يكتشفه المسبار بعد ⇒ حوّل تلقائياً للالتقاط المحلي بدل خطأ محيّر للكاشير.
       // نفس clientRequestId يبقى ⇒ لو كان الطلب وصل الخادم فعلاً وضاع الردّ، الترحيل اللاحق
       // يطابقه idempotent-ياً (لا ازدواج) ويعرض ربط OFF ↔ INV في درج المزامنة.
-      if (!code) {
+      //
+      // فحص الحمل ٣١/٨/٢٦ — **503 يُلتقَط أيضاً**: حارس الحِمل الزائد يردّ 503 قبل أن يبلغ
+      // الطلبُ tRPC إطلاقاً (`onShed` بدل `next()`)، لكنه يحمل `code: INTERNAL_SERVER_ERROR`
+      // فكان يمرّ من هذا الشرط ويصل الكاشيرَ خطأً أحمرَ والزبونُ واقف — رغم أنّ البيعة **لم
+      // تُكتب قطعاً**. و`clientRequestId` يحرس من أيّ ازدواج.
+      //
+      // ⚠️ **بشرط أن تكون السلّة قابلةً للالتقاط فعلاً** (مراجعة عدائية ٣١/٨): شروط
+      // `captureOfflineSale` كلّها تفترض انقطاعَ الشبكة، فتحويلُ سلّةِ **بطاقة** إليها يبتلع
+      // رسالة الخادم الصحيحة («الخادم مشغول — أعد المحاولة») ويضع مكانها «الاتصال مقطوع،
+      // نقداً فقط» — وهي **تعليمةٌ خاطئة وخطِرة**: البطاقة تكون قد خُصمت فعلاً قبل
+      // `sales.create` (يشترطها `externalPaymentConfirmed`)، فيُدفع الكاشير إلى تحصيلٍ مكرّر
+      // أو ترك عمليةٍ مخصومة معلَّقة. ما لا يُلتقَط يسقط للمسار العاديّ برسالة الخادم كما هي.
+      const offlineCapturable =
+        !!shift &&
+        cart.length > 0 &&
+        !cart.some((c) => c.digital) &&
+        activeTab.method === "CASH" &&
+        !isCredit &&
+        !activeTab.couponCode;
+      if (!code || (errData?.httpStatus === 503 && offlineCapturable)) {
         saleCtxRef.current = null;
         void captureOfflineSale();
         return;

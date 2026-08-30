@@ -525,12 +525,22 @@ async function totalOnlineOrderQuote(
 export async function quoteOnlineOrder(input: OnlineOrderQuoteInput): Promise<OnlineOrderQuoteResult> {
   const normalizedLines = normalizeOnlineOrderLines(input.lines);
   if (!governorateById(input.governorate)) throw new TRPCError({ code: "BAD_REQUEST", message: "المحافظة غير صحيحة" });
+  // تسعيرةٌ قارئةٌ محضة: **بلا بوّابة الكتابة الماليّة** (فحص الحمل ٣١/٨/٢٦). كانت تأخذ
+  // `FINANCIAL_WRITER` (قفلٌ مشترك على صفّ بوّابة الإقفال العالميّ) في كل نداءٍ مجهول من كلّ
+  // زائر، وهي لا تكتب شيئاً إطلاقاً — والمعاملة تبقى قائمةً لضمان لقطةٍ متّسقة للأسعار
+  // والتوفّر عبر الاستعلامات المتعدّدة، لا للذرّية.
   return withTx(async (tx) => {
     const context = await requireStorefrontContext(tx, { requireOpen: true });
     const settings = (await tx.select({ freeShippingThreshold: storeSettingsTable.freeShippingThreshold })
       .from(storeSettingsTable).where(eq(storeSettingsTable.id, 1)).limit(1))[0];
+    // بلا `FOR UPDATE` على الكوبون: التسعيرة لا تستهلك استخداماً، والقفل الحصريّ كان يُسلسل
+    // كلّ زائرٍ يجرّب الرمز نفسه. حماية الاستهلاك المزدوج تبقى في مسار الإنشاء (lock افتراضيّ).
     const lockedCoupon = input.couponCode
-      ? await lockCouponForSale(tx, { code: input.couponCode, branchId: context.branchId, customerId: null, todayYmd: todayYmdBaghdad() })
+      ? await lockCouponForSale(
+          tx,
+          { code: input.couponCode, branchId: context.branchId, customerId: null, todayYmd: todayYmdBaghdad() },
+          { lock: false },
+        )
       : null;
     const items = await priceOnlineOrderLines(tx, context.branchId, normalizedLines, { lock: false, coupon: lockedCoupon });
     const couponDiscountTotal = round2(items.reduce((sum, item) => sum.plus(money(item.couponDiscountPerUnit ?? "0").times(item.quantity)), money(0)));
@@ -551,7 +561,7 @@ export async function quoteOnlineOrder(input: OnlineOrderQuoteInput): Promise<On
       })),
       ...totals,
     };
-  });
+  }, { gate: "NONE" });
 }
 
 /** طلب متجر جديد — server-priced، مُتحقَّق، idempotent، ذرّي. لا أثر مالي (PENDING فقط). */

@@ -41,8 +41,11 @@ export function startReservationsSweeper(): void {
   // لا cron في بيئة الاختبار (يُسبّب تسريب مؤقّتات ⇒ vitest يعلّق) — نمط outboxSweeper/morningPushScheduler.
   if (process.env.NODE_ENV === "test") return;
   stopReservationsSweeper();
-  const expiryCronExpr = "*/5 * * * *"; // كل ٥ دقائق UTC
-  const nearExpiryCronExpr = "* * * * *"; // كل ٦٠ ثانية على العامل ٠
+  // إزاحة الأطوار (فحص الحمل ٣١/٨/٢٦): ستّ وظائف دورية كانت تنطلق في الثانية `00` نفسها على
+  // العامل ٠ (ثلاثٌ كل دقيقة وثلاثٌ كل ٥ دقائق) فتتراكم ذروةُ استعلاماتٍ متزامنة على مجمّع
+  // اتصالٍ واحد. node-cron 4 يقبل حقل الثواني (٦ حقول) ⇒ نوزّعها على الدقيقة بفواصل ≥١٠ث.
+  const expiryCronExpr = "35 */5 * * * *"; // كل ٥ دقائق UTC عند الثانية ٣٥
+  const nearExpiryCronExpr = "45 * * * * *"; // كل ٦٠ ثانية عند الثانية ٤٥
   expiryCronTask = cron.schedule(
     expiryCronExpr,
     async () => {

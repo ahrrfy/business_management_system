@@ -119,7 +119,9 @@ let isRunning = false;
 export function startWaOutboxSweeper(): void {
   // لا cron في بيئة الاختبار (يُسبّب تسريب مؤقّتات ⇒ vitest يعلق) — نمط morningPushScheduler.
   if (process.env.NODE_ENV === "test") return;
-  const cronExpr = "* * * * *"; // كل دقيقة UTC
+  // إزاحة طور (فحص الحمل ٣١/٨/٢٦): الثانية ٥ بدل ٠ — ستّ وظائف كانت تنطلق في اللحظة نفسها
+  // على العامل ٠ فتصنع ذروةَ استعلاماتٍ متزامنة. node-cron 4 يقبل حقل الثواني (٦ حقول).
+  const cronExpr = "5 * * * * *"; // كل دقيقة UTC عند الثانية ٥
   if (cronTask) cronTask.stop();
   cronTask = cron.schedule(
     cronExpr,
