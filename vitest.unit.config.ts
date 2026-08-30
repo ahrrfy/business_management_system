@@ -100,6 +100,8 @@ export default defineConfig({
       "shared/priceWaveRule.test.ts",
       "shared/deliveryAging.test.ts",
       "shared/consignmentView.test.ts",
+      "shared/shortfallReason.test.ts",
+      "shared/partyExposure.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "server/lib/__tests__/opaqueFailure.test.ts",
       "server/lib/__tests__/paymentModeCod.test.ts",

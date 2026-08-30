@@ -22,6 +22,7 @@ import {
   listDeliveryParties,
   listInTransitConsignments,
   listPartyObligations,
+  listStaleParties,
   recordCompanyStatement,
   recordManualDeliveryProof,
   listOpenConsignments,
@@ -45,6 +46,7 @@ import {
 import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
 import { logAudit } from "../services/auditService";
+import { SHORTFALL_REASONS } from "@shared/shortfallReason";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -335,6 +337,14 @@ export const deliveryRouter = router({
    */
   obligations: deliveryReadProcedure.query(({ ctx }) => listPartyObligations(ctx.scopedBranchId)),
 
+  /**
+   * Slice DFP1 (٣٠/٨/٢٦) — قائمة الجهات المتأخّرة (SLA على عمر الطرود المفتوحة). قسم اطّلاعيّ
+   * على لوحة التوصيل لإبراز المناديب/الشركات التي تراكم عليها عملٌ بلا توريد. القراءة تكفي
+   * لصلاحية القاعدة (deliveryReadProcedure)؛ الحارس التشغيليّ لإسنادٍ جديد يفشل تلقائياً بلا
+   * تدخّل مدير (قرار المالك: لا تجاوُز إداريّ).
+   */
+  staleParties: deliveryReadProcedure.query(({ ctx }) => listStaleParties(ctx.scopedBranchId)),
+
   // سجل توريدات جهة (٩/٨): أثر التوريد كان إيصالاً حرارياً يُطبع مرة واحدة — الآن يُسرَد ويُتتبَّع.
   remittances: deliveryReadProcedure
     .input(z.object({
@@ -589,6 +599,12 @@ export const deliveryRouter = router({
       collectedAmount: moneyStr,
       evidence: z.string().trim().min(3).max(255),
       clientRequestId: z.string().trim().min(8).max(64),
+      /**
+       * Slice DFP1 (٣٠/٨/٢٦): سببُ العجز حين `collectedAmount < remainingOnParcel`.
+       * القيمة من enum ثابت `shared/shortfallReason.ts` — الخادم يرفض عجزاً بلا سبب.
+       * اختياريّ في المخطّط لأنّ التحصيل الكامل لا يحتاجه؛ الخدمة تُلزمه ديناميكياً.
+       */
+      shortfallReason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const res = await retryOnDeadlock(() => recordStaffDeliveryConfirmation(input, actorOf(ctx)));
@@ -596,7 +612,11 @@ export const deliveryRouter = router({
         action: "delivery.staffConfirm",
         entityType: "deliveryConsignment",
         entityId: input.consignmentId,
-        newValue: { collectedAmount: input.collectedAmount, evidence: input.evidence },
+        newValue: {
+          collectedAmount: input.collectedAmount,
+          evidence: input.evidence,
+          shortfallReason: input.shortfallReason ?? null,
+        },
       });
       return res;
     }),
@@ -607,6 +627,7 @@ export const deliveryRouter = router({
       collectedAmount: moneyStr,
       evidence: z.string().trim().min(4).max(500),
       clientRequestId: z.string().trim().min(8).max(64),
+      shortfallReason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const res = await retryOnDeadlock(() => recordManualDeliveryProof(input, actorOf(ctx)));
@@ -614,7 +635,11 @@ export const deliveryRouter = router({
         action: "delivery.manualProof",
         entityType: "deliveryConsignment",
         entityId: input.consignmentId,
-        newValue: { collectedAmount: input.collectedAmount, evidence: input.evidence },
+        newValue: {
+          collectedAmount: input.collectedAmount,
+          evidence: input.evidence,
+          shortfallReason: input.shortfallReason ?? null,
+        },
       });
       return res;
     }),

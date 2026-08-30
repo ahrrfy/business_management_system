@@ -8649,6 +8649,12 @@ export const deliveryParties = mysqlTable(
      * يعمل فقط حين تكون للجهة قاعدةٌ فعّالة أيضاً. `false` (الافتراض) = السلوك السابق بلا مساس.
      */
     useCommissionForSettlement: boolean("useCommissionForSettlement").default(false).notNull(),
+    /**
+     * Slice DFP1 (٣٠/٨/٢٦، هجرة 0294) — SLA على عمر الطرود المفتوحة لكلّ جهة (أيّام):
+     * `assertFloatLimitTx` يرفض إسناداً جديداً إن كان لدى الجهة أيّ طرد أقدم من هذه القيمة
+     * دون توريد. الافتراض 7 (أسبوعٌ تشغيليّ). المدى المقبول 1..365 محروسٌ بـCHECK constraint.
+     */
+    maxOpenParcelAgeDays: int("maxOpenParcelAgeDays").default(7).notNull(),
     notes: text("notes"),
     isActive: boolean("isActive").default(true).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -9174,12 +9180,21 @@ export const deliveryLedgerEntries = mysqlTable(
       "COD_RELEASED",
       "COD_WRITTEN_OFF",
       "COD_RECOVERED",
+      // Slice DFP1 (٣٠/٨/٢٦، هجرة 0295): عجزُ التحصيل ذمّةٌ فوريّة على المندوب — رافعٌ لعهدة
+      // الجهة تماماً كـCOD_COLLECTED، لكن مع إلزامِ `shortfallReason` أدناه.
+      "SHORTFALL_ASSIGNED",
       "FEE_EARNED",
       "FEE_PAID",
       "FEE_OFFSET",
       "FEE_REFUNDED",
     ]).notNull(),
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    /**
+     * Slice DFP1 (٣٠/٨/٢٦، هجرة 0295) — سببُ العجز حين entryType='SHORTFALL_ASSIGNED'.
+     * قيمُه من `shared/shortfallReason.ts` (enum ثابت)، وإلّا NULL. لا نصّ حرّ — القيمة
+     * يحرسها الخادم عبر `isShortfallReason` قبل الإدراج، ويعرضها الكشف بتسميةٍ عربية.
+     */
+    shortfallReason: varchar("shortfallReason", { length: 60 }),
     notes: varchar("notes", { length: 500 }),
     createdBy: int("createdBy").references(() => users.id),
     occurredAt: timestamp("occurredAt").defaultNow().notNull(),
@@ -9192,6 +9207,9 @@ export const deliveryLedgerEntries = mysqlTable(
     ),
     consignmentIdx: index("idx_delivery_ledger_cn").on(table.consignmentId),
     remittanceIdx: index("idx_delivery_ledger_remit").on(table.remittanceId),
+    shortfallReasonIdx: index("idx_delivery_ledger_shortfall_reason").on(
+      table.shortfallReason,
+    ),
   }),
 );
 export type DeliveryLedgerEntry = typeof deliveryLedgerEntries.$inferSelect;

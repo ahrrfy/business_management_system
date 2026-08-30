@@ -21,7 +21,7 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { money, round2, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
-import { assertFloatLimitTx } from "./parties";
+import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import { assertSiblingsReady } from "../workOrder/siblings";
@@ -310,6 +310,11 @@ export async function dispatchInvoiceInTx(
       consignmentId = extractInsertId(cnRes);
     }
 
+    // Slice DFP1 (٣٠/٨/٢٦) — SLA على عمر الطرود المفتوحة (نفس القرار على مسار الفواتير).
+    // ⚠️ خارج بلوك `codPositive` عمداً: طردٌ سابقٌ بـCOD صفريّ متأخر لا يمنع تلقائياً، لكنّ الطرد
+    // الأقدم عادةً بـCOD موجب ⇒ الحارس يمسك الحالة الحقيقيّة، وترك الفحص عاماً أخفّ في المستقبل
+    // إن قرّر المالك توسيع التعريف.
+    await assertNoStaleOpenParcelsTx(tx, party);
     if (codPositive) {
       // تدقيق ٦/٨ (ث٧): `floatLimit` كان يُدخَل في شاشة الجهة ولا يقرؤه أيّ مسار إسناد ⇒ سقفٌ
       // مسرحيّ. يُنفَّذ الآن: عهدةٌ تتجاوز السقف تُرفض (تراكمُ نقدٍ بيد مندوبٍ بلا حدّ = خطر).

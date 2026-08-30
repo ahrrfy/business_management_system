@@ -3,7 +3,7 @@
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
 // لذلك قائمة «المفتوح للتوريد» تقبل branchId وتعرض فقط طرود ذلك الفرع. أما السجل الإداري العام
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
-import { and, asc, desc, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money } from "../money";
@@ -216,7 +216,14 @@ export async function listInTransitConsignments(branchId: number | null, partyId
   const db = getDb();
   if (!db) return { rows: [], hasMore: false, nextCursor: null };
   const effLimit = resolvePageLimit(page.limit);
-  const conds = [eq(deliveryConsignments.status, "DISPATCHED")];
+  /**
+   * Slice DFP1 (٣٠/٨/٢٦، P1 #3b) — تسويةُ تعريف «قيد التوصيل» مع تعريفه في تبويب التسوية:
+   * كان الفلتر `status = 'DISPATCHED'` وحده، بينما `listPartyObligations` يعتمد
+   * `consignmentStatus IN ('DISPATCHED', 'PARTIAL')`. النتيجة كانت **تناقضاً حسابياً**: طردٌ
+   * سُلِّم جزئياً (PARTIAL) لا يظهر في «قيد التوصيل» لكن مجموعُه محسوبٌ في «مسؤولية الجهة»
+   * ⇒ رأس اللوحة والصفوف يتضاربان. الحلّ: توحيد الفلترة على نفس الشرط المؤتمَن في التسوية.
+   */
+  const conds = [inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"])];
   if (branchId != null) conds.push(eq(deliveryConsignments.branchId, branchId));
   if (partyId != null) conds.push(eq(deliveryConsignments.partyId, partyId));
   // ⚠️ Codex P1 (٢٥/٨): «قيد التوصيل» ASC (الأقدم أوّلاً) — الأصل كان `ORDER BY dispatchedAt` ASC
@@ -695,6 +702,35 @@ export async function listPartyObligations(branchId: number | null) {
         FROM deliveryConsignments dc
         WHERE dc.partyId = ${deliveryParties.id}
           AND dc.parcelStatus = 'DELIVERED'${cnBranch})`,
+      /**
+       * Slice DFP1 (٣٠/٨/٢٦، P1 #2) — عمودان جديدان يفكّان codDueTotal إلى مسؤوليّتين دلالياً منفصلتين
+       * (نصّ المالك المُغلَق: «٤ أعمدة منفصلة» — الأول من العمود القائم currentBalance، والثاني والثالث
+       * هنا، والرابع feeDueTotal القائم). المرجع الوحيد للتسميات والحساب: `shared/partyExposure.ts`.
+       *
+       *   parcelsInTransitAmount   = Σ codAmount للطرود ASSIGNED / OUT_FOR_DELIVERY (بضاعةٌ خرجت لم تصل)
+       *   deliveredUncollectedAmount = Σ (codAmount − collectedAmount − counterSettledAmount)>0
+       *                                للطرود DELIVERED مع moneyStatus ∈ (UNSETTLED, PARTIAL)
+       *                                (سُلِّم بلا قبضٍ كامل — خطرٌ أعلى من «بالطريق»).
+       *
+       * لماذا لم يُشتَق codDueTotal بجمعهما: `codDueTotal` القائم يستعمل openScope
+       * (`consignmentStatus IN DISPATCHED/PARTIAL`) وهو مخصَّص للنظرة المُوحَّدة «كل ما ليس مغلقاً».
+       * التقسيم البصريّ للمالك يقيس **parcelStatus** لا consignmentStatus — دلاليّاً مختلف: طردٌ
+       * DELIVERED بحالة إغلاق PARTIAL يقع في «سُلِّم لم يُحصَّل»، وطردٌ ASSIGNED بحالة إغلاق DISPATCHED
+       * في «بالطريق». نبقي codDueTotal كما هو (لا كسر واجهةٍ عبر ٢٠+ مستهلك).
+       */
+      parcelsInTransitAmount: sql<string>`(SELECT COALESCE(SUM(CAST(dc.codAmount AS DECIMAL(15,2))), 0)
+        FROM deliveryConsignments dc
+        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
+          AND dc.parcelStatus IN ('ASSIGNED', 'OUT_FOR_DELIVERY'))`,
+      deliveredUncollectedAmount: sql<string>`(SELECT COALESCE(SUM(GREATEST(
+          CAST(dc.codAmount AS DECIMAL(15,2))
+          - CAST(dc.collectedAmount AS DECIMAL(15,2))
+          - CAST(dc.counterSettledAmount AS DECIMAL(15,2)), 0)), 0)
+        FROM deliveryConsignments dc
+        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
+          AND dc.parcelStatus = 'DELIVERED'
+          AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
+          AND dc.returnDeclaredAt IS NULL)`,
       lastRemittanceAt: sql<Date | null>`(SELECT MAX(dr.receivedAt) FROM deliveryRemittances dr
         WHERE dr.partyId = ${deliveryParties.id}${rmBranch})`,
       hasPortal: sql<number>`(
@@ -743,6 +779,77 @@ export async function listPartyObligations(branchId: number | null) {
       feeDueTotal: String(r.feeDueTotal ?? "0.00"),
       lastRemittanceAt: r.lastRemittanceAt ?? null,
       hasPortal: Number(r.hasPortal ?? 0) > 0,
+      // Slice DFP1 (٣٠/٨/٢٦) — أعمدة المسؤوليّة الأربعة الجديدة (٢ و٣ من partyExposure).
+      parcelsInTransitAmount: String(r.parcelsInTransitAmount ?? "0.00"),
+      deliveredUncollectedAmount: String(r.deliveredUncollectedAmount ?? "0.00"),
+    }));
+}
+
+/**
+ * Slice DFP1 (٣٠/٨/٢٦) — الجهات المتأخّرة (SLA عليها طرودٌ مفتوحة تجاوزت `maxOpenParcelAgeDays`).
+ *
+ * الغرض: قسم «الجهات المتأخّرة» على لوحة التوصيل — تلقائيّاً يُظهر للمالك/المدير الجهات التي
+ * تراكمت عليها طرودٌ بلا توريد، فيتّخذ قراراً (مكالمة، إنذار، إيقاف). قرارُ المالك ٣٠/٨: هذه
+ * قائمةٌ اطّلاعيّة (السطرُ يفشل إسنادَ جديد كاملاً — لا حاجة لضغطة زرّ من المدير).
+ *
+ * الاستعلام يُعيد لكلّ جهةٍ متأخّرة: staleCount، أقدم طرد بالأيّام، مجموع المتبقّي المتأخّر —
+ * كافٍ لصفٍّ عمليّ يوجّه إلى صفحة الجهة لتصفية طرودها القديمة.
+ */
+export async function listStaleParties(branchId: number | null) {
+  const db = getDb();
+  if (!db) return [];
+  const cnBranch = branchId == null ? sql`` : sql` AND dc.branchId = ${branchId}`;
+  const rows = await db
+    .select({
+      partyId: deliveryParties.id,
+      name: deliveryParties.name,
+      partyType: deliveryParties.partyType,
+      maxOpenParcelAgeDays: deliveryParties.maxOpenParcelAgeDays,
+      // عددُ الطرود المفتوحة الأقدم من عتبة الجهة.
+      staleParcelCount: sql<number>`(SELECT COUNT(*)
+        FROM deliveryConsignments dc
+        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
+          AND dc.dispatchedAt IS NOT NULL
+          AND TIMESTAMPDIFF(DAY, dc.dispatchedAt, NOW()) > ${deliveryParties.maxOpenParcelAgeDays}
+          AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
+          AND dc.parcelStatus NOT IN ('RETURNED', 'CANCELLED'))`,
+      // عمرُ أقدم طرد متأخّر بالأيّام — للفرز والعرض.
+      oldestParcelAgeDays: sql<number | null>`(SELECT MAX(TIMESTAMPDIFF(DAY, dc.dispatchedAt, NOW()))
+        FROM deliveryConsignments dc
+        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
+          AND dc.dispatchedAt IS NOT NULL
+          AND TIMESTAMPDIFF(DAY, dc.dispatchedAt, NOW()) > ${deliveryParties.maxOpenParcelAgeDays}
+          AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
+          AND dc.parcelStatus NOT IN ('RETURNED', 'CANCELLED'))`,
+      // مجموع القيمة المُعرَّضة على الطرود المتأخّرة (بضاعةٌ + نقدٌ لم يُورَّد).
+      staleTotalAmount: sql<string>`(SELECT COALESCE(SUM(GREATEST(
+          CAST(dc.codAmount AS DECIMAL(15,2))
+          - CAST(dc.collectedAmount AS DECIMAL(15,2))
+          - CAST(dc.counterSettledAmount AS DECIMAL(15,2)), 0)), 0)
+        FROM deliveryConsignments dc
+        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
+          AND dc.dispatchedAt IS NOT NULL
+          AND TIMESTAMPDIFF(DAY, dc.dispatchedAt, NOW()) > ${deliveryParties.maxOpenParcelAgeDays}
+          AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
+          AND dc.parcelStatus NOT IN ('RETURNED', 'CANCELLED'))`,
+    })
+    .from(deliveryParties)
+    .where(
+      branchId == null
+        ? undefined
+        : or(isNull(deliveryParties.branchId), eq(deliveryParties.branchId, branchId)),
+    );
+  return rows
+    .filter((r) => Number(r.staleParcelCount ?? 0) > 0)
+    .sort((a, b) => Number(b.oldestParcelAgeDays ?? 0) - Number(a.oldestParcelAgeDays ?? 0))
+    .map((r) => ({
+      partyId: Number(r.partyId),
+      name: r.name,
+      partyType: r.partyType as "INDIVIDUAL" | "COMPANY",
+      maxOpenParcelAgeDays: Number(r.maxOpenParcelAgeDays ?? 7),
+      staleParcelCount: Number(r.staleParcelCount ?? 0),
+      oldestParcelAgeDays: r.oldestParcelAgeDays == null ? 0 : Number(r.oldestParcelAgeDays),
+      staleTotalAmount: String(r.staleTotalAmount ?? "0.00"),
     }));
 }
 

@@ -68,6 +68,8 @@ export {
   // ٢٢/٨ — قراءات جديدة لحملة حياة الطلب:
   getConsignmentTimeline,
   listPartyObligations,
+  // Slice DFP1 (٣٠/٨/٢٦) — قائمة الجهات المتأخّرة (SLA على عمر الطرود المفتوحة).
+  listStaleParties,
 } from "./delivery/queries";
 // ٥/٨: إسناد فاتورةٍ قائمة (بيع مباشر بلا أمر شغل) للتوصيل — كان مستحيلاً بنيوياً.
 export type { DispatchInvoiceInput } from "./delivery/dispatchInvoice";

@@ -26,7 +26,7 @@ import { nextInvoiceNumber } from "../numbering";
 import { openShiftIdTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
-import { assertFloatLimitTx } from "./parties";
+import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import { assertSiblingsReady } from "../workOrder/siblings";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
@@ -192,6 +192,9 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // (أوامر الشغل الجاهزة) يرفع `currentBalance` بلا حدّ. الفحص هنا **قبل** أيّ كتابة (فاتورة/
     // مخزون/عهدة) وتحت قفل صفّ الجهة أعلاه ⇒ الرفض لا يترك فاتورةً يتيمة.
     if (codAmount.gt(0)) await assertFloatLimitTx(tx, party, codAmount);
+    // Slice DFP1 (٣٠/٨/٢٦) — حظرُ إسنادٍ جديد على جهةٍ لديها طرود مفتوحة تجاوزت SLA الجهة (بلا
+    // تجاوُز إداريّ). الفحص يمرّ لكلّ إسناد (حتى COD=0 — الطرود القديمة قد تكون بـCOD موجب لم يُورَّد).
+    await assertNoStaleOpenParcelsTx(tx, party);
 
     // ═══ إعادة الإسناد بعد إلغائه (١٩/٨) ═══
     // بلا هذا الفرع كان `cancelDeliveryAssignment` يحبس الأمر **إلى الأبد**: يعود إلى طابور
