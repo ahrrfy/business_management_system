@@ -1160,7 +1160,7 @@
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/morningPushScheduler.ts:207"
 "job","(scheduled)","interval","","interval","interval","none","","","","","","","JOB_NO_PRINCIPAL","server/services/nativePushOutboxWorker.ts:293"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/onlineOrderExpirySweeper.ts:74"
-"job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/productStudioNotificationWorker.ts:64"
+"job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/productStudioNotificationWorker.ts:73"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/productStudioStagingWorker.ts:43"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/purchase/purchaseIntegrityMonitor.ts:108"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/reconcileScheduler.ts:55"

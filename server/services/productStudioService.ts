@@ -22,6 +22,12 @@ import { canCrossBranches } from "../lib/branchAuthority";
 import { utcDayStart, utcNextDayStart } from "./businessDay";
 import { reserveStudioSubmitQuotaInTx, studioPayloadBytes } from "./productStudioSubmitQuota";
 import { createAppNotification } from "./appNotificationService";
+import {
+  enqueueAppNotificationOutbox,
+  reconcileAppNotificationOutbox,
+  type AppNotificationOutboxIntent,
+  type AppNotificationWriter,
+} from "./appNotificationOutboxService";
 import { generateAndSaveContentDraftForProduct } from "./productContentAiService";
 
 const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
@@ -1243,8 +1249,13 @@ export async function transitionStudioCampaign(
      */
     cascadeAssignedTasks?: boolean;
   },
+  notificationWriter: AppNotificationWriter = createAppNotification,
 ) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  // UUID واحد لكل **حدث انتقال**. يُحفَظ في outbox داخل المعاملة، لذا دورتان
+  // PAUSED→ACTIVE متكررتان لا تتشاركان مفتاحاً، بينما إعادة مصالحة الحدث نفسه تبقى
+  // idempotent بقيد appNotifications.eventKey الفريد.
+  const notificationOccurrenceId = randomUUID();
   const outcome = await withStudioTx(async (tx) => {
     const campaign = (
       await tx
@@ -1307,8 +1318,8 @@ export async function transitionStudioCampaign(
       input.status === "CANCELLED"
         ? await cancelCampaignQueuedTasksInTx(tx, actor, campaign, input.reason?.trim() || `أُلغيت مع حملة «${campaign.name}» (#${input.campaignId})`, input.cascadeAssignedTasks === true ? "productStudio.campaign.cancelWithCampaign.cascade" : "productStudio.campaign.cancelWithCampaign", { cascadeAssigned: input.cascadeAssignedTasks === true })
         : { cancelledCount: 0, remaining: 0 };
-    // قائمةُ المستلمين تُلتقط داخل المعاملة (مرجعٌ اتّساقيّ) وتُستعمل بعد commit لإرسال
-    // الإشعارات — إشعاراتٌ خارج المعاملة كي لا يُدحرَج انتقالُ الحملة بسببِ فشلِ إشعارٍ.
+    // قائمةُ المستلمين تُلتقط داخل المعاملة (مرجعٌ اتّساقيّ) وتُحوَّل إلى نوايا دائمة في
+    // المعاملة نفسها. التسليم وحده يجري بعد commit كي لا يُدحرَج الانتقال بسبب عطلٍ عابر.
     //
     // اتحادُ (عضويّة الحملة) ∪ (مالكو مهام حيّة على الحملة) بعد مراجعة Codex P2 على PR #862:
     // `updateCampaignAssignees` يحذف صفَّ العضويّة ويترك المهامَّ سليمةً — فمصوّرٌ أُخرج من
@@ -1350,6 +1361,30 @@ export async function transitionStudioCampaign(
     for (const row of survivingCounts) {
       if (row.userId != null) survivingByUser.set(Number(row.userId), Number(row.n));
     }
+    const notificationIntents: AppNotificationOutboxIntent[] = [];
+    for (const userId of recipientIds) {
+      const notification = studioCampaignTransitionNotification(input.status, campaign.name, survivingByUser.get(userId) ?? 0);
+      if (!notification) continue;
+      notificationIntents.push({
+        branchId: Number(campaign.branchId),
+        streamKey: `studio.campaign:${input.campaignId}:user:${userId}`,
+        occurrenceId: notificationOccurrenceId,
+        notification: {
+          userId,
+          kind: "TASK_ASSIGNED",
+          title: notification.title,
+          body: notification.body,
+          route: `/catalog/image-studio?campaign=${input.campaignId}`,
+          eventKey: `studio.campaign.transition:${input.campaignId}:${notificationOccurrenceId}:${userId}`,
+          entityType: "productStudioCampaign",
+          entityId: input.campaignId,
+          requiresAction: notification.requiresAction,
+        },
+      });
+    }
+    // Transactional outbox حقيقي ومفهرس: نجاح المعاملة يعني أنّ كل نية باقية حتى لو
+    // تعطلت كتابة appNotifications اللاحقة؛ العامل الدوري يعيدها بلا مسح سجل التدقيق.
+    await enqueueAppNotificationOutbox(tx, notificationIntents);
     return {
       campaignId: input.campaignId,
       status: input.status,
@@ -1358,55 +1393,51 @@ export async function transitionStudioCampaign(
       cancelledTasks: cascade.cancelledCount,
       /** مهام طابورٍ لم تُلغَ بعد لأنّ الدفعة محدودة — تُستكمل بزرّ إلغاء الطابور. */
       remainingTasks: cascade.remaining,
-      /** يُستعمَل خارج المعاملة لإرسال الإشعارات — ليس جزءاً من عقد الواجهة. */
-      _recipients: recipientIds.map((userId) => ({ userId, survivingJobs: survivingByUser.get(userId) ?? 0 })),
-      _campaignName: campaign.name,
+      /** يُستعمَل خارج المعاملة لتسليم نوايا هذا الحدث فوراً — ليس جزءاً من عقد الواجهة. */
+      _notificationOccurrenceId: notificationOccurrenceId,
     };
   });
-  // إشعارات المستلمين بتغيّر الحالة (٢٩/٨) — كانت الحالة تتغيّر صامتاً فيَجد المصوّر
-  // قائمته النشطة فارغةً بلا سبب. الإشعار خارج المعاملة كي لا يُلغيَ إخفاقُ push انتقالاً
-  // ماليّ الأثر (إلغاء يجرّ الطابور).
-  //
-  // occurrenceNonce (Codex P2 على PR #862): eventKey فريدٌ **لكل حدث انتقال** لا لكل
-  // (حملة، حالة، مستلم) فقط. `appNotifications.eventKey` قيدُ تفرّدٍ عالميّ، فكان
-  // الاستئناف الثاني (PAUSED→ACTIVE مرّتين) يُبتلَع صامتاً. الوقتُ اللحظيّ (epoch ms)
-  // مضمونُ التميّز داخل هذه الدالة (نداءٌ واحد يُصدر إشعارات على أعلى تقدير أقلّ من
-  // مللي ثانية بين المستلمين). إعادة محاولة الطلب نفسها ما زالت idempotent بشرطها الآخر:
-  // العميل يجب أن يُعيد نفس occurrenceNonce، وهذا خارج نطاق هذا المكوّن — على القاعدة
-  // العامّة أنّ إعادة تنفيذ transitionStudioCampaign تُعالَج بحرّاسها المسبقة لا هنا.
-  const occurrenceNonce = Date.now();
-  if (outcome._recipients.length > 0) {
-    // eventKey شكلٌ: transition:<حملة>:<حالة>:<وقت>:<مستلم>. تنبيه لكل مستلم رسالتُه
-    // مبنيّة على عدد مهامه الحيّة — قد يختلف بين مستلَمَين لنفس الانتقال.
-    await Promise.allSettled(
-      outcome._recipients.map(({ userId, survivingJobs }) => {
-        const notification = studioCampaignTransitionNotification(outcome.status, outcome._campaignName, survivingJobs);
-        if (!notification) return Promise.resolve();
-        return createAppNotification({
-          userId,
-          kind: "TASK_ASSIGNED",
-          title: notification.title,
-          body: notification.body,
-          route: `/catalog/image-studio?campaign=${outcome.campaignId}`,
-          eventKey: `studio.campaign.transition:${outcome.campaignId}:${outcome.status}:${occurrenceNonce}:${userId}`,
-          entityType: "productStudioCampaign",
-          entityId: outcome.campaignId,
-          requiresAction: notification.requiresAction,
-        }).catch((err) => {
-          // ملاحظةٌ لمراجعة Codex P2: هذا المسار ما زال يفقد الإشعار إن فشل createAppNotification
-          // بعد commit المعاملة (اضطرابٌ عابر). المسار المكافئ لـ`reconcileStudioAssignmentNotifications`
-          // على انتقالات الحملة يبقى شغلاً مفتوحاً — يحتاج جدولَ outbox يمثّل الحدث ثمّ عامل
-          // تسوية دوريّاً. الأثر الحاليّ محدود: الطابور المتبقّي كافٍ لتنبيه المصوّر عند فتح
-          // الشاشة، وأثرُ الفقد رسالةٌ push غير موجَّهة.
-          logger.warn({ err, userId, campaignId: outcome.campaignId, status: outcome.status, survivingJobs }, "تعذّر إشعار مستلم بتغيّر حالة الحملة");
-        });
-      }),
-    );
+  // محاولةٌ فورية بعد commit لتحافظ الشاشة على زمن الاستجابة السابق. إن فشلت القراءة
+  // أو الكتابة لا يضيع شيء: سجلّ النية الذرّي يبقى، والعامل الدوري يعيد المصالحة.
+  try {
+    await reconcileStudioCampaignTransitionNotifications(actor, {
+      occurrenceId: outcome._notificationOccurrenceId,
+      notificationWriter,
+    });
+  } catch (error) {
+    logger.warn({ err: error, campaignId: outcome.campaignId, status: outcome.status, occurrenceId: outcome._notificationOccurrenceId }, "productStudio.campaign.transition.notification_reconcile_failed");
   }
-  // الحقول الداخليّة تُقشَّر قبل الإعادة — عقد الواجهة لا يحمل قائمة المستلمين.
-  const { _recipients: _r, _campaignName: _n, ...publicResult } = outcome;
-  void _r; void _n;
+  // الحقل الداخليّ يُقشَّر قبل الإعادة — عقد الواجهة لا يحمل معرّف نية الإشعار.
+  const { _notificationOccurrenceId: _occurrenceId, ...publicResult } = outcome;
+  void _occurrenceId;
   return publicResult;
+}
+
+/**
+ * يصالح outbox انتقالات الحملات مع صندوق التطبيق الدائم. السحب بقفل skip-locked وlease
+ * يمنع احتكار الصفوف الفاشلة للدفعة، و`appNotifications.eventKey` يحسم نافذة الانهيار
+ * بين إنشاء الإشعار وختم النية. بعدها يتولى `nativePushOutbox` إعادة محاولات الدفع.
+ */
+export async function reconcileStudioCampaignTransitionNotifications(
+  actor: ProductStudioActor,
+  options: { occurrenceId?: string; limit?: number; notificationWriter?: AppNotificationWriter } = {},
+): Promise<{ createdCount: number; claimedCount: number; failedCount: number }> {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  if (!canCrossBranches(actor) && actor.branchId == null) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لك" });
+  }
+  const result = await reconcileAppNotificationOutbox({
+    branchId: canCrossBranches(actor) ? undefined : Number(actor.branchId),
+    occurrenceId: options.occurrenceId,
+    limit: options.limit,
+    notificationWriter: options.notificationWriter,
+  });
+  // النداء المقيّد بـoccurrenceId هو التسليم الطبيعيّ الفوري لكل انتقال؛ لا نحوله إلى
+  // تحذير. التحذير يخصّ ما التقطه العامل لاحقاً، لأنه دليل فشلٍ سابق يستحق المراقبة.
+  if (result.createdCount > 0 && !options.occurrenceId) {
+    logger.warn({ createdCount: result.createdCount, claimedCount: result.claimedCount, failedCount: result.failedCount }, "productStudio.campaign.transition.notifications_reconciled");
+  }
+  return { createdCount: result.createdCount, claimedCount: result.claimedCount, failedCount: result.failedCount };
 }
 
 export async function listStudioCampaigns(actor: ProductStudioActor) {

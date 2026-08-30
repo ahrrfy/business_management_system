@@ -249,6 +249,9 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   nativePushOutbox_eventKey_unique: {
     msg: "حدث الإشعار سبق إدراجه للتسليم — لم يُنشأ إرسال مكرّر.",
   },
+  appNotificationOutbox_eventKey_unique: {
+    msg: "نية إشعار التطبيق لهذا الحدث مسجّلة مسبقاً — ستُستكمل المحاولة القائمة دون تكرار.",
+  },
   appNotifications_eventKey_unique: {
     msg: "هذا الإشعار سبق تسجيله — لم يُنشأ إشعار مكرّر.",
   },

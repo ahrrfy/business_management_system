@@ -5,6 +5,7 @@ import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { getCurrentCompanyId } from "../tenancy/context";
 import {
   reconcileStudioAssignmentNotifications,
+  reconcileStudioCampaignTransitionNotifications,
   sendStudioDueNotifications,
   type ProductStudioActor,
 } from "./productStudioService";
@@ -33,12 +34,20 @@ export async function sweepProductStudioNotificationsOnce(
       ),
     };
   }
-  // نداءان في نبضةٍ واحدة، وترتيبُهما مقصود:
-  //  ١) **المصالحة أوّلاً** — تُنشئ إشعارَ الإسناد المفقود. فالموظّف يحتاج أن يعرف **أنّ**
-  //     لديه مهمّة قبل أن يُذكَّر بقرب موعدها؛ العكسُ يُنتج تذكيراً بمهمّةٍ لم يسمع بها.
-  //  ٢) ثمّ تذكيراتُ المواعيد كما كانت.
-  // وفشلُ إحداهما لا يُسقط الأخرى: كلٌّ منهما مستقلٌّ وidempotent بالمفتاح الفريد.
+  // ثلاث مراحل في نبضةٍ واحدة، وترتيبُها مقصود:
+  //  ١) نوايا انتقالات الحملات الملتزمة ذرّياً — كي يعلم المصوّر أن الحملة توقفت/استؤنفت
+  //     قبل أي تذكيرٍ بعملها.
+  //  ٢) مصالحةُ إشعار الإسناد المفقود — الموظّف يحتاج أن يعرف **أنّ** لديه مهمّة قبل أن
+  //     يُذكَّر بقرب موعدها.
+  //  ٣) تذكيراتُ المواعيد كما كانت.
+  // فشلُ أيّ مصالحة لا يُسقط التالية: كلّها مستقلة وidempotent بالمفتاح الفريد.
   let createdCount = 0;
+  try {
+    const reconciledCampaignTransitions = await reconcileStudioCampaignTransitionNotifications(SYSTEM_ACTOR);
+    createdCount += reconciledCampaignTransitions.createdCount;
+  } catch (error) {
+    logger.warn({ err: error }, "productStudio.notifications.campaign_transition_reconcile_failed");
+  }
   try {
     const reconciled = await reconcileStudioAssignmentNotifications(SYSTEM_ACTOR);
     createdCount += reconciled.createdCount;
