@@ -137,17 +137,28 @@ function initials(name: string | null | undefined): string {
   const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
   return ((parts[0]?.[0] ?? "؟") + (parts[1]?.[0] ?? "")).slice(0, 2);
 }
-function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok" | "soon" | "late"; text: string } {
-  if (o.status === "DELIVERED") return { state: "done", text: "سُلّم" };
-  // ⚠️ o.dueDate يصل عبر tRPC/superjson كائنَ Date حقيقياً (لا نصّاً) — String(Date) ينتج
-  // "Tue Sep 15 2026…" لا ISO، فيفشل new Date(...) صامتاً وينتج NaN. toDate() يتعامل مع
-  // Date/نصّ/YYYY-MM-DD محلياً بأمان (نفس دالة fmtDate المُتحقَّق منها).
-  const due = toDate(o.dueDate as string | number | Date | null | undefined);
-  if (!due) return { state: "ok", text: "بلا موعد" };
+/**
+ * فرقُ أيّامٍ بين موعد الاستحقاق واليوم — قيمةٌ رقميّة يبني عليها كلٌّ من `dueInfo`
+ * (للعرض) والفلاتر السريعة في الموجة ٣ (المتأخّر/يستحقّ اليوم). المصدرُ الحاكم
+ * الوحيد لحساب اليوم، كي لا يختلف عرضٌ عن فلتر على نفس البطاقة.
+ *
+ * ⚠️ حسّاسٌ للنوع: `dueDate` يصل عبر tRPC/superjson كائنَ Date حقيقياً — `String(Date)`
+ * ينتج "Sun Aug 30 2026…" لا ISO، فيكسر أيّ مقارنةٍ بـ`slice(0,10)`. `toDate` يتعامل مع
+ * Date/نصّ/YYYY-MM-DD محلياً بأمان (Codex أمسك هذا).
+ */
+function dueDayDelta(dueVal: unknown): number | null {
+  const due = toDate(dueVal as string | number | Date | null | undefined);
+  if (!due) return null;
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate());
-  const days = Math.round((dueDay.getTime() - today.getTime()) / 864e5);
+  return Math.round((dueDay.getTime() - today.getTime()) / 864e5);
+}
+
+function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok" | "soon" | "late"; text: string } {
+  if (o.status === "DELIVERED") return { state: "done", text: "سُلّم" };
+  const days = dueDayDelta(o.dueDate);
+  if (days == null) return { state: "ok", text: "بلا موعد" };
   if (days < 0) return { state: "late", text: days === -1 ? "متأخر يوم" : `متأخر ${Math.abs(days)} يوم` };
   if (days === 0) return { state: "soon", text: "يستحق اليوم" };
   if (days === 1) return { state: "soon", text: "غداً" };
@@ -1252,6 +1263,10 @@ export default function WorkOrders() {
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const canDeliver = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager"]);
+  // مرآة workordersExecProcedure الخادميّة: workorders/FULL + roles=[cashier|manager|print_operator].
+  // إشارة الكانبان (setKanbanState) تحته ⇒ لا نُظهر زرّاً سيفشل بـFORBIDDEN لمستخدم READ (Codex #6).
+  const canSetKanban = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
   const canReadCustomerContext = !!me.data?.role &&
     hasModuleAccess(me.data.role, (me.data.permissionsOverride ?? null) as PermissionMap | null, "crm", "READ");
   // قائمة الموظَّفين القابِلين للإسناد — مَرفوعة لصَفحة WorkOrders كَي تُستعمَل
@@ -1390,26 +1405,28 @@ export default function WorkOrders() {
   const all = useMemo(() => [...(activeQ.data ?? []), ...(deliveredQ.data ?? [])], [activeQ.data, deliveredQ.data]);
   // الأولوية/القناة ترشيح عميلي (لا يدعمهما الخادم)؛ q تُطبَّق فورياً هنا أيضاً فوق الترشيح الخادمي
   // المُبطَّأ (debounce) — استجابة لحظية بلا وميض نتائج قديمة.
-  const filtered = useMemo(() => {
+  /**
+   * predicate الفلترة العميليّة — منفصلٌ عن `filtered` عمداً كي **يُعاد استعماله في التصدير**
+   * (Codex #5): «تصدير Excel» كان يطبّق فلاتر الخادم فقط ⇒ يصدّر أوامر لا تظهر في اللوحة.
+   */
+  const clientFilterPredicate = useMemo(() => {
     const needle = f.q.trim().toLowerCase();
-    // الموجة ٣ — فلاتر معلَّبة: كلٌّ منها URL-toggle، والانفصال العميلي هنا (سريع، تفاعليّ).
-    // «اليوم» بحدود UTC — dueDate عمود DATE يقارَن نصّياً بحتمية (نفس آلية counts خادمياً).
-    const todayUtc = new Date().toISOString().slice(0, 10);
-    return all.filter((o) => {
+    return (o: WO) => {
       if (f.pri !== "all" && o.priority !== f.pri) return false;
       if (f.ch !== "all" && o.receptionChannel !== f.ch) return false;
       // الفلاتر السريعة تطبِّق على النشطة فقط — تسليمٌ فائتُ الموعد ليس «متأخّراً» (خرج من الدورة).
+      // اليومُ يُحسَب بأيّامٍ محلّية (`dueDayDelta`) لاتساقه مع `dueInfo` على البطاقة نفسها —
+      // كلاهما مصدرُه الحاكم واحد، لا فرقَ بين ما يعرضه الشاشة وما يفلتره الزرّ (Codex #3).
       if (f.late === "1") {
         if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
-        if (!o.dueDate) return false;
-        const d = String(o.dueDate).slice(0, 10);
-        if (d >= todayUtc) return false;
+        const d = dueDayDelta(o.dueDate);
+        if (d == null || d >= 0) return false;
       }
       if (f.unassigned === "1" && o.assignedTo != null) return false;
       if (f.dueToday === "1") {
         if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
-        const d = o.dueDate ? String(o.dueDate).slice(0, 10) : "";
-        if (d !== todayUtc) return false;
+        const d = dueDayDelta(o.dueDate);
+        if (d !== 0) return false;
       }
       if (f.blocked === "1") {
         const ks = (o as unknown as { kanbanState?: string | null }).kanbanState;
@@ -1420,8 +1437,10 @@ export default function WorkOrders() {
         if (!hay.includes(needle)) return false;
       }
       return true;
-    });
-  }, [all, f.q, f.pri, f.ch, f.late, f.unassigned, f.dueToday, f.blocked]);
+    };
+  }, [f.q, f.pri, f.ch, f.late, f.unassigned, f.dueToday, f.blocked]);
+
+  const filtered = useMemo(() => all.filter(clientFilterPredicate), [all, clientFilterPredicate]);
 
   /** تصدير كامل عبر cursor (الشكل مصفوفة صرفة): صفحات 200 حتى صفحة ناقصة، بسقف أمان. */
   async function fetchAllForExport(): Promise<WO[]> {
@@ -1433,17 +1452,10 @@ export default function WorkOrders() {
       if (pageRows.length < 200) break;
       cursor = Number(pageRows[pageRows.length - 1].id);
     }
-    // نطبّق فلاتر العميل نفسها (أولوية/قناة/بحث لحظي) — التصدير يطابق ما تعرضه اللوحة.
-    const needle = f.q.trim().toLowerCase();
-    return out.filter((o) => {
-      if (f.pri !== "all" && o.priority !== f.pri) return false;
-      if (f.ch !== "all" && o.receptionChannel !== f.ch) return false;
-      if (needle) {
-        const hay = [o.orderNumber, o.title, o.customerName ?? ""].join(" ").toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
-      return true;
-    });
+    // نطبّق **نفس** predicate الفلترة العميليّة على النتائج — التصدير يطابق ما تعرضه
+    // اللوحة حرفياً بما فيه الفلاتر السريعة الأربعة (Codex #5). قبله: أولوية/قناة/بحث
+    // وحدها كانت تُطبَّق، فالضغط على «تصدير» بعد تفعيل «معطَّل» يصدّر أوامر لا تظهر.
+    return out.filter(clientFilterPredicate);
   }
 
   // ─── الموجة ٢ (٣٠/٨/٢٦) — Group By متبدّل بنمط Odoo ──────────────────────────
@@ -1727,17 +1739,33 @@ export default function WorkOrders() {
         {/* الموجة ٣ (٣٠/٨/٢٦) — فلاتر معلَّبة (نمط Odoo): بديلٌ عن حقولٍ متفرّقة يفهمها
             الموظّف بأسمائها لا بالفلترة اليدويّة. كلٌّ منها URL-toggle قابلة للنسخ.
             الشارة السابقة «متأخّر» صارت فلتراً تفاعليّاً: تعرض العدّاد وتحصر عند النقر. */}
-        <button
-          type="button"
-          aria-pressed={f.late === "1"}
-          onClick={() => setF({ late: f.late === "1" ? "" : "1" })}
-          className={`wob-qf${f.late === "1" ? " wob-qf-on wob-qf-late" : ""}`}
-          title="أوامرُ فات موعد استحقاقها"
-        >
-          <Timer aria-hidden className="size-3.5" />
-          متأخّر
-          {(serverCounts?.late ?? 0) > 0 && <span className="wob-qf-badge">{fmtInt(serverCounts?.late ?? 0)}</span>}
-        </button>
+        {(() => {
+          // Codex #4: عدّاد الخادم `serverCounts.late` **لا يقبل** فلاتر العميل (pri/ch)،
+          // فحين يُفعَّل أحدها تكذب الشارة («10 متأخر» وعلى الشاشة بطاقتان). حين يُفعَّل
+          // فلترٌ عميليّ، نُعيد الحساب من `filtered` نفسه (نفس مصدر البطاقات)، وإلّا نأخذ
+          // العدّ الخادميّ (أدقّ على مجموعة أوسع من نافذة النشطة الحاليّة).
+          const clientFilterActive = f.pri !== "all" || f.ch !== "all";
+          const lateBadge = clientFilterActive
+            ? filtered.filter((o) => {
+                if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+                const d = dueDayDelta(o.dueDate);
+                return d != null && d < 0;
+              }).length
+            : (serverCounts?.late ?? 0);
+          return (
+            <button
+              type="button"
+              aria-pressed={f.late === "1"}
+              onClick={() => setF({ late: f.late === "1" ? "" : "1" })}
+              className={`wob-qf${f.late === "1" ? " wob-qf-on wob-qf-late" : ""}`}
+              title="أوامرُ فات موعد استحقاقها"
+            >
+              <Timer aria-hidden className="size-3.5" />
+              متأخّر
+              {lateBadge > 0 && <span className="wob-qf-badge">{fmtInt(lateBadge)}</span>}
+            </button>
+          );
+        })()}
         <button
           type="button"
           aria-pressed={f.dueToday === "1"}
@@ -1938,7 +1966,9 @@ export default function WorkOrders() {
                         staff={s.key === "INBOX" && isManager ? assignableStaff.data : undefined}
                         assignPending={assign.isPending}
                         onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
-                        onCycleKanban={(orderId, current) => onCycleKanbanState(orderId, current)}
+                        // Codex #6: النقطة تفاعليّة لمن يستطيع الكتابة فقط؛ لغيرهم تُعرض قراءةً
+                        // (عرضاً غير-NORMAL فقط — بلا زرّ يفشل بـFORBIDDEN).
+                        onCycleKanban={canSetKanban ? ((orderId, current) => onCycleKanbanState(orderId, current)) : undefined}
                         kanbanBusy={setKanban.isPending}
                       />
                     ))}

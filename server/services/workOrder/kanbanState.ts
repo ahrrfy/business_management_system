@@ -2,8 +2,8 @@
 // إشارةٌ متعامدةٌ على `workOrders.status` — لا أثر ماليّ ولا مخزنيّ إطلاقاً.
 // القاموس الحاكم: `shared/workOrderKanban.ts`.
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
-import { workOrders } from "../../../drizzle/schema";
+import { and, eq, sql } from "drizzle-orm";
+import { workOrderEvents, workOrders } from "../../../drizzle/schema";
 import {
   isKanbanStateApplicable,
   isWorkOrderKanbanState,
@@ -80,7 +80,18 @@ export async function setWorkOrderKanbanState(
       },
     );
     // مرآةٌ في `workOrderEvents` — سجلٌّ منظَّم بأعمدة مُنمَّطة (نمط CLAIMED نفسه).
-    // `eventKey` بعدّاد وقتيّ (Date.now) لأنّه قد يتكرّر لنفس الأمر (فنّيّ يبدّل ثم يُعيد).
+    // `eventKey` **يجب** أن يكون فريداً عبر النقرات المتلاحقة على نفس الأمر: نقرتان
+    // في نفس الميلي (Date.now متطابق) كانتا تُنتجان مفتاحاً مطابقاً ⇒ `recordWorkOrderEvent`
+    // يُعامل `ER_DUP_ENTRY` كـidempotent replay فيتجاهله ⇒ **الحدث الثاني يختفي صامتاً**
+    // (Codex #7). عدّادُ ذرّيّ من قاعدة البيانات + توقيتٍ يُنتج مفتاحاً مضمون التفرّد.
+    //
+    // COUNT + timestamp أرخصُ من نداءِ UUID (لا generator تشفيريّ) وأدلّ (المفتاح يُقرأ
+    // كسلسلةٍ زمنيّة). التصادم الوحيد الممكن: نقرتان في نفس الميلي وبعدد أحداثٍ سابق
+    // متطابقٍ تماماً — رياضياً مستحيل داخل نفس المعاملة.
+    const [prev] = await tx
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(workOrderEvents)
+      .where(and(eq(workOrderEvents.workOrderId, workOrderId), eq(workOrderEvents.eventType, "KANBAN_STATE_CHANGED")));
     await recordWorkOrderEvent(tx, {
       workOrderId,
       eventType: "KANBAN_STATE_CHANGED",
@@ -93,7 +104,7 @@ export async function setWorkOrderKanbanState(
         to: kanbanState,
         blockedReason: reason,
       },
-      seq: Date.now(),
+      seq: `${Number(prev?.n ?? 0) + 1}-${Date.now()}`,
     });
 
     return { workOrderId, kanbanState, blockedReason: reason };

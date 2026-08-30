@@ -33,13 +33,17 @@ SET @sql := IF(@needs_reason,
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 
--- فهرس مُركَّب (status, kanbanState) — استعلامات KPIs العمود تجمع `count + sum + late`
--- مقسّمةً على الحالتَين معاً؛ الفهرس يفيد `GROUP BY status, kanbanState` مباشرةً.
+-- فهرس مُركَّب على (workOrderStatus, kanbanState) — استعلامات KPIs العمود تجمع
+-- `count + sum + late` مقسّمةً على الحالتَين معاً؛ الفهرس يفيد `GROUP BY` مباشرةً.
+-- ⚠️ اسم العمود الفعليّ `workOrderStatus` (أوّل معامل mysqlEnum في schema.ts:3378) —
+--    `status` خاصيّة Drizzle فقط. الخلطُ يُسقط الهجرة على الإنتاج بـ`Unknown column 'status'`
+--    (Codex أمسك هذه المرّة). حارس `check:schema-drift` لم يلتقطها لأنّه يفحص أسماء الأعمدة
+--    لا مراجع الفهارس. القاعدة العامّة: [[raw-sql-column-names]] — SQL خامّ = أعمدة خام.
 SET @needs_idx := (
   SELECT COUNT(*) = 0 FROM information_schema.statistics
   WHERE table_schema = DATABASE() AND table_name = 'workOrders' AND index_name = 'idx_wo_status_kanban'
 );
 SET @sql := IF(@needs_idx,
-  "CREATE INDEX `idx_wo_status_kanban` ON `workOrders` (`status`, `kanbanState`)",
+  "CREATE INDEX `idx_wo_status_kanban` ON `workOrders` (`workOrderStatus`, `kanbanState`)",
   "SELECT 'idx_wo_status_kanban exists' AS msg");
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
