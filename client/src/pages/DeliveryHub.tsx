@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
-import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
+import { buildCourierAssignmentMessage, buildCustomerDispatchMessage, buildWorkOrderStatusMessage, openWhatsApp } from "@/lib/whatsapp";
 import {
   CONSIGNMENT_VIEW_AR,
   CONSIGNMENT_VIEW_CLS,
@@ -205,8 +205,72 @@ function DispatchTab() {
   }, [ready.data]);
 
   const dispatch = trpc.delivery.dispatch.useMutation({
-    onSuccess: (r) => {
-      notify.ok("أُرسل عبر المندوب", `إرسالية ${r.consignmentNumber} — COD ${fmt(r.codAmount)} د.ع`);
+    onSuccess: (r, variables) => {
+      // Slice M (٣٠/٨/٢٦): تفاصيل الإسناد للمندوب بضغطةٍ من التوست — يفتح واتساب برسالةٍ مُعدّة.
+      // الجهة تُلتقط بـpartyId المُرسَل + قائمة parties الحيّة (لا استعلام إضافيّ).
+      const dispatchedParty = parties.data?.find((p) => Number(p.id) === Number(variables.partyId));
+      const dispatchedOrder = target; // النافذة لا تُغلَق حتى إتمام دورة onSuccess.
+      const courierPhone = dispatchedParty?.phone;
+      const canSendWhatsapp = !!courierPhone && !!dispatchedOrder;
+      notify.ok(
+        "أُرسل عبر المندوب",
+        `إرسالية ${r.consignmentNumber} — COD ${fmt(r.codAmount)} د.ع`,
+        canSendWhatsapp
+          ? {
+              label: "أرسل تفاصيل واتساب",
+              onClick: () => {
+                openWhatsApp(
+                  courierPhone!,
+                  buildCourierAssignmentMessage({
+                    consignmentNumber: r.consignmentNumber,
+                    orderNumber: dispatchedOrder!.orderNumber,
+                    title: dispatchedOrder!.title,
+                    customerName: dispatchedOrder!.customerName,
+                    customerPhone: dispatchedOrder!.deliveryPhone ?? dispatchedOrder!.customerPhone,
+                    deliveryAddress: dispatchedOrder!.deliveryAddress,
+                    codAmount: r.codAmount,
+                    deliveryFee: variables.deliveryFee ?? "0",
+                    feeCollection: dispatchedOrder!.deliveryFeeCollection ?? "COURIER",
+                  }),
+                );
+              },
+            }
+          : undefined,
+      );
+      // Slice N (٣٠/٨/٢٦): توست ثانٍ للعميل — يعرف مَن يُوصِل طلبَه ورقم هاتفه (لا يفاجَأ برقم غريب).
+      // ينفصل عن التوست الأوّل كي لا نُفقد الموظّف زرَّ المندوب حين يُغلق العميل من غير عمد.
+      const customerPhone = dispatchedOrder?.deliveryPhone ?? dispatchedOrder?.customerPhone;
+      if (customerPhone && dispatchedParty && dispatchedOrder) {
+        notify.info(
+          "أعلم العميل بالمندوب",
+          `اضغط للإرسال — ${dispatchedOrder.customerName ?? "العميل"} يعرف مَن يُوصِل طلبَه`,
+        );
+        // نمرّر الزرّ في التوست الثاني (info بدل ok كي يتمايز بصرياً — الأوّل نجاح، الثاني إجراءٌ اختياريّ).
+        setTimeout(() => {
+          notify.ok(
+            `أعلم ${dispatchedOrder.customerName ?? "العميل"} بالمندوب`,
+            `${dispatchedParty.name} — ${dispatchedParty.phone ?? "بلا هاتف"}`,
+            {
+              label: "أرسل واتساب للعميل",
+              onClick: () => {
+                openWhatsApp(
+                  customerPhone,
+                  buildCustomerDispatchMessage({
+                    orderNumber: dispatchedOrder.orderNumber,
+                    title: dispatchedOrder.title,
+                    customerName: dispatchedOrder.customerName,
+                    courierName: dispatchedParty.name,
+                    courierPhone: dispatchedParty.phone,
+                    codAmount: r.codAmount,
+                    deliveryFee: variables.deliveryFee ?? "0",
+                    feeCollection: dispatchedOrder.deliveryFeeCollection ?? "COURIER",
+                  }),
+                );
+              },
+            },
+          );
+        }, 400);
+      }
       setTarget(null);
       utils.delivery.readyForDispatch.invalidate();
       utils.delivery.listParties.invalidate();

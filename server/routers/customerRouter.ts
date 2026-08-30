@@ -149,13 +149,25 @@ export const customerRouter = router({
     .input(z.object({
       phone: z.string().trim().min(1).max(32),
       name: z.string().trim().min(2).max(255).optional(),
+      // ٣٠/٨/٢٦: حدّ الائتمان للعميل الجديد — أدمن/مدير فقط (تُفرض في الخدمة).
+      // "0" = نقديّ فقط (افتراض)، موجب = سقف يُفحَص، "" أو غير مُمرَّر = افتراض.
+      // نمرّرها كنصّ لتمييز "" (غير مُقصود) عن "0" (مقصود).
+      creditLimit: z.string().regex(/^(\d+(\.\d+)?)?$/).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      const result = await resolveReceptionCustomerByPhone(input, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
-        role: ctx.user.role,
-      });
+      const result = await resolveReceptionCustomerByPhone(
+        {
+          phone: input.phone,
+          name: input.name,
+          // نمرّرها فقط حين تكون قيمةً غير فارغة (كي لا نطمس افتراض "0" بـ`undefined`).
+          ...(input.creditLimit ? { creditLimit: input.creditLimit } : {}),
+        },
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId ?? 1,
+          role: ctx.user.role,
+        },
+      );
       if (result.created && result.customerId != null) {
         await logAudit(ctx, {
           action: "customer.receptionResolveCreate",
