@@ -96,7 +96,11 @@ export default function DeliveryParties() {
             { key: "name", header: "الجهة" },
             { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
             { key: "partyType", header: "النوع", map: (r) => (r.partyType === "COMPANY" ? "شركة" : "مندوب") },
-            { key: "currentBalance", header: "نقد بذمّتها", money: true },
+            // Slice DFP1 (٣٠/٨/٢٦) — ٤ أعمدة منفصلة (partyExposure) بدل «نقد بذمّتها» الملتبس.
+            { key: "currentBalance", header: "نقد بيده", money: true },
+            { key: "parcelsInTransitAmount", header: "طرود بالطريق", money: true, map: (r) => (r as { parcelsInTransitAmount?: string }).parcelsInTransitAmount ?? "0" },
+            { key: "deliveredUncollectedAmount", header: "سُلِّم لم يُحصَّل", money: true, map: (r) => (r as { deliveredUncollectedAmount?: string }).deliveredUncollectedAmount ?? "0" },
+            { key: "feesOwedAmount", header: "أجور مستحقّة له", money: true, map: (r) => (r as { feesOwedAmount?: string }).feesOwedAmount ?? "0" },
             { key: "openConsignments", header: "شحنات مفتوحة" },
             { key: "oldestOutstanding", header: "أقدم مستحق (يوم)", map: (r) => ageDays(r.oldestOutstanding) ?? "" },
             { key: "isActive", header: "الحالة", map: (r) => (r.isActive ? "نشط" : "معطّل") },
@@ -124,11 +128,16 @@ export default function DeliveryParties() {
         ) : (
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
+              {/* Slice DFP1 (٣٠/٨/٢٦، P1 #2+#7): ٤ أعمدة منفصلة (partyExposure) بدل عمود واحد ملتبس.
+                  التسميات والألوان من shared/partyExposure.ts (المصدر الوحيد). */}
               <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
                 <tr>
                   <th className="p-3 text-right">الجهة</th>
                   <th className="p-3 text-right">النوع</th>
-                  <th className="p-3 text-left">نقد بذمّتها</th>
+                  <th className="p-3 text-left" title="نقد قبضه المندوب لم يورَّد بعد">نقد بيده</th>
+                  <th className="p-3 text-left" title="بضاعة سُلِّمت للمندوب لم تصل الزبون">طرود بالطريق</th>
+                  <th className="p-3 text-left" title="طرد سُلِّم للزبون بلا قبضٍ كامل — خطر أعلى">سُلِّم لم يُحصَّل</th>
+                  <th className="p-3 text-left" title="أجور توصيل نحن مدينون بها للمندوب">أجور له</th>
                   <th className="p-3 text-center">شحنات مفتوحة</th>
                   <th className="p-3 text-center">أقدم مستحق</th>
                   <th className="p-3 text-center">الحالة</th>
@@ -138,6 +147,9 @@ export default function DeliveryParties() {
               <tbody>
                 {rows.map((p) => {
                   const bal = Number(p.currentBalance ?? 0);
+                  const inTransit = Number((p as { parcelsInTransitAmount?: string }).parcelsInTransitAmount ?? 0);
+                  const uncollected = Number((p as { deliveredUncollectedAmount?: string }).deliveredUncollectedAmount ?? 0);
+                  const feesOwed = Number((p as { feesOwedAmount?: string }).feesOwedAmount ?? 0);
                   return (
                     <tr key={p.id} className="border-b last:border-0 hover:bg-muted/30">
                       <td className="p-3 font-medium">
@@ -147,7 +159,10 @@ export default function DeliveryParties() {
                         {p.phone && <span className="ms-2 text-xs text-muted-foreground" dir="ltr">{p.phone}</span>}
                       </td>
                       <td className="p-3">{p.partyType === "COMPANY" ? "شركة" : "مندوب"}</td>
-                      <td className={cn("p-3 text-left tabular-nums font-bold", bal > 0 ? "text-destructive" : "")} dir="ltr">{fmt(p.currentBalance)}</td>
+                      <td className={cn("p-3 text-left tabular-nums font-bold", bal > 0 ? "text-foreground" : "text-muted-foreground")} dir="ltr">{fmt(p.currentBalance)}</td>
+                      <td className={cn("p-3 text-left tabular-nums font-bold", inTransit > 0 ? "text-[var(--sem-warn)]" : "text-muted-foreground")} dir="ltr">{fmt(String(inTransit))}</td>
+                      <td className={cn("p-3 text-left tabular-nums font-bold", uncollected > 0 ? "text-destructive" : "text-muted-foreground")} dir="ltr">{fmt(String(uncollected))}</td>
+                      <td className={cn("p-3 text-left tabular-nums font-bold", feesOwed > 0 ? "text-[var(--sem-pos)]" : "text-muted-foreground")} dir="ltr">{fmt(String(feesOwed))}</td>
                       <td className="p-3 text-center tabular-nums">{p.openConsignments}</td>
                       <td className="p-3 text-center">{ageBadge(ageDays(p.oldestOutstanding))}</td>
                       <td className="p-3 text-center">{p.isActive ? <Badge variant="secondary">نشط</Badge> : <Badge variant="outline">معطّل</Badge>}</td>

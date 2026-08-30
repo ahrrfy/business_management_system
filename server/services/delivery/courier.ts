@@ -54,6 +54,7 @@ import {
   deliveryDispatchMemoIntent,
   deliveryFeeAccrualIntent,
 } from "./posting";
+import { isShortfallReason } from "@shared/shortfallReason";
 
 /** يحلّ جهة التوصيل المرتبطة بحساب المستخدم (المندوب). null إن لم يُربط الحساب بجهة نشطة. */
 export async function resolveCourierPartyId(
@@ -561,6 +562,13 @@ export async function confirmConsignmentDelivery(
        * واحدٌ بالحرف (`confirmConsignmentDelivery`) كي لا تنجرف نسخةٌ ثانية عن الأولى.
        */
       kind?: "COMPANY_STATEMENT" | "MANUAL_PROOF" | "STAFF_CONFIRMED";
+      /**
+       * Slice DFP1 (٣٠/٨/٢٦): سببُ العجز حين `collectedAmount < invoiceRemaining`. قيمةٌ من
+       * enum `shared/shortfallReason.ts` (٦ قيم مغلقة، لا نصّ حرّ). لزوماً يُقدَّم لكلّ عجز
+       * — بدونه ترفض الخدمة الحفظ برسالةٍ صريحة تحيل الكاشير إلى قائمة الأسباب.
+       * سلوك بلا عجز: الحقل يُتجاهَل تماماً (لا قيدَ SHORTFALL_ASSIGNED يُكتَب).
+       */
+      shortfallReason?: string;
     };
   },
   actor: { userId: number },
@@ -777,8 +785,7 @@ export async function confirmConsignmentDelivery(
           .minus(money(inv.paidAmount)),
       );
       // بوّابة المندوب: الختمُ يعني قبض المتبقّي **كاملاً** ⇒ تطابقٌ تامّ يمسك أيّ انحراف.
-      // كشفُ الشركة: قد يُعلن تحصيلاً **جزئياً**، فالشرط يصير سقفاً لا تطابقاً — والمتبقّي
-      // يبقى على العميل مطالَباً به (قرار المالك)، ولا يجوز بحال تجاوزُ متبقّي الفاتورة.
+      // كشفُ الشركة: قد يُعلن تحصيلاً **جزئياً** — سقفٌ لا تطابق. لا يجوز بحال تجاوزُ متبقّي الفاتورة.
       const collectionMismatch = input.statementWitness
         ? cod.gt(invoiceRemaining)
         : !invoiceRemaining.eq(cod);
@@ -790,17 +797,72 @@ export async function confirmConsignmentDelivery(
             : `متبقي الفاتورة (${invoiceRemaining.toFixed(2)}) لا يطابق مبلغ التحصيل على الطرد (${cod.toFixed(2)}) — صحّح الدفعات قبل التسليم`,
         });
       }
+      /**
+       * Slice DFP1 (٣٠/٨/٢٦) — عجزُ التحصيل ذمّةٌ فوريّة على المندوب (قرار المالك ٣٠/٨):
+       *
+       * حين `cod < invoiceRemaining` تحت مصادقةِ شاهد (statementWitness = STAFF_CONFIRMED /
+       * MANUAL_PROOF / COMPANY_STATEMENT) — قبلَ اليوم كانت الفاتورة تُقبَض جزئياً ويُترك المتبقّي
+       * ذمّةً على العميل صامتاً. مخالفةٌ صريحة لمبدأ «لا دينار يضيع بصمت»: العميل استلم البضاعة
+       * كاملةً، والتاجر/المندوب هو من قبض ناقصاً. المسؤوليّة على المندوب لا على العميل.
+       *
+       * التطبيق:
+       *   ١) shortage = invoiceRemaining − cod (> 0)
+       *   ٢) `shortfallReason` إلزاميّ (enum من `shared/shortfallReason.ts`) — بدونه رفضٌ صريح.
+       *   ٣) قيدُ SHORTFALL_ASSIGNED يرفع عهدة المندوب بمبلغ العجز (يُضاف إلى `currentBalance`).
+       *   ٤) الفاتورة تُقفَل مسدَّدة كاملاً (`newPaid = invoiceRemaining`) — لا AR للعميل.
+       *   ٥) ذمّة العميل تُصفَّى كاملاً (`adjustCustomerBalance` بـinvoiceRemaining كاملاً).
+       *
+       * البيوّابة النظيرة في `manualProof` تحمل نفس السلوك (نفس المسار الماليّ). البيوّابة الجزئيّة
+       * الحقيقيّة عبر كشف الشركة الرسميّ تبقى مسموحةً بلا سبب (`kind='COMPANY_STATEMENT'` بلا شاهد
+       * SHORTFALL — نمطُ التحصيل الجزئيّ التقليديّ عبر مسار `counterCollection` لاحقاً).
+       */
+      const shortage = round2(invoiceRemaining.minus(cod));
+      const isStaffOrManualPath =
+        input.statementWitness?.kind === "STAFF_CONFIRMED" ||
+        input.statementWitness?.kind === "MANUAL_PROOF";
+      if (shortage.gt(0) && isStaffOrManualPath) {
+        const reason = input.statementWitness?.shortfallReason;
+        if (!reason || !isShortfallReason(reason)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `تحصيلٌ ناقص (${shortage.toFixed(2)} د.ع) بلا سبب مصنَّف — اختر سبباً من قائمة أسباب العجز قبل الحفظ`,
+          });
+        }
+      }
+      const shortfallReason = shortage.gt(0) && isStaffOrManualPath
+        ? input.statementWitness!.shortfallReason!
+        : null;
+
       if (cn.custodyRecognizedAt == null) {
-        await adjustDeliveryBalance(tx, membership.partyId, cod);
-        await appendDeliveryLedgerEntry(tx, {
-          eventKey: `CN:${cn.id}:COD_COLLECTED`,
-          partyId: membership.partyId,
-          consignmentId: Number(cn.id),
-          branchId: Number(cn.branchId),
-          entryType: "COD_COLLECTED",
-          amount: toDbMoney(cod),
-          actorUserId: actor.userId,
-        });
+        // نُصعِّد عهدةَ المندوب بـ**مجموع** ما يتحمّله (نقدٌ قبضه + عجزٌ يتحمّله):
+        //   COD_COLLECTED رفعُ عهدةٍ نقديّة (قبضٌ فعليّ)،
+        //   SHORTFALL_ASSIGNED رفعُ عهدةٍ غير نقديّة (ديْنٌ نيابةً عن العميل الذي أُفرِج عنه).
+        const custodyRise = round2(cod.plus(shortfallReason ? shortage : money(0)));
+        await adjustDeliveryBalance(tx, membership.partyId, custodyRise);
+        if (cod.gt(0)) {
+          await appendDeliveryLedgerEntry(tx, {
+            eventKey: `CN:${cn.id}:COD_COLLECTED`,
+            partyId: membership.partyId,
+            consignmentId: Number(cn.id),
+            branchId: Number(cn.branchId),
+            entryType: "COD_COLLECTED",
+            amount: toDbMoney(cod),
+            actorUserId: actor.userId,
+          });
+        }
+        if (shortfallReason) {
+          await appendDeliveryLedgerEntry(tx, {
+            eventKey: `CN:${cn.id}:SHORTFALL_ASSIGNED`,
+            partyId: membership.partyId,
+            consignmentId: Number(cn.id),
+            branchId: Number(cn.branchId),
+            entryType: "SHORTFALL_ASSIGNED",
+            amount: toDbMoney(shortage),
+            notes: `عجزُ تحصيل — ${shortfallReason}`,
+            shortfallReason,
+            actorUserId: actor.userId,
+          });
+        }
         await postEntry(tx, {
           entryType: "DELIVERY_DISPATCH",
           postingIntent: deliveryDispatchMemoIntent(),
@@ -808,25 +870,30 @@ export async function confirmConsignmentDelivery(
           branchId: Number(cn.branchId),
           invoiceId: Number(cn.invoiceId),
           deliveryPartyId: membership.partyId,
-          amount: cod,
-          notes: `COD collected after delivery ${cn.consignmentNumber}`,
+          amount: custodyRise,
+          notes: `تحصيل بعد التسليم ${cn.consignmentNumber}${shortfallReason ? ` (نقد ${cod.toFixed(2)} + عجز ${shortage.toFixed(2)} على المندوب)` : ""}`,
         });
       }
       // Customer AR moves to courier custody at the physical hand-over; no
       // drawer receipt exists yet.  The later remittance only moves custody to
       // cash and must not settle the customer a second time.
+      // Slice DFP1: `customerSettleAmount` = مجموع ما يُفرَج عنه من ذمّة العميل — يشمل العجز
+      // المُقيَّد على المندوب (لأنّ المندوب صار «المدين البديل» عن العميل بمقداره).
+      const customerSettleAmount = shortfallReason
+        ? round2(cod.plus(shortage))
+        : cod;
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
-        postingIntent: deliveryCustomerCollectionIntent(cod),
+        postingIntent: deliveryCustomerCollectionIntent(customerSettleAmount),
         dedupeKey: `PAYMENT_IN:COURIER_DELIVERY:${cn.id}`,
         branchId: Number(cn.branchId),
         invoiceId: Number(cn.invoiceId),
         customerId: inv.customerId != null ? Number(inv.customerId) : null,
         deliveryPartyId: membership.partyId,
-        amount: cod,
-        notes: `تحصيل العميل لدى جهة التوصيل ${cn.consignmentNumber}`,
+        amount: customerSettleAmount,
+        notes: `تحصيل العميل لدى جهة التوصيل ${cn.consignmentNumber}${shortfallReason ? ` (بضمنه عجزٌ على المندوب ${shortage.toFixed(2)})` : ""}`,
       });
-      const newPaid = round2(money(inv.paidAmount).plus(cod));
+      const newPaid = round2(money(inv.paidAmount).plus(customerSettleAmount));
       await tx
         .update(invoices)
         .set({
@@ -841,7 +908,7 @@ export async function confirmConsignmentDelivery(
         })
         .where(eq(invoices.id, Number(inv.id)));
       if (inv.customerId != null) {
-        await adjustCustomerBalance(tx, Number(inv.customerId), cod.neg());
+        await adjustCustomerBalance(tx, Number(inv.customerId), customerSettleAmount.neg());
       }
     }
 

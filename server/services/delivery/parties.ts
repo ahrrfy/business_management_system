@@ -56,6 +56,51 @@ export async function assertFloatLimitTx(
   }
 }
 
+/**
+ * Slice DFP1 (٣٠/٨/٢٦) — SLA على عمر الطرود المفتوحة (بلاغ المالك ٣٠/٨: «مندوبٌ لديه طرود منذ
+ * ٢١ يوماً بلا توريد، والنظام يقبل إسناد طرودٍ جديدة عليه»). قرارُ المالك: حظرٌ ثابت (لا تجاوُز
+ * إداريّ) حتى تُصفَّى الطرود القديمة.
+ *
+ * تعريف «الطرد المفتوح المُتأخّر» = deliveryConsignment للجهة، عمرها منذ الإسناد > `maxOpenParcelAgeDays`،
+ * والطرد **لم يُحسَم ماليّاً**: لا COD_REMITTED مسجَّل، ولا COD_RELEASED (إلغاء)، ولا COD_WRITTEN_OFF (شطب).
+ * حالة الطرد التشغيليّة (DELIVERED / OUT_FOR_DELIVERY / …) لا تنقض ذلك — طردٌ سُلِّم مع نقدٍ لم
+ * يُورَّد يبقى مُتأخّراً بحكم الحاجة إلى التوريد.
+ *
+ * الاستدعاء: **قبل كلّ إسناد**. الفشل يحوّل الكاشير إلى صفحة الجهة لتصفية الطرود المتأخّرة.
+ */
+export async function assertNoStaleOpenParcelsTx(
+  tx: Tx,
+  party: { id: number | string; name: string; maxOpenParcelAgeDays?: number | null },
+): Promise<void> {
+  const days = Number(party.maxOpenParcelAgeDays ?? 7);
+  // لا حارس بقيمةٍ غير موجبة (لا يجب أن تحدث بسبب CHECK constraint، لكن دفاع في العمق).
+  if (!Number.isFinite(days) || days < 1) return;
+  const row = (await tx
+    .select({
+      staleCount: sql<number>`COUNT(*)`,
+      oldestDays: sql<number>`COALESCE(MAX(TIMESTAMPDIFF(DAY, ${deliveryConsignments.dispatchedAt}, NOW())), 0)`,
+    })
+    .from(deliveryConsignments)
+    .where(
+      and(
+        eq(deliveryConsignments.partyId, Number(party.id)),
+        sql`${deliveryConsignments.dispatchedAt} IS NOT NULL`,
+        sql`TIMESTAMPDIFF(DAY, ${deliveryConsignments.dispatchedAt}, NOW()) > ${days}`,
+        // «مفتوحٌ ماليّاً» = moneyStatus != SETTLED (لم يُورَّد بعد) وليس ملغى/مشطوب.
+        sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED', 'PARTIAL')`,
+        sql`${deliveryConsignments.parcelStatus} NOT IN ('RETURNED', 'CANCELLED')`,
+      ),
+    ))[0];
+  const staleCount = Number(row?.staleCount ?? 0);
+  if (staleCount > 0) {
+    const oldest = Number(row?.oldestDays ?? 0);
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `جهة «${party.name}» لديها ${staleCount} طرداً مفتوحاً منذ أكثر من ${days} يوماً (أقدمها ${oldest} يوماً). سوّ الطرود المتأخّرة قبل إسناد جديد.`,
+    });
+  }
+}
+
 const DecimalMax = (
   a: ReturnType<typeof money>,
   b: ReturnType<typeof money>,
@@ -309,6 +354,53 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
     .groupBy(deliveryConsignments.partyId);
   const openMap = new Map(openAgg.map((r) => [Number(r.partyId), { openCount: Number(r.openCount), oldest: r.oldest }]));
 
+  /**
+   * Slice DFP1 (٣٠/٨/٢٦، P1 #2+#7) — الأعمدة الجديدة لقائمة المناديب (٣٠/٨):
+   * ٢) parcelsInTransitAmount = Σ codAmount للطرود ASSIGNED/OUT_FOR_DELIVERY (بضاعةٌ خرجت لم تصل).
+   * ٣) deliveredUncollectedAmount = Σ متبقّي الطرود DELIVERED مع moneyStatus ∈ (UNSETTLED, PARTIAL).
+   * ٤) feesOwedAmount = Σ (FEE_EARNED − FEE_REFUNDED − FEE_PAID − FEE_OFFSET) مقصوصةً عند صفر لكل جهة.
+   * الحسبة هنا اختصار للطاقة، والأعمدة تُعرَض في DeliveryParties بتوكينات لون partyExposure.
+   */
+  const exposureAgg = await db
+    .select({
+      partyId: deliveryConsignments.partyId,
+      parcelsInTransit: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryConsignments.parcelStatus} IN ('ASSIGNED','OUT_FOR_DELIVERY')
+        THEN CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+      deliveredUncollected: sql<string>`COALESCE(SUM(CASE
+        WHEN ${deliveryConsignments.parcelStatus} = 'DELIVERED'
+          AND ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')
+          AND ${deliveryConsignments.returnDeclaredAt} IS NULL
+        THEN GREATEST(
+          CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2))
+          - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2))
+          - CAST(${deliveryConsignments.counterSettledAmount} AS DECIMAL(15,2)), 0)
+        ELSE 0 END), 0)`,
+    })
+    .from(deliveryConsignments)
+    .where(sql`${deliveryConsignments.parcelStatus} != 'CANCELLED'`)
+    .groupBy(deliveryConsignments.partyId);
+  const exposureMap = new Map(
+    exposureAgg.map((r) => [
+      Number(r.partyId),
+      {
+        parcelsInTransit: String(r.parcelsInTransit ?? "0.00"),
+        deliveredUncollected: String(r.deliveredUncollected ?? "0.00"),
+      },
+    ]),
+  );
+  const feesAgg = await db
+    .select({
+      partyId: deliveryLedgerEntries.partyId,
+      feesOwed: sql<string>`GREATEST(COALESCE(SUM(CASE
+        WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount}
+        WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount}
+        WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID', 'FEE_OFFSET') THEN -${deliveryLedgerEntries.amount}
+        ELSE 0 END), 0), 0)`,
+    })
+    .from(deliveryLedgerEntries)
+    .groupBy(deliveryLedgerEntries.partyId);
+  const feesMap = new Map(feesAgg.map((r) => [Number(r.partyId), String(r.feesOwed ?? "0.00")]));
+
   const driverRows = await db.select({
     partyId: deliveryPartyMembers.partyId,
     userId: deliveryPartyMembers.userId,
@@ -338,6 +430,10 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
     hasPortalAccess: p.userId != null || portalPartyIds.has(Number(p.id)),
     openConsignments: openMap.get(Number(p.id))?.openCount ?? 0,
     oldestOutstanding: openMap.get(Number(p.id))?.oldest ?? null,
+    // Slice DFP1 (٣٠/٨/٢٦) — الأعمدة الأربعة الجديدة (partyExposure):
+    parcelsInTransitAmount: exposureMap.get(Number(p.id))?.parcelsInTransit ?? "0.00",
+    deliveredUncollectedAmount: exposureMap.get(Number(p.id))?.deliveredUncollected ?? "0.00",
+    feesOwedAmount: feesMap.get(Number(p.id)) ?? "0.00",
   }));
 }
 

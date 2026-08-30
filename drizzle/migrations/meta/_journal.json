@@ -1912,6 +1912,20 @@
 			"when": 1788052345000,
 			"tag": "0293_audit_operation_attribution",
 			"breakpoints": true
+		},
+		{
+			"idx": 294,
+			"version": "5",
+			"when": 1788052346000,
+			"tag": "0294_delivery_party_open_parcel_sla",
+			"breakpoints": true
+		},
+		{
+			"idx": 295,
+			"version": "5",
+			"when": 1788052347000,
+			"tag": "0295_delivery_ledger_shortfall",
+			"breakpoints": true
 		}
 	]
 }

@@ -453,6 +453,12 @@ export interface ManualDeliveryProofInput {
   /** الدليل المكتوب (رسالة الزبون/شاهد/مرجع صورة) — نصّ المالك: «يحتاج دليلاً». */
   evidence: string;
   clientRequestId: string;
+  /**
+   * Slice DFP1 (٣٠/٨/٢٦): سببُ العجز إن كان `collectedAmount < invoiceRemaining`.
+   * قيمةٌ من enum `shared/shortfallReason.ts`. لزوماً حين يقع عجز؛ يُرفض بدونه من الخدمة.
+   * يمرّ بلا تحقّق حين لا يوجد عجز (المسار العاديّ للتحصيل الكامل بلا حاجة لسبب).
+   */
+  shortfallReason?: string;
 }
 
 /**
@@ -512,6 +518,7 @@ export async function recordStaffDeliveryConfirmation(
         statementNumber,
         collectedAmount: round2(money(input.collectedAmount)).toFixed(2),
         kind: "STAFF_CONFIRMED",
+        shortfallReason: input.shortfallReason,
       },
     },
     { userId: actor.userId },
@@ -563,6 +570,7 @@ export async function recordManualDeliveryProof(
         statementNumber,
         collectedAmount: round2(money(input.collectedAmount)).toFixed(2),
         kind: "MANUAL_PROOF",
+        shortfallReason: input.shortfallReason,
       },
     },
     { userId: actor.userId },

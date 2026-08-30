@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Truck, UserPlus } from "lucide-react";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -122,13 +123,33 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
         <div className="mb-3 grid gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1.5 block text-sm font-bold">جهة التوصيل</label>
-            <AppSelect value={partyId} onValueChange={pickParty} placeholder="— اختر —" className="h-11">
-              {parties.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.partyType === "COMPANY" ? "شركة" : "مندوب"}){p.hasPortalAccess === false ? " — بلا حساب بوابة" : ""}
-                </option>
-              ))}
-            </AppSelect>
+            {/* Slice DFP1 (٣٠/٨/٢٦، P1 UX): قائمةٌ فارغة كانت تُظهر منسدلاً فارغاً بلا سياق ⇒ المستعمِل
+                عالق يظنّ عطباً. الآن: بطاقةٌ ظاهرة تُخبره صراحةً «لا مناديب مُعرَّفون بعد» بزرّ مباشر
+                لإضافة جهةٍ جديدة، بدل قائمة صامتة. */}
+            {parties.length === 0 ? (
+              <div className="flex flex-col items-start gap-2 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] p-3 text-xs">
+                <div className="flex items-center gap-1.5 font-bold text-[var(--sem-warn)]">
+                  <Truck aria-hidden className="size-3.5" />
+                  لا مناديب أو شركات توصيل مُعرَّفون بعد
+                </div>
+                <div className="text-muted-foreground">
+                  أضِف مندوباً أو شركة توصيل أوّلاً من صفحة «جهات التوصيل» ثمّ عُدْ لتسليم هذا الطلب.
+                </div>
+                <Link href="/delivery/parties" onClick={onClose}>
+                  <Button size="sm" variant="outline" className="mt-1">
+                    <UserPlus aria-hidden className="size-3.5" /> فتح صفحة جهات التوصيل
+                  </Button>
+                </Link>
+              </div>
+            ) : (
+              <AppSelect value={partyId} onValueChange={pickParty} placeholder="— اختر —" className="h-11">
+                {parties.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.partyType === "COMPANY" ? "شركة" : "مندوب"}){p.hasPortalAccess === false ? " — بلا حساب بوابة" : ""}
+                  </option>
+                ))}
+              </AppSelect>
+            )}
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-bold">أجرة التوصيل (د.ع)</label>

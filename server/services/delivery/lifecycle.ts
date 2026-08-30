@@ -155,6 +155,8 @@ export async function appendDeliveryLedgerEntry(
       | "COD_RELEASED"
       | "COD_WRITTEN_OFF"
       | "COD_RECOVERED"
+      // Slice DFP1 (٣٠/٨/٢٦، هجرة 0295): عجزُ التحصيل — ذمّة فوريّة على المندوب.
+      | "SHORTFALL_ASSIGNED"
       | "FEE_EARNED"
       | "FEE_PAID"
       | "FEE_OFFSET"
@@ -163,6 +165,11 @@ export async function appendDeliveryLedgerEntry(
     notes?: string | null;
     actorUserId?: number | null;
     occurredAt?: Date;
+    /**
+     * Slice DFP1 (٣٠/٨/٢٦): سببُ العجز حين `entryType='SHORTFALL_ASSIGNED'` — قيمةٌ من enum
+     * `shared/shortfallReason.ts`. المستدعي يمرّرها كنصّ، والحقلُ يبقى NULL لبقيّة الأنواع.
+     */
+    shortfallReason?: string | null;
   },
 ): Promise<void> {
   if (Number(input.amount) === 0) return;
@@ -177,6 +184,7 @@ export async function appendDeliveryLedgerEntry(
     notes: input.notes ?? null,
     createdBy: input.actorUserId ?? null,
     occurredAt: input.occurredAt ?? new Date(),
+    shortfallReason: input.shortfallReason ?? null,
   });
 }
 

@@ -40,6 +40,12 @@ import { playReadyBeep } from "@/lib/notifyBeep";
 import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  SHORTFALL_REASONS,
+  SHORTFALL_REASON_LABEL_AR,
+  SHORTFALL_REASON_DESCRIPTION_AR,
+  type ShortfallReason,
+} from "@shared/shortfallReason";
 import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
@@ -555,12 +561,18 @@ function InTransitTab() {
     return map;
   }, [rowsWithView]);
 
-  // ── Exposure totals ──
+  /**
+   * ── Exposure totals — Slice DFP1 (٣٠/٨/٢٦، P1 #3a): يُشتقّان من `list` (نتيجة الفلاتر
+   * والبحث)، لا من `rowsWithView` (الأصل الخام). كان الفلتر يُغيّر الصفوف المعروضة فيبقى
+   * الرأس يُعلن مسؤوليّة الجهات كلّها — تناقضٌ بصريّ يوجّه المدير لقرارٍ خاطئ.
+   * الآن: ما تراه هو ما يُجمَع في الرأس، ويُضاف رأسُ «قيمة البضاعة» بجوار «التحصيل» بلونٍ
+   * حذر — طردٌ مدفوعٌ سلفاً بـ500,000 ليس «صفر مسؤوليّة»، والبضاعة بيد المندوب حتى تصل.
+   */
   const totals = useMemo(() => {
-    const codDue = rowsWithView.reduce((s, r) => s + Number(r.codDue || 0), 0);
-    const goodsValue = rowsWithView.reduce((s, r) => s + Math.max(0, Number(r.invoiceTotal || 0) - Number(r.invoiceReturnedTotal || 0)), 0);
+    const codDue = list.reduce((s, r) => s + Number(r.codDue || 0), 0);
+    const goodsValue = list.reduce((s, r) => s + Math.max(0, Number(r.invoiceTotal || 0) - Number(r.invoiceReturnedTotal || 0)), 0);
     return { codDue, goodsValue };
-  }, [rowsWithView]);
+  }, [list]);
 
   // ── Bulk selection helpers ──
   const eligibleForHandoverIds = list.filter((r) => r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT").map((r) => Number(r.id));
@@ -906,12 +918,15 @@ function InTransitTab() {
           row={staffConfirmTarget}
           pending={staffConfirm.isPending}
           onCancel={() => setStaffConfirmTarget(null)}
-          onConfirm={(collectedAmount, evidence) => {
+          onConfirm={(collectedAmount, evidence, shortfallReason) => {
             staffConfirm.mutate({
               consignmentId: staffConfirmTarget.id,
               collectedAmount,
               evidence,
               clientRequestId: crypto.randomUUID(),
+              // Slice DFP1 (٣٠/٨/٢٦): سببُ العجز يُرسَل فقط حين وقع عجز — للحفاظ على توافق الحمولة
+              // للحالة السائدة (تحصيل كامل بلا سبب مطلوب). الخادم يرفضه إن لزم وغاب.
+              ...(shortfallReason ? { shortfallReason } : {}),
             });
           }}
         />
@@ -938,23 +953,51 @@ function InTransitTab() {
 }
 
 /**
- * حوار «تم التسليم» بيد الكاشير (٢٣/٨) — الحالة اليوميّة الشائعة (اتصال المندوب/رسالة).
- * ملاحظةٌ موجزةٌ إلزاميّة (اسم متّصل/رقم رسالة) — تُوثَّق في سجلّ التدقيق باسمك تلقائياً.
+ * حوار «تم التسليم» بيد الكاشير — Slice DFP1 (٣٠/٨/٢٦، redesign):
+ *
+ * قبلَ اليوم: يعرض «المطلوب تحصيله» ثمّ يفتح `MoneyInput` حرّاً مُهيَّأً بالقيمة — الكاشير يستطيع
+ * كتابة قيمةٍ مختلفة دون تنبيه، والحوار يُرسلها كأنّها التحصيل الحقيقيّ. بلاغ المالك (٣٠/٨):
+ * «لا شي زيادة ونقصان ولا دينار غير محسوب أو ليس له مسار» — الحرّية بلا تصنيف كذبٌ على المالك.
+ *
+ * التصميم الجديد بمسارَين مغلَقَين، مطابقٌ لسير عمل الكاشير الفعليّ:
+ *   ١) «قَبَض المطلوب كاملاً» — الحالة السائدة (٩٠٪+). زرٌّ رئيسٌ بلا حقول: يُثبِت المطلوب.
+ *   ٢) «مبلغ مختلف» — يفتح: (أ) المبلغ الفعليّ، (ب) سببٌ إلزاميّ من enum ثابت،
+ *      (ج) ملخّصُ الفرق «متبقٍّ Y د.ع على المندوب» ليعرف الكاشير أنّ العجز صار ذمّةً.
+ *
+ * لماذا لا نصّ حرّ للسبب: النصّ الحرّ يُنتج «مشاكل» غير قابلة للتحليل. القائمة الثابتة تسمح
+ * بتقرير «أسباب العجز الأكثر تكراراً» ⇒ قرارٌ عمليٌّ لا انطباع.
  */
-function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTransitRow; pending: boolean; onCancel: () => void; onConfirm: (collectedAmount: string, evidence: string) => void }) {
+function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTransitRow; pending: boolean; onCancel: () => void; onConfirm: (collectedAmount: string, evidence: string, shortfallReason: ShortfallReason | undefined) => void }) {
   const remaining = Math.max(0, Number(row.codAmount) - Number(row.collectedAmount ?? 0) - Number(row.counterSettledAmount ?? 0));
+  const [mode, setMode] = useState<"exact" | "different">("exact");
   const [amount, setAmount] = useState(String(remaining));
   const [note, setNote] = useState("");
+  const [shortfallReason, setShortfallReason] = useState<ShortfallReason | "">("");
   const QUICK_NOTES = ["اتصال المندوب", "رسالة واتساب من المندوب", "تأكيد من العميل"];
-  /**
-   * ٢٣/٨ (Codex P2 #4): `MoneyInput` يُصدر سلسلةً فارغةً عند مسح الحقل — `Number("")=0`
-   * فيمرّ الزرُّ صامتاً كتحصيلٍ صفريّ، وتُختَم فاتورةٌ كأنّ المندوب أفاد بلا قبض. نُلزم
-   * إدخالاً صريحاً لعددٍ منتهٍ (`Number.isFinite` يرفض `""` و`NaN` معاً)، والقيمةُ الصفريّة
-   * الصريحة تبقى مقبولةً (طردٌ مدفوعٌ سلفاً — codAmount=0).
-   */
   const amountTrimmed = amount.trim();
   const amountNum = Number(amountTrimmed);
   const isAmountValid = amountTrimmed !== "" && Number.isFinite(amountNum) && amountNum >= 0;
+  const effectiveAmount = mode === "exact" ? remaining : (isAmountValid ? amountNum : 0);
+  const diff = remaining - effectiveAmount;
+  const isShort = diff > 0.005;
+  const isOver = diff < -0.005;
+  const noteValid = note.trim().length >= 3;
+  const reasonRequired = mode === "different" && isShort;
+  const reasonValid = !reasonRequired || (shortfallReason !== "" && SHORTFALL_REASONS.includes(shortfallReason as ShortfallReason));
+  const canConfirm =
+    !pending &&
+    noteValid &&
+    (mode === "exact" || (isAmountValid && !isOver)) &&
+    reasonValid;
+
+  const handleConfirm = () => {
+    onConfirm(
+      effectiveAmount.toFixed(2),
+      note.trim(),
+      isShort && shortfallReason ? (shortfallReason as ShortfallReason) : undefined,
+    );
+  };
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" onClick={onCancel} dir="rtl">
       <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -969,10 +1012,84 @@ function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTran
           <span className="text-muted-foreground">المطلوب تحصيله من الزبون</span>
           <span className="text-end font-black tabular-nums" dir="ltr">{fmt(String(remaining))} د.ع</span>
         </div>
-        <Label htmlFor="staff-amount" className="text-xs">المبلغ الذي قبضه المندوب فعلاً</Label>
-        <div className="mb-3">
-          <MoneyInput id="staff-amount" value={amount} onChange={(v) => setAmount(v)} ariaLabel="المبلغ المُحصَّل" />
+
+        {/* اختيار المسار — رأسٌ واضحٌ لكيلا يخطئ الكاشير */}
+        <div className="mb-3 grid grid-cols-2 gap-1.5 rounded-lg border bg-muted/20 p-1">
+          <button
+            type="button"
+            onClick={() => { setMode("exact"); setAmount(String(remaining)); setShortfallReason(""); }}
+            className={cn(
+              "rounded-md px-3 py-2 text-sm font-bold transition",
+              mode === "exact" ? "bg-[var(--sem-pos)] text-background shadow-sm" : "text-muted-foreground hover:bg-accent",
+            )}
+          >
+            قَبَض المطلوب كاملاً
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("different")}
+            className={cn(
+              "rounded-md px-3 py-2 text-sm font-bold transition",
+              mode === "different" ? "bg-[var(--sem-warn)] text-background shadow-sm" : "text-muted-foreground hover:bg-accent",
+            )}
+          >
+            مبلغ مختلف
+          </button>
         </div>
+
+        {mode === "different" && (
+          <>
+            <Label htmlFor="staff-amount" className="text-xs">المبلغ الذي قبضه المندوب فعلاً</Label>
+            <div className="mb-3">
+              <MoneyInput id="staff-amount" value={amount} onChange={(v) => setAmount(v)} ariaLabel="المبلغ المُحصَّل" />
+            </div>
+            {isOver && (
+              <p className="mb-3 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-2 text-xs font-medium text-[var(--sem-neg)]">
+                المبلغ أكبر من المطلوب — تحقّق من الرقم أو استعمل مسار الفائض المستقلّ.
+              </p>
+            )}
+            {isShort && (
+              <>
+                <div className="mb-3 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs">
+                  <div className="font-bold text-[var(--sem-warn)]">
+                    عجزٌ في التحصيل: {fmt(String(diff))} د.ع
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    سيُقيَّد هذا الفرق ذمّةً فوريّة على {row.partyName ?? "المندوب"} — لا يبقى على الزبون.
+                  </div>
+                </div>
+                <Label className="text-xs">سبب العجز <span className="text-[var(--sem-neg)]">*</span></Label>
+                <div className="mb-3 grid grid-cols-1 gap-1.5">
+                  {SHORTFALL_REASONS.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setShortfallReason(r)}
+                      className={cn(
+                        "flex items-start gap-2 rounded-md border p-2 text-start text-xs transition",
+                        shortfallReason === r
+                          ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]"
+                          : "border-muted bg-muted/20 hover:bg-accent",
+                      )}
+                    >
+                      <span className="mt-0.5 inline-block size-3 shrink-0 rounded-full border-2"
+                        style={{
+                          borderColor: shortfallReason === r ? "var(--sem-warn)" : "var(--muted-foreground)",
+                          backgroundColor: shortfallReason === r ? "var(--sem-warn)" : "transparent",
+                        }}
+                      />
+                      <div className="flex-1">
+                        <div className="font-bold">{SHORTFALL_REASON_LABEL_AR[r]}</div>
+                        <div className="text-muted-foreground">{SHORTFALL_REASON_DESCRIPTION_AR[r]}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </>
+        )}
+
         <Label className="text-xs">مصدر التأكيد (اختصار سريع أو نصّ حرّ)</Label>
         <div className="mb-2 flex flex-wrap gap-1.5">
           {QUICK_NOTES.map((n) => (
@@ -985,7 +1102,7 @@ function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTran
         <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثلاً: اتصال ٦:٤٥م من المندوب…" className="mb-4" />
         <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onCancel} disabled={pending}>تراجع</Button>
-          <Button size="sm" disabled={pending || note.trim().length < 3 || !isAmountValid} onClick={() => onConfirm(amountNum.toFixed(2), note.trim())}>
+          <Button size="sm" disabled={!canConfirm} onClick={handleConfirm}>
             {pending ? "جارٍ…" : "تأكيد التسليم"}
           </Button>
         </div>
@@ -1148,6 +1265,11 @@ function SettleTab() {
   const settleSearch = useSearch();
   const [partyId, setPartyId] = useState<string>(() => new URLSearchParams(settleSearch).get("party") ?? "");
   const obligations = trpc.delivery.obligations.useQuery(undefined, { refetchInterval: 30_000 });
+  /**
+   * Slice DFP1 (٣٠/٨/٢٦) — الجهات المتأخّرة (SLA): قسم اطّلاعيّ يبرز الجهات التي راكمت طروداً
+   * قديمة بلا توريد. قرارُ المالك: عدّاد اطّلاعيّ فقط — الحارس التشغيليّ هو الذي يمنع الإسناد.
+   */
+  const staleParties = trpc.delivery.staleParties.useQuery(undefined, { refetchInterval: 60_000 });
   /**
    * Codex P1 #1 (٢٥/٨): تسويةُ المندوب مستندٌ ماليّ — لا نقبل أن تُخفي الترقيمُ (٢٠٠ صفٍّ افتراضياً)
    * إرسالياتٍ عن الكاشير فيوقّع سنداً ينقص عن العهدة. نستعمل `useInfiniteQuery` **بحدٍّ أقصى ٥٠٠
@@ -1348,6 +1470,31 @@ function SettleTab() {
 
   return (
     <div className="space-y-4">
+      {/* ─── Slice DFP1 (٣٠/٨/٢٦): الجهات المتأخّرة SLA — إشعارٌ اطّلاعيّ للمدير ─── */}
+      {(staleParties.data ?? []).length > 0 && (
+        <div className="rounded-xl border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-4">
+          <div className="mb-2 flex items-center gap-2 font-bold text-[var(--sem-neg)]">
+            <AlertTriangle aria-hidden className="size-4" />
+            جهاتٌ متأخّرة SLA — طرودٌ تجاوزت العتبة بلا توريد ({staleParties.data?.length ?? 0})
+          </div>
+          <p className="mb-2 text-xs text-muted-foreground">
+            الحارس التشغيليّ يرفض إسنادَ طرودٍ جديدة على هذه الجهات حتى تُصفّي القديم — لا حاجة لتدخّل مدير.
+          </p>
+          <div className="grid gap-1.5 text-sm">
+            {(staleParties.data ?? []).slice(0, 10).map((sp) => (
+              <div key={sp.partyId} className="flex items-center justify-between rounded-md border bg-card px-3 py-1.5">
+                <span className="font-bold">{sp.name}</span>
+                <span className="flex items-center gap-3 text-xs">
+                  <span className="tabular-nums">{sp.staleParcelCount} طرداً</span>
+                  <span className="tabular-nums text-[var(--sem-warn)]">أقدم: {sp.oldestParcelAgeDays} يوم</span>
+                  <span className="tabular-nums text-destructive" dir="ltr">{fmt(sp.staleTotalAmount)} د.ع</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ─── جدول التزامات الجهات — الأقدم أولاً ─── */}
       {(obligations.data ?? []).length === 0 ? (
         <EmptyState icon={Wallet} title="لا التزامات مفتوحة" description="كل الجهات مسدَّدة الالتزامات — لا شيء بذمّة أحدٍ حالياً." />
