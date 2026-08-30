@@ -1422,7 +1422,13 @@ export default function WorkOrders() {
         const d = dueDayDelta(o.dueDate);
         if (d == null || d >= 0) return false;
       }
-      if (f.unassigned === "1" && o.assignedTo != null) return false;
+      if (f.unassigned === "1") {
+        // Codex #2 (الجولة ٣): الاسم يقول «طابور مشترك — أوامرُ لم تُسنَد لفنّيّ بعد»،
+        // فإدراج أوامر مُسلَّمة/ملغاة غير مُسنَدة يخالف الاسم ويلوّث التصدير. مطابقة
+        // نمط late/dueToday/blocked: النهائيات مستبعدةٌ قبل فحص الشرط.
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+        if (o.assignedTo != null) return false;
+      }
       if (f.dueToday === "1") {
         if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
         const d = dueDayDelta(o.dueDate);
@@ -1598,21 +1604,32 @@ export default function WorkOrders() {
       document.body.style.userSelect = "none";
       setDrag({ order: dr.order, x: ev.clientX - dr.ox, y: ev.clientY - dr.oy, overCol: hitCol(ev.clientX, ev.clientY) });
     };
-    const up = (ev: PointerEvent) => {
+    // Codex #4 (الجولة ٣): تنظيفٌ مشترك — يزيل كلّ المستمعين ويعيد `userSelect` و`drag` و
+    // `dragRef` إلى قيمها الحياديّة. يُستدعى من pointerup **وpointercancel** معاً:
+    // المتصفّح يُطلق cancel (لا up) عند التمرير اللمسيّ العموديّ فوق البطاقة، وبدون
+    // مستمعٍ له كانت `dragRef` تبقى مأهولةً فيلتقط أوّل pointerup لاحقٍ في أيّ مكان
+    // من الشاشة بطاقةً «قديمة» ويفتح Drawer الخاطئ.
+    const cleanup = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
       document.body.style.userSelect = "";
-      const dr = dragRef.current; dragRef.current = null;
-      if (!dr) return;
-      if (!dr.moved) { setSel(dr.order.id); setDrag(null); return; }
-      const overKey = hitCol(ev.clientX, ev.clientY);
       setDrag(null);
+    };
+    const cancel = () => { dragRef.current = null; cleanup(); };
+    const up = (ev: PointerEvent) => {
+      const dr = dragRef.current; dragRef.current = null;
+      cleanup();
+      if (!dr) return;
+      if (!dr.moved) { setSel(dr.order.id); return; }
+      const overKey = hitCol(ev.clientX, ev.clientY);
       // overKey هو مفتاح العمود الافتراضي؛ نحوّله لحالة DB المستهدفة (مسحوب↔وارد = نفس الحالة ⇒ لا نقل).
       const col = COLUMNS.find((c) => c.key === overKey);
       if (col && col.status !== dr.order.status) attemptMove(dr.order, col.status);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   }
 
   async function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
@@ -1747,14 +1764,15 @@ export default function WorkOrders() {
             الموظّف بأسمائها لا بالفلترة اليدويّة. كلٌّ منها URL-toggle قابلة للنسخ.
             الشارة السابقة «متأخّر» صارت فلتراً تفاعليّاً: تعرض العدّاد وتحصر عند النقر. */}
         {(() => {
-          // Codex #4 (الجولة ١) + #3 (الجولة ٢): عدّاد الخادم `serverCounts.late` لا يقبل
-          // أيّ فلترٍ عميليّ، فحين يُفعَّل أحدها تكذب الشارة («10 متأخّر» وعلى الشاشة بطاقتان).
-          // نُعيد الحساب من `filtered` نفسه (نفس مصدر البطاقات). `late` نفسه لا يُدرَج —
-          // لا يغيّر معنى «كم متأخّر»؛ لكن `dueToday/unassigned/blocked` تُغيّر مجموعة العرض
-          // ⇒ إغفالُها كان يُنتج شارةً موجبة فوق لوحةٍ فارغة (late × dueToday متنافيان).
+          // Codex #4 (الجولة ١) + #3 (الجولة ٢) + #5 (الجولة ٣): عدّاد الخادم `serverCounts.late`
+          // لا يقبل أيّ فلترٍ عميليّ، فحين يُفعَّل أحدها تكذب الشارة. ونضيف `late` نفسه أيضاً:
+          // `serverCounts.late` يستعمل حدّ اليوم UTC (`businessDay` — نظر CLAUDE.md)، بينما
+          // predicate الفلتر يستعمل `dueDayDelta` بأيّامٍ محلّية (لاتّساقه مع `dueInfo` على
+          // البطاقة). خلال الساعات الثلاث الأولى من يوم بغداد يختلف الحدّان بيوم ⇒ الشارة
+          // من UTC والبطاقات من local. حين يُفعَّل `late` نأخذ من `filtered` لضمان التطابق.
           const clientFilterActive =
             f.pri !== "all" || f.ch !== "all" ||
-            f.dueToday === "1" || f.unassigned === "1" || f.blocked === "1";
+            f.late === "1" || f.dueToday === "1" || f.unassigned === "1" || f.blocked === "1";
           const lateBadge = clientFilterActive
             ? filtered.filter((o) => {
                 if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
@@ -1955,9 +1973,12 @@ export default function WorkOrders() {
                       )}
                     </div>
                     {/* عمود «مُسلَّم» يعرض نافذة الأحدث فقط — العدّاد من الخادم يحمل الإجمالي الحقيقي.
-                        يُستعمل فقط حين لا ترشيح عميلي (أولوية/قناة) وإلا خالف العدّادُ المحتوى المعروض. */}
+                        Codex #3 (الجولة ٣): يُستعمل عدّاد الخادم فقط حين لا فلترَ عميليّ (بما فيه
+                        الفلاتر السريعة). عند تفعيل late/dueToday/blocked تصير قائمة المُسلَّم
+                        فارغة (النهائيات مستبعدة في الـpredicate) لكنّ العدّاد كان يعرض «مُسلَّم 120»
+                        فوق عمود بلا بطاقات ⇒ تناقض. الآن يستعمل نفس `anyClientFilter`. */}
                     <span className="wob-col-count">
-                      {s.key === "DELIVERED" && serverCounts != null && f.pri === "all" && f.ch === "all"
+                      {s.key === "DELIVERED" && serverCounts != null && !anyClientFilter
                         ? fmtInt(serverCounts.delivered)
                         : list.length}
                     </span>
