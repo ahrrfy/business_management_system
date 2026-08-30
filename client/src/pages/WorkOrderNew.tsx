@@ -244,7 +244,10 @@ export default function WorkOrderNew() {
   // COD-مؤهَّلاً لأنّ متبقّي أمر الشغل نفسه ما زال يحتاج تحصيلاً عند التسليم.
   useEffect(() => {
     if (paymentModeOverridden) return;
-    const suggested: "PREPAID" | "COD" = hasDelivery && D(deposit || "0").isZero() ? "COD" : "PREPAID";
+    // ٣٠/٨/٢٦ (بلاغ المالك — Slice O): COD صار افتراضياً لكلّ طلبٍ بلا عربون سواء توصيل أو استلام.
+    // معظم طلبات الاتصال/واتساب/انستاغرام تدخل هذا المسار: عميل جديد + لا عربون + سيدفع عند التسليم.
+    // الحماية تحت الغطاء: deliver.ts يُلزم دفعاً كاملاً حين COD + استلام (بلا مندوبٍ يُحصِّل).
+    const suggested: "PREPAID" | "COD" = D(deposit || "0").isZero() ? "COD" : "PREPAID";
     if (paymentMode !== suggested) setPaymentMode(suggested);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasDelivery, deposit, paymentModeOverridden]);

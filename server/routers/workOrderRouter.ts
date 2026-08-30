@@ -1184,15 +1184,11 @@ export const workOrderRouter = router({
         });
       }
       await assertWorkOrderCustomerReady(input.customerId);
-      // Codex #854 P1: COD يشترط توصيلاً على الخادم — بلا هذا الحارس، عميلٌ نقديٌّ (creditLimit=0)
-      // يمكن أن يمرَّر paymentMode='COD' مع hasDelivery=false ⇒ deliverWorkOrder يتخطّى فحص الائتمان
-      // ويُدرج المتبقّي على currentBalance فيصير ديناً مسموحاً به بلا مندوبٍ يُحصّله.
-      if (input.paymentMode === "COD" && !input.hasDelivery) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "نمط COD يتطلّب توصيلاً (المندوب يُحصِّل عند التسليم) — للاستلام المباشر استعمل PREPAID أو CREDIT",
-        });
-      }
+      // ٣٠/٨/٢٦ (بلاغ المالك — Slice O): COD مسموحٌ الآن للاستلام أيضاً (طلبات الاتصال/واتساب/
+      // انستاغرام الشائعة). حماية «لا دينار صامت» انتقلت لـ`deliver.ts`: عند التسليم بلا توصيل
+      // يُلزم دفعاً كاملاً (`totalPaid === salePrice`)، فلا يُدرَج ديناً على currentBalance بغير
+      // ضمان تحصيل. الحارس السابق (Codex #854 P1) كان يمنع الحالة قبل إنشاء الأمر — الآن الحماية
+      // متأخّرةٌ للحظة التسليم، وهو المكان الطبيعيّ لضمان «المال يقابل البضاعة».
       const enforcedInput = { ...input, branchId: effectiveBranchId };
 
       // أعد المحاولة على سباق idempotency (طلبان متزامنان بنفس المفتاح ⇒ الثاني يُعيد الأول).
