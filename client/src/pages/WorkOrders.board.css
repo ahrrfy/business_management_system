@@ -222,6 +222,100 @@
 .wob-empty-board { flex: 1; display: grid; place-items: center; color: var(--muted-fg); font-size: 14px; }
 .wob-note { margin-top: 14px; background: var(--muted); border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.6; }
 
+/* ─── الموجة ١ (٣٠/٨/٢٦) — KPIs العمود ونقطةُ إشارة الفنّيّ ─── */
+
+/* KPIs الرأس — سطرٌ مضغوطٌ بحبَّاتٍ صغيرة تحت العنوان/التلميح. تُعرض حين لا فلترَ عميلي
+   يخالف الأرقام الخادميّة (مطابقٌ لسلوك عدّاد «مُسلَّم»). */
+.wob-col-kpis { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.wob-col-kpi { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); color: var(--muted-fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wob-col-kpi-value { color: var(--fg); }
+.wob-col-kpi-late { background: var(--sem-neg-bg); color: var(--sem-neg); border-color: color-mix(in oklch, var(--sem-neg) 20%, transparent); }
+.wob-col-kpi-blocked { background: var(--sem-warn-bg); color: var(--sem-warn); border-color: color-mix(in oklch, var(--sem-warn) 20%, transparent); }
+
+/* نقطةُ إشارة الفنّيّ (kanban_state) — زرٌّ صغيرٌ في رأس البطاقة بجانب رقم الأمر.
+   التوكنز `sem-*` تحرسها من `check:colors` وتتكيّف مع الوضع الداكن تلقائياً. */
+.wob-kanban-dot { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 99px; border: none; padding: 0; cursor: pointer; background: var(--muted); box-shadow: inset 0 0 0 1px var(--border-strong); transition: transform 0.12s, box-shadow 0.12s; }
+.wob-kanban-dot:hover:not(:disabled) { transform: scale(1.25); }
+.wob-kanban-dot:disabled { cursor: wait; opacity: 0.5; }
+.wob-kanban-dot-normal { background: var(--muted); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.wob-kanban-dot-ready { background: var(--sem-pos); box-shadow: 0 0 0 2px color-mix(in oklch, var(--sem-pos) 25%, transparent); }
+.wob-kanban-dot-blocked { background: var(--sem-neg); box-shadow: 0 0 0 2px color-mix(in oklch, var(--sem-neg) 25%, transparent); animation: wob-pulse 1.8s infinite; }
+
+/* هامشُ البطاقة يعكس إشارةَ الفنّيّ (يطغى على `wob-late` عند الاجتماع — التعطيل قرارُ فنّيّ
+   أوّلاً، ثم التأخير — لأنّ التعطيل قد يكون سببَ التأخير). */
+.wob-card.wob-kanban-blocked { border-inline-start-color: var(--sem-neg); }
+.wob-card.wob-kanban-ready { border-inline-start-color: var(--sem-pos); }
+
+/* ─── الموجة ٣ (٣٠/٨/٢٦) — رقاقات فلاتر معلَّبة ─── */
+
+/* الرقاقة الافتراضية: زرٌّ ممتلئٌ بلمسة hover — يُظهر الحالة ON/OFF بلون واضح.
+   `aria-pressed` هو مصدر الحقيقة للـa11y (نمط toggle قياسيّ). */
+.wob-qf {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  color: var(--muted-fg);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.wob-qf:hover { background: var(--border); color: var(--fg); }
+.wob-qf-on { color: var(--fg); }
+.wob-qf-on.wob-qf-late { background: var(--sem-neg-bg); color: var(--sem-neg); border-color: var(--sem-neg); }
+.wob-qf-on.wob-qf-today { background: var(--sem-warn-bg); color: var(--sem-warn); border-color: var(--sem-warn); }
+.wob-qf-on.wob-qf-unassigned { background: var(--sem-info-bg); color: var(--sem-info); border-color: var(--sem-info); }
+.wob-qf-on.wob-qf-blocked { background: var(--sem-neg-bg); color: var(--sem-neg); border-color: var(--sem-neg); }
+.wob-qf-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: var(--card);
+  font-size: 10.5px;
+  font-weight: 800;
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid currentColor;
+}
+
+/* ─── الموجة ٤ (٣٠/٨/٢٦) — كثافة العرض (مضغوط ↔ عاديّ ↔ مفصَّل) ─── */
+
+/* «مضغوط» — للكاشير الذي يحتاج رؤيةَ ٤٠ بطاقة بدل ٦: يخفي الصورة المصغّرة وشريطَ
+   التقدّم والنسخةَ المطبوعة من التخصيص، ويضغط الحواف والفواصل. تبقى المعلومة
+   الحاكمة (رقم، عنوان، عميل، سعر، موعد، إشارة كانبان، فنّيّ) ظاهرةً. */
+.wob-board.wob-d-compact .wob-card { padding: 6px 8px; }
+.wob-board.wob-d-compact .wob-thumb { display: none; }
+.wob-board.wob-d-compact .wob-card-title { font-size: 12.5px; margin-bottom: 2px; }
+.wob-board.wob-d-compact .wob-cust { font-size: 11.5px; }
+.wob-board.wob-d-compact .wob-cust-phone { display: none; }
+.wob-board.wob-d-compact .wob-card-specs { display: none; }
+.wob-board.wob-d-compact .wob-prog { display: none; }
+.wob-board.wob-d-compact .wob-foot { margin-top: 5px; padding-top: 5px; }
+.wob-board.wob-d-compact .wob-avatar { width: 22px; height: 22px; font-size: 10px; }
+.wob-board.wob-d-compact .wob-wa { min-width: 60px; height: 26px; font-size: 10.5px; padding-inline: 7px; }
+.wob-board.wob-d-compact .wob-wa svg { width: 14px; height: 14px; }
+.wob-board.wob-d-compact .wob-card-delivery { font-size: 10.5px; margin-top: 4px; }
+.wob-board.wob-d-compact .wob-col-body { gap: 6px; }
+
+/* «مفصَّل» — للمدير الذي يحتاج كل التفاصيل بلا نقر على البطاقة: يوسّع التخصيص
+   إلى ٤ أسطر (بدل ٢) ويكبّر خطّ العنوان ويزيد الفواصل. */
+.wob-board.wob-d-detailed .wob-card { padding: 12px 14px; }
+.wob-board.wob-d-detailed .wob-card-title { font-size: 15.5px; }
+.wob-board.wob-d-detailed .wob-card-specs { -webkit-line-clamp: 4; font-size: 12px; padding: 8px 10px; }
+.wob-board.wob-d-detailed .wob-col-body { gap: 12px; }
+.wob-board.wob-d-detailed .wob-thumb { flex-basis: 56px; width: 56px; height: 56px; }
+
 @media (max-width: 900px) {
   .wob-stats { grid-template-columns: repeat(2, 1fr); }
 }

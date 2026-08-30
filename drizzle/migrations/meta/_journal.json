@@ -1898,6 +1898,13 @@
 			"when": 1788052343000,
 			"tag": "0291_studio_campaign_notification_outbox",
 			"breakpoints": true
+		},
+		{
+			"idx": 292,
+			"version": "5",
+			"when": 1788052344000,
+			"tag": "0292_add_work_order_kanban_state",
+			"breakpoints": true
 		}
 	]
 }

@@ -6,6 +6,14 @@ import {
   workOrderStatusLabel,
   workOrderTimelineLabel,
 } from "@shared/workOrderStatus";
+import {
+  isKanbanStateApplicable,
+  isWorkOrderKanbanState,
+  nextKanbanStateInCycle,
+  workOrderKanbanDotCls,
+  workOrderKanbanStateLabel,
+  type WorkOrderKanbanState,
+} from "@shared/workOrderKanban";
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -46,6 +54,7 @@ import { deriveWoDeliveryState, woDeliveryStateLabel } from "@shared/workOrderDe
 import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice } from "@/lib/workOrderRefundPolicy";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   Dialog,
   DialogContent,
@@ -128,17 +137,28 @@ function initials(name: string | null | undefined): string {
   const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
   return ((parts[0]?.[0] ?? "؟") + (parts[1]?.[0] ?? "")).slice(0, 2);
 }
-function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok" | "soon" | "late"; text: string } {
-  if (o.status === "DELIVERED") return { state: "done", text: "سُلّم" };
-  // ⚠️ o.dueDate يصل عبر tRPC/superjson كائنَ Date حقيقياً (لا نصّاً) — String(Date) ينتج
-  // "Tue Sep 15 2026…" لا ISO، فيفشل new Date(...) صامتاً وينتج NaN. toDate() يتعامل مع
-  // Date/نصّ/YYYY-MM-DD محلياً بأمان (نفس دالة fmtDate المُتحقَّق منها).
-  const due = toDate(o.dueDate as string | number | Date | null | undefined);
-  if (!due) return { state: "ok", text: "بلا موعد" };
+/**
+ * فرقُ أيّامٍ بين موعد الاستحقاق واليوم — قيمةٌ رقميّة يبني عليها كلٌّ من `dueInfo`
+ * (للعرض) والفلاتر السريعة في الموجة ٣ (المتأخّر/يستحقّ اليوم). المصدرُ الحاكم
+ * الوحيد لحساب اليوم، كي لا يختلف عرضٌ عن فلتر على نفس البطاقة.
+ *
+ * ⚠️ حسّاسٌ للنوع: `dueDate` يصل عبر tRPC/superjson كائنَ Date حقيقياً — `String(Date)`
+ * ينتج "Sun Aug 30 2026…" لا ISO، فيكسر أيّ مقارنةٍ بـ`slice(0,10)`. `toDate` يتعامل مع
+ * Date/نصّ/YYYY-MM-DD محلياً بأمان (Codex أمسك هذا).
+ */
+function dueDayDelta(dueVal: unknown): number | null {
+  const due = toDate(dueVal as string | number | Date | null | undefined);
+  if (!due) return null;
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate());
-  const days = Math.round((dueDay.getTime() - today.getTime()) / 864e5);
+  return Math.round((dueDay.getTime() - today.getTime()) / 864e5);
+}
+
+function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok" | "soon" | "late"; text: string } {
+  if (o.status === "DELIVERED") return { state: "done", text: "سُلّم" };
+  const days = dueDayDelta(o.dueDate);
+  if (days == null) return { state: "ok", text: "بلا موعد" };
   if (days < 0) return { state: "late", text: days === -1 ? "متأخر يوم" : `متأخر ${Math.abs(days)} يوم` };
   if (days === 0) return { state: "soon", text: "يستحق اليوم" };
   if (days === 1) return { state: "soon", text: "غداً" };
@@ -240,7 +260,7 @@ function printWoThermalFromCard(o: WO) {
   });
 }
 
-function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending, onOpenCustomer }: {
+function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending, onOpenCustomer, onCycleKanban, kanbanBusy }: {
   o: WO;
   onPointerDown?: (e: React.PointerEvent) => void;
   dragging?: boolean;
@@ -251,6 +271,9 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
   staff?: { id: number; name: string | null; role: string; openLoad?: number; overdueLoad?: number; onShift?: boolean }[];
   assignPending?: boolean;
   onOpenCustomer?: (customerId: number) => void;
+  /** الموجة ١ — نقر نقطة الكانبان يدور إشارةَ الفنّيّ (NORMAL→READY→BLOCKED→NORMAL). */
+  onCycleKanban?: (orderId: number, current: WorkOrderKanbanState) => void;
+  kanbanBusy?: boolean;
 }) {
   const pr = progressOf(o.status);
   const di = dueInfo(o);
@@ -258,7 +281,19 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
   const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   const hue = workOrderStatusHue(o.status);
   const late = di.state === "late";
-  const cls = ["wob-card", late ? "wob-late" : "", dragging ? "wob-dragging" : "", ghost ? "wob-ghost" : ""].filter(Boolean).join(" ");
+  // إشارةُ الفنّيّ (الموجة ١) — تُعرض في الحالات النشطة فقط (المُسلَّم/الملغى نهايةٌ لا حاجةَ لإشارة).
+  const kanbanRaw = (o as unknown as { kanbanState?: string | null }).kanbanState;
+  const blockedReason = (o as unknown as { blockedReason?: string | null }).blockedReason ?? null;
+  const kanban: WorkOrderKanbanState = isWorkOrderKanbanState(kanbanRaw) ? kanbanRaw : "NORMAL";
+  const showKanbanDot = isKanbanStateApplicable(o.status);
+  const cls = [
+    "wob-card",
+    late ? "wob-late" : "",
+    dragging ? "wob-dragging" : "",
+    ghost ? "wob-ghost" : "",
+    showKanbanDot && kanban === "BLOCKED" ? "wob-kanban-blocked" : "",
+    showKanbanDot && kanban === "READY" ? "wob-kanban-ready" : "",
+  ].filter(Boolean).join(" ");
   // حالة محلّية لاختيار الفنّي في شريط الإسناد — لكل بطاقة على حِدة.
   const [pickedStaff, setPickedStaff] = useState<string>("");
   return (
@@ -281,6 +316,31 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
           <ChannelMark channel={o.receptionChannel} />
           <span className="wob-ch-chip-l">{chLabel}</span>
         </span>
+        {/* الموجة ١ — إشارةُ الفنّيّ داخل المرحلة: نقرةٌ تدور NORMAL→READY→BLOCKED→NORMAL.
+            الحالاتُ النهائية (DELIVERED/CANCELLED) تُخفي النقطة — لا معنى لإشارةٍ بعد الخروج من الدورة. */}
+        {showKanbanDot && !ghost && onCycleKanban && (
+          <button
+            type="button"
+            className={`wob-kanban-dot ${workOrderKanbanDotCls(kanban)}`}
+            title={
+              kanban === "BLOCKED" && blockedReason
+                ? `معطَّل — ${blockedReason} (اضغط لتغيير الإشارة)`
+                : `إشارةُ الفنّيّ: ${workOrderKanbanStateLabel(kanban)} — اضغط لتغييرها`
+            }
+            aria-label={`إشارةُ الفنّيّ الحاليّة: ${workOrderKanbanStateLabel(kanban)}`}
+            disabled={kanbanBusy}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onCycleKanban(o.id, kanban); }}
+          />
+        )}
+        {/* في وضع الشبح (السحب) أو حين لا يُمكن التبديل: نعرض النقطةَ عرضاً لا زرّاً. */}
+        {showKanbanDot && (ghost || !onCycleKanban) && kanban !== "NORMAL" && (
+          <span
+            className={`wob-kanban-dot ${workOrderKanbanDotCls(kanban)}`}
+            title={workOrderKanbanStateLabel(kanban)}
+            aria-hidden
+          />
+        )}
         <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>
         {!ghost && (
           // إيقاف انتشار pointer/click كي لا يلتقطها محرّك السحب أو فتح الـDrawer
@@ -418,6 +478,70 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
 // ─────────────── الإحصاءات ───────────────
 // من عدّ الخادم (workOrders.counts) لا من صفوف الشاشة: القائمة تجلب النشطة كاملةً لكن «مُسلَّم»
 // محدودة بالأحدث، فالعدّ من الصفوف كان سيَعرض نافذة العرض لا الحقيقة.
+
+// ─────────────── حوار سبب التعطيل (الموجة ١ — إشارةُ الفنّيّ) ───────────────
+/**
+ * حوارٌ صغير لالتقاط سببِ التعطيل حين ينقل الفنّيّ إشارةَ الكانبان إلى BLOCKED.
+ * لا مخزون ولا مال — الخادم يحفظ الإشارةَ + السبب في `workOrders.blockedReason`
+ * وحدَثاً في `workOrderEvents`. يُغلَق تلقائياً عند نجاح الحفظ (onSuccess).
+ */
+function BlockedReasonDialog({
+  target,
+  onClose,
+  onConfirm,
+  pending,
+}: {
+  target: { id: number; orderNumber: string; title: string } | null;
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+  pending: boolean;
+}) {
+  const [reason, setReason] = useState("");
+  useEffect(() => { if (target) setReason(""); }, [target?.id]); // eslint-disable-line
+  if (!target) return null;
+  const trimmed = reason.trim();
+  const tooLong = trimmed.length > 255;
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>تعطيل الأمر — سبب مطلوب</DialogTitle>
+          <DialogDescription>
+            الأمر «{target.title}» ({target.orderNumber}) — اكتب سبب التعطّل موجزاً.
+            سيظهر في تلميح البطاقة وفي سجلّ أحداث الأمر.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-2 py-1">
+          <Label htmlFor="wob-blocked-reason">سبب التعطّل</Label>
+          <Textarea
+            id="wob-blocked-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="مثال: بانتظار موافقة العميل على التصميم، أو نفاد لون خامّ، أو عطل الطابعة…"
+            rows={3}
+            maxLength={255}
+            autoFocus
+          />
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>{trimmed.length}/255</span>
+            {tooLong && <span className="text-[var(--sem-neg)]">أقصاه ٢٥٥ حرفاً</span>}
+          </div>
+        </div>
+        <DialogFooter>
+          <button type="button" className="wob-btn" onClick={onClose} disabled={pending}>تراجع</button>
+          <button
+            type="button"
+            className="wob-btn wob-btn-primary"
+            disabled={pending || !trimmed || tooLong}
+            onClick={() => onConfirm(trimmed)}
+          >
+            {pending ? ACTION_LABELS.saving : "وسْم كمعطَّل"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // ─────────────── حوار التسليم (مالي — تأكيد صريح) ───────────────
 const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -1139,6 +1263,10 @@ export default function WorkOrders() {
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const canDeliver = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager"]);
+  // مرآة workordersExecProcedure الخادميّة: workorders/FULL + roles=[cashier|manager|print_operator].
+  // إشارة الكانبان (setKanbanState) تحته ⇒ لا نُظهر زرّاً سيفشل بـFORBIDDEN لمستخدم READ (Codex #6).
+  const canSetKanban = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
   const canReadCustomerContext = !!me.data?.role &&
     hasModuleAccess(me.data.role, (me.data.permissionsOverride ?? null) as PermissionMap | null, "crm", "READ");
   // قائمة الموظَّفين القابِلين للإسناد — مَرفوعة لصَفحة WorkOrders كَي تُستعمَل
@@ -1150,7 +1278,7 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "" });
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: "normal" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -1249,23 +1377,81 @@ export default function WorkOrders() {
     onSuccess: () => { notify.ok("تم تحديث الإسناد"); invalidateAll(); },
     onError: (e) => { notify.err(e); invalidateAll(); },
   });
+  // الموجة ١ (٣٠/٨/٢٦) — إشارةُ الفنّيّ داخل المرحلة (NORMAL/READY/BLOCKED).
+  const [blockTarget, setBlockTarget] = useState<{ id: number; orderNumber: string; title: string } | null>(null);
+  const setKanban = trpc.workOrders.setKanbanState.useMutation({
+    onSuccess: () => { setBlockTarget(null); invalidateAll(); },
+    onError: (e) => { notify.err(e); },
+  });
+  /**
+   * دورةُ نقر النقطة: NORMAL → READY → BLOCKED (بحوار سبب) → NORMAL.
+   * BLOCKED بلا سببٍ يعني علامةً خاويةً لا تُساعد المدير — الخادم يرفضها والواجهة تسأل.
+   */
+  const onCycleKanbanState = (orderId: number, current: WorkOrderKanbanState) => {
+    const next = nextKanbanStateInCycle(current);
+    if (next === "BLOCKED") {
+      const row = all.find((o) => o.id === orderId);
+      setBlockTarget({
+        id: orderId,
+        orderNumber: row?.orderNumber ?? String(orderId),
+        title: row?.title ?? "",
+      });
+      return;
+    }
+    setKanban.mutate({ workOrderId: orderId, kanbanState: next });
+  };
   const busy = start.isPending || markReady.isPending || deliver.isPending || cancel.isPending || assign.isPending;
 
   const all = useMemo(() => [...(activeQ.data ?? []), ...(deliveredQ.data ?? [])], [activeQ.data, deliveredQ.data]);
   // الأولوية/القناة ترشيح عميلي (لا يدعمهما الخادم)؛ q تُطبَّق فورياً هنا أيضاً فوق الترشيح الخادمي
   // المُبطَّأ (debounce) — استجابة لحظية بلا وميض نتائج قديمة.
-  const filtered = useMemo(() => {
+  /**
+   * predicate الفلترة العميليّة — منفصلٌ عن `filtered` عمداً كي **يُعاد استعماله في التصدير**
+   * (Codex #5): «تصدير Excel» كان يطبّق فلاتر الخادم فقط ⇒ يصدّر أوامر لا تظهر في اللوحة.
+   */
+  const clientFilterPredicate = useMemo(() => {
     const needle = f.q.trim().toLowerCase();
-    return all.filter((o) => {
+    return (o: WO) => {
       if (f.pri !== "all" && o.priority !== f.pri) return false;
       if (f.ch !== "all" && o.receptionChannel !== f.ch) return false;
+      // الفلاتر السريعة تطبِّق على النشطة فقط — تسليمٌ فائتُ الموعد ليس «متأخّراً» (خرج من الدورة).
+      // اليومُ يُحسَب بأيّامٍ محلّية (`dueDayDelta`) لاتساقه مع `dueInfo` على البطاقة نفسها —
+      // كلاهما مصدرُه الحاكم واحد، لا فرقَ بين ما يعرضه الشاشة وما يفلتره الزرّ (Codex #3).
+      if (f.late === "1") {
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+        const d = dueDayDelta(o.dueDate);
+        if (d == null || d >= 0) return false;
+      }
+      if (f.unassigned === "1") {
+        // Codex #2 (الجولة ٣): الاسم يقول «طابور مشترك — أوامرُ لم تُسنَد لفنّيّ بعد»،
+        // فإدراج أوامر مُسلَّمة/ملغاة غير مُسنَدة يخالف الاسم ويلوّث التصدير. مطابقة
+        // نمط late/dueToday/blocked: النهائيات مستبعدةٌ قبل فحص الشرط.
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+        if (o.assignedTo != null) return false;
+      }
+      if (f.dueToday === "1") {
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+        const d = dueDayDelta(o.dueDate);
+        if (d !== 0) return false;
+      }
+      if (f.blocked === "1") {
+        // Codex #5 (الجولة ٢): مسارُ التسليم/الإلغاء لا يمسح `kanbanState` — أمرٌ وُسم
+        // BLOCKED ثمّ سُلّم يبقى محتفظاً بالقيمة، فيعيده فلترُ «معطَّل» من نافذة deliveredQ
+        // بينما `isKanbanStateApplicable` يعدّ DELIVERED نهاية ويُخفي نقطته على البطاقة.
+        // الحلّ الاتّساقيّ: نستبعد النهائيات هنا كما يفعل `late` و`dueToday`.
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+        const ks = (o as unknown as { kanbanState?: string | null }).kanbanState;
+        if (ks !== "BLOCKED") return false;
+      }
       if (needle) {
         const hay = [o.orderNumber, o.title, o.customerName ?? ""].join(" ").toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
-    });
-  }, [all, f.q, f.pri, f.ch]);
+    };
+  }, [f.q, f.pri, f.ch, f.late, f.unassigned, f.dueToday, f.blocked]);
+
+  const filtered = useMemo(() => all.filter(clientFilterPredicate), [all, clientFilterPredicate]);
 
   /** تصدير كامل عبر cursor (الشكل مصفوفة صرفة): صفحات 200 حتى صفحة ناقصة، بسقف أمان. */
   async function fetchAllForExport(): Promise<WO[]> {
@@ -1277,24 +1463,70 @@ export default function WorkOrders() {
       if (pageRows.length < 200) break;
       cursor = Number(pageRows[pageRows.length - 1].id);
     }
-    // نطبّق فلاتر العميل نفسها (أولوية/قناة/بحث لحظي) — التصدير يطابق ما تعرضه اللوحة.
-    const needle = f.q.trim().toLowerCase();
-    return out.filter((o) => {
-      if (f.pri !== "all" && o.priority !== f.pri) return false;
-      if (f.ch !== "all" && o.receptionChannel !== f.ch) return false;
-      if (needle) {
-        const hay = [o.orderNumber, o.title, o.customerName ?? ""].join(" ").toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
-      return true;
-    });
+    // نطبّق **نفس** predicate الفلترة العميليّة على النتائج — التصدير يطابق ما تعرضه
+    // اللوحة حرفياً بما فيه الفلاتر السريعة الأربعة (Codex #5). قبله: أولوية/قناة/بحث
+    // وحدها كانت تُطبَّق، فالضغط على «تصدير» بعد تفعيل «معطَّل» يصدّر أوامر لا تظهر.
+    return out.filter(clientFilterPredicate);
   }
+
+  // ─── الموجة ٢ (٣٠/٨/٢٦) — Group By متبدّل بنمط Odoo ──────────────────────────
+  // «حسب المرحلة» يبقى الافتراضَ (سلوكٌ ثابت + D&D يعمل). الأخرى تُشتقّ من البيانات
+  // ذاتها وتُعطّل D&D — تغييرُ الفنّيّ يحتاج mutation `assign`، الأولويّة تحتاج `update`،
+  // والقناة لا تتغيّر بعد الإنشاء ⇒ فتح كلٍّ منها في موجةٍ لاحقة يبقى أنقى من إدخالها هنا مبعثرةً.
+  type GroupBy = "stage" | "technician" | "channel" | "priority";
+  const groupBy = (["stage", "technician", "channel", "priority"] as const).includes(f.gb as GroupBy)
+    ? (f.gb as GroupBy)
+    : "stage";
+  const dndEnabled = groupBy === "stage";
+
+  type DynCol = { key: string; label: string; hint: string; hue: number; status: Status; match: (o: WO) => boolean };
+  const dynColumns: DynCol[] = useMemo(() => {
+    if (groupBy === "stage") return COLUMNS.slice();
+    if (groupBy === "technician") {
+      // «غير مُسنَد» عمودٌ حاكمٌ أوّلاً (طابور مشترك)، ثمّ فنّيّون مرتَّبون بالاسم.
+      const byTech = new Map<number | null, string>();
+      byTech.set(null, "غير مُسنَد");
+      filtered.forEach((o) => {
+        const id = o.assignedTo ?? null;
+        if (id != null && !byTech.has(id)) byTech.set(id, o.assigneeName ?? `فنّيّ #${id}`);
+      });
+      const cols: DynCol[] = [];
+      // ⚠️ status/hint هنا **قيمة عرضٍ** لا حاكمٌ منطقيّ — D&D معطَّل في هذا الوضع.
+      cols.push({ key: "tech:none", label: "غير مُسنَد", hint: "الطابور المشترك — بلا فنّيّ", hue: 72, status: "RECEIVED" as Status, match: (o) => o.assignedTo == null });
+      Array.from(byTech.entries()).forEach(([id, name]) => {
+        if (id == null) return;
+        cols.push({ key: `tech:${id}`, label: name, hint: `أوامرُ الفنّيّ`, hue: (Number(id) * 47) % 360, status: "IN_PROGRESS" as Status, match: (o) => Number(o.assignedTo) === Number(id) });
+      });
+      return cols;
+    }
+    if (groupBy === "channel") {
+      const cols: DynCol[] = [];
+      const CHANNEL_HUES: Record<string, number> = { WALK_IN: 155, WHATSAPP: 155, INSTAGRAM: 293, TIKTOK: 320, PHONE: 250, OTHER: 210 };
+      for (const ch of WORK_ORDER_CHANNELS) {
+        cols.push({
+          key: `ch:${ch}`,
+          label: receptionChannelLabel(ch),
+          hint: `قناةُ استلام`,
+          hue: CHANNEL_HUES[ch] ?? 210,
+          status: "IN_PROGRESS" as Status,
+          match: (o) => o.receptionChannel === ch,
+        });
+      }
+      return cols;
+    }
+    // priority
+    return [
+      { key: "pri:URGENT", label: "عاجل", hint: "أولويّة عليا — تنفيذٌ فوريّ", hue: 27, status: "IN_PROGRESS" as Status, match: (o) => (o.priority ?? "NORMAL") === "URGENT" },
+      { key: "pri:NORMAL", label: "عادي", hint: "أولويّة اعتياديّة", hue: 235, status: "IN_PROGRESS" as Status, match: (o) => (o.priority ?? "NORMAL") === "NORMAL" },
+      { key: "pri:LOW", label: "منخفض", hint: "لا يستعجل", hue: 155, status: "IN_PROGRESS" as Status, match: (o) => (o.priority ?? "NORMAL") === "LOW" },
+    ];
+  }, [groupBy, filtered]);
 
   const byCol = useMemo(() => {
     const m: Record<string, WO[]> = {};
-    COLUMNS.forEach((c) => (m[c.key] = []));
+    dynColumns.forEach((c) => (m[c.key] = []));
     filtered.forEach((o) => {
-      const col = COLUMNS.find((c) => c.match(o));
+      const col = dynColumns.find((c) => c.match(o));
       if (col) m[col.key].push(o);
     });
     Object.values(m).forEach((arr) =>
@@ -1307,7 +1539,7 @@ export default function WorkOrders() {
       })
     );
     return m;
-  }, [filtered]);
+  }, [filtered, dynColumns]);
 
   // ── الانتقال بين المراحل (الخطوة التالية فقط — التسليم خلف تأكيد مالي) ──
   async function attemptMove(order: WO, to: Status) {
@@ -1363,25 +1595,41 @@ export default function WorkOrders() {
     const move = (ev: PointerEvent) => {
       const dr = dragRef.current; if (!dr) return;
       if (!dr.moved && Math.hypot(ev.clientX - dr.startX, ev.clientY - dr.startY) < 6) return;
+      // Codex #6 (الجولة ٢): وسمُ `moved=true` **قبل** فحص `dndEnabled` كان يعطّل النقر
+      // على البطاقات في تجميعاتٍ غير stage — حركةٌ لمسٍ طفيفة (>6px) تنتج pointerup
+      // بحالة `moved=true` فلا يُفتح Drawer، ولا نقلٍ يحدث لأنّ مفاتيح `tech:*` ليست في
+      // COLUMNS ⇒ نقرةٌ ضائعة. الحلّ: نتخطّى في تجميعاتٍ غير stage قبل الوسم.
+      if (!dndEnabled) return;
       dr.moved = true;
       document.body.style.userSelect = "none";
       setDrag({ order: dr.order, x: ev.clientX - dr.ox, y: ev.clientY - dr.oy, overCol: hitCol(ev.clientX, ev.clientY) });
     };
-    const up = (ev: PointerEvent) => {
+    // Codex #4 (الجولة ٣): تنظيفٌ مشترك — يزيل كلّ المستمعين ويعيد `userSelect` و`drag` و
+    // `dragRef` إلى قيمها الحياديّة. يُستدعى من pointerup **وpointercancel** معاً:
+    // المتصفّح يُطلق cancel (لا up) عند التمرير اللمسيّ العموديّ فوق البطاقة، وبدون
+    // مستمعٍ له كانت `dragRef` تبقى مأهولةً فيلتقط أوّل pointerup لاحقٍ في أيّ مكان
+    // من الشاشة بطاقةً «قديمة» ويفتح Drawer الخاطئ.
+    const cleanup = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
       document.body.style.userSelect = "";
-      const dr = dragRef.current; dragRef.current = null;
-      if (!dr) return;
-      if (!dr.moved) { setSel(dr.order.id); setDrag(null); return; }
-      const overKey = hitCol(ev.clientX, ev.clientY);
       setDrag(null);
+    };
+    const cancel = () => { dragRef.current = null; cleanup(); };
+    const up = (ev: PointerEvent) => {
+      const dr = dragRef.current; dragRef.current = null;
+      cleanup();
+      if (!dr) return;
+      if (!dr.moved) { setSel(dr.order.id); return; }
+      const overKey = hitCol(ev.clientX, ev.clientY);
       // overKey هو مفتاح العمود الافتراضي؛ نحوّله لحالة DB المستهدفة (مسحوب↔وارد = نفس الحالة ⇒ لا نقل).
       const col = COLUMNS.find((c) => c.key === overKey);
       if (col && col.status !== dr.order.status) attemptMove(dr.order, col.status);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   }
 
   async function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
@@ -1391,7 +1639,7 @@ export default function WorkOrders() {
     cancel.mutate({ workOrderId: d.id, clientRequestId });
   }
 
-  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch";
+  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1";
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
 
@@ -1512,23 +1760,104 @@ export default function WorkOrders() {
         >
           لم يحضر أصحابها
         </button>
-        {/* ١٩/٨ (طلب المالك: «استثمار رأس الشاشة») — شريطُ الإحصاءات الخمس زال: أربعةٌ منه
-            كانت تكرّر عدّادات الأعمدة حرفياً (نشطة/قيد التنفيذ/جاهز/مُسلَّم) فتأكل صفّاً
-            كاملاً من ارتفاع اللوحة بلا خبر. بقي **المتأخّر** وحده لأنّه الوحيد الذي لا
-            يقوله عمودٌ — ويُخفى عند الصفر. */}
-        {(serverCounts?.late ?? 0) > 0 && (
-          <span
-            className="inline-flex flex-none items-center gap-1.5 rounded-lg border border-[var(--sem-neg)] bg-[var(--sem-neg-bg)] px-2.5 py-1.5 text-xs font-extrabold text-[var(--sem-neg)]"
-            title="أوامر تجاوزت تاريخ استحقاقها"
-          >
-            <Timer aria-hidden className="size-3.5" />
-            {fmtInt(serverCounts?.late ?? 0)} متأخّر
-          </span>
-        )}
+        {/* الموجة ٣ (٣٠/٨/٢٦) — فلاتر معلَّبة (نمط Odoo): بديلٌ عن حقولٍ متفرّقة يفهمها
+            الموظّف بأسمائها لا بالفلترة اليدويّة. كلٌّ منها URL-toggle قابلة للنسخ.
+            الشارة السابقة «متأخّر» صارت فلتراً تفاعليّاً: تعرض العدّاد وتحصر عند النقر. */}
+        {(() => {
+          // Codex #4 (الجولة ١) + #3 (الجولة ٢) + #5 (الجولة ٣): عدّاد الخادم `serverCounts.late`
+          // لا يقبل أيّ فلترٍ عميليّ، فحين يُفعَّل أحدها تكذب الشارة. ونضيف `late` نفسه أيضاً:
+          // `serverCounts.late` يستعمل حدّ اليوم UTC (`businessDay` — نظر CLAUDE.md)، بينما
+          // predicate الفلتر يستعمل `dueDayDelta` بأيّامٍ محلّية (لاتّساقه مع `dueInfo` على
+          // البطاقة). خلال الساعات الثلاث الأولى من يوم بغداد يختلف الحدّان بيوم ⇒ الشارة
+          // من UTC والبطاقات من local. حين يُفعَّل `late` نأخذ من `filtered` لضمان التطابق.
+          const clientFilterActive =
+            f.pri !== "all" || f.ch !== "all" ||
+            f.late === "1" || f.dueToday === "1" || f.unassigned === "1" || f.blocked === "1";
+          const lateBadge = clientFilterActive
+            ? filtered.filter((o) => {
+                if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+                const d = dueDayDelta(o.dueDate);
+                return d != null && d < 0;
+              }).length
+            : (serverCounts?.late ?? 0);
+          return (
+            <button
+              type="button"
+              aria-pressed={f.late === "1"}
+              onClick={() => setF({ late: f.late === "1" ? "" : "1" })}
+              className={`wob-qf${f.late === "1" ? " wob-qf-on wob-qf-late" : ""}`}
+              title="أوامرُ فات موعد استحقاقها"
+            >
+              <Timer aria-hidden className="size-3.5" />
+              متأخّر
+              {lateBadge > 0 && <span className="wob-qf-badge">{fmtInt(lateBadge)}</span>}
+            </button>
+          );
+        })()}
+        <button
+          type="button"
+          aria-pressed={f.dueToday === "1"}
+          onClick={() => setF({ dueToday: f.dueToday === "1" ? "" : "1" })}
+          className={`wob-qf${f.dueToday === "1" ? " wob-qf-on wob-qf-today" : ""}`}
+          title="أوامرُ تستحقّ التسليم اليوم"
+        >
+          <Calendar aria-hidden className="size-3.5" />
+          يستحقّ اليوم
+        </button>
+        <button
+          type="button"
+          aria-pressed={f.unassigned === "1"}
+          onClick={() => setF({ unassigned: f.unassigned === "1" ? "" : "1" })}
+          className={`wob-qf${f.unassigned === "1" ? " wob-qf-on wob-qf-unassigned" : ""}`}
+          title="طابورٌ مشترك — أوامرُ لم تُسنَد لفنّيّ بعد"
+        >
+          <Wrench aria-hidden className="size-3.5" />
+          بلا فنّيّ
+        </button>
+        <button
+          type="button"
+          aria-pressed={f.blocked === "1"}
+          onClick={() => setF({ blocked: f.blocked === "1" ? "" : "1" })}
+          className={`wob-qf${f.blocked === "1" ? " wob-qf-on wob-qf-blocked" : ""}`}
+          title="أوامرٌ أشار الفنّيّ إلى تعطّلها — سببها في تلميح البطاقة"
+        >
+          <AlertTriangle aria-hidden className="size-3.5" />
+          معطَّل
+        </button>
         <div className="wob-search">
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>
           <input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث (رقم / عنوان / عميل)" />
         </div>
+        {/* الموجة ٢ — Group By (نمط Odoo): يبدّل تجميع الأعمدة بلا تغيير الفلاتر.
+            «حسب المرحلة» هو الافتراضُ ويُفعِّل السحب والإفلات. البقيّة للقراءة الآن. */}
+        {view === "board" && (
+          <AppSelect
+            value={f.gb}
+            onValueChange={(v) => setF({ gb: v })}
+            className="w-auto min-w-36"
+            aria-label="تجميع البطاقات"
+          >
+            <option value="stage">حسب المرحلة (افتراضيّ)</option>
+            <option value="technician">حسب الفنّيّ</option>
+            <option value="channel">حسب القناة</option>
+            <option value="priority">حسب الأولويّة</option>
+          </AppSelect>
+        )}
+        {/* الموجة ٤ (٣٠/٨/٢٦) — كثافة العرض (نمط Odoo): الكاشير يفضّل «مضغوطاً» ليرى ٤٠
+            بطاقة بدل ٦؛ المدير يفضّل «مفصّلاً». يُحفَظ في URL — الفنّيّ يفتح الرابط
+            بكثافته المعتادة بلا إعادة ضبط. */}
+        {view === "board" && (
+          <AppSelect
+            value={f.d}
+            onValueChange={(v) => setF({ d: v })}
+            className="w-auto min-w-32"
+            aria-label="كثافة العرض"
+          >
+            <option value="compact">مضغوط</option>
+            <option value="normal">عاديّ</option>
+            <option value="detailed">مفصَّل</option>
+          </AppSelect>
+        )}
         {canCrossBranches && (
           <AppSelect
             value={f.branch}
@@ -1599,10 +1928,25 @@ export default function WorkOrders() {
         ) : boardEmpty ? (
           <div className="wob-empty-board">{anyFilter ? "لا طلبات مطابقة للبحث/الفلاتر الحالية." : "لا أوامر شغل بعد. تُنشأ الطلبات من شاشة الاستقبال الموحدة."}</div>
         ) : (
-          <div className="wob-board">
-            {COLUMNS.map((s) => {
+          <div className={`wob-board wob-d-${f.d === "compact" ? "compact" : f.d === "detailed" ? "detailed" : "normal"}`}>
+            {dynColumns.map((s) => {
               const list = byCol[s.key] ?? [];
-              const isOver = drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
+              // D&D يعمل فقط في «حسب المرحلة» (`groupBy=stage`): الأخرى تحتاج mutations
+              // مختلفة (assign/update) لم يُبنَ لها بعد جسر D&D — يبقى العرض قراءةً فقط.
+              const isOver = dndEnabled && drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
+              // الموجة ١ — KPIs الرأس: العدّاد كما كان، ونضيف مجموع القيمة و«معطَّل» و«متأخّر».
+              // ⚠️ KPIs مقياسها الحالة الحاكمة `s.status` (وليس ColKey): «طابور وارد»/«مسحوب»
+              // كلاهما RECEIVED فتظهر لهما نفس أرقام الحالة — قرارٌ مقصود: KPIs مالٍ/تأخّرٍ
+              // تُحدَّد على الحالة الحقيقية، والانقسام العرضي بحسب الإسناد.
+              // في التجميع غير stage: KPIs الخادم لا تُطابق ⇒ نُخفيها (تُشتقّ لاحقاً بمجموعِ list).
+              // Codex #4 (الجولة ٢): وأيضاً حين يُفعَّل أيّ فلترٍ عميليّ (pri/ch/dueToday/
+              // unassigned/blocked) — رأس العمود كان يعرض قيماً على كامل الحالة فوق بطاقاتٍ
+              // مرشَّحة سريعاً (تقاطعٌ أصغر) ⇒ الرقم يخالف ما تراه العين.
+              const anyClientFilter =
+                f.pri !== "all" || f.ch !== "all" ||
+                f.dueToday === "1" || f.unassigned === "1" || f.blocked === "1" || f.late === "1";
+              const colStats = groupBy === "stage" && !anyClientFilter ? serverCounts?.stats?.[s.status] : null;
+              const showValue = colStats != null;
               return (
                 <div className="wob-col" style={colVars(s.hue)} key={s.key}>
                   <div className="wob-col-head">
@@ -1610,11 +1954,31 @@ export default function WorkOrders() {
                     <div className="wob-col-head-txt">
                       <div className="wob-col-title">{s.label}</div>
                       <div className="wob-col-hint">{s.hint}</div>
+                      {showValue && Number(colStats.totalValue) > 0 && (
+                        <div className="wob-col-kpis">
+                          <span className="wob-col-kpi wob-col-kpi-value" title="مجموع قيمة العمل الجاري في هذا العمود">
+                            {fmtAr(colStats.totalValue)} <span className="wob-ml">د.ع</span>
+                          </span>
+                          {colStats.late > 0 && s.status !== "DELIVERED" && (
+                            <span className="wob-col-kpi wob-col-kpi-late" title="أوامرُ فات موعد استحقاقها">
+                              <Timer aria-hidden className="size-3" /> {fmtInt(colStats.late)} متأخّر
+                            </span>
+                          )}
+                          {colStats.blocked > 0 && s.status !== "DELIVERED" && (
+                            <span className="wob-col-kpi wob-col-kpi-blocked" title="أوامرٌ أشار الفنّيّ إلى تعطّلها">
+                              <AlertTriangle aria-hidden className="size-3" /> {fmtInt(colStats.blocked)} معطَّل
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     {/* عمود «مُسلَّم» يعرض نافذة الأحدث فقط — العدّاد من الخادم يحمل الإجمالي الحقيقي.
-                        يُستعمل فقط حين لا ترشيح عميلي (أولوية/قناة) وإلا خالف العدّادُ المحتوى المعروض. */}
+                        Codex #3 (الجولة ٣): يُستعمل عدّاد الخادم فقط حين لا فلترَ عميليّ (بما فيه
+                        الفلاتر السريعة). عند تفعيل late/dueToday/blocked تصير قائمة المُسلَّم
+                        فارغة (النهائيات مستبعدة في الـpredicate) لكنّ العدّاد كان يعرض «مُسلَّم 120»
+                        فوق عمود بلا بطاقات ⇒ تناقض. الآن يستعمل نفس `anyClientFilter`. */}
                     <span className="wob-col-count">
-                      {s.key === "DELIVERED" && serverCounts != null && f.pri === "all" && f.ch === "all"
+                      {s.key === "DELIVERED" && serverCounts != null && !anyClientFilter
                         ? fmtInt(serverCounts.delivered)
                         : list.length}
                     </span>
@@ -1625,6 +1989,7 @@ export default function WorkOrders() {
                         key={o.id}
                         o={o}
                         dragging={!!drag && drag.order.id === o.id}
+                        // النقر يفتح Drawer دائماً؛ السحب يعمل في «حسب المرحلة» فقط (`dndEnabled` داخل onCardPointerDown).
                         onPointerDown={(e) => onCardPointerDown(e, o)}
                         // إسناد inline لعَمود INBOX فَقط (مَدير + بَيانات الفنّيين جاهزة) per README §5.2.
                         inboxAssign={
@@ -1638,6 +2003,10 @@ export default function WorkOrders() {
                         staff={s.key === "INBOX" && isManager ? assignableStaff.data : undefined}
                         assignPending={assign.isPending}
                         onOpenCustomer={canReadCustomerContext ? setCustomerContextId : undefined}
+                        // Codex #6: النقطة تفاعليّة لمن يستطيع الكتابة فقط؛ لغيرهم تُعرض قراءةً
+                        // (عرضاً غير-NORMAL فقط — بلا زرّ يفشل بـFORBIDDEN).
+                        onCycleKanban={canSetKanban ? ((orderId, current) => onCycleKanbanState(orderId, current)) : undefined}
+                        kanbanBusy={setKanban.isPending}
                       />
                     ))}
                     {list.length === 0 && <div className="wob-col-empty">— لا أوامر —</div>}
@@ -1698,6 +2067,15 @@ export default function WorkOrders() {
         workOrderId={editTarget}
         onClose={() => setEditTarget(null)}
         onSaved={() => { setEditTarget(null); invalidateAll(); }}
+      />
+      <BlockedReasonDialog
+        target={blockTarget}
+        pending={setKanban.isPending}
+        onClose={() => setBlockTarget(null)}
+        onConfirm={(reason) => {
+          if (!blockTarget) return;
+          setKanban.mutate({ workOrderId: blockTarget.id, kanbanState: "BLOCKED", blockedReason: reason });
+        }}
       />
       {canReadCustomerContext && customerContextId != null && (
         <Contact360Panel

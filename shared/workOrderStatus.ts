@@ -131,6 +131,8 @@ export const WO_TIMELINE_LABEL: Record<string, string> = {
   "workOrder.requestDesignApproval": "طُلبت موافقة العميل على التصميم",
   "workOrder.setDesign": "حُفظت نسخة تصميم جديدة",
   "workOrder.release": "أُعيد الأمر إلى الطابور",
+  // الموجة ١ (٣٠/٨/٢٦) — إشارةُ الفنّيّ (NORMAL/READY/BLOCKED) داخل المرحلة.
+  "workOrder.setKanbanState": "تغيّرت إشارةُ الفنّيّ",
 };
 
 /** الأفعال التي **يجب** أن يغطّيها القاموس — يطابقها الاختبار مع الراوتر. */
