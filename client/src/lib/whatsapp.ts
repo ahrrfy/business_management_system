@@ -512,6 +512,96 @@ export function buildWorkOrderStatusMessage(d: WorkOrderStatusMessageData): stri
   return L.join("\n");
 }
 
+/**
+ * Slice N (٣٠/٨/٢٦) — إعلام العميل عند إسناد طلبه لمندوب.
+ * تكميلٌ لـSlice M: نفس لحظة الإسناد، لكن الرسالة موجَّهةٌ للعميل بمَن يُوصِل طلبه.
+ * العميل يعرف اسم المندوب ورقم هاتفه فيتوقّع الاتصال (بدل «مَن هذا الرقم الغريب؟»).
+ */
+export interface CustomerDispatchMessageData {
+  orderNumber: string;
+  title: string;
+  customerName?: string | null;
+  courierName: string;
+  courierPhone?: string | null;
+  codAmount: string | number;
+  deliveryFee?: string | number | null;
+  feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+}
+
+export function buildCustomerDispatchMessage(d: CustomerDispatchMessageData): string {
+  const cod = Number(d.codAmount);
+  const feeD = Number(d.deliveryFee ?? 0);
+  const feeCollection = d.feeCollection ?? "COURIER";
+  const L: string[] = [
+    `*تحديث طلبكم #${d.orderNumber}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.customerName) L.push(`مرحباً ${d.customerName}،`);
+  L.push(`طلبكم *${d.title}* في طريقه إليكم عبر المندوب.`);
+  L.push("");
+  L.push(`المندوب: ${d.courierName}`);
+  if (d.courierPhone) L.push(`رقم المندوب: ${d.courierPhone}`);
+  L.push("");
+  if (feeCollection === "COURIER" && feeD > 0) {
+    L.push(`قيمة الطلب: ${fmtMoney(cod)} د.ع`);
+    L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+    L.push(`*الإجماليّ للمندوب: ${fmtMoney(cod + feeD)} د.ع*`);
+  } else {
+    L.push(`المبلغ المستحق للمندوب: ${fmtMoney(cod)} د.ع`);
+  }
+  L.push("", `للاستفسار تواصلوا معنا — ${COMPANY_NAME}`);
+  return L.join("\n");
+}
+
+/**
+ * Slice M (٣٠/٨/٢٦) — رسالة إسناد إرسالية لجهة توصيل.
+ * تُرسَل من DispatchDialog بعد نجاح الإسناد: كلّ ما يحتاجه المندوب لتنفيذ التوصيل في رسالةٍ واحدة.
+ *
+ * الحقول القصوى (كلّها اختيارية ما عدا `consignmentNumber` و`codAmount`):
+ *  - رقم الإرسالية، الجهة، اسم المستلم، هاتفه، العنوان
+ *  - COD المطلوب تحصيله (إلزاميّ — بلا حجم صحيح لا معنى للإسناد)
+ *  - أجرة التوصيل الاقتراحيّة (يعرف المندوب ما سيقبضه فوق COD في نمط COURIER)
+ */
+export interface CourierAssignmentMessageData {
+  consignmentNumber: string;
+  orderNumber?: string | null;
+  title?: string | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  deliveryAddress?: string | null;
+  codAmount: string | number;
+  deliveryFee?: string | number | null;
+  /** COURIER يجمع الأجرة مع COD ⇒ نعرض الإجماليّ صراحةً. غيرها ⇒ COD فقط. */
+  feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+}
+
+export function buildCourierAssignmentMessage(d: CourierAssignmentMessageData): string {
+  const cod = Number(d.codAmount);
+  const feeD = Number(d.deliveryFee ?? 0);
+  const feeCollection = d.feeCollection ?? "COURIER";
+  const L: string[] = [
+    `*إرساليّة توصيل جديدة #${d.consignmentNumber}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.orderNumber) L.push(`رقم الطلب: ${d.orderNumber}`);
+  if (d.title) L.push(`الطلب: ${d.title}`);
+  if (d.customerName) L.push(`المستلم: ${d.customerName}`);
+  if (d.customerPhone) L.push(`الهاتف: ${d.customerPhone}`);
+  if (d.deliveryAddress) L.push(`العنوان: ${d.deliveryAddress}`);
+  L.push("");
+  L.push(`مبلغ التحصيل (COD): ${fmtMoney(cod)} د.ع`);
+  if (feeD > 0) {
+    L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+    if (feeCollection === "COURIER") {
+      L.push(`*الإجماليّ من العميل: ${fmtMoney(cod + feeD)} د.ع*`);
+    }
+  }
+  L.push("", "برجاء التواصل مع العميل لتحديد موعد التسليم.", COMPANY_NAME);
+  return L.join("\n");
+}
+
 export interface OperationalContactMessageData {
   partyName?: string | null;
   entityLabel: string;

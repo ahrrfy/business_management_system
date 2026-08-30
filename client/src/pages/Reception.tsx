@@ -351,6 +351,12 @@ export default function Reception() {
    * `assertCreditLimit` لأنّ حدّه صفر — وهو **افتراضي كل عميلٍ جديد** بقرار المالك.
    */
   const [customerDeferredEligible, setCustomerDeferredEligible] = useState(false);
+  /**
+   * ٣٠/٨/٢٦ (بلاغ المالك الحيّ): «حدّ ائتمانه 0 ويمنع البيع». الأدمن/المدير يستطيع تحديد حدٍّ عند
+   * الإنشاء (سلطته الأصليّة بقرار المالك ١٢/٨). الكاشير لا يراه (يبقى على "0" الافتراضيّ).
+   * "" (فارغ) = افتراض الخادم "0"، "unlimited" = null (بلا حدّ)، رقم = سقف صريح.
+   */
+  const [newCustomerCreditLimit, setNewCustomerCreditLimit] = useState<string>("");
   const [phoneResolutionError, setPhoneResolutionError] = useState<string | null>(null);
   const [resolvedCustomerTier, setResolvedCustomerTier] = useState<Tier | null>(null);
   // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
@@ -420,6 +426,13 @@ export default function Reception() {
       const result = await resolveReceptionCustomerByPhone({
         phone: receptionPhone,
         ...(name?.trim() ? { name: name.trim() } : {}),
+        // ٣٠/٨/٢٦: إن كان الدور مدير/أدمن + الحقل مُلىء ⇒ نمرّره (الخادم يرفض غير المرتفعين).
+        // "unlimited" على الواجهة يعني null (بلا حدّ) — نُرسله فارغاً لأنّ الحقل النصّيّ لا يقبل null،
+        // لكنّ الاتّفاق الحاليّ: الخادم يقبل "0"/موجب فقط عبر هذا المسار. "unlimited" يُعالَج
+        // مستقبلاً بإضافة حقل صريح `null`. الآن: قيمة رقمية أو فارغة.
+        ...(isElevatedRole && newCustomerCreditLimit.trim() && newCustomerCreditLimit !== "unlimited"
+          ? { creditLimit: newCustomerCreditLimit.trim() }
+          : {}),
       });
       if (sequence !== phoneLookupSequence.current) return null;
       if (result.status === "NEEDS_NAME") {
@@ -2557,30 +2570,49 @@ export default function Reception() {
                 )}
               </div>
             ) : (
-              <div className="flex min-h-12 items-center gap-1.5">
-                <Input
-                  value={customer.name}
-                  onChange={(event) => setCustomer((previous) => ({ ...previous, name: event.target.value, phone: receptionPhone, isNew: true }))}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && customer.name.trim().length >= 2 && phoneResolution === "NEEDS_NAME") {
-                      event.preventDefault();
-                      void resolveReceptionCustomer(customer.name, true);
-                    }
-                  }}
-                  disabled={!isValidIqMobile(receptionPhone) || phoneResolution === "CHECKING"}
-                  placeholder={isValidIqMobile(receptionPhone) ? "اسم العميل الجديد" : "أكمل الهاتف أولاً"}
-                  aria-label="اسم العميل"
-                  className="h-9 min-w-0 flex-1 text-xs font-bold"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={phoneResolution !== "NEEDS_NAME" || customer.name.trim().length < 2 || resolveReceptionCustomerM.isPending || !canCreateCustomer}
-                  onClick={() => void resolveReceptionCustomer(customer.name, true)}
-                  className="h-9 shrink-0 px-3 text-[11px] font-black"
-                >
-                  حفظ وربط
-                </Button>
+              <div className="space-y-1.5">
+                <div className="flex min-h-12 items-center gap-1.5">
+                  <Input
+                    value={customer.name}
+                    onChange={(event) => setCustomer((previous) => ({ ...previous, name: event.target.value, phone: receptionPhone, isNew: true }))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && customer.name.trim().length >= 2 && phoneResolution === "NEEDS_NAME") {
+                        event.preventDefault();
+                        void resolveReceptionCustomer(customer.name, true);
+                      }
+                    }}
+                    disabled={!isValidIqMobile(receptionPhone) || phoneResolution === "CHECKING"}
+                    placeholder={isValidIqMobile(receptionPhone) ? "اسم العميل الجديد" : "أكمل الهاتف أولاً"}
+                    aria-label="اسم العميل"
+                    className="h-9 min-w-0 flex-1 text-xs font-bold"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={phoneResolution !== "NEEDS_NAME" || customer.name.trim().length < 2 || resolveReceptionCustomerM.isPending || !canCreateCustomer}
+                    onClick={() => void resolveReceptionCustomer(customer.name, true)}
+                    className="h-9 shrink-0 px-3 text-[11px] font-black"
+                  >
+                    حفظ وربط
+                  </Button>
+                </div>
+                {/* ٣٠/٨/٢٦ (بلاغ المالك): «حدّ الائتمان» عند الإنشاء — للمدير/الأدمن فقط.
+                    الافتراض "0" (نقديّ فقط) بقرار المالك. الحقل يُتيح رفعَه فوراً بدل «اذهب لتعديل
+                    ملف العميل بعد الإنشاء ثمّ ارجع». اترك فارغاً = يبقى على الافتراض. */}
+                {isElevatedRole && phoneResolution === "NEEDS_NAME" && (
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      value={newCustomerCreditLimit}
+                      onChange={(e) => setNewCustomerCreditLimit(e.target.value.replace(/[^\d.]/g, ""))}
+                      disabled={!isValidIqMobile(receptionPhone)}
+                      placeholder="حدّ ائتمان (اختياريّ — للمدير)"
+                      aria-label="حدّ الائتمان للعميل الجديد"
+                      className="h-8 min-w-0 flex-1 text-[11px] tabular-nums"
+                      dir="ltr"
+                    />
+                    <span className="shrink-0 text-[10px] text-muted-foreground">د.ع · اتركه فارغاً للنقديّ فقط</span>
+                  </div>
+                )}
               </div>
             )}
             {!canCreateCustomer && (

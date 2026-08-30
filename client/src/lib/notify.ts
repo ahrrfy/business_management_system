@@ -24,9 +24,21 @@ export function errMsg(e: unknown): string {
 }
 
 export const notify = {
-  /** نجاح — مدّة قصيرة (٣ث). */
-  ok(message: string, description?: string) {
-    return toast.success(message, { description, duration: 3000 });
+  /**
+   * نجاح — مدّة قصيرة (٣ث).
+   * إن مُرِّرت `action`، تظهر بجانب النصّ (مدّة أطول ٨ث كي يراها المستعمل).
+   * الاستعمال: `notify.ok("أُرسل", "الإرسالية #123", { label: "أرسل واتساب", onClick: () => openWhatsApp(...) })`.
+   */
+  ok(
+    message: string,
+    description?: string,
+    action?: { label: string; onClick: () => void },
+  ) {
+    return toast.success(message, {
+      description,
+      duration: action ? 8000 : 3000,
+      action: action ? { label: action.label, onClick: action.onClick } : undefined,
+    });
   },
   /** خطأ — مدّة أطول (٦ث) ويقبل أي شكل خطأ. */
   err(error: unknown, description?: string) {

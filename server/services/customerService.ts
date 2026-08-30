@@ -225,7 +225,16 @@ export type ReceptionCustomerResolution = {
  * الفريد لـclientRequestId ويعودان بالسجل نفسه بدل إنشاء عميلين.
  */
 export async function resolveReceptionCustomerByPhone(
-  input: { phone: string; name?: string | null },
+  input: {
+    phone: string;
+    name?: string | null;
+    /**
+     * ٣٠/٨/٢٦ (بلاغ المالك): «حدّ ائتمانه 0 ويمنع البيع». المدير/الأدمن يستطيع تحديد
+     * حدٍّ مختلف عند الإنشاء من الاستقبال: `"0"` (السلوك السابق) · موجب (سقف) · `null`
+     * (بلا حدّ). كاشير الاستقبال يُترك على الافتراض `"0"` (قرار المالك السابق).
+     */
+    creditLimit?: string | null;
+  },
   actor: Actor,
 ): Promise<ReceptionCustomerResolution> {
   const phone = canonicalIraqiMobile(input.phone);
@@ -304,12 +313,17 @@ export async function resolveReceptionCustomerByPhone(
   }
 
   try {
+    // ٣٠/٨/٢٦ — قرارُ الحدّ: أدمن/مدير يستطيع تمريره صراحةً؛ غيرهما يُلزَم بـ`"0"` (قرار المالك).
+    const isPrivileged = actor.role === "admin" || actor.role === "manager";
+    const creditLimit = isPrivileged && input.creditLimit !== undefined
+      ? input.creditLimit  // قد تكون `"0"` أو موجب أو `null`
+      : "0";
     const created = await createCustomer({
       name,
       phone,
       customerType: "فرد",
       defaultPriceTier: "RETAIL",
-      creditLimit: "0",
+      creditLimit,
       clientRequestId: `reception-phone:${phone.slice(1)}`,
     }, actor);
     const row = await getCustomer(created.customerId);

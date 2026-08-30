@@ -152,8 +152,18 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // المندوب يحمل المسؤوليّة الماليّة (نمط codDispatchPending للاستقبال، لكن أعمّ). لكنّ حماية
     // «لا دينار صامت» تبقى: إن كان `unpaidPortion > 0` مع COD فهذا يعني المندوب لم يُحصِّل كاملاً،
     // وهو سيناريو مشروع (تسليم جزئيّ أُقرّ) لكن يفتح ذمّةً حقيقيّة تُعالَج كباقي الآجل.
+    //
+    // ٣٠/٨/٢٦ (بلاغ المالك — Slice O): COD للاستلام (بلا توصيل) صار مسموحاً في المسار — لكنّ
+    // ضمان «لا دينار صامت» هنا حرِج: العميل يستلم بيده ولا مندوبَ يُحصِّل. نُلزم دفعاً كاملاً
+    // لحظة التسليم (`totalPaid === salePrice`). خلافُه رفضٌ بـBAD_REQUEST برسالةٍ صريحة.
     const unpaidPortion = round2(salePrice.minus(totalPaid));
     const woPaymentMode = (wo.paymentMode ?? "PREPAID") as "PREPAID" | "COD" | "CREDIT";
+    if (woPaymentMode === "COD" && !wo.hasDelivery && unpaidPortion.gt(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `طلب COD للاستلام يتطلّب دفعاً كاملاً عند التسليم — المتبقّي ${unpaidPortion.toFixed(2)} د.ع. حصّل المبلغ قبل تسليم الأمر.`,
+      });
+    }
     if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
       await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);
     }

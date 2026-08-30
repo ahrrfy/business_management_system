@@ -986,6 +986,28 @@ export const deliveryRouter = router({
       });
     }),
 
+  // Slice L (٣٠/٨/٢٦) — بحث المنطقة بـcode (رمز المحافظة من `shared/governorates.ts`) ثمّ حساب
+  // الأجرة. يُغني كاشير المطبعة عن جلب `listZones` كاملةً ثمّ البحث محلّياً — استعلامٌ واحد.
+  // fallback مقصود: زون غير مبذور ⇒ null (الشاشة تعرض الأجرة الافتراضية من `governorates.ts`).
+  previewDeliveryQuoteByGovernorate: deliveryReadProcedure
+    .input(z.object({
+      governorate: z.string().min(1).max(60),
+      distanceKm: z.number().nullish(),
+      weightKg: z.number().nullish(),
+    }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return null;
+      const { deliveryZones } = await import("../../drizzle/schema");
+      const zone = (await db.select({ id: deliveryZones.id, isActive: deliveryZones.isActive })
+        .from(deliveryZones).where(eq(deliveryZones.code, input.governorate)).limit(1))[0];
+      if (!zone || !zone.isActive) return null;
+      return db.transaction(async (tx) => {
+        const { previewDeliveryQuote } = await import("../services/delivery/pricingRules");
+        return previewDeliveryQuote(tx as never, Number(zone.id), input.distanceKm, input.weightKg);
+      });
+    }),
+
   // ─── تقرير مقارنة العمولة (Slice K، ٢٩/٨/٢٦) ─── يساعد المالكَ على اتّخاذ قرار تفعيل H2
   // لكلّ جهةٍ: يقارن الأجرة الفعليّة المدفوعة بالعمولة التقديريّة (المخزَّنة منذ Slice H) في نافذةٍ
   // زمنيّة. الفرق الموجب = وفر متوقَّع للمكتبة عند التفعيل. مؤشّرٌ نصّيّ فقط — لا قيدَ محاسبيّ.
