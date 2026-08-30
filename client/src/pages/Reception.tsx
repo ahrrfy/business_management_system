@@ -430,7 +430,9 @@ export default function Reception() {
         // "unlimited" على الواجهة يعني null (بلا حدّ) — نُرسله فارغاً لأنّ الحقل النصّيّ لا يقبل null،
         // لكنّ الاتّفاق الحاليّ: الخادم يقبل "0"/موجب فقط عبر هذا المسار. "unlimited" يُعالَج
         // مستقبلاً بإضافة حقل صريح `null`. الآن: قيمة رقمية أو فارغة.
-        ...(isElevatedRole && newCustomerCreditLimit.trim() && newCustomerCreditLimit !== "unlimited"
+        // ٣٠/٨/٢٦ (بلاغ المالك المصحِّح): كاشير الاستقبال أيضاً يستطيع تحديد الحدّ عند إنشاء
+        // عميل — القيد على المدير أُلغيَ (الخادم يقبل من كلّ من يملك بوابة الإنشاء).
+        ...(newCustomerCreditLimit.trim() && newCustomerCreditLimit !== "unlimited"
           ? { creditLimit: newCustomerCreditLimit.trim() }
           : {}),
       });
@@ -2596,21 +2598,21 @@ export default function Reception() {
                     حفظ وربط
                   </Button>
                 </div>
-                {/* ٣٠/٨/٢٦ (بلاغ المالك): «حدّ الائتمان» عند الإنشاء — للمدير/الأدمن فقط.
-                    الافتراض "0" (نقديّ فقط) بقرار المالك. الحقل يُتيح رفعَه فوراً بدل «اذهب لتعديل
-                    ملف العميل بعد الإنشاء ثمّ ارجع». اترك فارغاً = يبقى على الافتراض. */}
-                {isElevatedRole && phoneResolution === "NEEDS_NAME" && (
+                {/* ٣٠/٨/٢٦ (بلاغ المالك المصحِّح): «حدّ الائتمان» عند الإنشاء — لكلّ من يملك
+                    صلاحية إنشاء عميل الاستقبال (كاشير + مدير). الافتراض "0" (نقديّ فقط) لا يُغيَّر
+                    إلّا إذا كتب المستعمل قيمة صراحةً. اتركه فارغاً = يبقى على الافتراض. */}
+                {phoneResolution === "NEEDS_NAME" && canCreateCustomer && (
                   <div className="flex items-center gap-1.5">
                     <Input
                       value={newCustomerCreditLimit}
                       onChange={(e) => setNewCustomerCreditLimit(e.target.value.replace(/[^\d.]/g, ""))}
                       disabled={!isValidIqMobile(receptionPhone)}
-                      placeholder="حدّ ائتمان (اختياريّ — للمدير)"
+                      placeholder="حدّ ائتمان اختياريّ (اتركه فارغاً للنقديّ فقط)"
                       aria-label="حدّ الائتمان للعميل الجديد"
                       className="h-8 min-w-0 flex-1 text-[11px] tabular-nums"
                       dir="ltr"
                     />
-                    <span className="shrink-0 text-[10px] text-muted-foreground">د.ع · اتركه فارغاً للنقديّ فقط</span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">د.ع</span>
                   </div>
                 )}
               </div>
