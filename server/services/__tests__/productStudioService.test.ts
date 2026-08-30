@@ -386,7 +386,11 @@ describe("product studio governed workflow", () => {
 
     await transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "ACTIVE" });
     expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId))).toEqual([]);
-    const pending = await db().select().from(s.appNotificationOutbox).where(eq(s.appNotificationOutbox.status, "PENDING"));
+    const pending = await db()
+      .select()
+      .from(s.appNotificationOutbox)
+      .where(eq(s.appNotificationOutbox.status, "PENDING"))
+      .orderBy(s.appNotificationOutbox.id);
     expect(pending).toHaveLength(2);
     expect(new Set(pending.map((row) => row.streamKey))).toEqual(new Set([`studio.campaign:${campaign.campaignId}:user:${worker.userId}`]));
 
