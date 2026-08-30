@@ -164,10 +164,6 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         message: `طلب COD للاستلام يتطلّب دفعاً كاملاً عند التسليم — المتبقّي ${unpaidPortion.toFixed(2)} د.ع. حصّل المبلغ قبل تسليم الأمر.`,
       });
     }
-    if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
-      await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);
-    }
-
     // ش١ (٥/٨): فاتورة التسليم تنتمي لوردية مُسلِّمها — كانت تُنشأ بلا shiftId فتسقط خارج
     // طابور فواتير المحطة (innerJoin shifts) وخارج نطاق reception.collectOnInvoice، بينما هي
     // **الحالة الأولى** لتسديد المتبقّي (عربونٌ مقبوض والباقي عند الاستلام). تُحلّ مبكراً وتُعاد
@@ -175,9 +171,14 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // مراجعة عدائية (٥/٨): الختم بوردية **RECEPTION حصراً** — openShiftIdTx المرن كان يلتقط
     // وردية RETAIL/PRINT_SERVICES الوحيدة فتسقط الفاتورة من طابور المحطة (innerJoin RECEPTION)
     // وتتضخّم Z تلك الوردية بمبيعاتٍ ليست لها. غيابها ⇒ null (سلوك ما قبل ش١، دلالة نظيفة).
-    // فحص الحمل ٣٠/٨/٢٦: قفل الوردية انتقل إلى هنا (كان بعد العدّاد) ليطابق المسار كاملاً
-    // ترتيب sale/create القانوني: **وردية ← عميل ← عدّاد** — كان انقلاب {وردية،عدّاد} مقابل
-    // البيع (وردية ثم عدّاد) بذرة ABBA حين يتشارك الطرفان وردية الاستقبال نفسها.
+    //
+    // ⚠️ **موضعه هنا مُلزَمٌ بترتيب الأقفال** (فحص الحمل ٣٠/٨/٢٦ + مراجعة Codex على #901):
+    // كان بعد العدّاد، ثم نُقل إلى ما بعد حارس الائتمان — وكلاهما خطأ لأنّ `assertCreditLimit`
+    // **يقفل صفّ العميل**، فينتج ترتيب «عميل ← وردية» مقابل ترتيب البيع «وردية ← عميل»
+    // (sale/create) ⇒ ABBA حين يتشارك بيعٌ وتسليمٌ متزامنان وردية الاستقبال نفسها والعميل نفسه.
+    // الترتيب القانوني الوحيد: **وردية ← عميل ← عدّاد**، فيسبق هذا القفلُ كلَّ ما يمسّ العميل.
+    // (أثرٌ جانبيّ مقصود: من لا وردية استقبالٍ له ويتجاوز سقف الائتمان معاً يرى رسالة الوردية
+    // أوّلاً بدل رسالة الائتمان — كلتاهما حاجزٌ مشروع ولا أثر ماليّ للترتيب بينهما.)
     const receptionShiftRow = (
       await tx
         .select({ id: shifts.id })
@@ -197,6 +198,10 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         code: "PRECONDITION_FAILED",
         message: "افتح وردية RECEPTION قبل قبض دفعة أمر الشغل نقداً؛ لا يجوز DRAWER بلا وردية استقبال مقفلة",
       });
+    }
+
+    if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
+      await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);
     }
 
     // ترتيب الأقفال القانوني (فحص الحمل ٣٠/٨/٢٦): صفّ العميل يُقفَل **قبل** عدّاد الترقيم دائماً،
