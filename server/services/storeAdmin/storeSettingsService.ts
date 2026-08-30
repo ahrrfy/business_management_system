@@ -54,15 +54,33 @@ async function hasReadyCatalog(
  * (دفعات 256 + فحص توفّرٍ لكلٍّ منها، وأسوأ حالاته مسحُ الكتالوج كاملاً) — وكان يُنفَّذ
  * على **كل** نداء `storefront.settings`، وهو أول ما يطلبه كل زائرٍ مجهول. كاشٌ قصير
  * أحادي الرحلة لمسار القراءة العام وحده؛ مسار الكتابة الإداري (updateStoreSettings)
- * يبقى على الفحص الطازج كي لا تحجب نتيجةٌ قديمة فتحَ المتجر، ويُبطل الكاشَ بعد كل تحديث.
- * المفتاح يتضمّن companyId درءاً لتسريبٍ بين الشركات إن فُعِّل تعدّدها.
+ * يبقى على الفحص الطازج كي لا تحجب نتيجةٌ قديمة فتحَ المتجر.
+ *
+ * **الإبطال عبر العمّال بالمفتاح لا بالمسح** (مراجعة Codex على #901): الإنتاج عنقودٌ من
+ * ثلاثة عمّال، و`cache.clear()` يمسح كاشَ العامل الذي عالج تحديثَ الإدارة **وحده** —
+ * فيبقى العاملان الآخران يردّان «غير جاهز» حتى تنقضي TTL: المالك يفتح المتجر فيراه ثلثا
+ * زوّاره مغلقاً دقيقةً كاملة. الحلّ بلا استعلامٍ إضافيّ ولا قناة تواصلٍ بين العمّال:
+ * `storeSettings.updatedAt` عمودٌ بـ`ON UPDATE CURRENT_TIMESTAMP` (المخطّط) يُقرأ أصلاً
+ * ضمن صفّ الإعدادات ⇒ إدراجه في المفتاح يجعل **أيّ** تحديثٍ للإعدادات يُبطل الكاش على
+ * كل العمّال حتماً وفي اللحظة نفسها.
+ *
+ * التخلّف المتبقّي والمقبول عمداً: تعديلُ **كتالوج** (تفعيل/تعطيل منتج) لا يمسّ
+ * `updatedAt` فتبقى الجاهزية متأخّرةً ≤ TTL — وهو ما صُمّمت TTL له، ولا يقلب حالة فتحٍ
+ * أقرّها المالك.
+ * والمفتاح يتضمّن companyId درءاً لتسريبٍ بين الشركات إن فُعِّل تعدّدها.
  */
 const CATALOG_READINESS_TTL_MS = 60_000;
 const catalogReadinessCache = createTtlCache<string, boolean>({ ttlMs: CATALOG_READINESS_TTL_MS, maxEntries: 50 });
 
-async function hasReadyCatalogCached(db: DB | Tx, branchId: number): Promise<boolean> {
+async function hasReadyCatalogCached(
+  db: DB | Tx,
+  branchId: number,
+  settingsVersion: Date | string | null,
+): Promise<boolean> {
   if (process.env.NODE_ENV === "test") return hasReadyCatalog(db, branchId);
-  const key = `${getCurrentCompanyId() ?? 0}:${branchId}`;
+  const version =
+    settingsVersion instanceof Date ? settingsVersion.getTime() : (settingsVersion ?? "0");
+  const key = `${getCurrentCompanyId() ?? 0}:${branchId}:${version}`;
   return catalogReadinessCache.get(key, () => hasReadyCatalog(db, branchId));
 }
 
@@ -104,7 +122,7 @@ export async function getStoreSettings(): Promise<StoreSettingsValue> {
     const branchActive = branch?.isActive === true;
     const catalogReady =
       branch && branchActive
-        ? await hasReadyCatalogCached(tx, Number(branch.id))
+        ? await hasReadyCatalogCached(tx, Number(branch.id), row.updatedAt ?? null)
         : false;
     return {
       isOpen: row.isOpen === true,
@@ -218,8 +236,9 @@ export async function updateStoreSettings(
         .insert(storeSettings)
         .values({ id: 1, ...next, updatedBy: userId });
     }
-    // تحديث الإعدادات قد يغيّر فرع التنفيذ ⇒ أبطل كاش الجاهزية كي يرى الزوّار الحالة الجديدة فوراً.
-    catalogReadinessCache.clear();
+    // لا مسحَ للكاش هنا عمداً: `updatedAt` تغيّر بهذه الكتابة (ON UPDATE CURRENT_TIMESTAMP)
+    // فصار مفتاح الجاهزية جديداً على **كل** العمّال — مسحٌ محلّيّ كان سيوهم بإبطالٍ شاملٍ
+    // لا يقع (راجع التعليق عند catalogReadinessCache).
     return {
       ...next,
       fulfillmentBranchName,

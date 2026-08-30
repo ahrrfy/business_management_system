@@ -47,6 +47,9 @@ export const CRITICAL_CASHIER_PROCEDURES: ReadonlySet<string> = new Set([
   "printPos.confirmExternalPayment",
   "returns.create",
   "returns.request",
+  // إنشاء أمر الشغل يقبض عربوناً والزبون واقفٌ على كاونتر الاستقبال — لا يقلّ حرجاً عن تسليمه
+  // (مراجعة Codex على #901: حمايةُ deliver دون create تُسقط الاستقبالَ عند مدخله لا مخرجه).
+  "workOrders.create",
   "workOrders.deliver",
   "reception.collectOnInvoice",
   "reception.collectDeposit",
