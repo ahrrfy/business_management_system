@@ -330,7 +330,8 @@ export async function logAuditTx(
     entityId: data.entityId != null ? String(data.entityId) : null,
     oldValue: redactAuditValue(data.oldValue),
     newValue: redactAuditValue(enrichedAuditValue(ctx, data)),
-    ipAddress: ip ? String(ip).slice(0, 45) : null,
+    // داخل المعاملة لا نُخفي فشل قيمة غير صالحة: رفض السجل يجب أن يُرجع حركة العمل كلها.
+    ipAddress: ip,
   });
   noteAuditWrite();
 }

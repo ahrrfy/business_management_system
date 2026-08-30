@@ -85,6 +85,7 @@ describe("العقد العام لتتبّع الحركات", () => {
     expect(source).toContain('outcome = result.ok ? "SUCCESS" : "FAILURE"');
     expect(source).not.toContain('type !== "mutation" || !ctx.user');
     expect(auditSource).toContain("{ ...(existing ?? {}), ...operationEnvelope(ctx, data) }");
+    expect(auditSource.slice(auditSource.indexOf("export async function logAuditTx"))).toContain("ipAddress: ip,");
     expect(backgroundSource).toContain("auditBackgroundFailure");
     expect(backgroundSource).toContain('outcome: "FAILURE"');
   });
