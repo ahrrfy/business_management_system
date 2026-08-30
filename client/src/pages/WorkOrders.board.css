@@ -25,8 +25,15 @@
 
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  height: calc(100vh - 3rem); /* داخل <main class="p-6"> ⇒ نطرح الحشو الرأسي */
+  gap: 10px;
+  /* الموجة ٥ (٣٠/٨/٢٦) + Codex #3 مراجعة الموجة ٥:
+     `height: 100%` يرث الطول المحسوب من `<main flex-1 overflow-auto p-3 md:p-6 pb-24 lg:pb-6>` —
+     يشغل بالضبط منطقة المحتوى (content-box) بلا حاجةٍ لحساب padding يدوياً.
+     الحسابات السابقة (`vh - 3rem` أو `dvh - 2.5rem`) كانت تفترض padding واحداً
+     بينما الفعليّ يختلف بين p-3/p-6 (1.5rem/3rem) وpb-24/pb-6 (6rem/1.5rem)
+     على mobile/desktop ⇒ تجاوزٌ للمحتوى وscrollbar خارجيّ لا مبرّرَ له. الآن
+     `100%` صحيحٌ بنيوياً على جميع نقاط الكسر بلا استثناء. */
+  height: 100%;
   min-height: 520px;
 }
 .dark .wob {
@@ -100,22 +107,83 @@
    شاشةٍ من ١١٠٠px فصاعداً، ويبقى التمرير مخرجاً للشاشات الأضيق وحدها. */
 .wob-board-wrap { flex: 1; overflow-x: auto; overflow-y: hidden; min-height: 0; margin: 0 -4px; padding: 0 4px; }
 .wob-board { display: flex; gap: 12px; height: 100%; min-width: 0; }
-.wob-col { flex: 1 1 0; min-width: var(--wob-col-min); display: flex; flex-direction: column; min-height: 0; background: var(--muted); border: 1px solid var(--border); border-radius: var(--wob-radius); padding: 6px; }
+/* الموجة ٥: خلفيّة العمود صارت مُتدرّجةً من c-soft (٧-٨٪) إلى var(--muted) ⇒
+   يبرز لون العمود دون أن يستهلك تباين النصّ. حدّه أيضاً بلون العمود بشفّافيّة. */
+.wob-col {
+  flex: 1 1 0;
+  min-width: var(--wob-col-min);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: linear-gradient(180deg,
+    color-mix(in oklch, var(--c-soft, transparent) 55%, var(--muted)) 0%,
+    var(--muted) 90%);
+  border: 1px solid color-mix(in oklch, var(--c-solid, var(--border)) 22%, var(--border));
+  border-radius: var(--wob-radius);
+  padding: 6px;
+}
 .wob-col-head { display: flex; align-items: center; gap: 9px; padding: 4px 4px 10px; }
 .wob-col-pip { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 4px; background: var(--c-solid); box-shadow: 0 0 0 4px var(--c-soft); }
 .wob-col-head-txt { flex: 1; min-width: 0; }
 .wob-col-title { font-weight: 800; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wob-col-hint { font-size: 11.5px; color: var(--muted-fg); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wob-col-count { flex: 0 0 auto; background: var(--c-soft); color: var(--c-text); font-weight: 800; font-size: 12.5px; min-width: 24px; height: 22px; padding: 0 7px; border-radius: 7px; display: grid; place-items: center; }
-.wob-col-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 9px; padding: 4px 2px 14px; border-radius: var(--wob-radius); transition: background 0.15s, box-shadow 0.15s; border: 1.5px dashed transparent; scroll-behavior: smooth; scrollbar-width: thin; overscroll-behavior: contain; }
+/* الموجة ٥: body العمود يتقلّص بحرّية داخل wrapper (Codex #2 في مراجعة الموجة ٥):
+   `min-height: 200px` السابقة كانت تدفع العمود خارج `.wob-board-wrap` عند شاشاتٍ
+   قصيرة (موبايل landscape · شريط فلاتر مُلتفٌّ) حيث الـwrapper يُخفي overflow-y،
+   فيُقصّ أسفل العمود ولا يعود scrollbar قابلاً للوصول. الآن `flex:1` وحدها ⇒ يشغل
+   ما تبقّى من ارتفاع الـwrapper مهما ضاق، ويُظهر scrollbar داخلياً بلا تجاوز. */
+.wob-col-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 10px; border-radius: var(--wob-radius); transition: background 0.15s, box-shadow 0.15s; border: 1.5px dashed transparent; scroll-behavior: smooth; scrollbar-width: thin; overscroll-behavior: contain; }
+/* scrollbar أظهرُ قليلاً (كان thin شبه شفّاف على WebKit) ⇒ الفنّيّ يعرف أن ثمّة تمريراً. */
+.wob-col-body::-webkit-scrollbar { width: 8px; }
+.wob-col-body::-webkit-scrollbar-thumb { background: color-mix(in oklch, var(--c-solid, var(--border-strong)) 35%, transparent); border-radius: 4px; }
+.wob-col-body::-webkit-scrollbar-thumb:hover { background: color-mix(in oklch, var(--c-solid, var(--border-strong)) 60%, transparent); }
 .wob-col-body.wob-drop-on { background: var(--c-soft); border-color: var(--c-solid); }
 .wob-col-empty { text-align: center; color: var(--muted-fg); font-size: 12.5px; padding: 26px 12px; border: 1.5px dashed var(--border); border-radius: var(--wob-radius); }
 
-/* ─── البطاقة ─── */
-.wob-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--wob-radius); box-shadow: var(--shadow-card); padding: 9px 10px; cursor: grab; position: relative; transition: box-shadow 0.15s, transform 0.12s, border-color 0.15s, opacity 0.15s; border-inline-start: 4px solid var(--accent, var(--border)); user-select: none; }
-.wob-card:hover { box-shadow: var(--shadow-lift); transform: translateY(-2px); border-color: var(--border-strong); }
+/* ─── البطاقة (الموجة ٥ — نمط Odoo/SAP بتلوين مشتقٍّ من العمود) ─── */
+/* المصدرُ الحاكم للألوان `--c-solid`/`--c-soft`/`--c-text` مُعرَّفٌ على `.wob-col` (colVars)
+   ⇒ يتوارث إلى `.wob-card` بلا prop إضافيّ ⇒ كل بطاقةٍ تلبس لون عمودها تلقائياً.
+   طبقات التلوين ثلاث: خلفيّةٌ لينةٌ للبطاقة (soft) + شريط علويّ بلون العمود + هامش
+   يُسار عريض. الأثر بصريٌّ ظاهرٌ بلا مبالغة (contrast ratio مقبول لجميع النصوص). */
+.wob-card {
+  /* خلفيّةٌ بتدرّجٍ لطيف: c-soft في الأعلى → var(--card) في الأسفل — يُشعر باللون
+     دون أن يطغى على النصّ (color-mix للتحكّم بالشفافيّة). */
+  background:
+    linear-gradient(180deg,
+      color-mix(in oklch, var(--c-soft, transparent) 45%, var(--card)) 0%,
+      var(--card) 60%);
+  border: 1px solid var(--border);
+  border-radius: var(--wob-radius);
+  box-shadow: var(--shadow-card);
+  padding: 12px 12px 10px;
+  cursor: grab;
+  position: relative;
+  transition: box-shadow 0.18s, transform 0.12s, border-color 0.15s, opacity 0.15s;
+  border-inline-start: 4px solid var(--c-solid, var(--accent, var(--border)));
+  user-select: none;
+  overflow: hidden; /* لكي يقصّ الشريط العلويّ حسب زوايا radius */
+}
+/* الشريط العلويّ — خطٌّ ملوّن بارتفاع 3px يمتدّ عرض البطاقة (فوق border-inline-start).
+   يُبرز هويّة العمود بلا استهلاك مساحة، وهو النمط الحاكم في Odoo Kanban. */
+.wob-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: 0;
+  height: 3px;
+  background: var(--c-solid, transparent);
+  opacity: 0.85;
+}
+.wob-card:hover {
+  box-shadow: 0 10px 25px color-mix(in oklch, var(--c-solid, oklch(0.2 0 0)) 22%, transparent),
+              0 3px 8px color-mix(in oklch, var(--c-solid, oklch(0.2 0 0)) 10%, transparent);
+  transform: translateY(-2px);
+  border-color: color-mix(in oklch, var(--c-solid, var(--border-strong)) 30%, var(--border));
+}
 .wob-card:active { cursor: grabbing; }
 .wob-card.wob-late { border-inline-start-color: var(--s-late); }
+.wob-card.wob-late::before { background: var(--s-late); opacity: 0.9; }
 .wob-card.wob-dragging { opacity: 0.35; }
 .wob-card.wob-ghost { width: calc(var(--wob-col-w) - 8px); pointer-events: none; box-shadow: var(--shadow-pop); transform: rotate(2.5deg) scale(1.02); cursor: grabbing; margin: 0; }
 .wob-card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
@@ -242,9 +310,12 @@
 .wob-kanban-dot-blocked { background: var(--sem-neg); box-shadow: 0 0 0 2px color-mix(in oklch, var(--sem-neg) 25%, transparent); animation: wob-pulse 1.8s infinite; }
 
 /* هامشُ البطاقة يعكس إشارةَ الفنّيّ (يطغى على `wob-late` عند الاجتماع — التعطيل قرارُ فنّيّ
-   أوّلاً، ثم التأخير — لأنّ التعطيل قد يكون سببَ التأخير). */
+   أوّلاً، ثم التأخير — لأنّ التعطيل قد يكون سببَ التأخير). الموجة ٥: الشريط العلويّ
+   يتّبع الإشارة أيضاً — تنسيقٌ مضاعفٌ (هامش + شريط) للبطاقات المُشار إليها. */
 .wob-card.wob-kanban-blocked { border-inline-start-color: var(--sem-neg); }
+.wob-card.wob-kanban-blocked::before { background: var(--sem-neg); opacity: 1; }
 .wob-card.wob-kanban-ready { border-inline-start-color: var(--sem-pos); }
+.wob-card.wob-kanban-ready::before { background: var(--sem-pos); opacity: 1; }
 
 /* ─── الموجة ٣ (٣٠/٨/٢٦) — رقاقات فلاتر معلَّبة ─── */
 
