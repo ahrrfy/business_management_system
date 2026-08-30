@@ -1,5 +1,116 @@
 import { z } from "zod";
 
+// ────────────────────────────────────────────────────────────────────────────────
+// تصنيف أخطاء مزوّد الذكاء (Gemini) — عقدٌ مشترك بين الخادم والعميل
+//
+// المشكلة قبل هذا التصنيف: `TRPCError({code:"BAD_REQUEST", message:"Model not found..."})`
+// كانت رسالته الإنجليزيّة تُبتلَع في `toArabicMessage` (لا حرف عربيّ ⇒ يرجع النصّ العامّ
+// «طلب غير صالح»)، والعميل بدوره يحذفها لسببٍ أمنيّ (منع تسريب المفاتيح/PII). النتيجة:
+// المستخدم يرى رسالةً عامّة ولا ندري ما رفضه المزوّد.
+//
+// الحلّ: تصنيفٌ صريحٌ مغلقٌ (٨ فئات فقط) ⇒ كلّ فئة لها رسالة عربيّة موحّدة، وإجراءٌ مُقترَح،
+// وعلَم retryable. الخادم يُصنّف وينقل الفئة في `data.providerCategory`؛ العميل يعرضها
+// بأمان (لا يمرّر نصّ الخادم الخام أبداً).
+// ────────────────────────────────────────────────────────────────────────────────
+
+export type AiProviderErrorCategory =
+  | "MODEL_NOT_FOUND"
+  | "SAFETY_BLOCK"
+  | "QUOTA_EXCEEDED"
+  | "INVALID_INPUT"
+  | "AUTH"
+  | "SERVER_TRANSIENT"
+  | "TIMEOUT"
+  | "UNKNOWN";
+
+export const AI_PROVIDER_ERROR_CATEGORIES: readonly AiProviderErrorCategory[] = [
+  "MODEL_NOT_FOUND",
+  "SAFETY_BLOCK",
+  "QUOTA_EXCEEDED",
+  "INVALID_INPUT",
+  "AUTH",
+  "SERVER_TRANSIENT",
+  "TIMEOUT",
+  "UNKNOWN",
+] as const;
+
+type CategoryPresentation = {
+  title: string;
+  message: string;
+  action?: string;
+  retryable: boolean;
+};
+
+/** خريطةُ عرضٍ موحّدة لكلّ فئة — تستعملها الواجهة عبر `describeAiError`.
+ *  ⛔ لا يوجد نصّ خام من المزوّد في هذه الرسائل — كل حرفٍ عربيّ من عندنا. */
+export const AI_PROVIDER_ERROR_PRESENTATION: Record<AiProviderErrorCategory, CategoryPresentation> = {
+  MODEL_NOT_FOUND: {
+    title: "النموذج المضبوط غير متوفّر",
+    message:
+      "المفتاح الحاليّ لا يصل إلى النموذج المضبوط في إعدادات الاستوديو. جُرِّب الرجوع للنموذج الافتراضي (gemini-2.5-flash) أو استعمل نموذجاً بديلاً.",
+    action: "اضبط النموذج من: إعدادات الاستوديو ← الذكاء الاصطناعي ← النموذج.",
+    retryable: false,
+  },
+  SAFETY_BLOCK: {
+    title: "حجب أمانٍ من مزوّد الذكاء",
+    message:
+      "رفض المزوّد المعالجة لأنّه اعتبر الصورة أو الطلب مخالفاً لسياساته. جرّب صورةً أوضح للمنتج أو تحقّق من الوصف المُدخَل.",
+    retryable: false,
+  },
+  QUOTA_EXCEEDED: {
+    title: "استُنفدت حصّة الاستخدام لدى المزوّد",
+    message:
+      "لدى مفتاح Gemini حدٌّ زمنيٌّ أو يوميّ بلغتَه. انتظر قليلاً ثمّ أعد المحاولة، أو ارفع الحصّة من لوحة Google AI Studio.",
+    retryable: true,
+  },
+  INVALID_INPUT: {
+    title: "رفض المزوّد الحمولة",
+    message:
+      "الصورة أو البيانات المُرسَلة لم يقبلها المزوّد. تأكّد أنّ الصورة سليمة (JPEG/PNG/WEBP) وأنّ الوصف قصير ومباشر.",
+    retryable: false,
+  },
+  AUTH: {
+    title: "مفتاح الذكاء الاصطناعي غير صالح",
+    message:
+      "رفض المزوّد المفتاح (منتهٍ أو مُبطَل أو بلا صلاحية). اطلب من المدير تحديث المفتاح من إعدادات الاستوديو.",
+    retryable: false,
+  },
+  SERVER_TRANSIENT: {
+    title: "خللٌ مؤقّت لدى مزوّد الذكاء",
+    message: "أعِد المحاولة بعد لحظات — العطل من طرف المزوّد، لم يتغيّر منتجك.",
+    retryable: true,
+  },
+  TIMEOUT: {
+    title: "تأخّر مزوّد الذكاء",
+    message: "لم يصل الردّ في الوقت المحدَّد. أعِد المحاولة، وسيبقى المنتج دون تغيير.",
+    retryable: true,
+  },
+  UNKNOWN: {
+    title: "خطأٌ غير مصنَّفٍ من المزوّد",
+    message:
+      "حدث خطأٌ لم يستطع النظام تصنيفه. أعد المحاولة، وإن استمرّ فأرسل رمز المتابعة للدعم.",
+    retryable: true,
+  },
+};
+
+/** يصنّف حالة HTTP + رسالة Gemini إلى فئةٍ داخليّة — نقطة استعمال واحدة على الخادم. */
+export function classifyGeminiError(
+  status: number,
+  detail: string | null | undefined,
+): AiProviderErrorCategory {
+  const text = String(detail ?? "").toLowerCase();
+  if (status === 401 || status === 403) return "AUTH";
+  if (status === 429) return "QUOTA_EXCEEDED";
+  if (status >= 500) return "SERVER_TRANSIENT";
+  if (status === 404 || /not found for the requested|model.*not.*found|does not exist/.test(text)) {
+    return "MODEL_NOT_FOUND";
+  }
+  if (/safety|blocked|harm/.test(text)) return "SAFETY_BLOCK";
+  if (status === 400) return "INVALID_INPUT";
+  return "UNKNOWN";
+}
+
+
 const factValue = z.string().trim().min(1).max(160);
 const inputDescription = z.string().trim().max(5_000);
 

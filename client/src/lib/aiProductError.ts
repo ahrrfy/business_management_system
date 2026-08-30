@@ -1,3 +1,8 @@
+import {
+  AI_PROVIDER_ERROR_PRESENTATION,
+  type AiProviderErrorCategory,
+} from "@shared/productContentAi";
+
 export type ZodFieldErrors = {
   fieldErrors?: Record<string, string[] | undefined>;
   formErrors?: string[];
@@ -8,6 +13,8 @@ export type MutationErrorLike = {
   data?: {
     code?: string;
     zodError?: ZodFieldErrors | null;
+    /** يأتي من errorFormatter في الخادم (server/trpc.ts) — فئةُ خطأ مزوّد الذكاء إن وُجدت. */
+    providerCategory?: AiProviderErrorCategory | null;
   };
 };
 
@@ -35,6 +42,9 @@ const FIELD_LABELS_AR: Record<string, string> = {
   conversionFactor: "معامل التحويل",
   color: "اللون",
   size: "القياس",
+  imageBase64: "الصورة",
+  mime: "نوع الصورة",
+  contextName: "السياق",
 };
 
 function labelForPath(rawPath: string): string {
@@ -59,18 +69,28 @@ function formatZodErrors(zodError: ZodFieldErrors | null | undefined): string | 
   return text || null;
 }
 
-// ⛔ عقد الأمان (يحرسه aiProductError.test.ts): candidate.message خامٌّ من الخادم قد يحمل
-// مفاتيح API أو مسار قاعدة أو نصّ تفصيلٍ من Gemini يذكر «secret/password/database» ⇒ **لا
-// يُسرَّب إلى المستخدم أبداً**. الاستثناء الوحيد المصرَّح به: كشفٌ سلوكيٌّ بمفتاحٍ عربيٍّ معلوم
-// (مثل «سقف الاستخدام اليومي») نستعمله لاختيار نصٍّ ثابتٍ من عندنا — لا نطبع نصّ الخادم نفسه.
-// الاستثناء الآخر المفيد: `data.zodError.fieldErrors` — أسماء حقولٍ معرَّفةٌ في السكيمة، لا
-// قيم مدخلات، فتُترجَم عربياً بأمان (النمط formatZodErrors أعلاه).
-
+/**
+ * تحويل خطأ مساعد الذكاء إلى عرضٍ آمن للمستخدم.
+ *
+ * ⛔ **عقد أمان محفوظ:** `candidate.message` خامٌّ قد يحمل تفاصيل من المزوّد (مفاتيح API،
+ * مسارات، PII). لا يُعرَض أبداً. مسارٌ واحد للخروج بمعلومة تشخيصيّة:
+ *   ١) `data.providerCategory` — فئةٌ مصنَّفةٌ من الخادم ⇒ نستعمل خريطة العرض المشتركة.
+ *   ٢) `data.zodError.fieldErrors` — أسماءُ حقولٍ من السكيمة (لا قيم مستخدم) ⇒ آمن.
+ *   ٣) كشفُ "سقف الاستخدام اليوميّ" بمفتاحٍ عربيّ ⇒ نختار نصّاً من عندنا.
+ * كلّ ما عدا ذلك ⇒ نصٌّ عامٌّ محفوظ.
+ */
 export function describeAiError(error: unknown): AiErrorPresentation {
   const candidate = (error ?? {}) as MutationErrorLike;
   const code = candidate.data?.code ?? "";
+  const providerCategory = candidate.data?.providerCategory ?? null;
   const zodDetail = formatZodErrors(candidate.data?.zodError);
 
+  // ١) الفئةُ المصنَّفة أولاً — تُعطي أدقّ إجراءٍ مقترحٍ للمستخدم.
+  if (providerCategory && providerCategory in AI_PROVIDER_ERROR_PRESENTATION) {
+    return AI_PROVIDER_ERROR_PRESENTATION[providerCategory];
+  }
+
+  // ٢) بقيّة الأكواد التي يرمي بها الخادم قبل الوصول للمزوّد.
   switch (code) {
     case "PRECONDITION_FAILED":
       if (candidate.message?.includes("سقف الاستخدام اليومي")) {
@@ -109,8 +129,6 @@ export function describeAiError(error: unknown): AiErrorPresentation {
         retryable: true,
       };
     case "BAD_REQUEST": {
-      // zodError آمنٌ عرضياً (أسماء حقول من السكيمة، لا قيم مستخدم) — يحوّل الرسالة العامّة
-      // إلى تشخيصٍ محدَّد: «وحدات البيع ← #1 ← معامل التحويل» بدل «راجع الحقول».
       if (zodDetail) {
         return {
           title: "بيانات المنتج بحاجة لتصحيح قبل التوليد",
