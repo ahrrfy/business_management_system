@@ -148,6 +148,7 @@ export default defineConfig({
       "server/middleware/__tests__/bodyParsersRestore.test.ts",
       "server/middleware/__tests__/csrf.test.ts",
       "server/services/__tests__/backgroundJobPhases.test.ts",
+      "server/services/__tests__/pm2EnvDeclaration.test.ts",
       "server/middleware/__tests__/overloadGuard.test.ts",
       "server/middleware/__tests__/requestPriority.test.ts",
       "server/lib/__tests__/retryDup.test.ts",

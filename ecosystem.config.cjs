@@ -37,6 +37,27 @@ const provisionPrivilegedEnvironment = Object.freeze({
 const provisionWorkerEnvironment = Object.freeze(
   provisionRuntimePolicy.buildWorkerEnvironment(process.env),
 );
+/**
+ * مفاتيح الضبط التشغيليّ لعامل الويب — تُصرَّح في كتلة `env` كي يلتقطها
+ * `pm2 reload … --update-env` عند كل نشر. **لا تُدرَج غير الموجودة**: مفتاحٌ بقيمة
+ * `undefined` قد يصل العملية نصّاً `"undefined"` فيرمي `boundedIntEnv` عند الإقلاع.
+ */
+const webTunableKeys = Object.freeze([
+  "DB_POOL_LIMIT",
+  "MYSQL_MAX_CONNECTIONS",
+  "DB_CONNECTION_RESERVE",
+  "EVENT_LOOP_MAX_LAG_MS",
+  "EVENT_LOOP_CRITICAL_MAX_LAG_MS",
+  "EVENT_LOOP_STOREFRONT_MAX_LAG_MS",
+]);
+const webTunables = Object.freeze(
+  Object.fromEntries(
+    webTunableKeys
+      .filter((key) => typeof process.env[key] === "string" && process.env[key].trim() !== "")
+      .map((key) => [key, process.env[key]]),
+  ),
+);
+
 const webForbiddenEnvironmentKeys = Object.freeze([
   "DB_ROOT_PW",
   "DB_CONTAINER",
@@ -135,6 +156,17 @@ module.exports = {
           process.env.INTERNAL_PROXY_SECRET_PREVIOUS ?? "",
         // يطابق عدد عمّال الويب المقصود في `instances` أعلاه.
         WEB_INSTANCES: String(process.env.WEB_INSTANCES || 2),
+        // ⚠️ **كلّ متغيّرٍ يقرأه الخادم يجب أن يُصرَّح هنا** (٣١/٨/٢٦ — أمسكها نشرٌ حقيقيّ):
+        // PM2 يدمج بيئة مُحمِّل ecosystem في التطبيق **عند `pm2 start` وحده**؛ أمّا `pm2 reload
+        // … --update-env` فيُحدّث ما هو مُصرَّحٌ في هذه الكتلة فقط. فمتغيّرٌ غير مُصرَّح يبقى
+        // **مجمَّداً على قيمته لحظةَ أوّل تشغيل** مهما عُدِّل `.env` ومهما أُعيد النشر — بلا أيّ
+        // خطأ أو تحذير. اكتُشفت حين بقي `DB_POOL_LIMIT` على 5 بعد نشرٍ ناجحٍ كامل ورفعِ القيمة
+        // في `.env` إلى 10 وتصديرِها صراحةً في صدفة الأمر: السقف الحقيقيّ ظلّ 15 اتصالاً
+        // للنظام كلّه بينما كلّ الأدلّة تقول إنّ الإصلاح سرى.
+        // ⚠️ تُدرَج **الموجودة فقط** عبر `webTunables` أدناه: إدراج مفتاحٍ بقيمة `undefined`
+        // قد يصل العملية نصّاً `"undefined"`، و`boundedIntEnv` في `server/db.ts` **يرمي** على
+        // قيمةٍ غير عددية ⇒ خادمٌ لا يُقلع في أيّ نشرٍ لا يضبط المفتاح في `.env`.
+        ...webTunables,
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
         // عمداً بلا CONTROL_DATABASE_URL/DB_ROOT_PW/docker — خادم الويب لا يوفّر شركات أبداً.
