@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expected = Object.freeze({
   applicationId: "online.alarabiya.store",
-  versionCode: 13,
+  versionCode: 14,
   versionName: "1.0.2",
   productionBaseUrl: "https://srv1548487.hstgr.cloud",
   certificatePinExpiration: "2027-08-01",
@@ -694,6 +694,13 @@ function verifySourceContract() {
     )
   ) {
     fail("downloadable scanner module configuration is incomplete");
+  }
+  if (
+    !/<uses-feature\b(?=[^>]*android:name="android\.hardware\.screen\.portrait")(?=[^>]*android:required="false")[^>]*\/>/.test(
+      androidManifest,
+    )
+  ) {
+    fail("ML Kit's portrait-only delegate must not make portrait a required Play device feature");
   }
   const fileProviders = [...androidManifest.matchAll(/<provider\b([^>]*)>([\s\S]*?)<\/provider>/g)]
     .filter((match) => xmlAttribute(match[1], "android:name") === "androidx.core.content.FileProvider");

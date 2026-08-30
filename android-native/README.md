@@ -31,8 +31,10 @@ The production pin set is exact-host only and contains the reviewed live leaf an
 `YE1` intermediate keys. Its inventory, expiry, extraction, and no-downtime rotation procedure are
 documented in [`docs/certificate-pinning.md`](docs/certificate-pinning.md).
 
-The v13 Play update keeps the package ID `online.alarabiya.store`, `versionName 1.0.2`, and
-uses `versionCode 13` because Google Play consumed version code 12 during the replaced draft upload.
+The v14 Play update keeps the package ID `online.alarabiya.store`, `versionName 1.0.2`, and
+uses `versionCode 14` because Google Play consumed version code 13 while validating the replaced
+draft. The manifest explicitly keeps `android.hardware.screen.portrait` optional: ML Kit's delegated
+scanner activity is portrait-only, but it must not exclude otherwise compatible TV/Car devices.
 The unpublished v11 draft contained pre-stripped native libraries. Barcode/OCR inference now runs in
 downloadable Google Play services modules, optional unreachable AndroidX JNI payloads are excluded,
 and CI rejects any `.so`

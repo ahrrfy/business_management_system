@@ -9,6 +9,11 @@
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="false" />
+    <!-- ML Kit's delegated scanner activity is portrait-only, but the ERP itself is not. Declaring
+         portrait optional prevents that library activity from excluding TV/Car devices in Play. -->
+    <uses-feature
+        android:name="android.hardware.screen.portrait"
+        android:required="false" />
 
     <application
         android:name=".AlrueyaApplication"
