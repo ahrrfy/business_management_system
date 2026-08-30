@@ -3,7 +3,7 @@ import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
 import { deliveryOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { cashierProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
+import { cashierProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, managerProcedure, reportViewerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
@@ -983,6 +983,35 @@ export const deliveryRouter = router({
       return db.transaction(async (tx) => {
         const { previewDeliveryQuote } = await import("../services/delivery/pricingRules");
         return previewDeliveryQuote(tx as never, input.zoneId, input.distanceKm, input.weightKg);
+      });
+    }),
+
+  // ─── تقرير مقارنة العمولة (Slice K، ٢٩/٨/٢٦) ─── يساعد المالكَ على اتّخاذ قرار تفعيل H2
+  // لكلّ جهةٍ: يقارن الأجرة الفعليّة المدفوعة بالعمولة التقديريّة (المخزَّنة منذ Slice H) في نافذةٍ
+  // زمنيّة. الفرق الموجب = وفر متوقَّع للمكتبة عند التفعيل. مؤشّرٌ نصّيّ فقط — لا قيدَ محاسبيّ.
+  // Codex P2 #5 (٢٩/٨): ماليٌّ حسّاس ⇒ `reportViewerProcedure` (admin/manager/accountant/auditor
+  // + `reports:READ`). الكاشير كان يحمل `store:READ` FULL افتراضياً ⇒ يستطيع الاستدعاء المباشر.
+  // Codex P2 #6: نقل المنطق كلّه إلى خدمة `commissionComparison` (البنية router↔service).
+  // Codex P2 #7: التاريخ المقلوب مرفوضٌ برسالةٍ صريحة (لا نتيجةٌ فارغة تُضلّل).
+  commissionComparison: reportViewerProcedure
+    .input(z.object({
+      fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+      toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+    }).optional().refine(
+      (v) => !v || !v.fromDate || !v.toDate || v.fromDate <= v.toDate,
+      { message: "نطاق التاريخ مقلوب: «من» أكبر من «إلى»" },
+    ))
+    .query(async ({ input, ctx }) => {
+      const { commissionComparison } = await import("../services/delivery/commissionComparison");
+      // `reportViewerProcedure` لا يوفّر `scopedBranchId` صراحةً — نشتقّه بنفس مبدأ
+      // `scopedBranchOf` (المالك/الأدمن يعبُران، غيرهم مثبَّت على فرعهم).
+      const scopedBranchId = ctx.user.role === "admin"
+        ? null
+        : (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+      return commissionComparison({
+        scopedBranchId,
+        fromDate: input?.fromDate,
+        toDate: input?.toDate,
       });
     }),
 });

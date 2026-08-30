@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1112,
+    "trpcTotal": 1113,
     "byKind": {
       "mutation": 582,
-      "query": 530
+      "query": 531
     },
     "byAuthority": {
-      "module-gate": 555,
+      "module-gate": 556,
       "module-map": 339,
       "admin": 67,
       "none": 53,
@@ -21,14 +21,14 @@
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 527,
+      "LOW": 528,
       "MEDIUM": 427,
       "HIGH": 158
     },
     "byModule": {
       "(none)": 193,
+      "reports": 100,
       "hr": 100,
-      "reports": 99,
       "store": 81,
       "digital_cards": 75,
       "inventory": 70,
@@ -77,10 +77,10 @@
     "expressMounts": 12,
     "jobs": 22,
     "routerFiles": 96,
-    "proposedPermissions": 928,
+    "proposedPermissions": 929,
     "proposedDomains": {
       "hr": 106,
-      "reports": 102,
+      "reports": 103,
       "treasury": 88,
       "inventory": 86,
       "catalog": 81,
@@ -4424,6 +4424,23 @@
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
       "loc": "server/routers/deliveryRouter.ts:165"
+    },
+    {
+      "surface": "trpc",
+      "router": "deliveryRouter",
+      "proposedPermission": "reports.delivery.commission_comparison",
+      "name": "commissionComparison",
+      "kind": "query",
+      "procedure": "reportViewerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "READ",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/deliveryRouter.ts:996"
     },
     {
       "surface": "trpc",
