@@ -1263,7 +1263,7 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "" });
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -1426,11 +1426,64 @@ export default function WorkOrders() {
     });
   }
 
+  // ─── الموجة ٢ (٣٠/٨/٢٦) — Group By متبدّل بنمط Odoo ──────────────────────────
+  // «حسب المرحلة» يبقى الافتراضَ (سلوكٌ ثابت + D&D يعمل). الأخرى تُشتقّ من البيانات
+  // ذاتها وتُعطّل D&D — تغييرُ الفنّيّ يحتاج mutation `assign`، الأولويّة تحتاج `update`،
+  // والقناة لا تتغيّر بعد الإنشاء ⇒ فتح كلٍّ منها في موجةٍ لاحقة يبقى أنقى من إدخالها هنا مبعثرةً.
+  type GroupBy = "stage" | "technician" | "channel" | "priority";
+  const groupBy = (["stage", "technician", "channel", "priority"] as const).includes(f.gb as GroupBy)
+    ? (f.gb as GroupBy)
+    : "stage";
+  const dndEnabled = groupBy === "stage";
+
+  type DynCol = { key: string; label: string; hint: string; hue: number; status: Status; match: (o: WO) => boolean };
+  const dynColumns: DynCol[] = useMemo(() => {
+    if (groupBy === "stage") return COLUMNS.slice();
+    if (groupBy === "technician") {
+      // «غير مُسنَد» عمودٌ حاكمٌ أوّلاً (طابور مشترك)، ثمّ فنّيّون مرتَّبون بالاسم.
+      const byTech = new Map<number | null, string>();
+      byTech.set(null, "غير مُسنَد");
+      filtered.forEach((o) => {
+        const id = o.assignedTo ?? null;
+        if (id != null && !byTech.has(id)) byTech.set(id, o.assigneeName ?? `فنّيّ #${id}`);
+      });
+      const cols: DynCol[] = [];
+      // ⚠️ status/hint هنا **قيمة عرضٍ** لا حاكمٌ منطقيّ — D&D معطَّل في هذا الوضع.
+      cols.push({ key: "tech:none", label: "غير مُسنَد", hint: "الطابور المشترك — بلا فنّيّ", hue: 72, status: "RECEIVED" as Status, match: (o) => o.assignedTo == null });
+      Array.from(byTech.entries()).forEach(([id, name]) => {
+        if (id == null) return;
+        cols.push({ key: `tech:${id}`, label: name, hint: `أوامرُ الفنّيّ`, hue: (Number(id) * 47) % 360, status: "IN_PROGRESS" as Status, match: (o) => Number(o.assignedTo) === Number(id) });
+      });
+      return cols;
+    }
+    if (groupBy === "channel") {
+      const cols: DynCol[] = [];
+      const CHANNEL_HUES: Record<string, number> = { WALK_IN: 155, WHATSAPP: 155, INSTAGRAM: 293, TIKTOK: 320, PHONE: 250, OTHER: 210 };
+      for (const ch of WORK_ORDER_CHANNELS) {
+        cols.push({
+          key: `ch:${ch}`,
+          label: receptionChannelLabel(ch),
+          hint: `قناةُ استلام`,
+          hue: CHANNEL_HUES[ch] ?? 210,
+          status: "IN_PROGRESS" as Status,
+          match: (o) => o.receptionChannel === ch,
+        });
+      }
+      return cols;
+    }
+    // priority
+    return [
+      { key: "pri:URGENT", label: "عاجل", hint: "أولويّة عليا — تنفيذٌ فوريّ", hue: 27, status: "IN_PROGRESS" as Status, match: (o) => (o.priority ?? "NORMAL") === "URGENT" },
+      { key: "pri:NORMAL", label: "عادي", hint: "أولويّة اعتياديّة", hue: 235, status: "IN_PROGRESS" as Status, match: (o) => (o.priority ?? "NORMAL") === "NORMAL" },
+      { key: "pri:LOW", label: "منخفض", hint: "لا يستعجل", hue: 155, status: "IN_PROGRESS" as Status, match: (o) => (o.priority ?? "NORMAL") === "LOW" },
+    ];
+  }, [groupBy, filtered]);
+
   const byCol = useMemo(() => {
     const m: Record<string, WO[]> = {};
-    COLUMNS.forEach((c) => (m[c.key] = []));
+    dynColumns.forEach((c) => (m[c.key] = []));
     filtered.forEach((o) => {
-      const col = COLUMNS.find((c) => c.match(o));
+      const col = dynColumns.find((c) => c.match(o));
       if (col) m[col.key].push(o);
     });
     Object.values(m).forEach((arr) =>
@@ -1443,7 +1496,7 @@ export default function WorkOrders() {
       })
     );
     return m;
-  }, [filtered]);
+  }, [filtered, dynColumns]);
 
   // ── الانتقال بين المراحل (الخطوة التالية فقط — التسليم خلف تأكيد مالي) ──
   async function attemptMove(order: WO, to: Status) {
@@ -1500,6 +1553,9 @@ export default function WorkOrders() {
       const dr = dragRef.current; if (!dr) return;
       if (!dr.moved && Math.hypot(ev.clientX - dr.startX, ev.clientY - dr.startY) < 6) return;
       dr.moved = true;
+      // الموجة ٢ — D&D يعمل في «حسب المرحلة» فقط. باقي التجميعات تفتح Drawer عند النقر
+      // بلا نقلٍ بين الأعمدة (لأنّ mutations الإسناد/الأولويّة/القناة تختلف عن الانتقال).
+      if (!dndEnabled) return;
       document.body.style.userSelect = "none";
       setDrag({ order: dr.order, x: ev.clientX - dr.ox, y: ev.clientY - dr.oy, overCol: hitCol(ev.clientX, ev.clientY) });
     };
@@ -1665,6 +1721,21 @@ export default function WorkOrders() {
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>
           <input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث (رقم / عنوان / عميل)" />
         </div>
+        {/* الموجة ٢ — Group By (نمط Odoo): يبدّل تجميع الأعمدة بلا تغيير الفلاتر.
+            «حسب المرحلة» هو الافتراضُ ويُفعِّل السحب والإفلات. البقيّة للقراءة الآن. */}
+        {view === "board" && (
+          <AppSelect
+            value={f.gb}
+            onValueChange={(v) => setF({ gb: v })}
+            className="w-auto min-w-36"
+            aria-label="تجميع البطاقات"
+          >
+            <option value="stage">حسب المرحلة (افتراضيّ)</option>
+            <option value="technician">حسب الفنّيّ</option>
+            <option value="channel">حسب القناة</option>
+            <option value="priority">حسب الأولويّة</option>
+          </AppSelect>
+        )}
         {canCrossBranches && (
           <AppSelect
             value={f.branch}
@@ -1736,15 +1807,18 @@ export default function WorkOrders() {
           <div className="wob-empty-board">{anyFilter ? "لا طلبات مطابقة للبحث/الفلاتر الحالية." : "لا أوامر شغل بعد. تُنشأ الطلبات من شاشة الاستقبال الموحدة."}</div>
         ) : (
           <div className="wob-board">
-            {COLUMNS.map((s) => {
+            {dynColumns.map((s) => {
               const list = byCol[s.key] ?? [];
-              const isOver = drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
+              // D&D يعمل فقط في «حسب المرحلة» (`groupBy=stage`): الأخرى تحتاج mutations
+              // مختلفة (assign/update) لم يُبنَ لها بعد جسر D&D — يبقى العرض قراءةً فقط.
+              const isOver = dndEnabled && drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
               // الموجة ١ — KPIs الرأس: العدّاد كما كان، ونضيف مجموع القيمة و«معطَّل» و«متأخّر».
               // ⚠️ KPIs مقياسها الحالة الحاكمة `s.status` (وليس ColKey): «طابور وارد»/«مسحوب»
               // كلاهما RECEIVED فتظهر لهما نفس أرقام الحالة — قرارٌ مقصود: KPIs مالٍ/تأخّرٍ
               // تُحدَّد على الحالة الحقيقية، والانقسام العرضي بحسب الإسناد.
-              const colStats = serverCounts?.stats?.[s.status];
-              const showValue = f.pri === "all" && f.ch === "all" && colStats != null;
+              // في التجميع غير stage: KPIs الخادم لا تُطابق ⇒ نُخفيها (تُشتقّ لاحقاً بمجموعِ list).
+              const colStats = groupBy === "stage" ? serverCounts?.stats?.[s.status] : null;
+              const showValue = groupBy === "stage" && f.pri === "all" && f.ch === "all" && colStats != null;
               return (
                 <div className="wob-col" style={colVars(s.hue)} key={s.key}>
                   <div className="wob-col-head">
@@ -1784,6 +1858,7 @@ export default function WorkOrders() {
                         key={o.id}
                         o={o}
                         dragging={!!drag && drag.order.id === o.id}
+                        // النقر يفتح Drawer دائماً؛ السحب يعمل في «حسب المرحلة» فقط (`dndEnabled` داخل onCardPointerDown).
                         onPointerDown={(e) => onCardPointerDown(e, o)}
                         // إسناد inline لعَمود INBOX فَقط (مَدير + بَيانات الفنّيين جاهزة) per README §5.2.
                         inboxAssign={
