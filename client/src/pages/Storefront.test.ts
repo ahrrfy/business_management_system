@@ -20,6 +20,7 @@ import {
   storefrontMediaUrls,
   storefrontVariantMedia,
   clampStorefrontZoomPoint,
+  getStorefrontSearchSuggestions,
   recommendationActionLabel,
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
@@ -396,5 +397,49 @@ describe("storefront persistence safety", () => {
 
     expect(refreshed).toMatchObject({ priceChanged: 1, unresolved: 0 });
     expect(refreshed.cart.get(line.cartKey)).toMatchObject({ qty: 2, price: "90.00" });
+  });
+});
+
+describe("getStorefrontSearchSuggestions", () => {
+  const p = (productId: number, productName: string, brand: string | null = null) => ({ productId, productName, brand });
+
+  it("returns nothing until the term is at least two characters", () => {
+    const items = [p(1, "دفتر A5"), p(2, "قلم أزرق")];
+    expect(getStorefrontSearchSuggestions(items, "")).toEqual([]);
+    expect(getStorefrontSearchSuggestions(items, " ")).toEqual([]);
+    expect(getStorefrontSearchSuggestions(items, "د")).toEqual([]);
+    expect(getStorefrontSearchSuggestions(items, "دف")).toHaveLength(1);
+  });
+
+  it("matches inside product name and brand together", () => {
+    const items = [p(1, "دفتر", "Stabilo"), p(2, "قلم أحمر", "Faber"), p(3, "علبة أقلام", "Stabilo")];
+    // نصّ الماركة يجب أن يُطابق كنصّ المنتج
+    expect(getStorefrontSearchSuggestions(items, "stab").map((it) => it.productId)).toEqual([1, 3]);
+  });
+
+  it("normalizes alef variants (أ/إ/آ → ا) and taa marbuta (ة → ه)", () => {
+    // العقد: normalizeStorefrontArabic يوحّد الألفات والتاء المربوطة فقط — بلا تشكيل.
+    // مقاسٌ على السلوك الفعليّ لا الطموح، فلا يشيخ الاختبار أمام تحسّنٍ لاحقٍ في التطبيع.
+    const items = [p(1, "أوراق ملوّنة"), p(2, "مسطرة"), p(3, "علبة"), p(4, "دفتر")];
+    expect(getStorefrontSearchSuggestions(items, "اوراق").map((it) => it.productId)).toEqual([1]);
+    expect(getStorefrontSearchSuggestions(items, "علبه").map((it) => it.productId)).toEqual([3]);
+  });
+
+  it("caps at six suggestions to keep the dropdown scannable", () => {
+    const items = Array.from({ length: 12 }, (_, i) => p(i + 1, `دفتر رقم ${i + 1}`));
+    expect(getStorefrontSearchSuggestions(items, "دفتر")).toHaveLength(6);
+  });
+
+  it("preserves the input list order (caller pre-filters/sorts)", () => {
+    // العقد: نُقلّص فقط، لا نُعيد الترتيب — الفلترة/الفرز مسؤولية المستدعي (filteredItems)
+    const items = [p(3, "دفتر C"), p(1, "دفتر A"), p(2, "دفتر B")];
+    expect(getStorefrontSearchSuggestions(items, "دفتر").map((it) => it.productId)).toEqual([3, 1, 2]);
+  });
+
+  it("handles null/undefined brand safely", () => {
+    const items = [p(1, "دفتر"), { productId: 2, productName: "قلم" }];
+    // undefined brand يجب ألّا يرمي؛ يُعامَل كأنّه سلسلة فارغة
+    expect(() => getStorefrontSearchSuggestions(items as never, "قلم")).not.toThrow();
+    expect(getStorefrontSearchSuggestions(items as never, "قلم")).toHaveLength(1);
   });
 });
