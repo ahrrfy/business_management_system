@@ -14,7 +14,7 @@ class NativeScannerPolicyTest {
     }
 
     @Test
-    fun `barcode and sku fields use bundled barcode analysis`() {
+    fun `barcode and sku fields use Play services barcode analysis`() {
         assertEquals(NativeScanEngine.BARCODE, NativeScanField.BARCODE.scanEngineOrNull())
         assertEquals(NativeScanEngine.BARCODE, NativeScanField.SKU_OR_BARCODE.scanEngineOrNull())
         assertEquals("ABC-120045", normalizeNativeScanResult(NativeScanField.SKU_OR_BARCODE, " ABC-120045\n"))

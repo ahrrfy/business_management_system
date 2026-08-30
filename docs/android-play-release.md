@@ -22,7 +22,7 @@
 
 `versionName` (مثل `1.0.0`) يبقى كما هو ما لم تُرِد إصداراً معلَناً جديداً. تحقّق محلياً: `pnpm check:mobile-release`.
 
-> عقد المصدر الحاليّ لإصدار v11 في ٣٠/٨/٢٠٢٦ = **versionCode 11 · versionName 1.0.2**؛ رُفع بعد أن أكّد Play أن الرقم 10 مستعمل.
+> عقد المصدر الحاليّ لإصدار v12 في ٣٠/٨/٢٠٢٦ = **versionCode 12 · versionName 1.0.2**؛ الرقم 10 مستعمل، وأُلغيت مسودّة 11 قبل النشر لإزالة مكتبات native المجرّدة من الرموز جذرياً.
 > الرقم التالي دائماً = الأعلى المرفوع إلى Play + 1. في بقيّة الدليل `N` = رقم إصدارك الحاليّ.
 
 ---
@@ -52,7 +52,7 @@ gh run watch "$RUN_ID" --exit-status
 - ⚠️ **لا تستعمل `gh run list --limit 1` وحده** لتحديد الـrun: قد يلتقط بناءً سابقاً إن تأخّر ظهور الجديد أو أُطلق إصدارٌ آخر — طابِق `headSha` كما أعلاه.
 
 الـworkflow يبني ويوقّع ويتحقّق (الحزمة + `versionCode` + نقطة النهاية `https://srv1548487.hstgr.cloud`
-+ عقد SPKI pinning الحقيقي + بصمة مفتاح الرفع `ANDROID_UPLOAD_SIGNING_SHA256`)، ثم يمسح بيانات
++ عقد SPKI pinning الحقيقي + خلوّ AAB/APK من أيّ `.so` + بصمة مفتاح الرفع `ANDROID_UPLOAD_SIGNING_SHA256`)، ثم يمسح بيانات
 التوقيع. **`release-gate` يشترط أن
 يكون SHA الجاري إصداره أخضرَ بالكامل؛ إن دُمج PR آخر أثناء ذلك تحرّك `main` وقد يفشل البابُ ⇒ أعِد
 الالتقاط والتشغيل على الـSHA الجديد.**
@@ -100,8 +100,9 @@ gh run download "$RUN_ID" -n "super-alarabiya-native-$SHA" -D ./release-artifact
    ```
 7. **(موصى به) رفع خرائط فكّ الترميز**: إن لم تُضمَّن تلقائياً، ارفع `mapping.txt` من
    **App bundle explorer → الإصدار → Downloads → Upload deobfuscation file** لتصل تقارير الأعطال مقروءة.
-8. **Next / Save** → **Review release** → عالِج أي تحذير (التحذيرات لا تمنع المسار الداخليّ عادةً) →
+8. **Next / Save** → **Review release** → لا تقبل تحذير native debug symbols؛ حارس CI يضمن أن الحزمة لا تحتوي native code أصلاً →
    **Start rollout to Internal testing** → أكّد.
+9. من رابط الاختبار الداخلي وعلى تثبيت جديد: افتح ماسح الباركود وOCR، وتحقّق من اكتمال تجهيز وحدات Google Play services، ثم اختبر رفض إذن الكاميرا وإعادة منحه ونجاح التقاط النص قبل ترقية المسار.
 
 ---
 

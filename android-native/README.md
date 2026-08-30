@@ -31,8 +31,11 @@ The production pin set is exact-host only and contains the reviewed live leaf an
 `YE1` intermediate keys. Its inventory, expiry, extraction, and no-downtime rotation procedure are
 documented in [`docs/certificate-pinning.md`](docs/certificate-pinning.md).
 
-The v11 Play update keeps the package ID `online.alarabiya.store`, `versionName 1.0.2`, and
-uses `versionCode 11` because Google Play has already consumed version code 10. Only debug builds
+The v12 Play update keeps the package ID `online.alarabiya.store`, `versionName 1.0.2`, and
+uses `versionCode 12` because Google Play consumed version code 10 and the unpublished v11 draft
+contained pre-stripped native libraries. Barcode/OCR inference now runs in downloadable Google Play
+services modules, optional unreachable AndroidX JNI payloads are excluded, and CI rejects any `.so`
+entry in the AAB or APK. Only debug builds
 add the `.debug` application ID suffix. A signed production
 build reads signing values from environment variables or Gradle properties; never commit them:
 

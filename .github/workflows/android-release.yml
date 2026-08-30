@@ -136,7 +136,19 @@ jobs:
           # positive verification marker instead of treating the expected trust warning as damage.
           jarsigner -verify -verbose -certs "$aab" > "$RUNNER_TEMP/aab-signature.txt"
           grep -Fq 'jar verified.' "$RUNNER_TEMP/aab-signature.txt"
-          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='11' versionName='1.0.2'"
+          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='12' versionName='1.0.2'"
+          unzip -tqq "$aab"
+          unzip -tqq "$apk"
+          unzip -Z1 "$aab" > "$RUNNER_TEMP/aab-entries.txt"
+          unzip -Z1 "$apk" > "$RUNNER_TEMP/apk-entries.txt"
+          if grep -Ei '\.so$' "$RUNNER_TEMP/aab-entries.txt"; then
+            echo "Native library found in signed AAB" >&2
+            exit 1
+          fi
+          if grep -Ei '\.so$' "$RUNNER_TEMP/apk-entries.txt"; then
+            echo "Native library found in signed APK" >&2
+            exit 1
+          fi
           unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/native-classes.dex"
           grep -aFq 'https://srv1548487.hstgr.cloud' "$RUNNER_TEMP/native-classes.dex"
           # R8/resource shrinking may shorten the packaged XML path (for example res/a.xml),
