@@ -82,6 +82,7 @@ export default defineConfig({
       "shared/invoiceStatus.test.ts",
       "shared/workOrderStatus.test.ts",
       "shared/workOrderKanban.test.ts",
+      "shared/codHandoverPolicy.test.ts",
       "shared/onlineOrderStatus.test.ts",
       "shared/orderSla.test.ts",
       "shared/workOrderEventType.test.ts",

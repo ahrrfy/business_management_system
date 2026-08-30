@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, isNull, notLike, or } from "drizzle-orm";
 import { invoiceItems, invoices, productUnits, productVariants, products, receipts, shifts, workOrders } from "../../../drizzle/schema";
 import { assertCreditLimit } from "../../lib/credit";
+import { requiresFullPaymentAtHandover, COD_PICKUP_PAYMENT_ERROR_AR, type CodPaymentMode } from "@shared/codHandoverPolicy";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
@@ -156,12 +157,13 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // ٣٠/٨/٢٦ (بلاغ المالك — Slice O): COD للاستلام (بلا توصيل) صار مسموحاً في المسار — لكنّ
     // ضمان «لا دينار صامت» هنا حرِج: العميل يستلم بيده ولا مندوبَ يُحصِّل. نُلزم دفعاً كاملاً
     // لحظة التسليم (`totalPaid === salePrice`). خلافُه رفضٌ بـBAD_REQUEST برسالةٍ صريحة.
+    // ثابتة السياسة + نصّ الرسالة في `@shared/codHandoverPolicy` (٦ اختبارات وحدة تحرسها).
     const unpaidPortion = round2(salePrice.minus(totalPaid));
-    const woPaymentMode = (wo.paymentMode ?? "PREPAID") as "PREPAID" | "COD" | "CREDIT";
-    if (woPaymentMode === "COD" && !wo.hasDelivery && unpaidPortion.gt(0)) {
+    const woPaymentMode = (wo.paymentMode ?? "PREPAID") as CodPaymentMode;
+    if (requiresFullPaymentAtHandover(woPaymentMode, !!wo.hasDelivery) && unpaidPortion.gt(0)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `طلب COD للاستلام يتطلّب دفعاً كاملاً عند التسليم — المتبقّي ${unpaidPortion.toFixed(2)} د.ع. حصّل المبلغ قبل تسليم الأمر.`,
+        message: COD_PICKUP_PAYMENT_ERROR_AR(unpaidPortion.toFixed(2)),
       });
     }
     if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
