@@ -23,7 +23,7 @@ fun quoted(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"
 // identity in one place prevents a staging/package override from producing an artifact that cannot
 // update the installed application.
 val productionApplicationId = "online.alarabiya.store"
-val productionVersionCode = 11
+val productionVersionCode = 12
 val productionVersionName = "1.0.2"
 val expectedProductionEndpoint = "https://srv1548487.hstgr.cloud"
 
@@ -173,11 +173,24 @@ android {
     }
 
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    // The app owns no NDK code. These optional AndroidX libraries are unreachable in this
+    // single-process app (no PathIterator or MultiProcessDataStore use), and their upstream AARs
+    // ship pre-stripped binaries with no public symbols. Compose/Firebase BOM upgrades must re-audit
+    // this reachability on API 26 before updating the source-contract pins below.
+    packaging.jniLibs.excludes += setOf(
+        "**/libandroidx.graphics.path.so",
+        "**/libdatastore_shared_counter.so",
+    )
 
     testOptions {
         animationsDisabled = true
         managedDevices {
             localDevices {
+                create("phoneApi26") {
+                    device = "Pixel 2"
+                    apiLevel = 26
+                    systemImageSource = "aosp"
+                }
                 create("phoneApi35") {
                     device = "Pixel 2"
                     apiLevel = 35
@@ -238,7 +251,7 @@ val verifyProductionReleaseInputs by tasks.registering {
         if (productionApplicationId != "online.alarabiya.store") {
             throw GradleException("Unexpected production applicationId.")
         }
-        if (productionVersionCode != 11 || productionVersionName != "1.0.2") {
+        if (productionVersionCode != 12 || productionVersionName != "1.0.2") {
             throw GradleException("Unexpected production version contract.")
         }
         if (productionBaseUrl != expectedProductionEndpoint) {
@@ -284,7 +297,6 @@ tasks.matching {
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.05.01")
-    val cameraXVersion = "1.6.1"
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
@@ -301,11 +313,11 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.navigation:navigation-compose:2.9.8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("androidx.camera:camera-camera2:$cameraXVersion")
-    implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
-    implementation("androidx.camera:camera-view:$cameraXVersion")
-    implementation("com.google.mlkit:barcode-scanning:17.3.0")
-    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+    // Scanner/OCR engines are downloaded and executed by Google Play services, so proprietary
+    // native engines are never embedded as unsymbolicated .so files in the Play bundle.
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
 
     // Firebase is inactive unless the release pipeline explicitly supplies google-services.json
     // and sets REMOTE_PUSH_CONFIGURED=true.
@@ -320,4 +332,5 @@ dependencies {
     testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("com.google.android.gms:play-services-base-testing:16.2.0")
 }

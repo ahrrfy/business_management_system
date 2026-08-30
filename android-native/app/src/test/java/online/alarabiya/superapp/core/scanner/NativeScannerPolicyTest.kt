@@ -14,7 +14,7 @@ class NativeScannerPolicyTest {
     }
 
     @Test
-    fun `barcode and sku fields use bundled barcode analysis`() {
+    fun `barcode and sku fields use Play services barcode analysis`() {
         assertEquals(NativeScanEngine.BARCODE, NativeScanField.BARCODE.scanEngineOrNull())
         assertEquals(NativeScanEngine.BARCODE, NativeScanField.SKU_OR_BARCODE.scanEngineOrNull())
         assertEquals("ABC-120045", normalizeNativeScanResult(NativeScanField.SKU_OR_BARCODE, " ABC-120045\n"))
@@ -25,7 +25,9 @@ class NativeScannerPolicyTest {
         assertEquals(NativeScanEngine.OCR, NativeScanField.DOCUMENT_REFERENCE.scanEngineOrNull())
         assertEquals(NativeScanEngine.OCR, NativeScanField.LATIN_REFERENCE_SEARCH.scanEngineOrNull())
         assertEquals("INV-2026-51 Baghdad", normalizeNativeScanResult(NativeScanField.DOCUMENT_REFERENCE, " INV-2026-51\n Baghdad "))
+        assertEquals("Réf-2026", normalizeNativeScanResult(NativeScanField.DOCUMENT_REFERENCE, "Réf-2026"))
         assertNull(normalizeNativeScanResult(NativeScanField.DOCUMENT_REFERENCE, "فاتورة INV-2026-51"))
+        assertNull(normalizeNativeScanResult(NativeScanField.DOCUMENT_REFERENCE, "INV-2026-51 🔒"))
     }
 
     @Test

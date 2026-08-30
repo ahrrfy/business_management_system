@@ -12,7 +12,40 @@ enum class NativeScanField {
 
 enum class NativeScanEngine { BARCODE, OCR }
 
-private val LatinReferencePattern = Regex("[\\p{IsLatin}\\p{N}\\p{Punct}\\p{Zs}]+")
+private val AllowedNumberTypes = setOf(
+    Character.DECIMAL_DIGIT_NUMBER.toInt(),
+    Character.LETTER_NUMBER.toInt(),
+    Character.OTHER_NUMBER.toInt(),
+)
+
+private val AllowedPunctuationTypes = setOf(
+    Character.CONNECTOR_PUNCTUATION.toInt(),
+    Character.DASH_PUNCTUATION.toInt(),
+    Character.START_PUNCTUATION.toInt(),
+    Character.END_PUNCTUATION.toInt(),
+    Character.INITIAL_QUOTE_PUNCTUATION.toInt(),
+    Character.FINAL_QUOTE_PUNCTUATION.toInt(),
+    Character.OTHER_PUNCTUATION.toInt(),
+)
+
+private fun isLatinReference(value: String): Boolean {
+    var index = 0
+    while (index < value.length) {
+        val codePoint = value.codePointAt(index)
+        val type = Character.getType(codePoint)
+        val allowed = when {
+            Character.isLetter(codePoint) ->
+                Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.LATIN
+            type in AllowedNumberTypes -> true
+            type == Character.SPACE_SEPARATOR.toInt() -> true
+            type in AllowedPunctuationTypes -> true
+            else -> false
+        }
+        if (!allowed) return false
+        index += Character.charCount(codePoint)
+    }
+    return value.isNotEmpty()
+}
 
 fun NativeScanField.scanEngineOrNull(): NativeScanEngine? = when (this) {
     NativeScanField.BARCODE,
@@ -37,7 +70,7 @@ fun normalizeNativeScanResult(field: NativeScanField, rawValue: String): String?
         null -> return null
     }
     if (normalized.isBlank() || normalized.any(Char::isISOControl)) return null
-    if (field.scanEngineOrNull() == NativeScanEngine.OCR && !LatinReferencePattern.matches(normalized)) return null
+    if (field.scanEngineOrNull() == NativeScanEngine.OCR && !isLatinReference(normalized)) return null
     val limit = when (field) {
         NativeScanField.BARCODE, NativeScanField.SKU_OR_BARCODE -> 128
         NativeScanField.DOCUMENT_REFERENCE -> 160

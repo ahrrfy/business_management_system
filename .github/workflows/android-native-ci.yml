@@ -53,7 +53,28 @@ jobs:
             :app:lintDevDebug \
             :app:lintProdRelease \
             :app:compileDevDebugAndroidTestKotlin \
-            :app:assembleDevDebug
+            :app:assembleDevDebug \
+            :app:bundleProdRelease \
+            -x :app:verifyProductionReleaseInputs
+      - name: Reject native libraries before merge
+        run: |
+          set -euo pipefail
+          apk="android-native/app/build/outputs/apk/dev/debug/app-dev-debug.apk"
+          aab="android-native/app/build/outputs/bundle/prodRelease/app-prod-release.aab"
+          test -f "$apk"
+          test -f "$aab"
+          unzip -tqq "$apk"
+          unzip -tqq "$aab"
+          unzip -Z1 "$apk" > "$RUNNER_TEMP/dev-apk-entries.txt"
+          unzip -Z1 "$aab" > "$RUNNER_TEMP/prod-aab-entries.txt"
+          if grep -Ei '\.so$' "$RUNNER_TEMP/dev-apk-entries.txt"; then
+            echo "Native library found in dev APK" >&2
+            exit 1
+          fi
+          if grep -Ei '\.so$' "$RUNNER_TEMP/prod-aab-entries.txt"; then
+            echo "Native library found in production AAB" >&2
+            exit 1
+          fi
 
   native-android-device-smoke:
     runs-on: ubuntu-latest
@@ -79,6 +100,14 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon :app:phoneApi35DevDebugAndroidTest \
+            -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+      - name: Run native smoke tests on minimum supported API
+        working-directory: android-native
+        env:
+          ALRUEYA_DEV_BASE_URL: http://10.0.2.2:3000
+          REMOTE_PUSH_CONFIGURED: "false"
+        run: |
+          ./gradlew --no-daemon :app:phoneApi26DevDebugAndroidTest \
             -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
       - name: Run native smoke tests on tablet
         working-directory: android-native

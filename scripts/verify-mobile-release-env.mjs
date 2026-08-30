@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expected = Object.freeze({
   applicationId: "online.alarabiya.store",
-  versionCode: 11,
+  versionCode: 12,
   versionName: "1.0.2",
   productionBaseUrl: "https://srv1548487.hstgr.cloud",
   certificatePinExpiration: "2027-08-01",
@@ -500,6 +500,14 @@ function xmlAttribute(attributes, name) {
   return attributes.match(new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`))?.[1] ?? null;
 }
 
+function readSourceFiles(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return readSourceFiles(entryPath);
+    return /\.(?:java|kt)$/.test(entry.name) ? [fs.readFileSync(entryPath, "utf8")] : [];
+  });
+}
+
 function verifyNetworkSecurityPinning(source) {
   if (/PLACEHOLDER|BASE64_SHA256|YYYY-MM-DD|dev\.invalid|staging\.invalid/i.test(source)) {
     fail("native production certificate pinning contains a placeholder or non-production host");
@@ -569,8 +577,34 @@ function verifyNetworkSecurityPinning(source) {
 
 function verifySourceContract() {
   const gradle = fs.readFileSync(path.join(root, "android-native/app/build.gradle.kts"), "utf8");
+  const androidManifest = fs.readFileSync(
+    path.join(root, "android-native/app/src/main/AndroidManifest.xml"),
+    "utf8",
+  );
+  const scanner = fs.readFileSync(
+    path.join(
+      root,
+      "android-native/app/src/main/java/online/alarabiya/superapp/ui/scanner/NativeScanner.kt",
+    ),
+    "utf8",
+  );
+  const cameraFilePaths = fs.readFileSync(
+    path.join(root, "android-native/app/src/main/res/xml/camera_file_paths.xml"),
+    "utf8",
+  );
+  const moduleInstallTest = fs.readFileSync(
+    path.join(
+      root,
+      "android-native/app/src/androidTest/java/online/alarabiya/superapp/ui/scanner/ModuleInstallCoordinatorTest.kt",
+    ),
+    "utf8",
+  );
   const networkSecurityConfig = fs.readFileSync(
     path.join(root, "android-native/app/src/main/res/xml/network_security_config.xml"),
+    "utf8",
+  );
+  const gradleProperties = fs.readFileSync(
+    path.join(root, "android-native/gradle.properties"),
     "utf8",
   );
   const nativeCi = fs.readFileSync(path.join(root, ".github/workflows/android-native-ci.yml"), "utf8");
@@ -618,16 +652,114 @@ function verifySourceContract() {
     `val expectedProductionEndpoint = "${expected.productionBaseUrl}"`,
     "applicationId = productionApplicationId",
     'applicationIdSuffix = ".debug"',
+    'platform("androidx.compose:compose-bom:2025.05.01")',
+    'implementation(platform("com.google.firebase:firebase-bom:34.16.0"))',
+    '"**/libandroidx.graphics.path.so"',
+    '"**/libdatastore_shared_counter.so"',
+    'implementation("com.google.android.gms:play-services-code-scanner:16.1.0")',
+    'implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")',
+    'implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")',
+    'androidTestImplementation("com.google.android.gms:play-services-base-testing:16.2.0")',
+    'create("phoneApi26")',
     "dependsOn(verifyProductionReleaseInputs)",
   ];
   for (const fragment of requiredGradleFragments) {
     if (!gradle.includes(fragment)) fail("native Gradle release identity/policy is incomplete");
+  }
+  if (
+    !/^android\.experimental\.testOptions\.managedDevices\.allowOldApiLevelDevices=true$/m.test(
+      gradleProperties,
+    )
+  ) {
+    fail("API 26 managed-device smoke requires the explicit old-API opt-in");
   }
   verifyNetworkSecurityPinning(networkSecurityConfig);
   const applicationIdSuffixes = [...gradle.matchAll(/applicationIdSuffix\s*=\s*"([^"]+)"/g)]
     .map((match) => match[1]);
   if (applicationIdSuffixes.length !== 1 || applicationIdSuffixes[0] !== ".debug") {
     fail("only the debug build type may add an applicationId suffix");
+  }
+  for (const forbiddenDependency of [
+    "androidx.camera:",
+    "com.google.mlkit:barcode-scanning",
+    "com.google.mlkit:text-recognition",
+  ]) {
+    if (gradle.includes(forbiddenDependency)) {
+      fail("native scanner engines must not be embedded in the Android bundle");
+    }
+  }
+  if (
+    !/<meta-data\b(?=[^>]*android:name="com\.google\.mlkit\.vision\.DEPENDENCIES")(?=[^>]*android:value="barcode_ui,ocr")[^>]*\/>/.test(
+      androidManifest,
+    )
+  ) {
+    fail("downloadable scanner module configuration is incomplete");
+  }
+  const fileProviders = [...androidManifest.matchAll(/<provider\b([^>]*)>([\s\S]*?)<\/provider>/g)]
+    .filter((match) => xmlAttribute(match[1], "android:name") === "androidx.core.content.FileProvider");
+  if (
+    fileProviders.length !== 1 ||
+    xmlAttribute(fileProviders[0][1], "android:authorities") !== "${applicationId}.fileprovider" ||
+    xmlAttribute(fileProviders[0][1], "android:exported") !== "false" ||
+    xmlAttribute(fileProviders[0][1], "android:grantUriPermissions") !== "true" ||
+    !/<meta-data\b(?=[^>]*android:name="android\.support\.FILE_PROVIDER_PATHS")(?=[^>]*android:resource="@xml\/camera_file_paths")[^>]*\/>/.test(
+      fileProviders[0][2],
+    )
+  ) {
+    fail("OCR FileProvider must remain private and grant only scoped capture URIs");
+  }
+  if (/android:process\s*=/.test(androidManifest)) {
+    fail("native app must remain single-process while shared-counter JNI is excluded");
+  }
+  for (const fragment of [
+    "GmsBarcodeScanning.getClient",
+    "ActivityResultContracts.TakePicture()",
+    "ActivityResultContracts.RequestPermission()",
+    "Manifest.permission.CAMERA",
+    "TextRecognition.getClient",
+    "ModuleInstall.getClient",
+    "ensureOptionalModuleInstalled",
+    "if (moduleInstallAttempt == 0) return@LaunchedEffect",
+    "withContext(NonCancellable + Dispatchers.IO)",
+    "calculateOcrSampleSize",
+  ]) {
+    if (!scanner.includes(fragment)) fail("scanner must delegate capture and inference outside the app bundle");
+  }
+  if (/androidx\.camera|com\.google\.mlkit\.vision\.barcode\.BarcodeScanning/.test(scanner)) {
+    fail("scanner source references an embedded native engine");
+  }
+  for (const fragment of [
+    "FakeModuleInstallClient",
+    "alreadyInstalledModuleSkipsInstallRequest",
+    "missingModuleRequestsImmediateInstall",
+    "stalledAvailabilityCheckTimesOut",
+    "installFailureIsPropagatedForRetryUi",
+  ]) {
+    if (!moduleInstallTest.includes(fragment)) {
+      fail("scanner module installation success, failure, and timeout paths must stay tested");
+    }
+  }
+  const cameraPathEntries = [
+    ...cameraFilePaths.matchAll(
+      /<(cache-path|files-path|external-path|external-cache-path|external-files-path|root-path)\b([^>]*)\/>/g,
+    ),
+  ];
+  if (
+    cameraPathEntries.length !== 1 ||
+    cameraPathEntries[0][1] !== "cache-path" ||
+    xmlAttribute(cameraPathEntries[0][2], "name") !== "scanner_capture" ||
+    xmlAttribute(cameraPathEntries[0][2], "path") !== "scanner/"
+  ) {
+    fail("OCR capture must be restricted to the private scanner cache directory");
+  }
+  const nativeAppSources = readSourceFiles(
+    path.join(root, "android-native/app/src/main/java"),
+  ).join("\n");
+  if (/\bPathIterator\b|MultiProcessDataStoreFactory|MultiProcessCoordinator/.test(nativeAppSources)) {
+    fail("optional AndroidX JNI exclusions are unsafe with PathIterator or multiprocess DataStore usage");
+  }
+  if (nativeAppSources.includes("IsLatin")) {
+    fail("native scanner policy must not use the API-26-incompatible IsLatin regex property");
   }
   for (const fragment of [
     'const val KEY_ALIAS = "alrueya_native_device_proof_v2"',
@@ -649,6 +781,8 @@ function verifySourceContract() {
     ":app:lintProdRelease",
     ":app:compileDevDebugAndroidTestKotlin",
     ":app:assembleDevDebug",
+    ":app:bundleProdRelease",
+    ":app:phoneApi26DevDebugAndroidTest",
   ]) {
     if (!nativeCi.includes(task)) fail(`native CI is missing ${task}`);
   }
@@ -675,6 +809,31 @@ function verifySourceContract() {
     !signedArtifactsJob.includes('test "$aab_actual" = "$expected"')
   ) {
     fail("release workflow does not verify the AAB signing certificate");
+  }
+  for (const fragment of [
+    'unzip -tqq "$aab"',
+    'unzip -tqq "$apk"',
+    'unzip -Z1 "$aab" > "$RUNNER_TEMP/aab-entries.txt"',
+    'unzip -Z1 "$apk" > "$RUNNER_TEMP/apk-entries.txt"',
+    'grep -Ei \'\\.so$\' "$RUNNER_TEMP/aab-entries.txt"',
+    'grep -Ei \'\\.so$\' "$RUNNER_TEMP/apk-entries.txt"',
+  ]) {
+    if (!signedArtifactsJob.includes(fragment)) {
+      fail("release workflow does not reject native libraries in the Play artifact");
+    }
+  }
+  for (const fragment of [
+    "Reject native libraries before merge",
+    ":app:bundleProdRelease",
+    "-x :app:verifyProductionReleaseInputs",
+    'unzip -tqq "$apk"',
+    'unzip -tqq "$aab"',
+    'grep -Ei \'\\.so$\' "$RUNNER_TEMP/dev-apk-entries.txt"',
+    'grep -Ei \'\\.so$\' "$RUNNER_TEMP/prod-aab-entries.txt"',
+  ]) {
+    if (!nativeCi.includes(fragment)) {
+      fail("native PR CI does not reject native libraries before merge");
+    }
   }
   const expectedProductionHost = new URL(expected.productionBaseUrl).hostname;
   for (const fragment of [
