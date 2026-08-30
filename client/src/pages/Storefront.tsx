@@ -1315,6 +1315,17 @@ function matchesPriceFilter(price: number, filter: PriceFilter): boolean {
   }
 }
 
+// اقتراحات البحث: مُصفَّرة من `filteredItems` (لا `items`) — لتحترم الفلاتر النشطة (قائمة أعجبتني،
+// الماركة، السعر، التوفّر). كان الاقتراح من `items` يعرض منتجاً يختفي فور اختياره لأنّ
+// فلترَ العميل يرفضه (Codex P2 على #761). العتبة حرفان ≥ لضبط الضوضاء.
+export function getStorefrontSearchSuggestions<T extends { productName: string; brand?: string | null }>(products: T[], rawSearch: string): T[] {
+  const term = normalizeStorefrontArabic(rawSearch.trim());
+  if (term.length < 2) return [];
+  return products
+    .filter((product) => normalizeStorefrontArabic(`${product.productName} ${product.brand ?? ""}`).includes(term))
+    .slice(0, 6);
+}
+
 function hasStorefrontAnalyticsConsent(): boolean {
   try {
     const raw = window.localStorage.getItem("arabia_store_consent_v1");
@@ -1329,6 +1340,8 @@ function hasStorefrontAnalyticsConsent(): boolean {
 function StorefrontContent() {
   const [rawSearch, setRawSearch] = useState("");
   const [search, setSearch] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [searchSuggestionIndex, setSearchSuggestionIndex] = useState(0);
   const [categoryId, setCategoryId] = useState<number | null>(null);
   // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
   const [availability, setAvailability] = useState<AvailabilityFilter>("IN_STOCK");
@@ -1825,6 +1838,17 @@ function StorefrontContent() {
     });
   }, [availability, brand, items, priceFilter, showWishlist, sort, wishlistIds]);
   const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED" || showWishlist;
+  // اقتراحات البحث: مُصفَّرة من `filteredItems` (Codex #4) — لا يظهر اقتراحٌ ينتفي فور اختياره.
+  const searchSuggestions = useMemo(() => getStorefrontSearchSuggestions(filteredItems, rawSearch), [filteredItems, rawSearch]);
+  useEffect(() => { setSearchSuggestionIndex(0); }, [rawSearch]);
+  // اختيار اقتراحٍ يفتح مودال المنتج بمعرّفه (Codex #1) — لا نملأ حقل البحث بـ`productName`
+  // فقد يكون `storeTitle` مخصَّصاً للقناة يعجز `storefrontCatalog` عن إيجاده (يبحث في `products.name`
+  // والماركة والباركود فقط) فيرجع نتيجةً فارغة رغم أنّ المنتج موجود. الفتح بالـID جوابٌ مقاومٌ للانحراف
+  // بين حقل العرض وحقل البحث الخادميّ.
+  const chooseSearchSuggestion = (product: (typeof filteredItems)[number]) => {
+    setSearchFocused(false);
+    setSelectedId(product.productId);
+  };
   // catalog يُرشّح البحث والفئة خادمياً، بينما السعر/الماركة عميلان. غياب العناصر من الصفحة الأولى
   // يعني كتالوجاً فارغاً حقاً؛ وأي غياب مع بحث/فئة/تنقيح يعني صفراً بسبب التصفية.
   const isEmptyCatalog = items.length === 0 && !search && categoryId == null;
@@ -2272,14 +2296,69 @@ function StorefrontContent() {
             <input
               type="search"
               value={rawSearch}
-              onChange={(e) => setRawSearch(e.target.value)}
+              onChange={(e) => {
+                setRawSearch(e.target.value);
+                setSearchFocused(true); // Codex #3: يُعيد فتح القائمة بعد Escape/Enter حين يغيّر الاستعلام
+              }}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => window.setTimeout(() => setSearchFocused(false), 120)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") { setSearchFocused(false); return; }
+                if (event.key === "ArrowDown" && searchSuggestions.length > 0) {
+                  event.preventDefault();
+                  setSearchSuggestionIndex((index) => Math.min(index + 1, searchSuggestions.length - 1));
+                  return;
+                }
+                if (event.key === "ArrowUp" && searchSuggestions.length > 0) {
+                  event.preventDefault();
+                  setSearchSuggestionIndex((index) => Math.max(index - 1, 0));
+                  return;
+                }
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  const suggestion = searchSuggestions[searchSuggestionIndex];
+                  if (suggestion) chooseSearchSuggestion(suggestion);
+                  else { setSearch(rawSearch.trim()); setSearchFocused(false); scrollToResults(); }
+                }
+              }}
               placeholder="ما الذي تبحث عنه اليوم؟"
               className="w-full rounded-lg border border-[#d7d2ca] bg-white py-3 pr-10 pl-11 text-sm font-semibold text-[#20252a] outline-none transition placeholder:text-[#92999c] focus:border-[#1e4a63] focus:ring-2 focus:ring-[#1e4a63]/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={searchFocused && searchSuggestions.length > 0}
+              aria-controls="store-search-suggestions"
+              aria-activedescendant={searchFocused && searchSuggestions[searchSuggestionIndex] ? `store-search-suggestion-${searchSuggestions[searchSuggestionIndex].productId}` : undefined}
             />
             {rawSearch && (
               <button type="button" onClick={() => { setRawSearch(""); setSearch(""); }} aria-label="مسح البحث" className="absolute left-2.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-[#7d8589] transition hover:bg-[#f0ece7] hover:text-[#20252a]">
                 <X aria-hidden className="size-4" />
               </button>
+            )}
+            {searchFocused && searchSuggestions.length > 0 && (
+              <div
+                id="store-search-suggestions"
+                role="listbox"
+                aria-label="اقتراحات البحث"
+                className="absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-xl border border-[#ded8d0] bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-800"
+              >
+                {searchSuggestions.map((product, index) => (
+                  <button
+                    key={product.productId}
+                    id={`store-search-suggestion-${product.productId}`}
+                    type="button"
+                    role="option"
+                    aria-selected={index === searchSuggestionIndex}
+                    tabIndex={-1} // Codex #2: خارج تسلسل Tab — aria-activedescendant يُدير التركيز افتراضياً
+                    onMouseDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => setSearchSuggestionIndex(index)}
+                    onClick={() => chooseSearchSuggestion(product)}
+                    className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-right focus:outline-none ${index === searchSuggestionIndex ? "bg-[#f6f1eb] dark:bg-slate-700" : "hover:bg-[#f6f1eb] dark:hover:bg-slate-700"}`}
+                  >
+                    <span className="line-clamp-1 text-xs font-bold text-[#20252a] dark:text-slate-100">{product.productName}</span>
+                    {product.brand && <span className="shrink-0 text-[10px] font-black text-[#a4513f]">{product.brand}</span>}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
           <button onClick={() => { pulseHeart("wishlist-header"); setShowWishlist((current) => !current); }} aria-label="قائمة أعجبتني" aria-pressed={showWishlist} className={`store-action-button relative flex size-11 shrink-0 items-center justify-center rounded-lg border bg-white transition hover:border-[#e65f4a] dark:bg-slate-800 ${showWishlist ? "border-[#e65f4a] text-[#e65f4a]" : "border-[#d7d2ca] text-[#1e4a63] dark:border-slate-700 dark:text-slate-100"} ${heartPulseTarget === "wishlist-header" ? "store-action-button--active" : ""}`}>
