@@ -28,7 +28,7 @@ for (const contract of [
   'outcome = result.ok ? "SUCCESS" : "FAILURE"',
   "automaticActorForProcedure(path, ctx.user != null)",
   "await getRawInput()",
-  "!result.ok || !specializedAuditWritten",
+  "const shouldWriteAutomatic = result.ok ? !specializedAuditWritten : ctx.user != null",
 ]) {
   if (!trpc.includes(contract)) fail(`عقد tRPC ناقص: ${contract}`);
 }
@@ -40,17 +40,19 @@ const serverFiles = filesUnder("server", ".ts");
 const unsafeHttp = [];
 for (const file of serverFiles) {
   const source = read(file);
-  const routes = source.match(/\b(?:r|router|app)\.(?:post|put|patch|delete)\s*\(/g) ?? [];
+  const routes = [...source.matchAll(/\b(?:r|router|app)\.(?:post|put|patch|delete)\s*\(/g)];
   if (!routes.length) continue;
-  const auditCalls = source.match(/\blogAudit\s*\(/g) ?? [];
-  const failedAuditCalls = source.match(/outcome\s*:\s*["']FAILURE["']/g) ?? [];
-  if (auditCalls.length < routes.length) {
-    fail(`${file}: ${routes.length} مسارات HTTP كاتبة مقابل ${auditCalls.length} نداءات logAudit.`);
+  for (let index = 0; index < routes.length; index += 1) {
+    const route = routes[index];
+    const region = source.slice(route.index, routes[index + 1]?.index ?? source.length);
+    if (!/\blogAudit\s*\(/.test(region)) {
+      fail(`${file}: المسار ${route[0]} بلا نداء logAudit ضمن معالجه.`);
+    }
+    if (!/outcome\s*:\s*["']FAILURE["']/.test(region)) {
+      fail(`${file}: المسار ${route[0]} بلا سجل فشل صريح ضمن معالجه.`);
+    }
   }
-  if (failedAuditCalls.length < routes.length) {
-    fail(`${file}: ${routes.length} مسارات HTTP كاتبة مقابل ${failedAuditCalls.length} سجلات فشل صريحة.`);
-  }
-  unsafeHttp.push(...routes.map((route) => `${file}:${route}`));
+  unsafeHttp.push(...routes.map((route) => `${file}:${route[0]}`));
 }
 
 const platformRouter = read("server/routers/platformAdminRouter.ts");
@@ -125,9 +127,28 @@ if (!platformPage.includes("<PlatformAuditTable />") || !platformPage.includes("
   fail("واجهة إدارة المنصّة لا تعرض عقد من/ماذا/الهدف/الوقت.");
 }
 
+const screenContextClients = [
+  "client/src/main.tsx",
+  "client/src/lib/printing/serverBridge.ts",
+  "client/src/pages/Settings.tsx",
+];
+for (const file of screenContextClients) {
+  if (!read(file).includes("screenAttributionHeaders()")) {
+    fail(`${file}: طلب كاتب داخلي بلا سياق الشاشة المبلّغ عنه.`);
+  }
+}
+const auditRouter = read("server/routers/auditRouter.ts");
+if (!auditRouter.includes("eq(auditLogs.screenPath, i.screenPath)")) {
+  fail("فلتر سجل الشاشة لا يستخدم العمود المفهرس auditLogs.screenPath.");
+}
+
 const pageFiles = filesUnder("client/src/pages", ".tsx");
 const tableSurfaces = pageFiles.reduce(
   (sum, file) => sum + (read(file).match(/<(?:DataTable|Table|table)\b/g)?.length ?? 0),
+  0,
+);
+const inlineOperationTables = pageFiles.reduce(
+  (sum, file) => sum + (read(file).match(/operation=\{[^}]+\}/g)?.length ?? 0),
   0,
 );
 const protectedRoutes = app.match(/<Shell>/g)?.length ?? 0;
@@ -135,6 +156,7 @@ const protectedRoutes = app.match(/<Shell>/g)?.length ?? 0;
 if (!process.exitCode) {
   console.log(
     `✓ تغطية إسناد العمليات: ${mutationCount} mutation عبر جذر واحد، ${unsafeHttp.length} مسارات HTTP كاتبة، ` +
-      `${registeredJobs.size} عوامل مصنّفة، ${protectedRoutes} مسارات محمية، ${pageFiles.length} شاشة و${tableSurfaces} سطح جدول تحت مدخل السجل العام.`,
+      `${registeredJobs.size} عوامل مصنّفة، ${protectedRoutes} مسارات محمية، ${pageFiles.length} شاشة تحت مدخل السجل العام؛ ` +
+      `${inlineOperationTables} جداول بإسناد داخل الصف من أصل ${tableSurfaces} سطحاً، والبقية تصل لسجل الشاشة العام.`,
   );
 }

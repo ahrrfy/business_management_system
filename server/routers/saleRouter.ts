@@ -111,6 +111,7 @@ export async function verifyManagerApproval(
     await logAudit(ctx as any, {
       action: "sale.creditOverride.rateLimited",
       entityType: "user",
+      outcome: "FAILURE",
       newValue: { email, attempts: mgrApprovalAttempts.get(email)?.length ?? 0 },
     });
     throw new TRPCError({
@@ -133,6 +134,7 @@ export async function verifyManagerApproval(
       action: "sale.creditOverride.fail",
       entityType: "user",
       entityId: u?.id ?? null,
+      outcome: "FAILURE",
       newValue: { email, reason: !u ? "no_user" : (u.isActive === false ? "inactive" : "wrong_password_or_role") },
     });
     throw new TRPCError({ code: "FORBIDDEN", message: "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير)." });
@@ -144,6 +146,7 @@ export async function verifyManagerApproval(
       action: "sale.creditOverride.fail",
       entityType: "user",
       entityId: u.id,
+      outcome: "FAILURE",
       newValue: { email, reason: "self_approval" },
     });
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز اعتماد عمليتك بنفسك — يلزم مدير آخر (فصل المهام)." });
@@ -154,6 +157,7 @@ export async function verifyManagerApproval(
       action: "sale.creditOverride.fail",
       entityType: "user",
       entityId: u.id,
+      outcome: "FAILURE",
       newValue: { email, reason: "cross_branch", approverBranchId: u.branchId, saleBranchId: branchId },
     });
     throw new TRPCError({ code: "FORBIDDEN", message: "المعتمد ليس مدير هذا الفرع" });
@@ -853,6 +857,7 @@ export const saleRouter = router({
             // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
             branchId: invoices.branchId,
             invoiceDate: invoices.invoiceDate,
+            createdAt: invoices.createdAt,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
             returnedTotal: invoices.returnedTotal,
@@ -931,6 +936,7 @@ export const saleRouter = router({
             // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
             branchId: invoices.branchId,
             invoiceDate: invoices.invoiceDate,
+            createdAt: invoices.createdAt,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
             returnedTotal: invoices.returnedTotal,

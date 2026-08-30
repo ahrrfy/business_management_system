@@ -274,7 +274,7 @@ export default function GeneralLedger() {
           type: "accountingEntry",
           label: sourceView(row).label,
         },
-        at: row.entryDate,
+        at: row.createdAt,
       }),
       label: "تتبّع القيد",
     }),

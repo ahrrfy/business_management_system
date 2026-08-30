@@ -1905,6 +1905,13 @@
 			"when": 1788052344000,
 			"tag": "0292_add_work_order_kanban_state",
 			"breakpoints": true
+		},
+		{
+			"idx": 293,
+			"version": "5",
+			"when": 1788052345000,
+			"tag": "0293_audit_operation_attribution",
+			"breakpoints": true
 		}
 	]
 }

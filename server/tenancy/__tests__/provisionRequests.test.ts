@@ -14,7 +14,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { appRouter } from "../../routers";
 import { __resetKeyCacheForTests } from "../../services/cryptoService";
 import { closeControlDb, getControlDb } from "../controlDb";
-import { companies, companyProvisionRequests, platformAdmins } from "../controlSchema";
+import { companies, companyProvisionRequests, platformAdmins, platformAuditLogs } from "../controlSchema";
 import {
   claimNextPendingRequest,
   createProvisionRequest,
@@ -272,5 +272,30 @@ describe("platformAdminRouter.companies — طبقة الراوتر", () => {
 
     const list = await caller.platformAdmin.companies.provisionRequests();
     expect(list.some((r) => r.id === created.requestId)).toBe(true);
+  });
+
+  it("يسجّل نجاح وفشل طلب المنصّة ويتيح تصفّح كل الصفوف بترقيم خادمي", async () => {
+    const adminId = await seedPlatformAdmin();
+    const caller = callerWithPlatformAdmin(adminId, "pa@test.local");
+    const input = {
+      code: "acme",
+      name: "أكمي",
+      adminEmail: "admin@acme.test",
+      adminUsername: "admin",
+      demo: false,
+    };
+    await caller.platformAdmin.companies.requestCreate(input);
+    await expect(caller.platformAdmin.companies.requestCreate(input)).rejects.toThrow();
+
+    const first = await caller.platformAdmin.audit.list({ limit: 1, offset: 0 });
+    const second = await caller.platformAdmin.audit.list({ limit: 1, offset: 1 });
+    expect(first.total).toBe(2);
+    expect(first.rows).toHaveLength(1);
+    expect(second.rows).toHaveLength(1);
+    expect(first.rows[0]!.id).not.toBe(second.rows[0]!.id);
+
+    const audits = await db().select().from(platformAuditLogs);
+    expect(audits.map((row) => row.success).sort()).toEqual([false, true]);
+    expect(audits.every((row) => row.actorEmail === "pa@test.local")).toBe(true);
   });
 });

@@ -83,7 +83,7 @@ export function OperationSubjectCell({
         {subject?.label?.trim() || subject?.type?.trim() || "هدف غير محدد"}
       </span>
       {subject?.id != null && (
-        <bdi className="shrink-0 font-mono text-xs text-muted-foreground">
+        <bdi className="shrink-0 font-mono text-sm text-muted-foreground">
           #{String(subject.id)}
         </bdi>
       )}
@@ -95,7 +95,7 @@ export function OperationTimeCell({ at }: { at: OperationAttribution["at"] }) {
   const label = operationTimeLabel(at);
   return (
     <span
-      className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs"
+      className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm"
       title={label}
     >
       <Clock3 aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
@@ -123,13 +123,13 @@ export function OperationAttributionCell({
       aria-label={title.replaceAll("\n", "، ")}
     >
       <ActorCell actor={operation.actor} className="max-w-56 font-medium" />
-      <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-1.5 text-sm leading-5 text-muted-foreground">
         <FilePenLine aria-hidden className="size-3.5 shrink-0" />
         <span className="truncate">{action}</span>
         <span aria-hidden>·</span>
         <span className="truncate">{subject}</span>
       </div>
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-sm leading-5 text-muted-foreground">
         <Clock3 aria-hidden className="size-3.5 shrink-0" />
         <bdi dir="ltr">{time}</bdi>
       </div>

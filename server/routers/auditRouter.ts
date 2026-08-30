@@ -46,9 +46,7 @@ export const auditRouter = router({
       if (i.userId) conds.push(eq(auditLogs.userId, i.userId));
       if (i.entityType) conds.push(eq(auditLogs.entityType, i.entityType));
       if (i.entityId) conds.push(eq(auditLogs.entityId, i.entityId));
-      if (i.screenPath) {
-        conds.push(sql`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$._operation.screenPath')) = ${i.screenPath}`);
-      }
+      if (i.screenPath) conds.push(eq(auditLogs.screenPath, i.screenPath));
       if (i.branchId) conds.push(eq(auditLogs.branchId, i.branchId));
       if (i.action?.trim()) {
         const pat = `%${escLike(i.action.trim())}%`;
@@ -106,6 +104,8 @@ export const auditRouter = router({
               entityId: auditLogs.entityId,
               oldValue: auditLogs.oldValue,
               newValue: auditLogs.newValue,
+              operation: auditLogs.operation,
+              screenPath: auditLogs.screenPath,
               ipAddress: auditLogs.ipAddress,
               createdAt: auditLogs.createdAt,
             })

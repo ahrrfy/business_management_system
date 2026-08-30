@@ -59,8 +59,11 @@ export const platformAdminRouter = router({
 
   audit: router({
     list: platformAdminProcedure
-      .input(z.object({ limit: z.number().int().positive().max(200).default(100) }).optional())
-      .query(({ input }) => listPlatformAudit(input?.limit ?? 100)),
+      .input(z.object({
+        limit: z.number().int().positive().max(200).default(50),
+        offset: z.number().int().min(0).default(0),
+      }).optional())
+      .query(({ input }) => listPlatformAudit(input)),
   }),
 
   companies: router({
@@ -69,16 +72,28 @@ export const platformAdminRouter = router({
     setActive: platformAdminProcedure
       .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
       .mutation(async ({ input, ctx }) => {
-        await setCompanyActive(input.id, input.isActive);
-        await logPlatformAudit(ctx, {
-          action: "company.setActive",
-          success: true,
-          platformAdminId: ctx.platformAdmin.id,
-          actorEmail: ctx.platformAdmin.email,
-          companyId: input.id,
-          details: { isActive: input.isActive },
-        });
-        return { success: true } as const;
+        try {
+          await setCompanyActive(input.id, input.isActive);
+          await logPlatformAudit(ctx, {
+            action: "company.setActive",
+            success: true,
+            platformAdminId: ctx.platformAdmin.id,
+            actorEmail: ctx.platformAdmin.email,
+            companyId: input.id,
+            details: { isActive: input.isActive },
+          });
+          return { success: true } as const;
+        } catch (error) {
+          await logPlatformAudit(ctx, {
+            action: "company.setActive",
+            success: false,
+            platformAdminId: ctx.platformAdmin.id,
+            actorEmail: ctx.platformAdmin.email,
+            companyId: input.id,
+            details: { isActive: input.isActive },
+          });
+          throw error;
+        }
       }),
 
     /** ينشئ طلب توفير شركة (طابور) — لا يوفّر شيئاً فعلياً هنا. يُعيد كلمة مرور المدير
@@ -95,22 +110,33 @@ export const platformAdminRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
-        const { id, tempPassword } = await createProvisionRequest({
-          code: input.code,
-          name: input.name,
-          adminEmail: input.adminEmail,
-          adminUsername: input.adminUsername ?? "admin",
-          demo: input.demo ?? false,
-          requestedByAdminId: ctx.platformAdmin.id,
-        });
-        await logPlatformAudit(ctx, {
-          action: "company.requestCreate",
-          success: true,
-          platformAdminId: ctx.platformAdmin.id,
-          actorEmail: ctx.platformAdmin.email,
-          details: { requestId: id, code: input.code, name: input.name },
-        });
-        return { requestId: id, tempPassword };
+        try {
+          const { id, tempPassword } = await createProvisionRequest({
+            code: input.code,
+            name: input.name,
+            adminEmail: input.adminEmail,
+            adminUsername: input.adminUsername ?? "admin",
+            demo: input.demo ?? false,
+            requestedByAdminId: ctx.platformAdmin.id,
+          });
+          await logPlatformAudit(ctx, {
+            action: "company.requestCreate",
+            success: true,
+            platformAdminId: ctx.platformAdmin.id,
+            actorEmail: ctx.platformAdmin.email,
+            details: { requestId: id, code: input.code, name: input.name },
+          });
+          return { requestId: id, tempPassword };
+        } catch (error) {
+          await logPlatformAudit(ctx, {
+            action: "company.requestCreate",
+            success: false,
+            platformAdminId: ctx.platformAdmin.id,
+            actorEmail: ctx.platformAdmin.email,
+            details: { code: input.code, name: input.name },
+          });
+          throw error;
+        }
       }),
 
     /** حالة طلب توفير واحد — لاستطلاع الشاشة (بلا كلمة المرور). */

@@ -783,7 +783,7 @@ export default function Invoices() {
       },
       action: { code: "sale.create", label: "إنشاء فاتورة مبيعات" },
       subject: { type: "invoice", label: "فاتورة", id: invoice.invoiceNumber },
-      at: invoice.invoiceDate,
+      at: invoice.createdAt,
     }),
     label: "تتبّع الإنشاء",
   }), []);

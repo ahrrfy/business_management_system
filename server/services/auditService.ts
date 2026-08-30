@@ -22,7 +22,7 @@ export type AuditData = {
   branchId?: number | null;
   /** نجاح أو فشل المحاولة؛ الافتراضي SUCCESS للسجلات المتخصصة القديمة. */
   outcome?: "SUCCESS" | "FAILURE";
-  /** مسار شاشة صريح؛ وإلا يُشتق بأمان من Referer من دون query أو بيانات حساسة. */
+  /** مسار شاشة صريح؛ وإلا يُشتق من Referer مطابق لمضيف الطلب ومن دون query أو بيانات حساسة. */
   screenPath?: string | null;
 };
 
@@ -140,47 +140,63 @@ export function buildAutomaticAuditData(
   };
 }
 
-/** هوية دقيقة للقنوات العامة؛ لا نسمّي الزائر أو الجهاز «النظام» ولا نختلق مستخدماً. */
+/**
+ * الإسناد الآلي لا يستطيع إثبات هوية قناة عامة من namespace وحده. الهوية الدقيقة (جهاز/تكليف)
+ * يمرّرها المعالج بعد نجاح مصادقته؛ وإلا نعرض بصدق أنها قناة عامة غير مؤكدة.
+ */
 export function automaticActorForProcedure(path: string, authenticated: boolean): AuditActorDescriptor {
   if (authenticated) return { source: "user" };
-  if (path.startsWith("countPortal.")) return { source: "device", label: "بوابة الجرد" };
-  if (path.startsWith("kiosk.")) return { source: "device", label: "جهاز الكشك" };
-  if (path.startsWith("storefront.")) return { source: "external", label: "عميل المتجر" };
-  if (path.startsWith("recruitment.")) return { source: "external", label: "متقدّم وظيفة" };
-  if (path.startsWith("auth.")) return { source: "external", label: "زائر قبل تسجيل الدخول" };
-  return { source: "external", label: "قناة عامة" };
+  return { source: "external", label: "قناة عامة غير مؤكدة" };
 }
 
-/** يلتقط pathname فقط؛ query قد يحمل بحثاً أو معرّفات لا حاجة لها في أثر الشاشة. */
+function normalizedScreenPath(value: string | null | undefined): string | null {
+  const path = value?.trim();
+  if (!path?.startsWith("/")) return null;
+  return path.split(/[?#]/, 1)[0]!.slice(0, 255);
+}
+
+/**
+ * يلتقط pathname فقط؛ query قد يحمل بحثاً أو معرّفات لا حاجة لها في أثر الشاشة.
+ * Referer إفادةٌ من العميل لا حقيقةٌ سلطوية، لذلك لا نقبله إلا إذا طابق مضيف الطلب الذي
+ * مرّره الوكيل العكسي. اسم إجراء tRPC يبقى المصدر الحاكم لما نُفّذ فعلاً.
+ */
 export function auditScreenPath(req: AuditContext["req"]): string | null {
+  const reported = req?.headers?.["x-erp-screen-path"];
+  if (typeof reported === "string") {
+    const path = normalizedScreenPath(reported);
+    if (path) return path;
+  }
   const raw = req?.headers?.referer;
   if (typeof raw !== "string" || !raw.trim()) return null;
   try {
-    const path = new URL(raw, "http://audit.local").pathname.trim();
-    return path.startsWith("/") ? path.slice(0, 255) : null;
+    const url = new URL(raw);
+    const forwardedHost = req?.headers?.["x-forwarded-host"];
+    const expectedHost = (
+      (typeof forwardedHost === "string" ? forwardedHost.split(",", 1)[0] : undefined) ??
+      req?.headers?.host
+    )?.trim().toLowerCase();
+    if (!expectedHost || url.host.toLowerCase() !== expectedHost) return null;
+    return normalizedScreenPath(url.pathname);
   } catch {
     return null;
   }
 }
 
 function operationEnvelope(ctx: AuditContext, data: AuditData): OperationAuditEnvelope {
-  const actor = data.actor ?? (ctx.user ? { source: "user" as const } : ctx.req ? { source: "external" as const } : { source: "system" as const });
-  const screenPath = data.screenPath === undefined ? auditScreenPath(ctx.req) : data.screenPath;
+  const rawActor = data.actor ?? (ctx.user ? { source: "user" as const } : ctx.req ? { source: "external" as const } : { source: "system" as const });
+  const actor = {
+    source: rawActor.source,
+    ...(rawActor.label?.trim() ? { label: rawActor.label.trim().slice(0, 255) } : {}),
+  };
+  const screenPath = normalizedScreenPath(
+    data.screenPath === undefined ? auditScreenPath(ctx.req) : data.screenPath,
+  );
   return {
     version: "operation.v2",
     actor,
     outcome: data.outcome ?? "SUCCESS",
     ...(screenPath ? { screenPath } : {}),
   };
-}
-
-function enrichedAuditValue(ctx: AuditContext, data: AuditData): unknown {
-  const value = recordOf(data.newValue);
-  const existing = value ? recordOf(value._operation) : null;
-  // الحقول الموثوقة تُكتب أخيراً كي لا تستطيع حمولة المستدعي تزوير المنفّذ أو النتيجة.
-  const _operation = { ...(existing ?? {}), ...operationEnvelope(ctx, data) };
-  if (value) return { ...value, _operation };
-  return data.newValue === undefined ? { _operation } : { value: data.newValue, _operation };
 }
 
 /**
@@ -287,10 +303,9 @@ export async function logAudit(ctx: AuditContext, data: AuditData): Promise<bool
   try {
     const db = getDb();
     if (!db) return false;
-    const ip =
-      (ctx.req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
-      ctx.req?.ip ??
-      null;
+    const operation = operationEnvelope(ctx, data);
+    // req.ip وحده يحترم إعداد Express trust proxy=1؛ قراءة أول XFF مباشرة تسمح بالتزوير.
+    const ip = ctx.req?.ip ?? null;
     await db.insert(auditLogs).values({
       userId: ctx.user?.id ?? null,
       branchId: data.branchId ?? ctx.user?.branchId ?? null,
@@ -298,7 +313,9 @@ export async function logAudit(ctx: AuditContext, data: AuditData): Promise<bool
       entityType: data.entityType,
       entityId: data.entityId != null ? String(data.entityId) : null,
       oldValue: redactAuditValue(data.oldValue),
-      newValue: redactAuditValue(enrichedAuditValue(ctx, data)),
+      newValue: redactAuditValue(data.newValue),
+      operation,
+      screenPath: operation.screenPath ?? null,
       ipAddress: ip ? String(ip).slice(0, 45) : null,
     });
     noteAuditWrite();
@@ -318,10 +335,8 @@ export async function logAuditTx(
   ctx: AuditContext,
   data: AuditData,
 ): Promise<void> {
-  const ip =
-    (ctx.req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
-    ctx.req?.ip ??
-    null;
+  const operation = operationEnvelope(ctx, data);
+  const ip = ctx.req?.ip ?? null;
   await tx.insert(auditLogs).values({
     userId: ctx.user?.id ?? null,
     branchId: data.branchId ?? ctx.user?.branchId ?? null,
@@ -329,7 +344,9 @@ export async function logAuditTx(
     entityType: data.entityType,
     entityId: data.entityId != null ? String(data.entityId) : null,
     oldValue: redactAuditValue(data.oldValue),
-    newValue: redactAuditValue(enrichedAuditValue(ctx, data)),
+    newValue: redactAuditValue(data.newValue),
+    operation,
+    screenPath: operation.screenPath ?? null,
     // داخل المعاملة لا نُخفي فشل قيمة غير صالحة: رفض السجل يجب أن يُرجع حركة العمل كلها.
     ipAddress: ip,
   });

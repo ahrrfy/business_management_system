@@ -40,7 +40,7 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { cn } from "@/lib/utils";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { WorkspaceBar, WorkspaceStatusBar } from "@/components/workspace/OperationalWorkspace";
-import { ActorCell, type OperationActor } from "@/components/data-table/ActorCell";
+import { ActorCell } from "@/components/data-table/ActorCell";
 import {
   OperationActionCell,
   OperationAttributionCell,
@@ -122,11 +122,6 @@ type DataTableProps<T, K = string> = {
   rowClickSelects?: boolean;
   /** صنف بصري اختياري للصف مشتق من بياناته (تمييز حالات تشغيلية مهمة). */
   getRowClassName?: (row: T) => string | undefined;
-  /** بيان موحّد لمن أنشأ/نفّذ العملية، يُضاف كعمود أخير من دون تكراره في كل شاشة. */
-  actor?: {
-    getActor: (row: T) => OperationActor | null | undefined;
-    label?: string;
-  };
   /**
    * عقد الحركة الكامل. compact يربط «من/ماذا/على ماذا/متى» في خلية واحدة للجداول التشغيلية،
    * وcolumns يفصلها إلى أربعة أعمدة في سجلات التدقيق والتحقيق.
@@ -238,7 +233,6 @@ export function DataTable<T, K = string>({
   mobileCardRenderer,
   rowClickSelects = false,
   getRowClassName,
-  actor,
   operation,
   pageSize = 50,
   bounded = true,
@@ -305,22 +299,8 @@ export function DataTable<T, K = string>({
         },
       ];
     }
-    if (!actor) return columns;
-    return [
-      ...columns,
-      {
-        id: "operationActor",
-        header: actor.label ?? "من قام بالعملية",
-        accessorFn: (row) => {
-          const value = actor.getActor(row);
-          return value?.name ?? value?.userId ?? value?.source ?? "";
-        },
-        cell: ({ row }) => <ActorCell actor={actor.getActor(row.original)} />,
-        enableSorting: false,
-        meta: { kind: "actor" },
-      },
-    ];
-  }, [actor, columns, operation]);
+    return columns;
+  }, [columns, operation]);
   const storageKey = useMemo(() => {
     const scope = viewKey || (typeof window !== "undefined" ? window.location.pathname : "table");
     const ids = effectiveColumns.map((column, index) => columnIdentity(column as ColumnDef<unknown, unknown>, index)).join("|");
@@ -543,6 +523,14 @@ export function DataTable<T, K = string>({
             {!loading && visibleRows.map((row, idx) => (
               <div key={row.id}>
                 {mobileCardRenderer(row.original, idx)}
+                {operation && (
+                  <div className="mt-1.5 rounded-lg border border-border/70 bg-card px-3 py-2.5">
+                    <OperationAttributionCell
+                      operation={operation.getOperation(row.original)}
+                      className="min-w-0"
+                    />
+                  </div>
+                )}
               </div>
             ))}
             {!loading && visibleRows.length === 0 && (

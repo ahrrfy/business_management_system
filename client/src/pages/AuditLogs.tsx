@@ -20,9 +20,14 @@ type AuditOperationMeta = {
   screenPath?: string;
 };
 
-function auditOperationMeta(value: unknown): AuditOperationMeta {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
-  const raw = (value as Record<string, unknown>)._operation;
+function auditOperationMeta(row: Pick<AuditRow, "operation" | "newValue">): AuditOperationMeta {
+  const direct = row.operation;
+  if (direct !== null && typeof direct === "object" && !Array.isArray(direct)) {
+    return direct as AuditOperationMeta;
+  }
+  // توافق مؤقت مع أي صفوف كُتبت من نسخة تجريبية سبقت فصل العقد عن newValue.
+  if (row.newValue === null || typeof row.newValue !== "object" || Array.isArray(row.newValue)) return {};
+  const raw = (row.newValue as Record<string, unknown>)._operation;
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
   return raw as AuditOperationMeta;
 }
@@ -435,8 +440,11 @@ function exportColumns() {
     { key: "entityType", header: "الكيان", map: (r: AuditRow) => entityLabel(r.entityType) },
     { key: "entityId", header: "المعرّف", map: (r: AuditRow) => r.entityId ?? "" },
     { key: "branchName", header: "الفرع", map: (r: AuditRow) => r.branchName ?? (r.branchId ? `#${r.branchId}` : "") },
-    { key: "outcome", header: "النتيجة", map: (r: AuditRow) => auditOperationMeta(r.newValue).outcome === "FAILURE" ? "فشلت" : "نجحت" },
-    { key: "screenPath", header: "الشاشة", map: (r: AuditRow) => auditOperationMeta(r.newValue).screenPath ?? "" },
+    { key: "outcome", header: "النتيجة", map: (r: AuditRow) => {
+      const outcome = auditOperationMeta(r).outcome;
+      return outcome === "FAILURE" ? "فشلت" : outcome === "SUCCESS" ? "نجحت" : "غير موثّقة";
+    } },
+    { key: "screenPath", header: "الشاشة المبلّغ عنها", map: (r: AuditRow) => r.screenPath ?? auditOperationMeta(r).screenPath ?? "" },
     { key: "oldValue", header: "القيمة القديمة", map: (r: AuditRow) => jsonStr(r.oldValue) },
     { key: "newValue", header: "القيمة الجديدة", map: (r: AuditRow) => jsonStr(r.newValue) },
     { key: "ipAddress", header: "IP", map: (r: AuditRow) => r.ipAddress ?? "" },
@@ -529,18 +537,22 @@ export default function AuditLogs() {
       enableSorting: false, meta: { kind: "text" },
     },
     {
-      id: "outcome", header: "النتيجة", accessorFn: (row) => auditOperationMeta(row.newValue).outcome ?? "SUCCESS",
+      id: "outcome", header: "النتيجة", accessorFn: (row) => auditOperationMeta(row).outcome ?? "UNKNOWN",
       cell: ({ row }) => {
-        const failed = auditOperationMeta(row.original.newValue).outcome === "FAILURE";
-        return <span className={failed ? "font-medium text-destructive" : "font-medium text-money-positive"}>{failed ? "فشلت" : "نجحت"}</span>;
+        const outcome = auditOperationMeta(row.original).outcome;
+        return outcome === "FAILURE"
+          ? <span className="font-medium text-destructive">فشلت</span>
+          : outcome === "SUCCESS"
+            ? <span className="font-medium text-money-positive">نجحت</span>
+            : <span className="font-medium text-muted-foreground">غير موثّقة</span>;
       },
       enableSorting: false, meta: { kind: "status", align: "center" },
     },
     {
-      id: "screenPath", header: "الشاشة", accessorFn: (row) => auditOperationMeta(row.newValue).screenPath ?? "",
+      id: "screenPath", header: "الشاشة المبلّغ عنها", accessorFn: (row) => row.screenPath ?? auditOperationMeta(row).screenPath ?? "",
       cell: ({ row }) => {
-        const path = auditOperationMeta(row.original.newValue).screenPath;
-        return path ? <bdi dir="ltr" className="text-xs">{path}</bdi> : <span className="text-xs text-muted-foreground">غير موثّقة</span>;
+        const path = row.original.screenPath ?? auditOperationMeta(row.original).screenPath;
+        return path ? <bdi dir="ltr" className="text-sm">{path}</bdi> : <span className="text-sm text-muted-foreground">غير موثّقة</span>;
       },
       enableSorting: false, meta: { kind: "code", width: "wide" },
     },
@@ -553,7 +565,7 @@ export default function AuditLogs() {
   const operation = useMemo(() => ({
     mode: "columns" as const,
     getOperation: (row: AuditRow) => {
-      const meta = auditOperationMeta(row.newValue);
+      const meta = auditOperationMeta(row);
       const failed = meta.outcome === "FAILURE";
       return {
         actor: row.userId != null
@@ -622,7 +634,7 @@ export default function AuditLogs() {
                     aria-label="معرّف الهدف"
                   />
                 </FilterField>
-                <FilterField label="الشاشة">
+                <FilterField label="الشاشة المبلّغ عنها">
                   <Input
                     value={f.screenPath}
                     onChange={(e) => { setF({ screenPath: e.target.value }); setPage(0); }}

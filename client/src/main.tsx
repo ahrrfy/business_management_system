@@ -12,6 +12,7 @@ import {
 } from "@/lib/offline/connectivity";
 import { shouldMountGlobalStudioTools } from "@/lib/productStudio/coldOfflinePolicy";
 import { trpc } from "@/lib/trpc";
+import { screenAttributionHeaders } from "@/lib/screenAttribution";
 import { UNAUTHED_ERR_MSG } from "@shared/const";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink, TRPCClientError } from "@trpc/client";
@@ -121,7 +122,12 @@ const trpcClient = trpc.createClient({
     httpBatchLink({
       url: "/api/trpc",
       transformer: superjson,
-      headers: { "X-ERP-CSRF": "1" },
+      // Helmet يمنع Referer عمداً؛ نرسل pathname وحده (بلا query/أسرار) لربط الحركة
+      // بالشاشة. الخادم يعرضه كمسار مُبلّغ عنه، واسم إجراء tRPC يبقى الحقيقة السلطوية.
+      headers: () => ({
+        "X-ERP-CSRF": "1",
+        ...screenAttributionHeaders(),
+      }),
       // كل نداء tRPC يغذّي كاشف الاتصال: وصول أي ردّ HTTP (ولو 4xx/5xx) = الشبكة والخادم
       // موصولان؛ رفض fetch نفسه (بلا ردّ) = انقطاع. AbortError إلغاء داخلي لا إشارة شبكة.
       fetch(input, init) {

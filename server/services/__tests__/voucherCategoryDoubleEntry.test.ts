@@ -401,11 +401,11 @@ describe("voucher category exact double-entry", () => {
       entityId: "90",
       newValue: {
         voucherCategoryId: 11,
-        _operation: {
-          version: "operation.v2",
-          actor: { source: "user" },
-          outcome: "SUCCESS",
-        },
+      },
+      operation: {
+        version: "operation.v2",
+        actor: { source: "user" },
+        outcome: "SUCCESS",
       },
     });
     expect(replayAudit).toMatchObject({
@@ -416,11 +416,11 @@ describe("voucher category exact double-entry", () => {
         _auditContract: "operation.v1",
         procedure: expect.stringMatching(/(^|\.)assignHistoricalCategory$/),
         outcome: "SUCCESS",
-        _operation: {
-          version: "operation.v2",
-          actor: { source: "user" },
-          outcome: "SUCCESS",
-        },
+      },
+      operation: {
+        version: "operation.v2",
+        actor: { source: "user" },
+        outcome: "SUCCESS",
       },
     });
   });

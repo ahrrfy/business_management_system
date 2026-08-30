@@ -11,7 +11,7 @@ export function OperationAuditAccess() {
   const me = trpc.auth.me.useQuery();
   const [location] = useLocation();
   const screenPath = location.split("?", 1)[0] || "/";
-  const allowed = me.data?.role === "admin" || me.data?.role === "auditor" || me.data?.isOwner === true;
+  const allowed = me.data?.role === "admin" || me.data?.role === "auditor";
 
   if (!allowed || screenPath === "/audit") return null;
 
@@ -20,7 +20,7 @@ export function OperationAuditAccess() {
       asChild
       variant="outline"
       size="sm"
-      className="fixed bottom-4 left-4 z-40 border-border bg-background/95 shadow-sm backdrop-blur-sm print:hidden"
+      className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] left-4 z-50 border-border bg-background/95 shadow-sm backdrop-blur-sm print:hidden lg:bottom-4"
     >
       <Link
         href={`/audit?screenPath=${encodeURIComponent(screenPath)}`}

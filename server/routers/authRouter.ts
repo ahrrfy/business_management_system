@@ -305,6 +305,7 @@ export const authRouter = router({
               action: "auth.login.ip_throttled",
               entityType: "user",
               entityId: user?.id ?? null,
+              outcome: "FAILURE",
               newValue: { reason: "ip_rate_limit", ipHash, emailHash },
             }
           );
@@ -328,13 +329,13 @@ export const authRouter = router({
             // القفل يُسجَّل خادمياً للأثر فقط (لا يُكشَف للعميل)، ولا نزيد العدّاد أثناء نافذة القفل.
             await logAudit(
               { user, req: ctx.req },
-              { action: "auth.login.locked", entityType: "user", entityId: user.id, newValue: { reason: "locked", ipHash, emailHash } }
+              { action: "auth.login.locked", entityType: "user", entityId: user.id, outcome: "FAILURE", newValue: { reason: "locked", ipHash, emailHash } }
             );
           } else {
             if (user && !ok) await registerFailedLogin(db, user);
             await logAudit(
               { user: user ?? null, req: ctx.req },
-              { action: "auth.login.failed", entityType: "user", entityId: user?.id ?? null, newValue: { reason: "invalid_credentials", ipHash, emailHash } }
+              { action: "auth.login.failed", entityType: "user", entityId: user?.id ?? null, outcome: "FAILURE", newValue: { reason: "invalid_credentials", ipHash, emailHash } }
             );
           }
           // صاحب الكلمة الصحيحة أثناء نافذة القفل لا يستهلك حدّ IP المشترك — كان تكرار
@@ -352,7 +353,7 @@ export const authRouter = router({
           if (expired) {
             await logAudit(
               { user, req: ctx.req },
-              { action: "auth.login.expired_temp", entityType: "user", entityId: user.id }
+              { action: "auth.login.expired_temp", entityType: "user", entityId: user.id, outcome: "FAILURE" }
             );
             throw new TRPCError({
               code: "UNAUTHORIZED",
@@ -524,7 +525,7 @@ export const authRouter = router({
           recordIpFailure(rateKey);
           await logAudit(
             { user, req: ctx.req },
-            { action: "auth.login.2fa_failed", entityType: "user", entityId: user.id }
+            { action: "auth.login.2fa_failed", entityType: "user", entityId: user.id, outcome: "FAILURE" }
           );
           throw new TRPCError({ code: "UNAUTHORIZED", message: "رمز التحقق غير صحيح" });
         }
@@ -666,7 +667,7 @@ export const authRouter = router({
       if (!passOk || !codeOk) {
         // جلسة مخطوفة لا تستطيع brute-force التعطيل — الفشل يقفل الحساب كفشل الدخول تماماً.
         await registerFailedLogin(db, fresh);
-        await logAudit(ctx, { action: "auth.2fa.disable_failed", entityType: "user", entityId: ctx.user.id });
+        await logAudit(ctx, { action: "auth.2fa.disable_failed", entityType: "user", entityId: ctx.user.id, outcome: "FAILURE" });
         throw new TRPCError({ code: "UNAUTHORIZED", message: "كلمة المرور أو رمز التحقق غير صحيح" });
       }
       await disableTwoFactor(fresh.id);

@@ -5112,6 +5112,10 @@ export const auditLogs = mysqlTable(
     entityId: varchar("entityId", { length: 50 }),
     oldValue: json("oldValue"),
     newValue: json("newValue"),
+    /** عقد الإسناد مستقلّ عن حمولة التغيير كي يبقى oldValue/newValue متوافقين مع مستهلكيهما. */
+    operation: json("operation"),
+    /** نسخة مفهرسة من operation.screenPath لتصفية سجل الشاشة بلا JSON_EXTRACT. */
+    screenPath: varchar("screenPath", { length: 255 }),
     ipAddress: varchar("ipAddress", { length: 45 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -5130,6 +5134,10 @@ export const auditLogs = mysqlTable(
       table.entityType,
       table.entityId,
       table.createdAt,
+    ),
+    screenPathIdIdx: index("idx_audit_screen_path_id").on(
+      table.screenPath,
+      table.id,
     ),
   }),
 );

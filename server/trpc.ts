@@ -85,9 +85,9 @@ function providerCategoryFrom(cause: unknown): AiProviderErrorCategory | null {
 export const router = t.router;
 export const middleware = t.middleware;
 /**
- * العقد العام لتتبّع الحركات: كل mutation ناجحة أو فاشلة لم تكتب سجلاً متخصصاً تحصل على أثرٍ آمن
- * تلقائياً. السجل المتخصص (logAudit/logAuditTx) يغلب دائماً، فلا ازدواج في سجل المستخدم.
- * القراءة لا تُسجّل هنا، والكتابة العامة بلا هوية لا تُنسب زوراً إلى «النظام».
+ * العقد العام لتتبّع الحركات: كل mutation ناجحة، وكل محاولة فاشلة لمستخدم موثّق، تحصل على أثرٍ
+ * آمن إن لم تكتب سجلاً متخصصاً. رفض الطلب العام قبل المصادقة يبقى في سجلّ الأمن المحدود المعدّل
+ * ولا يتحول إلى INSERT لكل عنصر batch؛ مسارات الدخول والقنوات العامة الحساسة تسجل رفضها صراحةً.
  */
 const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, getRawInput, next }) => {
   if (type !== "mutation" || path.startsWith("platformAdmin.")) return next();
@@ -95,8 +95,10 @@ const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, get
   // الجذر يسبق محلّل input في سلسلة tRPC؛ نقرأ الخام المخبّأ كي لا نفقد معرّف هدف update/delete.
   const auditInput = input === undefined ? await getRawInput() : input;
   const { value: result, specializedAuditWritten } = await withMutationAuditScope(() => next());
-  // الفشل يُسجّل دائماً: قد يكون logAuditTx المتخصص قد عُلّم ثم تراجعت معاملته مع الاستثناء.
-  if (!result.ok || !specializedAuditWritten) {
+  // فشل المستخدم الموثّق يُسجّل دائماً: قد يكون logAuditTx قد عُلّم ثم تراجعت معاملته.
+  // الفشل غير الموثّق لا يكتب سطراً عاماً كي لا يتحول رفض batch رخيص إلى تضخيم I/O عن بُعد.
+  const shouldWriteAutomatic = result.ok ? !specializedAuditWritten : ctx.user != null;
+  if (shouldWriteAutomatic) {
     const outcome = result.ok ? "SUCCESS" : "FAILURE";
     await logAudit(
       ctx,

@@ -60,15 +60,17 @@ describe("العقد العام لتتبّع الحركات", () => {
     });
     expect(failed).toMatchObject({
       outcome: "FAILURE",
-      actor: { source: "external", label: "عميل المتجر" },
+      actor: { source: "external", label: "قناة عامة غير مؤكدة" },
       newValue: { outcome: "FAILURE" },
     });
-    expect(automaticActorForProcedure("countPortal.submit", false)).toEqual({ source: "device", label: "بوابة الجرد" });
+    expect(automaticActorForProcedure("countPortal.submit", false)).toEqual({ source: "external", label: "قناة عامة غير مؤكدة" });
     expect(automaticActorForProcedure("sales.create", true)).toEqual({ source: "user" });
   });
 
   it("يحفظ مسار الشاشة فقط ويختصر أثر العامل إلى عدد آمن", () => {
-    expect(auditScreenPath({ headers: { referer: "https://erp.local/sales?customerPhone=secret" } } as never)).toBe("/sales");
+    expect(auditScreenPath({ headers: { "x-erp-screen-path": "/invoices?secret=1" } } as never)).toBe("/invoices");
+    expect(auditScreenPath({ headers: { host: "erp.local", referer: "https://erp.local/sales?customerPhone=secret" } } as never)).toBe("/sales");
+    expect(auditScreenPath({ headers: { host: "erp.local", referer: "https://evil.local/sales" } } as never)).toBeNull();
     expect(backgroundOperationEffectCount({ claimed: 2, sent: 2, candidates: 50, error: "لا يُسجّل" })).toBe(2);
     expect(backgroundOperationEffectCount({ balanced: true, findingCount: 9 })).toBe(0);
   });
@@ -81,10 +83,11 @@ describe("العقد العام لتتبّع الحركات", () => {
     expect(source).toContain("t.procedure.use(auditMutationOperation)");
     expect(source).toContain("withMutationAuditScope(() => next())");
     expect(source).toContain("await getRawInput()");
-    expect(source).toContain("!result.ok || !specializedAuditWritten");
+    expect(source).toContain("const shouldWriteAutomatic = result.ok ? !specializedAuditWritten : ctx.user != null");
     expect(source).toContain('outcome = result.ok ? "SUCCESS" : "FAILURE"');
     expect(source).not.toContain('type !== "mutation" || !ctx.user');
-    expect(auditSource).toContain("{ ...(existing ?? {}), ...operationEnvelope(ctx, data) }");
+    expect(auditSource).toContain("newValue: redactAuditValue(data.newValue)");
+    expect(auditSource).toContain("screenPath: operation.screenPath ?? null");
     expect(auditSource.slice(auditSource.indexOf("export async function logAuditTx"))).toContain("ipAddress: ip,");
     expect(backgroundSource).toContain("auditBackgroundFailure");
     expect(backgroundSource).toContain('outcome: "FAILURE"');
