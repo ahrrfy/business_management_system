@@ -113,6 +113,26 @@ describe("appNotificationService", () => {
     });
   });
 
+  it("يوجّه إشعار حملة الاستوديو إلى وجهة Android مسجّلة", async () => {
+    await createAppNotification({
+      userId: 41,
+      kind: "TASK_ASSIGNED",
+      title: "تغيّرت حالة حملة الاستوديو",
+      body: "راجع حملة التصوير.",
+      route: "/product-studio/campaigns/77",
+      eventKey: "studio:campaign:77:status:ACTIVE:41",
+      entityType: "productStudioCampaign",
+      entityId: 77,
+      push: true,
+    });
+
+    const [row] = await db().select().from(nativePushOutbox);
+    expect(row.payload).toMatchObject({
+      kind: "TASK_ASSIGNED",
+      destination: "alrueya://app/modules",
+    });
+  });
+
   it("يحترم تعطيل فئة الإشعار ولا ينشئ صف إرسال أصلي", async () => {
     await updateNotificationPreferences(41, {
       taskAssigned: false,
