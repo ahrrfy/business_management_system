@@ -34,7 +34,9 @@ describe("productStudioNotificationWorker", () => {
     sendDue.mockResolvedValueOnce({ createdCount: 2 });
     sendDue.mockResolvedValueOnce({ createdCount: 0 });
 
-    expect(PRODUCT_STUDIO_NOTIFICATION_CRON).toBe("*/5 * * * *");
+    // ٣١/٨/٢٦: تعبيرٌ سداسيّ الحقول — الثانية ١٥ إزاحةً لطور الوظائف الدورية (فحص الحمل).
+    // الدلالة كما هي: كل خمس دقائق (يحرس تباعدَ الأطوار `backgroundJobPhases.test.ts`).
+    expect(PRODUCT_STUDIO_NOTIFICATION_CRON).toBe("15 */5 * * * *");
     await expect(sweepProductStudioNotificationsOnce(now)).resolves.toEqual({ createdCount: 2 });
     await expect(sweepProductStudioNotificationsOnce(now)).resolves.toEqual({ createdCount: 0 });
     expect(sendDue).toHaveBeenNthCalledWith(

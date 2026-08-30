@@ -25,6 +25,8 @@ import {
   promotions,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { createTtlCache } from "../lib/ttlCache";
+import { getCurrentCompanyId } from "../tenancy/context";
 import { escLike } from "../lib/sqlLike";
 import { decodeDataUrl, productImageUrl } from "../imageRoute";
 import { withTx } from "./tx";
@@ -311,6 +313,53 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)));
 }
 
+/**
+ * كاشات سطح المتجر العامّ (فحص الحمل ٣١/٨/٢٦) — أحاديّة الرحلة، والمفتاح يحمل companyId.
+ *
+ * الجذر: ثلاثة مسارات على السطح **المجهول** تمسح الكتالوج كاملاً في كل نداء —
+ *  (١) ترشيح الكتالوج: مسحٌ بلا `LIMIT` على كل صفوف (وحدة × متغيّر) المنشورة ثمّ تحميل توفّرٍ
+ *      لها جميعاً، **ويُعاد المسح كاملاً لكل صفحة** من التمرير اللانهائيّ (المؤشّر يُحلّ بالبحث
+ *      داخل القائمة المرتّبة في الذاكرة، فالصفحة الثانية تدفع ثمن الأولى كاملاً من جديد).
+ *  (٢) الفئات: وصلٌ خماسيّ على الكتالوج كلّه + تحميل توفّرٍ لكل متغيّر، على إجراءٍ بلا مدخلات.
+ *  (٣) عدّاد المبيع: مسحُ تاريخ الفواتير كلّه بلا حدٍّ زمنيّ.
+ *
+ * ⛔ **لماذا لا `LIMIT` في SQL بدلاً من الكاش؟** الحدّ يقع على **المنتجات بعد تجميع متغيّراتها**
+ * لا على صفوف SQL (وإلّا ابتلع منتجٌ بعشر وحداتٍ الصفحةَ كلّها — يثبّته اختبارٌ صريح)، وترتيب
+ * الصفحة يبدأ بـ`inStock` المشتقّ من `loadVariantAvailability` (محمّلٌ متعدّد الاستعلامات
+ * بارتدادٍ للبكجات) ولا يُعبَّر عنه بـSQL. فالمكسب الصحيح هو **إلغاء تكرار المسح** لا اقتطاعه.
+ *
+ * المقايضة المقبولة: تغييرُ مخزونٍ أو نشرٍ قد يظهر متأخّراً بمقدار TTL على **ترتيب/عدّ** العرض
+ * فقط. لا أثر ماليّ: الطلب يُعاد تسعيره وتُتحقَّق كمّياته تحت قفلٍ في مسار الإنشاء.
+ */
+const STOREFRONT_CANDIDATES_TTL_MS = 30_000;
+const STOREFRONT_CATEGORIES_TTL_MS = 60_000;
+const STOREFRONT_SOLD_COUNTS_TTL_MS = 5 * 60_000;
+// كاشان منفصلان للترشيح: فضاء مفاتيح **التصفّح** مغلقٌ ومحدود (فرع × فئة × مرشّح توفّر)،
+// أمّا **البحث** فنصٌّ حرّ يُدخله الجمهور (≤٦٤ محرفاً) ⇒ فضاءٌ غير محدود. خلطُهما في كاشٍ
+// واحد يجعل زاحفاً ببضع مئات مصطلحاتٍ يطرد مفاتيحَ التصفّح الساخنة باستمرار، فينهار المكسب
+// كلّه إلى المسح الكامل. الفصل يحصر أثر أيّ إغراقٍ بالبحث داخل حصّته وحدها (مراجعة ٣١/٨).
+const candidateOrderCache = createTtlCache<string, number[]>({
+  ttlMs: STOREFRONT_CANDIDATES_TTL_MS,
+  maxEntries: 60,
+});
+const candidateSearchCache = createTtlCache<string, number[]>({
+  ttlMs: STOREFRONT_CANDIDATES_TTL_MS,
+  maxEntries: 40,
+});
+const categoriesCache = createTtlCache<string, StorefrontCategory[]>({
+  ttlMs: STOREFRONT_CATEGORIES_TTL_MS,
+  maxEntries: 8,
+});
+const soldCountsCache = createTtlCache<string, Map<number, number>>({
+  ttlMs: STOREFRONT_SOLD_COUNTS_TTL_MS,
+  maxEntries: 120,
+});
+
+/** الاختبارات تتحقّق من الكتالوج بعد كتاباتها مباشرةً — الكاش يعمى عنها. */
+const storefrontCacheDisabled = (): boolean => process.env.NODE_ENV === "test";
+
+const companyScope = (): string => String(getCurrentCompanyId() ?? 0);
+
 function chooseCandidateProductIds(
   rows: Array<{
     productId: number;
@@ -596,13 +645,25 @@ async function attachSoldCounts(
 ): Promise<void> {
   if (!items.length) return;
   const productIds = items.map((i) => i.productId);
-  const rows = await db
-    .select({ productId: productVariants.productId, n: sql<number>`COUNT(DISTINCT ${invoiceItems.invoiceId})` })
-    .from(invoiceItems)
-    .innerJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
-    .where(inArray(productVariants.productId, productIds))
-    .groupBy(productVariants.productId);
-  const map = new Map(rows.map((r) => [Number(r.productId), Number(r.n)]));
+  const loadCounts = async (): Promise<Map<number, number>> => {
+    const rows = await db
+      .select({ productId: productVariants.productId, n: sql<number>`COUNT(DISTINCT ${invoiceItems.invoiceId})` })
+      .from(invoiceItems)
+      .innerJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
+      .where(inArray(productVariants.productId, productIds))
+      .groupBy(productVariants.productId);
+    return new Map(rows.map((r) => [Number(r.productId), Number(r.n)]));
+  };
+  // دليلٌ اجتماعيّ بطيء التغيّر يمسح تاريخ الفواتير كلّه بلا حدٍّ زمنيّ — كاشٌ بخمس دقائق
+  // (فحص الحمل ٣١/٨/٢٦). ⚠️ **لا يُقيَّد بنافذةٍ زمنية عمداً**: ذلك يغيّر الأرقام المعروضة
+  // («بيع ١٢ مرة» / شارة «الأكثر طلباً») وهو قرارُ منتجٍ لا تحسينُ أداء، ولا اختبارَ يثبّت
+  // دلالته اليوم. المفتاح مجموعةُ المنتجات مرتّبةً ⇒ الصفحة الأولى (الأشيع) مفتاحٌ واحد.
+  const map = storefrontCacheDisabled()
+    ? await loadCounts()
+    : await soldCountsCache.get(
+        `${companyScope()}:${[...productIds].sort((a, b) => a - b).join(",")}`,
+        loadCounts,
+      );
   for (const it of items) it.soldCount = map.get(it.productId) ?? 0;
 }
 
@@ -676,6 +737,11 @@ async function attachVariantColors(
 /**
  * يطبّق العروض على قائمة منتجات بقواعد محرّك POS نفسها. تُحمَّل القواعد والأهداف مرة واحدة
  * للصفحة، ثم يكون الحلّ لكل بطاقة نقياً في الذاكرة؛ لا استعلامات تتناسب مع عدد المنتجات.
+ *
+ * **بلا بوّابة الكتابة الماليّة** (فحص الحمل ٣١/٨/٢٦ — مراجعة عدائية): قراءةٌ محضة (لقطة
+ * قواعد + حلٌّ في الذاكرة، صفر كتابة) وكانت تأخذ `FINANCIAL_WRITER` في **كل** صفحة كتالوج
+ * ومنتج ومقترحاتٍ من كلّ زائرٍ مجهول — أي أضعافَ حركة التسعيرة التي عولجت أوّلاً. المعاملة
+ * تبقى للقطةٍ متّسقة عبر استعلامات اللقطة، لا للذرّية.
  */
 async function applyStorefrontPromotions(list: StorefrontProduct[], branchId: number): Promise<void> {
   const eligible = list.filter((p) => p.price != null);
@@ -713,7 +779,7 @@ async function applyStorefrontPromotions(list: StorefrontProduct[], branchId: nu
         }
       }
     }
-  });
+  }, { gate: "NONE" });
 }
 
 /** كتالوج المتجر: منتجات قابلة للاقتناء (بطاقة لكل منتج) + توفّر + سعر عرض. المتوفّر أولاً. */
@@ -746,16 +812,32 @@ export async function storefrontCatalog(opts: {
     );
     if (searchCond) conds.push(searchCond);
   }
-  const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
-  const hydratedCandidates = await attachAvailability(db, branchId, candidateRows);
   // نرتّب على مستوى المنتج أولاً (بعد حساب ATP)، ثم نأخذ الصفحة. لا نطبّق limit على صفوف
   // variant×unit كي لا يبتلع متغيّر واحد الصفحة كلها. cursor هو آخر منتج من هذا الترتيب لا
   // إزاحة رقمية؛ لذلك لا يكرر بطاقات الصفحة السابقة عند التحميل التدريجي.
-  const orderedIds = chooseCandidateProductIds(
-    hydratedCandidates,
-    Number.MAX_SAFE_INTEGER,
-    availabilityFilter,
-  );
+  //
+  // القائمة المرتّبة مُكيَّشة (فحص الحمل ٣١/٨/٢٦): هي ثمرةُ المسح الكامل + تحميل التوفّر، ولا
+  // تتعلّق بـ`limit`/`cursor` إطلاقاً — فكلّ صفحةٍ تالية كانت تُعيد دفع ثمن الأولى كاملاً،
+  // وزوّارٌ متزامنون على نفس المرشّحات يدفعونه كلٌّ على حدة. المفتاح يحمل **كلّ** ما يغيّر
+  // النتيجة (الشركة/الفرع/الفئة/البحث/مرشّح التوفّر) ولا شيء سواه.
+  const loadOrderedIds = async (): Promise<number[]> => {
+    const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
+    const hydratedCandidates = await attachAvailability(db, branchId, candidateRows);
+    return chooseCandidateProductIds(
+      hydratedCandidates,
+      Number.MAX_SAFE_INTEGER,
+      availabilityFilter,
+    );
+  };
+  // النصّ يُطبَّع بحالة الأحرف كي لا تصير «Pen»/«pen»/«PEN» ثلاثةَ مداخل لنتيجةٍ واحدة
+  // (مطابقة MySQL غير حسّاسة للحالة أصلاً).
+  const searchKey = s.toLowerCase();
+  const orderedIds = storefrontCacheDisabled()
+    ? await loadOrderedIds()
+    : await (searchKey ? candidateSearchCache : candidateOrderCache).get(
+        `${companyScope()}:${branchId}:${opts.categoryId ?? ""}:${availabilityFilter}:${searchKey}`,
+        loadOrderedIds,
+      );
   const cursor = opts.cursor ?? null;
   const cursorIndex = cursor == null ? -1 : orderedIds.indexOf(cursor);
   // مؤشر قديم بعد إخفاء المنتج/نفاده لا يعود إلى أول القائمة فيكرر ما رآه الزائر؛ ينتهي بأمان
@@ -799,11 +881,16 @@ export async function storefrontCatalog(opts: {
   await attachSoldCounts(db, items);
   await attachVariantColors(db, items, branchId);
   await attachStorefrontListMedia(db, items);
-  const last = items[items.length - 1];
+  // المؤشّر يتقدّم بآخر **معرّفٍ مختار** لا بآخر بطاقةٍ مرسومة (مراجعة عدائية ٣١/٨): كل صنفٍ
+  // نفد بين اختيار القائمة وجلب صفوفها يسقط بالتصفية الحيّة أعلاه — وهو **صحيح** (نعرض الحقيقة
+  // لا لقطةً قديمة)، لكن لو سقطت الصفحة كلّها كان `last` يصير `undefined` فيعود المؤشّر `null`
+  // ويتوقّف التمرير اللانهائيّ نهائياً وآلافُ المنتجات دونه. بالمعرّف المختار يواصل الزائر
+  // تصفّحه وتظهر صفحةٌ أقصر فحسب. (العلّة قائمةٌ قبل الكاش بنافذةٍ أضيق — والإصلاح يغطّيهما.)
+  const lastSelectedId = selectedIds[selectedIds.length - 1];
   return {
     items,
-    hasMore: hasMore && last != null,
-    nextCursor: hasMore && last != null ? last.productId : null,
+    hasMore,
+    nextCursor: hasMore ? (lastSelectedId ?? null) : null,
   };
 }
 
@@ -812,6 +899,19 @@ export async function storefrontCategories(branchIdInput?: number): Promise<Stor
   const db = getDb();
   if (!db) return [];
   const branchId = await resolveStorefrontBranchId(branchIdInput);
+  // إجراءٌ عامٌّ **بلا مدخلات** يمشي على الكتالوج كلّه (وصلٌ خماسيّ) ويحمّل توفّر كل متغيّر —
+  // ولا يستعمل من ذلك التوفّر إلا مقارنةً منطقيةً واحدة. نتيجته صغيرة وثابتة نسبياً ⇒ كاشٌ
+  // بدقيقة يخدم كلّ الزوّار المتزامنين بمسحٍ واحد (فحص الحمل ٣١/٨/٢٦).
+  if (storefrontCacheDisabled()) return computeStorefrontCategories(db, branchId);
+  return categoriesCache.get(`${companyScope()}:${branchId}`, () =>
+    computeStorefrontCategories(db, branchId),
+  );
+}
+
+async function computeStorefrontCategories(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  branchId: number,
+): Promise<StorefrontCategory[]> {
   const rawRows = await db
     .select({
       id: categories.id,

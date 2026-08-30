@@ -70,7 +70,8 @@ export function startOnlineOrderExpirySweeper(): void {
       logger.error({ err: error }, "storefront.order_expiry.startup_failed"),
     );
   task = cron.schedule(
-    "*/5 * * * *",
+    // إزاحة طور (فحص الحمل ٣١/٨/٢٦): الثانية ٥٥ — تباعدٌ عن إشعارات الاستوديو (١٥) وانتهاء الحجوزات (٣٥).
+    "55 */5 * * * *",
     async () => {
       if (running) return;
       running = true;

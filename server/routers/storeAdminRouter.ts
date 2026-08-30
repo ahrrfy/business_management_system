@@ -25,6 +25,7 @@ import {
   updateBanner,
 } from "../services/storeAdmin/bannerService";
 import { getStoreSettings, updateStoreSettings } from "../services/storeAdmin/storeSettingsService";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
   createCategory,
   deleteCategory,
@@ -252,7 +253,12 @@ const settingsRouter = router({
     .mutation(async ({ input, ctx }) => {
       // إعداد واحد يحكم المتجر العام كله. مدير فرع لا يفتح/يغلق أو يعيد توجيه
       // متجر فرع آخر؛ نفحص الفرع الحالي والمستهدف كي لا يلتفّ بنقل التنفيذ إلى فرعه.
-      const r = await updateStoreSettings(input, ctx.user.id);
+      //
+      // إعادة محاولة على تنافس القفل (فحص الحمل ٣١/٨/٢٦): الحفظ يأخذ `FOR UPDATE` على صفّ
+      // الإعدادات الوحيد الذي تقرأه كلّ طلبات المتجر بقفلٍ مشترك؛ تحت حملٍ كثيف قد تتأخّر
+      // ترقيته حتى تنتهي مهلة القفل، فيرى المالك فشلاً عابراً في «حفظ إعدادات المتجر».
+      // العملية ذرّية بالكامل (withTx واحد) فإعادتها آمنة حتماً.
+      const r = await retryOnDeadlock(() => updateStoreSettings(input, ctx.user.id));
       await logAudit(ctx, { action: "store.settings.update", entityType: "storeSettings", entityId: 1, newValue: r });
       return r;
     }),

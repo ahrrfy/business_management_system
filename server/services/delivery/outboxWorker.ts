@@ -179,7 +179,8 @@ export function startDeliveryOutboxWorker(): void {
   if (process.env.NODE_ENV === "test") return;
   task?.stop();
   void sweepDeliveryOutboxOnce().catch((error) => logger.error({ err: error }, "delivery outbox startup sweep failed"));
-  task = cron.schedule("* * * * *", async () => {
+  // إزاحة طور (فحص الحمل ٣١/٨/٢٦): الثانية ٢٥ — تباعدٌ عن كنّاس واتساب (٥) والحجوزات (٤٥).
+  task = cron.schedule("25 * * * * *", async () => {
     if (running) return;
     running = true;
     try {
