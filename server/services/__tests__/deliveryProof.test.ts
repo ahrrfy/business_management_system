@@ -22,6 +22,7 @@ import {
   recordCompanyStatement,
   recordDeliveryProof,
   recordManualDeliveryProof,
+  recordStaffDeliveryConfirmation,
 } from "../delivery/companyStatement";
 import { recordDeliveryRemittance } from "../delivery/remittance";
 import { money, round2 } from "../money";
@@ -323,5 +324,122 @@ describe("recordManualDeliveryProof — الإثبات اليدويّ الاست
       clientRequestId: "manual-2",
     }, CASHIER)).rejects.toThrowError(/دليلاً مكتوباً/);
     expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("ASSIGNED");
+  });
+});
+
+/**
+ * Slice DFP1 (٣٠/٨/٢٦) — عجزُ التحصيل ذمّةٌ فوريّة على المندوب (قرار المالك).
+ * قبل اليوم: كشفٌ/تأكيدٌ بمبلغٍ أقلّ من المطلوب كان **يُقفل الفاتورة جزئياً** ويترك المتبقّي
+ * ذمّةً على العميل صامتاً — كسرٌ مباشر لمبدأ CLAUDE.md §٥ «لا دينار يضيع بصمت». اليوم:
+ *  ① العجز يُقيَّد SHORTFALL_ASSIGNED على المندوب برفعِ عهدته (بموازاة COD_COLLECTED للنقد).
+ *  ② الفاتورة تُقفَل مسدَّدةً كاملاً — لا AR للعميل.
+ *  ③ السبب إلزاميّ من enum ثابت — عجزٌ بلا سبب يُرفض قبل أيّ كتابة (لا مخرج).
+ *  ④ ذمّةُ العميل تُصفَّى بالكامل (adjustCustomerBalance بـinvoiceRemaining).
+ */
+describe("Slice DFP1 — عجزُ التحصيل ذمّةٌ فوريّة على المندوب", () => {
+  it("⭐ staffConfirm بعجزٍ + سبب مصنَّف: يُقيَّد SHORTFALL_ASSIGNED، فاتورة PAID، ذمّة العميل صفر", async () => {
+    const shiftId = await openReception();
+    const a = await dispatchedOrder(shiftId, "sh-1", "20000.00");
+
+    const res = await recordStaffDeliveryConfirmation({
+      consignmentId: a.consignmentId,
+      collectedAmount: "15000.00", // ٥٠٠٠ عجز
+      evidence: "اتصال المندوب — حصّل ١٥٠٠٠",
+      clientRequestId: "sh-conf-1",
+      shortfallReason: "MERCHANT_REFUSED_COMMISSION",
+    }, CASHIER);
+    expect(res.consignmentId).toBe(a.consignmentId);
+
+    // المسار الماليّ الكامل:
+    expect(await partyBalance()).toBe(20000); // ١٥٠٠٠ نقد + ٥٠٠٠ عجز = ٢٠٠٠٠ عهدة
+    expect(await balanceOf(1)).toBe(0);       // ذمّة العميل صفر
+    const inv = await invoiceOf(a.invoiceId);
+    expect(inv.status).toBe("PAID");
+    expect(inv.paidAmount).toBe("20000.00");
+
+    // قيدُ SHORTFALL_ASSIGNED في دفتر التوصيل بالسبب المصنَّف
+    const ledgerRows = await db().select().from(s.deliveryLedgerEntries)
+      .where(eq(s.deliveryLedgerEntries.consignmentId, a.consignmentId));
+    const shortfall = ledgerRows.find((r) => r.entryType === "SHORTFALL_ASSIGNED");
+    expect(shortfall).toBeDefined();
+    expect(shortfall!.amount).toBe("5000.00");
+    expect(shortfall!.shortfallReason).toBe("MERCHANT_REFUSED_COMMISSION");
+
+    // وقيدُ COD_COLLECTED للنقد المقبوض فعلاً
+    const collected = ledgerRows.find((r) => r.entryType === "COD_COLLECTED");
+    expect(collected).toBeDefined();
+    expect(collected!.amount).toBe("15000.00");
+  });
+
+  it("⭐ staffConfirm بعجزٍ **بلا سبب** ⇒ يُرفض قبل أيّ كتابة (لا مخرج)", async () => {
+    const shiftId = await openReception();
+    const a = await dispatchedOrder(shiftId, "sh-2", "20000.00");
+
+    await expect(recordStaffDeliveryConfirmation({
+      consignmentId: a.consignmentId,
+      collectedAmount: "15000.00",
+      evidence: "اتصال المندوب",
+      clientRequestId: "sh-conf-2",
+      // shortfallReason: undefined ⇒ يُرفض
+    }, CASHIER)).rejects.toThrowError(/سبب مصنَّف/);
+
+    // لا كتابة: الطرد ما زال ASSIGNED، لا قيود، لا فاتورة تحرّكت
+    expect((await consignmentOf(a.consignmentId)).parcelStatus).toBe("ASSIGNED");
+    expect(await partyBalance()).toBe(0);
+    expect(await balanceOf(1)).toBe(20000);
+    expect((await invoiceOf(a.invoiceId)).paidAmount).toBe("0.00");
+  });
+
+  it("staffConfirm بمبلغٍ مطابق (بلا عجز): لا قيد SHORTFALL، السلوك القديم يعمل", async () => {
+    const shiftId = await openReception();
+    const a = await dispatchedOrder(shiftId, "sh-3", "8000.00");
+
+    await recordStaffDeliveryConfirmation({
+      consignmentId: a.consignmentId,
+      collectedAmount: "8000.00",
+      evidence: "اتصال المندوب — حصّل الكامل",
+      clientRequestId: "sh-conf-3",
+    }, CASHIER);
+
+    expect(await partyBalance()).toBe(8000);
+    expect(await balanceOf(1)).toBe(0);
+    expect((await invoiceOf(a.invoiceId)).status).toBe("PAID");
+    const ledgerRows = await db().select().from(s.deliveryLedgerEntries)
+      .where(eq(s.deliveryLedgerEntries.consignmentId, a.consignmentId));
+    expect(ledgerRows.find((r) => r.entryType === "SHORTFALL_ASSIGNED")).toBeUndefined();
+  });
+
+  it("manualProof بعجزٍ + سبب: يعمل بنفس السلوك (نفس المسار الماليّ)", async () => {
+    const shiftId = await openReception();
+    const a = await dispatchedOrder(shiftId, "sh-4", "10000.00");
+
+    await recordManualDeliveryProof({
+      consignmentId: a.consignmentId,
+      collectedAmount: "7000.00",
+      evidence: "شاهدُ الجيران أفاد بالتسليم — العميل رفض دفع كامل السعر",
+      clientRequestId: "mn-sh-1",
+      shortfallReason: "CUSTOMER_REQUESTED_DISCOUNT",
+    }, CASHIER);
+
+    expect(await partyBalance()).toBe(10000);
+    expect(await balanceOf(1)).toBe(0);
+    expect((await invoiceOf(a.invoiceId)).status).toBe("PAID");
+    const ledgerRows = await db().select().from(s.deliveryLedgerEntries)
+      .where(eq(s.deliveryLedgerEntries.consignmentId, a.consignmentId));
+    const shortfall = ledgerRows.find((r) => r.entryType === "SHORTFALL_ASSIGNED");
+    expect(shortfall?.shortfallReason).toBe("CUSTOMER_REQUESTED_DISCOUNT");
+    expect(shortfall?.amount).toBe("3000.00");
+  });
+
+  it("staffConfirm بمبلغ **أكبر** من المطلوب: يُرفض (المسار الحاليّ — لا يتغيّر)", async () => {
+    const shiftId = await openReception();
+    const a = await dispatchedOrder(shiftId, "sh-5", "5000.00");
+
+    await expect(recordStaffDeliveryConfirmation({
+      consignmentId: a.consignmentId,
+      collectedAmount: "6000.00", // فائض
+      evidence: "اتصال المندوب",
+      clientRequestId: "sh-conf-5",
+    }, CASHIER)).rejects.toThrow();
   });
 });
