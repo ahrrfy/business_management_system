@@ -1,5 +1,6 @@
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { DisplayScaleControl } from "@/components/DisplayScaleControl";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -21,17 +22,15 @@ import {
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  Menu, Search, Home, ScanLine, Receipt,
-  ShoppingCart, Package, Printer, Boxes, Server,
-  Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
-  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark, Check, WalletCards, ClipboardCheck,
-  History, Star, Images, FileCheck2, Sparkles,
-  type LucideIcon,
+  Menu, Search, Home, Printer, UserCircle2, ChevronLeft, LogOut, Check,
+  ClipboardCheck, History, Star,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { CASHIER_NAV_PATHS, INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
+import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
+import { APPLICATION_MODULES as NAV_LINKS } from "@/lib/moduleRegistry";
 import {
   NAV_FAVORITES_LIMIT,
   loadNavWorkspace,
@@ -74,8 +73,6 @@ function PrinterStatusButton({
   );
 }
 
-type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
-
 // تَنقّل الشريط الجانبي — مُسطَّح بالكامل (الموجة ٢، يونيو ٢٠٢٦): كل وَحدة = مَدخل واحد يَفتح
 // شاشة الوحدة، وتبويباتها الثانوية أعلى الشاشة (أزرار). لا مَجموعات قابلة للطيّ، لا تَمرير مُملّ.
 //  - لوحة التحكم تَبقى رابطاً مُستقلّاً أعلى القائمة.
@@ -89,66 +86,6 @@ type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
 //   ‏(ب) يومي مالي/تشغيلي: الخزينة ← التوصيل ← المخزون.
 //   ‏(ج) دوري (أسبوعي/عند الحاجة): المشتريات ← الموردون ← التقارير.
 //   ‏(د) متخصّص/نادر: الصيرفة ← الأصول ← الموارد ← الإقفال ← الإدارة والإعدادات (في الأسفل دائماً).
-const NAV_LINKS: NavLink[] = [
-  // (أ) الأكثر استعمالاً يومياً — تشغيل الواجهة الأمامية
-  { href: "/pos", label: "نقطة البيع", icon: ShoppingCart },
-  { href: "/price-checker", label: "قارئ الأسعار", icon: ScanLine },
-  { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer, module: "workorders" },
-  { href: "/crm", label: "CRM والعلاقات", icon: Users, module: "crm" },
-  // نظام المهام الموحّد (S2/T2.3) — module فقط (بلا roles) ⇒ مرآة hasModuleAccess تماماً كبوّابة
-  // الخادم tasksReadProcedure (requireModule("tasks","READ") — لا قائمة أدوار صريحة هناك أيضاً).
-  // ش٦ (١٩/٨): سطحُ «ما ينتظره منّي العمل». بلا بوّابة وحدة (protectedProcedure) — والمحتوى
-  // يُصفّى خادمياً بصلاحية كل مصدرٍ على حِدة، فلا يرى أحدٌ قراراً لا يملكه.
-  { href: "/my-work", label: "مطلوب مني الآن", icon: ClipboardCheck },
-  { href: "/tasks", label: "المهام والتذاكر", icon: ListChecks, module: "tasks" },
-  { href: "/invoices", label: "المبيعات", icon: Receipt, ...INVOICE_LIST_GATE },
-  // (ب) يومي مالي/تشغيلي
-  // الخزينة: كل تبويباتها مُقيَّدة (treasury/expenses ≥ READ في TreasuryHub) — بلا قيدٍ هنا يهبط
-  // أمين المخزن/الفني على hub بلا تبويبات = صفحة فارغة (نفس مبدأ الأصول/الموارد أدناه).
-  { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
-  // حساب البطاقة/البنك: رصيد أموال البطاقة (منفصل عن الدرج) — ماليّ يُحجَب عن الكاشير (module=reports كخدمته).
-  { href: "/card-account", label: "حساب البطاقة/البنك", icon: CreditCard, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
-  { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
-  // شاشة المندوب الذاتية — courier فقط (admin يراها عبر canSeeGate؛ المدير يدير عبر /delivery).
-  { href: "/my-deliveries", label: "توصيلاتي", icon: PackageCheck, roles: ["courier"], module: "courier" },
-  { href: "/store-admin", label: "طلبات المتجر", icon: Store, roles: ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"], module: "store" },
-  // ٢٩/٨ (بلاغ مالك): بندٌ واحدٌ فقط للاستوديو — دُمج «حملات التصوير» ضمنه بعد أن أُفرد
-  // في ٢٨/٨. المدير يجد إدارةَ الحملات عبر زرٍّ بارزٍ داخل شاشة الاستوديو، ولا حاجةَ
-  // لبندٍ منفصلٍ يضاعف طول القائمة الجانبية. المسار الفنّيّ `/catalog/image-studio/campaigns`
-  // يبقى محفوظاً — يُوصَل إليه من داخل الاستوديو ومن أيّ رابطٍ خارجيّ.
-  { href: "/catalog/image-studio", label: "استوديو المنتجات", icon: Images, roles: ["admin", "manager", "print_operator", "auditor"], module: "productStudio" },
-  // ٢٩/٨ — طابور المسودّات المولَّدة تلقائياً بعد اعتماد صور الاستوديو (الهجين). زرٌّ بجانب
-  // الاستوديو منطقيّ: تعمل الشاشتان في تسلسلٍ واحد — يعتمد صورةً هناك، فتنتظره مسودّة هنا.
-  { href: "/products/content-drafts", label: "مسودّات المحتوى", icon: Sparkles, roles: ["admin", "manager"], module: "products" },
-  { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
-  // (ج) دوري — أسبوعي/عند الحاجة
-  { href: "/purchases", label: "المشتريات", icon: Package },
-  { href: "/suppliers", label: "الموردون", icon: Building2 },
-  { href: "/gifts", label: "الهدايا والمجانيات", icon: Gift, roles: ["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"], module: "gifts" },
-  { href: "/digital-cards", label: "البطاقات الرقمية", icon: WalletCards, roles: ["admin", "manager", "accountant", "auditor"], module: "digital_cards" },
-  { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },
-  { href: "/chart-of-accounts", label: "شجرة الحسابات", icon: Landmark, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
-  { href: "/statutory-accounting", label: "الدليل المحاسبي النظامي", icon: FileCheck2, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
-  // (د) متخصّص/نادر — الإعدادات في الأسفل دائماً
-  // الصيرفة تتبع وحدة «الخزينة» (راوترها يسمح لـmanager/accountant + منح صريح) — والمحاسب
-  // القالبيّ يظهر عبر قائمة الأدوار، والمنح الصريح لغيره عبر module (تبويبات الصيرفة غير مُقيَّدة).
-  { href: "/exchange", label: "الصيرفة", icon: DollarSign, roles: ["admin", "manager", "accountant"], module: "treasury" },
-  // الأصول/الإعدادات: محاور بتبويبات managerOnly داخلها ⇒ لا نفتحها بمنح وحدة (وإلا
-  // وصل المستخدم لمحور بلا تبويبات مرئية = صفحة فارغة، مراجعة Codex). تبقى مديرية بالكامل.
-  { href: "/assets", label: "الأصول الثابتة", icon: Server, managerOnly: true },
-  // الموارد البشرية: تبويباتها صارت مرآة الخادم (HrHub) ⇒ تُفتح كبوّابته requireModule("hr","READ")
-  // — أدوار القالب (accountant/auditor قالباهما hr=READ) + المنح الصريح عبر module.
-  { href: "/hr", label: "الموارد البشرية", icon: Briefcase, roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
-  {
-    href: "/closing",
-    label: "الإقفال والرَقابة",
-    icon: Lock,
-    roles: ["admin", "manager", "accountant", "auditor"],
-    module: "reports",
-  },
-  { href: "/settings", label: "الإدارة والإعدادات", icon: Settings, managerOnly: true },
-];
-
 // نشِط = المسار يطابق الوَحدة أو يقع تحتها (تبويب ?tab أو شاشة تفصيل ‎/x/…). الحارس ‎+"/" يَمنع
 // التقاط بادئة خاطئة (‎/inventory لا يَلتقط ‎/inventory-movements).
 function isModuleActive(loc: string, href: string): boolean {
@@ -179,6 +116,44 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     enabled: !coldStudio && Boolean(me.data),
     refetchInterval: 30_000,
   });
+  // ٢٩/٨ (بلاغ المالك): «الفنيّ حوّله لجاهز — لا شي يظهر ولا يلاحظه موظفو الاستقبال». Slice A كان
+  // إشعاراً داخل شاشة الطابور فقط (يعمل حين تكون مفتوحة). هنا شارةٌ عالميّة على /work-orders
+  // و/delivery تظهر عدد الطلبات الجاهزة بصرف النظر عن أيّ شاشة يفتحها الموظف.
+  //
+  // Codex P2 (٢٩/٨) — الاستعلامان محكومان بأذونات الوحدة لا بقائمة أدوارٍ ثابتة:
+  //  - workorders:READ للـ workOrders.counts
+  //  - store:READ لـ readyForDispatchCount
+  // بلا هذا: محاسبٌ قالبه `workorders:NONE` يُصدر FORBIDDEN متكرّراً رغم إخفاء الرابط.
+  //
+  // Codex P1 (٢٩/٨) — للـsupervisors (workorders:FULL): تمرير `branchQueue: true` كي يُلغى
+  // `scopedOwnerId` ⇒ الشارة تعدّ طابور الفرع كاملاً (الأمر الجاهز الذي أنشأه زميل يظهر أيضاً،
+  // وهو سيناريو تسليم الوردية الذي صُمّمت له الشارة أصلاً).
+  const roleForGate = me.data?.role ?? "";
+  const overrideForGate = (me.data?.permissionsOverride ?? null) as
+    | import("@shared/permissions").PermissionMap
+    | null;
+  const canReadWorkOrders = !coldStudio && Boolean(me.data)
+    && hasModuleAccess(roleForGate, overrideForGate, "workorders", "READ");
+  const canReadDelivery = !coldStudio && Boolean(me.data)
+    && hasModuleAccess(roleForGate, overrideForGate, "store", "READ");
+  const canBranchQueueWorkOrders = canReadWorkOrders
+    && hasModuleAccess(roleForGate, overrideForGate, "workorders", "FULL");
+  const woCounts = trpc.workOrders.counts.useQuery(
+    canBranchQueueWorkOrders ? { branchQueue: true } : {},
+    {
+      enabled: canReadWorkOrders,
+      refetchInterval: 20_000,
+      refetchOnWindowFocus: true,
+    },
+  );
+  // Codex P2 (٢٩/٨) — نستهلك عدّاداً خفيفاً بدل الصفوف الكاملة (شارة تحتاج `.length` فقط).
+  const deliveryReadyCountQ = trpc.delivery.readyForDispatchCount.useQuery(undefined, {
+    enabled: canReadDelivery,
+    refetchInterval: 20_000,
+    refetchOnWindowFocus: true,
+  });
+  const workOrderReadyCount = woCounts.data?.ready ?? 0;
+  const deliveryReadyCount = deliveryReadyCountQ.data ?? 0;
   const printer = usePrinterConnection();
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
@@ -400,6 +375,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             const active = isModuleActive(loc, m.href);
             const favorite = favoritePaths.has(m.href);
             const Icon = m.icon;
+            // شارة العدّ (٢٩/٨): الجاهز لأمر الشغل → /work-orders، الجاهز للإرسال → /delivery.
+            const badge = m.href === "/work-orders" ? workOrderReadyCount
+              : m.href === "/delivery" ? deliveryReadyCount
+              : 0;
+            // Codex P2 (٢٩/٨): الأرقام لاتينيّة دائماً (قاعدة i18n)؛ التجاوز يعرض «99+» لا «+٩٩».
+            const badgeLabel = badge > 99 ? "99+" : String(badge);
             return (
               <div key={m.href} className="group relative">
                 <Link
@@ -413,6 +394,19 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 >
                   <Icon className="size-4 shrink-0" aria-hidden />
                   <span className="truncate">{m.label}</span>
+                  {badge > 0 && (
+                    <span
+                      aria-label={m.href === "/delivery"
+                        ? `${badge} إرسالية جاهزة`
+                        : `${badge} أمر جاهز`}
+                      title={m.href === "/delivery"
+                        ? `${badge} إرسالية جاهزة للتوصيل`
+                        : `${badge} أمر شغل جاهز للتسليم`}
+                      className="ms-auto inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-[var(--sem-warn)] px-1.5 py-0.5 text-[10px] font-black text-background tabular-nums"
+                    >
+                      {badgeLabel}
+                    </span>
+                  )}
                 </Link>
                 <button
                   type="button"
@@ -495,6 +489,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-0.5">
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
+            <DisplayScaleControl />
             <ThemeToggle />
           </div>
         </div>
@@ -518,6 +513,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-0.5">
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
+            <DisplayScaleControl />
             <ThemeToggle />
           </div>
         </header>
@@ -538,6 +534,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           role={role}
           permsOverride={permsOverride}
           onOpenMenu={() => setNavOpen(true)}
+          // Codex P2 (٢٩/٨) — الشارات على الجوال أيضاً: القائمة الجانبية مخفيّة أقلَّ من lg،
+          // فبلا هذا لا يرى موظّفو الاستقبال على الهاتف/التابلت أيَّ إعلانٍ للجاهز.
+          workOrderReadyCount={workOrderReadyCount}
+          deliveryReadyCount={deliveryReadyCount}
         />
       )}
     </div>

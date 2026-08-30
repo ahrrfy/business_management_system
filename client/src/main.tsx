@@ -20,6 +20,7 @@ import { createRoot } from "react-dom/client";
 import { useLocation } from "wouter";
 import superjson from "superjson";
 import App from "./App";
+import { applyStoredDisplayScale } from "@/lib/displayScale";
 // خط Cairo مستضاف محلياً (بلا اعتماد على Google Fonts CDN) ⇒ يعمل النظام كاملاً بلا إنترنت.
 import "@fontsource/cairo/400.css";
 import "@fontsource/cairo/500.css";
@@ -31,6 +32,9 @@ import "animate.css/animate.min.css";
 import "./lib/theme/tokens.css";
 import "./lib/theme/comfort.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)
+
+// قبل أول رسم: يمنع قفزة التخطيط عند وجود مقياس محفوظ على الجهاز.
+applyStoredDisplayScale();
 
 /** أدوات عامة قد تفتح بحثاً/مسحاً شبكياً؛ لا تُركب على Studio البارد. */
 function GlobalOverlays() {

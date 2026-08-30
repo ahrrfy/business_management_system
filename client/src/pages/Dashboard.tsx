@@ -8,6 +8,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { dashboardActionBranchId } from "@/lib/dashboardActionScope";
+import { APPLICATION_MODULES, type ApplicationModule } from "@/lib/moduleRegistry";
 import { ROLE_LABEL } from "@/lib/roles";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Banknote, CalendarDays, MapPin, ReceiptText, RefreshCw, ShoppingCart } from "lucide-react";
@@ -53,9 +54,10 @@ type ModuleDef = RoleGate & {
   color: string;
   featured?: boolean;
   adminOnly?: boolean;
+  icon?: ApplicationModule["icon"];
 };
 
-const MODULES: ModuleDef[] = [
+const CORE_MODULES: ModuleDef[] = [
   { id: "pos",           href: "/pos",                 name: "نقطة البيع",       desc: "مبيعات وورديات",    sec: 1, color: "var(--sec1-ink)",  featured: true },
   { id: "crm",           href: "/crm",                 name: "CRM والعلاقات",      desc: "عملاء ومحادثات وعروض", sec: 1, color: "var(--sec1-ink)", module: "crm" },
   { id: "sales",         href: "/invoices",            name: "المبيعات",          desc: "فواتير ومدفوعات",   sec: 1, color: "var(--sec1-ink)", module: "sales" },
@@ -94,6 +96,37 @@ const MODULES: ModuleDef[] = [
   { id: "users",         href: "/users",               name: "المستخدمون",        desc: "صلاحيات وأدوار",    sec: 5, color: "var(--sec5-ink)", adminOnly: true },
   { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "var(--sec5-ink)", adminOnly: true },
   { id: "reconcile",     href: "/reconcile",           name: "تدقيق التوافق",     desc: "كشف الانحراف",      sec: 5, color: "var(--sec5-ink)",  adminOnly: true },
+];
+
+const registeredById = new Map(APPLICATION_MODULES.map((module) => [module.id, module]));
+const coreModuleIds = new Set(CORE_MODULES.map((module) => module.id));
+const fromRegistry = (module: ApplicationModule): ModuleDef => ({
+  ...module,
+  name: module.label,
+  desc: module.description,
+  sec: module.section,
+  color: `var(--sec${module.section}-ink)`,
+});
+
+function withRegisteredGate(module: ModuleDef): ModuleDef {
+  const registered = registeredById.get(module.id);
+  if (!registered) return module;
+  return {
+    ...module,
+    roles: registered.roles,
+    module: registered.module,
+    level: registered.level,
+    managerOnly: registered.managerOnly,
+    adminOnly: registered.adminOnly,
+    anyOf: registered.anyOf,
+    icon: registered.icon,
+  };
+}
+
+/** بطاقات الرئيسية تُغذّى من سجلّ التنقّل؛ أي وحدة مستقبلية جديدة تظهر هنا تلقائياً. */
+const MODULES: ModuleDef[] = [
+  ...CORE_MODULES.map(withRegisteredGate),
+  ...APPLICATION_MODULES.filter((module) => !coreModuleIds.has(module.id)).map(fromRegistry),
 ];
 
 /* ═══════════ QUICK ACTIONS ═══════════
@@ -516,9 +549,9 @@ function DashboardHeader({
     <header style={{ background: T.cardBg, borderBottom: `1px solid ${T.cardBord}`, padding: "22px 24px 18px" }}>
       <div style={{ maxWidth: 1600, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 18, flexWrap: "wrap" }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: T.secLabel, marginBottom: 5 }}>الشاشة الرئيسية</div>
-          <h1 style={{ margin: 0, fontSize: 24, lineHeight: 1.35, fontWeight: 900, color: T.text }}>أهلاً {me.data?.name ?? "بك"}</h1>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 9, color: T.sub, fontSize: 11.5 }}>
+          <div style={{ fontSize: "0.75rem", fontWeight: 700, color: T.secLabel, marginBottom: 5 }}>الشاشة الرئيسية</div>
+          <h1 style={{ margin: 0, fontSize: "1.5rem", lineHeight: 1.35, fontWeight: 900, color: T.text }}>أهلاً {me.data?.name ?? "بك"}</h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 9, color: T.sub, fontSize: "0.75rem" }}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
               <CalendarDays aria-hidden size={14} />
               {dateLabel}
@@ -557,7 +590,7 @@ function DashboardHeader({
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (
-                <Link key={action.href} href={action.href} style={{ minHeight: 42, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px 13px", borderRadius: 9, border: `1px solid ${action.primary ? "var(--dash-pos-chip)" : T.cardBord}`, background: action.primary ? "var(--dash-pos-chip)" : T.statBg, color: action.primary ? "var(--dash-pos-glyph)" : T.text, fontSize: 12, fontWeight: 800, textDecoration: "none", boxShadow: action.primary ? "0 2px 6px oklch(0 0 0 / 0.10)" : "none" }}>
+                <Link key={action.href} href={action.href} style={{ minHeight: 42, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px 13px", borderRadius: 9, border: `1px solid ${action.primary ? "var(--dash-pos-chip)" : T.cardBord}`, background: action.primary ? "var(--dash-pos-chip)" : T.statBg, color: action.primary ? "var(--dash-pos-glyph)" : T.text, fontSize: "0.75rem", fontWeight: 800, textDecoration: "none", boxShadow: action.primary ? "0 2px 6px oklch(0 0 0 / 0.10)" : "none" }}>
                   <Icon aria-hidden size={16} />
                   {action.label}
                 </Link>
@@ -773,11 +806,11 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
   return (
     <section aria-label="مؤشرات اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "16px 24px 4px" }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 9 }}>
-        <h2 style={{ margin: 0, color: T.text, fontSize: 14, fontWeight: 900 }}>مؤشرات اليوم</h2>
-        <span style={{ color: T.muted, fontSize: 10.5 }}>تتحدث تلقائياً حسب صلاحياتك ونطاق فرعك</span>
+        <h2 style={{ margin: 0, color: T.text, fontSize: "0.875rem", fontWeight: 900 }}>مؤشرات اليوم</h2>
+        <span style={{ color: T.muted, fontSize: "0.6875rem" }}>تتحدث تلقائياً حسب صلاحياتك ونطاق فرعك</span>
       </div>
       {hasRefreshIssue && (
-        <div role="status" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10, padding: "9px 11px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: 11.5 }}>
+        <div role="status" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10, padding: "9px 11px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: "0.75rem" }}>
           <span>تعذّر تحديث بعض المؤشرات؛ القيم المتاحة ما زالت معروضة.</span>
           <button type="button" onClick={() => { void metrics.refetch(); if (canSeeStocktakes) void stk.refetch(); }} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
             <RefreshCw aria-hidden size={13} />
@@ -794,10 +827,10 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
             <div key={i} className="group" style={{ minWidth: 0, minHeight: 74, borderRadius: 11, padding: "11px 12px", display: "flex", alignItems: "center", gap: 10, background: abg, border: `1px solid ${abd}`, boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)", cursor: s.href ? "pointer" : "default", textDecoration: "none" }}>
               <div style={{ width: 34, height: 34, borderRadius: 8, flexShrink: 0, background: s.iBg, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.ico}</div>
               <div>
-                <div style={{ fontSize: 17, fontWeight: 800, lineHeight: 1.25, color: s.isAlert ? s.alertC : T.text }}>{s.value}</div>
-                <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.3, marginTop: 2 }}>{s.label}</div>
+                <div style={{ fontSize: "1.0625rem", fontWeight: 800, lineHeight: 1.25, color: s.isAlert ? s.alertC : T.text }}>{s.value}</div>
+                <div style={{ fontSize: "0.6875rem", color: T.muted, lineHeight: 1.3, marginTop: 2 }}>{s.label}</div>
               </div>
-              {s.unit && <div style={{ marginRight: "auto", fontSize: 10, color: T.muted, textAlign: "left" }}>{s.unit}</div>}
+              {s.unit && <div style={{ marginRight: "auto", fontSize: "0.6875rem", color: T.muted, textAlign: "left" }}>{s.unit}</div>}
               {/* زِرّ نَسخ يَظهَر عِند الـhover — يَنسَخ «التَسمية: القيمة الوحدة»
                 stopPropagation/preventDefault لمَنع تَفعيل رابط البِطاقة (href). */}
               <div
@@ -851,7 +884,7 @@ function ActionButton({ a, primary, color }: { a: Action; primary: boolean; colo
           alignItems: "center",
           justifyContent: "center",
           gap: 4,
-          fontSize: 12,
+          fontSize: "0.75rem",
           fontWeight: primary ? 700 : 600,
           color: base,
           padding: "0 4px",
@@ -888,6 +921,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
   const restShadow = "0 1px 2px oklch(0 0 0 / 0.05), 0 1px 3px oklch(0 0 0 / 0.03)";
   const hoverShadow = "0 4px 16px oklch(0 0 0 / 0.08)";
   const hoverBord = `color-mix(in oklch, ${m.color} 32%, ${T.cardBord})`;
+  const ModuleIcon = m.icon;
 
   return (
     <div
@@ -935,11 +969,27 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
           textDecoration: "none",
         }}
       >
-        <Shape id={m.id} sec={m.sec} isPos={m.id === "pos"} size={44} />
+        {ModuleIcon ? (
+          <span
+            aria-hidden
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: m.color,
+              background: `color-mix(in oklch, ${m.color} 12%, transparent)`,
+            }}
+          >
+            <ModuleIcon size={24} strokeWidth={1.7} />
+          </span>
+        ) : <Shape id={m.id} sec={m.sec} isPos={m.id === "pos"} size={44} />}
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <div
             style={{
-              fontSize: 12.5,
+              fontSize: "0.8125rem",
               fontWeight: 700,
               lineHeight: 1.3,
               color: T.text,
@@ -948,7 +998,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
           >
             {m.name}
           </div>
-          <div style={{ fontSize: 10, color: T.sub, lineHeight: 1.4, fontWeight: 500 }}>
+          <div style={{ fontSize: "0.6875rem", color: T.sub, lineHeight: 1.4, fontWeight: 500 }}>
             {m.desc}
           </div>
         </div>
@@ -1002,7 +1052,7 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <div style={{ width: 3, height: 14, borderRadius: 2, background: sec.accent, flexShrink: 0 }} />
-        <span style={{ fontSize: 11, fontWeight: 800, color: T.secLabel, letterSpacing: "0.04em" }}>
+        <span style={{ fontSize: "0.75rem", fontWeight: 800, color: T.secLabel, letterSpacing: "0.04em" }}>
           {sec.name}
         </span>
         <span
@@ -1017,7 +1067,7 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
             background: T.statBg,
             border: `1px solid ${T.statBord}`,
             color: T.muted,
-            fontSize: 9.5,
+            fontSize: "0.6875rem",
             fontWeight: 800,
           }}
         >
@@ -1094,11 +1144,11 @@ function BriefCard({
         {icon}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, color: T.sub, marginBottom: 2 }}>{label}</div>
-        <div style={{ fontSize: 22, fontWeight: 900, color: accent, lineHeight: 1, marginBottom: 2 }}>
+        <div style={{ fontSize: "0.75rem", color: T.sub, marginBottom: 2 }}>{label}</div>
+        <div style={{ fontSize: "1.375rem", fontWeight: 900, color: accent, lineHeight: 1, marginBottom: 2 }}>
           <span dir="ltr" style={{ fontVariantNumeric: "tabular-nums" }}>{fmtAr(count)}</span>
         </div>
-        <div style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</div>
+        <div style={{ fontSize: "0.75rem", color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</div>
       </div>
     </Link>
   );
@@ -1121,7 +1171,7 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
   if (isAdmin && branchScope === undefined) {
     return (
       <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", border: `1px solid ${T.cardBord}`, borderRadius: 9, background: T.statBg, color: T.sub, fontSize: 11.5 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", border: `1px solid ${T.cardBord}`, borderRadius: 9, background: T.statBg, color: T.sub, fontSize: "0.75rem" }}>
           <MapPin aria-hidden size={14} />
           اختر فرعاً من أعلى الشاشة لعرض برنامج اليوم القابل للتنفيذ.
         </div>
@@ -1130,7 +1180,7 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
   }
   if (metrics.isLoading) {
     return (
-      <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px", color: T.muted, fontSize: 11.5 }}>
+      <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px", color: T.muted, fontSize: "0.75rem" }}>
         جارٍ تجهيز برنامج اليوم…
       </section>
     );
@@ -1138,7 +1188,7 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
   if (metrics.isError || !metrics.data) {
     return (
       <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px" }}>
-        <div role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: 11.5 }}>
+        <div role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: "0.75rem" }}>
           <span>تعذّر تحميل برنامج اليوم.</span>
           <button type="button" onClick={() => void metrics.refetch()} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
             <RefreshCw aria-hidden size={13} />
@@ -1172,17 +1222,17 @@ function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefine
     >
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
         <div>
-          <h2 style={{ fontSize: 15, fontWeight: 800, color: T.text, margin: 0 }}>
+          <h2 style={{ fontSize: "0.9375rem", fontWeight: 800, color: T.text, margin: 0 }}>
             برنامج اليوم
           </h2>
-          <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>
+          <div style={{ fontSize: "0.75rem", color: T.muted, marginTop: 2 }}>
             ضمن فرع التنفيذ — افتح كل بطاقة للوصول إلى قائمتها
           </div>
         </div>
-        <span style={{ fontSize: 12, color: T.sub }}>{dateLabel} — {fmtAr(total)} بند{total === 1 ? "" : "ود"} للمتابعة</span>
+        <span style={{ fontSize: "0.75rem", color: T.sub }}>{dateLabel} — {fmtAr(total)} بند{total === 1 ? "" : "ود"} للمتابعة</span>
       </header>
       {remindersDegraded && (
-        <div role="status" style={{ padding: "9px 11px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: 11.5 }}>
+        <div role="status" style={{ padding: "9px 11px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: "0.75rem" }}>
           تعذّر تحديث تذكيرات الذمم؛ بنود التشغيل الأخرى ما زالت معروضة.
         </div>
       )}
@@ -1292,7 +1342,7 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
   if (!canSeeTasks) return null;
   if (metrics.isLoading) {
     return (
-      <section aria-label="المهام والتذاكر" style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px", color: T.muted, fontSize: 11.5 }}>
+      <section aria-label="المهام والتذاكر" style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px", color: T.muted, fontSize: "0.75rem" }}>
         جارٍ تحديث المهام…
       </section>
     );
@@ -1300,7 +1350,7 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
   if (metrics.isError) {
     return (
       <section aria-label="المهام والتذاكر" style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px" }}>
-        <div role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: 11.5 }}>
+        <div role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: "0.75rem" }}>
           <span>تعذّر تحديث المهام.</span>
           <button type="button" onClick={() => void metrics.refetch()} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
             <RefreshCw aria-hidden size={13} />
@@ -1317,7 +1367,7 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
       style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px", display: "flex", flexDirection: "column", gap: 10 }}
       aria-label="المهام والتذاكر"
     >
-      <h2 style={{ fontSize: 13, fontWeight: 800, color: T.text, margin: 0, letterSpacing: "0.01em" }}>
+      <h2 style={{ fontSize: "0.8125rem", fontWeight: 800, color: T.text, margin: 0, letterSpacing: "0.01em" }}>
         المهام والتذاكر
       </h2>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
@@ -1457,7 +1507,7 @@ function CashierHome() {
           <h1 style={{ fontSize: "clamp(22px, 2.4vw, 30px)", fontWeight: 800, color: T.text, margin: 0, letterSpacing: "-0.01em" }}>
             أهلاً {me.data?.name ?? ""}
           </h1>
-          <p style={{ fontSize: 14, color: T.sub, margin: "8px 0 0", lineHeight: 1.7 }}>
+          <p style={{ fontSize: "0.875rem", color: T.sub, margin: "8px 0 0", lineHeight: 1.7 }}>
             {roleLabel} · محطة عملك: افتح ورديتك، استقبل طلبات عملائك، أغلق وسلّم الصندوق.
           </p>
         </div>
@@ -1476,7 +1526,7 @@ function CashierHome() {
           <div style={{ fontSize: "clamp(24px, 2.6vw, 32px)", fontWeight: 800, color: T.text, letterSpacing: "-0.01em" }}>
             {isReception ? "محطة خدمة العملاء" : "نقطة البيع"}
           </div>
-          <div style={{ fontSize: 14, color: T.sub, marginTop: 10, lineHeight: 1.7, maxWidth: "62ch" }}>
+          <div style={{ fontSize: "0.875rem", color: T.sub, marginTop: 10, lineHeight: 1.7, maxWidth: "62ch" }}>
             {isReception
               ? "افتح الوردية واستقبل الطلب — السلّة والعميل والدفع في شاشة واحدة، وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."
               : "افتح الوردية وابدأ البيع — وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."}
@@ -1521,10 +1571,10 @@ function TileGroup({
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 14 }} aria-label={label}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-        <h2 style={{ fontSize: 13, fontWeight: 800, color: Tk.secLabel, margin: 0, letterSpacing: "0.04em" }}>
+        <h2 style={{ fontSize: "0.8125rem", fontWeight: 800, color: Tk.secLabel, margin: 0, letterSpacing: "0.04em" }}>
           {label}
         </h2>
-        {hint && <span style={{ fontSize: 12, color: Tk.muted }}>{hint}</span>}
+        {hint && <span style={{ fontSize: "0.75rem", color: Tk.muted }}>{hint}</span>}
         <div style={{ flex: 1, height: 1, background: Tk.secLine }} aria-hidden />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(264px, 1fr))", gap: 14 }}>
@@ -1546,7 +1596,7 @@ function TileGroup({
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 16, fontWeight: 700, color: Tk.text }}>{t.name}</span>
+              <span style={{ fontSize: "1rem", fontWeight: 700, color: Tk.text }}>{t.name}</span>
               {!!t.badge && t.badge > 0 && (
                 <span
                   title={t.badgeHint}
@@ -1556,7 +1606,7 @@ function TileGroup({
                     borderRadius: 999,
                     background: "var(--sem-warn-bg)",
                     color: "var(--sem-warn)",
-                    fontSize: 12,
+                    fontSize: "0.75rem",
                     fontWeight: 800,
                     textAlign: "center",
                   }}
@@ -1565,7 +1615,7 @@ function TileGroup({
                 </span>
               )}
             </div>
-            <div style={{ fontSize: 12.5, color: Tk.muted, lineHeight: 1.6 }}>{t.desc}</div>
+            <div style={{ fontSize: "0.8125rem", color: Tk.muted, lineHeight: 1.6 }}>{t.desc}</div>
           </Link>
         ))}
       </div>
@@ -1592,8 +1642,8 @@ export default function Dashboard() {
       <TasksBrief branchScope={branchScope} />
       <div style={{ maxWidth: 1648, margin: "0 auto", padding: "18px 24px 32px", display: "flex", flexDirection: "column", gap: 20 }}>
         <header>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 900, color: T.text }}>وحدات النظام</h2>
-          <p style={{ margin: "3px 0 0", fontSize: 11, color: T.muted }}>اختر الوحدة المطلوبة، أو استخدم الإجراءات المباشرة أسفل كل بطاقة.</p>
+          <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 900, color: T.text }}>وحدات النظام</h2>
+          <p style={{ margin: "3px 0 0", fontSize: "0.75rem", color: T.muted }}>اختر الوحدة المطلوبة، أو استخدم الإجراءات المباشرة أسفل كل بطاقة.</p>
         </header>
         {SECTIONS.map((sec) => (
           <SectionRow key={sec.id} sec={sec} />
