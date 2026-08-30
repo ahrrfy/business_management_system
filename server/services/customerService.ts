@@ -313,11 +313,12 @@ export async function resolveReceptionCustomerByPhone(
   }
 
   try {
-    // ٣٠/٨/٢٦ — قرارُ الحدّ: أدمن/مدير يستطيع تمريره صراحةً؛ غيرهما يُلزَم بـ`"0"` (قرار المالك).
-    const isPrivileged = actor.role === "admin" || actor.role === "manager";
-    const creditLimit = isPrivileged && input.creditLimit !== undefined
-      ? input.creditLimit  // قد تكون `"0"` أو موجب أو `null`
-      : "0";
+    // ٣٠/٨/٢٦ (بلاغ المالك المصحِّح): «أنا لا أعمل في الاستقبال — لماذا الصلاحيات لي وحدي؟»
+    // كاشير الاستقبال هو الذي يستقبل الاتصالات ويعرف العميل، فيلزمه ضبطُ الحدّ عند الإنشاء
+    // كي يبيع بلا الحاجة للحيلة (Slice O أعطاه COD، وهذا يُكمِله لبيعٍ آجل حقيقيّ لو أراد).
+    // القيد أُلغي — كلّ من يملك بوابة إنشاء عميل الاستقبال يستطيع تمرير الحدّ الآن.
+    // undefined = الافتراض "0" · قيمة = يُخزَّن كما هو · null = بلا حدّ.
+    const creditLimit = input.creditLimit !== undefined ? input.creditLimit : "0";
     const created = await createCustomer({
       name,
       phone,
