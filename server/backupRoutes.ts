@@ -94,6 +94,15 @@ export function backupRouter(): Router {
       res.setHeader("Cache-Control", "no-store");
       return res.json({ ok: true, source: ticket.fileName });
     } catch (error) {
+      await logAudit(
+        { user: session.user, req },
+        {
+          action: "system.restore.upload",
+          entityType: "system",
+          entityId: ticket.fileName,
+          outcome: "FAILURE",
+        },
+      );
       if (error instanceof RestoreUploadValidationError) {
         return res.status(error.status).json({ error: error.message });
       }

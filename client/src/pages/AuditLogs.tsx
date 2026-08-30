@@ -3,6 +3,7 @@ import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
+import type { OperationActor } from "@/components/data-table/ActorCell";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { FilterField } from "@/components/list/FilterField";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -13,6 +14,18 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { useMemo } from "react";
 
 type AuditRow = RouterOutputs["audit"]["list"]["rows"][number];
+type AuditOperationMeta = {
+  actor?: { source?: OperationActor["source"]; label?: string | null };
+  outcome?: "SUCCESS" | "FAILURE";
+  screenPath?: string;
+};
+
+function auditOperationMeta(value: unknown): AuditOperationMeta {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
+  const raw = (value as Record<string, unknown>)._operation;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return raw as AuditOperationMeta;
+}
 
 // ترجمة الأفعال الموصولة فعلياً بـlogAudit عبر الخادم (راجع grep -rn "action:" server/routers server/services
 // — الأكواد أدناه مطابقة حرفياً لما يُكتب في auditLogs.action، لا تخمين). مُجمَّعة حسب الوحدة لسهولة الصيانة؛
@@ -422,6 +435,8 @@ function exportColumns() {
     { key: "entityType", header: "الكيان", map: (r: AuditRow) => entityLabel(r.entityType) },
     { key: "entityId", header: "المعرّف", map: (r: AuditRow) => r.entityId ?? "" },
     { key: "branchName", header: "الفرع", map: (r: AuditRow) => r.branchName ?? (r.branchId ? `#${r.branchId}` : "") },
+    { key: "outcome", header: "النتيجة", map: (r: AuditRow) => auditOperationMeta(r.newValue).outcome === "FAILURE" ? "فشلت" : "نجحت" },
+    { key: "screenPath", header: "الشاشة", map: (r: AuditRow) => auditOperationMeta(r.newValue).screenPath ?? "" },
     { key: "oldValue", header: "القيمة القديمة", map: (r: AuditRow) => jsonStr(r.oldValue) },
     { key: "newValue", header: "القيمة الجديدة", map: (r: AuditRow) => jsonStr(r.newValue) },
     { key: "ipAddress", header: "IP", map: (r: AuditRow) => r.ipAddress ?? "" },
@@ -447,7 +462,7 @@ function shortValue(v: unknown): string {
   if (v == null) return "";
   if (typeof v !== "object") return String(v);
   try {
-    const entries = Object.entries(v as Record<string, unknown>).slice(0, 4);
+    const entries = Object.entries(v as Record<string, unknown>).filter(([key]) => !key.startsWith("_")).slice(0, 4);
     return entries.map(([k, val]) => `${k}: ${jsonStr(val)}`).join(" · ");
   } catch {
     return jsonStr(v);
@@ -460,7 +475,7 @@ export default function AuditLogs() {
   // فلاتر الشاشة محفوظة في الرابط (useUrlFilters) — نمط Users.tsx نفسه: تعيش مع فتح التفاصيل
   // والرجوع، وقابلة للمشاركة. كل القيم نصوص، نشتقّ الأنواع الفعلية أدناه.
   const [f, setF, resetF] = useUrlFilters({
-    action: "", entityType: "", entityId: "", userId: "", branchId: "", from: "", to: "", page: "0",
+    action: "", entityType: "", entityId: "", screenPath: "", userId: "", branchId: "", from: "", to: "", page: "0",
   });
   const userId = f.userId ? Number(f.userId) : undefined;
   const branchId = f.branchId ? Number(f.branchId) : undefined;
@@ -478,12 +493,13 @@ export default function AuditLogs() {
       action: f.action || undefined,
       entityType: f.entityType || undefined,
       entityId: f.entityId.trim() || undefined,
+      screenPath: f.screenPath.trim() || undefined,
       userId,
       branchId,
       from: f.from || undefined,
       to: f.to || undefined,
     }),
-    [f.action, f.entityType, f.entityId, userId, branchId, f.from, f.to],
+    [f.action, f.entityType, f.entityId, f.screenPath, userId, branchId, f.from, f.to],
   );
 
   const facets = trpc.audit.facets.useQuery();
@@ -491,7 +507,7 @@ export default function AuditLogs() {
   const list = trpc.audit.list.useQuery({ ...filterInput, limit, offset: page * limit });
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
-  const activeFilterCount = [f.action, f.entityType, f.entityId, f.userId, f.branchId, f.from, f.to].filter(Boolean).length;
+  const activeFilterCount = [f.action, f.entityType, f.entityId, f.screenPath, f.userId, f.branchId, f.from, f.to].filter(Boolean).length;
 
   const columns = useMemo<ColumnDef<AuditRow, unknown>[]>(() => [
     {
@@ -513,6 +529,22 @@ export default function AuditLogs() {
       enableSorting: false, meta: { kind: "text" },
     },
     {
+      id: "outcome", header: "النتيجة", accessorFn: (row) => auditOperationMeta(row.newValue).outcome ?? "SUCCESS",
+      cell: ({ row }) => {
+        const failed = auditOperationMeta(row.original.newValue).outcome === "FAILURE";
+        return <span className={failed ? "font-medium text-destructive" : "font-medium text-money-positive"}>{failed ? "فشلت" : "نجحت"}</span>;
+      },
+      enableSorting: false, meta: { kind: "status", align: "center" },
+    },
+    {
+      id: "screenPath", header: "الشاشة", accessorFn: (row) => auditOperationMeta(row.newValue).screenPath ?? "",
+      cell: ({ row }) => {
+        const path = auditOperationMeta(row.original.newValue).screenPath;
+        return path ? <bdi dir="ltr" className="text-xs">{path}</bdi> : <span className="text-xs text-muted-foreground">غير موثّقة</span>;
+      },
+      enableSorting: false, meta: { kind: "code", width: "wide" },
+    },
+    {
       accessorKey: "ipAddress", header: "عنوان الجهاز IP", cell: ({ row }) => row.original.ipAddress ?? "غير متاح",
       enableSorting: false, meta: { kind: "code" },
     },
@@ -520,14 +552,20 @@ export default function AuditLogs() {
 
   const operation = useMemo(() => ({
     mode: "columns" as const,
-    getOperation: (row: AuditRow) => ({
-      actor: row.userId != null
-        ? { userId: Number(row.userId), name: row.userName, source: "user" as const }
-        : row.action.startsWith("system.") ? { source: "system" as const } : { name: "هوية غير مؤكدة", source: "legacy" as const },
-      action: { code: row.action, label: actionLabel(row.action) },
-      subject: { type: row.entityType, label: entityLabel(row.entityType), id: row.entityId },
-      at: row.createdAt,
-    }),
+    getOperation: (row: AuditRow) => {
+      const meta = auditOperationMeta(row.newValue);
+      const failed = meta.outcome === "FAILURE";
+      return {
+        actor: row.userId != null
+          ? { userId: Number(row.userId), name: row.userName, source: "user" as const }
+          : meta.actor?.source
+            ? { name: meta.actor.label, source: meta.actor.source }
+            : row.action.startsWith("system.") ? { source: "system" as const } : { name: "هوية غير مؤكدة", source: "legacy" as const },
+        action: { code: row.action, label: `${failed ? "محاولة فاشلة — " : ""}${actionLabel(row.action)}` },
+        subject: { type: row.entityType, label: entityLabel(row.entityType), id: row.entityId },
+        at: row.createdAt,
+      };
+    },
     labels: { actor: "من قام", action: "ماذا فعل", subject: "على ماذا", time: "متى" },
   }), []);
 
@@ -582,6 +620,16 @@ export default function AuditLogs() {
                     className="h-8 w-28"
                     dir="ltr"
                     aria-label="معرّف الهدف"
+                  />
+                </FilterField>
+                <FilterField label="الشاشة">
+                  <Input
+                    value={f.screenPath}
+                    onChange={(e) => { setF({ screenPath: e.target.value }); setPage(0); }}
+                    placeholder="/مسار-الشاشة"
+                    className="h-8 w-36"
+                    dir="ltr"
+                    aria-label="مسار الشاشة"
                   />
                 </FilterField>
                 <FilterField label="المستخدم">

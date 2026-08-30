@@ -16,6 +16,33 @@ export type AuditData = {
   entityId?: string | number | null;
   oldValue?: unknown;
   newValue?: unknown;
+  /** منفّذ غير تابع لجدول users: عامل النظام، جهاز، مزوّد خارجي، أو سجل قديم. */
+  actor?: AuditActorDescriptor;
+  /** فرع معلوم من قناة خارجية/جهاز حتى مع غياب مستخدم جلسة. */
+  branchId?: number | null;
+  /** نجاح أو فشل المحاولة؛ الافتراضي SUCCESS للسجلات المتخصصة القديمة. */
+  outcome?: "SUCCESS" | "FAILURE";
+  /** مسار شاشة صريح؛ وإلا يُشتق بأمان من Referer من دون query أو بيانات حساسة. */
+  screenPath?: string | null;
+};
+
+export type AuditActorSource = "user" | "system" | "external" | "device" | "platform" | "legacy";
+
+export type AuditActorDescriptor = {
+  source: AuditActorSource;
+  label?: string | null;
+};
+
+export type OperationAuditEnvelope = {
+  version: "operation.v2";
+  actor: AuditActorDescriptor;
+  outcome: "SUCCESS" | "FAILURE";
+  screenPath?: string;
+};
+
+type AuditContext = {
+  user?: TrpcContext["user"];
+  req?: TrpcContext["req"];
 };
 
 type MutationAuditScope = { writes: number };
@@ -87,22 +114,73 @@ function firstTargetId(value: unknown, entityType: string): string | null {
  * يبني الحد الأدنى الآمن لسجل الحركة العام: لا ينسخ input/result إطلاقاً، بل اسم الإجراء
  * ومعرّف الهدف فقط. بهذا تغطي الطبقة كل mutation من دون تسريب كلمة مرور أو مرفق أو ملاحظة.
  */
-export function buildAutomaticAuditData(path: string, input: unknown, result: unknown): AuditData {
+export function buildAutomaticAuditData(
+  path: string,
+  input: unknown,
+  result: unknown,
+  options: { outcome?: "SUCCESS" | "FAILURE"; actor?: AuditActorDescriptor } = {},
+): AuditData {
   const normalizedPath = path.trim() || "unknown.mutation";
   const entityType = normalizedPath.split(".")[0]?.slice(0, 50) || "operation";
   const entityId = firstTargetId(result, entityType) ?? firstTargetId(input, entityType);
   const action = `rpc.${normalizedPath}`.slice(0, 100);
+  const outcome = options.outcome ?? "SUCCESS";
   return {
     action,
     entityType,
     entityId,
+    actor: options.actor,
+    outcome,
     newValue: {
       _auditContract: "operation.v1",
       procedure: normalizedPath,
-      outcome: "SUCCESS",
+      outcome,
       target: entityId ? { entityType, entityId } : { entityType },
     },
   };
+}
+
+/** هوية دقيقة للقنوات العامة؛ لا نسمّي الزائر أو الجهاز «النظام» ولا نختلق مستخدماً. */
+export function automaticActorForProcedure(path: string, authenticated: boolean): AuditActorDescriptor {
+  if (authenticated) return { source: "user" };
+  if (path.startsWith("countPortal.")) return { source: "device", label: "بوابة الجرد" };
+  if (path.startsWith("kiosk.")) return { source: "device", label: "جهاز الكشك" };
+  if (path.startsWith("storefront.")) return { source: "external", label: "عميل المتجر" };
+  if (path.startsWith("recruitment.")) return { source: "external", label: "متقدّم وظيفة" };
+  if (path.startsWith("auth.")) return { source: "external", label: "زائر قبل تسجيل الدخول" };
+  return { source: "external", label: "قناة عامة" };
+}
+
+/** يلتقط pathname فقط؛ query قد يحمل بحثاً أو معرّفات لا حاجة لها في أثر الشاشة. */
+export function auditScreenPath(req: AuditContext["req"]): string | null {
+  const raw = req?.headers?.referer;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  try {
+    const path = new URL(raw, "http://audit.local").pathname.trim();
+    return path.startsWith("/") ? path.slice(0, 255) : null;
+  } catch {
+    return null;
+  }
+}
+
+function operationEnvelope(ctx: AuditContext, data: AuditData): OperationAuditEnvelope {
+  const actor = data.actor ?? (ctx.user ? { source: "user" as const } : ctx.req ? { source: "external" as const } : { source: "system" as const });
+  const screenPath = data.screenPath === undefined ? auditScreenPath(ctx.req) : data.screenPath;
+  return {
+    version: "operation.v2",
+    actor,
+    outcome: data.outcome ?? "SUCCESS",
+    ...(screenPath ? { screenPath } : {}),
+  };
+}
+
+function enrichedAuditValue(ctx: AuditContext, data: AuditData): unknown {
+  const value = recordOf(data.newValue);
+  const existing = value ? recordOf(value._operation) : null;
+  // الحقول الموثوقة تُكتب أخيراً كي لا تستطيع حمولة المستدعي تزوير المنفّذ أو النتيجة.
+  const _operation = { ...(existing ?? {}), ...operationEnvelope(ctx, data) };
+  if (value) return { ...value, _operation };
+  return data.newValue === undefined ? { _operation } : { value: data.newValue, _operation };
 }
 
 /**
@@ -205,7 +283,7 @@ export function redactAuditValue(value: unknown): unknown {
 }
 
 /** يكتب سطر تدقيق. لا يرمي أبداً — السجلّ لا يجب أن يُسقط عمليةً ناجحة. */
-export async function logAudit(ctx: Pick<TrpcContext, "user" | "req">, data: AuditData): Promise<boolean> {
+export async function logAudit(ctx: AuditContext, data: AuditData): Promise<boolean> {
   try {
     const db = getDb();
     if (!db) return false;
@@ -215,13 +293,13 @@ export async function logAudit(ctx: Pick<TrpcContext, "user" | "req">, data: Aud
       null;
     await db.insert(auditLogs).values({
       userId: ctx.user?.id ?? null,
-      branchId: ctx.user?.branchId ?? null,
+      branchId: data.branchId ?? ctx.user?.branchId ?? null,
       action: data.action,
       entityType: data.entityType,
       entityId: data.entityId != null ? String(data.entityId) : null,
       oldValue: redactAuditValue(data.oldValue),
-      newValue: redactAuditValue(data.newValue),
-      ipAddress: ip,
+      newValue: redactAuditValue(enrichedAuditValue(ctx, data)),
+      ipAddress: ip ? String(ip).slice(0, 45) : null,
     });
     noteAuditWrite();
     return true;
@@ -237,7 +315,7 @@ export async function logAudit(ctx: Pick<TrpcContext, "user" | "req">, data: Aud
  */
 export async function logAuditTx(
   tx: Tx,
-  ctx: Pick<TrpcContext, "user" | "req">,
+  ctx: AuditContext,
   data: AuditData,
 ): Promise<void> {
   const ip =
@@ -246,13 +324,13 @@ export async function logAuditTx(
     null;
   await tx.insert(auditLogs).values({
     userId: ctx.user?.id ?? null,
-    branchId: ctx.user?.branchId ?? null,
+    branchId: data.branchId ?? ctx.user?.branchId ?? null,
     action: data.action,
     entityType: data.entityType,
     entityId: data.entityId != null ? String(data.entityId) : null,
     oldValue: redactAuditValue(data.oldValue),
-    newValue: redactAuditValue(data.newValue),
-    ipAddress: ip,
+    newValue: redactAuditValue(enrichedAuditValue(ctx, data)),
+    ipAddress: ip ? String(ip).slice(0, 45) : null,
   });
   noteAuditWrite();
 }

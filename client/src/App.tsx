@@ -19,6 +19,7 @@ import { OfflineBanner } from "@/components/offline/OfflineBanner";
 import { RequireRole } from "@/components/RequireRole";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { RouteFallback } from "@/components/RouteFallback";
+import { OperationAuditAccess } from "@/components/audit/OperationAuditAccess";
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import {
@@ -65,6 +66,7 @@ const DeliveryCenter = lazy(() => import("@/pages/DeliveryCenter"));
 const MyDeliveries = lazy(() => import("@/pages/MyDeliveries"));
 const ClosingHub = lazy(() => import("@/pages/ClosingHub"));
 const AdminHub = lazy(() => import("@/pages/AdminHub"));
+const AuditLogs = lazy(() => import("@/pages/AuditLogs"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const MobileDesignPreview = lazy(() => import("@/pages/MobileDesignPreview"));
 const ExpenseNew = lazy(() => import("@/pages/ExpenseNew"));
@@ -209,6 +211,7 @@ function Shell({
   return (
     <Protected>
       <AppLayout>
+        <OperationAuditAccess />
         {/* حدّ خطأ لكل صفحة: عطل شاشة واحدة لا يُعطّل التنقّل/الشريط الجانبي. */}
         {/* OnlineGate: من فتح الشاشة والاتصال مقطوع يرى رسالة صادقة بدل استعلامات تفشل (ش١ أوفلاين). */}
         <RouteErrorBoundary>
@@ -556,7 +559,7 @@ export default function App() {
       <Route path="/roles/new"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/roles/:id/edit"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
-      <Route path="/audit"><Redirect to="/settings?tab=audit" /></Route>
+      <Route path="/audit"><Shell><RequireRole roles={["admin","auditor"]}><AuditLogs /></RequireRole></Shell></Route>
       <Route path="/closing"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports" level="READ"><ClosingHub /></RequireRole></Shell></Route>
       <Route path="/period-lock"><Redirect to="/closing?tab=period" /></Route>
       <Route path="/credit-approvals"><Redirect to="/closing?tab=credit" /></Route>

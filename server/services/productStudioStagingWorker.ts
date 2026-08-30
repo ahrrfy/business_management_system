@@ -1,9 +1,7 @@
 import cron, { type ScheduledTask } from "node-cron";
-import { isMultiTenantModeActive } from "../db";
 import { logger } from "../logger";
 import { isImageStoreOperational } from "../lib/imageStore";
-import { getCurrentCompanyId } from "../tenancy/context";
-import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { cleanupStudioStaging } from "./productStudioService";
 
 /**
@@ -24,7 +22,7 @@ export async function sweepProductStudioStagingOnce(): Promise<number> {
     logger.warn("productStudio.staging.disabled: R2 image store is not configured");
     return 0;
   }
-  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+  if (!isBackgroundOperationActive("product_studio_staging")) {
     const runs = await runAcrossActiveTenants("product_studio_staging", sweepProductStudioStagingOnce);
     return runs.reduce((sum, removed) => sum + removed, 0);
   }

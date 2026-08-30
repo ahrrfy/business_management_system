@@ -7,9 +7,7 @@ import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { waOutbox } from "../../../drizzle/schema";
 import { logger } from "../../logger";
-import { isMultiTenantModeActive } from "../../db";
-import { getCurrentCompanyId } from "../../tenancy/context";
-import { runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
+import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
 import { withTx } from "../tx";
 import { dripRunningBroadcasts } from "./broadcastDispatch";
 import { getWaHubSettings } from "./flowNotify";
@@ -54,7 +52,7 @@ export interface WaOutboxSweepResult {
 
 /** دورة كنس واحدة — تُستعمل من cron ومن الاختبار مباشرة (بلا انتظار مؤقّت دقيقة). */
 export async function sweepWaOutboxOnce(): Promise<WaOutboxSweepResult> {
-  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+  if (!isBackgroundOperationActive("whatsapp_outbox")) {
     const runs = await runAcrossActiveTenants("whatsapp_outbox", sweepWaOutboxOnce);
     return { claimed: runs.reduce((sum, run) => sum + run.claimed, 0) };
   }

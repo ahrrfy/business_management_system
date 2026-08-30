@@ -25,6 +25,7 @@ export const auditRouter = router({
           entityType: z.string().optional(),
           entityId: z.string().trim().min(1).max(50).optional(),
           action: z.string().optional(),
+          screenPath: z.string().trim().startsWith("/").max(255).optional(),
           // فلتر فرع اختياري (شاشة سجلّ التدقيق) — auditReadProcedure أصلاً بلا عزل فروع (أدمن/مدقّق
           // يريان كل الفروع)، فلا حارس صلاحية إضافي هنا.
           branchId: z.number().int().positive().optional(),
@@ -45,6 +46,9 @@ export const auditRouter = router({
       if (i.userId) conds.push(eq(auditLogs.userId, i.userId));
       if (i.entityType) conds.push(eq(auditLogs.entityType, i.entityType));
       if (i.entityId) conds.push(eq(auditLogs.entityId, i.entityId));
+      if (i.screenPath) {
+        conds.push(sql`JSON_UNQUOTE(JSON_EXTRACT(${auditLogs.newValue}, '$._operation.screenPath')) = ${i.screenPath}`);
+      }
       if (i.branchId) conds.push(eq(auditLogs.branchId, i.branchId));
       if (i.action?.trim()) {
         const pat = `%${escLike(i.action.trim())}%`;

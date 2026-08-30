@@ -3,6 +3,7 @@
 // لكن على getControlDb() بدل getDb(). بلا CONTROL_DATABASE_URL (نشر أحادي الشركة) ⇒ getControlDb()=null
 // ⇒ نتخطّى بصمت (المسار لا يُستعمَل أصلاً في ذلك الوضع).
 import type { Request } from "express";
+import { desc } from "drizzle-orm";
 import { getControlDb } from "./controlDb";
 import { platformAuditLogs } from "./controlSchema";
 import { logger } from "../logger";
@@ -38,4 +39,15 @@ export async function logPlatformAudit(
   } catch (e) {
     logger.warn({ err: e, action: data.action }, "تعذّر كتابة سجلّ تدقيق مدير المنصّة");
   }
+}
+
+/** سجل المنصّة للعرض في نفس شاشة إدارتها؛ لا يخرج من قاعدة التحكّم ولا يكشف أسراراً. */
+export async function listPlatformAudit(limit = 100) {
+  const db = getControlDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(platformAuditLogs)
+    .orderBy(desc(platformAuditLogs.id))
+    .limit(Math.max(1, Math.min(Math.trunc(limit), 200)));
 }

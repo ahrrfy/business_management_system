@@ -12,7 +12,12 @@ import { isCurrentNativeClient } from "./auth/deviceProof";
 import { isCryptoReady } from "./services/cryptoService";
 import { canCrossBranches } from "./lib/branchAuthority";
 import { logger } from "./logger";
-import { buildAutomaticAuditData, logAudit, withMutationAuditScope } from "./services/auditService";
+import {
+  automaticActorForProcedure,
+  buildAutomaticAuditData,
+  logAudit,
+  withMutationAuditScope,
+} from "./services/auditService";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -80,24 +85,32 @@ function providerCategoryFrom(cause: unknown): AiProviderErrorCategory | null {
 export const router = t.router;
 export const middleware = t.middleware;
 /**
- * العقد العام لتتبّع الحركات: كل mutation ناجحة لم تكتب سجلاً متخصصاً تحصل على أثرٍ آمن
+ * العقد العام لتتبّع الحركات: كل mutation ناجحة أو فاشلة لم تكتب سجلاً متخصصاً تحصل على أثرٍ آمن
  * تلقائياً. السجل المتخصص (logAudit/logAuditTx) يغلب دائماً، فلا ازدواج في سجل المستخدم.
  * القراءة لا تُسجّل هنا، والكتابة العامة بلا هوية لا تُنسب زوراً إلى «النظام».
  */
-const auditSuccessfulMutation = t.middleware(async ({ ctx, type, path, input, getRawInput, next }) => {
-  if (type !== "mutation" || !ctx.user) return next();
+const auditMutationOperation = t.middleware(async ({ ctx, type, path, input, getRawInput, next }) => {
+  if (type !== "mutation" || path.startsWith("platformAdmin.")) return next();
 
   // الجذر يسبق محلّل input في سلسلة tRPC؛ نقرأ الخام المخبّأ كي لا نفقد معرّف هدف update/delete.
   const auditInput = input === undefined ? await getRawInput() : input;
   const { value: result, specializedAuditWritten } = await withMutationAuditScope(() => next());
-  if (result.ok && !specializedAuditWritten) {
-    await logAudit(ctx, buildAutomaticAuditData(path, auditInput, result.data));
+  // الفشل يُسجّل دائماً: قد يكون logAuditTx المتخصص قد عُلّم ثم تراجعت معاملته مع الاستثناء.
+  if (!result.ok || !specializedAuditWritten) {
+    const outcome = result.ok ? "SUCCESS" : "FAILURE";
+    await logAudit(
+      ctx,
+      buildAutomaticAuditData(path, auditInput, result.ok ? result.data : undefined, {
+        outcome,
+        actor: automaticActorForProcedure(path, ctx.user != null),
+      }),
+    );
   }
   return result;
 });
 
 /** الجذر الوحيد لبناء الإجراءات؛ يحرسه اختبار عقدي كي لا تظهر mutation خارج التدقيق العام. */
-const auditedProcedure = t.procedure.use(auditSuccessfulMutation);
+const auditedProcedure = t.procedure.use(auditMutationOperation);
 
 export const publicProcedure = auditedProcedure;
 

@@ -10,7 +10,7 @@ import {
 } from "../tenancy/provisionRequests";
 import { signPlatformSession } from "../tenancy/platformAuth";
 import { verifyPlatformAdminCredentials } from "../tenancy/platformAdminService";
-import { logPlatformAudit } from "../tenancy/platformAudit";
+import { listPlatformAudit, logPlatformAudit } from "../tenancy/platformAudit";
 import { platformAdminProcedure, publicProcedure, router } from "../trpc";
 
 /**
@@ -55,6 +55,12 @@ export const platformAdminRouter = router({
     }
     ctx.res.clearCookie(PLATFORM_ADMIN_COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { success: true } as const;
+  }),
+
+  audit: router({
+    list: platformAdminProcedure
+      .input(z.object({ limit: z.number().int().positive().max(200).default(100) }).optional())
+      .query(({ input }) => listPlatformAudit(input?.limit ?? 100)),
   }),
 
   companies: router({

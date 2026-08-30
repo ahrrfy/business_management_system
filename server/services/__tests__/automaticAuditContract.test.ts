@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildAutomaticAuditData } from "../auditService";
+import {
+  auditScreenPath,
+  automaticActorForProcedure,
+  buildAutomaticAuditData,
+} from "../auditService";
+import { backgroundOperationEffectCount } from "../../tenancy/backgroundTenants";
 
 describe("العقد العام لتتبّع الحركات", () => {
   it("ينسب الحركة إلى هدف النتيجة قبل معرّفات الأطراف في الإدخال", () => {
@@ -48,12 +53,39 @@ describe("العقد العام لتتبّع الحركات", () => {
     expect((audit.newValue as { procedure: string }).procedure).toBe(path);
   });
 
+  it("يميّز الفشل والقنوات العامة والأجهزة من دون اختلاق مستخدم", () => {
+    const failed = buildAutomaticAuditData("storefront.createOrder", { id: 9 }, undefined, {
+      outcome: "FAILURE",
+      actor: automaticActorForProcedure("storefront.createOrder", false),
+    });
+    expect(failed).toMatchObject({
+      outcome: "FAILURE",
+      actor: { source: "external", label: "عميل المتجر" },
+      newValue: { outcome: "FAILURE" },
+    });
+    expect(automaticActorForProcedure("countPortal.submit", false)).toEqual({ source: "device", label: "بوابة الجرد" });
+    expect(automaticActorForProcedure("sales.create", true)).toEqual({ source: "user" });
+  });
+
+  it("يحفظ مسار الشاشة فقط ويختصر أثر العامل إلى عدد آمن", () => {
+    expect(auditScreenPath({ headers: { referer: "https://erp.local/sales?customerPhone=secret" } } as never)).toBe("/sales");
+    expect(backgroundOperationEffectCount({ claimed: 2, sent: 2, candidates: 50, error: "لا يُسجّل" })).toBe(2);
+    expect(backgroundOperationEffectCount({ balanced: true, findingCount: 9 })).toBe(0);
+  });
+
   it("يجعل auditedProcedure الجذر الوحيد لكل إجراءات tRPC", () => {
     const source = readFileSync("server/trpc.ts", "utf8");
+    const auditSource = readFileSync("server/services/auditService.ts", "utf8");
+    const backgroundSource = readFileSync("server/tenancy/backgroundTenants.ts", "utf8");
     expect(source.match(/t\.procedure/g)).toHaveLength(1);
-    expect(source).toContain("t.procedure.use(auditSuccessfulMutation)");
+    expect(source).toContain("t.procedure.use(auditMutationOperation)");
     expect(source).toContain("withMutationAuditScope(() => next())");
     expect(source).toContain("await getRawInput()");
-    expect(source).toContain("!specializedAuditWritten");
+    expect(source).toContain("!result.ok || !specializedAuditWritten");
+    expect(source).toContain('outcome = result.ok ? "SUCCESS" : "FAILURE"');
+    expect(source).not.toContain('type !== "mutation" || !ctx.user');
+    expect(auditSource).toContain("{ ...(existing ?? {}), ...operationEnvelope(ctx, data) }");
+    expect(backgroundSource).toContain("auditBackgroundFailure");
+    expect(backgroundSource).toContain('outcome: "FAILURE"');
   });
 });
