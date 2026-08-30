@@ -512,6 +512,54 @@ export function buildWorkOrderStatusMessage(d: WorkOrderStatusMessageData): stri
   return L.join("\n");
 }
 
+/**
+ * Slice M (٣٠/٨/٢٦) — رسالة إسناد إرسالية لجهة توصيل.
+ * تُرسَل من DispatchDialog بعد نجاح الإسناد: كلّ ما يحتاجه المندوب لتنفيذ التوصيل في رسالةٍ واحدة.
+ *
+ * الحقول القصوى (كلّها اختيارية ما عدا `consignmentNumber` و`codAmount`):
+ *  - رقم الإرسالية، الجهة، اسم المستلم، هاتفه، العنوان
+ *  - COD المطلوب تحصيله (إلزاميّ — بلا حجم صحيح لا معنى للإسناد)
+ *  - أجرة التوصيل الاقتراحيّة (يعرف المندوب ما سيقبضه فوق COD في نمط COURIER)
+ */
+export interface CourierAssignmentMessageData {
+  consignmentNumber: string;
+  orderNumber?: string | null;
+  title?: string | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  deliveryAddress?: string | null;
+  codAmount: string | number;
+  deliveryFee?: string | number | null;
+  /** COURIER يجمع الأجرة مع COD ⇒ نعرض الإجماليّ صراحةً. غيرها ⇒ COD فقط. */
+  feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
+}
+
+export function buildCourierAssignmentMessage(d: CourierAssignmentMessageData): string {
+  const cod = Number(d.codAmount);
+  const feeD = Number(d.deliveryFee ?? 0);
+  const feeCollection = d.feeCollection ?? "COURIER";
+  const L: string[] = [
+    `*إرساليّة توصيل جديدة #${d.consignmentNumber}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.orderNumber) L.push(`رقم الطلب: ${d.orderNumber}`);
+  if (d.title) L.push(`الطلب: ${d.title}`);
+  if (d.customerName) L.push(`المستلم: ${d.customerName}`);
+  if (d.customerPhone) L.push(`الهاتف: ${d.customerPhone}`);
+  if (d.deliveryAddress) L.push(`العنوان: ${d.deliveryAddress}`);
+  L.push("");
+  L.push(`مبلغ التحصيل (COD): ${fmtMoney(cod)} د.ع`);
+  if (feeD > 0) {
+    L.push(`أجرة التوصيل: ${fmtMoney(feeD)} د.ع`);
+    if (feeCollection === "COURIER") {
+      L.push(`*الإجماليّ من العميل: ${fmtMoney(cod + feeD)} د.ع*`);
+    }
+  }
+  L.push("", "برجاء التواصل مع العميل لتحديد موعد التسليم.", COMPANY_NAME);
+  return L.join("\n");
+}
+
 export interface OperationalContactMessageData {
   partyName?: string | null;
   entityLabel: string;

@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
-import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
+import { buildCourierAssignmentMessage, buildWorkOrderStatusMessage, openWhatsApp } from "@/lib/whatsapp";
 import {
   CONSIGNMENT_VIEW_AR,
   CONSIGNMENT_VIEW_CLS,
@@ -205,8 +205,38 @@ function DispatchTab() {
   }, [ready.data]);
 
   const dispatch = trpc.delivery.dispatch.useMutation({
-    onSuccess: (r) => {
-      notify.ok("أُرسل عبر المندوب", `إرسالية ${r.consignmentNumber} — COD ${fmt(r.codAmount)} د.ع`);
+    onSuccess: (r, variables) => {
+      // Slice M (٣٠/٨/٢٦): تفاصيل الإسناد للمندوب بضغطةٍ من التوست — يفتح واتساب برسالةٍ مُعدّة.
+      // الجهة تُلتقط بـpartyId المُرسَل + قائمة parties الحيّة (لا استعلام إضافيّ).
+      const dispatchedParty = parties.data?.find((p) => Number(p.id) === Number(variables.partyId));
+      const dispatchedOrder = target; // النافذة لا تُغلَق حتى إتمام دورة onSuccess.
+      const courierPhone = dispatchedParty?.phone;
+      const canSendWhatsapp = !!courierPhone && !!dispatchedOrder;
+      notify.ok(
+        "أُرسل عبر المندوب",
+        `إرسالية ${r.consignmentNumber} — COD ${fmt(r.codAmount)} د.ع`,
+        canSendWhatsapp
+          ? {
+              label: "أرسل تفاصيل واتساب",
+              onClick: () => {
+                openWhatsApp(
+                  courierPhone!,
+                  buildCourierAssignmentMessage({
+                    consignmentNumber: r.consignmentNumber,
+                    orderNumber: dispatchedOrder!.orderNumber,
+                    title: dispatchedOrder!.title,
+                    customerName: dispatchedOrder!.customerName,
+                    customerPhone: dispatchedOrder!.deliveryPhone ?? dispatchedOrder!.customerPhone,
+                    deliveryAddress: dispatchedOrder!.deliveryAddress,
+                    codAmount: r.codAmount,
+                    deliveryFee: variables.deliveryFee ?? "0",
+                    feeCollection: dispatchedOrder!.deliveryFeeCollection ?? "COURIER",
+                  }),
+                );
+              },
+            }
+          : undefined,
+      );
       setTarget(null);
       utils.delivery.readyForDispatch.invalidate();
       utils.delivery.listParties.invalidate();
