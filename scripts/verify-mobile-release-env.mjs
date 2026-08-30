@@ -758,6 +758,9 @@ function verifySourceContract() {
   if (/\bPathIterator\b|MultiProcessDataStoreFactory|MultiProcessCoordinator/.test(nativeAppSources)) {
     fail("optional AndroidX JNI exclusions are unsafe with PathIterator or multiprocess DataStore usage");
   }
+  if (nativeAppSources.includes("IsLatin")) {
+    fail("native scanner policy must not use the API-26-incompatible IsLatin regex property");
+  }
   for (const fragment of [
     'const val KEY_ALIAS = "alrueya_native_device_proof_v2"',
     "builder.setIsStrongBoxBacked(useStrongBox)",

@@ -1,9 +1,8 @@
 package online.alarabiya.superapp.navigation
 
 import androidx.activity.ComponentActivity
-import android.content.ContentValues
 import android.graphics.Bitmap
-import android.provider.MediaStore
+import android.os.Environment
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
@@ -21,6 +20,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import kotlinx.coroutines.flow.MutableSharedFlow
+import java.io.File
 import java.lang.reflect.Proxy
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -267,19 +267,7 @@ class NativeWorkspaceNavigationTest {
         compose.waitForIdle()
 
         val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
-        val resolver = compose.activity.contentResolver
-        val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, "visual-self-service.png")
-            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SuperArabicQA")
-            put(MediaStore.Images.Media.IS_PENDING, 1)
-        }
-        val uri = requireNotNull(resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values))
-        resolver.openOutputStream(uri).use { stream ->
-            requireNotNull(stream)
-            assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream))
-        }
-        resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+        saveAuditScreenshot("visual-self-service.png", bitmap)
     }
 
     @Test
@@ -404,19 +392,7 @@ class NativeWorkspaceNavigationTest {
         compose.waitForIdle()
 
         val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
-        val resolver = compose.activity.contentResolver
-        val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, "manager-home-executive-after.png")
-            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SuperArabicQA")
-            put(MediaStore.Images.Media.IS_PENDING, 1)
-        }
-        val uri = requireNotNull(resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values))
-        resolver.openOutputStream(uri).use { stream ->
-            requireNotNull(stream)
-            assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream))
-        }
-        resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+        saveAuditScreenshot("manager-home-executive-after.png", bitmap)
     }
 
     @Test
@@ -450,6 +426,20 @@ class NativeWorkspaceNavigationTest {
         compose.waitUntil(timeoutMillis = 5_000) { FakeInventorySource.lowOnlyRequested.get() }
         compose.onNodeWithTag("native-route-inventory").assertIsDisplayed()
         compose.onNodeWithText("LOW-EXECUTIVE-STOCK").assertIsDisplayed()
+    }
+
+    private fun saveAuditScreenshot(fileName: String, bitmap: Bitmap) {
+        val picturesRoot = compose.activity.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+            ?: compose.activity.cacheDir
+        val auditDirectory = File(picturesRoot, "SuperArabicQA")
+        require(auditDirectory.isDirectory || auditDirectory.mkdirs())
+        try {
+            File(auditDirectory, fileName).outputStream().buffered().use { stream ->
+                assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream))
+            }
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     private fun setWorkspace(
