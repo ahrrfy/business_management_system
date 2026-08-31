@@ -97,7 +97,7 @@ export default function DeliveryParties() {
             { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
             { key: "partyType", header: "النوع", map: (r) => (r.partyType === "COMPANY" ? "شركة" : "مندوب") },
             // Slice DFP1 (٣٠/٨/٢٦) — ٤ أعمدة منفصلة (partyExposure) بدل «نقد بذمّتها» الملتبس.
-            { key: "currentBalance", header: "نقد بيده", money: true },
+            { key: "currentBalance", header: "بذمته (نقد+عجز مقبول)", money: true },
             { key: "parcelsInTransitAmount", header: "طرود بالطريق", money: true, map: (r) => (r as { parcelsInTransitAmount?: string }).parcelsInTransitAmount ?? "0" },
             { key: "deliveredUncollectedAmount", header: "سلم لم يحصل", money: true, map: (r) => (r as { deliveredUncollectedAmount?: string }).deliveredUncollectedAmount ?? "0" },
             { key: "feesOwedAmount", header: "أجور مستحقّة له", money: true, map: (r) => (r as { feesOwedAmount?: string }).feesOwedAmount ?? "0" },
@@ -134,7 +134,7 @@ export default function DeliveryParties() {
                 <tr>
                   <th className="p-3 text-right">الجهة</th>
                   <th className="p-3 text-right">النوع</th>
-                  <th className="p-3 text-left" title="نقد قبضه المندوب لم يورَّد بعد">نقد بيده</th>
+                  <th className="p-3 text-left" title="مسؤولية الدفتر على المندوب: نقد قبضه + عجز قبله ذمّةً (SHORTFALL_ASSIGNED). قد تحوي جزءا غير نقدي.">بذمته</th>
                   <th className="p-3 text-left" title="بضاعة سُلِّمت للمندوب لم تصل الزبون">طرود بالطريق</th>
                   <th className="p-3 text-left" title="طرد سُلِّم للزبون بلا قبضٍ كامل — خطر أعلى">سلم لم يحصل</th>
                   <th className="p-3 text-left" title="أجور توصيل نحن مدينون بها للمندوب">أجور له</th>

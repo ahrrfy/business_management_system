@@ -87,31 +87,69 @@ function* walk(dir) {
  * ويستثني التعليقات (// … أو * …) لأنها ليست UI.
  */
 /**
- * الحرِج ماذا:
- *   - `<th>` — رأس عمود (حجم ~12px + عريض غالباً).
- *   - `<Badge>` — شارة تعريف موجزة (10-11px عادةً).
- *   - `text-[9px]/[10px]/[11px]` — أحجام دقيقة يسقط رسم التشكيل عليها كلياً.
+ * السياقات الحرِجة — كلٌّ يحدّد نمطَ الفحص (multiline vs single-line):
+ *   - `<th>` — multiline (رأس عمود قد يمتدّ لعدّة أسطر). scan حتى `</th>` أو `/>`.
+ *   - `<Badge>` — multiline (شارة قد تحوي نصّاً على سطرٍ منفصل).
+ *   - `text-[9px|10px|11px]` — **single-line only**: عناصر التشكيل قد تظهر على `<p>`
+ *     أو `<div>` بحجمٍ صغير لكنّ المحتوى فقرةٌ طويلة (وليس شارة)، فيصير الفحص متعدّد
+ *     الأسطر ذا إيجابيّات كاذبة. نقتصر على السطر نفسه (شارة inline بحجم صغير).
  *
- * ما هو **مستثنى** (النصّ فيه أطول ويقرأ بحجم متّسعٍ نسبياً):
- *   - `text-xs` عامّةً (١٢px) — للفقرات والوصف
- *   - `<Label>` — تسميات النماذج
- *   - `<p>` — فقرات
+ * المستثنى: `text-xs` عامّةً + `<Label>` + `<p>` بلا حجمٍ محدَّد صغير.
  */
+function contextKind(line) {
+  if (/<th[\s>]/.test(line)) return "multiline";
+  if (/<Badge[\s>]/.test(line)) return "multiline";
+  if (/text-\[(9|10|11)px\]/.test(line)) return "single-line";
+  return null;
+}
 function isSmallTextContext(line) {
-  if (/<th[\s>]/.test(line)) return true;
-  if (/<Badge[\s>]/.test(line)) return true;
-  if (/text-\[(9|10|11)px\]/.test(line)) return true;
-  return false;
+  return contextKind(line) != null;
 }
 
 function isCommentOnlyLine(line) {
   const trimmed = line.trim();
-  return trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*");
+  // JS/TS comments + JSX comments {/* ... */}
+  return trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")
+    || /^\{\s*\/\*/.test(trimmed);
 }
 
-/** استخراج قيمة `title="..."` من السطر لأنّها مستثناة. */
+/**
+ * استخراج قيمة `title=…` من السطر (نصّها يظهر في tooltip بحجمٍ نظاميّ أكبر ⇒ مستثنى).
+ * Codex #908: يجب أن ندعم template literals `title={`...${x}...`}` بحاصرات متداخلة.
+ */
 function stripTitleAttrs(line) {
-  return line.replace(/title=(?:\{[^}]*\}|"[^"]*"|'[^']*')/g, "");
+  // title="..." أو title='...'
+  let out = line.replace(/title=(?:"[^"]*"|'[^']*')/g, "");
+  // title={ ... } — حرِّك عدّاد أقواس متوازناً (يتحمّل مستوى تداخل واحد كافياً لقالب literal).
+  out = out.replace(/title=\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g, "");
+  return out;
+}
+
+/**
+ * Codex #908 P2: يفحص عنصراً كاملاً لا سطراً واحداً.
+ *
+ * إن وجدنا فاتحة `<th>` أو `<Badge>` أو حاوية `text-[9-11px]` على السطر i، فحص
+ * الأسطر [i..i+MAX_JSX_SPAN] حتى نصادف الإغلاق (`</th>`, `</Badge>`, `/>`, أو
+ * حاوية تُنشئ سياقاً جديداً). عناصر JSX الحقيقية نادراً ما تتجاوز ٦ أسطر.
+ * قبل الإصلاح كان JSX متعدّد الأسطر يمرّ (الفاتحة بلا تشكيل + النصّ في السطر
+ * التالي بلا سياق) — Codex P2 صحيح تماماً.
+ */
+const MAX_JSX_SPAN = 6;
+
+function isClosingBoundary(line) {
+  return /<\/th\b|<\/Badge\b|\/>/.test(line);
+}
+
+/** فحص الأسطر [i..i+MAX_JSX_SPAN] للنصّ العربيّ الذي يحوي تشكيلاً بعد استبعاد title=. */
+function scanElementForTashkeel(lines, startIdx) {
+  for (let j = startIdx; j < Math.min(lines.length, startIdx + MAX_JSX_SPAN); j++) {
+    const stripped = stripTitleAttrs(lines[j]);
+    if (TASHKEEL_RE.test(stripped)) {
+      return { lineIdx: j, text: lines[j].trim().slice(0, 200) };
+    }
+    if (j > startIdx && isClosingBoundary(lines[j])) break;
+  }
+  return null;
 }
 
 const findings = [];
@@ -121,14 +159,25 @@ for (const file of walk(SCAN_ROOT)) {
   const rel = path.relative(REPO_ROOT, file).replace(/\\/g, "/");
   const text = readFileSync(file, "utf8");
   const lines = text.split(/\r?\n/);
+  const reportedElements = new Set(); // نتفادى الإبلاغ عن نفس السطر مرّتَين
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (isCommentOnlyLine(line)) continue;
-    if (!isSmallTextContext(line)) continue;
+    const kind = contextKind(line);
+    if (kind == null) continue;
     checkedCount++;
-    const stripped = stripTitleAttrs(line);
-    if (TASHKEEL_RE.test(stripped)) {
-      findings.push({ file: rel, line: i + 1, text: line.trim().slice(0, 200) });
+    if (kind === "single-line") {
+      // نفحص السطر نفسه فقط — سياق text-[Xpx] قد يكون على `<p>` أو فقرة.
+      const stripped = stripTitleAttrs(line);
+      if (TASHKEEL_RE.test(stripped)) {
+        findings.push({ file: rel, line: i + 1, text: line.trim().slice(0, 200) });
+      }
+    } else {
+      const hit = scanElementForTashkeel(lines, i);
+      if (hit && !reportedElements.has(hit.lineIdx)) {
+        reportedElements.add(hit.lineIdx);
+        findings.push({ file: rel, line: hit.lineIdx + 1, text: hit.text });
+      }
     }
   }
 }

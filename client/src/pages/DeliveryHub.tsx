@@ -1507,9 +1507,9 @@ function SettleTab() {
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span
                 className="rounded-md border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-2 py-1 font-bold text-[var(--sem-warn)]"
-                title={DT.deliveredUncollected.tooltip}
+                title="متبقّي COD على كلّ الطرود المفتوحة (بالطريق للعميل + مسلَّمة بلا قبض) — يشمل كلّ إرساليّة لم تُغلَق ماليّاً بعد."
               >
-                قيد التحصيل من العملاء: <span className="tabular-nums" dir="ltr">{fmt(totalObligationExposure)}</span> د.ع
+                إجمالي COD المفتوح: <span className="tabular-nums" dir="ltr">{fmt(totalObligationExposure)}</span> د.ع
               </span>
               <span
                 className="rounded-md border border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)] px-2 py-1 font-bold text-[var(--sem-info)]"
@@ -1524,9 +1524,14 @@ function SettleTab() {
               <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
                 <tr>
                   <th className="p-2 text-start">الجهة</th>
-                  <th className="p-2 text-end" title={DT.cashInHand.tooltip}>{PARTY_EXPOSURE_LABEL_AR.cashInHand}</th>
+                  <th
+                    className="p-2 text-end"
+                    title="مسؤوليّة المندوب على الدفتر (نقدٌ قبضه + عجزٌ قبله كذمّة عليه بموجب SHORTFALL_ASSIGNED). قد تحوي جزءاً غير نقديّ."
+                  >
+                    بذمته
+                  </th>
                   <th className="p-2 text-end" title={DT.openParcelsCount.tooltip}>{DT.openParcelsCount.compact}</th>
-                  <th className="p-2 text-end" title={DT.deliveredUncollected.tooltip}>قيد التحصيل</th>
+                  <th className="p-2 text-end" title="متبقّي COD على كلّ الطرود المفتوحة (بالطريق + مسلَّمة بلا قبض).">قيد التحصيل</th>
                   <th className="p-2 text-end" title={DT.oldestOpenAge.tooltip}>{DT.oldestOpenAge.compact}</th>
                   <th className="p-2 text-end" title={DT.feesOwedToCourier.tooltip}>{PARTY_EXPOSURE_LABEL_AR.feesOwedToThem}</th>
                   <th className="p-2 text-end" title={DT.lastRemittanceAt.tooltip}>{DT.lastRemittanceAt.compact}</th>
@@ -1548,7 +1553,13 @@ function SettleTab() {
                           {!p.hasPortal && <span className="rounded bg-[var(--sem-info-bg)] px-1 py-px text-[9px] font-bold text-[var(--sem-info)]" title="تُدار بكشف الشركة لا ببوّابة سائق">كشف</span>}
                         </div>
                       </td>
-                      <td className="p-2 text-end font-bold tabular-nums" dir="ltr" title={DT.cashInHand.tooltip}>{fmt(p.currentBalance)}</td>
+                      <td
+                        className="p-2 text-end font-bold tabular-nums"
+                        dir="ltr"
+                        title="مسؤوليّة الدفتر على المندوب (نقدٌ قبضه + عجزٌ قبله ذمّةً بموجب SHORTFALL_ASSIGNED)."
+                      >
+                        {fmt(p.currentBalance)}
+                      </td>
                       <td className="p-2 text-end">
                         <span className="tabular-nums">{p.openCount}</span>
                         {/* Slice DFP2: النصّ بلا تشكيل («سلم» بدل «سُلِّم») + فاصلة بصريّة كبيرة. */}
@@ -1787,25 +1798,32 @@ function SettleTab() {
                 </div>
               )}
               {(() => {
+                /**
+                 * Codex #908 P1: كشفٌ بأسطرَ صفريّةٍ فقط (إثبات تسليم بلا نقد) يجعل
+                 * `totals.net = 0` و`countedCash = 0` — يجب أن يمرّ كمطابقةٍ صحيحة.
+                 * المقارنةُ المباشرةُ الآن: (0, 0) → مطابق تام (وليس «لم يبدأ العدّ»).
+                 * الاختلاف عن الحالة «لم يبدأ» = وجود صافٍ متوقَّع (`totals.net > 0`).
+                 */
                 const cashDiff = countedCash - totals.net;
-                const hasStartedCounting = countedCash > 0;
-                const isMismatch = hasStartedCounting && Math.abs(cashDiff) > 0.01;
-                const isMatch = hasStartedCounting && !isMismatch;
-                const tone = isMismatch ? "text-money-negative"
+                const isMatch = Math.abs(cashDiff) < 0.01;
+                const needsInput = totals.net > 0.01 && countedCash === 0;
+                const tone = needsInput ? "text-muted-foreground"
                   : isMatch ? "text-money-positive"
-                  : "text-muted-foreground";
-                const label = isMismatch ? "فرق العدّ — سوِّ المعدود قبل التسوية"
+                  : "text-money-negative";
+                const label = needsInput ? "أدخل النقد المعدود لبدء التسوية"
                   : isMatch ? "النقد المعدود مطابق للصافي"
-                  : "أدخل النقد المعدود لبدء التسوية";
+                  : "فرق العد — سو المعدود قبل التسوية";
                 return (
                   <div className={cn("flex items-center justify-between border-t py-1.5 font-bold", tone)}>
                     <span>{label}</span>
-                    <span dir="ltr" className="tabular-nums">{hasStartedCounting ? `${fmt(String(cashDiff))} د.ع` : "—"}</span>
+                    <span dir="ltr" className="tabular-nums">{needsInput ? "—" : `${fmt(String(cashDiff))} د.ع`}</span>
                   </div>
                 );
               })()}
               {canRemit && (() => {
-                const cashMatched = countedCash > 0 && Math.abs(countedCash - totals.net) < 0.01;
+                // Codex P1: مقارنة مباشرة (تسمح بـ 0=0 لكشف الإثبات الصفريّ).
+                const cashMatched = Math.abs(countedCash - totals.net) < 0.01;
+                const needsInput = totals.net > 0.01 && countedCash === 0;
                 const isBlocked = remit.isPending || companyStatement.isPending || listStillLoading || !cashMatched;
                 return (
                   <Button
@@ -1815,14 +1833,15 @@ function SettleTab() {
                     disabled={isBlocked}
                     title={
                       listStillLoading ? "جارٍ تحميل باقي الإرساليات — التوريد بعد اكتمال العدّ"
-                      : !cashMatched ? "أدخل النقد المعدود المطابق للصافي المتوقَّع قبل التوريد"
+                      : needsInput ? "أدخل النقد المعدود المطابق للصافي المتوقَّع قبل التوريد"
+                      : !cashMatched ? "النقد المعدود لا يطابق الصافي — سو الفرق قبل التوريد"
                       : undefined
                     }
                   >
                     {remit.isPending || companyStatement.isPending
-                      ? "جارٍ…"
+                      ? "جار…"
                       : listStillLoading
-                        ? "جارٍ تحميل باقي الإرساليات…"
+                        ? "جار تحميل باقي الإرساليات…"
                         : statementMode
                           ? `تسجيل كشف الشركة ${statementNumber.trim()} وتوريد الصافي`
                           : "تأكيد التسوية وتوريد الصافي"}
