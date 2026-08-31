@@ -360,6 +360,21 @@ export async function shiftCloseToCanvas(
   ctx.fillStyle = "#000";
   y += vH + 16;
 
+  if (d.cashHandover) {
+    y = sectionHdr(ctx, y, "عقد تسليم النقد");
+    const h = 150;
+    strokeBox(ctx, y, h, 2);
+    ctx.fillStyle = "#000";
+    ctx.textAlign = "right";
+    ctx.font = "800 22px Cairo, sans-serif";
+    ctx.fillText(`المبلغ: ${fmt(d.cashHandover.amount)} د.ع`, W - PAD - 12, y + 34);
+    ctx.fillText(`سلّم إلى: ${d.cashHandover.recipientName}`, W - PAD - 12, y + 68);
+    ctx.fillText(`رقم العهدة: ${d.cashHandover.referenceNumber}`, W - PAD - 12, y + 102);
+    ctx.font = "700 18px Cairo, sans-serif";
+    ctx.fillText("بانتظار العدّ والقبول في الخزينة", W - PAD - 12, y + 132);
+    y += h + 16;
+  }
+
   // الإجمالي الكبير — كتلة معكوسة
   const totH = 130;
   invertedBlock(ctx, y, totH);

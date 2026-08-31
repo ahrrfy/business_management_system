@@ -164,6 +164,8 @@ export type PostingProfile =
   | "ADJUST_FIXED_ASSET_ACCRUAL"
   | "ADJUST_FIXED_ASSET_ACCRUAL_REVERSAL"
   | "ADJUST_EXCHANGE_CONTROL_RECLASS"
+  | "CASH_DAILY_SHORTAGE"
+  | "CASH_DAILY_SURPLUS"
   | "OPENING_CUSTOMER"
   | "OPENING_SUPPLIER"
   | "OPENING_CASH"
@@ -180,11 +182,14 @@ export type PostingProfile =
   | "INTERNAL_USE_INVENTORY"
   | "WASTAGE_INVENTORY"
   | "CASH_HANDOVER_TO_TREASURY"
+  | "CASH_HANDOVER_TO_TRANSIT"
   | "CASH_DROP_TO_TRANSIT"
   | "CASH_TRANSFER_OUT_IN_TRANSIT"
   | "INTERBRANCH_CLEARING_OUT"
   | "CASH_TRANSFER_IN_FROM_TRANSIT"
   | "CASH_TRANSFER_IN_FROM_CLEARING"
+  | "CASH_CUSTODY_SHORTAGE"
+  | "CASH_CUSTODY_SURPLUS"
   | "SHIFT_FLOAT_FROM_TREASURY"
   | "TREASURY_FUNDING_CAPITAL"
   | "TREASURY_FUNDING_OWNER_CURRENT"
@@ -328,6 +333,8 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "ADJUST_FIXED_ASSET_ACCRUAL",
     "ADJUST_FIXED_ASSET_ACCRUAL_REVERSAL",
     "ADJUST_EXCHANGE_CONTROL_RECLASS",
+    "CASH_DAILY_SHORTAGE",
+    "CASH_DAILY_SURPLUS",
   ],
   OPENING: [
     "OPENING_CUSTOMER",
@@ -348,6 +355,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
   WASTAGE: ["WASTAGE_INVENTORY"],
   CASH_HANDOVER: ["CASH_HANDOVER_TO_TREASURY"],
   CASH_TRANSFER_OUT: [
+    "CASH_HANDOVER_TO_TRANSIT",
     "CASH_DROP_TO_TRANSIT",
     "CASH_TRANSFER_OUT_IN_TRANSIT",
     "INTERBRANCH_CLEARING_OUT",
@@ -355,6 +363,8 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
   CASH_TRANSFER_IN: [
     "CASH_TRANSFER_IN_FROM_TRANSIT",
     "CASH_TRANSFER_IN_FROM_CLEARING",
+    "CASH_CUSTODY_SHORTAGE",
+    "CASH_CUSTODY_SURPLUS",
   ],
   SHIFT_FLOAT_OUT: ["SHIFT_FLOAT_FROM_TREASURY"],
   TREASURY_FUNDING: [
@@ -1574,6 +1584,30 @@ export const PROFILE_POLICIES = Object.freeze({
     ],
     requireRoleComponents: [...CASH_ASSETS, "ROUNDING_DIFF"],
   }),
+  CASH_DAILY_SHORTAGE: profilePolicy(
+    "ADJUST",
+    ["LOSSES"],
+    ["TREASURY_CASH"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES"]),
+      ],
+      requireRoleComponents: ["LOSSES", "TREASURY_CASH"],
+    },
+  ),
+  CASH_DAILY_SURPLUS: profilePolicy(
+    "ADJUST",
+    ["TREASURY_CASH"],
+    ["OTHER_LIABILITY"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["TREASURY_CASH"]),
+      ],
+      requireRoleComponents: ["TREASURY_CASH", "OTHER_LIABILITY"],
+    },
+  ),
   ADJUST_AR: profilePolicy("ADJUST", ["AR"], ["OPENING_EQUITY"], {
     sourceAssertions: [sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["AR"])],
   }),
@@ -2008,6 +2042,16 @@ export const PROFILE_POLICIES = Object.freeze({
       ],
     },
   ),
+  CASH_HANDOVER_TO_TRANSIT: profilePolicy(
+    "CASH_TRANSFER_OUT",
+    ["CASH_IN_TRANSIT"],
+    ["CASH"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["CASH_IN_TRANSIT"]),
+      ],
+    },
+  ),
   CASH_DROP_TO_TRANSIT: profilePolicy(
     "CASH_TRANSFER_OUT",
     ["CASH_IN_TRANSIT"],
@@ -2057,6 +2101,38 @@ export const PROFILE_POLICIES = Object.freeze({
     {
       sourceAssertions: [
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["TREASURY_CASH"]),
+      ],
+    },
+  ),
+  CASH_CUSTODY_SHORTAGE: profilePolicy(
+    "CASH_TRANSFER_IN",
+    ["TREASURY_CASH", "EMPLOYEE_ADVANCES"],
+    ["CASH_IN_TRANSIT"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["TREASURY_CASH"]),
+      ],
+      requireRoleComponents: [
+        "TREASURY_CASH",
+        "EMPLOYEE_ADVANCES",
+        "CASH_IN_TRANSIT",
+      ],
+    },
+  ),
+  CASH_CUSTODY_SURPLUS: profilePolicy(
+    "CASH_TRANSFER_IN",
+    ["TREASURY_CASH"],
+    ["CASH_IN_TRANSIT", "OTHER_LIABILITY"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["TREASURY_CASH"]),
+      ],
+      requireRoleComponents: [
+        "TREASURY_CASH",
+        "CASH_IN_TRANSIT",
+        "OTHER_LIABILITY",
       ],
     },
   ),

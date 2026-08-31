@@ -9,6 +9,7 @@ import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
 import { MATERIALIZED_RECEIPT_STATUS_SQL } from "./cash/cashAvailability";
+import { receiptCashEventAtSql } from "./cash/cashEventAt";
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -17,11 +18,7 @@ function rowsOf(res: unknown): any[] {
 }
 
 // طلب maker-checker يتحقق نقدياً عند اعتماد شخصٍ آخر؛ الحركة الفورية تبقى بتاريخ إنشائها.
-const RECEIPT_CASH_EVENT_AT_SQL = sql`CASE
-  WHEN r.approvedBy IS NOT NULL AND r.approvedBy <> r.createdBy AND r.approvedAt IS NOT NULL
-    THEN r.approvedAt
-  ELSE r.createdAt
-END`;
+const RECEIPT_CASH_EVENT_AT_SQL = receiptCashEventAtSql("r");
 
 const PAY_METHOD_AR: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",

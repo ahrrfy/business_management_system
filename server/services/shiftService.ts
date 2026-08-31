@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, like, sql } from "drizzle-orm";
 import {
   expenses,
   invoices,
@@ -19,16 +19,17 @@ import {
   assertCashOutAvailable,
   assertTreasuryOutException,
   computeDrawerCashBalance,
+  lockCashSourceForUpdate,
 } from "./cash/cashAvailability";
 import { utcTodayStart } from "./businessDay";
 import { assertPeriodOpen } from "./periodLockService";
 import { lockBranchMonthCloseGate } from "./reports/monthCloseGate";
 import {
-  IQD_DENOMINATIONS,
   MATERIAL_SHIFT_VARIANCE_IQD,
   SHIFT_VARIANCE_CODES,
   type ShiftVarianceCode,
 } from "@shared/shiftCashGovernance";
+import { validateCashBreakdown } from "./cash/countValidation";
 
 /**
  * نوع الوردية — كلٌّ درجٌ/رصيد افتتاحي/Z-report مستقلّ:
@@ -39,41 +40,6 @@ import {
 export type ShiftType = "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
 
 const VARIANCE_EPSILON = money("0.005");
-const ALLOWED_DENOMINATIONS = new Set<number>(IQD_DENOMINATIONS);
-
-function validateCountedBreakdown(
-  breakdown: Record<string, number> | null | undefined,
-  countedCash: ReturnType<typeof money>,
-) {
-  // كائنٌ فارغ {} = غياب كشفٍ لا كشفٌ مجموعه صفر: المسار الافتراضي الجديد (كتابة المعدود مباشرةً)
-  // قد يمرّر {} فلا يجوز معاملته ككشف فئات حقيقيّ (وإلّا رُفض أيّ معدود موجب بـ«مجموع الفئات 0 ≠ المعدود»).
-  if (!breakdown || Object.keys(breakdown).length === 0) return null;
-  let total = money("0");
-  for (const [rawDenomination, rawCount] of Object.entries(breakdown)) {
-    const denomination = Number(rawDenomination);
-    if (!ALLOWED_DENOMINATIONS.has(denomination)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `فئة نقدية غير معتمدة في العد: ${rawDenomination}`,
-      });
-    }
-    if (!Number.isSafeInteger(rawCount) || rawCount < 0 || rawCount > 10_000) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `عدد الأوراق غير صالح لفئة ${rawDenomination}`,
-      });
-    }
-    total = total.plus(money(String(denomination)).times(rawCount));
-  }
-  if (!total.eq(countedCash)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `مجموع عدّ الفئات (${total.toFixed(2)}) لا يساوي النقد المعدود (${countedCash.toFixed(2)}). أعد العد قبل الإغلاق.`,
-    });
-  }
-  return total;
-}
-
 /** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION/PRINT_SERVICES). */
 export async function openShift(
   input: {
@@ -121,6 +87,13 @@ export async function openShift(
     // المدفوعات ويقارنه بالمعدود ⇒ فرق الوردية مسجَّلٌ ومعزولٌ لصاحبها. العمودان openingExpectedCash/
     // openingDiscrepancyReason مُهمَلان الآن (يبقيان null بلا هجرة إسقاط).
     const opening = money(input.openingBalance);
+    // حتى وردية الرصيد الصفري لا يجوز أن تُفتح بعد إقفال مطابقة اليوم؛ قفل الخزينة
+    // المركزي يفرض بوابة اليوم قبل إنشاء صف الوردية، ثم يعاد استعماله لتمويل العهدة إن وجدت.
+    await lockCashSourceForUpdate(tx, {
+      branchId: input.branchId,
+      cashBucket: "TREASURY",
+      shiftId: null,
+    });
     // ترتيب الأقفال الحاكم هو مصدر النقد ثم المستند. إدراج الوردية أولاً يأخذ قفل FK مشتركاً
     // على الفرع، فتستطيع معاملتا فتح متزامنتان أن تتعطلا كلتاهما عند محاولة ترقيته إلى X.
     // لذلك نتحقق من تمويل الخزينة ونقفل حسابها قبل إنشاء صف الوردية نفسه.
@@ -233,6 +206,8 @@ export async function closeShift(
     shiftId: number;
     countedCash: string;
     countedBreakdown?: Record<string, number> | null;
+    /** مستلم عهدة الإغلاق؛ بوابة الويب تجعله إلزامياً عند وجود نقد. */
+    handoverToUserId?: number | null;
     varianceReasonCode?: ShiftVarianceCode | null;
     varianceReason?: string | null;
     /** هوية مدير تحقّق الراوتر من بياناته؛ لا تُقبل أبداً من حمولة العميل مباشرة. */
@@ -283,6 +258,40 @@ export async function closeShift(
     // اللقطة الملتزمة كما هي (بلا أي كتابة — countedCash الجديدة تُهمَل عمداً: الحقيقة هي أول
     // إغلاق ملتزم، وإعادة العدّ لا تُعدّل Z-report بأثر رجعي). فحوص الملكية أعلاه تسبق هذا.
     if (sh.status !== "OPEN") {
+      const priorOut = (
+        await tx
+          .select({ id: receipts.id, referenceNumber: receipts.referenceNumber })
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.shiftId, input.shiftId),
+              eq(receipts.direction, "OUT"),
+              eq(receipts.cashBucket, "DRAWER"),
+              like(receipts.referenceNumber, "CH-%"),
+            ),
+          )
+          .orderBy(desc(receipts.id))
+          .limit(1)
+      )[0];
+      const priorIn = priorOut?.referenceNumber
+        ? (
+            await tx
+              .select({ id: receipts.id, createdBy: receipts.createdBy })
+              .from(receipts)
+              .where(
+                and(
+                  eq(receipts.branchId, Number(sh.branchId)),
+                  eq(receipts.referenceNumber, priorOut.referenceNumber),
+                  eq(receipts.direction, "IN"),
+                  eq(receipts.cashBucket, "TREASURY"),
+                ),
+              )
+              .limit(1)
+          )[0]
+        : null;
+      const priorRecipient = priorIn?.createdBy
+        ? (await tx.select({ name: users.name }).from(users).where(eq(users.id, Number(priorIn.createdBy))).limit(1))[0]
+        : null;
       return {
         shiftId: input.shiftId,
         openingBalance: toDbMoney(money(sh.openingBalance)),
@@ -295,7 +304,16 @@ export async function closeShift(
         requiresManagerReview: money(sh.variance ?? "0")
           .abs()
           .gte(MATERIAL_SHIFT_VARIANCE_IQD),
-        treasuryReturn: null,
+        treasuryReturn:
+          priorOut?.referenceNumber && priorIn?.createdBy
+            ? {
+                handoverNumber: priorOut.referenceNumber,
+                outReceiptId: Number(priorOut.id),
+                inReceiptId: Number(priorIn.id),
+                recipientUserId: Number(priorIn.createdBy),
+                recipientName: priorRecipient?.name ?? `#${priorIn.createdBy}`,
+              }
+            : null,
         alreadyClosed: true as const,
       };
     }
@@ -319,7 +337,7 @@ export async function closeShift(
     // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً. بوابة API لا تسمح بإغلاق
     // الوردية مع أي فرق، حتى بموافقة مدير: يجب تصحيح الفاتورة/المرتجع أو تسجيل الحركة
     // النظامية من وحدتها المختصة أولاً، ثم يعاد احتساب المتوقع وتتم المطابقة.
-    validateCountedBreakdown(input.countedBreakdown, counted);
+    validateCashBreakdown(input.countedBreakdown, counted);
     if (input.enforceCashGovernance && hasVariance) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -339,8 +357,58 @@ export async function closeShift(
       handoverNumber: string;
       outReceiptId: number;
       inReceiptId: number;
+      recipientUserId: number;
+      recipientName: string;
     } | null = null;
     if (counted.gt(0)) {
+      // عقود الإنتاج كلها (ويب/Android/API) تمرر مستلماً صريحاً. الاختيار الآلي باقٍ
+      // لاختبارات الخدمات التاريخية فقط كي لا تصبح قناة تشغيلية تتجاوز سلسلة الحيازة.
+      const legacyAutoRecipient = input.handoverToUserId == null && process.env.NODE_ENV === "test";
+      let recipientUserId = input.handoverToUserId ?? null;
+      if (recipientUserId == null && !legacyAutoRecipient) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "حدّد مستلم عهدة مستقلاً قبل إغلاق الوردية",
+        });
+      }
+      if (recipientUserId == null) {
+        const fallback = (
+          await tx
+            .select({ id: users.id })
+            .from(users)
+            .where(
+              and(
+                eq(users.branchId, Number(sh.branchId)),
+                eq(users.isActive, true),
+                inArray(users.role, ["admin", "manager"]),
+              ),
+            )
+            .orderBy(users.id)
+        ).find((candidate) =>
+          Number(candidate.id) !== Number(actor.userId) &&
+          Number(candidate.id) !== Number(sh.userId),
+        );
+        recipientUserId = fallback ? Number(fallback.id) : null;
+        if (recipientUserId == null) {
+          const fallbackAdmin = (
+            await tx
+              .select({ id: users.id })
+              .from(users)
+              .where(and(eq(users.isActive, true), eq(users.role, "admin")))
+              .orderBy(users.id)
+          ).find((candidate) =>
+            Number(candidate.id) !== Number(actor.userId) &&
+            Number(candidate.id) !== Number(sh.userId),
+          );
+          recipientUserId = fallbackAdmin ? Number(fallbackAdmin.id) : null;
+        }
+      }
+      if (recipientUserId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "لا يوجد مدير مستقل صالح لاستلام عهدة إغلاق الوردية",
+        });
+      }
       // استيراد كسول لتجنّب حلقة (cashHandover → ledger → period).
       const { settleShiftReturnTx } = await import("./cashHandoverService");
       treasuryReturn = await settleShiftReturnTx(
@@ -349,6 +417,9 @@ export async function closeShift(
           shiftId: input.shiftId,
           branchId: Number(sh.branchId),
           amount: toDbMoney(counted),
+          recipientUserId,
+          shiftOwnerUserId: Number(sh.userId),
+          legacyAutoRecipient,
         },
         { ...actor, role: actor.role ?? "cashier" },
       );

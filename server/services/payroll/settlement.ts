@@ -16,6 +16,7 @@ import { extractInsertId } from "../../lib/insertId";
 import {
   assertApprovedTreasuryOutAvailable,
   authorizeExternalTreasuryDisbursement,
+  lockMaterializedCashReceiptSourceForWrite,
 } from "../cash/cashAvailability";
 import { baghdadToday } from "../businessDay";
 import { money, round2, toDateStr, toDbMoney } from "../money";
@@ -435,6 +436,36 @@ export async function returnSalaryPayment(
     });
   }
   return withTx(async (tx) => {
+    const [returnPreview] = await tx
+      .select({ id: payrollAccountingEvents.id })
+      .from(payrollAccountingEvents)
+      .where(eq(payrollAccountingEvents.reversalOfId, input.accountingEventId))
+      .limit(1);
+    const [cashPreview] = await tx
+      .select({
+        paymentMethod: receipts.paymentMethod,
+        branchId: payrollObligations.branchIdSnapshot,
+      })
+      .from(payrollAccountingEvents)
+      .innerJoin(receipts, eq(payrollAccountingEvents.receiptId, receipts.id))
+      .innerJoin(
+        payrollObligations,
+        eq(payrollAccountingEvents.obligationId, payrollObligations.id),
+      )
+      .where(eq(payrollAccountingEvents.id, input.accountingEventId))
+      .limit(1);
+    let prelockedCashBranchId: number | null = null;
+    if (!returnPreview && cashPreview?.paymentMethod === "CASH") {
+      prelockedCashBranchId = Number(cashPreview.branchId);
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: prelockedCashBranchId,
+        shiftId: null,
+        cashBucket: "TREASURY",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
+    }
     const [original] = await tx
       .select({
         event: payrollAccountingEvents,
@@ -465,6 +496,16 @@ export async function returnSalaryPayment(
       "إعادة راتب مدفوع",
     );
     const method = supportedReceiptMethod(original.receipt.paymentMethod);
+    if (
+      method === "CASH" &&
+      prelockedCashBranchId !== Number(original.obligation.branchIdSnapshot) &&
+      !returnPreview
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تغيّر مصدر إعادة الراتب أثناء قفل النقد؛ أعد المحاولة.",
+      });
+    }
     const referenceNumber = assertPayrollPaymentEvidence(
       method,
       input.referenceNumber ?? original.receipt.referenceNumber,

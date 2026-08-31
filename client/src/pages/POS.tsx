@@ -4,6 +4,7 @@
  */
 import CustomerPicker from "@/components/CustomerPicker";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
+import { ShiftHandoverSection } from "@/components/pos/ShiftHandoverSection";
 import {
   discardLegacyPosDrafts,
   loadPosTabsDraft,
@@ -16,7 +17,7 @@ import { variantDisplayName } from "@shared/variantDisplay";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
-import { D, roundCashIQD, round2 } from "@/lib/money";
+import { D, formatIqd, roundCashIQD, round2 } from "@/lib/money";
 import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, printShiftClose, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -3384,6 +3385,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
   const [countEntered, setCountEntered] = useState(false);
+  const [handoverToUserId, setHandoverToUserId] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
   // ش٤ أوفلاين — حارس الطابور: إغلاق الوردية وثمة مبيعات غير مُزامنة يترك نقداً في الدرج بلا
@@ -3430,7 +3432,20 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
         expectedCash: r.expectedCash,
         countedCash:  r.countedCash,
         variance:     r.variance,
+        cashHandover: r.treasuryReturn
+          ? {
+              amount: r.countedCash,
+              referenceNumber: r.treasuryReturn.handoverNumber,
+              recipientName: r.treasuryReturn.recipientName,
+            }
+          : null,
       });
+      if (r.treasuryReturn) {
+        notify.ok(
+          `سلّم ${formatIqd(r.countedCash)} إلى ${r.treasuryReturn.recipientName}`,
+          `العهدة ${r.treasuryReturn.handoverNumber} بانتظار العدّ والقبول في الخزينة.`,
+        );
+      }
       await utils.shifts.current.invalidate();
       onClosed();
     },
@@ -3552,11 +3567,13 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             )}
 
-            {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق
-                (drawer→0) — لا اختيار مستلِم. الوردية التالية تبدأ بعهدةٍ جديدة تُسحَب من الخزينة. */}
-            <div style={{ marginTop: 14, padding: "10px 12px", background: C.muted, border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 12.5, color: C.mutedFg }}>
-              يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق (تسليمٌ كامل). الوردية التالية تبدأ بعهدةٍ جديدة من الخزينة.
-            </div>
+            <ShiftHandoverSection
+              branchId={branchId}
+              amount={counted}
+              value={handoverToUserId}
+              onChange={setHandoverToUserId}
+              disabled={closeShift.isPending}
+            />
 
             {/* ش٤ أوفلاين: لا مصدر مالي قبل ترحيل الفاتورة، لذلك لا يوجد تجاوز للإغلاق. */}
             {outboxQueued.count > 0 && (
@@ -3579,10 +3596,11 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 إلغاء
               </button>
               <button
-                disabled={!counted || closeShift.isPending || closeBlocked || hasVariance}
+                disabled={!counted || closeShift.isPending || closeBlocked || hasVariance || (countedD?.gt(0) && handoverToUserId == null)}
                 onClick={() => shift && closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
+                  handoverToUserId,
                 })}
                 style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || hasVariance ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || hasVariance ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || hasVariance ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
                 {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}

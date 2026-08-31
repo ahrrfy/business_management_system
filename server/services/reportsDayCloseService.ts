@@ -11,7 +11,7 @@
 //   إنها نقلٌ للنقد المعدود إلى الخزينة الإدارية **بعد** العدّ (closeShift يحسب expected أولاً ثم
 //   يُنشئ سند التسليم — راجع shiftService.closeShift: computeExpectedCash يسبق createHandover).
 //   طرحُها من المتوقَّع بينما «المعدود» هو الدرج الكامل قبل التسليم = فائضٌ وهميٌّ بمقدار التسليم.
-//   لذا تُعرَض منفصلةً («سُلّم للخزينة») مع «المتبقّي في الدرج» = المعدود − التسليمات.
+//   لذا تُعرَض منفصلةً («خرج إلى العهدة») مع «المتبقّي في الدرج» = المعدود − التسليمات.
 //
 // النقد فقط: paymentMethod='CASH' وcashBucket='DRAWER' (تُستبعَد البطاقة/التحويل والخزينة الإدارية).
 // لا فلتر receiptStatus — العكوس تُصافَر بإيصالٍ تعويضيّ IN (مطابقةً حرفيةً لـcomputeExpectedCash).
@@ -22,11 +22,16 @@
 // السحب النقديّ أثناء الوردية (cash drop, referenceNumber LIKE 'CD-%' — cashDropService): يقع
 //   **أثناء** الوردية فيُدرَج في computeExpectedCash (يُنقِص المتوقَّع) والنقد المعدود يُنقِص بالمثل ⇒
 //   الفرق لا يتأثّر. يُصنَّف في دلو cashDrops (ضمن الخارج التشغيليّ)، خلافاً لتسليم الإغلاق CH.
-import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
-import { branches, expenses, receipts, shifts, users } from "../../drizzle/schema";
+import { and, eq, gte, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
+import { branches, cashCustodyCounts, expenses, receipts, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { utcDayRange } from "./businessDay";
 import { materializedDrawerCashConditions } from "./cash/cashAvailability";
+import {
+  isPotentialCashCustodyRecipient,
+  type CashCustodyVisibilityActor,
+} from "./cash/custodyBlindCount";
 import { money, toDbMoney } from "./money";
 
 /** سطر مطابقة وردية واحدة. كل الحقول المالية نصّية decimal(15,2). */
@@ -53,7 +58,7 @@ export interface DayCloseShiftLine {
   otherOut: string;         // مصروفات أخرى — الباقي التشغيليّ
   operatingOut: string;     // = returnsCash + expensesCash + otherOut = cashOut − handoversCash
   // ── تسليم الخزينة (لا يؤثّر على المتوقَّع — يُعرَض منفصلاً) ──
-  handoversCash: string;    // سُلّم للخزينة الإدارية (CH-…)
+  handoversCash: string;    // خرج من الدرج إلى عهدة إغلاق (CH-…)؛ لا يعني أن الخزينة قبلته
   cashDrops: string;        // خطاف شريحة لاحقة (السحب أثناء الوردية) — صفر حالياً
   // ── المطابقة ──
   expected: string;         // opening + cashIn − operatingOut  (== storedExpectedCash)
@@ -90,6 +95,8 @@ export interface DayCloseReconciliationResult {
   date: string;
   branchId: number | null;
   shifts: DayCloseShiftLine[];
+  /** ورديات محجوبة عن مستلم محتمل حتى يثبّت أول عدّ أعمى للعهدة. */
+  withheldBlindCountShiftCount: number;
   totals: DayCloseTotals;
   balancedCount: number; // ورديات مغلقة فرقها = صفر
   driftCount: number;    // ورديات مغلقة فرقها ≠ صفر
@@ -130,6 +137,7 @@ interface ReceiptAgg {
 export async function getDayCloseReconciliation(opts: {
   date: string;
   branchId?: number;
+  actor?: CashCustodyVisibilityActor;
 }): Promise<DayCloseReconciliationResult> {
   const emptyTotals: DayCloseTotals = {
     shiftCount: 0, openCount: 0, closedCount: 0,
@@ -142,6 +150,7 @@ export async function getDayCloseReconciliation(opts: {
     date: opts.date,
     branchId: opts.branchId ?? null,
     shifts: [],
+    withheldBlindCountShiftCount: 0,
     totals: emptyTotals,
     balancedCount: 0, driftCount: 0, overCount: 0, shortCount: 0,
     receptionExtras: { fundedDrafts: { count: 0, heldNet: "0.00" }, discountByUser: [] },
@@ -180,7 +189,77 @@ export async function getDayCloseReconciliation(opts: {
 
   if (shiftRows.length === 0) return base;
 
-  const shiftIds = shiftRows.map((r) => Number(r.shiftId));
+  const allShiftIds = shiftRows.map((r) => Number(r.shiftId));
+  const protectedShiftIds = new Set<number>();
+  if (opts.actor) {
+    const sourceReceipt = alias(receipts, "blindCountSourceReceipt");
+    const pendingReceipt = alias(receipts, "blindCountPendingReceipt");
+    const firstCount = alias(cashCustodyCounts, "blindCountFirstCount");
+    const sourceShift = alias(shifts, "blindCountSourceShift");
+    const pendingBlindRows = await db
+      .select({
+        shiftId: sourceReceipt.shiftId,
+        branchId: sourceReceipt.branchId,
+        handedOverByUserId: sourceReceipt.createdBy,
+        shiftOwnerUserId: sourceShift.userId,
+      })
+      .from(sourceReceipt)
+      .innerJoin(
+        pendingReceipt,
+        and(
+          eq(pendingReceipt.branchId, sourceReceipt.branchId),
+          eq(pendingReceipt.referenceNumber, sourceReceipt.referenceNumber),
+          eq(pendingReceipt.direction, "IN"),
+          eq(pendingReceipt.paymentMethod, "CASH"),
+          eq(pendingReceipt.cashBucket, "TREASURY"),
+          eq(pendingReceipt.status, "PENDING"),
+          eq(pendingReceipt.approvalStatus, "APPROVED"),
+        ),
+      )
+      .leftJoin(firstCount, eq(firstCount.treasuryReceiptId, pendingReceipt.id))
+      .leftJoin(sourceShift, eq(sourceShift.id, sourceReceipt.shiftId))
+      .where(
+        and(
+          inArray(sourceReceipt.shiftId, allShiftIds),
+          eq(sourceReceipt.direction, "OUT"),
+          eq(sourceReceipt.paymentMethod, "CASH"),
+          eq(sourceReceipt.cashBucket, "DRAWER"),
+          eq(sourceReceipt.status, "COMPLETED"),
+          eq(sourceReceipt.approvalStatus, "APPROVED"),
+          or(
+            like(sourceReceipt.referenceNumber, "CH-%"),
+            like(sourceReceipt.referenceNumber, "CD-%"),
+          ),
+          isNull(firstCount.id),
+        ),
+      );
+
+    for (const row of pendingBlindRows) {
+      if (
+        row.shiftId != null &&
+        isPotentialCashCustodyRecipient(opts.actor, {
+          branchId: row.branchId == null ? null : Number(row.branchId),
+          handedOverByUserId:
+            row.handedOverByUserId == null ? null : Number(row.handedOverByUserId),
+          shiftOwnerUserId:
+            row.shiftOwnerUserId == null ? null : Number(row.shiftOwnerUserId),
+        })
+      ) {
+        protectedShiftIds.add(Number(row.shiftId));
+      }
+    }
+  }
+
+  // لا نعيد صفاً ناقصاً يمكن جمع أجزائه لاستنتاج المبلغ؛ نحجب الوردية ومساهمتها
+  // في المجاميع كاملةً حتى أول عد، ونصرّح فقط بعدد الصفوف المحجوبة بلا معرّفات.
+  const visibleShiftRows = shiftRows.filter(
+    (row) => !protectedShiftIds.has(Number(row.shiftId)),
+  );
+  const withheldBlindCountShiftCount = shiftRows.length - visibleShiftRows.length;
+  if (visibleShiftRows.length === 0) {
+    return { ...base, withheldBlindCountShiftCount };
+  }
+  const shiftIds = visibleShiftRows.map((r) => Number(r.shiftId));
 
   // تفكيك مقبوضات/مدفوعات الدرج النقدية لكل وردية عبر SUM(CASE …). البِنى متنافية بالإنشاء:
   //   • تسليم الخزينة يحمل referenceNumber='CH-…' وبلا voucherNumber/expense/invoiceId ⇒ دلوُه وحده.
@@ -224,7 +303,7 @@ export async function getDayCloseReconciliation(opts: {
   let tHandovers = money(0), tCashDrops = money(0), tExpected = money(0), tCounted = money(0), tDrift = money(0), tRetained = money(0);
   let openCount = 0, closedCount = 0, balancedCount = 0, driftCount = 0, overCount = 0, shortCount = 0;
 
-  const lines: DayCloseShiftLine[] = shiftRows.map((sh) => {
+  const lines: DayCloseShiftLine[] = visibleShiftRows.map((sh) => {
     const agg = aggByShift.get(Number(sh.shiftId));
     const opening = money(sh.opening);
     const cashIn = money(agg?.cashIn ?? 0);
@@ -368,6 +447,7 @@ export async function getDayCloseReconciliation(opts: {
     date: opts.date,
     branchId: opts.branchId ?? null,
     shifts: lines,
+    withheldBlindCountShiftCount,
     receptionExtras: {
       fundedDrafts: {
         count: Number(fundedRow?.c ?? 0),

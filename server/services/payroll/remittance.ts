@@ -16,6 +16,7 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import {
   assertApprovedTreasuryOutAvailable,
   authorizeExternalTreasuryDisbursement,
+  lockMaterializedCashReceiptSourceForWrite,
 } from "../cash/cashAvailability";
 import { baghdadToday } from "../businessDay";
 import { money, round2, toDateStr, toDbMoney } from "../money";
@@ -563,6 +564,34 @@ export async function returnRemittance(
   }
   const ymd = paymentDate(input?.returnedAt);
   return withTx(async (tx) => {
+    const [requestPreview] = await tx
+      .select({
+        status: payrollRemittanceRequests.status,
+        payingBranchId: payrollRemittanceRequests.payingBranchId,
+        receiptId: payrollRemittanceRequests.receiptId,
+      })
+      .from(payrollRemittanceRequests)
+      .where(eq(payrollRemittanceRequests.id, requestId))
+      .limit(1);
+    let prelockedCashReceiptId: number | null = null;
+    if (requestPreview?.status === "PAID" && requestPreview.receiptId != null) {
+      const [receiptPreview] = await tx
+        .select({ paymentMethod: receipts.paymentMethod })
+        .from(receipts)
+        .where(eq(receipts.id, Number(requestPreview.receiptId)))
+        .limit(1);
+      if (receiptPreview?.paymentMethod === "CASH") {
+        prelockedCashReceiptId = Number(requestPreview.receiptId);
+        await lockMaterializedCashReceiptSourceForWrite(tx, {
+          branchId: Number(requestPreview.payingBranchId),
+          shiftId: null,
+          cashBucket: "TREASURY",
+          paymentMethod: "CASH",
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+        });
+      }
+    }
     const [request] = await tx
       .select()
       .from(payrollRemittanceRequests)
@@ -653,6 +682,12 @@ export async function returnRemittance(
     const method = originalReceipt.paymentMethod as PayrollPaymentMethod;
     if (!["CASH", "CARD", "TRANSFER", "WALLET"].includes(method)) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "طريقة التحويل الأصلية غير مدعومة للإعادة." });
+    }
+    if (method === "CASH" && prelockedCashReceiptId !== Number(request.receiptId)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تغيّر مصدر إعادة التحويل أثناء قفل النقد؛ أعد المحاولة.",
+      });
     }
     const referenceNumber = payrollRemittancePaymentReference(method, input?.referenceNumber ?? originalReceipt.referenceNumber);
     const amount = money(request.requestedAmount);

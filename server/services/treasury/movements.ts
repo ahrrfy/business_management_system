@@ -3,6 +3,8 @@ import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
+import { receiptCashEventAtSql } from "../cash/cashEventAt";
+import { isPotentialCashCustodyRecipient } from "../cash/custodyBlindCount";
 import { PAY_METHOD_AR, isCashier, rowsOf } from "./helpers";
 
 export interface MovementRow {
@@ -53,7 +55,12 @@ export async function getRecentMovements(
     to?: string;
     offset?: number;
   },
-  scope: { scopedBranchId: number | null; role: string; userId?: number },
+  scope: {
+    scopedBranchId: number | null;
+    role: string;
+    userId?: number;
+    actorBranchId?: number | null;
+  },
 ): Promise<MovementRow[]> {
   const db = getDb();
   if (!db) return [];
@@ -71,16 +78,12 @@ export async function getRecentMovements(
     effectiveBranch != null ? sql`AND e.branchId = ${effectiveBranch}` : sql``;
   // زمن الحركة النقدية = approvedAt لطلبات اعتماد فصل المهام، وcreatedAt للحركات الفورية.
   // طلب D1 اعتُمِد D2 يجب أن يظهر في D2، لا بأثر رجعي في يوم إنشائه.
-  const receiptCashEventAtSql = sql`CASE
-    WHEN r.approvedBy IS NOT NULL AND r.approvedBy <> r.createdBy AND r.approvedAt IS NOT NULL
-      THEN r.approvedAt
-    ELSE r.createdAt
-  END`;
+  const receiptCashEventAt = receiptCashEventAtSql("r");
   const fromFilterR = input.from
-    ? sql`AND ${receiptCashEventAtSql} >= ${input.from}`
+    ? sql`AND ${receiptCashEventAt} >= ${input.from}`
     : sql``;
   const toFilterR = input.to
-    ? sql`AND ${receiptCashEventAtSql} < DATE_ADD(${input.to}, INTERVAL 1 DAY)`
+    ? sql`AND ${receiptCashEventAt} < DATE_ADD(${input.to}, INTERVAL 1 DAY)`
     : sql``;
   const fromFilterE = input.from
     ? sql`AND e.createdAt >= ${input.from}`
@@ -104,6 +107,52 @@ export async function getRecentMovements(
     : sql``;
   const ownShiftE = isolateCashier
     ? sql`AND e.shiftId IN (SELECT s.id FROM shifts s WHERE s.userId = ${scope.userId})`
+    : sql``;
+
+  // العد الأعمى P1: سند OUT المكتمل يحمل المبلغ نفسه والمرجع/الوردية اللذين يراهما
+  // المستلم في طابور العهدة. لذلك إخفاء سند IN المعلّق وحده لا يكفي؛ يمكن ربط الصفين
+  // فوراً. نستبعد سند المصدر نفسه من سجل الحركات لكل مدير/إداري صالح للاستلام في الفرع
+  // إلى أن يُثبَّت أول cashCustodyCount (MATCHED أو VARIANCE_OPEN).
+  const protectBlindCount =
+    scope.userId != null &&
+    isPotentialCashCustodyRecipient(
+      {
+        userId: scope.userId,
+        role: scope.role,
+        branchId: scope.actorBranchId ?? null,
+      },
+      {
+        branchId: scope.actorBranchId ?? null,
+        handedOverByUserId: null,
+        shiftOwnerUserId: null,
+      },
+    );
+  const blindCountFilterR = protectBlindCount
+    ? sql`AND NOT (
+        r.direction = 'OUT'
+        AND r.paymentMethod = 'CASH'
+        AND r.cashBucket = 'DRAWER'
+        AND (r.referenceNumber LIKE 'CH-%' OR r.referenceNumber LIKE 'CD-%')
+        AND r.branchId = ${scope.actorBranchId}
+        AND (r.createdBy IS NULL OR r.createdBy <> ${scope.userId})
+        AND (s.userId IS NULL OR s.userId <> ${scope.userId})
+        AND EXISTS (
+          SELECT 1
+          FROM receipts pendingCustody
+          WHERE pendingCustody.branchId = r.branchId
+            AND pendingCustody.referenceNumber = r.referenceNumber
+            AND pendingCustody.direction = 'IN'
+            AND pendingCustody.paymentMethod = 'CASH'
+            AND pendingCustody.cashBucket = 'TREASURY'
+            AND pendingCustody.receiptStatus = 'PENDING'
+            AND pendingCustody.receiptApprovalStatus = 'APPROVED'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM cashCustodyCounts firstCount
+              WHERE firstCount.treasuryReceiptId = pendingCustody.id
+            )
+        )
+      )`
     : sql``;
 
   const rows = rowsOf(
@@ -148,7 +197,7 @@ export async function getRecentMovements(
           ex.costCenter AS costCenter,
           (SELECT ae.id FROM accountingEntries ae WHERE ae.receiptId = r.id ORDER BY ae.id DESC LIMIT 1) AS ledgerEntryId,
           COALESCE(ex.expenseDate, r.voucherDate, DATE(r.createdAt)) AS documentDate,
-          ${receiptCashEventAtSql} AS createdAt
+          ${receiptCashEventAt} AS createdAt
         FROM receipts r
         LEFT JOIN branches b ON b.id = r.branchId
         LEFT JOIN expenses ex ON ex.receiptId = r.id
@@ -165,6 +214,7 @@ export async function getRecentMovements(
           ${toFilterR}
           ${bucketFilterR}
           ${ownShiftR}
+          ${blindCountFilterR}
       )
       UNION ALL
       (

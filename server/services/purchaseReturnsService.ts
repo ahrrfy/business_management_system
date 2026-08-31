@@ -31,9 +31,12 @@ import { lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { extractAffectedRows, extractInsertId } from "../lib/insertId";
 import { paymentAssetRole } from "./sale/paymentPosting";
-import { purchaseCashSettlementUsesClearingTx } from "./purchase/internal";
+import {
+  assertPurchaseBranch,
+  purchaseCashSettlementUsesClearingTx,
+} from "./purchase/internal";
 
-type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 
 export function refundablePurchaseCash(returned: Decimal, paid: Decimal, priorRefunded: Decimal): Decimal {
   const available = Decimal.max(new Decimal(0), paid.minus(priorRefunded));
@@ -53,7 +56,8 @@ export interface CreatePurchaseReturnInput {
   purchaseOrderRefId: number;
   items: PurchaseReturnLineInput[];
   reason?: string | null;
-  paymentMethod?: PaymentMethod; // CASH = استرداد فوري؛ غيره = خصم من ذمم المورد فقط
+  /** طريقة الإثبات؛ الاسترداد الفوري يقبل CASH فقط، وCREDIT لا ينشئ إيصالاً. */
+  paymentMethod?: PaymentMethod;
   /** افتراضياً CREDIT (خصم من الرصيد المقابل). CASH ⇒ يُسجَّل receipt IN للاسترداد */
   settlement?: "CASH" | "CREDIT";
 }
@@ -89,6 +93,27 @@ function purchaseReturnFingerprint(input: CreatePurchaseReturnInput): string {
  *  - idempotency على clientRequestId عبر تخزينه في accountingEntries.notes (مفتاح فريد منطقي).
  */
 export async function createPurchaseReturn(input: CreatePurchaseReturnInput, actor: Actor) {
+  if (
+    input.paymentMethod != null &&
+    !["CASH", "CARD", "TRANSFER", "WALLET"].includes(
+      String(input.paymentMethod),
+    )
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "الصكوك غير مدعومة في تسوية مرتجع الشراء",
+    });
+  }
+  if (
+    !Number.isSafeInteger(input.purchaseOrderRefId) ||
+    input.purchaseOrderRefId <= 0
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "مرتجع الشراء يتطلب أمر شراء مرجعياً مثبتاً واستلاماً صالحاً؛ اختر الأمر من شاشة المرتجع",
+    });
+  }
   if (!input.items.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مرتجع المشتريات بلا أصناف" });
   }
@@ -134,7 +159,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       });
     }
 
-    // إن وُجد أمر شراء مرجعي ⇒ تحقّق ملكية المورد/الفرع + سقف الكميّات.
+    // أمر الشراء المرجعي إلزامي: نُثبّت عزل الفاعل وملكية المورد/الفرع وسقف الكميّات.
     let refPo: typeof purchaseOrders.$inferSelect | undefined;
     let refItems: (typeof purchaseOrderItems.$inferSelect)[] = [];
     const r = await tx
@@ -145,6 +170,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       .limit(1);
     refPo = r[0];
     if (!refPo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء المرجعي غير موجود" });
+    assertPurchaseBranch(refPo, actor);
     if (!(["CONFIRMED", "RECEIVED"] as const).includes(refPo.status as "CONFIRMED" | "RECEIVED")) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُرجع إلا من أمر شراء مثبت ومستلم كلياً أو جزئياً" });
     }
@@ -310,8 +336,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     const returnedNet = round2(sumMoney(work.map((w) => w.lineTotal.toFixed(2))));
     const returnedInventoryBook = round2(sumMoney(work.map((w) => w.bookCostPerBase.times(w.baseQuantity).toFixed(2))));
     const purchasePriceVariance = round2(returnedInventoryBook.minus(returnedNet));
-    // المرتجع المرجعي يرث نسبة ضريبة أمر الشراء؛ لا نسمح بإنشاء نسبة جديدة في المرتجع.
-    // المرتجع غير المرجعي يبقى بلا ضريبة لغياب مستند أصل يمكن تدقيقه.
+    // المرتجع يرث نسبة ضريبة أمر الشراء المرجعي؛ لا نسمح بإنشاء نسبة جديدة في المرتجع.
     const returnedTax = refPo
       ? round2(returnedNet.times(money(refPo.taxRatePercent ?? "0")).dividedBy(100))
       : new Decimal(0);

@@ -1,6 +1,6 @@
 // عقد الشراء المشترك (أمر الشراء/الاستلام/تسديد فاتورة الدولار).
 
-type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 export type PurchaseSettlementType = "CASH" | "CREDIT";
 
 export interface PurchaseLineInput {
@@ -94,7 +94,7 @@ export interface ReceivePurchaseInput {
    * عن `payment` أعلاه (تلك دفعةٌ للمورّد، وهذه دفعةٌ لشركة النقل).
    */
   shippingPaymentMethod?: PaymentMethod | null;
-  /** مرجع أداة تسوية الشحن؛ إلزامي للتحويل والصك ويُحفظ في السند المالي. */
+  /** مرجع أداة تسوية الشحن؛ إلزامي للتحويل ويُحفظ في السند المالي. */
   shippingPaymentReference?: string | null;
   /** آخر أربعة أرقام للبطاقة عند اختيار CARD. */
   shippingCardLastFour?: string | null;

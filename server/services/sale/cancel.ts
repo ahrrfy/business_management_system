@@ -57,6 +57,7 @@ import { withTx, type Actor } from "../tx";
 import { userNameSnapshot } from "../userSnapshot";
 import { nextVoucherNumber } from "../voucher/helpers";
 import { classifyGiftPosting } from "./giftPosting";
+import { assertInvoiceCancellationDeliverySafeTx } from "./invoiceCancellationGuard";
 import { paymentAssetRole } from "./paymentPosting";
 
 // ملاحظة: EXCHANGE ممنوع (مسار الصيرفة له خدمة مخصّصة كما في voucherService)، وWALLET/CHECK/
@@ -167,6 +168,13 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         shiftId: prelockedCashSource.shiftId,
       });
     }
+
+    // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. الحارس لا يكتفي
+    // بوسم CANCELLED: يثبت أيضاً انعدام الحيازة وCOD والتسوية المفتوحة تحت الأقفال نفسها.
+    await assertInvoiceCancellationDeliverySafeTx(tx, {
+      invoiceId: input.invoiceId,
+      expectedBranchId: Number(invPreview.branchId),
+    });
 
     // ═══ ١) قراءة الفاتورة تحت FOR UPDATE + الحراس ═══
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);

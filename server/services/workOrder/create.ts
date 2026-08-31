@@ -22,6 +22,7 @@ import { nextWorkOrderNumber } from "./helpers";
 import type { CreateWorkOrderInput } from "./types";
 import type { Tx } from "../../db";
 import { paymentAssetRole } from "../sale/paymentPosting";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 
 async function requireLockedReceptionShift(
   tx: Tx,
@@ -201,6 +202,14 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       const shiftId = depositMethod === "CASH"
         ? await requireLockedReceptionShift(tx, actor, input.branchId, basketShiftId, "قبض عربون نقدي")
         : basketShiftId;
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: input.branchId,
+        shiftId,
+        cashBucket: depositMethod === "CASH" ? "DRAWER" : null,
+        paymentMethod: depositMethod,
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
       const dRes = await tx.insert(receipts).values({
         branchId: input.branchId,
         shiftId,
@@ -258,6 +267,14 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         basketShiftId,
         "قبض أجرة توصيل نقداً",
       );
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: input.branchId,
+        shiftId: feeShiftId,
+        cashBucket: "DRAWER",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
       const feeRes = await tx.insert(receipts).values({
         branchId: input.branchId,
         shiftId: feeShiftId,

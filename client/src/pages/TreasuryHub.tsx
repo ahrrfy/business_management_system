@@ -7,12 +7,14 @@ import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 
 const Treasury = lazy(() => import("@/pages/Treasury"));
+const DayCloseReport = lazy(() => import("@/pages/DayCloseReport"));
 const TreasuryTransfers = lazy(() => import("@/pages/TreasuryTransfers"));
 const Expenses = lazy(() => import("@/pages/Expenses"));
 const ExpenseCategories = lazy(() => import("@/pages/ExpenseCategories"));
 const Vouchers = lazy(() => import("@/pages/Vouchers"));
 const VoucherCategories = lazy(() => import("@/pages/VoucherCategories"));
 const Shifts = lazy(() => import("@/pages/Shifts"));
+const CashVarianceResolutionPanel = lazy(() => import("@/components/treasury/CashVarianceResolutionPanel"));
 
 // بوّابات التبويبات = مرآة بوّابات الخادم لاستعلامات كل صفحة (server/trpc.ts + الراوترات):
 //  - اللوحة/الورديات: requireModule("treasury","READ") ⇒ الأدوار التي قالبها treasury≥READ + منح صريح.
@@ -21,6 +23,8 @@ const Shifts = lazy(() => import("@/pages/Shifts"));
 //  - المصروفات: expensesReadProcedure = requireModule("expenses","READ") (أمين المخزن expenses=NONE).
 const TABS: HubTab[] = [
   { value: "dashboard", label: "لوحة الخزينة", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury" }, Component: Treasury },
+  { value: "daily-reconciliation", label: "المطابقة اليومية", gate: { roles: ["admin", "manager", "accountant", "auditor"], module: "reports" }, Component: DayCloseReport },
+  { value: "cash-variance", label: "فروقات النقد", gate: { roles: ["admin", "manager", "accountant"], module: "treasury" }, Component: CashVarianceResolutionPanel },
   { value: "transfers", label: "تحويلات نقدية", gate: { roles: ["manager", "accountant"], module: "treasury" }, Component: TreasuryTransfers },
   { value: "expenses", label: "المصروفات", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "expenses" }, Component: Expenses },
   // فئات المصروفات: إدارة (مدير/محاسب) — الكاشير يُنشئ مصروفاً ويقرأ المنتقي لكنه لا يديره.

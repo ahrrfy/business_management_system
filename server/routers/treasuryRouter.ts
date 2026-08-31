@@ -17,17 +17,94 @@ import {
   reassignPendingTreasuryReceipt,
 } from "../services/treasuryService";
 import { fundTreasury } from "../services/treasuryFundingService";
+import {
+  closeDailyCashReconciliation,
+  getDailyCashReconciliation,
+  recordDailyTreasuryCount,
+  reopenDailyCashReconciliation,
+} from "../services/cashDailyReconciliationService";
 import { logAudit } from "../services/auditService";
 import { retryOnDup } from "../lib/retryDup";
-import { branchScopedProcedure, managerBranchScopedProcedure, requireModule, router, treasuryManagerProcedure } from "../trpc";
+import { cashVarianceRouter } from "./cashVarianceRouter";
+import { branchScopedProcedure, managerBranchScopedProcedure, reportViewerProcedure, requireModule, router, treasuryManagerProcedure } from "../trpc";
 
 const periodEnum = z.enum(["today", "yesterday", "week", "month"]);
+const businessDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
+const cashBreakdownSchema = z.record(z.string(), z.number().int().min(0).max(10_000));
 
 // إنفاذ وحدة «الخزينة» (treasury) فَوق عَزل الفرع: قراءة. الكاشير (treasury=READ) يَصل ويَرى
 // دَرْجه فقط (getDashboard يُمرّر الدور)؛ أدوار غَير مالية (مخزن/مشتريات…) = NONE ⇒ تُحجَب فِعلياً.
 const treasuryRead = branchScopedProcedure.use(requireModule("treasury", "READ"));
+const treasuryDailyRead = reportViewerProcedure.use(requireModule("treasury", "READ"));
 
 export const treasuryRouter = router({
+  cashVariance: cashVarianceRouter,
+  // الرصيد الفعلي/النظامي للخزينة معلومة حساسة؛ لا يقرأها الكاشير حتى لو كان
+  // treasury=READ لاحتياج الوردية. القراءة لمشاهدي التقارير الماليين فقط، وتشمل المراجع.
+  dailyCashReconciliation: treasuryDailyRead
+    .input(z.object({ branchId: z.number().int().positive(), businessDate: businessDateSchema }))
+    .query(({ input, ctx }) =>
+      getDailyCashReconciliation(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+        role: ctx.user.role,
+      }),
+    ),
+
+  recordDailyTreasuryCount: treasuryManagerProcedure
+    .input(z.object({
+      branchId: z.number().int().positive(),
+      businessDate: businessDateSchema,
+      countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود غير صالح"),
+      countedBreakdown: cashBreakdownSchema,
+      notes: z.string().max(500).nullish(),
+      expectedVersion: z.number().int().min(0),
+      clientRequestId: z.string().min(1).max(64),
+    }))
+    .mutation(({ input, ctx }) =>
+      recordDailyTreasuryCount(
+        input,
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+          role: ctx.user.role,
+        },
+        ctx,
+      ),
+    ),
+
+  closeDailyCashReconciliation: treasuryManagerProcedure
+    .input(z.object({
+      reconciliationId: z.number().int().positive(),
+      expectedVersion: z.number().int().positive(),
+      clientRequestId: z.string().min(1).max(64),
+    }))
+    .mutation(({ input, ctx }) =>
+      closeDailyCashReconciliation(
+        input,
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+          role: ctx.user.role,
+        },
+        ctx,
+      ),
+    ),
+
+  reopenDailyCashReconciliation: treasuryManagerProcedure
+    .input(z.object({ reconciliationId: z.number().int().positive(), reason: z.string().trim().min(10).max(500) }))
+    .mutation(({ input, ctx }) =>
+      reopenDailyCashReconciliation(
+        input,
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+          role: ctx.user.role,
+        },
+        ctx,
+      ),
+    ),
+
   /** عقود تسليم النقد المعلقة المسندة للمستخدم الحالي وحده. */
   pendingHandoverReceipts: treasuryRead.query(async ({ ctx }) => {
     return listMyPendingTreasuryReceipts({
@@ -67,7 +144,12 @@ export const treasuryRouter = router({
 
   /** قبول صريح من المستلم نفسه؛ بعده فقط يصبح النقد جزءاً من رصيد الخزينة. */
   acceptHandoverReceipt: treasuryRead
-    .input(z.object({ receiptId: z.number().int().positive() }))
+    .input(z.object({
+      receiptId: z.number().int().positive(),
+      countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود غير صالح"),
+      countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10_000)),
+      clientRequestId: z.string().min(1).max(64),
+    }))
     .mutation(async ({ input, ctx }) => {
       return acceptPendingTreasuryReceipt(
         input.receiptId,
@@ -77,6 +159,11 @@ export const treasuryRouter = router({
           role: ctx.user.role,
         },
         ctx,
+        {
+          countedCash: input.countedCash,
+          countedBreakdown: input.countedBreakdown,
+          clientRequestId: input.clientRequestId,
+        },
       );
     }),
 
@@ -121,6 +208,7 @@ export const treasuryRouter = router({
           scopedBranchId: (ctx as { scopedBranchId: number | null }).scopedBranchId,
           role: ctx.user.role,
           userId: ctx.user.id,
+          actorBranchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
         },
       );
       return { rows: rows.slice(0, limit), hasMore: rows.length > limit };

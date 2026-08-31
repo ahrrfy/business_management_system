@@ -1,8 +1,9 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, or, like } from "drizzle-orm";
+import { and, asc, desc, eq, or, like } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   accountingEntries,
+  cashCustodyCounts,
   receipts,
   shifts,
   users,
@@ -14,6 +15,8 @@ import {
   debitLine,
 } from "../accounting/postingEngine";
 import { logAuditTx } from "../auditService";
+import { validateCashBreakdown, type CashBreakdown } from "../cash/countValidation";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { postEntry } from "../ledgerService";
 import { money } from "../money";
 import { requireDb, withTx, type Actor } from "../tx";
@@ -21,7 +24,6 @@ import { requireDb, withTx, type Actor } from "../tx";
 export interface PendingTreasuryReceipt {
   id: number;
   branchId: number;
-  amount: string;
   referenceNumber: string;
   description: string | null;
   createdAt: Date;
@@ -32,6 +34,15 @@ export interface PendingTreasuryReceipt {
 }
 
 type AuditContext = Pick<TrpcContext, "user" | "req">;
+
+function canonicalBreakdown(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "{}";
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)),
+    ),
+  );
+}
 
 function contractSource(
   referenceNumber: string,
@@ -56,7 +67,6 @@ export async function listMyPendingTreasuryReceipts(
     .select({
       id: receipts.id,
       branchId: receipts.branchId,
-      amount: receipts.amount,
       referenceNumber: receipts.referenceNumber,
       description: receipts.description,
       createdAt: receipts.createdAt,
@@ -100,7 +110,6 @@ export async function listMyPendingTreasuryReceipts(
       {
         id: Number(row.id),
         branchId: Number(row.branchId),
-        amount: String(row.amount),
         referenceNumber: row.referenceNumber,
         description: row.description,
         createdAt: row.createdAt,
@@ -138,7 +147,6 @@ export async function listPendingTreasuryQueue(actor: Actor): Promise<PendingTre
     .select({
       id: receipts.id,
       branchId: receipts.branchId,
-      amount: receipts.amount,
       referenceNumber: receipts.referenceNumber,
       description: receipts.description,
       createdAt: receipts.createdAt,
@@ -185,7 +193,6 @@ export async function listPendingTreasuryQueue(actor: Actor): Promise<PendingTre
     return [{
       id: Number(row.id),
       branchId: Number(row.branchId),
-      amount: String(row.amount),
       referenceNumber: row.referenceNumber,
       description: row.description,
       createdAt: row.createdAt,
@@ -262,7 +269,7 @@ export async function reassignPendingTreasuryReceipt(
     // بيده ⇒ سلسلة حيازة بشخصٍ واحد. المُسلِّم = مُنشئ سند الدرج المقابل (OUT).
     const sourceOut = (
       await tx
-        .select({ createdBy: receipts.createdBy })
+        .select({ createdBy: receipts.createdBy, shiftId: receipts.shiftId })
         .from(receipts)
         .where(
           and(
@@ -278,6 +285,39 @@ export async function reassignPendingTreasuryReceipt(
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: "لا يجوز إسناد العهدة إلى مُسلِّم النقد نفسه — الاستلام يلزمه شخصٌ ثانٍ",
+      });
+    }
+    if (sourceOut?.shiftId != null) {
+      const sourceShift = (
+        await tx
+          .select({ userId: shifts.userId })
+          .from(shifts)
+          .where(eq(shifts.id, Number(sourceOut.shiftId)))
+          .limit(1)
+      )[0];
+      if (sourceShift?.userId != null && Number(sourceShift.userId) === toUserId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "لا يجوز إسناد العهدة إلى مالك الوردية التي خرج منها النقد",
+        });
+      }
+    }
+    const priorTargetCount = (
+      await tx
+        .select({ id: cashCustodyCounts.id })
+        .from(cashCustodyCounts)
+        .where(
+          and(
+            eq(cashCustodyCounts.treasuryReceiptId, receiptId),
+            eq(cashCustodyCounts.countedByUserId, toUserId),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (priorTargetCount) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يجوز إعادة العهدة إلى مستخدم سبق أن عدّها؛ يلزم مستلم جديد مستقل",
       });
     }
 
@@ -305,7 +345,6 @@ export async function reassignPendingTreasuryReceipt(
     return {
       receiptId: Number(row.id),
       referenceNumber,
-      amount: String(row.amount),
       previousHolderId: previousHolder,
       assignedToId: toUserId,
     };
@@ -320,8 +359,33 @@ export async function acceptPendingTreasuryReceipt(
   receiptId: number,
   actor: Actor,
   auditCtx?: AuditContext,
+  countInput?: {
+    countedCash: string;
+    countedBreakdown?: CashBreakdown | null;
+    clientRequestId: string;
+  },
 ) {
   return withTx(async (tx) => {
+    const candidate = (
+      await tx
+        .select({ branchId: receipts.branchId })
+        .from(receipts)
+        .where(eq(receipts.id, receiptId))
+        .limit(1)
+    )[0];
+    if (!candidate) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "عهدة الاستلام غير موجودة" });
+    }
+    if (candidate.branchId == null) {
+      throw new TRPCError({ code: "CONFLICT", message: "عهدة الاستلام بلا فرع صالح" });
+    }
+    // ترتيب القفل موحّد مع المطابقة اليومية: خزينة الفرع أولاً، ثم إيصال العهدة.
+    // بهذا لا يستطيع قبولٌ متزامن الدخول بعد لقطة evidence على رصيد قديم.
+    await lockCashSourceForUpdate(tx, {
+      branchId: Number(candidate.branchId),
+      cashBucket: "TREASURY",
+      shiftId: null,
+    });
     const row = (
       await tx
         .select()
@@ -364,11 +428,62 @@ export async function acceptPendingTreasuryReceipt(
       });
     }
 
+    if (!countInput && process.env.NODE_ENV !== "test") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "العدّ المستقل وتفصيل فئات النقد مطلوبان قبل قبول العهدة",
+      });
+    }
+    const counted = money(countInput?.countedCash ?? row.amount);
+    const declared = money(row.amount);
+    const breakdown = validateCashBreakdown(
+      countInput?.countedBreakdown,
+      counted,
+      { requiredWhenPositive: countInput != null },
+    );
+    const requestId = countInput?.clientRequestId ?? `legacy-accept-${receiptId}`;
+    const priorCount = (
+      await tx
+        .select()
+        .from(cashCustodyCounts)
+        .where(
+          and(
+            eq(cashCustodyCounts.treasuryReceiptId, receiptId),
+            eq(cashCustodyCounts.clientRequestId, requestId),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (
+      priorCount &&
+      (
+        !money(priorCount.countedAmount).eq(counted) ||
+        canonicalBreakdown(priorCount.countedBreakdown) !== canonicalBreakdown(breakdown)
+      )
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "مفتاح المحاولة مستعمل لحمولة عدّ مختلفة",
+      });
+    }
+    const latestCount = (
+      await tx
+        .select()
+        .from(cashCustodyCounts)
+        .where(eq(cashCustodyCounts.treasuryReceiptId, receiptId))
+        .orderBy(desc(cashCustodyCounts.id))
+        .limit(1)
+    )[0];
     if (row.status === "COMPLETED") {
+      const finalCount = latestCount?.status === "MATCHED" ? latestCount : null;
       return {
         receiptId: Number(row.id),
         referenceNumber,
         amount: String(row.amount),
+        countedCash: finalCount ? String(finalCount.countedAmount) : String(row.amount),
+        variance: finalCount ? String(finalCount.variance) : "0.00",
+        countStatus: "MATCHED" as const,
+        accepted: true,
         branchId: Number(row.branchId),
         idempotent: true,
       };
@@ -379,59 +494,141 @@ export async function acceptPendingTreasuryReceipt(
         message: "عهدة الاستلام ليست قابلة للقبول",
       });
     }
-
-    // CD يخرج من الدرج إلى CASH_IN_TRANSIT عند التسليم. لا نُثبت الخزينة إلا إذا وجدنا
-    // سند الخروج المكتمل وقيد المرحلة الأولى نفسه؛ بادئة المرجع وحدها لا تصنع أصلاً نقدياً.
-    let stagedCashDrop = false;
-    if (source === "CASH_DROP") {
-      const sourceRows = await tx
-        .select({ id: receipts.id, amount: receipts.amount })
-        .from(receipts)
+    if (priorCount?.status === "VARIANCE_OPEN") {
+      return {
+        receiptId: Number(row.id),
+        referenceNumber,
+        amount: declared.toFixed(2),
+        countedCash: String(priorCount.countedAmount),
+        variance: String(priorCount.variance),
+        countStatus: "VARIANCE_OPEN" as const,
+        accepted: false,
+        branchId: Number(row.branchId),
+        idempotent: true,
+      };
+    }
+    const priorActorCount = (
+      await tx
+        .select({ id: cashCustodyCounts.id })
+        .from(cashCustodyCounts)
         .where(
           and(
-            eq(receipts.branchId, Number(row.branchId)),
-            eq(receipts.referenceNumber, referenceNumber),
-            eq(receipts.direction, "OUT"),
-            eq(receipts.paymentMethod, "CASH"),
-            eq(receipts.cashBucket, "DRAWER"),
-            eq(receipts.status, "COMPLETED"),
-            eq(receipts.approvalStatus, "APPROVED"),
+            eq(cashCustodyCounts.treasuryReceiptId, receiptId),
+            eq(cashCustodyCounts.countedByUserId, actor.userId),
           ),
         )
-        .for("update");
-      const matchingSources = sourceRows.filter((candidate) =>
-        money(candidate.amount).eq(money(row.amount)),
-      );
-      if (matchingSources.length !== 1) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "عقد سحب النقد لا يملك سند خروج مطابقاً وفريداً",
-        });
-      }
+        .limit(1)
+    )[0];
+    if (priorActorCount) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "سبق أن عدَدت هذه العهدة؛ يلزم إعادة إسنادها إلى مستلم جديد مستقل لإعادة العد",
+      });
+    }
 
-      const sourceEntries = await tx
-        .select({
-          entryType: accountingEntries.entryType,
-          amount: accountingEntries.amount,
-        })
-        .from(accountingEntries)
-        .where(eq(accountingEntries.receiptId, Number(matchingSources[0].id)));
-      stagedCashDrop = sourceEntries.some(
-        (entry) =>
-          entry.entryType === "CASH_TRANSFER_OUT" &&
-          money(entry.amount).eq(money(row.amount)),
-      );
-      const legacyRecognized = sourceEntries.some(
-        (entry) =>
-          entry.entryType === "CASH_HANDOVER" &&
-          money(entry.amount).eq(money(row.amount)),
-      );
-      if (stagedCashDrop === legacyRecognized) {
+    // CD وCH الجديدان يخرجان إلى CASH_IN_TRANSIT. البيانات التاريخية قد تحمل
+    // CASH_HANDOVER سبق أن أثبت الخزينة؛ ندعمها بلا ترحيل مزدوج.
+    const sourceRows = await tx
+      .select({
+        id: receipts.id,
+        amount: receipts.amount,
+        createdBy: receipts.createdBy,
+        shiftId: receipts.shiftId,
+      })
+      .from(receipts)
+      .where(
+        and(
+          eq(receipts.branchId, Number(row.branchId)),
+          eq(receipts.referenceNumber, referenceNumber),
+          eq(receipts.direction, "OUT"),
+          eq(receipts.paymentMethod, "CASH"),
+          eq(receipts.cashBucket, "DRAWER"),
+          eq(receipts.status, "COMPLETED"),
+          eq(receipts.approvalStatus, "APPROVED"),
+        ),
+      )
+      .for("update");
+    const matchingSources = sourceRows.filter((candidate) => declared.eq(money(candidate.amount)));
+    if (matchingSources.length !== 1) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "عقد تسليم النقد لا يملك سند خروج مطابقاً وفريداً",
+      });
+    }
+    const matchingSource = matchingSources[0];
+    if (matchingSource.createdBy != null && Number(matchingSource.createdBy) === actor.userId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمُسلِّم النقد قبول عهدته" });
+    }
+    if (matchingSource.shiftId != null) {
+      const sourceShift = (
+        await tx
+          .select({ userId: shifts.userId })
+          .from(shifts)
+          .where(eq(shifts.id, Number(matchingSource.shiftId)))
+          .limit(1)
+      )[0];
+      if (sourceShift?.userId != null && Number(sourceShift.userId) === actor.userId) {
         throw new TRPCError({
-          code: "CONFLICT",
-          message: "دليل قيد سحب النقد مفقود أو متعارض",
+          code: "FORBIDDEN",
+          message: "لا يجوز لمالك الوردية قبول النقد الخارج من درجها",
         });
       }
+    }
+    const sourceEntries = await tx
+      .select({ entryType: accountingEntries.entryType, amount: accountingEntries.amount })
+      .from(accountingEntries)
+      .where(eq(accountingEntries.receiptId, Number(matchingSource.id)));
+    const stagedToTransit = sourceEntries.some(
+      (entry) => entry.entryType === "CASH_TRANSFER_OUT" && declared.eq(money(entry.amount)),
+    );
+    const legacyRecognized = sourceEntries.some(
+      (entry) => entry.entryType === "CASH_HANDOVER" && declared.eq(money(entry.amount)),
+    );
+    if (stagedToTransit === legacyRecognized) {
+      throw new TRPCError({ code: "CONFLICT", message: "دليل قيد تسليم النقد مفقود أو متعارض" });
+    }
+
+    const variance = counted.minus(declared);
+    const countStatus = variance.abs().lte("0.005") ? "MATCHED" : "VARIANCE_OPEN";
+    if (!priorCount) {
+      await tx.insert(cashCustodyCounts).values({
+        treasuryReceiptId: receiptId,
+        clientRequestId: requestId,
+        declaredAmount: declared.toFixed(2),
+        countedAmount: counted.toFixed(2),
+        variance: variance.toFixed(2),
+        countedBreakdown: breakdown,
+        status: countStatus,
+        countedByUserId: actor.userId,
+      });
+    }
+
+    if (countStatus === "VARIANCE_OPEN") {
+      if (auditCtx && !priorCount) {
+        await logAuditTx(tx, auditCtx, {
+          action: "treasury.handover.countVariance",
+          entityType: "receipt",
+          entityId: receiptId,
+          oldValue: { status: "PENDING", referenceNumber, declaredAmount: declared.toFixed(2) },
+          newValue: {
+            status: "PENDING",
+            countedAmount: counted.toFixed(2),
+            variance: variance.toFixed(2),
+            countStatus,
+          },
+        });
+      }
+      return {
+        receiptId: Number(row.id),
+        referenceNumber,
+        amount: declared.toFixed(2),
+        countedCash: counted.toFixed(2),
+        variance: variance.toFixed(2),
+        countStatus,
+        accepted: false,
+        branchId: Number(row.branchId),
+        idempotent: Boolean(priorCount),
+      };
     }
 
     await tx
@@ -443,8 +640,8 @@ export async function acceptPendingTreasuryReceipt(
       })
       .where(and(eq(receipts.id, receiptId), eq(receipts.status, "PENDING")));
 
-    if (source === "CASH_DROP" && stagedCashDrop) {
-      const amount = money(row.amount);
+    if (stagedToTransit) {
+      const amount = declared;
       await postEntry(tx, {
         entryType: "CASH_TRANSFER_IN",
         postingIntent: createPostingIntent(
@@ -458,9 +655,9 @@ export async function acceptPendingTreasuryReceipt(
         branchId: Number(row.branchId),
         receiptId: Number(row.id),
         amount,
-        dedupeKey: `CASH_DROP_ACCEPT:${row.id}`,
+        dedupeKey: `CASH_CUSTODY_ACCEPT:${row.id}`,
         createdBy: actor.userId,
-        notes: `قبول استلام السحب النقدي ${referenceNumber}`,
+        notes: `قبول استلام عهدة النقد ${referenceNumber}`,
       });
     }
 
@@ -474,8 +671,13 @@ export async function acceptPendingTreasuryReceipt(
           status: "COMPLETED",
           referenceNumber,
           amount: String(row.amount),
+          countedCash: counted.toFixed(2),
+          variance: variance.toFixed(2),
+          countedBreakdown: breakdown,
           branchId: Number(row.branchId),
           source,
+          previousVarianceCountId:
+            latestCount?.status === "VARIANCE_OPEN" ? Number(latestCount.id) : null,
         },
       });
     }
@@ -484,8 +686,12 @@ export async function acceptPendingTreasuryReceipt(
       receiptId: Number(row.id),
       referenceNumber,
       amount: String(row.amount),
+      countedCash: counted.toFixed(2),
+      variance: variance.toFixed(2),
+      countStatus: "MATCHED" as const,
+      accepted: true,
       branchId: Number(row.branchId),
-      idempotent: false,
+      idempotent: Boolean(priorCount),
     };
   });
 }

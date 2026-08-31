@@ -710,6 +710,16 @@ export const treasuryManagerReadProcedure = moduleProcedure(["manager", "account
 export const treasuryReadProcedure = branchScopedProcedure.use(requireModule("treasury", "READ"));
 export const treasuryCashierProcedure = moduleProcedure(["cashier", "manager"], "treasury", "READ");
 /**
+ * قائمة مستلمي عهد النقد تخدم الكاشير عند إغلاق الوردية، وتخدم المدير أو
+ * المحاسب عند إعادة إسناد عهدة معلّقة. فصلها عن بوابة الكاشير يمنع توسيع
+ * بقية طفرات الوردية للمحاسب، مع إبقاء المنح الصريح وعزل الفرع.
+ */
+export const treasuryHandoverRecipientsProcedure = moduleProcedure(
+  ["cashier", "manager", "accountant"],
+  "treasury",
+  "READ",
+);
+/**
  * بيانات مرجعية عامّة للخزينة (فئات السندات) — **بلا اشتراط فرعٍ مُسنَد**.
  *
  * `moduleProcedure` يُلحق `requireOwnBranch` بكل إجراءاته، وهو الصواب لكل ما يمسّ صندوق فرعٍ

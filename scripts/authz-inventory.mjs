@@ -622,6 +622,13 @@ const PROCEDURES = {
     roles: ["cashier", "manager"],
     branch: "required",
   },
+  treasuryHandoverRecipientsProcedure: {
+    authority: "module-gate",
+    module: "treasury",
+    level: "READ",
+    roles: ["cashier", "manager", "accountant"],
+    branch: "required",
+  },
   commissionsManagerProcedure: {
     authority: "module-gate",
     module: "commissions",

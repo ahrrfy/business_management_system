@@ -56,6 +56,17 @@ export function cumulativePurchaseTax(
 export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
     assertUniqueReceiveLines(input.lines);
+    if (
+      input.shippingPaymentMethod != null &&
+      !["CASH", "CARD", "TRANSFER", "WALLET"].includes(
+        String(input.shippingPaymentMethod),
+      )
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الصكوك غير مدعومة في تسوية مصروفات الشراء",
+      });
+    }
     if (input.payment && input.payment.method !== "CASH") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -173,16 +184,10 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         message: "مرجع تسوية الشحن يجب ألا يتجاوز 50 محرفاً",
       });
     }
-    if (
-      (shippingMethod === "TRANSFER" || shippingMethod === "CHECK") &&
-      !shippingPaymentReference
-    ) {
+    if (shippingMethod === "TRANSFER" && !shippingPaymentReference) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message:
-          shippingMethod === "CHECK"
-            ? "رقم الصك إلزامي لتسوية مصروف الشحن"
-            : "مرجع التحويل إلزامي لتسوية مصروف الشحن",
+        message: "مرجع التحويل إلزامي لتسوية مصروف الشحن",
       });
     }
     if (shippingMethod === "CARD" && !/^\d{4}$/.test(shippingCardLastFour)) {
@@ -648,9 +653,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           description: `تسوية مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
           referenceNumber: shippingVoucherReference,
           checkNumber:
-            shipMethod === "CHECK" || shipMethod === "TRANSFER"
-              ? shippingPaymentReference
-              : null,
+            shipMethod === "TRANSFER" ? shippingPaymentReference : null,
           cardLastFour:
             shipMethod === "CARD" ? shippingCardLastFour : null,
           clientRequestId: `purchase-shipping-payment-${paymentRequestToken}`,
@@ -663,7 +666,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           paymentReference:
             shipMethod === "CARD"
               ? shippingCardLastFour
-              : shipMethod === "TRANSFER" || shipMethod === "CHECK"
+              : shipMethod === "TRANSFER"
                 ? shippingPaymentReference
                 : null,
           obligationId: Number(obligation.id),

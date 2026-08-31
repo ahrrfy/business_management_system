@@ -137,6 +137,103 @@ beforeEach(async () => {
 });
 
 describe("مرتجع المشتريات المرجعي", () => {
+  it("يرفض CHECK عند حد الخدمة بلا حفظ مرتجع أو مفتاح تكرار", async () => {
+    const po = await receivedOrder();
+    await expect(
+      createPurchaseReturn(
+        {
+          clientRequestId: "return-check-service",
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderRefId: po.poId,
+          items: [{ purchaseOrderItemId: po.itemId, quantity: "1" }],
+          settlement: "CREDIT",
+          paymentMethod: "CHECK",
+        } as never,
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await stock()).toBe(100);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(0);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+  });
+
+  it("يرفض استدعاء الخدمة بلا مرجع صالح قبل أي أثر", async () => {
+    await expect(
+      createPurchaseReturn(
+        {
+          clientRequestId: "return-without-reference",
+          supplierId: 1,
+          branchId: 1,
+          items: [{ purchaseOrderItemId: 1, quantity: "1" }],
+          settlement: "CREDIT",
+        } as never,
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+  });
+
+  it("يعزل الخدمة فرعياً ولو حاول مستدعٍ داخلي تمرير فرع الأمر", async () => {
+    const po = await receivedOrder();
+    await expect(
+      createPurchaseReturn(
+        {
+          clientRequestId: "return-cross-branch-service",
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderRefId: po.poId,
+          items: [{ purchaseOrderItemId: po.itemId, quantity: "1" }],
+          settlement: "CREDIT",
+        },
+        { userId: 1, branchId: 2, role: "manager" },
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await stock()).toBe(100);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(0);
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.purchaseOrderItems)
+          .where(eq(s.purchaseOrderItems.id, po.itemId))
+      )[0].returnedBaseQuantity,
+    ).toBe(0);
+  });
+
+  it("يرفض تكرار بند المصدر ذرياً بلا خصم مخزون أو كمية مرجعية", async () => {
+    const po = await receivedOrder();
+    await expect(
+      createPurchaseReturn(
+        {
+          clientRequestId: "return-duplicate-source-line",
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderRefId: po.poId,
+          items: [
+            { purchaseOrderItemId: po.itemId, quantity: "60" },
+            { purchaseOrderItemId: po.itemId, quantity: "60" },
+          ],
+          settlement: "CREDIT",
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await stock()).toBe(100);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(0);
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.purchaseOrderItems)
+          .where(eq(s.purchaseOrderItems.id, po.itemId))
+      )[0].returnedBaseQuantity,
+    ).toBe(0);
+  });
+
   it("يحل الرقم المرئي كاملاً ولا يفسر رقم الفرع كمعرّف الأمر", async () => {
     const po = await receivedOrder();
     const resolved = await resolveReturnablePurchaseOrder({

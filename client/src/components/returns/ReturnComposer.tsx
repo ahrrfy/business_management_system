@@ -73,6 +73,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
   const [manualAmount, setManualAmount] = useState<string | null>(null);
   const [shiftId, setShiftId] = useState<number | null>(null);
   const [cardReference, setCardReference] = useState("");
+  const [reason, setReason] = useState("");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   // idempotency: مفتاحٌ ثابتٌ للمحاولة، يتجدّد عند تبديل الفاتورة وبعد كل نجاح — نقرةٌ مزدوجة
@@ -87,12 +88,14 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     setManualAmount(null);
     setShiftId(null);
     setCardReference("");
+    setReason("");
     setError("");
     setDone("");
     setClientRequestId(crypto.randomUUID());
   }, [invoiceId]);
 
   const inv = detail.data;
+  const isWalkIn = !!inv?.walkInResolutionPolicy;
   const items = inv?.items ?? [];
   const shifts = inv?.refundShifts ?? [];
 
@@ -133,22 +136,32 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     return owes.gt(0) ? owes : D(0);
   }, [inv?.total, inv?.returnedTotal, inv?.paidAmount, returnValue]);
 
-  /** الافتراضيّ = الأقلّ من سقف الرافد والمستحقّ للزبون. التحرير يبقى متاحاً حتى السقف. */
+  /**
+   * العميل المسجّل يحتفظ بالمسار القديم. أمّا العابر فالمبلغ ليس قراراً واجهياً: هو قيمة
+   * المرتجع الدقيقة المحسوبة (ومنها باقي تقريب IQD عند الإرجاع المُكمِل) ولا يمكن تحريرها.
+   */
   const suggestedRefund = useMemo(
-    () => (customerOwedBack.lt(railCap) ? customerOwedBack : railCap),
-    [customerOwedBack, railCap],
+    () => isWalkIn ? returnValue : (customerOwedBack.lt(railCap) ? customerOwedBack : railCap),
+    [isWalkIn, returnValue, customerOwedBack, railCap],
   );
-  const refundAmount = manualAmount ?? (suggestedRefund.gt(0) ? suggestedRefund.toFixed(2) : "");
+  const refundAmount = isWalkIn
+    ? (suggestedRefund.gt(0) ? suggestedRefund.toFixed(2) : "")
+    : manualAmount ?? (suggestedRefund.gt(0) ? suggestedRefund.toFixed(2) : "");
   const refundD = /^\d+(\.\d+)?$/.test(refundAmount.trim()) ? D(refundAmount.trim()) : D(0);
   const overCap = refundD.gt(railCap);
 
   // الرافد الافتراضيّ: النقد ما دام ممكناً، وإلّا أوّل رافدٍ غير محجوب — فلا يبدأ الموظف
   // على خيارٍ سيُرفض. يُعاد التقييم كلّما تغيّرت السقوف (تحميل/تحديث بعد مرتجعٍ جزئيّ).
   useEffect(() => {
+    if (isWalkIn && rail !== "CASH") {
+      setRail("CASH");
+      setManualAmount(null);
+      return;
+    }
     if (!options.length || !suggestedRefund.gt(0)) return;
     const usable = options.find((o) => !o.blockedReason);
     if (activeOption?.blockedReason && usable) setRail(usable.method as RefundRail);
-  }, [options, activeOption?.blockedReason, suggestedRefund]);
+  }, [isWalkIn, rail, options, activeOption?.blockedReason, suggestedRefund]);
 
   // الدرج الافتراضيّ: درج المنفّذ نفسه إن كان مفتوحاً (قرار المالك)، وإلّا الوحيد المفتوح.
   useEffect(() => {
@@ -172,6 +185,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
       setQty({});
       setManualAmount(null);
       setCardReference("");
+      setReason("");
       setClientRequestId(crypto.randomUUID());
       await utils.returns.requests.invalidate();
       await utils.returns.getInvoice.invalidate({ invoiceId });
@@ -190,6 +204,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
       setQty({});
       setManualAmount(null);
       setCardReference("");
+      setReason("");
       setClientRequestId(crypto.randomUUID());
       await Promise.all([
         utils.returns.getInvoice.invalidate({ invoiceId }),
@@ -221,6 +236,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
   const isLocked = inv?.status === "RETURNED" || inv?.status === "CANCELLED";
   const needsShift = rail === "CASH" && refundD.gt(0);
   const needsReference = rail === "CARD" && refundD.gt(0);
+  const selectedShift = shifts.find((s) => Number(s.shiftId) === Number(shiftId));
   /**
    * مرتجعٌ بلا ردّ نقديّ (بلاغ المالك ١٨/٨) — فاتورةٌ لم يُقبض عليها دينار (آجلة/COD/عربونٌ
    * أقلّ) أو قيمةُ المرتجع تُغطّيها الذمّة: **لا مال يخرج**، فلا رافدَ ولا درجَ ولا مرجع.
@@ -228,27 +244,34 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
    * زرّ التأكيد كلّياً لأنّ كلا الرافدين «محجوب» حين يكون وعاء المقبوض صفراً — فيُقرأ ذلك
    * «النظام يجبرني على اختيار درجٍ لردّ نقودٍ لم تُقبض».
    */
-  const noRefundNeeded = refundD.lte(0);
+  const noRefundNeeded = !isWalkIn && refundD.lte(0);
 
   /** سببُ تعطيل الحفظ — نصٌّ واحدٌ يُعرَض دائماً بدل رفضٍ متأخّر من الخادم. */
   const blockReason = useMemo(() => {
     if (isLocked) return "هذه الفاتورة مرتجعة/ملغاة — لا يمكن تسجيل مرتجع جديد.";
     if (!selectedLines.length) return "حدّد كمية إرجاع واحدة على الأقل.";
+    if (isWalkIn && !returnValue.gt(0)) return "قيمة المرتجع صفر؛ لا يمكن إنشاء تسوية نقدية لزبون عابر.";
     // حجبُ الرافد يسري على ردٍّ **موجب** فقط — لا معنى لسقفٍ حين لا يخرج مال.
     if (!noRefundNeeded && activeOption?.blockedReason) return activeOption.blockedReason;
     if (overCap) return `المبلغ يتجاوز المسموح (${fmt(railCap.toFixed(2))} د.ع).`;
-    if (needsShift && !shifts.length) return "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية أو استردّ على البطاقة.";
+    if (needsShift && !shifts.length) return isWalkIn
+      ? "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية لردّ المبلغ كاملاً قبل تسجيل مرتجع الزبون العابر."
+      : "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية أو استردّ على البطاقة.";
     if (needsShift && shiftId == null) return "حدّد الدرج الذي سيخرج منه النقد فعلياً.";
+    if (needsShift && selectedShift && D(selectedShift.expectedCash).lt(refundD)) {
+      return `الدرج المحدّد لا يحمل المبلغ كاملاً (المتاح ${fmt(selectedShift.expectedCash)} د.ع). اختر درجاً صالحاً أو موّله أولاً.`;
+    }
     if (needsReference && !cardReference.trim()) return "أدخِل مرجع عملية الاسترداد من جهاز الدفع.";
+    if (isWalkIn && reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق التسوية.";
     return null;
-  }, [isLocked, selectedLines.length, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, needsShift, shifts.length, shiftId, needsReference, cardReference]);
+  }, [isLocked, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, needsShift, shifts.length, shiftId, selectedShift, refundD, needsReference, cardReference, reason]);
 
   async function submit() {
     setError("");
     setDone("");
     if (!inv || blockReason) return;
 
-    const refund = refundD.gt(0)
+    const refund = !isWalkIn && refundD.gt(0)
       ? {
           amount: round2(refundD).toFixed(2),
           method: rail,
@@ -256,10 +279,22 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
           ...(rail === "CARD" ? { reference: cardReference.trim() } : {}),
         }
       : undefined;
+    const resolution = isWalkIn
+      ? {
+          kind: "IMMEDIATE_REFUND" as const,
+          method: "CASH" as const,
+          amount: round2(returnValue).toFixed(2),
+          shiftId: shiftId!,
+          reason: reason.trim(),
+          disposition: restock ? "RESTOCK" as const : "DAMAGED" as const,
+        }
+      : undefined;
 
     const pieces = selectedLines.reduce((s, l) => s + l.baseQuantity, 0);
-    const moneySentence = refund
-      ? `يستلم الزبون ${fmt(refund.amount)} د.ع ${RAIL_LABEL[rail]}`
+    const moneySentence = resolution
+      ? `يستلم الزبون العابر ${fmt(resolution.amount)} د.ع نقداً كاملاً من الدرج المحدّد`
+      : refund
+        ? `يستلم الزبون ${fmt(refund.amount)} د.ع ${RAIL_LABEL[rail]}`
       : "بلا إرجاع نقود (تُخصَم من ذمّة العميل فقط)";
     const stockSentence = restock ? "والبضاعة تعود للرفّ" : "والبضاعة تالفة لا تعود للمخزون";
 
@@ -273,10 +308,23 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     ) return;
 
     if (approvingRequestId) {
-      approve.mutate({ requestId: approvingRequestId, refund, restock, clientRequestId });
+      approve.mutate({
+        requestId: approvingRequestId,
+        refund,
+        resolution,
+        ...(!isWalkIn ? { restock } : {}),
+        clientRequestId,
+      });
       return;
     }
-    create.mutate({ invoiceId: inv.id, lines: selectedLines, refund, restock, clientRequestId });
+    create.mutate({
+      invoiceId: inv.id,
+      lines: selectedLines,
+      refund,
+      resolution,
+      ...(!isWalkIn ? { restock } : {}),
+      clientRequestId,
+    });
   }
 
   if (detail.isLoading) return <LoadingState message="جارٍ تحميل بنود الفاتورة…" />;
@@ -398,6 +446,35 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         </CardContent>
       </Card>
 
+      {isWalkIn && (
+        <Card className="border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)]/25">
+          <CardHeader className="pb-2"><CardTitle className="text-base">تسوية زبون عابر — ردّ نقدي كامل</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-start gap-2 text-sm text-[var(--sem-warn)]">
+              <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <p>
+                لا حساب عميل يحمل رصيداً أو مطالبة. لذلك لن يُعاد المخزون ولن يُعكس الإيراد
+                إلا مع ردّ <strong>{fmt(returnValue.toFixed(2))} د.ع</strong> نقداً كاملاً الآن من وردية مفتوحة.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ret-walkin-reason">سبب المرتجع</Label>
+              <Input
+                id="ret-walkin-reason"
+                value={reason}
+                maxLength={500}
+                disabled={isLocked}
+                onChange={(e) => { setReason(e.target.value); setError(""); }}
+                placeholder="مثال: المنتج غير مطابق لطلب الزبون"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                مصير البضاعة موثّق من الاختيار أعلاه: {restock ? "سليمة وتعود للرف" : "تالفة ولا تعود للمخزون"}.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* ④ كيف يستلم الزبون ماله — رافدان فقط، سقفُ كلٍّ من الخادم، والمحجوب معطَّلٌ بسببه ظاهراً.
           بلا مالٍ يخرج (فاتورةٌ لم تُقبض، أو الذمّة تغطّي المرتجع) تُستبدل البطاقةُ كلّها
           بإفصاحٍ صريح: لا رافد ولا درج ولا مرجع — والحفظ متاح (بلاغ المالك ١٨/٨). */}
@@ -421,7 +498,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-base">كيف يستلم الزبون ماله؟</CardTitle></CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="طريقة الاسترداد">
+          <div className={`grid gap-2 ${isWalkIn ? "grid-cols-1" : "grid-cols-2"}`} role="radiogroup" aria-label="طريقة الاسترداد">
             {options.map((o) => {
               const m = o.method as RefundRail;
               const picked = rail === m;
@@ -453,17 +530,23 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
                   قيمة المرتجع {fmt(returnValue.toFixed(2))} · المسموح {fmt(railCap.toFixed(2))}
                 </div>
               </div>
-              <div className="w-44 space-y-1">
-                <Label htmlFor="ret-amount" className="text-xs">تعديل المبلغ (اختياري)</Label>
-                <MoneyInput
-                  id="ret-amount"
-                  value={refundAmount}
-                  onChange={setManualAmount}
-                  ariaLabel="مبلغ الاسترداد"
-                  disabled={isLocked}
-                  expectedRange={{ max: Number(railCap.toFixed(2)) }}
-                />
-              </div>
+              {isWalkIn ? (
+                <div className="rounded-md border border-[var(--sem-info)]/35 bg-[var(--sem-info-bg)] px-3 py-2 text-xs font-bold text-[var(--sem-info)]">
+                  مبلغ ثابت بعد التقريب — لا يقبل الردّ الجزئي
+                </div>
+              ) : (
+                <div className="w-44 space-y-1">
+                  <Label htmlFor="ret-amount" className="text-xs">تعديل المبلغ (اختياري)</Label>
+                  <MoneyInput
+                    id="ret-amount"
+                    value={refundAmount}
+                    onChange={setManualAmount}
+                    ariaLabel="مبلغ الاسترداد"
+                    disabled={isLocked}
+                    expectedRange={{ max: Number(railCap.toFixed(2)) }}
+                  />
+                </div>
+              )}
             </div>
             {overCap && (
               <p className="mt-2 text-xs font-bold text-destructive">
@@ -479,7 +562,9 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
               {shifts.length === 0 ? (
                 <div className="badge-stock-low flex items-start gap-2 rounded-md border px-2.5 py-2">
                   <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
-                  <span>لا توجد وردية مفتوحة في هذا الفرع — افتح وردية، أو استردّ على البطاقة.</span>
+                  <span>{isWalkIn
+                    ? "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية وردّ المبلغ كاملاً قبل تسجيل المرتجع."
+                    : "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية، أو استردّ على البطاقة."}</span>
                 </div>
               ) : (
                 <AppSelect size="sm" className="text-xs" aria-label="درج الاسترداد"
@@ -519,7 +604,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         <Button onClick={submit} disabled={!!blockReason || create.isPending || approve.isPending}>
           {create.isPending ? "جارٍ التسجيل…" : "تأكيد المرتجع"}
         </Button>
-        <Button variant="outline" onClick={() => { setQty({}); setManualAmount(null); setCardReference(""); setError(""); setDone(""); }}>
+        <Button variant="outline" onClick={() => { setQty({}); setManualAmount(null); setCardReference(""); setReason(""); setError(""); setDone(""); }}>
           إعادة ضبط
         </Button>
         {footer}

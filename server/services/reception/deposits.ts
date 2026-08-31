@@ -29,7 +29,10 @@ import {
   openShiftIdTx,
   resolveBranchCashShiftTx,
 } from "../shiftService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import {
+  assertCashOutAvailable,
+  lockMaterializedCashReceiptSourceForWrite,
+} from "../cash/cashAvailability";
 import { assertTelecomCollectAllowed } from "./telecom";
 import { withTx, type Actor } from "../tx";
 import { paymentAssetRole } from "../sale/paymentPosting";
@@ -167,6 +170,14 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
         message: "ورديتك أُغلقت للتوّ — افتح وردية استقبال ثم أعد قبض العربون",
       });
     }
+    await lockMaterializedCashReceiptSourceForWrite(tx, {
+      branchId: Number(draft.branchId),
+      shiftId: Number(myShift.id),
+      cashBucket: input.method === "CASH" ? "DRAWER" : null,
+      paymentMethod: input.method,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+    });
 
     // ٣) I2 تحت القفل: المقبوض الجديد + الصافي المحتجز <= إجمالي الأسطر المُعاد حسابه.
     const held = await heldNetOfDraft(tx, input.draftId);

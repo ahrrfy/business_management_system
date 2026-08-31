@@ -19,6 +19,7 @@ import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { titleForChannel } from "@shared/productChannelTitles";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
@@ -201,6 +202,14 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         message: "افتح وردية RECEPTION قبل قبض دفعة أمر الشغل نقداً؛ لا يجوز DRAWER بلا وردية استقبال مقفلة",
       });
     }
+    await lockMaterializedCashReceiptSourceForWrite(tx, {
+      branchId: Number(wo.branchId),
+      shiftId: deliveryShiftId,
+      cashBucket: input.payment?.method === "CASH" && paidNow.gt(0) ? "DRAWER" : null,
+      paymentMethod: input.payment?.method ?? "CASH",
+      status: paidNow.gt(0) ? "COMPLETED" : "PENDING",
+      approvalStatus: "APPROVED",
+    });
 
     if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
       await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);

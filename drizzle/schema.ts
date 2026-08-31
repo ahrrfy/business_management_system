@@ -2649,6 +2649,316 @@ export type Receipt = typeof receipts.$inferSelect;
 export type InsertReceipt = typeof receipts.$inferInsert;
 
 /**
+ * عدّ مستقل لعقد حيازة نقدية CD/CH. السجل append-only: المحاولة المختلفة لا تمحو
+ * فرقاً سابقاً، والقبول المالي يحصل فقط لسجل MATCHED.
+ */
+export const cashCustodyCounts = mysqlTable(
+  "cashCustodyCounts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    treasuryReceiptId: bigint("treasuryReceiptId", { mode: "number" })
+      .notNull()
+      .references(() => receipts.id),
+    clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
+    declaredAmount: decimal("declaredAmount", { precision: 15, scale: 2 }).notNull(),
+    countedAmount: decimal("countedAmount", { precision: 15, scale: 2 }).notNull(),
+    variance: decimal("variance", { precision: 15, scale: 2 }).notNull(),
+    countedBreakdown: json("countedBreakdown"),
+    status: mysqlEnum("cashCustodyCountStatus", ["MATCHED", "VARIANCE_OPEN"]).notNull(),
+    countedByUserId: int("countedByUserId")
+      .notNull()
+      .references(() => users.id),
+    countedAt: timestamp("countedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    requestUq: unique("uq_cash_custody_count_request").on(
+      table.treasuryReceiptId,
+      table.clientRequestId,
+    ),
+    receiptStatusIdx: index("idx_cash_custody_receipt_status").on(
+      table.treasuryReceiptId,
+      table.status,
+    ),
+  }),
+);
+
+export type CashCustodyCount = typeof cashCustodyCounts.$inferSelect;
+
+/** لقطة الجرد الفعلي للخزينة لفرع ويوم عمل UTC واحد. */
+export const cashDailyReconciliations = mysqlTable(
+  "cashDailyReconciliations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    businessDate: date("businessDate", { mode: "string" }).notNull(),
+    expectedTreasuryCash: decimal("expectedTreasuryCash", { precision: 15, scale: 2 }).notNull(),
+    countedTreasuryCash: decimal("countedTreasuryCash", { precision: 15, scale: 2 }).notNull(),
+    variance: decimal("variance", { precision: 15, scale: 2 }).notNull(),
+    countedBreakdown: json("countedBreakdown"),
+    status: mysqlEnum("cashDailyReconciliationStatus", [
+      "MATCHED",
+      "VARIANCE_OPEN",
+      "RESOLVED_WITH_ADJUSTMENT",
+      "CLOSED",
+      "REOPENED",
+    ]).notNull(),
+    notes: varchar("notes", { length: 500 }),
+    lastClientRequestId: varchar("lastClientRequestId", { length: 64 }).notNull(),
+    closeClientRequestId: varchar("closeClientRequestId", { length: 64 }),
+    evidenceHash: varchar("evidenceHash", { length: 64 }).notNull(),
+    shiftCount: int("shiftCount").default(0).notNull(),
+    custodyCount: int("custodyCount").default(0).notNull(),
+    version: int("version").default(1).notNull(),
+    countedByUserId: int("countedByUserId").notNull().references(() => users.id),
+    countedAt: timestamp("countedAt").defaultNow().notNull(),
+    closedByUserId: int("closedByUserId").references(() => users.id),
+    closedAt: timestamp("closedAt"),
+    reopenedByUserId: int("reopenedByUserId").references(() => users.id),
+    reopenedAt: timestamp("reopenedAt"),
+    reopenReason: varchar("reopenReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchDateUq: unique("uq_cash_daily_branch_date").on(table.branchId, table.businessDate),
+    requestUq: unique("uq_cash_daily_request").on(table.lastClientRequestId),
+    closeRequestUq: unique("uq_cash_daily_close_request").on(table.closeClientRequestId),
+    statusDateIdx: index("idx_cash_daily_status_date").on(table.status, table.businessDate),
+  }),
+);
+
+export type CashDailyReconciliation = typeof cashDailyReconciliations.$inferSelect;
+
+/**
+ * اقتراح تسوية فرق نقدي. الرأس دليل immutable: لا حالةً قابلة للكتابة هنا؛
+ * الحالة والإصدار مشتقان حصراً من آخر حدث append-only في cashVarianceCaseEvents.
+ */
+export const cashVarianceCases = mysqlTable(
+  "cashVarianceCases",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    sourceType: mysqlEnum("cashVarianceSourceType", [
+      "CUSTODY",
+      "DAILY_TREASURY",
+    ]).notNull(),
+    custodyReceiptId: bigint("custodyReceiptId", { mode: "number" }),
+    custodyCountId: bigint("custodyCountId", { mode: "number" }),
+    dailyReconciliationId: bigint("dailyReconciliationId", {
+      mode: "number",
+    }),
+    /** إصدار مستند المصدر وقت الاقتراح؛ يمنع اعتماد فرقٍ بعد إعادة عد/تغيير الدليل. */
+    sourceVersion: int("sourceVersion").default(1).notNull(),
+    sourceReference: varchar("sourceReference", { length: 100 }).notNull(),
+    /** بصمة دليل مستند المصدر عند الاقتراح؛ إلزامية للمطابقة اليومية وصفر أثر للعهدة. */
+    sourceEvidenceHash: char("sourceEvidenceHash", { length: 64 }),
+    expectedAmount: decimal("expectedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    actualAmount: decimal("actualAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    /** actualAmount - expectedAmount؛ السالب عجز والموجب زيادة. */
+    variance: decimal("variance", { precision: 15, scale: 2 }).notNull(),
+    reasonCode: mysqlEnum("cashVarianceReasonCode", [
+      "COUNT_ERROR",
+      "UNRECORDED_CASH_IN",
+      "UNRECORDED_CASH_OUT",
+      "CUSTODY_LOSS",
+      "DOCUMENTATION_ERROR",
+      "OTHER",
+    ]).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    evidenceReference: mediumtext("evidenceReference").notNull(),
+    responsibleUserId: int("responsibleUserId"),
+    responsibleEmployeeId: bigint("responsibleEmployeeId", {
+      mode: "number",
+    }),
+    responsibleNameSnapshot: varchar("responsibleNameSnapshot", {
+      length: 255,
+    }),
+    countedByUserId: int("countedByUserId").notNull(),
+    proposedByUserId: int("proposedByUserId").notNull(),
+    proposalClientRequestId: varchar("proposalClientRequestId", {
+      length: 64,
+    })
+      .notNull()
+      .unique("uq_cash_variance_proposal_request"),
+    proposalRequestHash: char("proposalRequestHash", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    custodyCountUq: unique("uq_cash_variance_custody_count").on(
+      table.custodyCountId,
+    ),
+    dailyVersionUq: unique("uq_cash_variance_daily_version").on(
+      table.dailyReconciliationId,
+      table.sourceVersion,
+    ),
+    branchCreatedIdx: index("idx_cash_variance_branch_created").on(
+      table.branchId,
+      table.createdAt,
+    ),
+    branchFk: foreignKey({
+      name: "fk_cash_variance_branch",
+      columns: [table.branchId],
+      foreignColumns: [branches.id],
+    }),
+    custodyReceiptFk: foreignKey({
+      name: "fk_cash_variance_custody_receipt",
+      columns: [table.custodyReceiptId],
+      foreignColumns: [receipts.id],
+    }),
+    custodyCountFk: foreignKey({
+      name: "fk_cash_variance_custody_count",
+      columns: [table.custodyCountId],
+      foreignColumns: [cashCustodyCounts.id],
+    }),
+    dailyFk: foreignKey({
+      name: "fk_cash_variance_daily",
+      columns: [table.dailyReconciliationId],
+      foreignColumns: [cashDailyReconciliations.id],
+    }),
+    responsibleFk: foreignKey({
+      name: "fk_cash_variance_responsible",
+      columns: [table.responsibleUserId],
+      foreignColumns: [users.id],
+    }),
+    responsibleEmployeeFk: foreignKey({
+      name: "fk_cash_variance_employee",
+      columns: [table.responsibleEmployeeId],
+      foreignColumns: [employees.id],
+    }),
+    counterFk: foreignKey({
+      name: "fk_cash_variance_counter",
+      columns: [table.countedByUserId],
+      foreignColumns: [users.id],
+    }),
+    proposerFk: foreignKey({
+      name: "fk_cash_variance_proposer",
+      columns: [table.proposedByUserId],
+      foreignColumns: [users.id],
+    }),
+    sourceShapeCheck: check(
+      "chk_cash_variance_source_shape",
+      sql`(
+        (${table.sourceType} = 'CUSTODY' AND ${table.custodyReceiptId} IS NOT NULL AND ${table.custodyCountId} IS NOT NULL AND ${table.dailyReconciliationId} IS NULL AND ${table.sourceEvidenceHash} IS NULL AND (
+          (${table.variance} < 0 AND ${table.responsibleUserId} IS NOT NULL AND ${table.responsibleEmployeeId} IS NOT NULL AND ${table.responsibleNameSnapshot} IS NOT NULL)
+          OR (${table.variance} > 0 AND ${table.responsibleUserId} IS NULL AND ${table.responsibleEmployeeId} IS NULL AND ${table.responsibleNameSnapshot} IS NULL)
+        ))
+        OR
+        (${table.sourceType} = 'DAILY_TREASURY' AND ${table.custodyReceiptId} IS NULL AND ${table.custodyCountId} IS NULL AND ${table.dailyReconciliationId} IS NOT NULL AND ${table.sourceEvidenceHash} IS NOT NULL AND ${table.responsibleUserId} IS NULL AND ${table.responsibleEmployeeId} IS NULL AND ${table.responsibleNameSnapshot} IS NULL)
+      )`,
+    ),
+    amountCheck: check(
+      "chk_cash_variance_amounts",
+      sql`${table.expectedAmount} >= 0 AND ${table.actualAmount} >= 0 AND ${table.variance} <> 0 AND ${table.variance} = ${table.actualAmount} - ${table.expectedAmount}`,
+    ),
+    sourceVersionCheck: check(
+      "chk_cash_variance_source_version",
+      sql`${table.sourceVersion} > 0`,
+    ),
+  }),
+);
+
+export type CashVarianceCase = typeof cashVarianceCases.$inferSelect;
+
+/** سجل الحالة الوحيد لتسوية الفرق؛ لا UPDATE ولا DELETE في الخدمة. */
+export const cashVarianceCaseEvents = mysqlTable(
+  "cashVarianceCaseEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    caseId: bigint("caseId", { mode: "number" }).notNull(),
+    version: int("version").notNull(),
+    eventType: mysqlEnum("cashVarianceEventType", [
+      "PROPOSED",
+      "APPROVED",
+      "REJECTED",
+    ]).notNull(),
+    clientRequestId: varchar("clientRequestId", { length: 64 })
+      .notNull()
+      .unique("uq_cash_variance_event_request"),
+    requestHash: char("requestHash", { length: 64 }).notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    note: varchar("note", { length: 500 }),
+    counterAccountRole: mysqlEnum("cashVarianceCounterAccountRole", [
+      "EMPLOYEE_ADVANCES",
+      "LOSSES",
+      "OTHER_LIABILITY",
+    ]),
+    resolvedVariance: decimal("resolvedVariance", {
+      precision: 15,
+      scale: 2,
+    }),
+    adjustmentReceiptId: bigint("adjustmentReceiptId", {
+      mode: "number",
+    }).unique("uq_cash_variance_adjustment_receipt"),
+    accountingEntryId: bigint("accountingEntryId", { mode: "number" })
+      .unique("uq_cash_variance_accounting_entry"),
+    /** ذمة الموظف الناتجة عن عجز العهدة فقط؛ لا تُنشأ لعجز DAILY أو للزيادة. */
+    advanceId: bigint("advanceId", { mode: "number" }).unique(
+      "uq_cash_variance_advance",
+    ),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    caseVersionUq: unique("uq_cash_variance_case_version").on(
+      table.caseId,
+      table.version,
+    ),
+    caseCreatedIdx: index("idx_cash_variance_case_created").on(
+      table.caseId,
+      table.createdAt,
+    ),
+    caseFk: foreignKey({
+      name: "fk_cash_variance_event_case",
+      columns: [table.caseId],
+      foreignColumns: [cashVarianceCases.id],
+    }),
+    actorFk: foreignKey({
+      name: "fk_cash_variance_event_actor",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+    receiptFk: foreignKey({
+      name: "fk_cash_variance_event_receipt",
+      columns: [table.adjustmentReceiptId],
+      foreignColumns: [receipts.id],
+    }),
+    entryFk: foreignKey({
+      name: "fk_cash_variance_event_entry",
+      columns: [table.accountingEntryId],
+      foreignColumns: [accountingEntries.id],
+    }),
+    advanceFk: foreignKey({
+      name: "fk_cash_variance_advance",
+      columns: [table.advanceId],
+      foreignColumns: [employeeAdvances.id],
+    }),
+    versionCheck: check(
+      "chk_cash_variance_event_version",
+      sql`${table.version} > 0`,
+    ),
+    resolutionShapeCheck: check(
+      "chk_cash_variance_resolution_shape",
+      sql`(
+        (${table.eventType} = 'APPROVED' AND ${table.counterAccountRole} = 'EMPLOYEE_ADVANCES' AND ${table.resolvedVariance} < 0 AND ${table.adjustmentReceiptId} IS NOT NULL AND ${table.accountingEntryId} IS NOT NULL AND ${table.advanceId} IS NOT NULL)
+        OR
+        (${table.eventType} = 'APPROVED' AND ${table.counterAccountRole} = 'LOSSES' AND ${table.resolvedVariance} < 0 AND ${table.adjustmentReceiptId} IS NOT NULL AND ${table.accountingEntryId} IS NOT NULL AND ${table.advanceId} IS NULL)
+        OR
+        (${table.eventType} = 'APPROVED' AND ${table.counterAccountRole} = 'OTHER_LIABILITY' AND ${table.resolvedVariance} > 0 AND ${table.adjustmentReceiptId} IS NOT NULL AND ${table.accountingEntryId} IS NOT NULL AND ${table.advanceId} IS NULL)
+        OR
+        (${table.eventType} <> 'APPROVED' AND ${table.counterAccountRole} IS NULL AND ${table.resolvedVariance} IS NULL AND ${table.adjustmentReceiptId} IS NULL AND ${table.accountingEntryId} IS NULL AND ${table.advanceId} IS NULL)
+      )`,
+    ),
+  }),
+);
+
+export type CashVarianceCaseEvent = typeof cashVarianceCaseEvents.$inferSelect;
+
+/**
  * Indexed ownership of an accepted cash-drop source by a shift-funding request.
  * JSON on receipts remains the immutable audit snapshot; this relation is the
  * concurrency and lookup authority, so source reuse never requires a history scan.

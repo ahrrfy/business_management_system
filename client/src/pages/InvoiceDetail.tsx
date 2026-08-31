@@ -370,10 +370,26 @@ export default function InvoiceDetail() {
     ) &&
     data.consignmentId != null &&
     (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "FAILED");
+  const hasDeliveryLifecycle =
+    data.consignmentId != null || data.consignmentStatus != null || data.deliveryPartyId != null;
+  // مرآة بصرية للحارس الخادمي: الإرسالية الحديثة لا تصبح آمنة إلا بعد CANCELLED النهائي.
+  // طلب المتجر القديم الملغى يُعرض موحّداً كـRETURNED (saleRouter)، وهو الاستثناء الآمن بلا consignmentId.
+  const deliveryCancellationResolved =
+    data.consignmentId != null
+      ? data.consignmentStatus === "CANCELLED"
+      : data.sourceType === "ONLINE" && data.consignmentStatus === "RETURNED";
+  const deliveryCancellationBlockReason = !hasDeliveryLifecycle || deliveryCancellationResolved
+    ? null
+    : canCancelDelivery
+      ? "ألغِ إسناد التوصيل أولاً، ثم ألغِ الفاتورة. لا يجوز إعادة المخزون والطرد ما زال مسنداً."
+      : data.consignmentStatus === "DISPATCHED" || data.consignmentStatus === "PARTIAL"
+        ? "لا يمكن إلغاء الفاتورة والطرد أو تحصيل COD ما زال في دورة التوصيل. أعد الطرد وسوِّ العهدة من مركز التوصيل أولاً."
+        : "لا يمكن إلغاء الفاتورة بعد تسليم الطرد أو وجود تسوية توصيل. استخدم الإرجاع الموثق أو عالج العهدة من مركز التوصيل.";
   const isCancellable =
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
-    data.sourceType !== "WORKORDER";
+    data.sourceType !== "WORKORDER" &&
+    deliveryCancellationBlockReason == null;
   /**
    * فاتورة أمر شغلٍ حيّة: مخرجها الوحيد هو المرتجع الموثَّق (الإلغاء والتصحيح يرفضهما الخادم
    * لهذا المنشأ). البوّابة مرآةُ `returns.create` = مدير + `sales:FULL`. التوصيلُ النشط يُستثنى:
@@ -732,6 +748,24 @@ export default function InvoiceDetail() {
           ))}
         </>}
       />
+
+      {canCancelInvoice && deliveryCancellationBlockReason && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-sm text-[var(--sem-warn)]"
+        >
+          <span className="inline-flex items-center gap-2 font-medium">
+            <Truck aria-hidden className="size-4 shrink-0" />
+            {deliveryCancellationBlockReason}
+          </span>
+          <Link
+            href={`/delivery?tab=parties&detail=${data.deliveryPartyId ?? ""}`}
+            className="font-bold underline underline-offset-2"
+          >
+            فتح مركز التوصيل
+          </Link>
+        </div>
+      )}
 
       {/* بطاقة الترويسة: بيانات وصفية + لوحة ملخّص مالي */}
       <Card>

@@ -58,6 +58,15 @@ async function sumCol(invoiceId: number, col: "revenue" | "profit" | "amount"): 
   return rows.reduce((t, r) => t + Number(r.v), 0);
 }
 
+const walkInCashResolution = (amount: string) => ({
+  kind: "IMMEDIATE_REFUND" as const,
+  method: "CASH" as const,
+  amount,
+  shiftId: 1,
+  reason: "إرجاع كامل لاختبار التقريب",
+  disposition: "RESTOCK" as const,
+});
+
 describe("F6 — تصافُر الدفتر عند المرتجع الكامل للبيع المقرَّب IQD", () => {
   it("بيع نقديّ مقرَّب (١٣٠٠ ⇒ ١٢٥٠، تقريب −٥٠) ثم مرتجع كامل ⇒ Σ(revenue)=Σ(profit)=0، والتقريب مُعكَّس مرّة واحدة", async () => {
     await reset();
@@ -76,7 +85,7 @@ describe("F6 — تصافُر الدفتر عند المرتجع الكامل ل
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
     const ret = await returnSale(
       { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
-        refund: { amount: "1250.00", method: "CASH" }, restock: true },
+        resolution: walkInCashResolution("1250.00") },
       actor,
     );
     expect(ret.fullyReturned).toBe(true);
@@ -114,7 +123,7 @@ describe("F6 — تصافُر الدفتر عند المرتجع الكامل ل
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
     await returnSale(
       { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
-        refund: { amount: "1000.00", method: "CASH" }, restock: true },
+        resolution: walkInCashResolution("1000.00") },
       actor,
     );
     expect(money(await sumCol(sale.invoiceId, "revenue")).isZero()).toBe(true);

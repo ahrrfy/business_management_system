@@ -163,6 +163,10 @@ const EXTRA_MIGRATIONS = [
   // موثوقاً على MySQL 8، فالقيمة الجديدة تلزم إعادةَ التطبيق يدوياً على قاعدة الاختبار
   // كي يمرّ `check:migrations` وتقبل الخدمة الانتقالات الجديدة.
   "drizzle/migrations/0283_add_paused_studio_campaign_status.sql",
+  // ٣١/٨/٢٦: الحالة الصادقة RESOLVED_WITH_ADJUSTMENT توسّع enum المطابقة اليومية.
+  // الملف idempotent: ALTER إلى التعريف نفسه آمن، والجدولان CREATE IF NOT EXISTS، لذا
+  // يعيد تطبيق عقد enum على قاعدة db:push ويترك جداولها وقيودها القائمة بلا استبدال.
+  "drizzle/migrations/0297_cash_variance_resolution.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

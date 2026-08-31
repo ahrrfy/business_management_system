@@ -18,6 +18,7 @@ import { findIdempotentRefId } from "./idempotency";
 import { money, round2 } from "./money";
 import { assertTelecomCollectAllowed } from "./reception/telecom";
 import { canonicalIraqiMobile } from "../lib/phone";
+import { lockMaterializedCashReceiptSourceForWrite } from "./cash/cashAvailability";
 
 export interface ReceptionCheckoutInput {
   branchId: number;
@@ -177,6 +178,19 @@ export async function checkoutReceptionInTx(
       }
       if (actor.role !== "admin" && actor.role !== "manager" && Number(current.userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع التسجيل على وردية مستخدم آخر" });
+      }
+      const writesMaterialCash =
+        (input.paymentMethod === "CASH" && money(input.paidAmount ?? "0").gt(0)) ||
+        money(input.deliveryFeeHeld ?? "0").gt(0);
+      if (writesMaterialCash) {
+        await lockMaterializedCashReceiptSourceForWrite(tx, {
+          branchId: input.branchId,
+          shiftId: input.shiftId,
+          cashBucket: "DRAWER",
+          paymentMethod: "CASH",
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+        });
       }
     }
 

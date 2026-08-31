@@ -16,6 +16,10 @@ import {
   baghdadMonthUpperExclusive,
   getMonthCloseReadiness,
 } from "../reports/monthCloseReadiness";
+import {
+  buildDailyCashEvidenceTx,
+  closeDailyCashReconciliation,
+} from "../cashDailyReconciliationService";
 import { truncateTables } from "./__testUtils__";
 
 const MONTH = "2026-07"; // شهرٌ منقضٍ: من 2026-07-01 إلى 2026-07-31
@@ -28,6 +32,10 @@ function db() {
 
 async function reset() {
   await truncateTables([
+    "auditLogs",
+    "cashVarianceCaseEvents",
+    "cashVarianceCases",
+    "cashDailyReconciliations",
     "employeeAdvanceRepaymentAllocations",
     "employeeAdvanceRepaymentRequests",
     "employeeTerminations",
@@ -43,6 +51,7 @@ async function reset() {
     "journalLines",
     "journalEntries",
     "accountingEntries",
+    "cashCustodyCounts",
     "stockAdjustmentRequests",
     "stocktakeSessions",
     "receipts",
@@ -124,8 +133,10 @@ describe("getMonthCloseReadiness — بوّابة الإقفال الشهري (�
       "openShifts",
       "payrollAccrual",
       "pendingAdvanceRepayments",
+      "pendingCashCustody",
       "pendingStockAdjustments",
       "pendingVouchers",
+      "unclosedDailyCashReconciliations",
     ]);
   });
 
@@ -135,6 +146,240 @@ describe("getMonthCloseReadiness — بوّابة الإقفال الشهري (�
     expect(it_.status).toBe("BLOCK");
     expect(it_.count).toBe(1);
     expect(blocked).toBe(true);
+  });
+
+  it("عهدة نقد خرجت من الدرج ولم يقبلها المستلم ⇒ تحجب الإقفال الشهري", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "250000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CH-20260731-0001",
+      createdBy: 1,
+      createdAt: new Date("2026-07-31T18:00:00Z"),
+    });
+
+    const custody = await item("pendingCashCustody");
+    expect(custody.item.status).toBe("BLOCK");
+    expect(custody.item.count).toBe(1);
+    expect(custody.blocked).toBe(true);
+  });
+
+  it("مطابقة نقد يومية بفرق مفتوح ⇒ تحجب الإقفال الشهري", async () => {
+    await db().insert(s.cashDailyReconciliations).values({
+      branchId: 1,
+      businessDate: "2026-07-20",
+      expectedTreasuryCash: "100000.00",
+      countedTreasuryCash: "99000.00",
+      variance: "-1000.00",
+      status: "VARIANCE_OPEN",
+      lastClientRequestId: "month-open-daily-cash",
+      evidenceHash: "a".repeat(64),
+      countedByUserId: 1,
+    });
+
+    const daily = await item("unclosedDailyCashReconciliations");
+    expect(daily.item.status).toBe("BLOCK");
+    expect(daily.item.count).toBe(1);
+    expect(daily.blocked).toBe(true);
+  });
+
+  it("مطابقة نقد يومية MATCHED غير مغلقة ⇒ تحجب الإقفال الشهري", async () => {
+    await db().insert(s.cashDailyReconciliations).values({
+      branchId: 1,
+      businessDate: "2026-07-19",
+      expectedTreasuryCash: "0.00",
+      countedTreasuryCash: "0.00",
+      variance: "0.00",
+      status: "MATCHED",
+      lastClientRequestId: "month-matched-not-closed",
+      evidenceHash: "e".repeat(64),
+      countedByUserId: 1,
+    });
+
+    const daily = await item("unclosedDailyCashReconciliations");
+    expect(daily.item).toMatchObject({ status: "BLOCK", count: 1 });
+    expect(daily.blocked).toBe(true);
+  });
+
+  it("المطابقة المحسومة بسند تصحيح تبقى حاجزاً حتى closeDaily ثم تزول بوابة النقد", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "100000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "MONTH-RESOLVED-SOURCE",
+      createdBy: 1,
+      approvedBy: 1,
+      createdAt: new Date("2026-07-20T08:00:00.000Z"),
+      approvedAt: new Date("2026-07-20T08:00:00.000Z"),
+    });
+    const evidence = await db().transaction((tx) =>
+      buildDailyCashEvidenceTx(tx, 1, "2026-07-20"),
+    );
+    const dailyId = extractInsertId(await db().insert(s.cashDailyReconciliations).values({
+      branchId: 1,
+      businessDate: "2026-07-20",
+      expectedTreasuryCash: "100000.00",
+      countedTreasuryCash: "99000.00",
+      variance: "-1000.00",
+      status: "RESOLVED_WITH_ADJUSTMENT",
+      version: 2,
+      lastClientRequestId: "month-resolved-count",
+      evidenceHash: evidence.evidenceHash,
+      countedByUserId: 1,
+    }));
+    const caseId = extractInsertId(await db().insert(s.cashVarianceCases).values({
+      branchId: 1,
+      sourceType: "DAILY_TREASURY",
+      dailyReconciliationId: dailyId,
+      sourceVersion: 1,
+      sourceReference: "DAILY:2026-07-20",
+      sourceEvidenceHash: evidence.evidenceHash,
+      expectedAmount: "100000.00",
+      actualAmount: "99000.00",
+      variance: "-1000.00",
+      reasonCode: "COUNT_ERROR",
+      reason: "عجز خزينة يومي مثبت ومعتمد بسند تصحيح",
+      evidenceReference: "evidence://month-close/resolved-daily",
+      responsibleUserId: null,
+      responsibleEmployeeId: null,
+      responsibleNameSnapshot: null,
+      countedByUserId: 1,
+      proposedByUserId: 1,
+      proposalClientRequestId: "month-resolved-proposal",
+      proposalRequestHash: "b".repeat(64),
+    }));
+    const adjustmentReceiptId = extractInsertId(await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "1000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: `CV-${caseId}`,
+      createdBy: 1,
+      approvedBy: 1,
+      createdAt: new Date("2026-08-31T08:00:00.000Z"),
+      approvedAt: new Date("2026-08-31T08:00:00.000Z"),
+    }));
+    const accountingEntryId = extractInsertId(await db().insert(s.accountingEntries).values({
+      entryType: "ADJUST",
+      postingProfile: "CASH_DAILY_SHORTAGE",
+      branchId: 1,
+      receiptId: adjustmentReceiptId,
+      amount: "1000.00",
+      entryDate: new Date("2026-08-31T00:00:00.000Z"),
+      dedupeKey: `CASH_VARIANCE:${caseId}`,
+      createdBy: 1,
+    }));
+    await db().insert(s.cashVarianceCaseEvents).values({
+      caseId,
+      version: 1,
+      eventType: "PROPOSED",
+      clientRequestId: "month-resolved-proposal-event",
+      requestHash: "c".repeat(64),
+      actorUserId: 1,
+    });
+    await db().insert(s.cashVarianceCaseEvents).values({
+      caseId,
+      version: 2,
+      eventType: "APPROVED",
+      clientRequestId: "month-resolved-approval",
+      requestHash: "d".repeat(64),
+      actorUserId: 1,
+      counterAccountRole: "LOSSES",
+      resolvedVariance: "-1000.00",
+      adjustmentReceiptId,
+      accountingEntryId,
+    });
+
+    const beforeClose = await item("unclosedDailyCashReconciliations");
+    expect(beforeClose.item).toMatchObject({ status: "BLOCK", count: 1 });
+    expect(beforeClose.blocked).toBe(true);
+
+    await closeDailyCashReconciliation(
+      { reconciliationId: dailyId, expectedVersion: 2, clientRequestId: "month-resolved-close" },
+      { userId: 1, branchId: 1, role: "admin" },
+      { user: { id: 1, branchId: 1, role: "admin", name: "مدير" }, req: { headers: {} } } as never,
+    );
+    const afterClose = await item("unclosedDailyCashReconciliations");
+    expect(afterClose.item).toMatchObject({ status: "OK", count: 0 });
+    expect(afterClose.blocked).toBe(false);
+  });
+
+  it("يوم نشاط نقدي بلا شهادة مطابقة ⇒ يحجب الإقفال الشهري", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "50000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "MONTH-DAY-WITHOUT-RECONCILIATION",
+      createdBy: 1,
+      createdAt: new Date("2026-07-20T10:00:00Z"),
+    });
+
+    const daily = await item("unclosedDailyCashReconciliations");
+    expect(daily.item.status).toBe("BLOCK");
+    expect(daily.item.count).toBe(1);
+    expect(daily.item.detail).toContain("1 بلا جرد");
+    expect(daily.blocked).toBe(true);
+  });
+
+  it("اعتماد نقدي متأخر عند حد الشهر يُنسب إلى شهر الاعتماد لا شهر الإنشاء", async () => {
+    await db().insert(s.users).values({
+      id: 2,
+      openId: "month-close-approver",
+      name: "معتمد ثانٍ",
+      role: "manager",
+      loginMethod: "local",
+    });
+    await db()
+      .insert(s.receipts)
+      .values({
+        branchId: 1,
+        direction: "IN",
+        amount: "50000.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        referenceNumber: "MONTH-DELAYED-APPROVAL",
+        createdBy: 1,
+        approvedBy: 2,
+        createdAt: new Date("2026-07-31T23:30:00.000Z"),
+        approvedAt: new Date("2026-08-01T00:30:00.000Z"),
+      });
+
+    const july = await getMonthCloseReadiness({
+      month: "2026-07",
+      branchId: 1,
+    });
+    const august = await getMonthCloseReadiness({
+      month: "2026-08",
+      branchId: 1,
+    });
+    const julyDaily = july.items.find(
+      (entry) => entry.key === "unclosedDailyCashReconciliations",
+    );
+    const augustDaily = august.items.find(
+      (entry) => entry.key === "unclosedDailyCashReconciliations",
+    );
+
+    expect(julyDaily?.count).toBe(0);
+    expect(augustDaily?.count).toBe(1);
+    expect(augustDaily?.detail).toContain("1 بلا جرد");
+    expect(august.blocked).toBe(true);
   });
 
   it("٣) سندٌ بانتظار الاعتماد مؤرَّخٌ في الشهر ⇒ حجب (قرار المالك)", async () => {
@@ -283,7 +528,8 @@ describe("getMonthCloseReadiness — بوّابة الإقفال الشهري (�
     await seedOpenShift(1, new Date("2026-07-15T10:00:00Z"));
     const res = await getMonthCloseReadiness({ month: MONTH, branchId: 1 });
     expect(res.blocked).toBe(true);
-    expect(res.items.filter((i) => i.status === "BLOCK")).toHaveLength(1);
+    expect(res.items.filter((i) => i.status === "BLOCK").length).toBeGreaterThanOrEqual(1);
+    expect(res.items.find((i) => i.key === "openShifts")?.status).toBe("BLOCK");
     expect(res.items.find((i) => i.key === "pendingVouchers")?.status).toBe(
       "OK",
     );

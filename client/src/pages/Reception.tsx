@@ -52,7 +52,7 @@ import {
 } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, round2, roundCashIQD } from "@/lib/money";
+import { D, fmt, formatIqd, round2, roundCashIQD } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { fmtDate } from "@/lib/date";
@@ -92,7 +92,7 @@ import OrderDeliveryDialog, { type OrderDeliveryValue } from "@/components/recep
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
-import type { PosTokens } from "@/components/pos/ShiftHandoverSection";
+import { ShiftHandoverSection, type PosTokens } from "@/components/pos/ShiftHandoverSection";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   getServerBridgeStatus,
@@ -206,6 +206,7 @@ export default function Reception() {
   const [opening, setOpening] = useState("0");
   const [closing, setClosing] = useState(false);
   const [counted, setCounted] = useState("");
+  const [handoverToUserId, setHandoverToUserId] = useState<number | null>(null);
   const [countEntered, setCountEntered] = useState(false);
   const branchName = useMemo(
     () => (branchesQ.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
@@ -263,9 +264,23 @@ export default function Reception() {
         // ش٤ (I14): إفصاح عرابين الطلبات غير المُثبَّتة على Z المطبوع أيضاً.
         heldDepositsCount: rep?.heldDepositsCount ?? 0,
         heldDepositsTotal: rep?.heldDepositsTotal ?? "0",
+        cashHandover: r.treasuryReturn
+          ? {
+              amount: r.countedCash,
+              referenceNumber: r.treasuryReturn.handoverNumber,
+              recipientName: r.treasuryReturn.recipientName,
+            }
+          : null,
       });
+      if (r.treasuryReturn) {
+        notify.ok(
+          `سلّم ${formatIqd(r.countedCash)} إلى ${r.treasuryReturn.recipientName}`,
+          `العهدة ${r.treasuryReturn.handoverNumber} بانتظار العدّ والقبول في الخزينة.`,
+        );
+      }
       setClosing(false);
       setCounted("");
+      setHandoverToUserId(null);
       setCountEntered(false);
       await utils.shifts.current.invalidate();
     },
@@ -2412,20 +2427,24 @@ export default function Reception() {
                     </p>
                   </div>
                 )}
-                {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود للخزينة تلقائياً عند الإغلاق. */}
-                <div className="mt-3.5 rounded-lg border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
-                  عند التأكيد سيُسجّل النظام تسليم كامل المبلغ المعدود، ويبدأ العمل القادم بمبلغ جديد.
-                </div>
+                <ShiftHandoverSection
+                  branchId={Number(shift.branchId)}
+                  amount={counted}
+                  value={handoverToUserId}
+                  onChange={setHandoverToUserId}
+                  disabled={closeShiftM.isPending}
+                />
                 <div className="mt-5 flex gap-2.5">
                   <Button variant="outline" className="flex-1" onClick={() => setClosing(false)}>
                     إلغاء
                   </Button>
                   <Button
                     className="flex-1"
-                    disabled={!counted || closeShiftM.isPending || hasRecVariance}
+                    disabled={!counted || closeShiftM.isPending || hasRecVariance || (D(counted || 0).gt(0) && handoverToUserId == null)}
                     onClick={() => closeShiftM.mutate({
                       shiftId: shift.id,
                       countedCash: counted,
+                      handoverToUserId,
                     })}
                   >
                     {closeShiftM.isPending ? "جارٍ الإنهاء…" : hasRecVariance ? "لا يمكن الإنهاء قبل حل الفرق" : "تأكيد الإنهاء وطباعة الملخص"}

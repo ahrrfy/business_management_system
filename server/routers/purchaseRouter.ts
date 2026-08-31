@@ -46,7 +46,7 @@ import {
 } from "../trpc";
 import { pauseIfRetryableDbError } from "../lib/retryDup";
 
-const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const method = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
 /**
  * دفعةُ المورّد **لحظة الاستلام**: نقديّة فقط — العقد الخادميّ يرفض غيرها منذ أوّل سطر في
  * `receivePurchase` («الدفع غير النقدي للمورد يتطلب سند صرف موثقاً بمرجع الأداة المالية»)،
@@ -57,8 +57,8 @@ const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
  * يجعل الرفض عند **حدّ العقد** (خطأ تحقّقٍ واضح) بدل عملٍ يسقط كاملاً — وهو الدرس المُوثَّق
  * في CLAUDE.md §٦: لا تُفتَح طريقةٌ قبل التحقّق أنّ الخادم يقبل حمولتها.
  *
- * ⚠️ تسويةُ الشحن/الكمرك (`shippingPaymentMethod`) تبقى على `method` الكامل: مسارها مختلف
- * تماماً — تُنشئ سند صرفٍ نظاميّاً يقبل غير النقد فعلاً.
+ * ⚠️ تسويةُ الشحن/الكمرك (`shippingPaymentMethod`) تبقى على الطرق المدعومة أعلاه: مسارها
+ * مختلف تماماً — تُنشئ طلب صرفٍ نظاميّاً يقبل غير النقد مع دليله، ولا يقبل الصكوك.
  */
 const supplierPaymentMethod = z.enum(["CASH"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على orderDate).

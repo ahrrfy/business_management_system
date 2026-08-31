@@ -7,7 +7,7 @@
  * الاتفاقيات (CLAUDE.md):
  *  - Decimal-safe: كل الأموال عبر D()/round2 (لا parseFloat).
  *  - idempotency: clientRequestId يولَّد مرة واحدة لكل جلسة محاولة.
- *  - "مرتجع مرجعي" اختياري: يُدخل المستخدم رقم/مُعرّف أمر الشراء فنجلب بنوده ونملأ السلة
+ *  - المرجع إلزامي: يختار المستخدم أمر شراء مستلماً فنجلب بنوده ونملأ السلة
  *    بالكمّيات المُستلَمة (قيد بحدّ أعلى ≤ المُستلَم − المُرتجَع سابقاً يُفرض على الخادم).
  */
 
@@ -256,7 +256,6 @@ export default function PurchaseReturnNew() {
       }
     }
 
-    const paymentMethod = state.paymentMethod;
     // تدقيق ١٧/٧: التسوية من المفتاح الصريح لا من paymentTerms العام (كان افتراضه CASH يسجّل قبضاً وهمياً).
 
     const payload = {
@@ -269,7 +268,9 @@ export default function PurchaseReturnNew() {
         quantity: D(l.qty).toString(),
       })),
       reason: state.notes?.trim() || null,
-      paymentMethod,
+      // لا منتقي طريقة دفع في هذه الشاشة: الاسترداد الفوري نقدي حصراً، والآجل خصم ذمة.
+      // تثبيت القيمة يمنع أن تتسرّب طريقة عامة (ومنها CHECK تاريخياً) من حالة محرّر الفواتير.
+      paymentMethod: "CASH" as const,
       settlement,
     };
     return { ok: true, payload };

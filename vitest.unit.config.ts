@@ -59,6 +59,8 @@ export default defineConfig({
       "client/src/pages/__tests__/assetAccrualUi.test.ts",
       "client/src/pages/__tests__/assetPendingLifecycleUi.test.ts",
       "client/src/pages/__tests__/purchaseShippingAccrualUi.test.ts",
+      "client/src/pages/__tests__/DayCloseReport.test.tsx",
+      "client/src/components/treasury/__tests__/CashVarianceResolutionPanel.test.tsx",
       "client/src/components/scan/BarcodeSearchCue.test.ts",
       "client/src/components/invoice/__tests__/paymentTerms.test.ts",
       "client/src/components/invoice/__tests__/priceCellPrecision.test.ts",

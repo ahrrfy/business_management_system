@@ -1926,6 +1926,20 @@
 			"when": 1788052347000,
 			"tag": "0295_delivery_ledger_shortfall",
 			"breakpoints": true
+		},
+		{
+			"idx": 296,
+			"version": "5",
+			"when": 1788052348000,
+			"tag": "0296_cash_daily_reconciliation",
+			"breakpoints": true
+		},
+		{
+			"idx": 297,
+			"version": "5",
+			"when": 1788052349000,
+			"tag": "0297_cash_variance_resolution",
+			"breakpoints": true
 		}
 	]
 }

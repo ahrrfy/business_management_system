@@ -91,12 +91,20 @@ describe("Idempotency — النقر المزدوج لا يُنشئ عمليات
     );
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
     const reqId = "ret-req-001";
+    const resolution = {
+      kind: "IMMEDIATE_REFUND" as const,
+      method: "CASH" as const,
+      amount: "10.00",
+      shiftId: 1,
+      reason: "إرجاع idempotency",
+      disposition: "RESTOCK" as const,
+    };
     await returnSale(
-      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" }, clientRequestId: reqId },
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], resolution, clientRequestId: reqId },
       actor,
     );
     const r2 = await returnSale(
-      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" }, clientRequestId: reqId },
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], resolution, clientRequestId: reqId },
       actor,
     );
     expect((r2 as any).idempotentReplay).toBe(true);

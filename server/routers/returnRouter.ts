@@ -25,6 +25,15 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const walkInResolution = z.object({
+  kind: z.literal("IMMEDIATE_REFUND"),
+  // تُبقي الخدمةُ التوجيهَ التجاريّ لطريقةٍ غير CASH؛ enum هنا يمنع القيم المجهولة فقط.
+  method,
+  amount: nonNegMoneyString,
+  shiftId: z.number().int().positive(),
+  reason: z.string().trim().min(3, "سبب المرتجع إلزامي (٣ أحرف على الأقل)").max(500),
+  disposition: z.enum(["RESTOCK", "DAMAGED"]),
+});
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
@@ -44,6 +53,8 @@ export const returnRouter = router({
           // مرجع عملية جهاز الدفع — إلزاميّ للردّ بالبطاقة (تفرضه الخدمة، لا مجرّد تزيين واجهة).
           reference: z.string().trim().min(1).max(100).optional(),
         }).optional(),
+        /** إلزامي خادمياً إذا كانت الفاتورة بلا customerId؛ لا يغيّر عقد العميل المسجّل. */
+        resolution: walkInResolution.optional(),
         restock: z.boolean().optional(),
         // idempotency: نفس المفتاح ⇒ مرتجع واحد (لا استرداد/إرجاع/خصم AR مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
@@ -62,7 +73,16 @@ export const returnRouter = router({
           // قد يعاكس إرسال/تسوية توصيلٍ متزامن على نفس الفاتورة (مسار «تعذّر التسليم» يستدعيه) ⇒
           // deadlock عرضيّ من MySQL؛ يمتصّه هنا. سباق المفتاح (ER_DUP) يبقى للحلقة الخارجية.
           const res = await retryOnDeadlock(() => returnSale(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role }));
-          await logAudit(ctx, { action: "return.create", entityType: "invoice", entityId: input.invoiceId, newValue: { lines: input.lines.length, refund: input.refund?.amount } });
+          await logAudit(ctx, {
+            action: "return.create", entityType: "invoice", entityId: input.invoiceId,
+            newValue: {
+              lines: input.lines.length,
+              refund: input.refund?.amount ?? input.resolution?.amount,
+              resolution: input.resolution?.kind ?? null,
+              reason: input.resolution?.reason ?? null,
+              disposition: input.resolution?.disposition ?? null,
+            },
+          });
           return res;
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue; // سباق نفس المفتاح ⇒ أعد المحاولة فيُرى المرتجع الأول replay
@@ -134,6 +154,7 @@ export const returnRouter = router({
         shiftId: z.number().int().positive().optional(),
         reference: z.string().trim().min(1).max(100).optional(),
       }).optional(),
+      resolution: walkInResolution.optional(),
       restock: z.boolean().optional(),
       clientRequestId: z.string().min(1).max(80).optional(),
     }))
@@ -158,6 +179,7 @@ export const returnRouter = router({
           invoiceId,
           lines,
           refund: input.refund,
+          resolution: input.resolution,
           restock: input.restock,
           clientRequestId: input.clientRequestId ?? `retreq-${input.requestId}`,
         }, actor);
@@ -167,7 +189,13 @@ export const returnRouter = router({
       const invoiceId = res.invoiceId;
       await logAudit(ctx, {
         action: "return.approveRequest", entityType: "invoice", entityId: invoiceId,
-        newValue: { requestId: input.requestId, refund: input.refund?.amount ?? null },
+        newValue: {
+          requestId: input.requestId,
+          refund: input.refund?.amount ?? input.resolution?.amount ?? null,
+          resolution: input.resolution?.kind ?? null,
+          reason: input.resolution?.reason ?? null,
+          disposition: input.resolution?.disposition ?? null,
+        },
       });
       return { ...res, requestId: input.requestId };
     }),
@@ -405,7 +433,9 @@ export const returnRouter = router({
     // سقفٌ خامّ لكل طريقة (قبل قصّه بقيمة المرتجع الذي لم تُحدَّد كمّياته بعد) — الشاشة تقصّه
     // لحظياً بقيمة ما اختاره الموظف، فيبقى الطرفان على معادلةٍ واحدة.
     // رافدا الردّ وحدهما (قرار المالك ١٧/٨: نقدٌ أو بطاقة) — لا تُعرَض طريقةٌ لا يريدها العمل.
-    const refundOptions = SURFACED_REFUND_METHODS.map((m) => ({
+    const isWalkIn = inv.customerId == null;
+    const surfacedMethods = isWalkIn ? (["CASH"] as const) : SURFACED_REFUND_METHODS;
+    const refundOptions = surfacedMethods.map((m) => ({
       method: m,
       cap: (caps.capByMethod.get(m) ?? money(0)).toFixed(2),
       /** صافي المقبوض بهذا الرافد (زين مطويٌّ في النقد) — إفصاحٌ يشرح للموظف مصدر المال. */
@@ -414,7 +444,9 @@ export const returnRouter = router({
       // كان يُقرأ منعاً للمرتجع كلّه على فاتورةٍ لم تُقبض (بلاغ المالك ١٨/٨) — والمرتجع بلا ردّ
       // مقبولٌ خادمياً أصلاً: يُخصَم من المتبقّي ومن ذمّة العميل.
       blockedReason: (caps.capByMethod.get(m) ?? money(0)).lte(0)
-        ? "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
+        ? isWalkIn
+          ? "لا يوجد مقبوض يغطي ردّ الزبون العابر؛ لا تسجّل المرتجع قبل ربطه بعميل أو معالجة أصل الفاتورة."
+          : "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
         : null,
     }));
 
@@ -441,6 +473,16 @@ export const returnRouter = router({
       refundPool: caps.pool.toFixed(2),
       refundOptions,
       refundShifts,
+      walkInResolutionPolicy: isWalkIn
+        ? {
+            required: true as const,
+            kind: "IMMEDIATE_REFUND" as const,
+            method: "CASH" as const,
+            exactAmountRequired: true as const,
+            reasonRequired: true as const,
+            dispositions: ["RESTOCK", "DAMAGED"] as const,
+          }
+        : null,
       id: Number(inv.id),
       invoiceNumber: inv.invoiceNumber,
       status: inv.status,

@@ -13,7 +13,7 @@ import { positiveQtyString } from "../lib/schemas";
 import { purchasesManagerProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
-const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const method = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 

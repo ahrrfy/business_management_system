@@ -1302,6 +1302,12 @@ export interface ShiftCloseData {
   /** ش٤ (I14) — عرابين محجوزة لطلبات لم تُثبَّت قُبضت على هذه الوردية (إفصاح، اختياري). */
   heldDepositsCount?: number | null;
   heldDepositsTotal?: string | number | null;
+  /** عقد الحيازة الناتج عن الإغلاق: خرج النقد من الدرج ولم يدخل الخزينة بعد. */
+  cashHandover?: {
+    amount: string | number;
+    referenceNumber: string;
+    recipientName: string;
+  } | null;
 }
 
 export function printShiftCloseBrowser(d: ShiftCloseData): void {
@@ -1458,6 +1464,15 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
     </div>
     <div style="font-size:22px;font-weight:900;direction:ltr;">${esc(varVal)}</div>
   </div>
+
+  ${d.cashHandover ? `
+  ${sectionHdr('عقد تسليم النقد')}
+  <div style="border:2px solid #000;padding:7px;margin:4px 0;font-size:12px;line-height:1.8;">
+    <div><strong>المبلغ:</strong> <span style="direction:ltr;font-weight:900;">${fmt(d.cashHandover.amount)} د.ع</span></div>
+    <div><strong>سلّم إلى:</strong> ${esc(d.cashHandover.recipientName)}</div>
+    <div><strong>رقم العهدة:</strong> <span style="direction:ltr;font-weight:900;">${esc(d.cashHandover.referenceNumber)}</span></div>
+    <div style="font-size:10px;font-weight:700;">بانتظار العدّ والقبول في الخزينة</div>
+  </div>` : ''}
 
   <!-- الإجمالي الكبير — معكوس -->
   <div style="background:#000;color:#fff;text-align:center;padding:12px 8px;
