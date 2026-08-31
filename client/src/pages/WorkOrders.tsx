@@ -54,6 +54,8 @@ import { deriveWoDeliveryState, woDeliveryStateLabel } from "@shared/workOrderDe
 import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice } from "@/lib/workOrderRefundPolicy";
+import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
+import { CancelWorkOrderDialogById } from "@/components/workorder/CancelWorkOrderDialog";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   Dialog,
@@ -1309,6 +1311,8 @@ export default function WorkOrders() {
   const [deliverOrder, setDeliverOrder] = useState<DeliverTarget | null>(null);
   const [cancelNotice, setCancelNotice] = useState<{ title: string; description: string; awaitingOwner: boolean } | null>(null);
   const [cancelRetryWorkOrderId, setCancelRetryWorkOrderId] = useState<number | null>(null);
+  /** الأمرُ المفتوحُ حوارُ إلغائه — `null` ⇒ مغلق. */
+  const [cancelTargetId, setCancelTargetId] = useState<number | null>(null);
   const [drag, setDrag] = useState<{ order: WO; x: number; y: number; overCol: string | null } | null>(null);
 
   const colRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -1374,11 +1378,28 @@ export default function WorkOrders() {
       else notify.ok(notice.title, notice.description);
       cancelRequestIdsRef.current.delete(variables.workOrderId);
       setCancelRetryWorkOrderId(null);
+      setCancelTargetId(null);
       setSel(null);
       invalidateAll();
     },
     onError: (error, variables) => {
+      /**
+       * ⚠️ رفضٌ بكودٍ صريح ≠ نتيجةٌ مجهولة. `PRECONDITION_FAILED` (مثلاً «حدّد درج الاسترداد»
+       * أو «لا وردية استقبال مفتوحة») يقع **قبل أيّ كتابة** داخل `withTx` ⇒ لم يحدث شيء
+       * يقيناً. وإلحاقُ «لم نتأكد… أعد المحاولة بالمعرّف نفسه» بكلّ خطأ كان يُنتج رسالتين
+       * متناقضتين: الخادمُ يقول ما ينقص، والشاشةُ تقول «غالباً شبكة» — فيعيد الموظّف محاولةً
+       * تفشل بنفس الطريقة أبداً، ويبقى الأمرُ موسوماً «بانتظار المالك» بلا شيءٍ معلّق.
+       * نفسُ الإصلاح جرى في [`Reception.tsx`](./Reception.tsx) (١٩/٨) ولم يُكنَس إلى هنا.
+       */
+      if (serverAnsweredDeterministically(error)) {
+        notify.err(error);
+        // الحوار يبقى مفتوحاً على سببه المذكور ليُعالَج فوراً — لا وسمَ «مجهول» ولا زرَّ إعادة.
+        setCancelRetryWorkOrderId(null);
+        setCancelNotice(null);
+        return;
+      }
       notify.err(error, "لم نتأكد من نتيجة الإلغاء؛ يمكنك إعادة المحاولة بالمعرّف نفسه دون تكرار الأثر.");
+      setCancelTargetId(null);
       setCancelRetryWorkOrderId(variables.workOrderId);
       setCancelNotice({
         title: "تعذّر التحقق من نتيجة الإلغاء",
@@ -1646,11 +1667,13 @@ export default function WorkOrders() {
     window.addEventListener("pointercancel", cancel);
   }
 
-  async function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
-    if (!(await confirm({ variant: "danger", title: "إلغاء طلب الخدمة", description: `إلغاء «${d.title}» (${d.orderNumber})؟ تُعكَس المواد المخصومة للمخزون.`, confirmText: "إلغاء الطلب", cancelText: "تراجع" }))) return;
-    const clientRequestId = cancelRequestIdsRef.current.get(d.id) ?? newClientRequestId();
-    cancelRequestIdsRef.current.set(d.id, clientRequestId);
-    cancel.mutate({ workOrderId: d.id, clientRequestId });
+  /**
+   * الإلغاء يفتح الحوار الكامل بدل `confirm()` نصّية — فيصير للسبب حقلٌ، وللخامة قرارُ هدر،
+   * **وللنقد درجٌ يُحدَّد**. الأخيرُ كان يجعل أمراً بعربونٍ نقديّ غيرَ قابلٍ للإلغاء كلّما
+   * فُتحت ورديتان: الخادم يطلب تحديد الدرج ولا حقلَ في الشاشة يُحدّده.
+   */
+  function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
+    setCancelTargetId(d.id);
   }
 
   const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1";
@@ -2075,6 +2098,23 @@ export default function WorkOrders() {
           if (!deliverOrder) return;
           if (!(await confirm({ variant: "danger", title: "تسليم الأمر وإصدار الفاتورة", description: `تسليم «${deliverOrder.title}» (${deliverOrder.orderNumber}) يُصدر فاتورة نهائية بمبلغ ${fmtAr(deliverOrder.salePrice)} د.ع ويحدّث المخزون والذمم — لا رجعة فيه. اكتب «تسليم» للتأكيد.`, confirmText: "تسليم وإصدار الفاتورة", cancelText: "تراجع", requireText: "تسليم" }))) return;
           deliver.mutate({ workOrderId: deliverOrder.id, payment });
+        }}
+      />
+      <CancelWorkOrderDialogById
+        workOrderId={cancelTargetId}
+        onOpenChange={(v) => { if (!v) setCancelTargetId(null); }}
+        pending={cancel.isPending}
+        onConfirm={(d) => {
+          if (cancelTargetId == null) return;
+          const clientRequestId = cancelRequestIdsRef.current.get(cancelTargetId) ?? newClientRequestId();
+          cancelRequestIdsRef.current.set(cancelTargetId, clientRequestId);
+          cancel.mutate({
+            workOrderId: cancelTargetId,
+            clientRequestId,
+            reason: d.reason,
+            materials: d.materials,
+            refundShiftId: d.refundShiftId,
+          });
         }}
       />
       <EditWorkOrderDialog

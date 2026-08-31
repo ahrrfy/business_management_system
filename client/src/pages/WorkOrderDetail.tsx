@@ -37,6 +37,8 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
+import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
+import { RefundDrawerPicker, useRefundDrawer } from "@/components/workorder/RefundDrawerPicker";
 
 
 /** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
@@ -204,6 +206,20 @@ export default function WorkOrderDetail() {
   const [reverseOpen, setReverseOpen] = useState(false);
   const [reverseReason, setReverseReason] = useState("");
   const [reverseReopen, setReverseReopen] = useState(false);
+  /**
+   * درجُ ردّ المقبوض عند الاسترجاع. المحفِّز هو **المقبوض فعلاً** لا طريقةُ العربون: الدفعُ
+   * عند التسليم لا يمرّ بالعربون، وقد يكون نقداً بينما العربون بطاقة. وعرضُ المنتقي بلا حاجةٍ
+   * غيرُ ضارّ (الخادم يتجاهله لغير النقد)، بينما إخفاؤه عند الحاجة **بابٌ مسدود**.
+   */
+  const reverseCashOut = D(wo.data?.invoicePaidAmount ?? 0);
+  const reverseDrawer = useRefundDrawer({
+    needed: reverseOpen && reverseCashOut.gt(0),
+    // `?? null` مقصود: الفرعُ غيرُ المحمَّل يجب أن **يعطّل** الاستعلام لا أن يعني «نطاق الخادم».
+    branchId: wo.data?.branchId ?? null,
+    requiredShiftType: "RECEPTION",
+    emptyLabel: "وردية استقبال",
+    estimatedAmount: reverseCashOut.toFixed(2),
+  });
   const reverse = trpc.workOrders.reverseDelivery.useMutation({
     onSuccess: async (r) => {
       setDone(
@@ -271,8 +287,18 @@ export default function WorkOrderDetail() {
         if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
         return;
       }
-      setCancelOutcomeUncertain(true);
-      setError(`${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
+      /**
+       * ⚠️ «مجهولٌ» ليست مرادفَ «فشل». الرفضُ بكودٍ صريح (`PRECONDITION_FAILED` مثلاً:
+       * «حدّد درج الاسترداد») يقع **قبل أيّ كتابة** داخل `withTx` ⇒ لم يحدث شيء يقيناً.
+       * وسمُه «لم يثبت الخادم التنفيذ؛ أعد المحاولة بالمعرّف نفسه» كان يدفع الموظّف لتكرار
+       * محاولةٍ تفشل بنفس الطريقة أبداً بدل معالجة السبب المذكور. نفسُ الإصلاح جرى في
+       * [`Reception.tsx`](./Reception.tsx) على بلاغٍ حيّ (١٩/٨) ولم يُكنَس إلى هنا.
+       */
+      const deterministic = serverAnsweredDeterministically(mutationError);
+      setCancelOutcomeUncertain(!deterministic);
+      setError(deterministic
+        ? mutationError.message
+        : `${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
     },
   });
 
@@ -897,14 +923,31 @@ export default function WorkOrderDetail() {
               يُعكَس قيد البيع والتكلفة، وتسقط ذمّةُ العميل غير المسدَّدة، ويُردّ المقبوض.
               ولا تعود الخامة للمخزون — استُهلكت فعلاً، واسترجاعُ الخردة تسويةُ مخزونٍ منفصلة.
             </p>
+            {reverseCashOut.gt(0) && (
+              <div className="mt-3">
+                <RefundDrawerPicker
+                  state={reverseDrawer}
+                  needed
+                  hint="وردية القبض قد تكون أُغلقت منذ أيّام — النقد يخرج من درجٍ مفتوحٍ الآن."
+                />
+              </div>
+            )}
+            {/* سببُ التعطيل مقروءٌ دائماً — زرٌّ معطَّلٌ بلا سبب هو نصفُ البابِ المسدود. */}
+            {(reverseDrawer.blockReason || reverseReason.trim().length < 3) && (
+              <p className="mt-2 text-2xs font-bold text-[var(--sem-warn)]">
+                {reverseReason.trim().length < 3 ? "اكتب سبب الاسترجاع (٣ أحرف على الأقل)." : reverseDrawer.blockReason}
+              </p>
+            )}
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setReverseOpen(false)} disabled={reverse.isPending}>تراجع</Button>
-              <Button variant="destructive" disabled={reverse.isPending || reverseReason.trim().length < 3}
+              <Button variant="destructive"
+                disabled={reverse.isPending || reverseReason.trim().length < 3 || reverseDrawer.blockReason != null}
                 onClick={() => reverse.mutate({
                   workOrderId,
                   reason: reverseReason.trim(),
                   reopen: reverseReopen,
                   clientRequestId: newClientRequestId(),
+                  refundShiftId: reverseDrawer.refundShiftId,
                 })}>
                 {reverse.isPending ? "جارٍ…" : "أكّد الاسترجاع"}
               </Button>
@@ -932,8 +975,12 @@ export default function WorkOrderDetail() {
       <CancelWorkOrderDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
+        workOrderId={workOrderId}
+        branchId={data.branchId}
         orderNumber={data.orderNumber}
         title={data.title}
+        deposit={data.deposit}
+        paymentMethod={data.paymentMethod}
         // الخامة تُعرَض فقط بعد البدء — قبله لا استهلاك، فجدولُ الهدر يكذب لو ظهر.
         materials={
           data.status === "IN_PROGRESS" || data.status === "READY"
@@ -958,6 +1005,7 @@ export default function WorkOrderDetail() {
             clientRequestId: cancelRequestIdRef.current,
             reason: d.reason,
             materials: d.materials,
+            refundShiftId: d.refundShiftId,
           });
         }}
       />
