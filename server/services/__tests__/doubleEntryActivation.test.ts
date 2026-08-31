@@ -1871,6 +1871,14 @@ describe("تغيير وضع الدفتر — انتقالات ذرّية مُد�
         "فجوة متزامنة",
         { cycleId: CYCLE_ID },
       );
+      // نفس علّة `setGapCreatedAt` أعلاه، لكنّ التثبيت هنا **داخل المعاملة** (`tx` لا `db()`):
+      // القفل محجوزٌ هنا عمداً لاختبار التنازع، فنداءٌ من اتّصالٍ آخر يتعلّق عليه ويُجمّد الاختبار.
+      // وبلا التثبيت يسقط رأسُ الفجوة خارج النافذة فيُحجَب التفعيل بـ`MISSING_JOURNALS`
+      // (مصدرٌ بلا يومية) بدل الفجوة نفسها ⇒ الاختبار يمرّ لسببٍ غير الذي يدّعيه اسمُه.
+      await tx
+        .update(s.journalEntries)
+        .set({ createdAt: new Date("2026-08-30T00:00:00.000Z") })
+        .where(eq(s.journalEntries.entryId, Number(inserted[0].id)));
       writerHasLock();
       await writerCanCommit;
     });
@@ -1898,5 +1906,13 @@ describe("تغيير وضع الدفتر — انتقالات ذرّية مُد�
     expect((await db().select().from(s.doubleEntrySettings))[0].mode).toBe(
       "SHADOW",
     );
+    // برهانُ أنّ الفجوة المُلتزَمة **رُئيت فعلاً** (ملاحظة Codex P2): رفضُ
+    // `PRECONDITION_FAILED` وحدَه لا يُثبت شيئاً هنا — `activateDoubleEntry` يستدعي
+    // `canActivate({ requireStatutoryCompliance: true })` و`seedShadow` لا يعتمد ملفاً نظامياً،
+    // فالرفضُ مضمونٌ بـ`STATUTORY_COMPLIANCE` وحدها ⇒ يبقى الاختبار أخضرَ ولو لم
+    // يُطابق التثبيتُ صفاً أو عادت الفجوة خارج النافذة. فيُقاس الأثرُ صراحةً:
+    const postGate = await canActivate({ now: NOW });
+    expect(postGate.gapCount).toBe(1);
+    expect(postGate.blockers.map((b) => b.key)).toContain("UNMAPPED_GAPS");
   });
 });
