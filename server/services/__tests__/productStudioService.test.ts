@@ -9,6 +9,7 @@ import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } fr
 import { createAppNotification } from "../appNotificationService";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
+import { discoverImageGaps, getImageHealthCounts, getTopGapCategories } from "../productStudioDiscovery";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const PNG_1X1_ALT = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nH0AAAAASUVORK5CYII=";
@@ -1211,6 +1212,97 @@ describe("product studio governed workflow", () => {
         matchKind: "BARCODE_ALIAS",
       }),
     ]);
+  });
+
+  it("resolves uppercase alphanumeric barcodes case-insensitively (Code39 / internal ALR)", async () => {
+    // انحدارٌ حقيقيّ (بلاغ المالك): باركود أبجديّ-رقميّ بأحرفٍ كبيرة — كباركودات Code39
+    // على بدائل الملازم — كان يُبلَّغ «الباركود غير معروف» في الاستوديو رغم وجود المنتج.
+    // الجذر: `contextFor` قارن حرفياً (`"MLZ6A" !== "mlz6a"`) بعد أن صغّر `normalizeSearchText`
+    // الاستعلامَ، بينما ترتيبُ حروف MySQL (لا يُميّز الحالة) وجد الصفَّ في SQL.
+    const d = db();
+    await d.insert(s.products).values({ id: 105, name: "ملزمة سادس النموذجيّة" });
+    await d.insert(s.productVariants).values({ id: 105, productId: 105, sku: "MLZ-6", costPrice: "1" });
+    await d.insert(s.productUnits).values({
+      id: 105,
+      variantId: 105,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+      barcode: "MLZ6A", // أحرف كبيرة ⇒ يُصنَّف Code39، وكان يسقط قبل الإصلاح
+    });
+    await d.insert(s.productUnitBarcodes).values({ productUnitId: 105, barcode: "ALR0001084" });
+
+    // مسحٌ بنفس الحالة (كما يعيدها الماسح الضوئيّ) ⇒ يُطابق الأساسيّ.
+    await expect(listStudioProducts(manager, { search: "MLZ6A" })).resolves.toMatchObject({
+      rows: [expect.objectContaining({ productId: 105, unitId: 105, matchKind: "BARCODE_PRIMARY" })],
+    });
+    // إدخالٌ يدويّ بأحرفٍ صغيرة للباركود الداخليّ ⇒ يُطابق البديل نفسه (بلا حساسيّة للحالة).
+    await expect(listStudioProducts(manager, { search: "alr0001084" })).resolves.toMatchObject({
+      rows: [expect.objectContaining({ productId: 105, unitId: 105, matchKind: "BARCODE_ALIAS" })],
+    });
+    // resolveStudioBarcode لم يعد يرمي NOT_FOUND على منتجٍ موجود فعلاً.
+    await expect(resolveStudioBarcode(manager, "MLZ6A")).resolves.toMatchObject({
+      productId: 105,
+      variantId: 105,
+      unitId: 105,
+      matchKind: "BARCODE_PRIMARY",
+    });
+  });
+
+  it("البديل: يُكشف بباركوده، وصورته منفصلة عن الأساس، ويظهر في كشف الناقصة ثمّ يختفي بصورته", async () => {
+    // تحقّقٌ شاملٌ لطلب المالك: (١) الاستوديو يكشف البديل بباركوده المستقلّ (يحلّه إلى
+    // متغيّر البديل بالذات)، (٢) صورةُ البديل منفصلةٌ عن الأساس — لكل باركود مسار صورته،
+    // (٣) البديلُ بلا صورةٍ خاصّة يظهر في «كشف المنتجات الناقصة صورًا»، ويختفي حين تُضاف
+    // صورتُه هو (لا تكفيه صورةُ الأساس المشتركة).
+    const d = db();
+    await d.insert(s.products).values({ id: 106, name: "ملزمة سادس — علوم" });
+    await d.insert(s.productVariants).values([
+      { id: 106, productId: 106, sku: "MLZ-SCI", variantKind: "VARIANT", isActive: true, costPrice: "1" },
+      { id: 107, productId: 106, sku: "MLZ-SCI-NASR", variantKind: "ALTERNATIVE", variantName: "طبعة النسر", isActive: true, costPrice: "1" },
+    ]);
+    await d.insert(s.productUnits).values([
+      { id: 106, variantId: 106, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "9990000010016" },
+      // باركود البديل أبجديّ-رقميّ (Code39) — عين حالة البلاغ.
+      { id: 107, variantId: 107, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "NASR-6A" },
+    ]);
+    // للأساس صورتان معتمَدتان بمعرّف متغيّره (٢ ⇒ تتجاوز فحص SINGLE_IMAGE)؛ البديل بلا صورة.
+    await d.insert(s.productImages).values([
+      { productId: 106, variantId: 106, url: "u1", reviewStatus: "APPROVED" },
+      { productId: 106, variantId: 106, url: "u2", reviewStatus: "APPROVED" },
+    ]);
+
+    // (١) الكشف: مسحُ باركود البديل الأبجديّ-رقميّ يحلّه إلى **متغيّر البديل** بالتحديد.
+    await expect(resolveStudioBarcode(manager, "NASR-6A")).resolves.toMatchObject({
+      productId: 106,
+      variantId: 107,
+      unitId: 107,
+      matchKind: "BARCODE_PRIMARY",
+    });
+
+    // (٣) البديلُ بلا صورةٍ خاصّة ⇒ المنتج يظهر «بدائل ناقصة» في كشف الفجوات (صورةُ الأساس
+    // لا تُغطّيه)، مع عدّادٍ صادق: متغيّران، واحدٌ بصورة، وواحدٌ ناقص.
+    const gap = await discoverImageGaps(manager, {});
+    expect(gap.items.find((r) => r.productId === 106)).toMatchObject({
+      state: "VARIANTS_INCOMPLETE",
+      variantCount: 2,
+      variantsWithImages: 1,
+      variantsMissing: 1,
+    });
+    // عدّادات لوحة الكشف (getImageHealthCounts) تعكس الفجوة أيضاً — لا منتجَ بلا متغيّرٍ ناقص
+    // هنا سواه، فالعدّاد ١ بالضبط. مع الفخّ غير المُصلَح كان صفراً (يُصنَّف 106 خطأً NO_IMAGES).
+    const counts = await getImageHealthCounts(manager);
+    expect(counts.counts.VARIANTS_INCOMPLETE).toBe(1);
+    // ملخّص أعلى الفئات فجوةً — المنتج بلا فئة، فتظهر فجوته في مجموعة «بلا فئة» (نفس فخّ
+    // التأهيل + التجميع). مع الفخّ كان عمود «بدائل ناقصة» صفراً كاذباً.
+    const cats = await getTopGapCategories(manager);
+    const noCategory = cats.find((c) => c.categoryId === null);
+    expect(noCategory?.variantsIncomplete ?? 0).toBeGreaterThanOrEqual(1);
+
+    // (٢) صورةُ البديل منفصلةٌ عن الأساس: إضافتُها بمعرّف متغيّر البديل تُغلق فجوته وحده،
+    // فيصير المنتج سليماً ويغيب عن الكشف الافتراضيّ (الذي يستبعد HEALTHY).
+    await d.insert(s.productImages).values({ productId: 106, variantId: 107, url: "u3", reviewStatus: "APPROVED" });
+    const afterGap = await discoverImageGaps(manager, {});
+    expect(afterGap.items.find((r) => r.productId === 106)).toBeUndefined();
   });
 
   it("normalizes Arabic variant names even when the parent product name does not match", async () => {

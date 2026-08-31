@@ -566,8 +566,17 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   const contextFor = (row: (typeof contexts)[number]) => {
     const productNorm = normalizeSearchText(row.productName);
     const variantNorm = normalizeSearchText(row.variantName ?? "");
-    if (q && row.primaryBarcode === q) return { rank: 1, kind: "BARCODE_PRIMARY" as const, barcode: q };
-    if (q && row.aliasBarcode === q) return { rank: 1, kind: "BARCODE_ALIAS" as const, barcode: q };
+    // الباركود يُطبَّع على طرفَي المقارنة معاً (كالـSKU في السطر التالي): `q` مرّ أصلاً
+    // بـ`normalizeSearchText` (الذي **يُصغّر الأحرف**)، بينما القيمة المخزّنة تصل بحالتها
+    // الأصليّة. المقارنة الحرفيّة `row.primaryBarcode === q` كانت تُسقط أيّ باركود أبجديّ-رقميّ
+    // بأحرفٍ كبيرة (Code39 والداخليّ `ALR…`) لأنّ «ABC» ≠ «abc» في JS — بينما ترتيبُ حروف
+    // MySQL (`utf8mb4_0900_ai_ci`) لا يُميّز الحالة فيجد صفّه في SQL. النتيجة: صفٌّ يُطابقه
+    // الاستعلامُ لكنّ التصنيف يسقط إلى NAME_CONTAINS، فيعيد `resolveStudioBarcode` (بلا
+    // BARCODE_PRIMARY/ALIAS) خطأ «الباركود غير معروف» على منتجٍ موجود فعلاً.
+    if (q && row.primaryBarcode != null && normalizeSearchText(row.primaryBarcode) === q)
+      return { rank: 1, kind: "BARCODE_PRIMARY" as const, barcode: row.primaryBarcode };
+    if (q && row.aliasBarcode != null && normalizeSearchText(row.aliasBarcode) === q)
+      return { rank: 1, kind: "BARCODE_ALIAS" as const, barcode: row.aliasBarcode };
     if (q && normalizeSearchText(row.sku ?? "") === q) return { rank: 2, kind: "SKU" as const, barcode: null };
     if (q && numericId > 0 && Number(row.productId) === numericId) return { rank: 2, kind: "PRODUCT_ID" as const, barcode: null };
     if (q && (productNorm.startsWith(q) || variantNorm.startsWith(q))) return { rank: 3, kind: "NAME_PREFIX" as const, barcode: null };
