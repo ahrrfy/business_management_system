@@ -10,6 +10,7 @@ import {
   productionRecipeLines,
   productionRecipes,
 } from "../../../drizzle/schema";
+import { batchMultipleNote, requiredBatchMultiple } from "../../../shared/batchDivisibility";
 import { money, round2 } from "../money";
 import { withTx } from "../tx";
 import { computeRunCosts } from "./calc";
@@ -79,6 +80,7 @@ export async function runPreview(args: {
       .orderBy(productionRecipeLines.id);
     if (!recLines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة بلا مكوّنات" });
 
+    const coefficients = recLines.map((l: any) => String(l.qtyPerOutputBase));
     const inVarIds = Array.from(new Set(recLines.map((l: any) => Number(l.inputVariantId))));
     const costMap = new Map(recLines.map((l: any) => [Number(l.inputVariantId), l.costPrice]));
 
@@ -102,11 +104,18 @@ export async function runPreview(args: {
       scrap,
     });
 
+    /*
+     * المضاعف المطلوب يُحسَب مرّةً هنا كي **تحمله رسالة الرفض**: «ليس عدداً صحيحاً» وحدها
+     * تُخبر أنّ الدفعة خطأ ولا تقول أيّها صحيح، فيبقى المستعمل يجرّب أرقاماً عشوائية.
+     */
+    const batchMultiple = requiredBatchMultiple(coefficients);
+    const multipleNote = batchMultipleNote(batchMultiple);
+
     const inputs = recLines.map((l: any) => {
       const perOut = new Decimal(l.qtyPerOutputBase);
       const consumedDec = perOut.times(calc.started);
       if (!consumedDec.isInteger()) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `استهلاك «${l.productName ?? l.inputVariantId}» (${consumedDec.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة` });
+        throw new TRPCError({ code: "BAD_REQUEST", message: `استهلاك «${l.productName ?? l.inputVariantId}» (${consumedDec.toString()}) ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة.${multipleNote ? ` ${multipleNote}` : ""}` });
       }
       const consumed = consumedDec.toNumber();
       const unitCost = round2(money(costMap.get(Number(l.inputVariantId)) ?? "0"));
