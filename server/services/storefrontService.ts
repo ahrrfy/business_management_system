@@ -9,7 +9,7 @@
  * ويطبّق **قواعد محرّك العروض نفسها** عبر snapshot مجمّعة — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, not, or, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import {
   bundleComponents,
   categories,
@@ -28,6 +28,10 @@ import { getDb } from "../db";
 import { createTtlCache } from "../lib/ttlCache";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { escLike } from "../lib/sqlLike";
+import {
+  ARABIC_NORMALIZATION_PAIRS,
+  normalizeArabicSearch,
+} from "../../shared/storefrontSearchNormalize";
 import { decodeDataUrl, productImageUrl } from "../imageRoute";
 import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
@@ -802,12 +806,31 @@ export async function storefrontCatalog(opts: {
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
   const s = String(opts.search ?? "").trim();
   if (s) {
-    // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') كبقية مسارات البحث — كان بحث «%» يطابق كل
-    // شيء ويفرض مسحاً كاملاً (اتساق/أداء؛ القيمة مربوطة أصلاً فلا حقن).
-    const p = `%${escLike(s)}%`;
+    // تطبيعٌ عربيّ مشتركٌ مع اقتراحات العميل ([`shared/storefrontSearchNormalize.ts`](../../shared/storefrontSearchNormalize.ts))
+    // — يوحّد الألفات (أ/إ/آ ⇒ ا) والتاء المربوطة (ة ⇒ ه). كان الاقتراح يظهر لحظياً لأنّ العميل
+    // يُطبّع محلياً، ثمّ يختفي حين يستبدل الخادم صفحات الكتالوج بنتائج LIKE خامّ ⇒ Codex P2 على #904.
+    // نطبّق REPLACE متسلسلاً بنفس أزواج التطبيع على العمود، ونُطبّع الاستعلام قبل ربطه ⇒ ما ظهر يبقى.
+    // الأزواج ثابتةٌ لا مدخل من المستخدم ⇒ لا حقن؛ القيمة المُطبَّعة مربوطةٌ في الوسائط.
+    // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') كبقية مسارات البحث.
+    const normalizedTerm = normalizeArabicSearch(s);
+    const p = `%${escLike(normalizedTerm)}%`;
+    // بناءُ عبارة REPLACE بحسب الترتيب — يعكس ما يفعله `normalizeArabicSearch` تماماً. توسيعُ
+    // أزواج التطبيع مستقبلاً يمرّ من ملفٍ واحد ويسري تلقائياً هنا. `LOWER` أخيراً لموازاة
+    // `toLocaleLowerCase("ar")` عميلياً — العربيّةُ لا تحمل حالةً فالفائدة للاتينيّة داخل الأسماء.
+    const arabicLike = (col: SQL | AnyColumn, pattern: string) => {
+      let expr: SQL = sql`${col}`;
+      for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
+        expr = sql`REPLACE(${expr}, ${from}, ${to})`;
+      }
+      return sql`LOWER(${expr}) LIKE ${pattern} ESCAPE '!'`;
+    };
+    // storeTitle: عنوان القناة (عرضٌ في المتجر) — كان مغيَّباً عن البحث فتنعدمُ قابليّةُ اكتشاف
+    // منتجٍ ذي عنوانٍ متجريٍّ مختلفٍ عن اسمه الداخليّ. `LIKE` على NULL = NULL ⇒ يُعامَل كاذباً في OR.
+    // barcode رقميٌّ لا يحتاج تطبيعاً عربياً؛ نُبقيه على LIKE مباشر.
     const searchCond = or(
-      sql`${products.name} LIKE ${p} ESCAPE '!'`,
-      sql`${products.brand} LIKE ${p} ESCAPE '!'`,
+      arabicLike(products.name, p),
+      arabicLike(products.storeTitle, p),
+      arabicLike(products.brand, p),
       sql`${productUnits.barcode} LIKE ${p} ESCAPE '!'`,
     );
     if (searchCond) conds.push(searchCond);
