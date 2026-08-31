@@ -112,6 +112,7 @@ export default defineConfig({
       "client/src/pages/__tests__/employmentStatusToggleContract.test.ts",
       "client/src/pages/__tests__/productionPreviewErrorSurfaced.test.ts",
       "client/src/pages/__tests__/productionCapacityAndDivisibility.test.ts",
+      "client/src/pages/__tests__/employeeTerminationOfficialPathContract.test.ts",
       "server/auth/password.test.ts",
       "server/lib/imageStore/__tests__/imageStore.test.ts",
       "server/lib/imageStore/__tests__/resilience.test.ts",
