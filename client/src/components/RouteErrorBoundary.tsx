@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { ErrorBoundary, type FallbackProps } from "react-error-boundary";
 import { useLocation } from "wouter";
 import { AlertTriangle } from "lucide-react";
+import { captureClientException } from "@/sentry";
 
 function Fallback({ error, resetErrorBoundary }: FallbackProps) {
   const ref = (error as { _ref?: string })?._ref ?? "—";
@@ -30,14 +31,10 @@ function onError(error: unknown) {
   // وسم بمرجع + إبلاغ Sentry إن كان محمّلاً (lazy، لا أثر إن غير مفعّل).
   const ref = nanoid(8);
   if (error && typeof error === "object") (error as { _ref?: string })._ref = ref;
-  const w = window as unknown as { Sentry?: { captureException?: (e: unknown, c?: unknown) => void } };
-  try {
-    w.Sentry?.captureException?.(error, { tags: { ref } });
-  } catch {
-    /* تجاهل */
-  }
+  captureClientException(error, { ref, surface: "route" });
   // سجلّ محلي للتشخيص.
-  console.error(`[RouteError ${ref}]`, error);
+  if (import.meta.env.DEV) console.error(`[RouteError ${ref}]`, error);
+  else console.error(`[RouteError ${ref}]`);
 }
 
 export function RouteErrorBoundary({ children }: { children: React.ReactNode }) {

@@ -4,8 +4,12 @@ import { addProductToCart, sanitizeCartLines } from "../lib/cart-context";
 import type { Product } from "../shared/storefront";
 
 function makeProduct(id: string): Product {
+  const numericId = Array.from(id).reduce((total, character) => total * 31 + character.charCodeAt(0), 7);
   return {
     id,
+    productId: numericId,
+    productUnitId: numericId + 100,
+    variantId: numericId + 200,
     title: `منتج ${id}`,
     subtitle: "وحدة",
     categoryId: "1",

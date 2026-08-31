@@ -5,6 +5,7 @@ import { extractAffectedRows } from "../lib/insertId";
 import { logger } from "../logger";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { withTx } from "./tx";
+import { releaseCouponReservationForOnlineOrder } from "./couponService";
 
 const DEFAULT_BATCH = 200;
 const EXPIRED_REASON = "انتهت مهلة حجز المخزون (24 ساعة) قبل تأكيد الطلب";
@@ -49,6 +50,7 @@ export async function sweepExpiredOnlineOrdersOnce(
           dueCondition,
         ),
       );
+    await releaseCouponReservationForOnlineOrder(tx, ids, EXPIRED_REASON);
     return { cancelled: extractAffectedRows(updated) };
   });
 }
