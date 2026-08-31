@@ -510,8 +510,16 @@ export default function WorkOrderDetail() {
 
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="سعر البيع" value={data.salePrice} strong />
+              {/*
+                تنبيه: `SummaryRow` **يُنسّق بنفسه** (`fmtAr` ⇒ `D(value)`)، فتمريرُ نصٍّ منسَّقٍ سلفاً
+                يُسقط الشاشة كلَّها: القيمة كانت «ناقص + fmt(العربون)» = «−70,000» بإشارةِ ناقصٍ
+                يونيكوديّة (U+2212) وفاصلةِ آلاف ⇒ `DecimalError: Invalid argument` يبتلعه حدُّ
+                الخطأ فيُظهر «حدث خطأ غير متوقّع» مكانَ الصفحة بأكملها.
+                ⇒ أيُّ أمرِ شغلٍ بعربونٍ موجب كان **يتعذّر فتح تفاصيله إطلاقاً**.
+                وبقيّةُ النداءات تُمرّر القيمةَ خامّاً؛ فلتُمرَّر هذه خامّةً سالبةً كذلك.
+              */}
               {D(data.deposit ?? 0).gt(0) && (
-                <SummaryRow label="العربون المقبوض" value={`−${fmt(data.deposit ?? "0")}`} />
+                <SummaryRow label="العربون المقبوض" value={D(data.deposit ?? 0).neg().toFixed(2)} />
               )}
               {/* Slice D (٢٩/٨/٢٦): إظهار «إجمالي ما سيدفعه العميل» شاملاً التوصيل في بطاقة الأمر —
                   بلاغ المالك: «يجب أن يعلم الزبون بالمبلغ الكلي النهائي شاملاً التوصيل». يظهر عند
