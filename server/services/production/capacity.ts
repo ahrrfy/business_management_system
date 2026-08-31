@@ -120,24 +120,54 @@ export async function recipeCapacity(args: {
     // صفٌّ غائب = رصيد صفر (لا «غير معلوم») — الصنف الذي لم يدخل الفرع قطّ يحدّ السقف بصفر.
     for (const s of stockRows) availMap.set(Number(s.variantId), Number(s.qty));
 
-    let maxByStock = Number.POSITIVE_INFINITY;
-    const raw = recLines.map((l: any) => {
+    /*
+     * **الجمعُ بالمتغيّر قبل القسمة.** الوصفة قد تحمل المتغيّر نفسه في أكثر من سطر (لا قيد
+     * فريد يمنع ذلك في المخطّط ولا في التحقّق). وقسمةُ الرصيد على كل سطرٍ **وحده** تَعِد
+     * بدفعةٍ تستهلك ضعفَ المتاح: سطران بمعامِل 1 ورصيدٌ 100 ⇒ «الأقصى 100» بينما التشغيل
+     * يحتاج 200 فيسقط عند الترحيل — والشاشة هي التي اقترحت الرقم. (أمسكها Codex على #911.)
+     *
+     * ⚠️ والقابلية للقسمة تبقى **بالسطر لا بالمجموع**: حارس `runPreview` يفحص كل سطرٍ على
+     * حدة (`perOut × batch`)، فسطران بـ0.5 يلزمهما مضاعف 2 بينما مجموعهما 1.0 لا يلزم شيئاً.
+     * ولذلك `multiple` أعلاه يُحسَب من `coefficients` السطرية، والجمعُ هنا للكفاية فقط.
+     */
+    const byVariant = new Map<
+      number,
+      { coefSum: Decimal; lineCoefs: string[]; productName: string | null; sku: string | null }
+    >();
+    for (const l of recLines as any[]) {
       const variantId = Number(l.inputVariantId);
-      const perOut = new Decimal(l.qtyPerOutputBase);
+      const coef = new Decimal(l.qtyPerOutputBase);
+      const prev = byVariant.get(variantId);
+      if (prev) {
+        prev.coefSum = prev.coefSum.plus(coef);
+        prev.lineCoefs.push(String(l.qtyPerOutputBase));
+      } else {
+        byVariant.set(variantId, {
+          coefSum: coef,
+          lineCoefs: [String(l.qtyPerOutputBase)],
+          productName: l.productName ?? null,
+          sku: l.sku ?? null,
+        });
+      }
+    }
+
+    let maxByStock = Number.POSITIVE_INFINITY;
+    const raw = Array.from(byVariant.entries()).map(([variantId, agg]) => {
       const available = Math.max(0, availMap.get(variantId) ?? 0);
       // معامِلٌ ≤ 0 لا يقيّد شيئاً (لا يُستهلك) — لا يُدخِل قسمةً على صفر.
-      const maxFromThis = perOut.gt(0)
-        ? Math.floor(new Decimal(available).div(perOut).toNumber())
+      const maxFromThis = agg.coefSum.gt(0)
+        ? Math.floor(new Decimal(available).div(agg.coefSum).toNumber())
         : Number.POSITIVE_INFINITY;
       if (maxFromThis < maxByStock) maxByStock = maxFromThis;
       return {
         variantId,
-        productName: l.productName ?? null,
-        sku: l.sku ?? null,
-        perOutputBase: perOut.toString(),
+        productName: agg.productName,
+        sku: agg.sku,
+        /** مجموع ما تستهلكه الوصفة من هذا المتغيّر لكل وحدة ناتج (عبر كل أسطره). */
+        perOutputBase: agg.coefSum.toString(),
         available,
         maxBatchFromThis: maxFromThis,
-        batchMultiple: requiredBatchMultiple([String(l.qtyPerOutputBase)]),
+        batchMultiple: requiredBatchMultiple(agg.lineCoefs),
       };
     });
 

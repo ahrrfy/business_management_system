@@ -193,7 +193,16 @@ export const productionRouter = router({
         branchId: z.number().int().positive().nullish(),
       })
     )
-    .query(({ input }) => runPreview(input)),
+    .query(({ input, ctx }) => {
+      // عزل مدير الفرع (قرار المالك ١٢/٨) — كان هذا المسار يمرّر branchId خامّاً، فيكشف
+      // **أرصدة فرعٍ آخر** في أشرطة المتاح لمدير فرعٍ يبدّل الرقم بطلبٍ مباشر. نفس تعبير
+      // `elevated` المستعمل في list/create أعلاه كي لا تنحرف السياسة داخل الراوتر الواحد.
+      const elevated = ctx.user.role === "admin";
+      const branchId = elevated
+        ? Number(input.branchId ?? ctx.user.branchId ?? 0) || null
+        : Number(ctx.user.branchId ?? 0) || null;
+      return runPreview({ ...input, branchId });
+    }),
 
   /**
    * سقفُ الإنتاج الممكن الآن + المضاعف المطلوب — **لا يأخذ دفعةً ولا يرمي عليها**.
@@ -204,10 +213,20 @@ export const productionRouter = router({
     .input(
       z.object({
         recipeId: z.number().int().positive(),
-        branchId: z.number().int().positive(),
+        // يُحترَم للأدمن وحده (اختيار فرعٍ صريح)؛ غيرُه مقصورٌ بفرعه المُسنَد مهما أرسل.
+        branchId: z.number().int().positive().optional(),
       })
     )
-    .query(({ input }) => recipeCapacity(input)),
+    .query(({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin";
+      const branchId = elevated
+        ? Number(input.branchId ?? ctx.user.branchId ?? 0)
+        : Number(ctx.user.branchId ?? 0);
+      if (!branchId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا فرع مُسنَد لحسابك — اختر الفرع أولاً." });
+      }
+      return recipeCapacity({ recipeId: input.recipeId, branchId });
+    }),
 
   create: inventoryManagerProcedure
     .input(

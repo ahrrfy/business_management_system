@@ -68,6 +68,45 @@ describe("عقد سقف الإنتاج وقابلية قسمة الدفعة", ()
     expect(preview).toMatch(/ليس عدداً صحيحاً — عدّل الدفعة أو الوصفة\.\$\{multipleNote/);
   });
 
+  /* ===== ملاحظات مراجعة Codex على #911 — كلٌّ منها مثبَّتة هنا ===== */
+
+  it("P1: الفرع يُشتقّ من الفاعل لا من الحمولة — في السقف وفي المعاينة معاً", () => {
+    // مدير فرعٍ كان يقرأ أرصدة فرعٍ آخر بتبديل الرقم في طلبٍ مباشر (عزل الفرع، قرار المالك ١٢/٨).
+    for (const handler of ["recipeCapacity", "runPreview"]) {
+      const idx = router.indexOf(handler + ":");
+      expect(idx).toBeGreaterThan(-1);
+      const body = router.slice(idx, idx + 1400);
+      expect(body).toContain('const elevated = ctx.user.role === "admin"');
+      expect(body).toContain("Number(ctx.user.branchId ?? 0)");
+    }
+    // ولا يُمرَّر input خامّاً بعد اليوم.
+    expect(router).not.toContain(".query(({ input }) => runPreview(input))");
+  });
+
+  it("P2: السقف يجمع أسطر المتغيّر الواحد قبل القسمة", () => {
+    expect(capacity).toContain("const byVariant = new Map<");
+    expect(capacity).toContain("prev.coefSum = prev.coefSum.plus(coef)");
+    expect(capacity).toContain(".div(agg.coefSum)");
+  });
+
+  it("P2: ⭐ القابلية للقسمة تبقى بالسطر لا بالمجموع", () => {
+    // حارس runPreview يفحص كل سطرٍ وحده ⇒ سطران بـ0.5 يلزمهما مضاعف 2،
+    // بينما مجموعهما 1.0 لا يلزم شيئاً. الخلط هنا كان سيجعل الشاشة تَعِد بدفعةٍ يرفضها الخادم.
+    expect(requiredBatchMultiple(["0.5", "0.5"])).toBe(2);
+    expect(requiredBatchMultiple(["1"])).toBe(1);
+    // ولذلك مصدر المضاعف في الخدمة هو الأسطر لا المجموع.
+    expect(capacity).toContain("const multiple = requiredBatchMultiple(coefficients)");
+    expect(capacity).toContain("coefficients = recLines.map");
+  });
+
+  it("P2: لا يُعلَن سقفٌ لوصفةٍ معطّلة — الترحيل يرفضها", () => {
+    expect(productionNew).toContain("capacity.data?.isActive ? capacity.data : null");
+  });
+
+  it("P2: كاش السقف يُبطَل بعد ترحيلٍ يغيّر المخزون", () => {
+    expect(productionNew).toContain("utils.production.recipeCapacity.invalidate()");
+  });
+
   it("⭐ الحساب المركّب على أرقام الشاشة الحقيقية", () => {
     // مكوّن متاحٌ منه 195,680 ومعامِله 80 لكل ناتج ⇒ الكفاية تسمح بـ2446.
     const maxByStock = Math.floor(195680 / 80);

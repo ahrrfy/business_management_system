@@ -175,13 +175,22 @@ export default function ProductionNew() {
     { recipeId: Number(recipeId), branchId: effectiveBranch },
     { enabled: mode === "recipe" && !!recipeId && !needsBranchChoice },
   );
-  const cap = capacity.data;
+  /*
+   * **لا يُعلَن سقفٌ لوصفةٍ معطّلة.** `runPreview` ومسارُ الترحيل يرفضان المعطّلة صراحةً،
+   * فإظهارُ «الأقصى الممكن إنتاجه» وزرِّ زرعه بجانب رسالة «الوصفة معطّلة» يجعل الشاشة
+   * تناقض نفسها وتدعو إلى فعلٍ محكومٍ بالفشل. (أمسكها Codex على #911: رابطٌ محفوظ
+   * `?recipe=` لوصفةٍ معطّلة، أو تعطيلُها من جلسةٍ أخرى والصفحة مفتوحة.)
+   */
+  const cap = capacity.data?.isActive ? capacity.data : null;
 
   const create = trpc.production.create.useMutation({
     onSuccess: (r: any) => {
       setClientRequestId(crypto.randomUUID());
       notify.ok("تم ترحيل المستند", `رقم ${r.docNumber} — حُدِّث المخزون.`);
       utils.production.list.invalidate();
+      // السقف مشتقٌّ من الرصيد ⇒ يُبطَل مع بقيّة قرّاء المخزون. بدونه يعيش الرقم القديم
+      // ٦٠ ثانية (staleTime العام) فيقترح الزرّ دفعةً لم يعد المخزون يحتملها.
+      utils.production.recipeCapacity.invalidate();
       utils.inventory.onHand.invalidate();
       utils.inventory.movementsRich.invalidate();
       navigate(`/production/${r.productionOrderId}`);
