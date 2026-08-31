@@ -6,6 +6,7 @@ import {
   TurnstileWidget,
   loadTurnstileScript,
   reduceTurnstileStatus,
+  turnstileStatusAllowsRetry,
 } from "./TurnstileWidget";
 
 afterEach(() => {
@@ -36,6 +37,9 @@ describe("managed Turnstile widget contract", () => {
     expect(reduceTurnstileStatus("verified", "EXPIRED")).toBe("expired");
     expect(reduceTurnstileStatus("verified", "ERROR")).toBe("error");
     expect(reduceTurnstileStatus("error", "RESET")).toBe("ready");
+    expect(turnstileStatusAllowsRetry("error")).toBe(true);
+    expect(turnstileStatusAllowsRetry("expired")).toBe(true);
+    expect(turnstileStatusAllowsRetry("verified")).toBe(false);
   });
 
   it("removes a failed script so reopening checkout performs a real retry", async () => {

@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import { addProductToCart, sanitizeCartLines } from "../lib/cart-context";
 import { canonicalIraqiLocalPhone, normalizeIraqiPhone } from "../lib/iraqi-phone";
+import { marketingCarouselGeometry } from "../lib/marketing-carousel-layout";
 import { catalogDisplayState, classifyNetworkError, formatIqd, productDiscountPercent, storefrontDisplayPrice, storefrontMutationHeaders } from "../lib/storefront-api";
 import type { Product } from "../shared/storefront";
 
 const testProduct: Product = {
   id: "test-product",
+  productId: 1,
+  productUnitId: 10,
+  variantId: 20,
   title: "منتج اختبار",
   subtitle: "وحدة",
   categoryId: "1",
@@ -18,6 +22,11 @@ const testProduct: Product = {
 };
 
 describe("واجهة كتالوج مكتبة العربية", () => {
+  it("يبقي بطاقة البطل داخل عروض الهواتف الصغيرة والقياسية", () => {
+    expect(marketingCarouselGeometry(320)).toEqual({ cardWidth: 288, sideInset: 16 });
+    expect(marketingCarouselGeometry(390)).toEqual({ cardWidth: 358, sideInset: 16 });
+  });
+
   it("ترفض السلة المخزنة القيم غير الصالحة وتفرض حد الكمية", () => {
     const restored = sanitizeCartLines([{ product: testProduct, quantity: 5_000 }, { product: null, quantity: 1 }]);
     expect(restored).toHaveLength(1);
@@ -27,8 +36,10 @@ describe("واجهة كتالوج مكتبة العربية", () => {
   it("يزيد زر الإضافة كمية المنتج نفسه في السلة مع كل ضغطة", () => {
     const firstPress = addProductToCart([], testProduct);
     const secondPress = addProductToCart(firstPress, testProduct);
-    expect(firstPress).toEqual([{ product: testProduct, quantity: 1 }]);
-    expect(secondPress).toEqual([{ product: testProduct, quantity: 2 }]);
+    expect(firstPress).toHaveLength(1);
+    expect(firstPress[0]).toMatchObject({ product: testProduct, quantity: 1, selectionDetails: { productUnitId: 10 } });
+    expect(secondPress).toHaveLength(1);
+    expect(secondPress[0]).toMatchObject({ product: testProduct, quantity: 2, selectionDetails: { productUnitId: 10 } });
   });
 
   it("يحسب شارة الخصم من السعرين الحقيقيين ويستخدم أرقاماً لاتينية", () => {

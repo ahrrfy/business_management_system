@@ -144,6 +144,15 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_loyalty_order_earn: { msg: "نقاط الولاء لهذا الطلب مُنحت مسبقاً." },
   uq_storefront_push_token_hash: { msg: "هذا الجهاز مسجّل مسبقاً لإشعارات المتجر." },
   uq_storefront_push_delivery: { msg: "تم إنشاء تسليم هذه الحملة لهذا الجهاز مسبقاً." },
+  uq_coupon_reservation_order: {
+    msg: "هذا الطلب مرتبط بحجز قسيمة مسبقاً — حدّث الطلب ولا تعِد إنشاء الحجز.",
+  },
+  uq_online_order_guest_tracking_hash: {
+    msg: "تعارض نادر عند إنشاء رمز تتبّع الضيف — أعد المحاولة لتوليد رمز جديد.",
+  },
+  uq_online_order_guest_tracking_public_id: {
+    msg: "تعارض نادر عند إنشاء معرّف تتبّع الضيف — أعد المحاولة لتوليد معرّف جديد.",
+  },
   uq_storefront_review_order_product: {
     msg: "أرسلتَ مراجعةً لهذا المنتج من هذا الطلب مسبقاً — عدّل المراجعة الموجودة بدلاً من إرسال أخرى.",
   },

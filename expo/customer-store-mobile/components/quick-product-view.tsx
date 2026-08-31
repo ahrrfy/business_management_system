@@ -3,19 +3,16 @@ import { Image } from "expo-image";
 import { router } from "expo-router";
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
-import { useCart } from "@/lib/cart-context";
 import { formatIqd, productDiscountPercent, storefrontDisplayPrice } from "@/lib/storefront-api";
 import type { Product } from "@/shared/storefront";
 
-export function QuickProductView({ product, onClose, onAddedToCart }: { product: Product | null; onClose: () => void; onAddedToCart?: () => void }) {
-  const { addProduct } = useCart();
+export function QuickProductView({ product, onClose }: { product: Product | null; onClose: () => void; onAddedToCart?: () => void }) {
   const discount = product ? productDiscountPercent(product) : null;
   if (!product) return null;
 
-  const addToCart = () => {
-    addProduct(product);
+  const chooseOptions = () => {
     onClose();
-    onAddedToCart?.();
+    router.push(`/product/${product.id}` as never);
   };
 
   return <Modal animationType="slide" transparent visible onRequestClose={onClose}>
@@ -40,8 +37,9 @@ export function QuickProductView({ product, onClose, onAddedToCart }: { product:
             {discount != null && <Text style={styles.oldPrice}>{formatIqd(product.price)}</Text>}
           </View>
         </View>
+        {product.isCustomizable && <View accessibilityLiveRegion="polite" accessibilityRole="alert" style={styles.unavailable}><MaterialIcons color="#8A5A15" name="info-outline" size={18} /><Text style={styles.unavailableText}>هذا منتج بطلب خاص، وغير متاح للطلب الإلكتروني مؤقتاً.</Text></View>}
         <View style={styles.actions}>
-          <TouchableOpacity activeOpacity={0.88} onPress={addToCart} style={styles.add}><MaterialIcons color="#FFFFFF" name="add-shopping-cart" size={19} /><Text style={styles.addText}>أضف للسلة</Text></TouchableOpacity>
+          <TouchableOpacity accessibilityHint={product.isCustomizable ? "يفتح تفاصيل حالة توفر الطلب" : "يفتح صفحة اختيار البديل ووحدة البيع"} accessibilityRole="button" activeOpacity={0.88} onPress={chooseOptions} style={styles.add}><MaterialIcons color="#FFFFFF" name={product.isCustomizable ? "info-outline" : "tune"} size={19} /><Text style={styles.addText}>{product.isCustomizable ? "عرض التفاصيل" : "اختر المواصفات"}</Text></TouchableOpacity>
           <TouchableOpacity activeOpacity={0.82} onPress={() => { onClose(); router.push(`/product/${product.id}` as never); }} style={styles.details}><Text style={styles.detailsText}>التفاصيل</Text><MaterialIcons color="#0E806A" name="arrow-back" size={18} /></TouchableOpacity>
         </View>
       </View>
@@ -59,5 +57,6 @@ const styles = StyleSheet.create({
   visual: { alignItems: "center", borderRadius: 18, height: 120, justifyContent: "center", overflow: "hidden", width: 120 }, image: { height: "100%", width: "100%" },
   discount: { backgroundColor: "#F05D53", borderRadius: 10, left: 8, paddingHorizontal: 7, paddingVertical: 4, position: "absolute", top: 8 }, discountText: { color: "#FFFFFF", fontFamily: "Cairo_800ExtraBold", fontSize: 11 },
   copy: { flex: 1 }, title: { color: "#183D36", fontFamily: "Cairo_800ExtraBold", fontSize: 17, textAlign: "right" }, subtitle: { color: "#6D817A", fontFamily: "Cairo_400Regular", fontSize: 12, marginTop: 5, textAlign: "right" }, price: { color: "#0E806A", fontFamily: "Cairo_800ExtraBold", fontSize: 16, marginTop: 11, textAlign: "right" }, oldPrice: { color: "#9BA6A1", fontFamily: "Cairo_400Regular", fontSize: 11, marginTop: 2, textAlign: "right", textDecorationLine: "line-through" },
+  unavailable: { alignItems: "flex-start", backgroundColor: "#FFF7E8", borderColor: "#EBD4A8", borderRadius: 13, borderWidth: 1, flexDirection: "row-reverse", gap: 7, marginTop: 15, padding: 10 }, unavailableText: { color: "#785923", flex: 1, fontFamily: "Cairo_600SemiBold", fontSize: 11, lineHeight: 18, textAlign: "right" },
   actions: { flexDirection: "row-reverse", gap: 10, marginTop: 20 }, add: { alignItems: "center", backgroundColor: "#0E806A", borderRadius: 15, flex: 1, flexDirection: "row-reverse", gap: 7, height: 52, justifyContent: "center" }, addText: { color: "#FFFFFF", fontFamily: "Cairo_800ExtraBold", fontSize: 14 }, details: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#0E806A", borderRadius: 15, borderWidth: 1, flexDirection: "row", gap: 5, height: 52, justifyContent: "center", paddingHorizontal: 15 }, detailsText: { color: "#0E806A", fontFamily: "Cairo_700Bold", fontSize: 13 },
 });

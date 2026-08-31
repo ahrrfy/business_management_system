@@ -12,6 +12,11 @@ import type { Readable } from "node:stream";
 
 /** الحد الواحد نفسه لعقد submit والمشتق المنشور؛ إبقاؤه مشتركاً يمنع رفض صورة اعتمدها الاستوديو. */
 export const MAX_PUBLISHED_PRODUCT_IMAGE_BYTES = 900_000;
+/** المقاسات العامة الوحيدة المسموح أن تصبح مفاتيح cache؛ تمنع cardinality غير محدودة من `w`. */
+export const PUBLIC_PRODUCT_IMAGE_WIDTHS = [320, 640, 1200] as const;
+export type PublicProductImageWidth = (typeof PUBLIC_PRODUCT_IMAGE_WIDTHS)[number];
+/** عقد thumbnail المنشور من الاستوديو (`MAX_STUDIO_THUMBNAIL_BYTES`)؛ لا نثق بتعليق schema القديم. */
+export const MAX_PUBLIC_PRODUCT_THUMBNAIL_BYTES = 128 * 1024;
 
 export interface PutResult {
   /** المفتاح المعنون-بالمحتوى المُودَع. */
