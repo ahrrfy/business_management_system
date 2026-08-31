@@ -1,12 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   drawerShortfallWarning,
-  eligibleRefundDrawers,
   pickDefaultRefundDrawer,
   refundDrawerBlockReason,
-  refundExitsCashDrawer,
   serverAnsweredDeterministically,
-  workOrderCancelNeedsCashDrawer,
   type RefundDrawerOption,
 } from "./refundDrawer";
 
@@ -15,27 +12,6 @@ const drawer = (over: Partial<RefundDrawerOption> & { shiftId: number }): Refund
   userName: "كاشير",
   shiftType: "RECEPTION",
   ...over,
-});
-
-describe("eligibleRefundDrawers — الرافدان ليسا واحداً", () => {
-  const mixed = [
-    drawer({ shiftId: 1, shiftType: "RECEPTION" }),
-    drawer({ shiftId: 2, shiftType: "POS" }),
-    drawer({ shiftId: 3, shiftType: "RECEPTION" }),
-  ];
-
-  it("مسارُ أمر الشغل يقصر على RECEPTION — درجُ POS لا يُعرَض أصلاً", () => {
-    // لو عُرِض لأعاد الخادمُ نفسَ رسالة الرفض بعد الاختيار (بابٌ مسدودٌ يرتدي ثوب الحلّ).
-    expect(eligibleRefundDrawers(mixed, "RECEPTION").map((d) => d.shiftId)).toEqual([1, 3]);
-  });
-
-  it("مسارُ التوصيل يقبل أيّ درجٍ مفتوح", () => {
-    expect(eligibleRefundDrawers(mixed, null).map((d) => d.shiftId)).toEqual([1, 2, 3]);
-  });
-
-  it("لا نوعَ مطابقاً ⇒ قائمةٌ فارغة لا تسرُّبَ فيها", () => {
-    expect(eligibleRefundDrawers(mixed, "WAREHOUSE")).toEqual([]);
-  });
 });
 
 describe("pickDefaultRefundDrawer — درجُ المنفّذ ثمّ الوحيد ثمّ لا تخمين", () => {
@@ -119,7 +95,7 @@ describe("drawerShortfallWarning — تحذيرٌ لا حجب، ولا تخمي�
    * `invoicePaidAmount` (قد يكون نصفُه بطاقة)، فتُمرّر `null`. تحذيرٌ على رقمٍ مجهول يُطالب
    * الكاشير بتمويل درجٍ لمالٍ لن يخرج منه — إسقاطُه أصدقُ من تخمينه.
    */
-  it("⭐ تقديرٌ غائب/صفر/معطوب ⇒ لا تحذير إطلاقاً", () => {
+  it("⭐ تقديرٌ غائب/صفر/معطوب ⇒ لا تحذير إطلاقاً (ولا استثناءَ يُسقط الحوار)", () => {
     expect(drawerShortfallWarning({ drawers, selectedShiftId: 2, estimatedAmount: null })).toBeNull();
     expect(drawerShortfallWarning({ drawers, selectedShiftId: 2, estimatedAmount: "0" })).toBeNull();
     expect(drawerShortfallWarning({ drawers, selectedShiftId: 2, estimatedAmount: "" })).toBeNull();
@@ -130,47 +106,17 @@ describe("drawerShortfallWarning — تحذيرٌ لا حجب، ولا تخمي�
     const unknown = [drawer({ shiftId: 9, expectedCash: null })];
     expect(drawerShortfallWarning({ drawers: unknown, selectedShiftId: 9, estimatedAmount: "70000" })).toBeNull();
   });
-});
 
-describe("refundExitsCashDrawer — رصيدُ زين يخرج نقداً", () => {
-  it("النقدُ ورصيدُ زين ⇒ درجٌ نقديّ", () => {
-    expect(refundExitsCashDrawer("CASH")).toBe(true);
-    // TELECOM بلا سكّة ردّ ⇒ يُردّ نقداً؛ إغفالُه يُخفي المنتقي عن حالةٍ تحتاجه.
-    expect(refundExitsCashDrawer("TELECOM")).toBe(true);
-  });
-
-  it("البطاقةُ والتحويلُ والمحفظة ⇒ لا درج (cashBucket = NULL)", () => {
-    expect(refundExitsCashDrawer("CARD")).toBe(false);
-    expect(refundExitsCashDrawer("TRANSFER")).toBe(false);
-    expect(refundExitsCashDrawer("WALLET")).toBe(false);
-    expect(refundExitsCashDrawer(null)).toBe(false);
-    expect(refundExitsCashDrawer(undefined)).toBe(false);
+  /**
+   * ⭐ المقارنةُ بـ`Decimal` لا بالعائم (مراجعة Codex P2): `0.10 + 0.20` بالعائم = `0.30000000000000004`
+   * فيُعلَن عجزٌ كاذبٌ أمام درجٍ فيه `0.30` بالضبط.
+   */
+  it("⭐ لا عجزَ كاذبٌ من دقّة العائم: 0.30 يغطّي 0.30", () => {
+    const cents = [drawer({ shiftId: 3, expectedCash: "0.30" })];
+    expect(drawerShortfallWarning({ drawers: cents, selectedShiftId: 3, estimatedAmount: "0.30" })).toBeNull();
   });
 });
 
-describe("workOrderCancelNeedsCashDrawer — ثلاثةُ روافدَ تُخرج نقداً", () => {
-  it("عربونٌ نقديّ ⇒ يلزم درج (حالةُ البلاغ: ٧٠٬٠٠٠ نقداً)", () => {
-    expect(workOrderCancelNeedsCashDrawer({ deposit: "70000.00", paymentMethod: "CASH", deliveryFeeHeldNet: "0" })).toBe(true);
-  });
-
-  it("عربونُ بطاقةٍ بلا أمانة ⇒ لا درجَ ولا منتقٍ يُربك", () => {
-    expect(workOrderCancelNeedsCashDrawer({ deposit: "70000.00", paymentMethod: "CARD", deliveryFeeHeldNet: "0" })).toBe(false);
-  });
-
-  it("⭐ عربونُ بطاقةٍ + أمانةُ أجرةِ توصيلٍ نقديّة ⇒ يلزم درجٌ رغم أنّ «طريقة دفع العربون» ليست نقداً", () => {
-    expect(workOrderCancelNeedsCashDrawer({ deposit: "50000", paymentMethod: "CARD", deliveryFeeHeldNet: "5000" })).toBe(true);
-  });
-
-  it("بلا عربونٍ ولا أمانة ⇒ لا درج", () => {
-    expect(workOrderCancelNeedsCashDrawer({ deposit: "0.00", paymentMethod: "CASH", deliveryFeeHeldNet: "0.00" })).toBe(false);
-    expect(workOrderCancelNeedsCashDrawer({ deposit: null, paymentMethod: null, deliveryFeeHeldNet: null })).toBe(false);
-    expect(workOrderCancelNeedsCashDrawer({ deposit: "", paymentMethod: "CASH", deliveryFeeHeldNet: "" })).toBe(false);
-  });
-
-  it("قيمٌ معطوبة لا تُشعل المنتقي كذباً", () => {
-    expect(workOrderCancelNeedsCashDrawer({ deposit: "abc", paymentMethod: "CASH", deliveryFeeHeldNet: null })).toBe(false);
-  });
-});
 
 describe("⏳ الإرجاع بعد أيّام — الوردية الأصلية مُغلقةٌ حتماً", () => {
   /**

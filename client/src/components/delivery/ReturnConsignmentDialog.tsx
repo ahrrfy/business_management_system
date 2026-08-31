@@ -6,22 +6,19 @@
  * في الفرع صار إرجاعُ طردٍ مدفوعٍ مستحيلاً برسالةٍ تطلب ما لا سبيل لإعطائه.
  *
  * ⚠️ رافدُ التوصيل يقبل **أيّ** درجٍ مفتوح (`resolveBranchCashShiftTx`) بخلاف رافد أمر الشغل
- * المقصور على `RECEPTION` — ولذلك `requiredShiftType = null` هنا.
+ * المقصور على `RECEPTION` — والتمييزُ يقع **خادمياً** في `delivery.returnPreflight`، فلا
+ * تُصفّي الشاشةُ ولا تُخمّن.
  */
 import { useEffect } from "react";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { RefundDrawerPicker, useRefundDrawer } from "@/components/workorder/RefundDrawerPicker";
+import { trpc } from "@/lib/trpc";
 
 export interface ReturnConsignmentTarget {
   consignmentId: number;
   label: string;
-  /**
-   * تقديرُ النقد الخارج — للتحذير من درجٍ لا يكفي. `null` حين لا تملكه الشاشة: عندئذٍ
-   * يُعرَض المنتقي بلا تقديرٍ بدل إخفائه (إظهارٌ زائد غيرُ ضارّ، والإخفاءُ بابٌ مسدود).
-   */
-  estimatedRefund: string | number | null;
 }
 
 export function ReturnConsignmentDialog({
@@ -35,15 +32,18 @@ export function ReturnConsignmentDialog({
   onClose: () => void;
   onConfirm: (args: { consignmentId: number; refundShiftId: number | undefined }) => void;
 }) {
+  /**
+   * **التمهيدُ الخادميّ** — يقول إن كان الطردُ يُخرج نقداً أصلاً. الافتراضُ السابق («كلُّ
+   * إرجاعٍ يُخرج نقداً») كان يُعطّل إرجاعَ طردٍ غيرِ محصَّلٍ خارج الوردية (Codex P1)، والأدراجُ
+   * تأتي مُصفّاةً **بفرع الإرسالية** فلا يُعرَض درجُ فرعٍ آخر يرفضه الخادم (Codex P2).
+   */
+  const preflightQ = trpc.delivery.returnPreflight.useQuery(
+    { consignmentId: target?.consignmentId ?? 0 },
+    { enabled: target != null, staleTime: 0 },
+  );
   const drawer = useRefundDrawer({
-    // نفترض خروجَ نقدٍ ما دام الحوار مفتوحاً: الشاشةُ لا تحمل `paidAmount` للطرد، والخادمُ
-    // يتجاهل الدرجَ حين لا يخرج نقد — فالإظهارُ آمنٌ والإخفاءُ يُعيد الحائط.
-    needed: target != null,
-    // صفوفُ التوصيل بلا `branchId` ⇒ نطاقُ الخادم هو الحاكم (`undefined` لا `null`).
-    branchId: undefined,
-    requiredShiftType: null,
+    preflight: target ? preflightQ.data ?? null : null,
     emptyLabel: "وردية",
-    estimatedAmount: target?.estimatedRefund ?? null,
   });
 
   useEffect(() => {
@@ -73,8 +73,8 @@ export function ReturnConsignmentDialog({
 
           <RefundDrawerPicker
             state={drawer}
-            needed
-            hint="إن كان قد قُبض على هذا الطرد نقدٌ، فمن هذا الدرج يخرج ردُّه."
+            needed={preflightQ.data?.needsCashDrawer === true}
+            hint="قُبض على هذا الطرد نقدٌ — من هذا الدرج يخرج ردُّه."
           />
         </div>
 

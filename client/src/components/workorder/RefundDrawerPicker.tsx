@@ -20,35 +20,23 @@ import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import {
   drawerShortfallWarning,
-  eligibleRefundDrawers,
   pickDefaultRefundDrawer,
   refundDrawerBlockReason,
   type RefundDrawerOption,
 } from "@/lib/refundDrawer";
+import type { RefundPreflight } from "@shared/refundPreflight";
 
 export interface UseRefundDrawerArgs {
-  /** هل يخرج نقدٌ فعلاً؟ `false` ⇒ لا استعلامَ ولا حجبَ ولا منتقٍ (عربونُ بطاقة/صفر). */
-  needed: boolean;
   /**
-   * فرعُ المستند — لا فرعُ المستخدم: الإلغاء قد يقع على أمرٍ في فرعٍ آخر يملكه المدير.
+   * تمهيدُ الخادم — **مصدرُ الحقيقة الوحيد**. `null` ⇒ لم يصل بعد (لا حجب، لا وعد).
    *
-   * ثلاثُ دلالاتٍ متمايزة، لا تخلطها:
-   *  · **رقمٌ**      ⇒ استعلمْ عن أدراج هذا الفرع بعينه.
-   *  · `undefined` ⇒ لا رقمَ في يد الشاشة (صفوفُ التوصيل مثلاً) ⇒ يُترك التحديدُ لنطاق
-   *    الخادم (`scopedBranchId` يسبق المُدخَل في `getOpenShifts`) — **لا تعطيل**.
-   *  · `null`      ⇒ الفرعُ لم يُحمَّل بعد ⇒ عطِّل الاستعلام حتى يصل، فلا تُعرَض قائمةٌ خطأ.
+   * ⛔ لا تُشتقّ الحاجةُ ولا المبلغُ ولا الأدراج في الشاشة: التخمينُ العميليّ أنتج ثلاثةَ
+   * حوائطَ أمسكتها مراجعة Codex (بطاقةٌ كاملة تُعطَّل · طردٌ بلا نقدٍ يُعطَّل · عربونُ مسوّدةٍ
+   * يُخفي المنتقي). التفصيل في [`shared/refundPreflight.ts`](../../../../shared/refundPreflight.ts).
    */
-  branchId: number | null | undefined;
-  /**
-   * نوعُ الوردية الذي يقبله الخادمُ على هذا المسار — **صرّح به دائماً**:
-   * `"RECEPTION"` لأوامر الشغل (`resolveLockedReceptionCashShift`)، و`null` للتوصيل
-   * والعربون (`resolveBranchCashShiftTx` يقبل أيّ درجٍ مفتوح).
-   */
-  requiredShiftType: string | null;
+  preflight: RefundPreflight | null;
   /** وصفُ الدرج في رسالة «لا يوجد» — مثلاً «وردية استقبال». */
   emptyLabel: string;
-  /** تقديرُ النقد الخارج — للتحذير من درجٍ لا يكفي (لا للحجب). */
-  estimatedAmount?: string | number | null;
 }
 
 export interface RefundDrawerState {
@@ -66,17 +54,13 @@ export interface RefundDrawerState {
 
 /** حالةُ درج الاسترداد + الافتراضُ التلقائيّ. */
 export function useRefundDrawer(args: UseRefundDrawerArgs): RefundDrawerState {
-  const { needed, branchId, requiredShiftType, emptyLabel, estimatedAmount } = args;
+  const { preflight, emptyLabel } = args;
   const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
 
+  const needed = preflight?.needsCashDrawer === true;
   const me = trpc.auth.me.useQuery(undefined, { enabled: needed });
-  const openShiftsQ = trpc.treasury.getOpenShifts.useQuery(
-    branchId == null ? {} : { branchId },
-    // `staleTime: 0` — الدرجُ يُغلَق أثناء فتح الحوار؛ قائمةٌ قديمة تُنتج اختياراً يُرفض.
-    { enabled: needed && branchId !== null, staleTime: 0 },
-  );
-
-  const drawers = eligibleRefundDrawers(openShiftsQ.data ?? [], requiredShiftType);
+  // الأدراجُ تأتي مُصفّاةً بالفرع والنوع من الخادم — لا تصفيةَ ولا استعلامَ خزينةٍ هنا.
+  const drawers = preflight?.drawers ?? [];
 
   // الافتراضُ يُعاد تقييمه كلّما تغيّرت القائمة (تحميلٌ أوّل، أو إغلاقُ درجٍ أثناء الفتح).
   useEffect(() => {
@@ -88,7 +72,7 @@ export function useRefundDrawer(args: UseRefundDrawerArgs): RefundDrawerState {
   return {
     refundShiftId: needed ? refundShiftId ?? undefined : undefined,
     blockReason: refundDrawerBlockReason({ needed, drawers, selectedShiftId: refundShiftId, emptyLabel }),
-    shortfall: drawerShortfallWarning({ drawers, selectedShiftId: refundShiftId, estimatedAmount }),
+    shortfall: drawerShortfallWarning({ drawers, selectedShiftId: refundShiftId, estimatedAmount: preflight?.estimatedCashOut ?? null }),
     drawers,
     setRefundShiftId,
     reset: () => setRefundShiftId(null),

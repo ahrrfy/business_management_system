@@ -3,6 +3,8 @@ import { failOpaque } from "../lib/opaqueFailure";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
+import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
+import { canCrossBranches } from "../lib/branchAuthority";
 import {
   auditLogs,
   customers,
@@ -1709,6 +1711,31 @@ export const workOrderRouter = router({
       branchId: ctx.user.branchId ?? 1,
       role: ctx.user.role,
       isOwner: ctx.user.isOwner,
+    })),
+
+  /**
+   * **تمهيدُ الاسترداد** — تسأله الشاشةُ قبل فتح حوار الإلغاء/الاسترجاع فتعرف يقيناً: هل يخرج
+   * نقد؟ كم؟ وما الأدراج المؤهَّلة في **فرع الأمر**؟
+   *
+   * ⚠️ **بوّابتُه بوّابةُ الفعل نفسها** (`workordersManagerProcedure`) لا `treasury:READ`:
+   * كان المنتقي يقرأ `treasury.getOpenShifts`، فدورٌ مخوَّلٌ للإلغاء وممنوعٌ من الخزينة يتلقّى
+   * FORBIDDEN ⇒ قائمةٌ فارغة ⇒ **فعلُه المصرَّح به معطَّلٌ نهائياً** (مراجعة Codex P1 #920).
+   * ولا يُسرّب سطحَ الخزينة: يُعيد أدراجَ هذا الفرع وحدها بما يلزم للاختيار.
+   */
+  refundPreflight: workordersManagerProcedure
+    .input(z.object({
+      workOrderId: z.number().int().positive(),
+      operation: z.enum(["CANCEL", "REVERSE_DELIVERY"]),
+    }))
+    .query(async ({ input, ctx }) => withTx(async (tx) => {
+      const res = await workOrderRefundPreflight(tx, input.workOrderId, input.operation);
+      if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
+      // عزلُ الفرع بنفس سلطة التنفيذ (`canCrossBranches` = admin/isOwner وحدهما، قرار المالك):
+      // التمهيدُ لا يكشف أدراجَ فرعٍ لا يملك الفاعلُ التصرّفَ فيه.
+      if (!canCrossBranches(ctx.user) && res.branchId !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
+      }
+      return res;
     })),
 
   cancellationRefundStatus: workordersReadProcedure

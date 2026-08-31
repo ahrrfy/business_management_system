@@ -1317,7 +1317,17 @@ export default function WorkOrders() {
 
   const colRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{ order: WO; startX: number; startY: number; ox: number; oy: number; moved: boolean } | null>(null);
-  const cancelRequestIdsRef = useRef(new Map<number, string>());
+  /**
+   * **حمولةُ الإلغاء كاملةً** لا معرّفُها وحده (مراجعة Codex P1 #920).
+   *
+   * كانت إعادةُ المحاولة تُرسل `{workOrderId, clientRequestId}` فقط، وقد أُضيفت إلى العقد
+   * `reason`/`materials`/`refundShiftId`. وبصمةُ الـidempotency الخادميّة تشمل هذه الحقول، فـ:
+   *  · إن كانت المحاولةُ الأولى **قد التزمت** ⇒ بصمةٌ مختلفة ⇒ تضاربٌ بدل إعادةِ النتيجة.
+   *  · وإن **لم تصل** ⇒ تُنفَّذ عمليةٌ **مختلفة عمّا أقرّه المستخدم**: كلُّ الخامة تعود
+   *    (بلا قرار هدر) وبلا الدرج المختار.
+   * ⇒ نحفظ الحمولةَ الحرفيّة ونُعيد إرسالها كما هي.
+   */
+  const cancelPayloadsRef = useRef(new Map<number, Parameters<typeof cancel.mutate>[0]>());
 
   // فلاتر خادمية مشتركة بين القائمتين والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
   const serverFilters = {
@@ -1376,7 +1386,7 @@ export default function WorkOrders() {
       setCancelNotice(notice);
       if (notice.awaitingOwner) notify.warn(notice.title, notice.description);
       else notify.ok(notice.title, notice.description);
-      cancelRequestIdsRef.current.delete(variables.workOrderId);
+      cancelPayloadsRef.current.delete(variables.workOrderId);
       setCancelRetryWorkOrderId(null);
       setCancelTargetId(null);
       setSel(null);
@@ -1751,12 +1761,14 @@ export default function WorkOrders() {
               className="mt-2 rounded-md border border-current px-3 py-1.5 text-xs font-bold disabled:opacity-50"
               disabled={cancel.isPending}
               onClick={() => {
-                const clientRequestId = cancelRequestIdsRef.current.get(cancelRetryWorkOrderId);
-                if (!clientRequestId) {
-                  notify.err("تعذّر العثور على معرّف المحاولة السابقة؛ افتح أمر الشغل للتحقق من حالته.");
+                const payload = cancelPayloadsRef.current.get(cancelRetryWorkOrderId);
+                if (!payload) {
+                  notify.err("تعذّر العثور على حمولة المحاولة السابقة؛ افتح أمر الشغل للتحقق من حالته.");
                   return;
                 }
-                cancel.mutate({ workOrderId: cancelRetryWorkOrderId, clientRequestId });
+                // الحمولةُ نفسُها حرفياً — بصمةُ الخادم تشملها، فإرسالُ ناقصٍ يُنتج تضارباً
+                // أو إلغاءً مختلفاً عمّا أقرّه المستخدم.
+                cancel.mutate(payload);
               }}
             >
               {cancel.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
@@ -2106,15 +2118,17 @@ export default function WorkOrders() {
         pending={cancel.isPending}
         onConfirm={(d) => {
           if (cancelTargetId == null) return;
-          const clientRequestId = cancelRequestIdsRef.current.get(cancelTargetId) ?? newClientRequestId();
-          cancelRequestIdsRef.current.set(cancelTargetId, clientRequestId);
-          cancel.mutate({
+          const prev = cancelPayloadsRef.current.get(cancelTargetId);
+          const payload = {
             workOrderId: cancelTargetId,
-            clientRequestId,
+            // المعرّفُ يُعاد استعماله إن وُجد ⇒ إعادةُ المحاولة تظلّ idempotent.
+            clientRequestId: prev?.clientRequestId ?? newClientRequestId(),
             reason: d.reason,
             materials: d.materials,
             refundShiftId: d.refundShiftId,
-          });
+          };
+          cancelPayloadsRef.current.set(cancelTargetId, payload);
+          cancel.mutate(payload);
         }}
       />
       <EditWorkOrderDialog

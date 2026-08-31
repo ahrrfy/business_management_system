@@ -17,7 +17,6 @@ import { Label } from "@/components/ui/label";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { estimatedWorkOrderCancelCashOut, workOrderCancelNeedsCashDrawer } from "@/lib/refundDrawer";
 import { RefundDrawerPicker, useRefundDrawer } from "./RefundDrawerPicker";
 
 export interface CancelMaterialRow {
@@ -150,25 +149,19 @@ export default function CancelWorkOrderDialog({
   const [waste, setWaste] = useState<Record<number, number>>({});
 
   /**
-   * أمانةُ أجرة التوصيل تُردّ **نقداً دائماً** عند الإلغاء ولو كان العربون بطاقة
-   * ([`cancel.ts`](../../../../server/services/workOrder/cancel.ts)) — فهي رافدٌ ثالثٌ
-   * يستوجب الدرج وحدَه.
+   * **التمهيدُ الخادميّ** بدل تخمين العربون: يشمل حصصَ العربون المطبَّقة من مسوّدة الاستقبال
+   * (`orderPayments`) وأمانةَ أجرة التوصيل معاً — وهما ما كان التخمينُ يعميه، فيُخفي المنتقي
+   * على أمرٍ يطلب الخادمُ درجَه (مراجعة Codex P1).
    */
-  const feeHeldQ = trpc.workOrders.deliveryFeeHeld.useQuery(
-    { workOrderId },
+  const preflightQ = trpc.workOrders.refundPreflight.useQuery(
+    { workOrderId, operation: "CANCEL" },
     { enabled: open, staleTime: 0 },
   );
-  const cashOutArgs = { deposit, paymentMethod, deliveryFeeHeldNet: feeHeldQ.data?.net ?? null };
-  const needsCashDrawer = workOrderCancelNeedsCashDrawer(cashOutArgs);
   const drawer = useRefundDrawer({
-    needed: open && needsCashDrawer,
-    branchId,
-    // مسارُ أمر الشغل يقصر على RECEPTION (resolveLockedReceptionCashShift) — عرضُ درج POS
-    // هنا يُعيد نفسَ رسالة الرفض بعد الاختيار.
-    requiredShiftType: "RECEPTION",
+    preflight: open ? preflightQ.data ?? null : null,
     emptyLabel: "وردية استقبال",
-    estimatedAmount: estimatedWorkOrderCancelCashOut(cashOutArgs),
   });
+  const needsCashDrawer = preflightQ.data?.needsCashDrawer === true;
 
   // فتحٌ جديد ⇒ حالةٌ نظيفة: سببٌ قديم أو درجٌ أُغلق بينهما يُنتجان تأكيداً يكذب.
   useEffect(() => {
