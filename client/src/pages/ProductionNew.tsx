@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, pct, round2 } from "@/lib/money";
+import { D, fmt, fmtInt, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
@@ -164,6 +164,18 @@ export default function ProductionNew() {
    * بلاغ المالك: «لا تقبل إلا 100». الرسالة موجودة خادمياً منذ البداية؛ ينقصها العرض.
    */
   const previewErrorMsg = preview.error?.message ?? null;
+
+  /*
+   * **سقفُ الإنتاج يُسأل عنه مستقلاً عن الدفعة.** `runPreview` يرمي على الدفعة غير الصالحة
+   * ⇒ لا يملك جواباً للسؤال «كم أستطيع؟» في اللحظة التي يُسأل فيها. ولذلك مسارٌ ثانٍ لا
+   * يأخذ دفعةً أصلاً: يبقى الرقم المقترَح ظاهراً حتى وقتَ الخطأ، وهو أنفعُ ما يُعرَض عندئذٍ.
+   * ولا يتبع `dBatch` عمداً — لا يُعاد جلبُه مع كل ضغطة حرف.
+   */
+  const capacity = trpc.production.recipeCapacity.useQuery(
+    { recipeId: Number(recipeId), branchId: effectiveBranch },
+    { enabled: mode === "recipe" && !!recipeId && !needsBranchChoice },
+  );
+  const cap = capacity.data;
 
   const create = trpc.production.create.useMutation({
     onSuccess: (r: any) => {
@@ -355,6 +367,31 @@ export default function ProductionNew() {
                         <div className="h-9 flex items-center gap-1 font-bold badge-status-active rounded-md px-3" dir="ltr">{fmt(pv?.good ?? Math.max(0, Math.trunc(Number(batch) || 0) - Math.trunc(Number(scrap) || 0)))} <span className="text-xs text-muted-foreground font-normal">{pv?.outputUnitName}</span></div>
                       </div>
                     </div>
+                    {cap && (
+                      <div className="rounded-md border bg-muted/30 p-2.5 text-sm flex flex-wrap items-center gap-x-4 gap-y-2">
+                        <span className="flex items-center gap-1.5">
+                          الأقصى الممكن إنتاجه الآن:
+                          <b className="tabular-nums" dir="ltr">{fmtInt(cap.maxBatch)}</b>
+                          <span className="text-xs text-muted-foreground">{cap.outputUnitName}</span>
+                        </span>
+                        {cap.maxBatch > 0 && (
+                          <Button type="button" variant="outline" size="sm" onClick={() => setBatch(String(cap.maxBatch))}>
+                            استعمل هذا العدد
+                          </Button>
+                        )}
+                        {cap.limitingComponent && (
+                          <span className="text-xs text-muted-foreground">المحدِّد: {cap.limitingComponent}</span>
+                        )}
+                        {cap.batchMultipleNote && (
+                          <span className="text-xs text-[var(--sem-warn)]">{cap.batchMultipleNote}</span>
+                        )}
+                        {cap.maxBatch === 0 && cap.maxByStock > 0 && (
+                          <span className="text-xs text-[var(--sem-warn)]">
+                            المخزون يكفي {fmtInt(cap.maxByStock)} فقط — دون أصغر دفعة صالحة ({fmtInt(cap.batchMultiple)}).
+                          </span>
+                        )}
+                      </div>
+                    )}
                     {previewErrorMsg && (
                       <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-sm text-destructive space-y-1">
                         <div className="font-medium">تعذّر حساب هذه الدفعة — الترحيل موقوف:</div>

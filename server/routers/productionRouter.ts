@@ -16,6 +16,7 @@ import {
   cancelProduction,
   createProduction,
   getProduction,
+  recipeCapacity,
   runPreview,
 } from "../services/productionService";
 import {
@@ -193,6 +194,20 @@ export const productionRouter = router({
       })
     )
     .query(({ input }) => runPreview(input)),
+
+  /**
+   * سقفُ الإنتاج الممكن الآن + المضاعف المطلوب — **لا يأخذ دفعةً ولا يرمي عليها**.
+   * `runPreview` يرمي عند أوّل دفعةٍ غير صالحة، فيعجز عن قول «كم أستطيع؟» في اللحظة
+   * التي يُسأل فيها. هذا المسار يُجيب دائماً كي لا تبقى الشاشة بلا رقمٍ تقترحه.
+   */
+  recipeCapacity: inventoryManagerProcedure
+    .input(
+      z.object({
+        recipeId: z.number().int().positive(),
+        branchId: z.number().int().positive(),
+      })
+    )
+    .query(({ input }) => recipeCapacity(input)),
 
   create: inventoryManagerProcedure
     .input(
