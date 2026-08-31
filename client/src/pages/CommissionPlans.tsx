@@ -28,6 +28,7 @@ import { TierPlayground } from "@/components/commissions/TierPlayground";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { iqd } from "@/lib/hr/ui";
+import { employmentStatusLabel } from "@shared/hr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Plus, Trash2, Users } from "lucide-react";
@@ -498,7 +499,7 @@ export default function CommissionPlans() {
                       <div className="font-medium whitespace-nowrap">{r.employeeName}</div>
                       <div className="text-xs text-muted-foreground whitespace-nowrap">
                         {r.position || "—"}
-                        {r.employmentStatus === "leave" ? " · في إجازة" : ""}
+                        {r.employmentStatus === "leave" ? ` · ${employmentStatusLabel("leave")}` : ""}
                       </div>
                     </td>
                     <td className="p-2 text-muted-foreground whitespace-nowrap">{r.branchName || "—"}</td>
