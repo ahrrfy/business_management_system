@@ -217,15 +217,15 @@ describe("getMonthCloseReadiness — بوّابة الإقفال الشهري (�
       referenceNumber: "MONTH-RESOLVED-SOURCE",
       createdBy: 1,
       approvedBy: 1,
-      createdAt: new Date("2026-07-20T08:00:00.000Z"),
-      approvedAt: new Date("2026-07-20T08:00:00.000Z"),
+      createdAt: new Date("2026-07-31T08:00:00.000Z"),
+      approvedAt: new Date("2026-07-31T08:00:00.000Z"),
     });
     const evidence = await db().transaction((tx) =>
-      buildDailyCashEvidenceTx(tx, 1, "2026-07-20"),
+      buildDailyCashEvidenceTx(tx, 1, "2026-07-31"),
     );
     const dailyId = extractInsertId(await db().insert(s.cashDailyReconciliations).values({
       branchId: 1,
-      businessDate: "2026-07-20",
+      businessDate: "2026-07-31",
       expectedTreasuryCash: "100000.00",
       countedTreasuryCash: "99000.00",
       variance: "-1000.00",
@@ -240,7 +240,7 @@ describe("getMonthCloseReadiness — بوّابة الإقفال الشهري (�
       sourceType: "DAILY_TREASURY",
       dailyReconciliationId: dailyId,
       sourceVersion: 1,
-      sourceReference: "DAILY:2026-07-20",
+      sourceReference: "DAILY:2026-07-31",
       sourceEvidenceHash: evidence.evidenceHash,
       expectedAmount: "100000.00",
       actualAmount: "99000.00",
@@ -305,10 +305,17 @@ describe("getMonthCloseReadiness — بوّابة الإقفال الشهري (�
     expect(beforeClose.item).toMatchObject({ status: "BLOCK", count: 1 });
     expect(beforeClose.blocked).toBe(true);
 
+    await db().insert(s.users).values({
+      id: 2,
+      openId: "month-close-independent-reviewer",
+      name: "مراجع إقفال مستقل",
+      role: "manager",
+      loginMethod: "local",
+    });
     await closeDailyCashReconciliation(
       { reconciliationId: dailyId, expectedVersion: 2, clientRequestId: "month-resolved-close" },
-      { userId: 1, branchId: 1, role: "admin" },
-      { user: { id: 1, branchId: 1, role: "admin", name: "مدير" }, req: { headers: {} } } as never,
+      { userId: 2, branchId: 1, role: "manager" },
+      { user: { id: 2, branchId: 1, role: "manager", name: "مراجع إقفال مستقل" }, req: { headers: {} } } as never,
     );
     const afterClose = await item("unclosedDailyCashReconciliations");
     expect(afterClose.item).toMatchObject({ status: "OK", count: 0 });
@@ -326,13 +333,33 @@ describe("getMonthCloseReadiness — بوّابة الإقفال الشهري (�
       approvalStatus: "APPROVED",
       referenceNumber: "MONTH-DAY-WITHOUT-RECONCILIATION",
       createdBy: 1,
-      createdAt: new Date("2026-07-20T10:00:00Z"),
+      createdAt: new Date("2026-07-31T10:00:00Z"),
     });
 
     const daily = await item("unclosedDailyCashReconciliations");
     expect(daily.item.status).toBe("BLOCK");
     expect(daily.item.count).toBe(1);
     expect(daily.item.detail).toContain("1 بلا جرد");
+    expect(daily.blocked).toBe(true);
+  });
+
+  it("رصيد خزينة مرحّل يوجب شهادة لكل يوم لاحق ولو لم توجد حركة جديدة", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "50000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "MONTH-CARRIED-CASH-WITHOUT-DAILY-COUNTS",
+      createdBy: 1,
+      createdAt: new Date("2026-07-20T10:00:00Z"),
+    });
+
+    const daily = await item("unclosedDailyCashReconciliations");
+    expect(daily.item).toMatchObject({ status: "BLOCK", count: 12 });
+    expect(daily.item.detail).toContain("12 بلا جرد");
     expect(daily.blocked).toBe(true);
   });
 
@@ -360,6 +387,22 @@ describe("getMonthCloseReadiness — بوّابة الإقفال الشهري (�
         createdAt: new Date("2026-07-31T23:30:00.000Z"),
         approvedAt: new Date("2026-08-01T00:30:00.000Z"),
       });
+    // تصفير الرصيد في يوم الاعتماد يعزل هذا الاختبار على نسبة الحدّ الشهري:
+    // يبقى 1 آب يوم نشاط مطلوباً، ولا تنشأ 30 شهادة إضافية لرصيد مرحّل.
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "50000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "MONTH-DELAYED-APPROVAL-OFFSET",
+      createdBy: 1,
+      approvedBy: 2,
+      createdAt: new Date("2026-08-01T01:00:00.000Z"),
+      approvedAt: new Date("2026-08-01T01:00:00.000Z"),
+    });
 
     const july = await getMonthCloseReadiness({
       month: "2026-07",

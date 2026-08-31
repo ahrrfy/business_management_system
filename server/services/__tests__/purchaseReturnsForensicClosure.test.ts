@@ -669,7 +669,9 @@ describe("إغلاق جنائي لمرتجع الشراء", () => {
   it("يعكس USD بنسبة لقطة الفاتورة ويمتص آخر جزء باقي التقريب مع الضريبة", async () => {
     await db().insert(s.purchaseControlSettings).values({
       branchId: 1,
-      totalToleranceAmount: "10.00",
+      // ضريبة المستند $0.02 × 1200 = 24 IQD، وحد المطابقة يساويها
+      // بالضبط؛ أي فلس إضافي يبقى HOLD لأن المقارنة strict >.
+      totalToleranceAmount: "24.00",
     });
     const source = await makeGovernedReturnSource({
       acceptedBaseQuantity: 2,
@@ -677,15 +679,15 @@ describe("إغلاق جنائي لمرتجع الشراء", () => {
       currency: "USD",
       agreedRate: "1200.0000",
       usdTotal: "0.05",
-      taxAmount: "10.00",
+      taxAmount: "0.02",
       expectedMatchOutcome: "WITHIN_TOLERANCE",
     });
     const [postedSupplier] = await db()
       .select()
       .from(s.suppliers)
       .where(eq(s.suppliers.id, 1));
-    expect(postedSupplier.currentBalance).toBe("70.00");
-    expect(postedSupplier.currentBalanceUsd).toBe("0.05");
+    expect(postedSupplier.currentBalance).toBe("84.00");
+    expect(postedSupplier.currentBalanceUsd).toBe("0.07");
 
     const firstRequest = await purchasingCaller().purchaseReturnGovernance.requestReturn({
       supplierInvoiceId: source.supplierInvoiceId,
@@ -696,7 +698,7 @@ describe("إغلاق جنائي لمرتجع الشراء", () => {
       paymentMethod: "TRANSFER",
       evidenceType: "RETURN_NOTE",
       evidenceReference: `usd-return-note-first:${randomUUID()}`,
-      reason: "إرجاع أول نصف من فاتورة USD ذات ضريبة دينارية",
+      reason: "إرجاع أول نصف من فاتورة USD ذات ضريبة بعملة المستند",
       lines: [{ matchAllocationId: source.matchAllocationId, baseQuantity: 1 }],
     });
     await approverCaller().purchaseReturnGovernance.decideReturn({
@@ -709,8 +711,8 @@ describe("إغلاق جنائي لمرتجع الشراء", () => {
       db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)).then((rows) => rows[0]!),
       db().select().from(s.supplierInvoices).where(eq(s.supplierInvoices.id, source.supplierInvoiceId)).then((rows) => rows[0]!),
     ]);
-    expect(afterFirst.currentBalance).toBe("35.00");
-    expect(afterFirst.currentBalanceUsd).toBe("0.02");
+    expect(afterFirst.currentBalance).toBe("42.00");
+    expect(afterFirst.currentBalanceUsd).toBe("0.03");
 
     const secondRequest = await purchasingCaller().purchaseReturnGovernance.requestReturn({
       supplierInvoiceId: source.supplierInvoiceId,

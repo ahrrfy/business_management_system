@@ -1,6 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { TRPCError } from "@trpc/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "../../context";
 import { cashVarianceRouter } from "../cashVarianceRouter";
+
+const serviceMocks = vi.hoisted(() => ({
+  approveCashVarianceCase: vi.fn(),
+  getCashVarianceCase: vi.fn(),
+  listCashVarianceCases: vi.fn(),
+  listCashVarianceResponsibleUsers: vi.fn(),
+  proposeCashVarianceCase: vi.fn(),
+  registerCashVarianceEvidence: vi.fn(),
+  rejectCashVarianceCase: vi.fn(),
+}));
+
+vi.mock("../../services/cashVarianceService", () => serviceMocks);
 
 function context(role: string): TrpcContext {
   return {
@@ -19,12 +32,20 @@ function context(role: string): TrpcContext {
 }
 
 describe("عقد API لفروقات النقد", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    serviceMocks.proposeCashVarianceCase.mockRejectedValue(
+      new TRPCError({ code: "NOT_FOUND", message: "مصدر فرق النقد غير موجود" }),
+    );
+  });
+
   it("يعرّض مسارات الإدراج والقراءة والقرار فقط من الراوتر المحمي", () => {
     expect(Object.keys(cashVarianceRouter._def.procedures).sort()).toEqual([
       "approve",
       "get",
       "list",
       "propose",
+      "registerEvidence",
       "reject",
       "responsibleUsers",
     ]);
@@ -39,6 +60,7 @@ describe("عقد API لفروقات النقد", () => {
     await expect(cashVarianceRouter.createCaller(context("manager")).propose({
       sourceType: "CUSTODY",
       sourceId: 1,
+      evidenceDocumentId: 701,
       reasonCode: "CUSTODY_LOSS",
       reason: "عجز مثبت بمحضر عد مستقل صالح للاختبار",
       evidenceReference: "evidence://custody/owner",
@@ -51,17 +73,24 @@ describe("عقد API لفروقات النقد", () => {
     await expect(cashVarianceRouter.createCaller(context("manager")).propose({
       sourceType: "DAILY_TREASURY",
       sourceId: 1,
+      evidenceDocumentId: 702,
       reasonCode: "COUNT_ERROR",
       reason: "فرق يومي مثبت بمحضر عد مستقل صالح للاختبار",
       evidenceReference: "evidence://daily/count",
       clientRequestId: "variance-daily-api-contract",
     })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(serviceMocks.proposeCashVarianceCase).toHaveBeenCalledWith(
+      expect.objectContaining({ evidenceDocumentId: 702 }),
+      expect.objectContaining({ userId: 91, branchId: 1, role: "manager" }),
+      expect.objectContaining({ userId: 91, branchId: 1 }),
+    );
   });
 
   it("يرفض حقن مسؤول في عقد المطابقة اليومية", async () => {
     await expect(cashVarianceRouter.createCaller(context("manager")).propose({
       sourceType: "DAILY_TREASURY",
       sourceId: 1,
+      evidenceDocumentId: 703,
       reasonCode: "COUNT_ERROR",
       reason: "فرق يومي مثبت بمحضر عد مستقل صالح للاختبار",
       evidenceReference: "evidence://daily/no-employee",
@@ -74,6 +103,7 @@ describe("عقد API لفروقات النقد", () => {
     await expect(cashVarianceRouter.createCaller(context("manager")).propose({
       sourceType: "DAILY_TREASURY",
       sourceId: 1,
+      evidenceDocumentId: 704,
       reasonCode: "CUSTODY_LOSS",
       reason: "فرق يومي لا يجوز تحميله على عهدة موظف",
       evidenceReference: "evidence://daily/not-custody",

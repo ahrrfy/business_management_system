@@ -152,7 +152,9 @@ describe("S0 — دورة اعتماد أمر الشراء", () => {
     await updatePurchaseOrder(
       {
         purchaseOrderId: second.purchaseOrderId,
+        expectedVersion: second.version,
         supplierId: 1,
+        revisionReason: "تعديل الكمية قبل الإرسال للاعتماد",
         items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "10.00" }],
       },
       editor,
@@ -190,7 +192,9 @@ describe("S0 — دورة اعتماد أمر الشراء", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: immutable.purchaseOrderId,
+          expectedVersion: await currentVersion(immutable.purchaseOrderId),
           supplierId: 1,
+          revisionReason: "محاولة تعديل أمر معتمد يجب رفضها",
           items: [{ variantId: 1, productUnitId: 1, quantity: "9", unitPrice: "9.00" }],
         },
         editor,
@@ -202,7 +206,9 @@ describe("S0 — دورة اعتماد أمر الشراء", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: raced.purchaseOrderId,
+          expectedVersion: raced.version,
           supplierId: 1,
+          revisionReason: "تعديل متزامن مع طلب الاعتماد",
           items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "20.00" }],
         },
         editor,
@@ -213,7 +219,7 @@ describe("S0 — دورة اعتماد أمر الشراء", () => {
     expect(["fulfilled", "rejected"]).toContain(updateResult.status);
 
     if (confirmResult.status === "fulfilled") {
-      await decide(confirmResult.value.requestId, "race-first-decision").catch(() => undefined);
+      await decide(confirmResult.value.requestId, "race-first-decision", editor);
     }
     let [row] = await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, raced.purchaseOrderId));
     if (row.status !== "CONFIRMED") {

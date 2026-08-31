@@ -208,6 +208,7 @@ export default defineConfig({
       "server/services/hrDevices/__tests__/runtimeTasks.test.ts",
       "server/services/hrDevices/__tests__/deviceLinkEffectiveWindow.test.ts",
       "server/routers/__tests__/periodLockAuthority.test.ts",
+      "server/routers/__tests__/cashVarianceRouter.test.ts",
       "server/routers/__tests__/purchaseP0Controls.test.ts",
       "server/routers/__tests__/purchaseGovernanceS1S2.test.ts",
       "server/routers/__tests__/salesPipelineAuthority.test.ts",
