@@ -55,15 +55,22 @@ export function deriveConsignmentView(r: ConsignmentViewInput): ConsignmentViewK
   return "CLOSED";
 }
 
-/** التسمية العربية المعتمدة — `ASSIGNED` تُطابق `WO_DELIVERY_STATE_AR` حرفياً (اسمٌ واحد للشيء الواحد). */
+/**
+ * التسمية العربية المعتمدة — `ASSIGNED` تُطابق `WO_DELIVERY_STATE_AR` حرفياً (اسمٌ واحد للشيء الواحد).
+ *
+ * Slice DFP2 (٣١/٨/٢٦): التسميات بلا تشكيل (شارات صغيرة ١١-١٢px):
+ *   خطّ الواجهة يرسم «مُ + كلمة» + تشكيل كأنّه «ف + كلمة» في الحجم الصغير
+ *   («سُلِّم» → «شلَم»، «مُسنَد» → «فسند»). المصطلحات الأدبيّة (بتشكيل كامل) في
+ *   `shared/deliveryTerminology.ts.prose` للعناوين والفقرات ذات الحجم الأكبر.
+ */
 export const CONSIGNMENT_VIEW_AR: Record<ConsignmentViewKey, string> = {
   RETURN_DECLARED: "بانتظار المرتجع",
-  FAILED: "تعذّر التسليم",
-  DELIVERED_AWAITING_REMIT: "سُلِّم — بانتظار التوريد",
+  FAILED: "تعذر التسليم",
+  DELIVERED_AWAITING_REMIT: "سلم — بانتظار التوريد",
   IN_TRANSIT: "بالطريق",
   AWAITING_STATEMENT: "بانتظار كشف الشركة",
-  ASSIGNED: "مُسنَد — لم يخرج",
-  CLOSED: "مُغلقة",
+  ASSIGNED: "مسند — لم يخرج",
+  CLOSED: "مغلقة",
 };
 
 export function consignmentViewLabel(key: ConsignmentViewKey): string {

@@ -249,11 +249,12 @@ describe("computePartyExposure — صافي المسؤوليّة (الحسبة �
 describe("قواميس التسميات + الألوان", () => {
   it("تسميات الأعمدة موجودة ومجمَّدة", () => {
     expect(Object.isFrozen(PARTY_EXPOSURE_LABEL_AR)).toBe(true);
+    // Slice DFP2 (٣١/٨/٢٦): بلا تشكيل — الخطّ يرسم «مُ + كلمة» + تشكيل خطأً في الحجم الصغير.
     expect(PARTY_EXPOSURE_LABEL_AR.cashInHand).toBe("نقد بيده");
     expect(PARTY_EXPOSURE_LABEL_AR.parcelsInTransit).toBe("طرود بالطريق");
-    expect(PARTY_EXPOSURE_LABEL_AR.deliveredUncollected).toBe("سُلِّم لم يُحصَّل");
-    expect(PARTY_EXPOSURE_LABEL_AR.feesOwedToThem).toBe("أجور مستحقّة له");
-    expect(PARTY_EXPOSURE_LABEL_AR.netResponsibility).toBe("صافي المسؤوليّة");
+    expect(PARTY_EXPOSURE_LABEL_AR.deliveredUncollected).toBe("سلم لم يحصل");
+    expect(PARTY_EXPOSURE_LABEL_AR.feesOwedToThem).toBe("أجور له");
+    expect(PARTY_EXPOSURE_LABEL_AR.netResponsibility).toBe("صافي المسؤولية");
   });
 
   it("توكينات ألوان الأعمدة موجودة ومجمَّدة", () => {

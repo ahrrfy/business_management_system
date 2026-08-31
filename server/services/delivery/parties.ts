@@ -342,7 +342,15 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
     .where(where)
     .orderBy(desc(deliveryParties.isActive), deliveryParties.name);
 
-  // عدد الشحنات المفتوحة + أقدم إرسالية لكل جهة (عهدة قائمة).
+  /**
+   * عدد الشحنات المفتوحة + أقدم إرسالية لكل جهة (عهدة قائمة).
+   *
+   * Slice DFP2 (٣١/٨/٢٦): **مصدر التعريف الوحيد** = `shared/deliveryOpenParcel.OPEN_CONSIGNMENT_STATUSES`
+   * (DISPATCHED, PARTIAL). قبل ذلك كان هذا الاستعلام يستعمل تعريفاً موسَّعاً
+   * (`parcelStatus NOT IN DELIVERED/RETURNED/CANCELLED OR moneyStatus IN UNSETTLED/PARTIAL`)
+   * فيُنتج ٦٩ طرداً حيث تُنتج `listPartyObligations` (نفس البيانات، تعريفٌ ماليّ صارم) ٧ فقط.
+   * المدير كان يقفز بين الشاشتَين فيرى رقمَين مختلفَين ⇒ ظنُّ عطبٍ نظاميّ. الآن التعريف موحَّد.
+   */
   const openAgg = await db
     .select({
       partyId: deliveryConsignments.partyId,
@@ -350,7 +358,8 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
       oldest: sql<string | null>`MIN(${deliveryConsignments.dispatchedAt})`,
     })
     .from(deliveryConsignments)
-    .where(sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)
+    // OPEN_CONSIGNMENT_STATUSES = ['DISPATCHED', 'PARTIAL'] من `shared/deliveryOpenParcel.ts`.
+    .where(sql`${deliveryConsignments.status} IN ('DISPATCHED', 'PARTIAL')`)
     .groupBy(deliveryConsignments.partyId);
   const openMap = new Map(openAgg.map((r) => [Number(r.partyId), { openCount: Number(r.openCount), oldest: r.oldest }]));
 
