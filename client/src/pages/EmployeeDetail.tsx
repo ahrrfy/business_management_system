@@ -3,11 +3,7 @@ import { DeviceLinkCard } from "@/components/hr/DeviceLinkCard";
 import { EmployeeStatementCard } from "@/components/hr/EmployeeStatementCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { UsagePanel } from "@/components/UsagePanel";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
@@ -18,8 +14,6 @@ import { type EmployeeEducation, payTypeLabel, WEEK_DAYS } from "@shared/hr";
 import { useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { PageHeader } from "@/components/PageHeader";
-
-const today = () => new Date().toISOString().slice(0, 10);
 
 function Field({ label, value, dir }: { label: string; value: React.ReactNode; dir?: "ltr" | "rtl" }) {
   return (
@@ -40,22 +34,17 @@ export default function EmployeeDetail() {
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin"; // شاشة تعديل المستخدم admin-only ⇒ لا نربطها لغير الإدارة
   const [tab, setTab] = useState("overview");
-  const [openTerminate, setOpenTerminate] = useState(false);
-  const [tDate, setTDate] = useState(today());
-  const [tReason, setTReason] = useState("");
 
   const refresh = async () => { await Promise.all([utils.employees.get.invalidate({ id }), utils.employees.list.invalidate()]); };
   const setStatus = trpc.employees.setStatus.useMutation({
     onSuccess: async (r) => {
-      // أثرا الفصل الأمنيّان يُصرَّح بهما بدل أن يمرّا صامتين.
-      const extra = [
-        r?.userDisabled ? "وعُطِّل حساب دخوله للنظام" : null,
-        // 0204: الربط لم يعد يُقطع بل يُحدُّ بيوم الإنهاء — فبصماتُ آخر يومٍ تُنسَب ولا تضيع.
-        // الرسالة القديمة («حُرّر ربطه») صارت كاذبة، والفرق ماليّ: يومُ عملٍ كامل.
-        r?.deviceLinksReleased ? `وحُدَّ ربطه بجهاز الحضور بيوم الإنهاء (${r.deviceLinksReleased})` : null,
-      ].filter(Boolean).join(" ");
-      notify.ok(`تم تحديث حالة التوظيف${extra ? ` — ${extra}` : ""}`);
-      setOpenTerminate(false); setTReason(""); await refresh();
+      // الخادم يرفض `terminated` من هذا الإجراء ويحيل للمسار الرسميّ ⇒ أثرا الفصل
+      // (تعطيلُ الحساب وحدُّ ربط الجهاز) لا يقعان هنا أبداً. الأثر الممكن الوحيد عكسيّ:
+      // إعادةُ العمل ترفع `effectiveTo` عن ربط جهاز الحضور (0207) — يُصرَّح به بدل أن
+      // يمرّ صامتاً، وإلّا ظنّ المستعمل أنّ بصمات العائد ما زالت مُهمَلة.
+      const restored = r?.deviceLinksRestored ?? 0;
+      notify.ok(`تم تحديث حالة التوظيف${restored ? ` — وأُعيد تفعيل ربطه بجهاز الحضور (${restored})` : ""}`);
+      await refresh();
     },
     onError: (e) => notify.err(e),
   });
@@ -103,7 +92,12 @@ export default function EmployeeDetail() {
             {isTerminated ? (
               <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "info", title: "إعادة الموظف للعمل", description: `إعادة الموظف «${e.fullName}» إلى الخدمة الفعّالة؟`, confirmText: "إعادة للعمل" }))) return; setStatus.mutate({ id, status: "active" }); }} disabled={setStatus.isPending}>إعادة للعمل</Button>
             ) : (
-              <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenTerminate(true)}>إنهاء الخدمة</Button>
+              // إنهاء الخدمة لا يُنفَّذ من بطاقة الموظف: `employees.setStatus` يرفض
+              // `terminated` صراحةً، والمسار الرسميّ وحده يحمل Maker-Checker وتسوية
+              // المستحقات النهائية. الزرّ يُحيل إليه بدل نافذةٍ تفشل عند كل ضغطة.
+              <Link href="/hr?tab=promotions">
+                <Button variant="outline" size="sm" className="text-destructive" title="يُنفَّذ من مسار إنهاء الخدمة الرسميّ — بتسوية مستحقات واعتماد ثانٍ">إنهاء الخدمة</Button>
+              </Link>
             )}
           </div>
         </CardContent>
@@ -240,32 +234,6 @@ export default function EmployeeDetail() {
           </Button>
         </CardContent>
       </Card>
-
-      {/* نافذة إنهاء الخدمة */}
-      <Dialog open={openTerminate} onOpenChange={(o) => { setOpenTerminate(o); if (!o) setTReason(""); }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>إنهاء خدمة الموظف</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1"><Label htmlFor="tdate">تاريخ آخر يوم عمل</Label><Input id="tdate" type="date" dir="ltr" value={tDate} onChange={(ev) => setTDate(ev.target.value)} /></div>
-            <div className="space-y-1"><Label htmlFor="treason">السبب</Label><Textarea id="treason" rows={2} value={tReason} onChange={(ev) => setTReason(ev.target.value)} placeholder="انتهاء عقد / استقالة / …" /></div>
-            {(e.userId || (e.deviceLinks ?? []).length > 0) && (
-              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs space-y-1">
-                <div className="font-medium text-[var(--sem-warn)]">سيُنفَّذ تلقائياً مع الفصل:</div>
-                <ul className="list-disc ps-4 space-y-0.5 text-muted-foreground">
-                  {e.userId && <li>تعطيل حساب دخوله للنظام وإنهاء جلساته المفتوحة فوراً.</li>}
-                  {(e.deviceLinks ?? []).length > 0 && (
-                    <li>تحرير ربطه بجهاز الحضور — كي لا تُنسب إليه بصمات موظفٍ جديد يأخذ رقمه لاحقاً. أيام حضوره المسجّلة تبقى.</li>
-                  )}
-                </ul>
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpenTerminate(false)}>إلغاء</Button>
-            <Button className="bg-destructive text-white hover:bg-destructive/90" disabled={setStatus.isPending} onClick={async () => { if (!(await confirm({ variant: "danger", title: "إنهاء خدمة الموظف", description: `إنهاء خدمة الموظف «${e.fullName}» نهائي ولا يمكن التراجع. اكتب اسم الموظف للتأكيد.`, confirmText: "إنهاء الخدمة", requireText: e.fullName }))) return; setStatus.mutate({ id, status: "terminated", terminationDate: tDate, terminationReason: tReason.trim() || undefined }); }}>{setStatus.isPending ? "جارٍ…" : "تأكيد إنهاء الخدمة"}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

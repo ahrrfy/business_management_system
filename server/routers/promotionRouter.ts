@@ -231,10 +231,15 @@ export const promotionRouter = router({
         },
       });
       // settlementVoucher != null ⇒ صُدِّر سند صرف مُعلَّق للتسوية ينتظر اعتماد مديرٍ آخر (فصل مهام #٦).
+      // والأثران الأمنيّان يُعادان للشاشة لا للتدقيق وحده: تعطيلُ حساب الدخول وحدُّ ربط جهاز
+      // الحضور فعلان يقعان بلا طلبٍ صريح من المُنفِّذ، فمرورهما صامتَين يترك مديراً يظنّ
+      // الحساب حيّاً وقد عُطِّل — وهما مسجَّلان في التدقيق أعلاه أصلاً، فلا كشفَ جديد.
       return {
         id: res.terminationId,
         settlementVoucher: res.settlementVoucher,
         recognition: res.recognition,
+        userDisabled: res.userDisabled,
+        deviceLinksReleased: res.deviceLinksReleased,
       };
     }),
 

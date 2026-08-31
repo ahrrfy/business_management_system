@@ -191,6 +191,7 @@ export default function Promotions() {
   const [tEvidenceNote, setTEvidenceNote] = useState("");
   const [tZeroAmountsAttested, setTZeroAmountsAttested] = useState(false);
   const [tReason, setTReason] = useState("");
+  const selectedTermEmp = useMemo(() => activeEmps.find((e) => String(e.id) === tEmp), [activeEmps, tEmp]);
   const tSettlement = terminationSettlementTotal(tBreakdown);
   const tEarnedNet = terminationEarnedNet(tBreakdown);
   const advanceBalance = trpc.payroll.advanceBalance.useQuery(
@@ -238,11 +239,17 @@ export default function Promotions() {
   });
   const completeTerm = trpc.promotions.completeTermination.useMutation({
     onSuccess: async (data) => {
+      // الأثران الأمنيّان يُصرَّح بهما بدل أن يمرّا صامتين — الخدمة تُرجعهما فعلاً.
+      const sideEffects = [
+        data?.userDisabled ? "وعُطِّل حساب دخوله للنظام" : null,
+        data?.deviceLinksReleased ? `وحُدَّ ربطه بجهاز الحضور بيوم العمل الأخير (${data.deviceLinksReleased})` : null,
+      ].filter(Boolean).join(" ");
+      const suffix = sideEffects ? ` — ${sideEffects}` : "";
       if (data?.settlementVoucher) {
         // تسوية المستحقات صارت سند صرفٍ مُعلَّق يعتمده مديرٌ آخر (فصل مهام #٦) — أبلِغ المستخدم بوجهة الفعل.
-        notify.ok(`اكتمل إنهاء الخدمة. تسوية المستحقات صُدِّرت كسند صرف مُعلَّق (${data.settlementVoucher.voucherNumber}) — يعتمده مديرٌ آخر من شاشة السندات.`);
+        notify.ok(`اكتمل إنهاء الخدمة${suffix}. تسوية المستحقات صُدِّرت كسند صرف مُعلَّق (${data.settlementVoucher.voucherNumber}) — يعتمده مديرٌ آخر من شاشة السندات.`);
       } else {
-        notify.ok("اكتمل إنهاء الخدمة وأُنهيت خدمة الموظف");
+        notify.ok(`اكتمل إنهاء الخدمة وأُنهيت خدمة الموظف${suffix}`);
       }
       await Promise.all([utils.promotions.listTerminations.invalidate(), utils.employees.list.invalidate()]);
     },
@@ -788,6 +795,19 @@ export default function Promotions() {
               </div>
               <div className="space-y-1"><Label htmlFor="t-lastday">آخر يوم عمل</Label><Input id="t-lastday" type="date" dir="ltr" value={tLastDay} onChange={(e) => setTLastDay(e.target.value)} /></div>
             </div>
+            {selectedTermEmp && (selectedTermEmp.userId != null || selectedTermEmp.deviceLinked) && (
+              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs space-y-1" data-testid="termination-preflight">
+                <div className="font-medium text-[var(--sem-warn)]">سيُنفَّذ تلقائياً عند إكمال الإجراء (لا عند تسجيله):</div>
+                <ul className="list-disc ps-4 space-y-0.5 text-muted-foreground">
+                  {selectedTermEmp.userId != null && <li>تعطيل حساب دخوله للنظام وإنهاء جلساته المفتوحة فوراً.</li>}
+                  {selectedTermEmp.deviceLinked && (
+                    // حدٌّ لا قطع (0207): الإكمال يقع بعد يوم العمل الأخير، فقطعُ الربط
+                    // يمحو نسبةَ بصمات ذلك اليوم إن لم تُطوَ بعد — وهو يومُ أجرٍ كامل.
+                    <li>حدُّ ربطه بجهاز الحضور بيوم العمل الأخير ({tLastDay}) — بصماتُ ذلك اليوم تُنسَب إليه، وما بعده لا يُنسب. أيام حضوره المسجّلة تبقى.</li>
+                  )}
+                </ul>
+              </div>
+            )}
             <div className="rounded-md border p-3 space-y-3" data-testid="termination-breakdown">
               <div>
                 <div className="text-sm font-medium">تفكيك التسوية اليدوي المعتمد</div>
