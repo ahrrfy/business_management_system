@@ -35,7 +35,7 @@ describe("عقد مسار إنهاء الخدمة الرسميّ", () => {
 
   it("زرّ «إنهاء الخدمة» في بطاقة الموظف يُحيل إلى المسار الرسميّ", () => {
     const page = readPage("EmployeeDetail.tsx");
-    expect(page).toMatch(/<Link href="\/hr\?tab=promotions">/);
+    expect(page).toContain('/hr?tab=promotions&sub=terminations&employee=${id}');
     // الزرّ نفسه داخل الرابط — لا `onClick` يفتح نافذةً محلّية.
     expect(page).not.toMatch(/setOpenTerminate/);
     expect(page).not.toMatch(/openTerminate/);
@@ -90,5 +90,49 @@ describe("التحذير القَبْليّ لأثري الإكمال في ال�
   it("الأثران يُصرَّح بهما بعد الإكمال أيضاً — الخدمة تُرجعهما", () => {
     expect(page).toMatch(/data\?\.userDisabled/);
     expect(page).toMatch(/data\?\.deviceLinksReleased/);
+  });
+});
+
+/**
+ * الرابط وحده لا يكفي (Codex P2، ٣١/٨): «tab=promotions» يختار تبويبَ الـhub فقط،
+ * وشاشةُ الترقيات تبدأ على تبويبها الداخليّ «promotions» — **وزرّ «إنهاء خدمة» لا
+ * يُرسَم أصلاً إلا على تبويب الإنهاءات** (actions مشروطة بالتبويب). فالهبوط كان يلزمه
+ * نقرتان وإعادةُ انتقاءٍ من قائمةٍ بمئتَي اسم لفعلٍ ماليٍّ لا رجعة فيه.
+ */
+describe("عقد نيّة الإنهاء المحمولة في الرابط", () => {
+  const page = readPage("Promotions.tsx");
+
+  it("«إنهاء خدمة» محجوب على التبويب الداخليّ الافتراضيّ — سببُ وجود sub", () => {
+    expect(page).toContain("const [tab, setTab] = useState(");
+    // شرطُ الزرّ نفسه: بلا التبويب الصحيح لا يُرسَم الزرّ إطلاقاً.
+    expect(page).toContain('tab === "promotions"');
+  });
+
+  it("التبويب الداخليّ يُشتقّ من sub لا من ثابتٍ وحده", () => {
+    expect(page).toContain('get("sub") === "terminations"');
+  });
+
+  it("employee يُنتقى سلفاً وتُفتح النافذة به", () => {
+    expect(page).toContain('get("employee")');
+    expect(page).toContain("setTEmp(String(match.id))");
+    expect(page).toContain("setTermOpen(true)");
+  });
+
+  it("لا حكمَ بالغياب قبل وصول القائمة، ولا نافذةَ بموظفٍ غير مُنتقى", () => {
+    // الحكم المبكر يجعل كلّ رابطٍ «غير مُدرَج»؛ وفتحُ النافذة بلا انتقاء يدعو المستعمل
+    // لاختيار الاسم المجاور — وهو الخطر عينه الذي جاء الرابط ليُغلقه.
+    expect(page).toContain("if (!employees.isSuccess) return;");
+    expect(page).toContain("if (!match) {");
+    expect(page).toContain('notify.err("هذا الموظف غير مُدرَج');
+  });
+
+  it("النيّة تُطبَّق مرّةً لكل رابط — لا تُعيد فتح النافذة بعد إغلاقها", () => {
+    expect(page).toContain("subIntentRef");
+    expect(page).toContain("empIntentRef.current === search");
+  });
+
+  it("useSearch تفاعليّ ⇒ يعمل الرابط بلا remount", () => {
+    expect(page).toContain("const search = useSearch();");
+    expect(page).toContain('from "wouter"');
   });
 });
