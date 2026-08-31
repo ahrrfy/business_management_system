@@ -291,6 +291,7 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
       feeEarned: "0.00",
       feePaid: "0.00",
       feeDue: "0.00",
+      feeDueRaw: "0.00",
       hasFinancialAnomaly: false,
     };
   }
@@ -324,7 +325,17 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
   const paid = n(row?.feePaid);
   const outstandingRaw = assigned - collected - released;
   const custody = collected - remitted - writtenOff;
-  const feeDue = earned - paid;
+  const feeDueRaw = earned - paid;
+  /**
+   * Slice DFP2 (٣١/٨/٢٦): قصّ `feeDue` عند صفر — أُبلغ عنه على الإنتاج (٣١/٨):
+   * «أجرة مستحقة −1,000 د.ع» على مودال ابراهيم احمد. السالب يعني `feePaid > feeEarned` — أي دفعنا
+   * لهذا المندوب زيادة (تصحيحُ سندٍ سابق أو صرفٌ فوق المستحقّ). القيمة السالبة تُعرَض للمستعمِل
+   * كأنّها «مستحقٌّ عليه» بينما الحقيقة أنّها فائضٌ تاريخيّ — التباسٌ ماليّ خطر.
+   *
+   * القرار: قصّ صريح عند صفر (كما في listPartyObligations.feeDueTotal) + إبقاء `feeDueRaw` للتنبيه.
+   * التقارير التاريخيّة تستعمل الخام؛ الشاشة اليومية تستعمل المقصوص.
+   */
+  const feeDue = Math.max(0, feeDueRaw);
   return {
     codAssigned: assigned.toFixed(2),
     codCollected: collected.toFixed(2),
@@ -338,7 +349,9 @@ export async function getDeliveryFinancialSummary(partyId: number, assignedUserI
     feeEarned: earned.toFixed(2),
     feePaid: paid.toFixed(2),
     feeDue: feeDue.toFixed(2),
-    hasFinancialAnomaly: outstandingRaw < 0 || custody < 0 || feeDue < 0,
+    /** Slice DFP2: القيمة الخام قبل القصّ — للتنبيه ولا تُعرَض عادةً. */
+    feeDueRaw: feeDueRaw.toFixed(2),
+    hasFinancialAnomaly: outstandingRaw < 0 || custody < 0 || feeDueRaw < 0,
   };
 }
 

@@ -6,7 +6,7 @@
 // → توريدات → كشف حساب حيّ (يشمل أمانات الأجرة التي كان الكشف المطبوع يُسقطها صامتاً)
 // → بيانات الجهة وتعديلها (سقف العهدة كان غير قابل للضبط من أي شاشة = حارس ميت).
 import { useEffect, useMemo, useState } from "react";
-import { Banknote, PackageOpen, Printer, Truck, X } from "lucide-react";
+import { AlertTriangle, Banknote, PackageOpen, Printer, Truck, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -129,7 +129,7 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
               <Truck aria-hidden className="size-5 text-primary" />
               {party.name}
               <Badge variant="secondary">{party.partyType === "COMPANY" ? "شركة توصيل" : "مندوب"}</Badge>
-              {!party.isActive && <Badge variant="outline">معطّل</Badge>}
+              {!party.isActive && <Badge variant="outline">معطل</Badge>}
             </h2>
             {party.phone && <div className="mt-1 text-xs text-muted-foreground" dir="ltr">{party.phone}</div>}
           </div>
@@ -167,27 +167,73 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
 
 /** طرود متجر «مع المندوب» لم تُؤكَّد بعد (١٠/٨): عهدة المتجر تُرفع عند التأكيد لا الإرسال —
  *  ما بيده فعلياً كان غير ظاهر في أي عهدة أو كشف. */
+/**
+ * ملخّصٌ ماليّ لجهة التوصيل — Slice DFP2 (٣١/٨/٢٦، إعادة تصميم):
+ *
+ * الفحص البصريّ (٣١/٨) أظهر شبكةً بستّ إحصائيّات تعرض:
+ *   COD مطلوب: 500 (آخر طرد فقط!) · COD خطل: 102,500 · COD ورد: 0 · نقد بذمة: 102,500 ·
+ *   **أجرة مكتسبة: 705,000** (تراكميّة تاريخيّة مضلِّلة) · **أجرة مستحقة: -1,000** (سالبة!).
+ * ستّة أرقام تدّعي أنّها التعرّض، بعضها متضارب وبعضها بمعانٍ غير واضحة.
+ *
+ * الحلّ: أربع إحصائيّات وحيدةٌ تُطابق نموذج `partyExposure` (نقد بيده + طرود بالطريق +
+ * سلَّم لم يحصَّل + أجور له) + **قسمُ الشفافيّة التاريخيّة** يعرض التراكميّات (أجرة مكتسبة
+ * تاريخيّاً + قصّ صريح للسالب) بلونٍ رمادي بلا إبراز.
+ *
+ * التسميات كلها بلا تشكيل (شارات < 14px تتشوّه بصرياً بالتشكيل).
+ */
 function PartyFinancialSummary({ partyId }: { partyId: number }) {
   const q = trpc.delivery.partyFinancials.useQuery({ partyId }, { staleTime: 15_000 });
   const s = q.data?.summary;
   if (!s) return null;
-  const cells = [
-    ["COD مطلوب تحصيله", s.codOutstanding],
-    ["COD حُصّل", s.codCollected],
-    ["COD وُرّد", s.codRemitted],
-    ["نقد بذمة الجهة", s.cashInCustody],
-    ["أجرة مكتسبة", s.feeEarned],
-    ["أجرة مستحقة", s.feeDue],
+  // الأربعة الرئيسة (بصريّة بارزة).
+  const primary: Array<[string, string, string, string]> = [
+    ["نقد بيده", s.cashInCustody, "text-[var(--sem-warn)]", "المندوب قبضه من الزبائن ولم يورّده للمكتبة بعد."],
+    ["قيد التحصيل من العملاء", s.codOutstanding, "text-foreground", "المتبقّي على الطرود المفتوحة لدى العملاء (لم يقبضه المندوب بعد)."],
+    ["إجمالي التوريد التاريخيّ", s.codRemitted, "text-[var(--sem-pos)]", "مجموع ما وُرِّد من هذه الجهة إلى درج المكتبة منذ بدء العمل."],
+    ["أجور له الآن", s.feeDue, "text-[var(--sem-info)]", "أجورٌ تراكمت على المكتبة لم تُدفَع بعد — تُقصّ عند صفر بحكم القرار المحاسبيّ."],
   ];
+  // الشفافيّة التاريخيّة (رمادية، بلا إبراز — للتقارير لا للتسوية).
+  // Slice DFP2 (٣١/٨/٢٦): إن كان feeDueRaw سالباً ⇒ الجهة استقبلت زيادةً تاريخية.
+  const feeDueRaw = Number((s as { feeDueRaw?: string }).feeDueRaw ?? s.feeDue);
+  const showOverpaidNote = feeDueRaw < -0.01;
   return (
-    <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
-      {cells.map(([label, value]) => (
-        <div key={label} className="rounded-xl border bg-card p-3">
-          <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
-          <div className="mt-1 font-extrabold tabular-nums" dir="ltr">{fmt(value)} د.ع</div>
+    <>
+      <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+        {primary.map(([label, value, tone, tip]) => (
+          <div key={label} className="rounded-xl border bg-card p-3" title={tip}>
+            <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
+            <div className={`mt-1 font-extrabold tabular-nums ${tone}`} dir="ltr">{fmt(value)} د.ع</div>
+          </div>
+        ))}
+      </div>
+      <details className="mb-4 rounded-lg border bg-muted/20 p-2 text-xs">
+        <summary className="cursor-pointer font-bold text-muted-foreground">أرقامٌ تاريخيّة تراكميّة (للتقارير لا للتسوية)</summary>
+        <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+          <div className="rounded border bg-card p-2" title="مجموع مبالغ COD التي أُسندت للمندوب منذ بدء العمل (تاريخيّ).">
+            <div className="text-[10px] text-muted-foreground">COD أسند اجمالا</div>
+            <div className="tabular-nums font-bold" dir="ltr">{fmt(s.codAssigned)} د.ع</div>
+          </div>
+          <div className="rounded border bg-card p-2" title="مجموع ما قبضه المندوب فعلاً من الزبائن (تاريخيّ).">
+            <div className="text-[10px] text-muted-foreground">COD قبض اجمالا</div>
+            <div className="tabular-nums font-bold" dir="ltr">{fmt(s.codCollected)} د.ع</div>
+          </div>
+          <div className="rounded border bg-card p-2" title="مجموع الأجور التي اكتسبها هذا المندوب على كل طرودٍ ناجحة منذ بدء العمل.">
+            <div className="text-[10px] text-muted-foreground">أجور مكتسبة تاريخيا</div>
+            <div className="tabular-nums font-bold" dir="ltr">{fmt(s.feeEarned)} د.ع</div>
+          </div>
+          <div className="rounded border bg-card p-2" title="مجموع الأجور المدفوعة لهذا المندوب منذ بدء العمل.">
+            <div className="text-[10px] text-muted-foreground">أجور مدفوعة تاريخيا</div>
+            <div className="tabular-nums font-bold" dir="ltr">{fmt(s.feePaid)} د.ع</div>
+          </div>
         </div>
-      ))}
-    </div>
+        {showOverpaidNote && (
+          <div className="mt-2 flex items-start gap-1 rounded border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-[11px] font-bold text-[var(--sem-warn)]">
+            <AlertTriangle aria-hidden className="mt-0.5 size-3 shrink-0" />
+            <span>أدفع لهذه الجهة زيادة عن مستحقها بمقدار {fmt(String(Math.abs(feeDueRaw)))} د.ع — راجع سندات صرف الأجور القديمة.</span>
+          </div>
+        )}
+      </details>
+    </>
   );
 }
 
@@ -287,12 +333,12 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
                 <th className="p-2.5 text-right">الفاتورة</th>
                 <th className="p-2.5 text-right">العميل/المستلم</th>
                 <th className="p-2.5 text-left">COD</th>
-                <th className="p-2.5 text-left">المُحصَّل</th>
-                <th className="p-2.5 text-left">المتبقّي</th>
+                <th className="p-2.5 text-left">المقبوض</th>
+                <th className="p-2.5 text-left">المتبقي</th>
                 <th className="p-2.5 text-center">حالة التسوية</th>
                 <th className="p-2.5 text-center">التسليم للعميل</th>
                 <th className="p-2.5 text-right">السائق والحركة</th>
-                <th className="p-2.5 text-right">أُرسلت</th>
+                <th className="p-2.5 text-right">ارسلت</th>
                 <th className="p-2.5 text-right">التوريد</th>
               </tr>
             </thead>
@@ -386,9 +432,9 @@ function RemittancesTab({ partyId }: { partyId: number }) {
               <tr>
                 <th className="p-2.5 text-right">رقم التوريد</th>
                 <th className="p-2.5 text-right">التاريخ</th>
-                <th className="p-2.5 text-left">المُحصَّل</th>
+                <th className="p-2.5 text-left">المقبوض</th>
                 <th className="p-2.5 text-left">الأجور</th>
-                <th className="p-2.5 text-left">الصافي المورَّد</th>
+                <th className="p-2.5 text-left">صافي التوريد</th>
                 <th className="p-2.5 text-left">عجز بقي عهدة</th>
                 <th className="p-2.5 text-center">الحالة</th>
                 <th className="p-2.5 text-right">استلمه</th>
@@ -666,8 +712,8 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
                   </TableCell>
                   <TableCell className="text-center">
                     {r.isActive
-                      ? <Badge variant="secondary" className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">فعّالة</Badge>
-                      : <Badge variant="outline">معطَّلة</Badge>}
+                      ? <Badge variant="secondary" className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">فعالة</Badge>
+                      : <Badge variant="outline">معطلة</Badge>}
                   </TableCell>
                   <TableCell className="text-center">
                     {canEdit && (
