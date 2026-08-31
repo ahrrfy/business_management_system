@@ -246,13 +246,14 @@ async function insertSale(input: {
 
 async function writeSaleJournal(
   entryId: number,
-  input?: { branchId?: number; entryDate?: string; amount?: string },
+  input?: { branchId?: number; entryDate?: string; amount?: string; createdAt?: Date },
 ) {
+  const entryDate = new Date(`${input?.entryDate ?? "2026-08-15"}T00:00:00.000Z`);
   await withTx(async (tx) =>
     writeJournal(
       tx,
       entryId,
-      new Date(`${input?.entryDate ?? "2026-08-15"}T00:00:00.000Z`),
+      entryDate,
       input?.branchId ?? BRANCH_MAIN,
       postingLinesFor({
         entryType: "SALE",
@@ -262,6 +263,29 @@ async function writeSaleJournal(
       { cycleId: CYCLE_ID, postingProfile: "SALE_INVENTORY" },
     ),
   );
+  /**
+   * `writeJournal` لا يقبل `createdAt` صراحةً (يستعمل `defaultNow()` من المخطّط). لكنّ نافذة
+   * التسوية `reconcileDoubleEntryShadowWindow` تصفّي `journalEntries.createdAt ∈ [startedAt, NOW]`،
+   * وNOW في اختباراتنا ثابت (2026-08-31)، فلو تُرك `createdAt` على `NOW()` الحقيقيّ صار خارج
+   * النافذة عند تشغيل الاختبارات بعد 2026-08-31 ⇒ تُستبعد ولا تُحسب انحرافاً/فجوة.
+   * الحل الآمن: بعد الكتابة نُحدِّث `createdAt` إلى تاريخ ضمن النافذة (entryDate افتراضياً).
+   */
+  const createdAt = input?.createdAt ?? entryDate;
+  await db()
+    .update(s.journalEntries)
+    .set({ createdAt })
+    .where(eq(s.journalEntries.entryId, entryId));
+}
+
+/**
+ * ضبط `createdAt` لرأس يوميّة UNMAPPED (فجوة) بعد `writeJournalGap` كي يقع داخل نافذة
+ * التسوية `[startedAt, NOW]`. مطلوب لنفس السبب أعلاه.
+ */
+async function setGapCreatedAt(entryId: number, createdAt: Date) {
+  await db()
+    .update(s.journalEntries)
+    .set({ createdAt })
+    .where(eq(s.journalEntries.entryId, entryId));
 }
 
 async function seedShadow(startedAt = THIRTY_DAYS_AGO) {
@@ -1179,12 +1203,7 @@ describe("canActivate — بوابة ACTIVE", () => {
     expect(gate.unmappedEntryTypes).toEqual([]);
   });
 
-  // Slice DFP2 (٣١/٨/٢٦): مُعطَّل مؤقتاً — الفشل موجودٌ على main بعد #860 (statutory
-  // accounting compliance): `canActivate` صار يعود بـ`OPERATIONAL_RECONCILIATION` أوّلاً
-  // فلا يصل الاختبار إلى `UNMAPPED_GAPS`. الإصلاح الحقيقيّ يتطلّب فهم تغييرات #860 على
-  // reconcileService — خارج نطاق DFP2 (منظومة التوصيل). TODO(#TBD): إعادة تفعيل + توسيع
-  // arrayContaining ليشمل OPERATIONAL_RECONCILIATION + فحص سبب اختفاء gapCount.
-  it.skip("تحجب فجوة أو حدثاً مفقوداً أو انحرافاً في أي فرع خلال نافذة الظل", async () => {
+  it("تحجب فجوة أو حدثاً مفقوداً أو انحرافاً في أي فرع خلال نافذة الظل", async () => {
     await seedShadow();
 
     const drifted = await insertSale({
@@ -1210,6 +1229,8 @@ describe("canActivate — بوابة ACTIVE", () => {
         { cycleId: CYCLE_ID },
       ),
     );
+    // نشدّ createdAt للفجوة داخل نافذة التسوية (وإلّا استُبعدت من reconcileDoubleEntryShadowWindow).
+    await setGapCreatedAt(gapEntry, new Date("2026-08-11T00:00:00.000Z"));
     await insertSale({ createdAt: new Date("2026-08-12T00:00:00.000Z") });
 
     const gate = await canActivate({ now: NOW });
@@ -1224,18 +1245,20 @@ describe("canActivate — بوابة ACTIVE", () => {
         }),
       ]),
     );
+    // Slice DFP2 (٣١/٨/٢٦، تصحيح Codex #908): توسعة arrayContaining لتشمل OPERATIONAL_RECONCILIATION
+    // (blocker جديد من #860 statutory accounting — يُطلق عند أي مطابقة تشغيليّة غير متطابقة).
+    // arrayContaining يقبل superset ⇒ إن ظهرت blockers إضافية فلا فشل ما دام الأربعة موجودين.
     expect(keys).toEqual(
       expect.arrayContaining([
         "UNMAPPED_GAPS",
         "MISSING_JOURNALS",
         "RECONCILIATION_DRIFT",
+        "OPERATIONAL_RECONCILIATION",
       ]),
     );
   });
 
-  // Slice DFP2 (٣١/٨/٢٦): مُعطَّل مؤقتاً — نفس السبب أعلاه (#860): `scopeMismatchCount`
-  // في reconcileService لم يعد يُحسب/يُبلَّغ بالطريقة السابقة. TODO(#TBD): مراجعة #860.
-  it.skip("تحجب يوميةً مرتبطة بالمصدر لكنها منسوبة إلى فرع مختلف", async () => {
+  it("تحجب يوميةً مرتبطة بالمصدر لكنها منسوبة إلى فرع مختلف", async () => {
     await seedShadow();
     const entryId = await insertSale({
       branchId: BRANCH_MAIN,
