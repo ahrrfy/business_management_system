@@ -39,6 +39,7 @@ export default defineConfig({
       "client/src/lib/doubleEntryReportPeriod.test.ts",
       "client/src/lib/doubleEntryRoleLabels.test.ts",
       "client/src/lib/workOrderRefundPolicy.test.ts",
+      "client/src/lib/refundDrawer.test.ts",
       "client/src/lib/voucherCategoryAccounting.test.ts",
       "client/src/components/vouchers/voucherUiPolicy.test.ts",
       "client/src/components/workspace/OperationalWorkspace.test.ts",

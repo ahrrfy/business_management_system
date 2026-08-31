@@ -39,6 +39,7 @@ import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
 
 
 /** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
@@ -300,8 +301,18 @@ export default function WorkOrderDetail() {
         forgetCancelAttempt();
         return;
       }
-      setCancelOutcomeUncertain(true);
-      setError(`${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
+      /**
+       * ⚠️ «مجهولٌ» ليست مرادفَ «فشل». الرفضُ بكودٍ صريح (`PRECONDITION_FAILED` مثلاً:
+       * «حدّد درج الاسترداد») يقع **قبل أيّ كتابة** داخل `withTx` ⇒ لم يحدث شيء يقيناً.
+       * وسمُه «لم يثبت الخادم التنفيذ؛ أعد المحاولة بالمعرّف نفسه» كان يدفع الموظّف لتكرار
+       * محاولةٍ تفشل بنفس الطريقة أبداً بدل معالجة السبب المذكور. نفسُ الإصلاح جرى في
+       * [`Reception.tsx`](./Reception.tsx) على بلاغٍ حيّ (١٩/٨) ولم يُكنَس إلى هنا.
+       */
+      const deterministic = serverAnsweredDeterministically(mutationError);
+      setCancelOutcomeUncertain(!deterministic);
+      setError(deterministic
+        ? mutationError.message
+        : `${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
     },
   });
   const requestControl = trpc.workOrders.requestControl.useMutation({
@@ -342,6 +353,23 @@ export default function WorkOrderDetail() {
   }
   if (!wo.data) return <ErrorState message="لم يُرجع الخادم بيانات طلب الخدمة." onRetry={() => void wo.refetch()} />;
   const data = wo.data;
+  const cancellationRequiresApproval = !canCancel || controlPreflight.data?.controlRequired.cancel === true;
+  const approvalRefundPreflight = cancellationRequiresApproval
+    ? controlPreflight.data == null
+      ? null
+      : {
+          needsCashDrawer: controlPreflight.data.cashRefundRequired,
+          estimatedCashOut: controlPreflight.data.expectedCashRefund,
+          branchId: controlPreflight.data.branchId,
+          drawers: controlPreflight.data.openReceptionShifts.map((shift) => ({
+            shiftId: shift.id,
+            userId: shift.userId,
+            userName: shift.userName ?? `#${shift.userId}`,
+            shiftType: "RECEPTION",
+            expectedCash: shift.expectedCash ?? "0.00",
+          })),
+        }
+    : undefined;
   const designApprovalReady =
     designApproval.data?.revision != null &&
     designApproval.data.approval?.status === "APPROVED";
@@ -559,8 +587,16 @@ export default function WorkOrderDetail() {
 
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="سعر البيع" value={data.salePrice} strong />
+              {/*
+                تنبيه: `SummaryRow` **يُنسّق بنفسه** (`fmtAr` ⇒ `D(value)`)، فتمريرُ نصٍّ منسَّقٍ سلفاً
+                يُسقط الشاشة كلَّها: القيمة كانت «ناقص + fmt(العربون)» = «−70,000» بإشارةِ ناقصٍ
+                يونيكوديّة (U+2212) وفاصلةِ آلاف ⇒ `DecimalError: Invalid argument` يبتلعه حدُّ
+                الخطأ فيُظهر «حدث خطأ غير متوقّع» مكانَ الصفحة بأكملها.
+                ⇒ أيُّ أمرِ شغلٍ بعربونٍ موجب كان **يتعذّر فتح تفاصيله إطلاقاً**.
+                وبقيّةُ النداءات تُمرّر القيمةَ خامّاً؛ فلتُمرَّر هذه خامّةً سالبةً كذلك.
+              */}
               {D(data.deposit ?? 0).gt(0) && (
-                <SummaryRow label="العربون المقبوض" value={`−${fmt(data.deposit ?? "0")}`} />
+                <SummaryRow label="العربون المقبوض" value={D(data.deposit ?? 0).neg().toFixed(2)} />
               )}
               {/* Slice D (٢٩/٨/٢٦): إظهار «إجمالي ما سيدفعه العميل» شاملاً التوصيل في بطاقة الأمر —
                   بلاغ المالك: «يجب أن يعلم الزبون بالمبلغ الكلي النهائي شاملاً التوصيل». يظهر عند
@@ -953,6 +989,7 @@ export default function WorkOrderDetail() {
       <CancelWorkOrderDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
+        workOrderId={workOrderId}
         orderNumber={data.orderNumber}
         title={data.title}
         // الخامة تُعرَض فقط بعد البدء — قبله لا استهلاك، فجدولُ الهدر يكذب لو ظهر.
@@ -966,13 +1003,11 @@ export default function WorkOrderDetail() {
               }))
             : []
         }
-        cashRefundRequired={controlPreflight.data?.cashRefundRequired ?? false}
-        expectedCashRefund={controlPreflight.data?.expectedCashRefund ?? "0"}
-        shifts={controlPreflight.data?.openReceptionShifts ?? []}
-        requiresApproval={!canCancel || controlPreflight.data?.controlRequired.cancel === true}
-        preflightPending={controlPreflight.isLoading || controlPreflight.isFetching}
-        preflightError={controlPreflight.isError}
-        onRetryPreflight={() => { void controlPreflight.refetch(); }}
+        requiresApproval={cancellationRequiresApproval}
+        refundPreflight={approvalRefundPreflight}
+        refundPreflightPending={cancellationRequiresApproval && (controlPreflight.isLoading || controlPreflight.isFetching)}
+        refundPreflightError={cancellationRequiresApproval && controlPreflight.isError}
+        onRetryRefundPreflight={() => { void controlPreflight.refetch(); }}
         pending={cancel.isPending || requestControl.isPending}
         onConfirm={(d) => {
           const preflight = controlPreflight.data;

@@ -3,22 +3,35 @@ import fs from "fs";
 import { type Server } from "http";
 import { nanoid } from "nanoid";
 import path from "path";
-import { createServer as createViteServer } from "vite";
+import { createServer as createViteServer, type UserConfig, type UserConfigFn } from "vite";
 import viteConfig from "../vite.config";
 
+/**
+ * **`vite.config.ts` يُصدّر دالّةً لا كائناً** (`defineConfig(({ mode }) => …)` — صار كذلك في
+ * 9bc2c33d حين احتاج قراءة البيئة عبر `loadEnv`). ونشرُ دالّةٍ بـ`...` يُنتج **كائناً فارغاً**: الدوالّ بلا
+ * خصائصَ قابلةٍ للتعداد. فكان خادمُ التطوير يفقد الإعداد كلَّه — وأهمُّه `root: client/`
+ * ومُعرِّفا `@`/`@shared` — فيسقط `root` إلى مجلّد التشغيل ويصير `/src/main.tsx` مسارَ ملفٍّ
+ * لا وجود له:
+ *
+ *     [vite] Pre-transform error: Failed to load url /src/main.tsx. Does the file exist?
+ *
+ * فتُخدَم `index.html` مكانَ الوحدة (MIME: text/html) ويبقى `#root` فارغاً — أي **`pnpm dev`
+ * لا يعرض الواجهة إطلاقاً**. لا يكشفه `pnpm check` ولا `pnpm build` (البناء يقرأ الملفّ
+ * بنفسه فيستدعي الدالّة صحيحةً)، ولا أيّ اختبار — العطبُ حصريٌّ في مسار الخادم التطويريّ.
+ *
+ * ⇒ نستدعيها حين تكون دالّةً بدل نشرها. و`command: "serve"` هي الحالة الصادقة هنا.
+ */
+async function resolveViteConfig(): Promise<UserConfig> {
+  return typeof viteConfig === "function"
+    ? await (viteConfig as UserConfigFn)({ command: "serve", mode: process.env.NODE_ENV ?? "development" })
+    : (viteConfig as UserConfig);
+}
+
 export async function setupVite(app: Express, server: Server) {
-  // ⚠️ `vite.config.ts` يُصدِّر **دالّة** منذ 9bc2c33d (`defineConfig(({ mode }) => …)`)، وهذا
-  // الملفّ ظلّ ينشرها كأنّها كائن. و`{...fn}` على دالّة يُنتج `{}` — بلا خطأٍ ولا تحذير:
-  // تضيع `root` (‏`client/`) والاسماء المختصرة معاً، فيقرأ Vite من `cwd` ويرتدّ
-  // `/src/main.tsx` بـ404 ⇒ صفحةٌ بيضاء في كلّ تطويرٍ محلّيّ (`pnpm dev`) بينما البناء
-  // الإنتاجيّ سليم (يقرأ الملفّ بنفسه فيستدعي الدالّة). ولذلك لا يمسكه `pnpm build` ولا CI.
-  // نستدعيها هنا بسياق `serve` بدل نشرها، ونُبقي دعم الشكل الكائنيّ للتوافق.
-  const resolvedConfig =
-    typeof viteConfig === "function"
-      ? await viteConfig({ command: "serve", mode: process.env.NODE_ENV ?? "development" })
-      : viteConfig;
+  // دمجُ #922: أُصلح العطبُ نفسه على `main` مضمَّناً هنا، وأُبقي الشكلُ المُستخرَج
+  // (`resolveViteConfig`) لأنّه نقطةُ القراءة التي يعتمدها حارسُ خادم التطوير — والمنطقُ واحد.
   const vite = await createViteServer({
-    ...resolvedConfig,
+    ...(await resolveViteConfig()),
     configFile: false,
     server: { middlewareMode: true, hmr: { server }, allowedHosts: true as const },
     appType: "custom",
