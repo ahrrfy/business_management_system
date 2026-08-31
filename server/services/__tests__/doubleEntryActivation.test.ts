@@ -1871,6 +1871,14 @@ describe("تغيير وضع الدفتر — انتقالات ذرّية مُد�
         "فجوة متزامنة",
         { cycleId: CYCLE_ID },
       );
+      // نفس علة `setGapCreatedAt` أعلاه، لكنّ التثبيت هنا **داخل المعاملة** (`tx` لا `db()`):
+      // القفل محجوزٌ هنا عمداً لاختبار التنازع، فنداءٌ من اتّصالٍ آخر يتعلّق عليه ويُجمّد الاختبار.
+      // وبلا التثبيت يسقط رأسُ الفجوة خارج النافذة فيُحجَب التفعيل بـ`MISSING_JOURNALS`
+      // (مصدرٌ بلا يومية) بدل الفجوة نفسها ⇒ الاختبار يمرّ لسببٍ غير الذي يدّعيه اسمُه.
+      await tx
+        .update(s.journalEntries)
+        .set({ createdAt: new Date("2026-08-30T00:00:00.000Z") })
+        .where(eq(s.journalEntries.entryId, Number(inserted[0].id)));
       writerHasLock();
       await writerCanCommit;
     });
