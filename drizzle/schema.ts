@@ -623,6 +623,20 @@ export const products = mysqlTable(
     // branchStock ولا يَكتب inventoryMovements (يُتجاوَز في inventoryService.applyMovement).
     // التَحويل بين الفُروع مَمنوع. الإيراد يَدخل كَالعَادة، التَكلفة من productVariants.cost.
     isService: boolean("isService").default(false).notNull(),
+    // «يُباع بالطلب» (هجرة 0318، ٣١/٨/٢٦) — بيعٌ قبل التوريد لصنفٍ **مخزنيّ** يُغذَّى لاحقاً.
+    // الحالة الحاكمة (بلاغ المالك): عملُ طباعةٍ نبيعه للزبون ثمّ نُوفّره — إمّا **شراءً جاهزاً
+    // من مطبعة أخرى** (فاتورة شراء ترفع الرصيد وتسجّل المورّد وذمّته والتكلفة بـWAVG)، أو
+    // **إنتاجاً داخلياً** بوصفة الصنف. الطريقان قائمان ويعملان؛ الناقص وحده كان السماح بالبيع
+    // **قبل** التغذية — فيظهر «نافذ» ويُرفض، والفاتورة لا تُنشأ.
+    //
+    // فالرصيد السالب هنا **ليس عطباً بل عدّاد التزام**: عدد الأعمال المُباعة ولم تُورَّد بعد،
+    // ويعود صفراً حتماً بأوّل شراءٍ أو إنتاجٍ يُغطّيها. ولذلك يُعفى هذا الصنف من حارس النفاد
+    // إعفاءً **دائماً** — لا بنافذة «وضع الافتتاح» ولا بشرط `openedAt IS NULL` (كلاهما ينكسر
+    // بعد أوّل استلامٍ يَسِم الصنف مُفتتَحاً، فتعود الشاشة تقول «نافذ» في الدورة الثانية).
+    //
+    // ⛔ ثلاثة استثناءات بنيويّة (CHECK أدناه): الخدمة (بلا رصيد أصلاً ⇒ لا معنى للسالب) ·
+    // البكج (رصيده رصيد مكوّناته) · الأمانة (سالبُها يُلفّق التزاماً لمودِعٍ لم يُودِع — §٥-ج).
+    allowBackorder: boolean("allowBackorder").default(false).notNull(),
     // توجيه الخدمة لنقطة خدمة العملاء (الاستقبال): خدمة طباعة (productType=PRINT_SERVICE) مفعَّلة هنا
     // تَظهر أيضاً في كاشير الاستقبال وتُباع عبر مسار createPrintSale المدقَّق (خصم المواد + COGS).
     showInReception: boolean("showInReception").default(false).notNull(),
@@ -668,6 +682,14 @@ export const products = mysqlTable(
     bundleIdx: index("idx_product_is_bundle").on(table.isBundle),
     // بضاعة الأمانة: كشف أصناف مودِع بعينه (سند الإيداع، التقارير، حارس التعطيل).
     consignorIdx: index("idx_product_consignor").on(table.consignorId),
+    // شاشة «المطلوب توريده» تصفّي بها قبل ضمّ الرصيد السالب.
+    backorderIdx: index("idx_product_allow_backorder").on(table.allowBackorder),
+    // الاستثناءات بنيويّةً لا بالنيّة: الوسم بلا معنى على خدمة/بكج (لا رصيد ذاتيّ لهما)،
+    // وخطِرٌ على الأمانة (بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع).
+    backorderStockedOnlyCheck: check(
+      "chk_product_backorder_stocked_only",
+      sql`(${table.allowBackorder} = 0 OR (${table.isService} = 0 AND ${table.isBundle} = 0 AND ${table.isConsignment} = 0))`,
+    ),
   }),
 );
 

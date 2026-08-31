@@ -104,6 +104,9 @@ export function buildStockState(cart: CartLine[]) {
     const isOut = availBase <= 0;
     const isShort = !isOut && reqBase > availBase;
     const availInUnit = Math.floor(availBase / convFactor);
+    // «يُباع بالطلب» (0318): الخادم يقبله قبل التوريد إعفاءً دائماً، فوسمُه «نافذاً» يحجب سلّةً
+    // ستُحفظ بنجاح. نُطفئ الوسم ونُبقي الرقم صادقاً — السالب هو عدّاد «مُباعٌ لم يُورَّد».
+    if (line.row.allowBackorder) return { isOut: false, isShort: false, availInUnit };
     return { isOut, isShort, availInUnit };
   };
 }

@@ -141,6 +141,9 @@ export default function ServiceForm() {
   const [government, setGovernment] = useState("");
   const [directCost, setDirectCost] = useState("");
   const [isStockedOutput, setIsStockedOutput] = useState(false);
+  // «يُباع بالطلب» (0318): الناتج المخزنيّ الذي يُباع **قبل** توريده — الحالة الحاكمة عملُ
+  // طباعةٍ يُباع للزبون ثمّ يُشترى جاهزاً من مطبعةٍ أخرى أو يُنتَج داخلياً بالوصفة.
+  const [allowBackorder, setAllowBackorder] = useState(false);
   const [showInPrintPos, setShowInPrintPos] = useState(true);
   const [showInReception, setShowInReception] = useState(false);
   const [consumesMaterials, setConsumesMaterials] = useState(false);
@@ -230,6 +233,8 @@ export default function ServiceForm() {
       name: name.trim(),
       categoryId: categoryId === "" ? undefined : Number(categoryId),
       isService: !isStockedOutput,
+      // خاصّةٌ بالناتج المخزنيّ وحده — الخدمة بلا رصيد فلا معنى لبيعٍ بالطلب عليها.
+      allowBackorder: isStockedOutput && allowBackorder,
       printService: showInPrintPos,
       showInReception,
       recipe,
@@ -296,6 +301,19 @@ export default function ServiceForm() {
               </span>
             </span>
           </label>
+          {isStockedOutput && (
+            <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/30">
+              <Switch checked={allowBackorder} onCheckedChange={setAllowBackorder} className="mt-0.5" />
+              <span className="text-sm">
+                <b>يُباع بالطلب (قبل التوريد)</b>
+                <span className="block text-xs text-muted-foreground">
+                  {allowBackorder
+                    ? "يُباع للزبون ولو كان الرصيد صفراً. الرصيد السالب = عدد الأعمال المُباعة ولم تُورَّد بعد، ويعود صفراً بفاتورة الشراء من المطبعة أو بأمر إنتاج داخليّ."
+                    : "البيع يتوقّف عند نفاد الرصيد — يلزم توريده أوّلاً (شراءً أو إنتاجاً) قبل بيعه."}
+                </span>
+              </span>
+            </label>
+          )}
           <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/30">
             <Switch checked={showInPrintPos} onCheckedChange={setShowInPrintPos} className="mt-0.5" />
             <span className="flex items-center gap-2 text-sm">
@@ -447,6 +465,9 @@ export default function ServiceForm() {
         <div className="text-xs text-muted-foreground hidden sm:flex items-center gap-2">
           سيُحفظ بند واحد
           {isStockedOutput && <Badge variant="secondary">مخزني: شراء أو إنتاج</Badge>}
+          {isStockedOutput && allowBackorder && (
+            <Badge variant="secondary" className="bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">يُباع بالطلب</Badge>
+          )}
           {showInPrintPos && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">نقطة الطباعة</Badge>}
           {consumesMaterials && anyMaterialPicked && (
             <Badge variant="secondary" className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]">

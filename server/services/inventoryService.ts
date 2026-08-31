@@ -34,6 +34,26 @@ export async function isBundleVariant(tx: Tx, variantId: number): Promise<boolea
   return !!rows[0]?.isBundle;
 }
 
+/**
+ * «يُباع بالطلب» (0318): صنفٌ مخزنيّ مسموحٌ بيعُه **قبل** توريده، ورصيدُه السالب عدّادُ التزامٍ
+ * يعود صفراً بأوّل شراءٍ (فاتورة مورّد) أو إنتاجٍ داخليّ يُغطّيه.
+ *
+ * ⚠️ الإعفاء **دائم** بقصد: البديلان القائمان كلاهما ينكسر في الدورة الثانية —
+ *  • `allowNegativeUnopened` مشروطٌ بـ`openedAt IS NULL`، وأوّل استلامٍ يَسِم الصنف مُفتتَحاً
+ *    (`stampOpened`) فيعود الرفض؛
+ *  • و«وضع الافتتاح» مفتاحٌ عامّ بنافذة ≤٦٠ يوماً ونقديٍّ كامل — أداةُ ترحيلٍ لا سياسةَ تشغيل.
+ * والصفة هنا حقيقةُ عملٍ دائمة عن الصنف، فمكانها صفُّ المنتج لا لحظةٌ ولا مفتاحٌ عامّ.
+ */
+export async function isBackorderVariant(tx: Tx, variantId: number): Promise<boolean> {
+  const rows = await tx
+    .select({ allowBackorder: products.allowBackorder })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(eq(productVariants.id, variantId))
+    .limit(1);
+  return !!rows[0]?.allowBackorder;
+}
+
 export type MovementType = "IN" | "OUT" | "ADJUST" | "RETURN" | "TRANSFER_IN" | "TRANSFER_OUT";
 type DirectionalType = Exclude<MovementType, "ADJUST">;
 
@@ -221,7 +241,17 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   const currentQty = rows[0]?.quantity ?? 0;
   // «وضع الافتتاح»: السماح المشروط يسري على غير المُفتتَح فقط — openedAt مقروء تحت نفس القفل
   // (صفٌّ يُنشأ الآن = غير مُفتتَح بداهةً؛ واعتمادُ جردٍ افتتاحي متزامن يتسلسل على هذا القفل).
-  const negativeAllowed = a.allowNegative || (a.allowNegativeUnopened === true && rows[0]?.openedAt == null);
+  const unopenedAllowed = a.allowNegativeUnopened === true && rows[0]?.openedAt == null;
+  // «يُباع بالطلب» (0318): إعفاءٌ **دائم** لصنفٍ وُسِم كذلك — رصيدُه السالب عدّادُ التزامٍ مقصود
+  // (مُباعٌ لم يُورَّد) يعود صفراً بأوّل شراءٍ أو إنتاجٍ يُغطّيه.
+  // القراءة **كسولة ومحفوظة**: لا تُدفَع إلّا حين يوشك حارسٌ على الرفض فعلاً — فالبيع المكتفي
+  // المخزون (الغالبية العظمى) لا يدفع أيّ استعلامٍ إضافيّ — وتُقرأ مرّةً واحدة لا مرّةً لكلّ حارس.
+  let backorderCache: boolean | null = null;
+  const isBackorder = async (): Promise<boolean> => {
+    if (a.allowNegative || unopenedAllowed) return false; // مسموحٌ سلفاً — لا حاجة للقراءة.
+    if (backorderCache == null) backorderCache = await isBackorderVariant(tx, a.variantId);
+    return backorderCache;
+  };
 
   const requestedFormalExemption = Number.isSafeInteger(a.formalReservationExemptionBase)
     && Number(a.formalReservationExemptionBase) > 0
@@ -233,11 +263,14 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   );
   const reservedBase = Math.max(0, (lockedAvailability?.reservedBase ?? 0) - formalReservationExemption);
   const availableAfterAllocations = Math.max(0, currentQty - reservedBase);
+  // «يُباع بالطلب» يعبر حاجز الحجوزات أيضاً — وإلّا بقي الصنف محجوباً كلّما وُجد حجزٌ قائم،
+  // وهو نقيض معنى الصفة: الطلب المحجوز يُغطّى من التوريد التالي كما يُغطّى البيع الجديد.
   if (
     DEDUCTING.has(a.movementType) &&
     reservedBase > 0 &&
     a.baseQuantity > availableAfterAllocations &&
-    a.allowNegative !== true
+    a.allowNegative !== true &&
+    !(await isBackorder())
   ) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -248,6 +281,9 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   }
 
   const sign = SIGN[a.movementType];
+  const backorderAllowed =
+    DEDUCTING.has(a.movementType) && currentQty < a.baseQuantity && (await isBackorder());
+  const negativeAllowed = a.allowNegative || unopenedAllowed || backorderAllowed;
   if (DEDUCTING.has(a.movementType) && currentQty < a.baseQuantity && !negativeAllowed) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -267,10 +303,17 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   //     إعادة تشغيلٍ أوفلاينيّ = فقدُ بيعٍ حصل فعلاً؛ نكتفي بوسم الحركة ورفع floorBreached للكشف.
   let notes = a.notes;
   let floorBreached = false;
+  // وسمُ الحركة صراحةً: سالبُ «يُباع بالطلب» مقصودٌ ويجب أن يُقرأ كذلك في كشف الحركة، وإلّا
+  // بدا في المراجعة كعجزٍ مخزنيّ مجهول السبب — وهو أكثر ما يُهدر وقت المدقّق.
+  if (backorderAllowed) {
+    notes = `${a.notes ? `${a.notes} — ` : ""}[بيع بالطلب: بانتظار التوريد بشراءٍ أو إنتاج]`;
+  }
   if (DEDUCTING.has(a.movementType) && negativeAllowed && newQuantity < 0) {
     const cap = await readNegativeFloorCap(tx);
     if (newQuantity < -cap) {
-      if (!a.allowNegative) {
+      // «يُباع بالطلب» يُوسَم ولا يُرفَض — نظير allowNegative تماماً. الرفض هنا كان سيُعيد
+      // نصبَ الحاجز الذي وُجدت الصفة لإزالته، وفي أسوأ لحظة: بعد أن التزم الموظّف للزبون.
+      if (!a.allowNegative && !backorderAllowed) {
         throw new TRPCError({
           code: "CONFLICT",
           message:
@@ -279,7 +322,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
         });
       }
       floorBreached = true;
-      notes = `${a.notes ? `${a.notes} — ` : ""}[تجاوز حدّ السالب: الرصيد ${newQuantity} دون ‑${cap}]`;
+      notes = `${notes ? `${notes} — ` : ""}[تجاوز حدّ السالب: الرصيد ${newQuantity} دون ‑${cap}]`;
     }
   }
 
