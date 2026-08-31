@@ -6,6 +6,8 @@ export interface LivePosStockRow {
   availableBase: number;
   openedAt: Date | string | null;
   isService: boolean;
+  /** «يُباع بالطلب» (0318): يتجدّد مع اللقطة الحيّة — وسمُ منتجٍ قد يتغيّر بين تبويبٍ وآخر. */
+  allowBackorder: boolean;
 }
 
 type StockAwareRow = {
@@ -16,6 +18,7 @@ type StockAwareRow = {
   availableBase?: number;
   openedAt?: Date | string | null;
   isService: boolean;
+  allowBackorder?: boolean;
 };
 
 type StockAwareCartItem<R extends StockAwareRow> = {
@@ -72,6 +75,7 @@ export function reconcilePosTabsStock<
       availableBase: snapshot.availableBase,
       openedAt: snapshot.openedAt,
       isService: snapshot.isService,
+      allowBackorder: snapshot.allowBackorder,
     };
   };
 

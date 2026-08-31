@@ -54,7 +54,8 @@ import {
 } from "../services/inventory/costRevaluationRequest";
 import { withTx } from "../services/tx";
 import { retryOnDup } from "../lib/retryDup";
-import { inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
+import { canSeeCostForUser, inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
+import { listBackorderShortfall } from "../services/inventory/backorderShortfall";
 
 /** تسميات عربية لأسباب الحركة اليدوية — تكتب في notes. */
 const REASON_LABELS = {
@@ -1081,6 +1082,39 @@ export const inventoryRouter = router({
    * عزل الفرع: الكاشير/المخزن مُجبَران بفرعهما (scopedBranchId)؛ المدير بفرعه (طلب فرع آخر = FORBIDDEN،
    * نمط onHand)؛ الأدمن يختار فرعاً أو يمرّر بلا فرع = كل الفروع.
    */
+  /**
+   * «المُسنَد المطلوب توريده» — أصناف «يُباع بالطلب» (0318) التي بيعت ولم تُورَّد.
+   *
+   * نطاقُ الفرع نسخةٌ حرفية من `reorderAlerts` المجاور (نفس القائمة، نفس المخاطر) كي لا ينحرف
+   * عزلُ الفرع بين شاشتَي نقصٍ متجاورتين. والتكلفة تُحجَب لمن لا يملك رؤيتها — الشاشة تبقى
+   * مفيدةً لأمين المخزن (يرى **ماذا** يلزم) بلا كشف الهامش.
+   */
+  backorderShortfall: inventoryReadProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().int().positive().nullish(),
+          limit: z.number().int().positive().max(500).default(200),
+          offset: z.number().int().min(0).default(0),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId =
+        ctx.scopedBranchId ??
+        input?.branchId ??
+        (ctx.user.role === "admin" ? null : ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+      if (branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      return listBackorderShortfall({
+        branchId,
+        includeCost: canSeeCostForUser(ctx.user),
+        limit: input?.limit ?? 200,
+        offset: input?.offset ?? 0,
+      });
+    }),
+
   reorderAlerts: inventoryReadProcedure
     .input(
       z

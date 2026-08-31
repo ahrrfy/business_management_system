@@ -122,6 +122,16 @@ describe("النسخ — بصمة محتوى تتغيّر إذا-وفقط-إذا
     expect(after.customersVersion).toBe(before.customersVersion);
   });
 
+  it("قلبُ «يُباع بالطلب» يغيّر النسخة — وإلّا بقي الجهاز المنقطع على الحقيقة القديمة بلا نهاية", async () => {
+    // العمود لا يُغيّر أيّ حقلٍ آخر في البصمة، فلولا إدخالُه فيها صراحةً لبقيت النسخة ثابتة
+    // بعد قلبه: الجهاز لا يسحب لقطةً جديدة، فيظلّ يعرض «نافذ» على صنفٍ صار يُباع بالطلب.
+    const before = await buildOfflineVersions();
+    await db().update(s.products).set({ allowBackorder: true }).where(eq(s.products.id, 1));
+    const after = await buildOfflineVersions();
+    expect(after.catalogVersion).not.toBe(before.catalogVersion);
+    expect(after.customersVersion).toBe(before.customersVersion);
+  });
+
   it("إعادة تسمية وحدة (جدول بلا updatedAt) يغيّر النسخة — CRC يلتقطها", async () => {
     const before = await buildOfflineVersions();
     await db().update(s.productUnits).set({ unitName: "كرتون" }).where(eq(s.productUnits.id, 2));

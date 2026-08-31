@@ -36,7 +36,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, Zap, ChevronDown, ChevronUp, Send, Wallet, Percent, Calculator } from "lucide-react";
+import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, Zap, ChevronDown, ChevronUp, Send, Wallet, Percent, Calculator, PackagePlus } from "lucide-react";
 import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
 import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { CopyButton } from "@/components/CopyButton";
@@ -935,6 +935,7 @@ export default function POS() {
       availableBase: 0,
       openedAt: null,
       isService: true,
+      allowBackorder: false, // الكرت الرقميّ خدمةٌ أصلاً — لا معنى لبيعٍ بالطلب عليه.
       isCustomizable: false,
       isPrintService: false,
       isContractPrice: false,
@@ -2324,6 +2325,10 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
     const isOut       = availBase <= 0;                       // نافذ — لا رصيد
     const isShort     = !isOut && reqBase > availBase;        // الطلب يتجاوز المتاح
     const availInUnit = Math.floor(availBase / convFactor);  // المتاح بوحدة السطر
+    // «يُباع بالطلب» (0318): الخادم يُعفيه من حارس النفاد إعفاءً دائماً (`applyMovement`)، فوسمُه
+    // «نافذاً» يكذب على الكاشير ويحجب زرّاً يعمل. نُطفئ **الوسم وحده** ونُبقي `availInUnit`
+    // صادقاً كما هو — رصيدُه السالب هو عدّاد «مُباعٌ لم يُورَّد»، وإخفاؤه خلف ∞ يطمس الفائدة.
+    if (c.row.allowBackorder) return { isKnown: true, isOut: false, isShort: false, availInUnit };
     return { isKnown: true, isOut, isShort, availInUnit };
   };
   // ملخّص للشارة الدائمة في التذييل (كي لا يختفي التحذير حين ينزلق السطر المميَّز خارج الرؤية).
@@ -2530,6 +2535,13 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
                     {openingSellable && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
                         <AlertTriangle aria-hidden size={12} /> غير مجرود — يُباع نقداً بالسالب
+                      </span>
+                    )}
+                    {/* «يُباع بالطلب» (0318): الصنف مسموحٌ بيعه قبل توريده — نُصرّح بذلك بدل ترك
+                        الكاشير يظنّ الرصيدَ الصفريّ/السالب عطباً. الرقم في العمود يبقى الحقيقة. */}
+                    {c.row.allowBackorder && (c.row.availableBase ?? 0) <= 0 && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                        <PackagePlus aria-hidden size={12} /> يُباع بالطلب — يُورَّد لاحقاً
                       </span>
                     )}
                     {!openingSellable && isOut && (
