@@ -60,6 +60,7 @@ type TrackData = NonNullable<RouterOutputs["storefront"]["trackOrder"]>;
 import { fmtInt } from "@/lib/money";
 import { isPublicHost } from "@/lib/siteHosts";
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
+import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
@@ -535,9 +536,10 @@ function money(v: string | number | null): string {
   return fmtInt(v);
 }
 
-function normalizeStorefrontArabic(value: string): string {
-  return value.toLocaleLowerCase("ar").replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/\s+/g, " ").trim();
-}
+// موحَّد مع الخادم عبر [`@shared/storefrontSearchNormalize`](../../../shared/storefrontSearchNormalize.ts).
+// كان تعريفاً محلياً منسوخاً؛ فرضُ الاستيراد يمنع انحرافاً صامتاً بين تصفية العميل وLIKE الخادميّ
+// (كان يجعل الاقتراح يظهر لحظياً ثمّ يختفي حين يستبدل الخادم الصفحات — Codex P2 على #904).
+const normalizeStorefrontArabic = normalizeArabicSearch;
 
 function priceLabel(price: string | null): string {
   if (price == null || price === "") return "اسأل الموظّف";

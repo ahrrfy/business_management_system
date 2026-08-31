@@ -12073,7 +12073,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/promotionRouter.ts:271"
+      "loc": "server/routers/promotionRouter.ts:276"
     },
     {
       "surface": "trpc",
@@ -12107,7 +12107,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reverse",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/promotionRouter.ts:241"
+      "loc": "server/routers/promotionRouter.ts:246"
     },
     {
       "surface": "trpc",
@@ -12124,7 +12124,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reverse",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/promotionRouter.ts:298"
+      "loc": "server/routers/promotionRouter.ts:303"
     },
     {
       "surface": "trpc",
