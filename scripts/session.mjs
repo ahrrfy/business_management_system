@@ -89,22 +89,68 @@ function pickPort(preferred) {
 }
 
 // أنشئ قاعدتَي التطوير والاختبار للجلسة (idempotent). يفشل ناعماً إن كان Docker متوقّفاً.
+/** محرفا الاقتباس كثابتين — لا سلاسلَ حرفيّة يفسدها هروبُ أداةٍ أو محرّر. */
+const DQ = String.fromCharCode(34);
+const SQ = String.fromCharCode(39);
+
 /**
- * **أساسُ رابط قاعدة الاختبار — مصدرٌ واحدٌ للمضيف والمنفذ والاعتماد** (مراجعة Codex P2 #921).
+ * يجرّد الاقتباس المحيط بقيمة `.env` — `parseEnv` لا يُزيله، و`.env.example` يوثّق قيماً
+ * مقتبَسة. وبلا هذا يصير الرابطُ المقتبَس غيرَ صالح فيسقط الاشتقاق إلى الافتراض صامتاً.
  *
- * كان الإنشاءُ يقرأ كلمةَ المرور من `TEST_DB_ROOT_PW` بينما الرابطُ المكتوب يأخذها من
- * `TEST_DB_BASE` الثابتة (`root:testpw`). فمَن غيّر كلمةَ مرور صندوق اختباره حصل على
- * **إنشاءٍ ناجح ورابطٍ يفشل بالمصادقة** — أسوأُ تركيبة: السكربت يقول «جاهزة» والاختبارات ترفض.
- * ⇒ الاثنان من هنا، ويُتجاوَزان معاً بمتغيّرٍ واحد.
+ * (!) بلا مرجعٍ خلفيّ في التعبير النمطيّ عمداً: كُتب أوّلاً بمرجعٍ خلفيّ فتحوّل عند الكتابة
+ * إلى محرفِ تحكّمٍ حرفيّ، فصار التعبيرُ لا يطابق شيئاً — والدالّة تُرجع القيمة مقتبَسةً كما
+ * هي بلا خطأٍ ولا تحذير. أمسكه فحصُ الأسبقيّة (حالةُ «قيمة مقتبَسة»). المقارنةُ الحرفية
+ * أدناه لا يفسدها هروبٌ ولا أداة.
  */
-function testBaseUrl() {
-  return String(process.env.TEST_DB_BASE_URL ?? TEST_DB_BASE).replace(/\/+$/, "");
+function unquote(v) {
+  const t = String(v ?? "").trim();
+  if (t.length >= 2) {
+    const first = t[0];
+    const last = t[t.length - 1];
+    if ((first === DQ && last === DQ) || (first === SQ && last === SQ)) return t.slice(1, -1);
+  }
+  return t;
 }
 
-/** اعتمادُ صندوق الاختبار مشتقٌّ من الرابط نفسه — لا متغيّرَ ثانٍ ينحرف عنه. */
-function testCreds() {
+/** أساسُ رابطٍ بلا اسم قاعدة: `mysql://u:p@h:port/db` ⇒ `mysql://u:p@h:port`. */
+function baseOfUrl(url) {
+  const m = unquote(url).match(/^(mysql:\/\/[^/]+)(?:\/.*)?$/);
+  return m ? m[1] : null;
+}
+
+/**
+ * **أساسُ رابط قاعدة الاختبار — مصدرٌ واحدٌ للمضيف والمنفذ والاعتماد**، بترتيبِ أسبقيّةٍ صريح.
+ *
+ * (مراجعة Codex P2، الجولة الأولى): كان الإنشاءُ يقرأ كلمةَ المرور من `TEST_DB_ROOT_PW` بينما
+ * الرابطُ المكتوب يأخذها من `TEST_DB_BASE` الثابتة ⇒ **إنشاءٌ ناجح ورابطٌ يفشل بالمصادقة**.
+ *
+ * (مراجعة Codex P2، الجولة الثانية): وهذا السكربت **لا يستورد dotenv** — يُحلّل `.env` الجذر
+ * يدوياً وكان يقرأ منه `DATABASE_URL` وحده. فمَن هيّأ `TEST_DATABASE_URL` في `.env` (وهو
+ * الموضعُ المُوثَّق في `.env.example`) كان يُتجاهَل صامتاً، ويُصوَّب كلُّ شيءٍ إلى
+ * `root:testpw@127.0.0.1:3310` الثابت بدل خادم اختباره المُهيّأ.
+ *
+ * ⇒ الأسبقيّة: بيئةُ الصدفة ← `TEST_DB_BASE_URL` في `.env` ← اشتقاقٌ من `TEST_DATABASE_URL`
+ * في `.env` ← الافتراضُ `TEST_DB_BASE` (صندوق الاختبار 3310).
+ */
+function resolveTestBaseUrl(rootEnv) {
+  const configuredTestUrl = rootEnv.get("TEST_DATABASE_URL");
+  const candidates = [
+    process.env.TEST_DB_BASE_URL,
+    rootEnv.get("TEST_DB_BASE_URL"),
+    configuredTestUrl ? baseOfUrl(configuredTestUrl) : null,
+    TEST_DB_BASE,
+  ];
+  for (const c of candidates) {
+    const v = unquote(c);
+    if (v) return v.replace(/\/+$/, "");
+  }
+  return TEST_DB_BASE;
+}
+
+/** اعتمادُ صندوق الاختبار مشتقٌّ من الأساس نفسه — لا متغيّرَ ثانٍ ينحرف عنه. */
+function credsOf(baseUrl) {
   try {
-    const u = new URL(testBaseUrl().replace(/^mysql:/, "http:"));
+    const u = new URL(String(baseUrl).replace(/^mysql:/, "http:"));
     return {
       user: decodeURIComponent(u.username || "root"),
       pw: decodeURIComponent(u.password || ""),
@@ -164,11 +210,11 @@ function createDbIn(container, user, pw, dbName) {
  * ⇒ قاعدةُ التطوير على حاوية التطوير، وقاعدةُ الاختبار على **صندوق الاختبار 3310** الذي
  * يفترضه `TEST_DB_BASE` أصلاً — فيتوافق السكربت مع الاشتقاق التلقائيّ بدل أن ينقضه.
  */
-function provisionDbs(dbName, testDbName) {
+function provisionDbs(dbName, testDbName, testBase) {
   const devContainer = process.env.DB_CONTAINER ?? "erp-mysql";
   const devPw = process.env.DB_ROOT_PW ?? "erp_root_pw";
   const testContainer = process.env.TEST_DB_CONTAINER ?? "erp-test-db";
-  const { user: testUser, pw: testPw } = testCreds();
+  const { user: testUser, pw: testPw } = credsOf(testBase);
   const dev = createDbIn(devContainer, "root", devPw, dbName);
   const test = createDbIn(testContainer, testUser, testPw, testDbName);
   return {
@@ -250,9 +296,23 @@ function cmdNew() {
   const testDbName = sessionTestDbName(name);
   const port = pickPort(flagVal("--port"));
 
+  /**
+   * `.env` الجذر يُقرأ **قبل** التزويد لا بعده: الإنشاءُ والرابطُ المكتوب يجب أن ينطلقا من
+   * الإعداد نفسه، وإلّا زُوِّدت قاعدةٌ على خادمٍ ويُكتب رابطٌ لخادمٍ آخر (مراجعة Codex).
+   */
+  const rootEnv = existsSync(path.join(root, ".env"))
+    ? parseEnv(readFileSync(path.join(root, ".env"), "utf8"))
+    : new Map();
+  const testBase = resolveTestBaseUrl(rootEnv);
+  if (/:3306(\/|$)/.test(testBase)) {
+    warn(`أساسُ قاعدة الاختبار يشير إلى المنفذ 3306 (${testBase}) — وهو مرآةُ الإنتاج محلّياً.
+` +
+      `   حرّاسُ الاختبار سيرفضونه (init-test-db.mjs / __setup__.ts). راجع TEST_DATABASE_URL في .env الجذر.`);
+  }
+
   // ٢) قاعدتا البيانات — كلٌّ على حاويتها (تطوير 3306 · اختبار 3310)
   if (!noDb) {
-    const prov = provisionDbs(dbName, testDbName);
+    const prov = provisionDbs(dbName, testDbName, testBase);
     if (prov.ok) {
       console.log(`• قاعدتان جاهزتان: ${dbName} على ${prov.devContainer} (تطوير) + ${testDbName} على ${prov.testContainer} (اختبار)`);
     } else {
@@ -269,20 +329,19 @@ function cmdNew() {
   }
 
   // ٣) ‎.env للجلسة (منفذ + قاعدتان مستقلّتان)
-  const rootEnv = existsSync(path.join(root, ".env")) ? parseEnv(readFileSync(path.join(root, ".env"), "utf8")) : new Map();
-  const baseUrl = rootEnv.get("DATABASE_URL") || "mysql://root:erp_root_pw@127.0.0.1:3306/erp";
+  const baseUrl = unquote(rootEnv.get("DATABASE_URL")) || "mysql://root:erp_root_pw@127.0.0.1:3306/erp";
   /**
    * ⛔ **لا يُشتقّ رابطُ الاختبار من `DATABASE_URL`** — هذا كان الجذر: يرث منه المنفذ 3306
    * (مرآةَ الإنتاج على هذا الجهاز) فترفضه حرّاسُ الاختبار، ويُلغي في الوقت نفسه الاشتقاقَ
    * التلقائيّ الصحيح لأنّ الكتابةَ الصريحة تسبقه.
-   * مصدرُه الآن `testBaseUrl()` (صندوق الاختبار 3310) — **نفسُ الأساس الذي أُنشئت به القاعدة
+   * مصدرُه الآن `resolveTestBaseUrl` — **نفسُ الأساس الذي أُنشئت به القاعدة
    * فعلاً**، فلا يفترق الاعتمادُ عن الإنشاء. واسمُها من `sessionTestDbName` لا من اسم المجلّد
    * (تصادمُ الاقتطاع — مراجعة Codex P1).
    */
   const envFile = writeWorktreeEnv(dir, {
     PORT: String(port),
     DATABASE_URL: withDb(baseUrl, dbName),
-    TEST_DATABASE_URL: `${testBaseUrl()}/${testDbName}`,
+    TEST_DATABASE_URL: `${testBase}/${testDbName}`,
   });
   console.log(`• ‎.env مكتوب: ${path.relative(parent, envFile)} (PORT=${port})`);
 
