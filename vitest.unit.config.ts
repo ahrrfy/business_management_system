@@ -102,6 +102,8 @@ export default defineConfig({
       "shared/consignmentView.test.ts",
       "shared/shortfallReason.test.ts",
       "shared/partyExposure.test.ts",
+      "shared/deliveryTerminology.test.ts",
+      "shared/deliveryOpenParcel.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "server/lib/__tests__/opaqueFailure.test.ts",
       "server/lib/__tests__/paymentModeCod.test.ts",

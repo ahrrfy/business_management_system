@@ -81,17 +81,17 @@ describe("deriveConsignmentView", () => {
 });
 
 describe("القاموس نفسه", () => {
-  it("التسميات المعتمدة حرفياً — و«مُسنَد — لم يخرج» تطابق قاموس أمر الشغل (اسمٌ واحد للشيء الواحد)", () => {
+  it("التسميات المعتمدة (Slice DFP2 ٣١/٨/٢٦: بلا تشكيلٍ في الشارات — خطّ الواجهة يشوّهها بالحجم الصغير)", () => {
     expect(CONSIGNMENT_VIEW_AR).toEqual({
       RETURN_DECLARED: "بانتظار المرتجع",
-      FAILED: "تعذّر التسليم",
-      DELIVERED_AWAITING_REMIT: "سُلِّم — بانتظار التوريد",
+      FAILED: "تعذر التسليم",
+      DELIVERED_AWAITING_REMIT: "سلم — بانتظار التوريد",
       IN_TRANSIT: "بالطريق",
       AWAITING_STATEMENT: "بانتظار كشف الشركة",
-      ASSIGNED: "مُسنَد — لم يخرج",
-      CLOSED: "مُغلقة",
+      ASSIGNED: "مسند — لم يخرج",
+      CLOSED: "مغلقة",
     });
-    expect(consignmentViewLabel("FAILED")).toBe("تعذّر التسليم");
+    expect(consignmentViewLabel("FAILED")).toBe("تعذر التسليم");
   });
 
   it("لكل مفتاحٍ تسمية وتوكن وموضعُ ترتيب — التغطية كاملة بلا زيادة", () => {
