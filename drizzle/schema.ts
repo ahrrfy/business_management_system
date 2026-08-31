@@ -2961,7 +2961,7 @@ export const cashVarianceEvidenceDocuments = mysqlTable(
     }),
     hashCheck: check(
       "chk_cash_variance_evidence_hash",
-      sql`CHAR_LENGTH(${table.contentHash}) = 64`,
+      sql`${table.contentHash} REGEXP '^[0-9a-fA-F]{64}$'`,
     ),
   }),
 );
