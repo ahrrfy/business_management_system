@@ -7,8 +7,18 @@ import { createServer as createViteServer } from "vite";
 import viteConfig from "../vite.config";
 
 export async function setupVite(app: Express, server: Server) {
+  // ⚠️ `vite.config.ts` يُصدِّر **دالّة** منذ 9bc2c33d (`defineConfig(({ mode }) => …)`)، وهذا
+  // الملفّ ظلّ ينشرها كأنّها كائن. و`{...fn}` على دالّة يُنتج `{}` — بلا خطأٍ ولا تحذير:
+  // تضيع `root` (‏`client/`) والاسماء المختصرة معاً، فيقرأ Vite من `cwd` ويرتدّ
+  // `/src/main.tsx` بـ404 ⇒ صفحةٌ بيضاء في كلّ تطويرٍ محلّيّ (`pnpm dev`) بينما البناء
+  // الإنتاجيّ سليم (يقرأ الملفّ بنفسه فيستدعي الدالّة). ولذلك لا يمسكه `pnpm build` ولا CI.
+  // نستدعيها هنا بسياق `serve` بدل نشرها، ونُبقي دعم الشكل الكائنيّ للتوافق.
+  const resolvedConfig =
+    typeof viteConfig === "function"
+      ? await viteConfig({ command: "serve", mode: process.env.NODE_ENV ?? "development" })
+      : viteConfig;
   const vite = await createViteServer({
-    ...viteConfig,
+    ...resolvedConfig,
     configFile: false,
     server: { middlewareMode: true, hmr: { server }, allowedHosts: true as const },
     appType: "custom",
