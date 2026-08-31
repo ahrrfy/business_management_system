@@ -11,6 +11,7 @@
  *  ④ لقطة التكلفة وقت الاستهلاك لا تتحرّك بتغيّر WAVG بعده.
  *  ⑤ الأمر المُسلَّم لا تُعدَّل بنوده، وبضاعة الأمانة لا تصلح مادةً.
  */
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -18,11 +19,22 @@ import { getDb } from "../../db";
 import { createWorkOrder } from "../workOrder/create";
 import { setWorkOrderMaterials } from "../workOrder/materials";
 import { startWorkOrder } from "../workOrder/lifecycle";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
+import {
+  approveWorkOrderControlRequest,
+  requestWorkOrderControl,
+} from "../workOrder/controlRequests";
 
 const TABLES = [
   "idempotencyKeys",
   "accountingEntries", "receipts", "inventoryMovements",
+  "workOrderControlRequests", "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions",
+  "taskEvents", "tasks",
   "workOrderMaterials", "workOrderImages", "workOrders",
+  "serviceTypes",
   "branchStock", "shifts", "customers",
   "productPrices", "productUnits", "productVariants", "products",
   "branches", "users",
@@ -49,7 +61,16 @@ async function seed() {
   await d.insert(s.users).values([
     { id: 1, openId: "mgr1", name: "مدير ١", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "c1", name: "كاشير ١", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "mgr3", name: "مدير مراجعة", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.customers).values({ id: 1, name: "عميل أ", defaultPriceTier: "RETAIL", currentBalance: "0" });
   // ثلاث مواد: ورق (١٠٠٠)، حبر (٢٥٠٠)، وأمانةٌ (لا تصلح مادة).
   await d.insert(s.products).values([
@@ -85,6 +106,73 @@ async function newWorkOrder(materials: Array<{ variantId: number; baseQuantity: 
 const loadWo = async (id: number) =>
   (await db().select().from(s.workOrders).where(eq(s.workOrders.id, id)).limit(1))[0];
 
+async function approveCurrentDesign(workOrderId: number) {
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId,
+      requestKey: `materials-design-request:${randomUUID()}`,
+      note: "اعتماد التصميم قبل بدء استهلاك المواد",
+    },
+    { userId: 1, branchId: 1, role: "manager" },
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `materials-design-approve:${randomUUID()}`,
+      decision: "APPROVED",
+      reason: "راجع العميل التصميم ووافق على بدء التنفيذ",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.materials.${randomUUID()}`,
+      },
+    },
+    { userId: 3, branchId: 1, role: "manager" },
+  );
+}
+
+async function startApprovedWorkOrder(workOrderId: number) {
+  await approveCurrentDesign(workOrderId);
+  return startWorkOrder(workOrderId, CASHIER);
+}
+
+async function editMaterials(
+  workOrderId: number,
+  materials: Array<{ variantId: number; baseQuantity: number }>,
+  actor: { userId: number; branchId: number; role: string } = CASHIER,
+) {
+  const workOrder = await loadWo(workOrderId);
+  return setWorkOrderMaterials(
+    {
+      workOrderId,
+      expectedVersion: Number(workOrder.version),
+      reason: "تعديل مواد أمر الشغل ضمن سيناريو الاختبار التشغيلي",
+      materials,
+    },
+    actor,
+  );
+}
+
+async function editMaterialsAfterStart(
+  workOrderId: number,
+  materials: Array<{ variantId: number; baseQuantity: number }>,
+) {
+  const workOrder = await loadWo(workOrderId);
+  const request = await requestWorkOrderControl({
+    requestKey: `materials-control:${randomUUID()}`,
+    workOrderId,
+    requestType: "MATERIAL_ADJUST",
+    baseVersion: Number(workOrder.version),
+    reason: "تعديل مواد بعد بدء التنفيذ ضمن سيناريو الاختبار التشغيلي",
+    payload: { materials },
+  }, CASHIER);
+  // مسار الاعتماد هو الذي يمرر approvedControlRequestId إلى setWorkOrderMaterialsInTx.
+  return approveWorkOrderControlRequest(
+    Number(request.id),
+    { userId: 3, branchId: 1, role: "manager" },
+    "راجعت فرق المواد بعد بدء التنفيذ",
+  );
+}
+
 const loadMats = async (id: number) =>
   db().select().from(s.workOrderMaterials).where(eq(s.workOrderMaterials.workOrderId, id));
 
@@ -114,10 +202,10 @@ describe("① قبل البدء — تحريرٌ بلا أثر مخزنيّ أو
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
     const stockBefore = await stockOf(1);
 
-    const res = await setWorkOrderMaterials(
-      { workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 25 }, { variantId: 2, baseQuantity: 4 }] },
-      CASHIER,
-    );
+    const res = await editMaterials(woId, [
+      { variantId: 1, baseQuantity: 25 },
+      { variantId: 2, baseQuantity: 4 },
+    ]);
 
     expect(res.stockAdjusted).toBe(false);
     expect(res.changed).toEqual([{ variantId: 1, from: 10, to: 25 }]);
@@ -134,7 +222,7 @@ describe("① قبل البدء — تحريرٌ بلا أثر مخزنيّ أو
 
   it("حذف كل المواد مسموح (قائمة فارغة)", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
-    const res = await setWorkOrderMaterials({ workOrderId: woId, materials: [] }, CASHIER);
+    const res = await editMaterials(woId, []);
     expect(res.removed).toEqual([{ variantId: 1, baseQuantity: 10 }]);
     expect(await loadMats(woId)).toHaveLength(0);
   });
@@ -143,8 +231,8 @@ describe("① قبل البدء — تحريرٌ بلا أثر مخزنيّ أو
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
     expect(Number((await loadWo(woId)).materialsEditCount)).toBe(0);
 
-    await setWorkOrderMaterials({ workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 11 }] }, CASHIER);
-    await setWorkOrderMaterials({ workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 12 }] }, CASHIER);
+    await editMaterials(woId, [{ variantId: 1, baseQuantity: 11 }]);
+    await editMaterials(woId, [{ variantId: 1, baseQuantity: 12 }]);
 
     const wo = await loadWo(woId);
     expect(Number(wo.materialsEditCount)).toBe(2);
@@ -154,20 +242,27 @@ describe("① قبل البدء — تحريرٌ بلا أثر مخزنيّ أو
 });
 
 describe("② بعد البدء — كل فرقٍ يقابله حركةٌ وقيدٌ مُكمِّل", () => {
+  it("يرفض التعديل المباشر بعد البدء بلا طلب تحكم معتمد", async () => {
+    const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
+    await startApprovedWorkOrder(woId);
+
+    await expect(editMaterials(woId, [
+      { variantId: 1, baseQuantity: 15 },
+    ])).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
   it("زيادة الكمّية تستهلك الفرق من الرفّ وترفع materialsCost وترحّل WIP بالفرق وحده", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]); // 10 × 1000 = 10,000
-    await startWorkOrder(woId, CASHIER);
+    await startApprovedWorkOrder(woId);
     expect(Number((await loadWo(woId)).materialsCost)).toBeCloseTo(10000, 2);
     const stockAfterStart = await stockOf(1); // 500 − 10 = 490
 
-    const res = await setWorkOrderMaterials(
-      { workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 15 }] },
-      CASHIER,
-    );
+    await editMaterialsAfterStart(woId, [
+      { variantId: 1, baseQuantity: 15 },
+    ]);
 
-    expect(res.stockAdjusted).toBe(true);
     expect(await stockOf(1)).toBe(stockAfterStart - 5); // الفرق وحده خرج
-    expect(Number(res.materialsCost)).toBeCloseTo(15000, 2);
+    expect(Number((await loadWo(woId)).materialsCost)).toBeCloseTo(15000, 2);
 
     // قيدان: استهلاك البدء (10,000) + المُكمِّل (5,000) — لا إعادة ترحيلٍ للإجمالي.
     const adjusts = await wipEntries();
@@ -181,53 +276,48 @@ describe("② بعد البدء — كل فرقٍ يقابله حركةٌ وقي
       { variantId: 1, baseQuantity: 10 },
       { variantId: 2, baseQuantity: 4 },
     ]); // 10,000 + 10,000 = 20,000
-    await startWorkOrder(woId, CASHIER);
+    await startApprovedWorkOrder(woId);
     const inkAfterStart = await stockOf(2); // 500 − 4 = 496
 
-    const res = await setWorkOrderMaterials(
-      { workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 10 }] },
-      CASHIER,
-    );
+    await editMaterialsAfterStart(woId, [
+      { variantId: 1, baseQuantity: 10 },
+    ]);
 
-    expect(res.removed).toEqual([{ variantId: 2, baseQuantity: 4 }]);
+    expect((await loadMats(woId)).map((row) => Number(row.variantId))).toEqual([1]);
     expect(await stockOf(2)).toBe(inkAfterStart + 4); // عادت للرفّ كاملةً
-    expect(Number(res.materialsCost)).toBeCloseTo(10000, 2);
+    expect(Number((await loadWo(woId)).materialsCost)).toBeCloseTo(10000, 2);
     const negative = (await wipEntries()).find((e) => Number(e.amount) === -10000);
     expect(negative).toBeTruthy(); // عكسٌ صريح لا حذفٌ صامت
   });
 
   it("④ لقطة التكلفة تثبت: تغيّر WAVG بعد البدء لا يحرّك قيمة ما استُهلك", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
-    await startWorkOrder(woId, CASHIER); // لقطة 1000
+    await startApprovedWorkOrder(woId); // لقطة 1000
 
     // ارتفع سعر الشراء لاحقاً — يجب ألّا يمسّ حصّة هذا الأمر.
     await db().update(s.productVariants).set({ costPrice: "9999.00" }).where(eq(s.productVariants.id, 1));
 
-    const res = await setWorkOrderMaterials(
-      { workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 11 }] },
-      CASHIER,
-    );
+    await editMaterialsAfterStart(woId, [
+      { variantId: 1, baseQuantity: 11 },
+    ]);
     // الفرق قطعةٌ واحدة بلقطة 1000 لا بـ9999.
-    expect(Number(res.materialsCost)).toBeCloseTo(11000, 2);
+    expect(Number((await loadWo(woId)).materialsCost)).toBeCloseTo(11000, 2);
   });
 });
 
 describe("③ idempotency طبيعيّة + حرّاس", () => {
   it("إرسال القائمة نفسها مرّتين: الثانية صفر حركة وصفر قيد", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
-    await startWorkOrder(woId, CASHIER);
+    await startApprovedWorkOrder(woId);
 
     const desired = [{ variantId: 1, baseQuantity: 15 }];
-    await setWorkOrderMaterials({ workOrderId: woId, materials: desired }, CASHIER);
+    await editMaterialsAfterStart(woId, desired);
     const movementsAfterFirst = await movementCount(woId);
     const entriesAfterFirst = (await wipEntries()).length;
     const stockAfterFirst = await stockOf(1);
 
-    const second = await setWorkOrderMaterials({ workOrderId: woId, materials: desired }, CASHIER);
+    await editMaterialsAfterStart(woId, desired);
 
-    expect(second.stockAdjusted).toBe(false);
-    expect(second.added).toEqual([]);
-    expect(second.changed).toEqual([]);
     expect(await movementCount(woId)).toBe(movementsAfterFirst);
     expect((await wipEntries()).length).toBe(entriesAfterFirst);
     expect(await stockOf(1)).toBe(stockAfterFirst);
@@ -237,34 +327,33 @@ describe("③ idempotency طبيعيّة + حرّاس", () => {
 
   it("بضاعة الأمانة لا تصلح مادةً — تُرفض ولا تُكتب", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
-    await expect(setWorkOrderMaterials(
-      { workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 10 }, { variantId: 3, baseQuantity: 2 }] },
-      CASHIER,
-    )).rejects.toThrowError(/الأمانة/);
+    await expect(editMaterials(woId, [
+      { variantId: 1, baseQuantity: 10 },
+      { variantId: 3, baseQuantity: 2 },
+    ])).rejects.toThrowError(/الأمانة/);
     expect(await loadMats(woId)).toHaveLength(1);
   });
 
   it("كمّية غير صحيحة أو صفرية مرفوضة (الحذف بإسقاط الصنف لا بصفر)", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
-    await expect(setWorkOrderMaterials(
-      { workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 0 }] },
-      CASHIER,
-    )).rejects.toThrowError(/صحيحاً موجباً/);
+    await expect(editMaterials(woId, [
+      { variantId: 1, baseQuantity: 0 },
+    ])).rejects.toThrowError(/صحيحاً موجباً/);
   });
 
   it("أمرٌ مُسلَّم لا تُعدَّل بنوده", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
     await db().update(s.workOrders).set({ status: "DELIVERED" }).where(eq(s.workOrders.id, woId));
-    await expect(setWorkOrderMaterials(
-      { workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 5 }] },
-      CASHIER,
-    )).rejects.toThrowError(/مُسلَّم/);
+    await expect(editMaterials(woId, [
+      { variantId: 1, baseQuantity: 5 },
+    ])).rejects.toThrowError(/مُسلَّم/);
   });
 
   it("عزل الفرع: كاشير فرعٍ آخر لا يعدّل بنود أمرٍ ليس لفرعه", async () => {
     const woId = await newWorkOrder([{ variantId: 1, baseQuantity: 10 }]);
-    await expect(setWorkOrderMaterials(
-      { workOrderId: woId, materials: [{ variantId: 1, baseQuantity: 5 }] },
+    await expect(editMaterials(
+      woId,
+      [{ variantId: 1, baseQuantity: 5 }],
       { userId: 2, branchId: 99, role: "cashier" },
     )).rejects.toThrowError(/لا يخصّ فرعك/);
   });

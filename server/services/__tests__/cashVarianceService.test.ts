@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -6,7 +7,10 @@ import { extractInsertId } from "../../lib/insertId";
 import {
   approveCashVarianceCase,
   buildCashVariancePostingPlan,
+  getCashVarianceCase,
+  listCashVarianceCases,
   proposeCashVarianceCase,
+  registerCashVarianceEvidence,
   rejectCashVarianceCase,
 } from "../cashVarianceService";
 import {
@@ -24,6 +28,7 @@ import {
 import { suggestDeductionsForPeriod } from "../advancesService";
 import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 import { truncateTables } from "./__testUtils__";
+import { CASH_VARIANCE_EVIDENCE_MAX_BYTES } from "../../../shared/cashVariance";
 
 const MAKER = { userId: 71, branchId: 1, role: "manager" as const };
 const COUNTER = { userId: 72, branchId: 1, role: "manager" as const };
@@ -44,6 +49,7 @@ const TABLES = [
   "auditLogs",
   "cashVarianceCaseEvents",
   "cashVarianceCases",
+  "cashVarianceEvidenceDocuments",
   "advanceSettlements",
   "employeeAdvances",
   "journalLines",
@@ -167,21 +173,211 @@ async function seedCustodyVariance(input: {
   };
 }
 
-function proposal(sourceType: "CUSTODY" | "DAILY_TREASURY", sourceId: number, requestId: string) {
+async function evidence(requestId: string, actor = MAKER) {
+  const content = Buffer.from(`cash-variance-evidence:${requestId}`, "utf8");
+  return registerCashVarianceEvidence({
+    branchId: actor.branchId,
+    fileName: `${requestId}.png`,
+    dataUrl: `data:image/png;base64,${content.toString("base64")}`,
+    clientRequestId: `evidence-${requestId}`.slice(0, 64),
+  }, actor);
+}
+
+async function proposal(sourceType: "CUSTODY" | "DAILY_TREASURY", sourceId: number, requestId: string) {
+  const registered = await evidence(requestId);
   return proposeCashVarianceCase(
     {
       sourceType,
       sourceId,
-      reasonCode: "CUSTODY_LOSS",
+      reasonCode: sourceType === "CUSTODY" ? "CUSTODY_LOSS" : "COUNT_ERROR",
       reason: "فرق نقد فعلي مثبت بعد عد مستقل ومراجعة المستند",
       evidenceReference: "evidence://cash-count/verified",
+      evidenceDocumentId: registered.evidenceDocumentId,
       clientRequestId: requestId,
     },
     MAKER,
   );
 }
 
+async function legacyCaseWithoutEvidence(reference: string) {
+  const source = await seedCustodyVariance({ reference });
+  const count = (
+    await db().select().from(s.cashCustodyCounts)
+      .where(eq(s.cashCustodyCounts.id, source.countId)).limit(1)
+  )[0];
+  const inserted = await db().insert(s.cashVarianceCases).values({
+    branchId: 1,
+    sourceType: "CUSTODY",
+    custodyReceiptId: source.treasuryReceiptId,
+    custodyCountId: source.countId,
+    sourceVersion: 1,
+    sourceReference: reference,
+    expectedAmount: count.declaredAmount,
+    actualAmount: count.countedAmount,
+    variance: count.variance,
+    reasonCode: "CUSTODY_LOSS",
+    reason: "قضية قديمة بلا مستند دليل ثابت",
+    evidenceReference: "legacy-evidence-description",
+    evidenceDocumentId: null,
+    evidenceContentHash: null,
+    responsibleUserId: RESPONSIBLE_USER_ID,
+    responsibleEmployeeId: RESPONSIBLE_EMPLOYEE_ID,
+    responsibleNameSnapshot: "الموظف المسؤول",
+    countedByUserId: COUNTER.userId,
+    proposedByUserId: MAKER.userId,
+    proposalClientRequestId: `legacy-${reference}`.slice(0, 64),
+    proposalRequestHash: "a".repeat(64),
+  });
+  const caseId = extractInsertId(inserted);
+  await db().insert(s.cashVarianceCaseEvents).values({
+    caseId,
+    version: 1,
+    eventType: "PROPOSED",
+    clientRequestId: `legacy-event-${reference}`.slice(0, 64),
+    requestHash: "b".repeat(64),
+    actorUserId: MAKER.userId,
+  });
+  return { caseId, source };
+}
+
+async function installAuditFailure(action: string) {
+  await db().execute(sql.raw("DROP TRIGGER IF EXISTS `test_cash_variance_audit_failure`"));
+  const safeAction = action.replaceAll("'", "''");
+  await db().execute(sql.raw(`
+    CREATE TRIGGER \`test_cash_variance_audit_failure\`
+    BEFORE INSERT ON \`auditLogs\`
+    FOR EACH ROW
+    BEGIN
+      IF NEW.action = '${safeAction}' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'injected audit failure';
+      END IF;
+    END
+  `));
+}
+
+async function removeAuditFailure() {
+  await db().execute(sql.raw("DROP TRIGGER IF EXISTS `test_cash_variance_audit_failure`"));
+}
+
 describe("cash variance maker-checker resolution", () => {
+  it("يرفض سبب عجز العهدة عند مصدر المطابقة اليومية من الخدمة مباشرة", async () => {
+    await expect(proposeCashVarianceCase({
+      sourceType: "DAILY_TREASURY",
+      sourceId: 1,
+      reasonCode: "CUSTODY_LOSS",
+      reason: "سبب غير صالح للمطابقة اليومية",
+      evidenceReference: "evidence://invalid-daily-reason",
+      evidenceDocumentId: 1,
+      clientRequestId: "invalid-daily-reason",
+    }, MAKER)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("يسجل دليلاً محدوداً ببصمة خادمية ويرفض MIME والحجم والنطاق والمالك والتلاعب", async () => {
+    const bytes = Buffer.from("server-hashed-cash-evidence", "utf8");
+    const input = {
+      branchId: 1,
+      fileName: "count-proof.png",
+      dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
+      clientRequestId: "evidence-contract-register",
+    };
+    const registered = await registerCashVarianceEvidence(input, MAKER);
+    expect(registered).toEqual({
+      evidenceDocumentId: expect.any(Number),
+      contentHash: createHash("sha256").update(bytes).digest("hex"),
+      idempotent: false,
+    });
+    await expect(registerCashVarianceEvidence(input, MAKER)).resolves.toMatchObject({
+      evidenceDocumentId: registered.evidenceDocumentId,
+      idempotent: true,
+    });
+    const stored = (
+      await db().select().from(s.cashVarianceEvidenceDocuments)
+        .where(eq(s.cashVarianceEvidenceDocuments.id, registered.evidenceDocumentId)).limit(1)
+    )[0];
+    expect(Buffer.from(stored.content).equals(bytes)).toBe(true);
+    expect(stored.contentHash).toBe(createHash("sha256").update(bytes).digest("hex"));
+
+    await expect(registerCashVarianceEvidence({
+      ...input,
+      clientRequestId: "evidence-invalid-mime",
+      fileName: "proof.svg",
+      dataUrl: "data:image/svg+xml;base64,PHN2Zy8+",
+    }, MAKER)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const oversized = Buffer.alloc(CASH_VARIANCE_EVIDENCE_MAX_BYTES + 1, 1);
+    await expect(registerCashVarianceEvidence({
+      ...input,
+      clientRequestId: "evidence-oversized",
+      dataUrl: `data:image/png;base64,${oversized.toString("base64")}`,
+    }, MAKER)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(registerCashVarianceEvidence({
+      ...input,
+      clientRequestId: "evidence-cross-branch",
+      branchId: 2,
+    }, MAKER)).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const ownerSource = await seedCustodyVariance({ reference: "CH-1-20260831-0020" });
+    await expect(proposeCashVarianceCase({
+      sourceType: "CUSTODY",
+      sourceId: ownerSource.treasuryReceiptId,
+      reasonCode: "CUSTODY_LOSS",
+      reason: "لا يجوز استعمال دليل منشئ آخر في القضية",
+      evidenceReference: "owner-mismatch-description",
+      evidenceDocumentId: registered.evidenceDocumentId,
+      clientRequestId: "evidence-owner-mismatch",
+    }, SECOND_CHECKER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const branchEvidence = await registerCashVarianceEvidence({
+      branchId: 2,
+      fileName: "other-branch.png",
+      dataUrl: `data:image/png;base64,${Buffer.from("other-branch").toString("base64")}`,
+      clientRequestId: "evidence-admin-other-branch",
+    }, SECOND_CHECKER);
+    await expect(proposeCashVarianceCase({
+      sourceType: "CUSTODY",
+      sourceId: ownerSource.treasuryReceiptId,
+      reasonCode: "CUSTODY_LOSS",
+      reason: "لا يجوز استعمال دليل فرع آخر في القضية",
+      evidenceReference: "branch-mismatch-description",
+      evidenceDocumentId: branchEvidence.evidenceDocumentId,
+      clientRequestId: "evidence-branch-mismatch",
+    }, SECOND_CHECKER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    await expect(
+      db().update(s.cashVarianceEvidenceDocuments)
+        .set({ content: Buffer.from("tampered") })
+        .where(eq(s.cashVarianceEvidenceDocuments.id, registered.evidenceDocumentId)),
+    ).rejects.toBeDefined();
+  });
+
+  it("يرفض الاقتراح والاعتماد والرفض عند غياب مستند الدليل", async () => {
+    const missingSource = await seedCustodyVariance({ reference: "CH-1-20260831-0021" });
+    await expect(proposeCashVarianceCase({
+      sourceType: "CUSTODY",
+      sourceId: missingSource.treasuryReceiptId,
+      reasonCode: "CUSTODY_LOSS",
+      reason: "هذا الاقتراح بلا سجل دليل داخلي صالح",
+      evidenceReference: "missing-evidence-description",
+      evidenceDocumentId: 999_999,
+      clientRequestId: "missing-evidence-proposal",
+    }, MAKER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.cashVarianceCases)).toHaveLength(0);
+    expect(await db().select().from(s.cashVarianceCaseEvents)).toHaveLength(0);
+
+    const approveLegacy = await legacyCaseWithoutEvidence("CH-1-20260831-0022");
+    await expect(approveCashVarianceCase({
+      caseId: approveLegacy.caseId,
+      expectedVersion: 1,
+      clientRequestId: "legacy-missing-evidence-approve",
+    }, CHECKER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    const rejectLegacy = await legacyCaseWithoutEvidence("CH-1-20260831-0023");
+    await expect(rejectCashVarianceCase({
+      caseId: rejectLegacy.caseId,
+      expectedVersion: 1,
+      clientRequestId: "legacy-missing-evidence-reject",
+      reason: "لا يجوز رفض القضية دون دليلها الحاكم",
+    }, CHECKER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
   it("uses custody receivables, daily losses, and liability suspense without invented revenue", () => {
     const shortage = buildCashVariancePostingPlan({
       sourceType: "CUSTODY",
@@ -241,6 +437,12 @@ describe("cash variance maker-checker resolution", () => {
   it("resolves a custody shortage atomically, clears transit and is idempotent", async () => {
     const source = await seedCustodyVariance({});
     const created = await proposal("CUSTODY", source.treasuryReceiptId, "variance-propose-1");
+    await expect(getCashVarianceCase(created.caseId, MAKER)).resolves.toMatchObject({
+      decisionPolicy: { canDecide: false, blockedReason: "لا يمكنك اعتماد تسوية اقترحتها أنت." },
+    });
+    await expect(getCashVarianceCase(created.caseId, CHECKER)).resolves.toMatchObject({
+      decisionPolicy: { canDecide: true, blockedReason: null },
+    });
 
     await expect(
       approveCashVarianceCase(
@@ -333,6 +535,7 @@ describe("cash variance maker-checker resolution", () => {
 
   it("derives custody responsibility from the shift contract and blocks the responsible actor", async () => {
     const source = await seedCustodyVariance({ reference: "CH-1-20260831-0006" });
+    const maliciousEvidence = await evidence("variance-derived-responsible");
     const malicious = await proposeCashVarianceCase(
       {
         sourceType: "CUSTODY",
@@ -340,6 +543,7 @@ describe("cash variance maker-checker resolution", () => {
         reasonCode: "CUSTODY_LOSS",
         reason: "عجز عهدة مثبت بمحضر عد مستقل ودليل موقع",
         evidenceReference: "evidence://custody/contract-owner",
+        evidenceDocumentId: maliciousEvidence.evidenceDocumentId,
         clientRequestId: "variance-derived-responsible",
       },
       MAKER,
@@ -365,6 +569,8 @@ describe("cash variance maker-checker resolution", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const second = await seedCustodyVariance({ reference: "CH-1-20260831-0007" });
+    const responsibleActor = { userId: RESPONSIBLE_USER_ID, branchId: 1, role: "manager" as const };
+    const responsibleEvidence = await evidence("responsible-propose-denied", responsibleActor);
     await expect(
       proposeCashVarianceCase(
         {
@@ -373,9 +579,10 @@ describe("cash variance maker-checker resolution", () => {
           reasonCode: "CUSTODY_LOSS",
           reason: "المسؤول لا ينشئ قضية عجز عهدته بنفسه",
           evidenceReference: "evidence://custody/responsible-proposer",
+          evidenceDocumentId: responsibleEvidence.evidenceDocumentId,
           clientRequestId: "responsible-propose-denied",
         },
-        { userId: RESPONSIBLE_USER_ID, branchId: 1, role: "manager" },
+        responsibleActor,
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
@@ -450,7 +657,16 @@ describe("cash variance maker-checker resolution", () => {
         SECOND_CHECKER,
       ),
     ]);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(["CONFLICT", "PRECONDITION_FAILED"]).toContain(rejected[0].reason?.code);
+    expect(String(rejected[0].reason?.message ?? rejected[0].reason)).not.toMatch(
+      /deadlock|lock wait|timeout/i,
+    );
     expect(
       await db()
         .select()
@@ -460,6 +676,183 @@ describe("cash variance maker-checker resolution", () => {
     expect(
       await db().select().from(s.cashVarianceCaseEvents).where(eq(s.cashVarianceCaseEvents.caseId, created.caseId)),
     ).toHaveLength(2);
+  });
+
+  it("rejects with exact replay, rejects key reuse and stale versions, and serializes approve versus reject", async () => {
+    const source = await seedCustodyVariance({ reference: "CH-1-20260831-0010" });
+    const created = await proposal("CUSTODY", source.treasuryReceiptId, "variance-reject-propose");
+    const rejectInput = {
+      caseId: created.caseId,
+      expectedVersion: 1,
+      clientRequestId: "variance-reject-decision",
+      reason: "الدليل المرفق لا يكفي لحسم فرق النقد",
+    };
+
+    await expect(rejectCashVarianceCase(rejectInput, CHECKER)).resolves.toMatchObject({
+      status: "REJECTED",
+      version: 2,
+      idempotent: false,
+    });
+    await expect(rejectCashVarianceCase(rejectInput, CHECKER)).resolves.toMatchObject({
+      status: "REJECTED",
+      version: 2,
+      idempotent: true,
+    });
+    await expect(
+      rejectCashVarianceCase(
+        { ...rejectInput, reason: "سبب رفض مختلف يستخدم المفتاح نفسه بصورة غير مسموحة" },
+        CHECKER,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(
+      await db()
+        .select()
+        .from(s.cashVarianceCaseEvents)
+        .where(eq(s.cashVarianceCaseEvents.caseId, created.caseId)),
+    ).toHaveLength(2);
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.dedupeKey, `CASH_VARIANCE:${created.caseId}`)),
+    ).toHaveLength(0);
+
+    const staleSource = await seedCustodyVariance({ reference: "CH-1-20260831-0011" });
+    const stale = await proposal(
+      "CUSTODY",
+      staleSource.treasuryReceiptId,
+      "variance-reject-stale-propose",
+    );
+    await expect(
+      rejectCashVarianceCase(
+        {
+          caseId: stale.caseId,
+          expectedVersion: 0,
+          clientRequestId: "variance-reject-stale-decision",
+          reason: "قرار مبني على نسخة قديمة من القضية",
+        },
+        CHECKER,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(
+      await db()
+        .select()
+        .from(s.cashVarianceCaseEvents)
+        .where(eq(s.cashVarianceCaseEvents.caseId, stale.caseId)),
+    ).toHaveLength(1);
+
+    const raceSource = await seedCustodyVariance({ reference: "CH-1-20260831-0012" });
+    const raced = await proposal(
+      "CUSTODY",
+      raceSource.treasuryReceiptId,
+      "variance-approve-reject-race-propose",
+    );
+    const racedResults = await Promise.allSettled([
+      approveCashVarianceCase(
+        {
+          caseId: raced.caseId,
+          expectedVersion: 1,
+          clientRequestId: "variance-approve-reject-race-approve",
+        },
+        CHECKER,
+      ),
+      rejectCashVarianceCase(
+        {
+          caseId: raced.caseId,
+          expectedVersion: 1,
+          clientRequestId: "variance-approve-reject-race-reject",
+          reason: "الأدلة لا تكفي لاعتماد فرق النقد في السباق",
+        },
+        SECOND_CHECKER,
+      ),
+    ]);
+    const racedFulfilled = racedResults.filter(
+      (result): result is PromiseFulfilledResult<unknown> => result.status === "fulfilled",
+    );
+    const racedRejected = racedResults.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(racedFulfilled).toHaveLength(1);
+    expect(racedRejected).toHaveLength(1);
+    expect(["CONFLICT", "PRECONDITION_FAILED"]).toContain(racedRejected[0].reason?.code);
+    expect(String(racedRejected[0].reason?.message ?? racedRejected[0].reason)).not.toMatch(
+      /deadlock|lock wait|timeout/i,
+    );
+
+    const raceEvents = await db()
+      .select()
+      .from(s.cashVarianceCaseEvents)
+      .where(eq(s.cashVarianceCaseEvents.caseId, raced.caseId));
+    expect(raceEvents).toHaveLength(2);
+    const decision = raceEvents.find((event) => Number(event.version) === 2);
+    expect(["APPROVED", "REJECTED"]).toContain(decision?.eventType);
+    const raceEntries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `CASH_VARIANCE:${raced.caseId}`));
+    expect(raceEntries).toHaveLength(decision?.eventType === "APPROVED" ? 1 : 0);
+  });
+
+  it("filters by the latest event in SQL before applying the requested limit", async () => {
+    const olderSource = await seedCustodyVariance({ reference: "CH-1-20260831-0013" });
+    const older = await proposal(
+      "CUSTODY",
+      olderSource.treasuryReceiptId,
+      "variance-list-older-proposed",
+    );
+    const secondProposedSource = await seedCustodyVariance({ reference: "CH-1-20260831-0015" });
+    const secondProposed = await proposal(
+      "CUSTODY",
+      secondProposedSource.treasuryReceiptId,
+      "variance-list-second-proposed",
+    );
+    const newerSource = await seedCustodyVariance({ reference: "CH-1-20260831-0014" });
+    const newer = await proposal(
+      "CUSTODY",
+      newerSource.treasuryReceiptId,
+      "variance-list-newer-rejected",
+    );
+    await rejectCashVarianceCase(
+      {
+        caseId: newer.caseId,
+        expectedVersion: 1,
+        clientRequestId: "variance-list-newer-reject-decision",
+        reason: "رفض أحدث قضية لإثبات أن الحد يطبق بعد الحالة",
+      },
+      CHECKER,
+    );
+
+    const firstPage = await listCashVarianceCases(
+      { branchId: 1, status: "PROPOSED", limit: 1 },
+      CHECKER,
+    );
+    expect(firstPage).toMatchObject({ total: 2, hasMore: true });
+    expect(firstPage.rows).toEqual([
+      expect.objectContaining({ id: older.caseId, status: "PROPOSED", version: 1 }),
+    ]);
+    expect(firstPage.nextCursor).not.toBeNull();
+    await expect(
+      listCashVarianceCases(
+        {
+          branchId: 1,
+          status: "PROPOSED",
+          limit: 1,
+          cursor: firstPage.nextCursor,
+        },
+        CHECKER,
+      ),
+    ).resolves.toMatchObject({
+      rows: [expect.objectContaining({ id: secondProposed.caseId, status: "PROPOSED" })],
+      total: 2,
+      hasMore: false,
+      nextCursor: null,
+    });
+    await expect(
+      listCashVarianceCases({ branchId: 1, status: "REJECTED", limit: 1 }, CHECKER),
+    ).resolves.toMatchObject({
+      rows: [expect.objectContaining({ id: newer.caseId, status: "REJECTED", version: 2 })],
+      total: 1,
+    });
   });
 
   it("rolls back receipt, event and case resolution when financial posting is blocked", async () => {
@@ -488,6 +881,80 @@ describe("cash variance maker-checker resolution", () => {
       await db().select().from(s.cashVarianceCaseEvents).where(eq(s.cashVarianceCaseEvents.caseId, created.caseId)),
     ).toHaveLength(1);
     expect(await db().select().from(s.employeeAdvances)).toHaveLength(0);
+  });
+
+  it("يرد الاقتراح كاملاً عندما يفشل تدقيقه داخل المعاملة", async () => {
+    const source = await seedCustodyVariance({ reference: "CH-1-20260831-0024" });
+    const registered = await evidence("audit-failure-proposal");
+    await installAuditFailure("treasury.cash_variance.propose");
+    try {
+      await expect(proposeCashVarianceCase({
+        sourceType: "CUSTODY",
+        sourceId: source.treasuryReceiptId,
+        reasonCode: "CUSTODY_LOSS",
+        reason: "فشل التدقيق يجب أن يرد الاقتراح كله",
+        evidenceReference: "audit-failure-proposal-proof",
+        evidenceDocumentId: registered.evidenceDocumentId,
+        clientRequestId: "audit-failure-proposal",
+      }, MAKER)).rejects.toBeDefined();
+    } finally {
+      await removeAuditFailure();
+    }
+    expect(await db().select().from(s.cashVarianceCases)).toHaveLength(0);
+    expect(await db().select().from(s.cashVarianceCaseEvents)).toHaveLength(0);
+    expect(
+      await db().select().from(s.auditLogs)
+        .where(eq(s.auditLogs.action, "treasury.cash_variance.propose")),
+    ).toHaveLength(0);
+  });
+
+  it("يرد السند والقيد والذمة والحدث عندما يفشل تدقيق الاعتماد ويرد حدث الرفض عند فشل تدقيقه", async () => {
+    const source = await seedCustodyVariance({ reference: "CH-1-20260831-0025" });
+    const created = await proposal("CUSTODY", source.treasuryReceiptId, "audit-failure-approve-proposal");
+    await installAuditFailure("treasury.cash_variance.approve");
+    try {
+      await expect(approveCashVarianceCase({
+        caseId: created.caseId,
+        expectedVersion: 1,
+        clientRequestId: "audit-failure-approve",
+      }, CHECKER)).rejects.toBeDefined();
+    } finally {
+      await removeAuditFailure();
+    }
+    expect(
+      await db().select().from(s.cashVarianceCaseEvents)
+        .where(eq(s.cashVarianceCaseEvents.caseId, created.caseId)),
+    ).toHaveLength(1);
+    expect(
+      await db().select().from(s.receipts)
+        .where(eq(s.receipts.referenceNumber, `CV-${created.caseId}`)),
+    ).toHaveLength(0);
+    expect(
+      await db().select().from(s.accountingEntries)
+        .where(eq(s.accountingEntries.dedupeKey, `CASH_VARIANCE:${created.caseId}`)),
+    ).toHaveLength(0);
+    expect(await db().select().from(s.employeeAdvances)).toHaveLength(0);
+    const custodyReceipt = (
+      await db().select().from(s.receipts)
+        .where(eq(s.receipts.id, source.treasuryReceiptId)).limit(1)
+    )[0];
+    expect(custodyReceipt.status).toBe("PENDING");
+
+    await installAuditFailure("treasury.cash_variance.reject");
+    try {
+      await expect(rejectCashVarianceCase({
+        caseId: created.caseId,
+        expectedVersion: 1,
+        clientRequestId: "audit-failure-reject",
+        reason: "فشل التدقيق يجب أن يرد حدث الرفض",
+      }, CHECKER)).rejects.toBeDefined();
+    } finally {
+      await removeAuditFailure();
+    }
+    expect(
+      await db().select().from(s.cashVarianceCaseEvents)
+        .where(eq(s.cashVarianceCaseEvents.caseId, created.caseId)),
+    ).toHaveLength(1);
   });
 
   it("rejects proposing or approving a variance after the branch cash day is closed", async () => {

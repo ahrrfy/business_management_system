@@ -24,7 +24,6 @@ import {
 import { getDb } from "../db";
 import {
   cancelWorkOrder,
-  reverseServiceInvoice,
   claimWorkOrder,
   createWorkOrder,
   deliverWorkOrder,
@@ -39,13 +38,11 @@ import {
   getWorkOrderCancellationRefundStatus,
   listPendingWorkOrderCancellationRefunds,
 } from "../services/workOrder/cancel";
-import { reverseWorkOrderDelivery } from "../services/workOrder/reverseDelivery";
 import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
-import { requestDesignApproval } from "../services/workOrder/approval";
 import { setWorkOrderDesign } from "../services/workOrder/design";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess } from "@shared/permissions";
@@ -63,6 +60,14 @@ import { logger } from "../logger";
 import { upsertConversation } from "../services/conversationService";
 import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import {
+  approveWorkOrderControlRequest,
+  getWorkOrderControlPreflight,
+  getWorkOrderControlRequest,
+  listPendingWorkOrderControls,
+  rejectWorkOrderControlRequest,
+  requestWorkOrderControl,
+} from "../services/workOrder/controlRequests";
 
 const workOrderCreatorUser = alias(users, "workOrderCreatorUser");
 /** محرّر البنود الأخير (0199) — اسمٌ يُعرَض بجانب وسم «مُعدَّل» فيُعرَف من غيّر ماذا. */
@@ -81,6 +86,46 @@ const receptionPaymentMethod = z
   .transform((value) => value as "CASH");
 const priceTierEnum = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
+const workOrderControlReason = z.string().trim().min(3).max(500);
+const workOrderMaterialPayload = z.object({
+  materials: z.array(z.object({
+    variantId: z.number().int().positive(),
+    baseQuantity: z.number().int().positive(),
+  })).max(200),
+});
+const workOrderCancelPayload = z.object({
+  refundShiftId: z.number().int().positive().nullish(),
+  materials: z.array(z.object({
+    workOrderMaterialId: z.number().int().positive(),
+    returnBase: z.number().int().min(0),
+    wasteBase: z.number().int().min(0),
+  })).max(200).nullish(),
+});
+const workOrderRefundSourcePlan = z.object({
+  sourceReceiptId: z.number().int().positive(),
+  amount: positiveMoneyString,
+  collectedMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]),
+  refundMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]),
+  counterRole: z.enum(["OTHER_LIABILITY", "AR"]),
+});
+const workOrderReversePayload = z.object({
+  expectedVersion: z.number().int().positive(),
+  reopen: z.boolean(),
+  refundShiftId: z.number().int().positive().nullish(),
+  refundSources: z.array(workOrderRefundSourcePlan).max(200),
+});
+const workOrderCommercialPayload = z.object({
+  title: z.string().trim().min(1).max(255).optional(),
+  customizationText: z.string().max(5000).nullish(),
+  salePrice: positiveMoneyString.optional(),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+  priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
+  customerId: z.number().int().positive().nullish(),
+  contactName: z.string().trim().max(255).nullish(),
+  contactPhone: z.string().trim().max(32).nullish(),
+  receptionChannel: z.enum(["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE", "OTHER"]).nullish(),
+  channelHandle: z.string().max(120).nullish(),
+});
 const receptionWorkOrderSchema = z.object({
   baseVariantId: z.number().int().positive().nullish(),
   title: z.string().trim().min(1),
@@ -376,6 +421,86 @@ function workOrdersFullAccess(user: { role: string; permissionsOverride?: unknow
 }
 
 export const workOrderRouter = router({
+  controlPreflight: workordersCashierProcedure
+    .input(z.object({ workOrderId: z.number().int().positive() }))
+    .query(({ input, ctx }) => getWorkOrderControlPreflight(input.workOrderId, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? 0,
+      role: ctx.user.role,
+    })),
+
+  requestControl: workordersCashierProcedure
+    .input(z.discriminatedUnion("requestType", [
+      z.object({
+        requestType: z.literal("COMMERCIAL_EDIT"),
+        requestKey: z.string().trim().min(1).max(120),
+        workOrderId: z.number().int().positive(),
+        baseVersion: z.number().int().positive(),
+        reason: workOrderControlReason,
+        payload: workOrderCommercialPayload,
+      }),
+      z.object({
+        requestType: z.literal("MATERIAL_ADJUST"),
+        requestKey: z.string().trim().min(1).max(120),
+        workOrderId: z.number().int().positive(),
+        baseVersion: z.number().int().positive(),
+        reason: workOrderControlReason,
+        payload: workOrderMaterialPayload,
+      }),
+      z.object({
+        requestType: z.literal("CANCEL"),
+        requestKey: z.string().trim().min(1).max(120),
+        workOrderId: z.number().int().positive(),
+        baseVersion: z.number().int().positive(),
+        reason: workOrderControlReason,
+        payload: workOrderCancelPayload,
+      }),
+      z.object({
+        requestType: z.literal("REVERSE_DELIVERY"),
+        requestKey: z.string().trim().min(1).max(120),
+        workOrderId: z.number().int().positive(),
+        baseVersion: z.number().int().positive(),
+        reason: workOrderControlReason,
+        payload: workOrderReversePayload,
+      }),
+    ]))
+    .mutation(({ input, ctx }) => requestWorkOrderControl(input, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? 0,
+      role: ctx.user.role,
+    })),
+
+  pendingControlRequests: workordersManagerProcedure.query(({ ctx }) =>
+    listPendingWorkOrderControls({
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? 0,
+      role: ctx.user.role,
+    })),
+
+  controlRequest: workordersManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(({ input, ctx }) => getWorkOrderControlRequest(input.id, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? 0,
+      role: ctx.user.role,
+    })),
+
+  approveControl: workordersManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), note: z.string().trim().max(500).nullish() }))
+    .mutation(({ input, ctx }) => approveWorkOrderControlRequest(input.id, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? 0,
+      role: ctx.user.role,
+    }, input.note)),
+
+  rejectControl: workordersManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), reason: workOrderControlReason }))
+    .mutation(({ input, ctx }) => rejectWorkOrderControlRequest(input.id, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? 0,
+      role: ctx.user.role,
+    }, input.reason)),
+
   // §٧ IDOR: الكاشير لا يجب أن يرى أوامر فروع أخرى. branchScopedProcedure يحقن
   // scopedBranchId=null للأدمن، ورقم الفرع للمدير وغيره.
   list: workordersReadProcedure
@@ -712,6 +837,7 @@ export const workOrderRouter = router({
           // `updatedAt` عمداً: ذاك يتحرّك مع كل كتابة فيفقد الوسم معناه.
           materialsEditedAt: workOrders.materialsEditedAt,
           materialsEditCount: workOrders.materialsEditCount,
+          version: workOrders.version,
           materialsEditedByName: materialsEditorUser.name,
           // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — تُحجب أدناه بحسب canSeeDeliveryForUser.
           consignmentId: deliveryConsignments.id,
@@ -1355,20 +1481,25 @@ export const workOrderRouter = router({
       const { managerApproval, ...rest } = input;
       // اعتماد مدير (اختياريّ) — يُجيز ردّ الأمانة عبر ورديةٍ غير وردية القبض؛ نفس قفل التخمين
       // والتدقيق اللذين يستعملهما sales.create/reception حرفياً. غيابه ⇒ الحوكمة داخل المساعد تقرّر.
-      let authorizedByManager = false;
+      let approvedByManagerId: number | null = null;
       if (managerApproval) {
-        await verifyManagerApproval(managerApproval, ctx, ctx.user.branchId ?? 1);
-        authorizedByManager = true;
+        approvedByManagerId = await verifyManagerApproval(managerApproval, ctx, ctx.user.branchId ?? 1);
+        if (Number(approvedByManagerId) === Number(ctx.user.id)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "رد أمانة أجرة التوصيل عبر وردية أخرى يتطلب مديراً مختلفاً عن منفذ إعادة التصنيف",
+          });
+        }
       }
       const res = await updateWorkOrderDeliveryMethod(
-        { ...rest, authorizedByManager },
+        { ...rest, approvedByManagerId },
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
       );
       await logAudit(ctx, {
         action: "workOrder.setDeliveryMethod",
         entityType: "workOrder",
         entityId: input.workOrderId,
-        newValue: { hasDelivery: input.hasDelivery, refundedFee: res.refundedFee },
+        newValue: { hasDelivery: input.hasDelivery, refundedFee: res.refundedFee, approvedByManagerId },
       });
       return res;
     }),
@@ -1395,6 +1526,8 @@ export const workOrderRouter = router({
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+        reason: workOrderControlReason,
         materials: z
           .array(
             z.object({
@@ -1433,6 +1566,8 @@ export const workOrderRouter = router({
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+        reason: workOrderControlReason,
         title: z.string().trim().min(1).max(255).optional(),
         customizationText: z.string().max(5000).nullish(),
         salePrice: positiveMoneyString.optional(),
@@ -1465,33 +1600,6 @@ export const workOrderRouter = router({
    * السحب الذاتي للفني (محطة التنفيذ): يُسنِد الأمر الوارد لنفسه ليظهر في «أوامري».
    * workOrderExecProcedure = كاشير/مدير/فني مطبعة + فرع مُسنَد. الخدمة تمنع سحب أمر زميل.
    */
-  /**
-   * ش٢ — طلبُ موافقة العميل على التصميم. `workordersExecProcedure`: **مَن ينفّذ هو من يطلب**
-   * (رأى التصميم وعرف أنّه يحتاج إقراراً)، والتسجيلُ والإغلاق يبقيان في شاشة المهام بمفرداتها.
-   */
-  requestDesignApproval: workordersExecProcedure
-    .input(
-      z.object({
-        workOrderId: z.number().int().positive(),
-        note: z.string().trim().max(2000).nullish(),
-        assignedTo: z.number().int().positive().nullish(),
-      }),
-    )
-    .mutation(async ({ input, ctx }) => {
-      const res = await requestDesignApproval(input, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
-        role: ctx.user.role,
-      });
-      await logAudit(ctx, {
-        action: "workOrder.requestDesignApproval",
-        entityType: "workOrder",
-        entityId: input.workOrderId,
-        newValue: { taskNumber: res.taskNumber, created: res.created },
-      });
-      return res;
-    }),
-
   /**
    * ش٢ — حفظُ نسخةِ تصميم. `workordersCashierProcedure` لا `Manager`: **الكاشير الذي كتب
    * المواصفة هو من يصحّحها** (اليوم `update` مديريّ حصراً، فالتصحيح يمرّ بالمدير بلا سبب).
@@ -1585,44 +1693,16 @@ export const workOrderRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
     }),
 
-  // الإلغاء يعكس مخزوناً/قيوداً ⇒ مدير فأعلى.
-  /**
-   * **عكس فاتورة خدمةٍ صفريّة البنود** (١٩/٨) — المخرج الأخير الناقص.
-   *
-   * أمرُ تخصيصٍ خالصٍ بلا منتجٍ كتالوجيّ تُنشأ فاتورتُه بصفر بنود (قيد FK)، فتُرفَض من
-   * المرتجع (يشترط أسطراً) ومن التصحيح (يشترط بنوداً) ومن الإلغاء (يرفض منشأ WORKORDER)
-   * ⇒ فاتورةٌ حيّةٌ بلا فعلٍ واحد. الخدمة تحصر نفسها بنيوياً في هذه الحالة وحدها.
-   */
-  reverseServiceInvoice: workordersManagerProcedure
-    .input(z.object({
-      workOrderId: z.number().int().positive(),
-      reason: z.string().trim().min(3).max(500),
-      clientRequestId: z.string().trim().min(1).max(100).optional(),
-    }))
-    .mutation(async ({ input, ctx }) => {
-      const res = await reverseServiceInvoice(input, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
-        role: ctx.user.role,
-      });
-      await logAudit(ctx, {
-        action: "workOrder.reverseServiceInvoice",
-        entityType: "workOrder",
-        entityId: input.workOrderId,
-        newValue: { reason: input.reason, invoiceId: (res as { invoiceId?: number }).invoiceId },
-      });
-      return res;
-    }),
-
   cancel: workordersManagerProcedure
     .input(z.object({
       workOrderId: z.number().int().positive(),
+      expectedVersion: z.number().int().positive(),
       // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه استرداد العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
       clientRequestId: z.string().trim().min(1).max(100).optional(),
       /** سببُ الإلغاء — يُكتب على الأمر (0237) فيصير قابلاً للقراءة والتقرير لا حبيسَ التدقيق. */
-      reason: z.string().trim().min(3).max(500).optional(),
+      reason: workOrderControlReason,
       /**
        * مصيرُ كلّ خامة مستهلَكة. **حذفُه = رجوعٌ كامل** (السلوك القائم حرفياً)، ووجودُه
        * يلزمه تغطيةُ كلّ الأسطر بمجموعٍ يساوي المستهلَك بالضبط — تتحقّق منه الخدمة.
@@ -1640,7 +1720,8 @@ export const workOrderRouter = router({
         {
           refundShiftId: input.refundShiftId ?? null,
           clientRequestId: input.clientRequestId ?? null,
-          reason: input.reason ?? null,
+          expectedVersion: input.expectedVersion,
+          reason: input.reason,
           materials: input.materials ?? null,
         },
       );
@@ -1650,41 +1731,6 @@ export const workOrderRouter = router({
         entityId: input.workOrderId,
         newValue: { reason: input.reason ?? null, wastedLines: (input.materials ?? []).filter((m) => m.wasteBase > 0).length },
       });
-      return res;
-    }),
-
-  /**
-   * **استرجاعُ أمر شغلٍ مُسلَّم** (٢٠/٨) — البابُ الذي لم يكن موجوداً.
-   *
-   * سلطتُه سلطةُ الإلغاء نفسها (`workordersManagerProcedure`): أثرٌ ماليٌّ عاكسٌ يستحقّ
-   * نفس مستوى الثقة. والخدمةُ تفرض الحرّاس كلَّها (مُسلَّم فقط · لا إرسالية حيّة · فاتورةٌ
-   * غير ميتة · ردُّ كلّ ما قُبض).
-   */
-  reverseDelivery: workordersManagerProcedure
-    .input(z.object({
-      workOrderId: z.number().int().positive(),
-      reason: z.string().trim().min(3).max(500),
-      /** يعيده للطابور جاهزاً لإعادة تسليمٍ مصحَّح بدل إغلاقه ملغىً. */
-      reopen: z.boolean().optional(),
-      refundShiftId: z.number().int().positive().optional(),
-      clientRequestId: z.string().trim().min(1).max(100).optional(),
-    }))
-    .mutation(async ({ input, ctx }) => {
-      const res = await reverseWorkOrderDelivery(
-        {
-          workOrderId: input.workOrderId,
-          reason: input.reason,
-          reopen: input.reopen === true,
-          refundShiftId: input.refundShiftId ?? null,
-          clientRequestId: input.clientRequestId ?? null,
-        },
-        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
-      );
-      // ⛔ لا `logAudit` هنا: الخدمةُ تكتب `workOrder.reverseDelivery` **داخل المعاملة**
-      // بمبالغها الحقيقية (المعكوس والمردود). تكرارُه هنا يُنتج صفَّي تدقيقٍ لعمليةٍ واحدة
-      // ⇒ حدثان في الخطّ الزمنيّ للأمر الواحد، أحدهما أفقرُ بياناً — والقارئُ لا يعرف
-      // أوقعت العمليةُ مرّتين أم لا. (النمط نفسه في `cancel.ts`: خدمتُه تُدقّق فعلاً
-      // مغايراً — `workOrder.refund.approve` — فلا تكرار هناك.)
       return res;
     }),
 

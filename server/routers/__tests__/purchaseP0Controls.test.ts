@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import type { TrpcContext } from "../../context";
 import { receivePurchase } from "../../services/purchaseService";
 import { purchaseRouter } from "../purchaseRouter";
@@ -21,7 +22,24 @@ function context(): TrpcContext {
 }
 
 describe("ضوابط P0 للمشتريات على حد API", () => {
-  it("يرفض CHECK في تسوية الشحن وتسديد USD قبل دخول الخدمة", async () => {
+  it("لا يقبل إنشاء CONFIRMED ولا اعتماداً بلا سبب ومفتاح طلب", async () => {
+    const caller = purchaseRouter.createCaller(context());
+    const createInput = {
+      supplierId: 1,
+      branchId: 1,
+      clientRequestId: "api-create-confirmed",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "1.00" }],
+    };
+
+    await expect(
+      caller.createOrder({ ...createInput, status: "CONFIRMED" } as never),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.confirmOrder({ purchaseOrderId: 1 } as never),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("يرفض CHECK في تسوية الشحن ولا يعرّض تسديد USD القديم عند API", async () => {
     const caller = purchaseRouter.createCaller(context());
 
     await expect(
@@ -33,16 +51,8 @@ describe("ضوابط P0 للمشتريات على حد API", () => {
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    await expect(
-      caller.settleUsdDirect({
-        purchaseOrderId: 999_991,
-        settledUsd: "10.00",
-        chargedIqd: "14500.00",
-        method: "CHECK" as never,
-        referenceNumber: "CHECK-USD-1",
-        clientRequestId: "api-purchase-check-usd",
-      }),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const routerSource = readFileSync("server/routers/purchaseRouter.ts", "utf8");
+    expect(routerSource).not.toContain("settleUsdDirect:");
   });
 
   it("يرفض CHECK في تسوية الشحن حتى عند استدعاء الخدمة مباشرة", async () => {

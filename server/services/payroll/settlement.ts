@@ -32,6 +32,7 @@ import type {
   PayrollPaymentMethod,
   PayrollReturnInput,
 } from "./types";
+import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -202,6 +203,9 @@ export async function payRun(
         code: "BAD_REQUEST",
         message: "يُدفع المسيّر بعد اعتماده الاستحقاقي فقط.",
       });
+    }
+    if (run.status === "approved") {
+      await assertCommissionArtifactReadyForPayrollTx(tx, run.period);
     }
     if (run.createdBy !== preview.createdBy || run.revisionNo !== preview.revisionNo) {
       throw new TRPCError({

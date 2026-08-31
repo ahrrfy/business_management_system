@@ -299,6 +299,15 @@ describe("shift.close — يَلتقط expectedCash/variance/handover", () => {
       loginMethod: "local",
       branchId: 1,
     });
+    await d.insert(s.users).values({
+      id: 10,
+      openId: "local_handover_manager",
+      name: "مدير استلام العهدة",
+      email: "handover@t.test",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+    });
     const sh = await d.insert(s.shifts).values({
       userId: 9,
       branchId: 1,
@@ -314,7 +323,7 @@ describe("shift.close — يَلتقط expectedCash/variance/handover", () => {
       await db().select().from(s.users).where(eq(s.users.id, 9)).limit(1)
     )[0];
     const caller = appRouter.createCaller(makeCtx(cashier));
-    await caller.shifts.close({ shiftId, countedCash: "100.00" });
+    await caller.shifts.close({ shiftId, countedCash: "100.00", handoverToUserId: 10 });
     const row = await lastAudit("shift.close");
     expect(row).toBeTruthy();
     const newV = row.newValue as {

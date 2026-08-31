@@ -1,23 +1,23 @@
 // بند 12أ (٧/٧): اختبارات وحدة الأقساط والشيكات الآجلة.
 // النمط: customerDuplicate.test.ts / voucher.test.ts — TRUNCATE + بذر مباشر ثم استدعاء الخدمة.
 // السداد يمرّ عبر createVoucher الحقيقية ⇒ نتحقّق من receipts + accountingEntries + AR فعلياً.
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   bounceCheck,
-  cancelPlan,
-  createPlan,
+  cancelPlan as cancelPlanService,
+  createPlan as createPlanService,
   dueSoon,
   getPlan,
   listPlans,
-  payLine,
+  payLine as payLineService,
 } from "../installmentService";
+import type { CreatePlanInput, PayLineInput } from "../installmentService";
 import { bouncedCheckPosting } from "../installment/bounce";
 import { validatePostingIntentAgainstSource } from "../accounting/postingEngine";
 import { money } from "../money";
-import { createVoucher } from "../voucherService";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 
@@ -68,15 +68,71 @@ async function seedBase() {
 
 const ymd = (offsetDays: number) => new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
 
-/** خطة قياسية: إجمالي 90000، دفعة أولى 10000، قسطان نقدي (30000) + شيك (50000).
+let nextInvoiceId = 1_000;
+
+/** كل إنشاء اختباري يمرّ بعقد الإنتاج: فاتورة حيّة إلزامية ومتبقيها يساوي الخطة. */
+async function createPlan(
+  input: Omit<CreatePlanInput, "invoiceId" | "clientRequestId"> & {
+    invoiceId?: number;
+    clientRequestId?: string;
+  },
+  planActor = actor,
+) {
+  let invoiceId = input.invoiceId;
+  if (invoiceId == null) {
+    invoiceId = nextInvoiceId++;
+    await db().insert(s.invoices).values({
+      id: invoiceId,
+      invoiceNumber: `INV-INST-${invoiceId}`,
+      sourceType: "POS",
+      branchId: input.branchId,
+      customerId: input.customerId,
+      subtotal: input.totalAmount,
+      total: input.totalAmount,
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      status: "PENDING",
+    });
+  }
+  return createPlanService(
+    { ...input, invoiceId, clientRequestId: input.clientRequestId ?? crypto.randomUUID() },
+    planActor,
+  );
+}
+
+async function payLine(
+  input: Omit<PayLineInput, "clientRequestId"> & { clientRequestId?: string },
+  payActor = actor,
+  restrictToBranchId: number | null = null,
+) {
+  return payLineService(
+    { ...input, clientRequestId: input.clientRequestId ?? crypto.randomUUID() },
+    payActor,
+    restrictToBranchId,
+  );
+}
+
+async function cancelPlan(
+  input: { planId: number; reason?: string | null; clientRequestId?: string },
+  cancelActor = actor,
+  restrictToBranchId: number | null = null,
+) {
+  return cancelPlanService(
+    { ...input, clientRequestId: input.clientRequestId ?? crypto.randomUUID() },
+    cancelActor,
+    restrictToBranchId,
+  );
+}
+
+/** خطة قياسية: متبقي الفاتورة 80000، بلا دفعة صامتة، قسطان نقدي (30000) + شيك (50000).
  *  المُرفق اختياريّ دائماً (٣١/٧) — اختبار الاعتماد (Maker-Checker) له خطة مخصّصة. */
 async function seedPlan(over: Partial<Parameters<typeof createPlan>[0]> = {}) {
   return createPlan(
     {
       customerId: 1,
       branchId: 1,
-      totalAmount: "90000.00",
-      downPayment: "10000.00",
+      totalAmount: "80000.00",
+      downPayment: "0.00",
       lines: [
         { dueDate: ymd(10), amount: "30000.00", kind: "CASH" },
         { dueDate: ymd(40), amount: "50000.00", kind: "CHECK", checkNumber: "CHK-777", bankName: "الرافدين" },
@@ -157,6 +213,7 @@ async function customerBalance(id = 1): Promise<string> {
 beforeEach(async () => {
   await reset();
   await seedBase();
+  nextInvoiceId = 1_000;
 });
 
 describe("createPlan", () => {
@@ -164,8 +221,8 @@ describe("createPlan", () => {
     const { planId } = await seedPlan();
     const plan = await getPlan(planId);
     expect(plan.status).toBe("ACTIVE");
-    expect(plan.totalAmount).toBe("90000.00");
-    expect(plan.downPayment).toBe("10000.00");
+    expect(plan.totalAmount).toBe("80000.00");
+    expect(plan.downPayment).toBe("0.00");
     expect(plan.lines).toHaveLength(2);
     expect(plan.lines.map((l) => l.seq)).toEqual([1, 2]);
     expect(plan.lines[1].checkNumber).toBe("CHK-777");
@@ -177,23 +234,50 @@ describe("createPlan", () => {
     expect(await customerBalance()).toBe("900000.00");
   });
 
+  it("إعادة معرّف الإنشاء نفسه تعيد الخطة ذاتها، وتعارض الحمولة المختلفة", async () => {
+    const invoiceId = nextInvoiceId++;
+    await db().insert(s.invoices).values({
+      id: invoiceId,
+      invoiceNumber: `INV-INST-${invoiceId}`,
+      sourceType: "POS",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "80000.00",
+      total: "80000.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      status: "PENDING",
+    });
+    const clientRequestId = crypto.randomUUID();
+    const first = await seedPlan({ invoiceId, clientRequestId });
+    const replay = await seedPlan({ invoiceId, clientRequestId });
+    expect(replay.planId).toBe(first.planId);
+    await expect(
+      seedPlan({ invoiceId, clientRequestId, notes: "حمولة مختلفة" }),
+    ).rejects.toThrow(/بحمولةٍ مختلفة/);
+    const plans = await db()
+      .select()
+      .from(s.installmentPlans)
+      .where(eq(s.installmentPlans.invoiceId, invoiceId));
+    expect(plans).toHaveLength(1);
+  });
+
   // قرار المالك (١٢/٨) — «لا دينار بلا سند»: الدفعة الأولى تحت الإنفاذ تُرفَض لكلّ خطة (لا للمرتبطة فقط)،
   // فتُسجَّل سندَ قبضٍ فعليّاً قبل الخطة بدل تخزينها صامتاً على الخطة المستقلّة.
-  it("دفعةٌ أولى تحت الإنفاذ لخطةٍ مستقلّة (بلا فاتورة) ⇒ تُرفَض (لا دينار بلا سند)", async () => {
-    await expect(seedPlan({ enforceFinancialIntegrity: true, downPayment: "10000.00" })).rejects.toThrow(
+  it("دفعةٌ أولى مخزنة داخل الخطة ⇒ تُرفَض (لا دينار بلا سند)", async () => {
+    await expect(seedPlan({ downPayment: "10000.00" })).rejects.toThrow(
       /الدفعة الأولى يجب تسجيلها سندَ قبض/,
     );
   });
 
   it("دفعةٌ أولى تحت الإنفاذ لخطةٍ مرتبطةٍ بفاتورة ⇒ تُرفَض أيضاً (نفس الحارس الموحَّد)", async () => {
-    await expect(seedPlan({ enforceFinancialIntegrity: true, invoiceId: 6, downPayment: "10000.00" })).rejects.toThrow(
+    await expect(seedPlan({ invoiceId: 6, downPayment: "10000.00" })).rejects.toThrow(
       /الدفعة الأولى يجب تسجيلها سندَ قبض/,
     );
   });
 
-  it("دفعةٌ أولى = صفر تحت الإنفاذ لخطةٍ مستقلّة ⇒ مسموح (لا مبلغ بلا سند)", async () => {
+  it("دفعةٌ أولى = صفر على فاتورة حيّة ⇒ مسموح", async () => {
     const { planId } = await seedPlan({
-      enforceFinancialIntegrity: true,
       downPayment: "0.00",
       totalAmount: "80000.00",
       lines: [
@@ -206,8 +290,8 @@ describe("createPlan", () => {
 
   it("مجموع لا يطابق ⇒ BAD_REQUEST برسالة تُسمّي الفرق", async () => {
     await expect(
-      seedPlan({ totalAmount: "90000.00", downPayment: "10000.00", lines: [{ dueDate: ymd(10), amount: "30000.00", kind: "CASH" }] }),
-    ).rejects.toThrow(/لا يطابق[\s\S]*الفرق 50000\.00/);
+      seedPlan({ totalAmount: "90000.00", downPayment: "0.00", lines: [{ dueDate: ymd(10), amount: "30000.00", kind: "CASH" }] }),
+    ).rejects.toThrow(/لا يطابق[\s\S]*الفرق 60000\.00/);
   });
 
   it("تواريخ غير متصاعدة ⇒ يُرفض", async () => {
@@ -240,10 +324,10 @@ describe("createPlan", () => {
   it("فاتورة لعميل آخر ⇒ يُرفض؛ فاتورة صحيحة ⇒ تُربط", async () => {
     const d = db();
     await d.insert(s.customers).values({ id: 2, name: "عميل آخر", defaultPriceTier: "RETAIL" });
-    await d.insert(s.invoices).values({ id: 5, invoiceNumber: "INV-5", sourceType: "POS", branchId: 1, customerId: 2, subtotal: "10", total: "10" });
+    await d.insert(s.invoices).values({ id: 5, invoiceNumber: "INV-5", sourceType: "POS", branchId: 1, customerId: 2, subtotal: "80000", total: "80000" });
     await expect(seedPlan({ invoiceId: 5 })).rejects.toThrow(/لا تخصّ هذا العميل/);
 
-    await d.insert(s.invoices).values({ id: 6, invoiceNumber: "INV-6", sourceType: "POS", branchId: 1, customerId: 1, subtotal: "10", total: "10" });
+    await d.insert(s.invoices).values({ id: 6, invoiceNumber: "INV-6", sourceType: "POS", branchId: 1, customerId: 1, subtotal: "80000", total: "80000" });
     const { planId } = await seedPlan({ invoiceId: 6 });
     expect((await getPlan(planId)).invoiceId).toBe(6);
   });
@@ -334,85 +418,126 @@ describe("payLine — سند قبض حقيقي بالمسار الموحَّد",
     expect(rc.approvalStatus).toBe("APPROVED");
   });
 
-  it("رفض محاولة تحصيل A1 يبقي مفتاحها immutable، وإعادة السداد تنشئ A2 مرة واحدة والمحاولات القديمة لا تُحيي الأثر", async () => {
+  it("إعادتان متزامنتان بنفس UUID تعيدان السند نفسه بلا قبض مزدوج، وتغيير الحمولة CONFLICT", async () => {
     const { planId } = await seedPlan();
     const line = (await getPlan(planId)).lines[0];
-    const baseDescription = `تحصيل القسط رقم ${line.seq} من خطة الأقساط #${planId}`;
-    const firstMetadata = JSON.stringify({
-      kind: "INSTALLMENT_PAYMENT_ATTEMPT",
-      lineId: Number(line.id),
-      attempt: 1,
-      priorReceiptId: null,
-      reissueReason: null,
-      operatorNote: null,
-    });
-    const rejectedInsert = await db().insert(s.receipts).values({
-      branchId: 1,
-      direction: "IN",
-      amount: line.amount,
-      paymentMethod: "CASH",
-      status: "FAILED",
-      approvalStatus: "REJECTED",
-      voucherNumber: `RV-INST-REJECTED-${line.id}`,
-      partyType: "CUSTOMER",
-      partyId: 1,
-      description: baseDescription,
-      internalNote: firstMetadata,
-      createdBy: actor.userId,
-    });
-    const rejectedReceiptId = Number(rejectedInsert[0].insertId);
-    await db().insert(s.idempotencyKeys).values({
-      operation: "voucher.create",
-      clientRequestId: `instpay-${line.id}-A1`,
-      refId: rejectedReceiptId,
-    });
-    await db()
-      .update(s.installmentLines)
-      .set({ receiptId: rejectedReceiptId })
-      .where(eq(s.installmentLines.id, line.id));
-
-    const paid = await payLine({ lineId: line.id, paymentMethod: "CASH" }, actor);
-    expect(paid).toMatchObject({ status: "PAID" });
-    expect(paid.receiptId).not.toBe(rejectedReceiptId);
+    const clientRequestId = crypto.randomUUID();
+    const [a, b] = await Promise.all([
+      payLine({ lineId: line.id, paymentMethod: "CASH", clientRequestId, note: "تحصيل مطابق" }, actor),
+      payLine({ lineId: line.id, paymentMethod: "CASH", clientRequestId, note: "تحصيل مطابق" }, actor),
+    ]);
+    expect(a.receiptId).toBe(b.receiptId);
+    expect(a.voucherNumber).toBe(b.voucherNumber);
     expect(await customerBalance()).toBe("870000.00");
-    const keys = await db().select().from(s.idempotencyKeys);
-    expect(keys).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          clientRequestId: `instpay-${line.id}-A1`,
-          refId: rejectedReceiptId,
-        }),
-        expect.objectContaining({
-          clientRequestId: `instpay-${line.id}-A2`,
-          refId: paid.receiptId,
-        }),
-      ]),
-    );
-
-    const staleRetry = () =>
-      createVoucher(
-        {
-          voucherType: "RECEIPT",
-          branchId: 1,
-          amount: line.amount,
-          paymentMethod: "CASH",
-          partyType: "CUSTOMER",
-          partyId: 1,
-          description: baseDescription,
-          internalNote: firstMetadata,
-          clientRequestId: `instpay-${line.id}-A1`,
-        },
-        actor,
-      );
-    const staleResults = await Promise.allSettled([staleRetry(), staleRetry()]);
-    expect(staleResults.every((result) => result.status === "rejected")).toBe(true);
-    expect(await customerBalance()).toBe("870000.00");
+    expect(await db().select().from(s.receipts)).toHaveLength(1);
     expect(
-      await db()
-        .select()
-        .from(s.accountingEntries)
-        .where(eq(s.accountingEntries.entryType, "PAYMENT_IN")),
+      await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN")),
     ).toHaveLength(1);
+
+    await expect(
+      payLine({ lineId: line.id, paymentMethod: "CASH", clientRequestId, note: "حمولة مختلفة" }, actor),
+    ).rejects.toThrow(/idempotency|تعارض/);
+  });
+
+  it("انحراف live outstanding يمنع overpay قبل إنشاء أي voucher", async () => {
+    const { planId } = await seedPlan();
+    const plan = await getPlan(planId);
+    await db()
+      .update(s.invoices)
+      .set({ paidAmount: "10000.00", status: "PARTIALLY_PAID" })
+      .where(eq(s.invoices.id, Number(plan.invoiceId)));
+
+    await expect(
+      payLine({ lineId: plan.lines[0].id, clientRequestId: crypto.randomUUID() }, actor),
+    ).rejects.toThrow(/لا يطابق أقساط الخطة المتبقية/);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+  });
+
+  it("فشل وسم PAID بعد إنشاء السند يسبب rollback كاملاً — لا orphan voucher", async () => {
+    const { planId } = await seedPlan();
+    const plan = await getPlan(planId);
+    const triggerName = "test_installment_paid_failure";
+    await db().execute(sql.raw(`DROP TRIGGER IF EXISTS \`${triggerName}\``));
+    await db().execute(sql.raw(`
+      CREATE TRIGGER \`${triggerName}\`
+      BEFORE UPDATE ON \`installmentLines\`
+      FOR EACH ROW
+      BEGIN
+        IF NEW.lineStatus = 'PAID' THEN
+          SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'forced installment paid failure';
+        END IF;
+      END
+    `));
+    try {
+      await expect(
+        payLine({ lineId: plan.lines[0].id, clientRequestId: crypto.randomUUID() }, actor),
+      ).rejects.toMatchObject({
+        cause: { code: "ER_SIGNAL_EXCEPTION", sqlState: "45000" },
+      });
+    } finally {
+      await db().execute(sql.raw(`DROP TRIGGER IF EXISTS \`${triggerName}\``));
+    }
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, Number(plan.invoiceId))))[0];
+    expect(inv.paidAmount).toBe("0.00");
+    expect((await getPlan(planId)).lines[0].status).toBe("PENDING");
+  });
+
+  it("pay↔cancel متسلسلان على قفل invoice/plan ولا ينتجان خطة ملغاة مع سند", async () => {
+    const { planId } = await seedPlan();
+    const line = (await getPlan(planId)).lines[0];
+    const results = await Promise.allSettled([
+      payLine({ lineId: line.id, clientRequestId: crypto.randomUUID() }, actor),
+      cancelPlan({ planId, reason: "اختبار السباق", clientRequestId: crypto.randomUUID() }, actor),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const after = await getPlan(planId);
+    const receipts = await db().select().from(s.receipts);
+    if (after.status === "CANCELLED") {
+      expect(receipts).toHaveLength(0);
+      expect(after.lines.every((item) => item.status === "CANCELLED")).toBe(true);
+    } else {
+      expect(receipts).toHaveLength(1);
+      expect(after.lines[0].status).toBe("PAID");
+    }
+  });
+
+  it("إنشاءان متزامنان على الفاتورة نفسها ينتجان خطة ACTIVE واحدة فقط", async () => {
+    const invoiceId = nextInvoiceId++;
+    await db().insert(s.invoices).values({
+      id: invoiceId,
+      invoiceNumber: `INV-INST-${invoiceId}`,
+      sourceType: "POS",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "80000.00",
+      total: "80000.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      status: "PENDING",
+    });
+    const payload = {
+      customerId: 1,
+      invoiceId,
+      branchId: 1,
+      totalAmount: "80000.00",
+      lines: [
+        { dueDate: ymd(10), amount: "30000.00", kind: "CASH" as const },
+        { dueDate: ymd(40), amount: "50000.00", kind: "CASH" as const },
+      ],
+    };
+    const results = await Promise.allSettled([
+      createPlanService({ ...payload, clientRequestId: crypto.randomUUID() }, actor),
+      createPlanService({ ...payload, clientRequestId: crypto.randomUUID() }, actor),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const active = await db()
+      .select()
+      .from(s.installmentPlans)
+      .where(and(eq(s.installmentPlans.invoiceId, invoiceId), eq(s.installmentPlans.status, "ACTIVE")));
+    expect(active).toHaveLength(1);
   });
 });
 
@@ -540,15 +665,15 @@ describe("bounceCheck", () => {
     expect(inReceiptIds.has(pay1.receiptId)).toBe(true);
     expect(inReceiptIds.has(pay2.receiptId)).toBe(true);
 
-    // (د) المفتاح القديم لا يُحذف، ومحاولة A2 الجديدة ترتبط بالإيصال الثاني.
+    // (د) المفتاح التاريخي لا يُحذف، والمحاولة الجديدة تحمل UUID مستقلاً وترتبط بالإيصال الثاني.
     const oldKey = (
       await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.clientRequestId, `instpay-${checkLine.id}`))
     )[0];
-    const newKey = (
-      await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.clientRequestId, `instpay-${checkLine.id}-A2`))
-    )[0];
+    const newKey = (await db().select().from(s.idempotencyKeys)).find(
+      (key) => key.clientRequestId.startsWith(`ip:${checkLine.id}:`),
+    );
     expect(Number(oldKey.refId)).toBe(pay1.receiptId);
-    expect(Number(newKey.refId)).toBe(pay2.receiptId);
+    expect(Number(newKey?.refId)).toBe(pay2.receiptId);
   });
 
   it("بعد عكس شيك تاريخي، إعادة السداد النقدي لا يمكن ارتدادها كشيك", async () => {
@@ -588,15 +713,15 @@ describe("bounceCheck", () => {
       paidAmount: "40000.00",
       status: "PARTIALLY_PAID",
     });
-    // خطة أقساط مرتبطة بالفاتورة، قسط شيك 50000.
+    // خطة أقساط مرتبطة بكامل المتبقي، قسط شيك 60000 بلا دفعة صامتة.
     const { planId } = await createPlan(
       {
         customerId: 1,
         branchId: 1,
         invoiceId: 10,
         totalAmount: "60000.00",
-        downPayment: "10000.00",
-        lines: [{ dueDate: ymd(30), amount: "50000.00", kind: "CHECK", checkNumber: "CHK-INV", bankName: "الرشيد" }],
+        downPayment: "0.00",
+        lines: [{ dueDate: ymd(30), amount: "60000.00", kind: "CHECK", checkNumber: "CHK-INV", bankName: "الرشيد" }],
       },
       actor,
     );
@@ -607,7 +732,7 @@ describe("bounceCheck", () => {
     let inv = (await d.select().from(s.invoices).where(eq(s.invoices.id, 10)))[0];
     expect(inv.paidAmount).toBe("40000.00");
     expect(inv.status).toBe("PARTIALLY_PAID");
-    expect(await customerBalance()).toBe("850000.00"); // 900000 − 50000
+    expect(await customerBalance()).toBe("840000.00"); // 900000 − 60000
 
     // الارتداد — الإصلاح: لا يطرح 50000 من paidAmount (لم يَزِدها التحصيل قطّ) فيمحو الـ40000 المشروعة.
     await bounceCheck({ lineId: checkLine.id, note: "ارتدّ" }, actor);
@@ -625,7 +750,7 @@ describe("bounceCheck", () => {
     // فاتورة مرتبطة بالخطة عليها دفعة مقدّمة نقدية مسجّلة (paidAmount=20000) من مصدرٍ آخر.
     await d.insert(s.invoices).values({
       id: 7, invoiceNumber: "INV-7", sourceType: "POS", branchId: 1, customerId: 1,
-      subtotal: "50000.00", total: "50000.00", paidAmount: "20000.00", status: "PARTIALLY_PAID",
+      subtotal: "100000.00", total: "100000.00", paidAmount: "20000.00", status: "PARTIALLY_PAID",
     });
     const { planId } = await seedPlan({ invoiceId: 7 });
     const checkLine = (await getPlan(planId)).lines[1]; // شيك 50000
@@ -694,6 +819,18 @@ describe("cancelPlan", () => {
     await payLine({ lineId: plan.lines[0].id }, actor);
     await expect(cancelPlan({ planId }, actor)).rejects.toThrow(/سُدِّد منها قسط/);
     expect((await getPlan(planId)).status).toBe("ACTIVE");
+  });
+
+  it("إعادة إلغاء بنفس UUID والسبب replay؛ تغيير السبب بنفس المفتاح CONFLICT", async () => {
+    const { planId } = await seedPlan();
+    const clientRequestId = crypto.randomUUID();
+    await cancelPlan({ planId, reason: "إعادة جدولة موثقة", clientRequestId }, actor);
+    await expect(
+      cancelPlan({ planId, reason: "إعادة جدولة موثقة", clientRequestId }, actor),
+    ).resolves.toEqual({ planId });
+    await expect(
+      cancelPlan({ planId, reason: "سبب مختلف", clientRequestId }, actor),
+    ).rejects.toThrow(/بحمولةٍ مختلفة|حمولة/);
   });
 });
 

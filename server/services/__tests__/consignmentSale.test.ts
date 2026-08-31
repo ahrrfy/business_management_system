@@ -119,7 +119,18 @@ describe("بضاعة الأمانة ش٣ — عكس المرتجع", () => {
       lines: [{ variantId, productUnitId, quantity: "2" }], payment: { amount: "10000", method: "CASH" } }, actor);
     expect(await balance(cid)).toBe("8000.00");
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
-    await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }], refund: { amount: "10000", method: "CASH" }, restock: true }, actor);
+    await returnSale({
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "10000",
+        shiftId,
+        reason: "مرتجع أمانة كامل قابل للإرجاع للمخزون",
+        disposition: "RESTOCK",
+      },
+    }, actor);
     expect(await balance(cid)).toBe("0.00"); // الالتزام عُكس بالكامل
     const ret = (await entries("RETURN"))[0]!;
     expect(ret.cost).toBe("0.00"); // بضاعة الأمانة ليست INVENTORY للمكتبة فلا عكس COGS هنا.
@@ -143,7 +154,18 @@ describe("بضاعة الأمانة ش٣ — عكس المرتجع", () => {
       lines: [{ variantId, productUnitId, quantity: "1" }], payment: { amount: "5000", method: "CASH" } }, actor);
     expect(await balance(cid)).toBe("4000.00");
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
-    await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "5000", method: "CASH" }, restock: false }, actor);
+    await returnSale({
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "5000",
+        shiftId,
+        reason: "مرتجع أمانة تالف لا يعود إلى المخزون",
+        disposition: "DAMAGED",
+      },
+    }, actor);
     // AP صافٍ يبقى 4000 (عُكس −4000 ثم أُعيد الاستحقاق +4000).
     expect(await balance(cid)).toBe("4000.00");
     // خسارة المكتبة: RETURN.cost = 0 (لم يُعكس) ⇒ التكلفة تبقى COGS. صافي الربح للقصة = −4000 (الحصة).

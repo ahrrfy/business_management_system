@@ -45,6 +45,8 @@ const TABLES = [
 
 const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
+const OWNER = { userId: 4, branchId: 1, role: "admin" };
+const WRITE_OFF_EVIDENCE = { evidenceNote: "محضر مطابقة عهدة موقع من طرفين" } as const;
 
 function db() {
   const d = getDb();
@@ -64,6 +66,7 @@ async function seed() {
     { id: 1, openId: "mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "rc", name: "موظف خدمة", email: "r@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "cr", name: "مندوب", email: "c@t.test", role: "courier", loginMethod: "local", branchId: 1 },
+    { id: 4, openId: "own", name: "مالك", email: "o@t.test", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values([{ id: 1, name: "عميل", currentBalance: "0.00", creditLimit: "1000000.00" }]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
@@ -193,12 +196,12 @@ describe("G3 — الشطب الموجَّه يقفل الإرسالية وال�
 
     // الشطب الجزئي للإرسالية مرفوض (المُحصَّل جزئياً يُورَّد أولاً).
     await expect(
-      writeOffDeliveryShortfall({ branchId: 1, partyId: 1, amount: "4000.00", reason: "ضياع نقد", consignmentId, clientRequestId: "g3-p" }, MANAGER),
+      writeOffDeliveryShortfall({ branchId: 1, partyId: 1, amount: "4000.00", reason: "ضياع نقد", consignmentId, clientRequestId: "g3-p", ...WRITE_OFF_EVIDENCE }, OWNER),
     ).rejects.toThrow(/بكامل متبقّيها/);
 
     const res = await writeOffDeliveryShortfall(
-      { branchId: 1, partyId: 1, amount: "10000.00", reason: "المندوب ضيّع النقد", consignmentId, clientRequestId: "g3" },
-      MANAGER,
+      { branchId: 1, partyId: 1, amount: "10000.00", reason: "المندوب ضيّع النقد", consignmentId, clientRequestId: "g3", ...WRITE_OFF_EVIDENCE },
+      OWNER,
     );
     expect(res.partyBalanceAfter).toBe("0.00");
 
@@ -227,7 +230,7 @@ describe("G3 — الشطب الموجَّه يقفل الإرسالية وال�
     const shift = await openReception();
     await deliveredCreditInvoice(shift.shiftId, "g3b");
     await expect(
-      writeOffDeliveryShortfall({ branchId: 1, partyId: 1, amount: "10000.00", reason: "بلا إرسالية" }, MANAGER),
+      writeOffDeliveryShortfall({ branchId: 1, partyId: 1, amount: "10000.00", reason: "بلا إرسالية", ...WRITE_OFF_EVIDENCE }, OWNER),
     ).rejects.toThrow(/السائبة/);
   });
 });
@@ -237,8 +240,8 @@ describe("G4 — استرداد عجز مشطوب", () => {
     const shift = await openReception();
     const { consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g4");
     await writeOffDeliveryShortfall(
-      { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع", consignmentId, clientRequestId: "g4-w" },
-      MANAGER,
+      { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع", consignmentId, clientRequestId: "g4-w", ...WRITE_OFF_EVIDENCE },
+      OWNER,
     );
 
     // استرداد فوق المشطوب يُرفض (السقف = صافي الخسارة المشطوبة cost — هنا = amount إذ لا جزء وهميّ).
@@ -261,6 +264,57 @@ describe("G4 — استرداد عجز مشطوب", () => {
     expect(rin).toBeTruthy();
     expect(String(rin.amount)).toBe("10000.00");
     expect(rin.direction).toBe("IN");
+  });
+});
+
+describe("G3-SOD — سلطة الشطب وفصل سلسلة عهدة COD", () => {
+  it("لا يكفي manager/store FULL، ولا يمر شطب المالك بلا إثبات", async () => {
+    await expect(writeOffDeliveryShortfall(
+      { branchId: 1, partyId: 1, amount: "1.00", reason: "عجز مثبت", ...WRITE_OFF_EVIDENCE },
+      MANAGER,
+    )).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(writeOffDeliveryShortfall(
+      { branchId: 1, partyId: 1, amount: "1.00", reason: "عجز مثبت" },
+      OWNER,
+    )).rejects.toThrow(/إثبات/);
+  });
+
+  it("يمنع المرسل أو مثبت التسليم أو المحصل/المورد نفسه من اعتماد شطب الإرسالية", async () => {
+    const shift = await openReception();
+    const { consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g3-sod");
+    const input = {
+      branchId: 1,
+      partyId: 1,
+      amount: "10000.00",
+      reason: "فقد عهدة مثبت",
+      consignmentId,
+      clientRequestId: "g3-sod-owner",
+      ...WRITE_OFF_EVIDENCE,
+    };
+
+    await db().update(s.deliveryConsignments).set({ dispatchedBy: OWNER.userId }).where(eq(s.deliveryConsignments.id, consignmentId));
+    await expect(writeOffDeliveryShortfall(input, OWNER)).rejects.toThrow(/أرسل الإرسالية/);
+
+    await db().update(s.deliveryConsignments).set({ dispatchedBy: CASHIER.userId }).where(eq(s.deliveryConsignments.id, consignmentId));
+    await db().insert(s.deliveryEvents).values({
+      eventKey: `CN:${consignmentId}:SOD_OWNER_PROOF`,
+      consignmentId,
+      eventType: "DELIVERED",
+      actorUserId: OWNER.userId,
+    });
+    await expect(writeOffDeliveryShortfall(input, OWNER)).rejects.toThrow(/أثبت التسليم/);
+
+    await db().delete(s.deliveryEvents).where(eq(s.deliveryEvents.eventKey, `CN:${consignmentId}:SOD_OWNER_PROOF`));
+    await db().insert(s.deliveryLedgerEntries).values({
+      eventKey: `CN:${consignmentId}:SOD_OWNER_COLLECTED`,
+      partyId: 1,
+      consignmentId,
+      branchId: 1,
+      entryType: "COD_COLLECTED",
+      amount: "1.00",
+      createdBy: OWNER.userId,
+    });
+    await expect(writeOffDeliveryShortfall(input, OWNER)).rejects.toThrow(/تحصيل\/توريد/);
   });
 });
 
@@ -300,9 +354,9 @@ describe("G5 — سطر التوريد الصفري يُستثنى", () => {
 describe("G6 — idempotency الشطب بpayloadHash", () => {
   it("نفس المفتاح بمبلغ مختلف = CONFLICT (كان نجاحاً صامتاً بلا تطبيق)", async () => {
     await db().update(s.deliveryParties).set({ currentBalance: "20000.00" }).where(eq(s.deliveryParties.id, 1));
-    await writeOffDeliveryShortfall({ branchId: 1, partyId: 1, amount: "5000.00", reason: "عجز قديم", clientRequestId: "g6" }, MANAGER);
+    await writeOffDeliveryShortfall({ branchId: 1, partyId: 1, amount: "5000.00", reason: "عجز قديم", clientRequestId: "g6", ...WRITE_OFF_EVIDENCE }, OWNER);
     await expect(
-      writeOffDeliveryShortfall({ branchId: 1, partyId: 1, amount: "8000.00", reason: "عجز قديم", clientRequestId: "g6" }, MANAGER),
+      writeOffDeliveryShortfall({ branchId: 1, partyId: 1, amount: "8000.00", reason: "عجز قديم", clientRequestId: "g6", ...WRITE_OFF_EVIDENCE }, OWNER),
     ).rejects.toThrow();
     // الشطب الفعلي بقي 5,000 فقط.
     expect(await partyBalance()).toBe("15000.00");
@@ -440,8 +494,8 @@ describe("G12 — الحزام الثاني للشطب الموجَّه: الق�
     await db().update(s.customers).set({ currentBalance: "7000.00" }).where(eq(s.customers.id, 1));
 
     await writeOffDeliveryShortfall(
-      { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع نقد بعد انحراف", consignmentId, clientRequestId: "g12-w" },
-      MANAGER,
+      { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع نقد بعد انحراف", consignmentId, clientRequestId: "g12-w", ...WRITE_OFF_EVIDENCE },
+      OWNER,
     );
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
     // الصافي الحيّ كان 7,000 (10,000 − 3,000 مرتجع) ⇒ القيد يقف عنده لا عند متبقّي الإرسالية.
@@ -478,8 +532,8 @@ describe("G14 — استرداد العجز المشطوب محصور بفرع �
     const shift = await openReception();
     const { consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g14");
     await writeOffDeliveryShortfall(
-      { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع", consignmentId, clientRequestId: "g14-w" },
-      MANAGER,
+      { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع", consignmentId, clientRequestId: "g14-w", ...WRITE_OFF_EVIDENCE },
+      OWNER,
     );
     await expect(
       recoverDeliveryWriteOff({ branchId: 2, partyId: 1, amount: "10000.00", clientRequestId: "g14-r" }, MANAGER),
@@ -497,8 +551,8 @@ describe("G15 — استرداد العجز المشطوب مسقوفٌ بالخ
     await db().update(s.invoices).set({ returnedTotal: "3000.00", paidAmount: "0.00", status: "PENDING" }).where(eq(s.invoices.id, invoiceId));
     await db().update(s.customers).set({ currentBalance: "7000.00" }).where(eq(s.customers.id, 1));
     await writeOffDeliveryShortfall(
-      { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع بعد انحراف", consignmentId, clientRequestId: "g15-w" },
-      MANAGER,
+      { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع بعد انحراف", consignmentId, clientRequestId: "g15-w", ...WRITE_OFF_EVIDENCE },
+      OWNER,
     );
     // العهدة المثبتة عند التسليم كانت 10,000؛ استردادها الكامل يمرّ.
     const r = await recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "10000.00", clientRequestId: "g15-r" }, MANAGER);
@@ -524,9 +578,10 @@ describe("G15 — استرداد العجز المشطوب مسقوفٌ بالخ
       partyId: 1,
       amount: "10000.00",
       reason: "شطب لسباق الاسترداد",
+      ...WRITE_OFF_EVIDENCE,
       consignmentId: first.consignmentId,
       clientRequestId: "g15-race-writeoff",
-    }, MANAGER);
+    }, OWNER);
     const second = await deliveredCreditInvoice(shift.shiftId, "g15-race-second");
 
     const results = await Promise.allSettled([

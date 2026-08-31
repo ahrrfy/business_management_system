@@ -63,7 +63,7 @@ describe("عقد شروط الدفع في محرّر الفواتير", () => {
 
   it("منتقي طريقة القبض في التصحيح يشتقّ من السياسة المركزية لا من نصّ ثابت", () => {
     const page = readPage("SalesInvoiceNew.tsx");
-    expect(page).toMatch(/PAYMENT_METHODS\.filter\(\(m\) => isPosPaymentMethodEnabled\(m\.value\)\)/);
+    expect(page).toMatch(/PAYMENT_METHODS\.filter\(\s*\(m\) => isPosPaymentMethodEnabled\(m\.value\),?\s*\)/);
   });
 });
 

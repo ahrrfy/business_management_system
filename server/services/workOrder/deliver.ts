@@ -13,13 +13,14 @@ import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { readOpeningWindowState } from "../openingModeService";
 import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../reception/deposits";
 import { type Actor, withTx } from "../tx";
-import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertWorkOrderBranch, loadWorkOrder, workOrderInvoiceSourceId } from "./helpers";
 import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
+import { assertCurrentDesignApproved } from "./designApproval";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
@@ -47,6 +48,9 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للتسليم" });
+    // قد تتغيّر نسخة التصميم بعد انتقال الأمر إلى READY. الحالة وحدها لا تثبت أن النسخة
+    // الحالية هي التي اعتمدها العميل؛ التسليم آخر حاجز دفاعي قبل الفاتورة والقيد.
+    await assertCurrentDesignApproved(tx, input.workOrderId, "deliver");
     // إخوةُ السلّة الواحدة: التسليمُ المباشر مخرجٌ ثالثٌ كان يفلت من حارس الإرسال الجزئيّ،
     // ومسوّدةٌ كلُّها أوامرُ شغل لا تصل إليه أصلاً (لا فاتورة بضاعةٍ لها).
     await assertSiblingsReady(tx, {
@@ -233,7 +237,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const { nextInvoiceNumber } = await import("../numbering");
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
-    const sourceId = `WO-${wo.id}`;
+    const sourceId = workOrderInvoiceSourceId(wo);
     /**
      * **نسبة البيع لمنشئ الطلب لا للمُسلِّم** (١٩/٨ — قاعدة #638: «العمولة تتبع البائع
      * الأصليّ»). فاتورة أمر الشغل تُنشأ لحظة التسليم، وقد ينفّذه كاشيرٌ آخر عن الذي استقبل

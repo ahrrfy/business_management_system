@@ -22,6 +22,7 @@ import { newClientRequestId } from "@/lib/countQueue";
 import { D } from "@/lib/money";
 import { Link } from "wouter";
 import { moduleAccessAllowed } from "@shared/permissions";
+import { MissedDailyCountExceptionPanel } from "@/components/cash/MissedDailyCountExceptionPanel";
 
 type DC = RouterOutputs["reports"]["dayCloseReconciliation"];
 
@@ -46,6 +47,7 @@ export default function DayCloseReport() {
   const [treasuryNotes, setTreasuryNotes] = useState("");
   const [countRequestId, setCountRequestId] = useState(newClientRequestId);
   const [closeRequestId, setCloseRequestId] = useState(newClientRequestId);
+  const [reopenRequestId, setReopenRequestId] = useState(newClientRequestId);
   const [reopenReason, setReopenReason] = useState("");
   const branches = trpc.branches.list.useQuery();
   const me = trpc.auth.me.useQuery();
@@ -75,6 +77,7 @@ export default function DayCloseReport() {
     setTreasuryNotes("");
     setCountRequestId(newClientRequestId());
     setCloseRequestId(newClientRequestId());
+    setReopenRequestId(newClientRequestId());
     setReopenReason("");
   }, [branchId, date]);
   const recordDailyM = trpc.treasury.recordDailyTreasuryCount.useMutation({
@@ -98,6 +101,7 @@ export default function DayCloseReport() {
   const reopenDailyM = trpc.treasury.reopenDailyCashReconciliation.useMutation({
     onSuccess: () => {
       notify.ok("أُعيد فتح المطابقة", "يلزم جرد جديد قبل الإقفال مرة أخرى.");
+      setReopenRequestId(newClientRequestId());
       setReopenReason("");
       void utils.treasury.dailyCashReconciliation.invalidate();
     },
@@ -205,7 +209,7 @@ export default function DayCloseReport() {
 
         {daily?.actions.canClose && saved && canManageDaily && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-            <p className="text-xs text-muted-foreground">الإقفال يحتاج مستخدماً مختلفاً عن منفّذ الجرد، باستثناء الإداري.</p>
+            <p className="text-xs text-muted-foreground">الإقفال يحتاج مستخدماً مختلفاً عن منفّذ الجرد، بلا استثناء للدور.</p>
             <Button
               onClick={() => closeDailyM.mutate({ reconciliationId: Number(saved.id), expectedVersion: Number(saved.version), clientRequestId: closeRequestId })}
               disabled={closeDailyM.isPending}
@@ -219,7 +223,17 @@ export default function DayCloseReport() {
         {daily?.actions.canReopen && saved?.status === "CLOSED" && canManageDaily && (
           <div className="space-y-2 border-t pt-4">
             <Textarea value={reopenReason} onChange={(event) => setReopenReason(event.target.value)} maxLength={500} placeholder="سبب إعادة الفتح (10 أحرف على الأقل)" />
-            <Button variant="outline" disabled={reopenDailyM.isPending || reopenReason.trim().length < 10} onClick={() => reopenDailyM.mutate({ reconciliationId: Number(saved.id), reason: reopenReason.trim() })} className="gap-1.5">
+            <Button
+              variant="outline"
+              disabled={reopenDailyM.isPending || reopenReason.trim().length < 10 || !reopenRequestId}
+              onClick={() => reopenDailyM.mutate({
+                reconciliationId: Number(saved.id),
+                expectedVersion: Number(saved.version),
+                reason: reopenReason.trim(),
+                clientRequestId: reopenRequestId,
+              })}
+              className="gap-1.5"
+            >
               <RotateCcw className="size-4" /> إعادة فتح المطابقة
             </Button>
           </div>
@@ -228,8 +242,21 @@ export default function DayCloseReport() {
     </Card>
   );
 
+  const missedDailyPanel = branchId === "" ? null : (
+    <MissedDailyCountExceptionPanel
+      branchId={Number(branchId)}
+      businessDate={date}
+      canManage={canManageDaily}
+    />
+  );
+
   function onExport() {
-    if (!dc) return;
+    if (!dc || dc.withheldBlindCountShiftCount > 0) {
+      if (dc?.withheldBlindCountShiftCount) {
+        notify.warn("التقرير جزئي", "أكمل العدّ المستقل للعهد النقدية قبل تصدير تقرير الإقفال.");
+      }
+      return;
+    }
     exportRows(dc.shifts, {
       filename: `مطابقة-إقفال-اليوم-${date}-${branchId || "الكل"}`,
       columns: [
@@ -259,7 +286,12 @@ export default function DayCloseReport() {
 
   // طباعة A4 — نفس أعمدة الشاشة/التصدير (تفصيل كل وردية)، ولا اقتطاع (اليوم الواحد محدودُ الورديات أصلاً).
   function onPrint() {
-    if (!dc) return;
+    if (!dc || dc.withheldBlindCountShiftCount > 0) {
+      if (dc?.withheldBlindCountShiftCount) {
+        notify.warn("التقرير جزئي", "أكمل العدّ المستقل للعهد النقدية قبل طباعة تقرير الإقفال.");
+      }
+      return;
+    }
     const opened = printReportDoc({
       title: "مطابقة إقفال اليوم للنقد",
       headerExtra: [
@@ -313,8 +345,8 @@ export default function DayCloseReport() {
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!dc || dc.shifts.length === 0}
-      printDisabled={!dc || dc.shifts.length === 0}
+      exportDisabled={!dc || dc.shifts.length === 0 || dc.withheldBlindCountShiftCount > 0}
+      printDisabled={!dc || dc.shifts.length === 0 || dc.withheldBlindCountShiftCount > 0}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
@@ -362,7 +394,9 @@ export default function DayCloseReport() {
         <LoadingState />
       ) : dc.shifts.length === 0 ? (
         <div className="space-y-4">
+          <PartialBlindCountWarning count={dc.withheldBlindCountShiftCount} />
           {dailyPanel}
+          {missedDailyPanel}
           <Card>
             <CardContent className="p-8 text-center text-sm text-muted-foreground">
               لا ورديات في {fmtDate(date)} لـ{branchLabel}.
@@ -371,12 +405,31 @@ export default function DayCloseReport() {
         </div>
       ) : (
         <div className="space-y-4">
+          <PartialBlindCountWarning count={dc.withheldBlindCountShiftCount} />
           {dailyPanel}
+          {missedDailyPanel}
           <ReconciliationHero dc={dc} />
           <ShiftTable dc={dc} />
         </div>
       )}
     </ReportShell>
+  );
+}
+
+function PartialBlindCountWarning({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <Card className="border-[var(--sem-warn)]/50">
+      <CardContent className="flex items-start gap-2 p-4 text-sm">
+        <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-warn)]" />
+        <div>
+          <p className="font-bold">تقرير جزئي: حُجبت {count} وردية حتى اكتمال العدّ المستقل للعهدة</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            الأرقام الإجمالية لا تمثل اليوم كاملاً. التصدير والطباعة معطّلان لمنع تداول تقرير مالي ناقص.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

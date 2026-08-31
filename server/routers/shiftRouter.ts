@@ -367,17 +367,17 @@ export const shiftRouter = router({
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
-      if (!/^0(?:\.0{1,2})?$/.test(input.countedCash) && input.handoverToUserId == null) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "حدد مديراً مستقلاً لاستلام نقد الوردية",
-        });
-      }
       // NUMBERING-RACE (تدقيق ٢/٧): ترقيم سند التسليم (CH) يحرّر GET_LOCK قبل الالتزام ⇒ إغلاقان
       // متزامنان لنفس الفرع/اليوم قد يحسبان نفس الرقم؛ القيد الفريد يرفض الثاني. نعيد المحاولة على
       // التصادم (closeShift ذرّية داخل withTx فتتراجع المحاولة الفاشلة كاملةً).
       const res = await retryOnDup(() =>
-        closeShift({ ...input, enforceCashGovernance: true }, {
+        closeShift({
+          ...input,
+          enforceCashGovernance: true,
+          // توافق العملاء السابقين الذين لا يعرفون handoverToUserId: لا نسقط النقد ولا
+          // ندخله الخزينة؛ يبقى في CASH_IN_TRANSIT بعهدة مالك الوردية حتى يعيد المدير إسناده.
+          allowLegacySelfCustody: input.handoverToUserId == null,
+        }, {
           userId: ctx.user.id,
           branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
           role: ctx.user.role,

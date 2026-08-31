@@ -173,7 +173,14 @@ function DispatchTab() {
   const ready = trpc.delivery.readyForDispatch.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { refetchInterval: 30_000, refetchOnWindowFocus: true });
   const me = trpc.auth.me.useQuery();
-  const canDispatch = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
+  const canDispatch = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["cashier", "manager"],
+    );
   const [target, setTarget] = useState<ReadyOrder | null>(null);
   const [query, setQuery] = useState("");
 
@@ -386,7 +393,7 @@ function DispatchTab() {
                             label: "تسليم لمندوب",
                             hidden: !canDispatch,
                             onSelect: () => setTarget(o),
-                            gate: { roles: ["cashier", "manager"] },
+                            gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
                           },
                         ]}
                       />
@@ -483,7 +490,14 @@ function InTransitTab() {
       "FULL",
       ["manager", "cashier"],
     );
-  const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  const isManager = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["manager"],
+    );
 
   // ── Mutations ──
   const invalidateAll = () => {
@@ -1249,7 +1263,14 @@ function SettleTab() {
     { branchId, shiftType: "RECEPTION" },
     { enabled: branchId > 0 },
   );
-  const canRemit = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
+  const canRemit = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["cashier", "manager"],
+    );
   const canReturn = !!me.data
     && moduleAccessAllowed(
       me.data.role as RoleKey,

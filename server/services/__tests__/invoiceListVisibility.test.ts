@@ -10,6 +10,7 @@
  *    المستند المفرد منذ زمن. الآن القائمة والمستند على نفس المفردة، بنطاقٍ يقصّ القناة.
  *  ③ **عزل القناة**: نطاق الاستقبال/الطباعة يرى فواتير محطّته وحدها — لا بابَ على التجزئة.
  */
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { resolvePermissions, SECTION_CASHIER_ROLES } from "@shared/permissions";
@@ -20,9 +21,14 @@ import { appRouter } from "../../routers";
 import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
 import { createSale } from "../saleService";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const TABLES = [
   "orderPayments", "auditLogs", "idempotencyKeys", "accountingEntries", "receipts",
+  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions", "serviceTypes",
   "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
   "products", "shifts", "customers", "branches", "users", "roles",
@@ -47,6 +53,14 @@ async function seed() {
     { id: 2, openId: "rc1", name: "موظف استقبال", email: "r1@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "rt1", name: "كاشير تجزئة", email: "t1@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.customers).values([
     { id: 1, name: "عميل موثوق", phone: "+9647701234567", currentBalance: "0.00", creditLimit: null },
   ]);
@@ -97,6 +111,18 @@ async function receptionWorkOrderInvoice() {
   }, { userId: 2, branchId: 1, role: "cashier" });
   const woId = r.workOrders[0].workOrderId;
   const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];
+  const approval = await requestWorkOrderDesignApproval({
+    workOrderId: woId,
+    requestKey: `invoice-visibility-design-request:${randomUUID()}`,
+    note: "اعتماد النسخة الحالية قبل التنفيذ والتسليم",
+  }, { userId: 2, branchId: 1, role: "cashier" });
+  await decideWorkOrderDesignApproval({
+    approvalId: Number(approval.approval.id),
+    decisionKey: `invoice-visibility-design-decision:${randomUUID()}`,
+    decision: "APPROVED",
+    reason: "ثبتت موافقة العميل على النسخة الحالية",
+    evidence: { type: "WHATSAPP_MESSAGE", reference: `wamid.invoice-visibility.${randomUUID()}` },
+  }, { userId: 1, branchId: 1, role: "manager" });
   const caller = await callerFor(2);
   await caller.workOrders.start({ workOrderId: woId });
   await caller.workOrders.markReady({ workOrderId: woId });

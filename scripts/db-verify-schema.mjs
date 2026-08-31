@@ -587,7 +587,9 @@ try {
   const CRITICAL_INDEXES = [
     ["externalPaymentAttempts", "uq_extpay_reference"], // P0 0183: مرجع عالمي يمنع إعادة القبض عبر فرع/طريقة أخرى
     ["externalPaymentAttempts", "uq_extpay_request"],
-    ["externalPaymentAttempts", "uq_extpay_invoice"],
+    // 0307: الفاتورة تقبل محاولات/دفعات جزئية متعددة؛ يبقى invoiceId مفهرساً للقراءة
+    // لكنه ليس فريداً. receiptId/reference/request يحتفظ كلٌّ منها بحارس التفرّد المالي.
+    ["externalPaymentAttempts", "idx_extpay_invoice"],
     ["externalPaymentAttempts", "uq_extpay_receipt"],
     ["digitalSaleIntents", "uq_dsi_extpay_attempt"],
     ["receipts", "idx_receipt_bucket_status"], // F1: أُسقط مع bucketId في 0017، أُعيد في 0030

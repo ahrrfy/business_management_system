@@ -140,7 +140,7 @@ export interface PlanListRow {
   openAssignments: number;
 }
 
-export async function listPlans(): Promise<PlanListRow[]> {
+export async function listPlans(scopedBranchId: number | null = null): Promise<PlanListRow[]> {
   const db = requireDb();
   const plans = await db.select().from(commissionPlans).orderBy(desc(commissionPlans.isActive), asc(commissionPlans.name));
   if (plans.length === 0) return [];
@@ -149,7 +149,13 @@ export async function listPlans(): Promise<PlanListRow[]> {
   const openCounts = await db
     .select({ planId: commissionAssignments.planId, cnt: sql<number>`COUNT(*)` })
     .from(commissionAssignments)
-    .where(isNull(commissionAssignments.effectiveTo))
+    .innerJoin(employees, eq(employees.id, commissionAssignments.employeeId))
+    .where(
+      and(
+        isNull(commissionAssignments.effectiveTo),
+        scopedBranchId == null ? undefined : eq(employees.branchId, scopedBranchId),
+      ),
+    )
     .groupBy(commissionAssignments.planId);
   const countByPlan = new Map(openCounts.map((r) => [Number(r.planId), Number(r.cnt)]));
 
@@ -264,7 +270,7 @@ export interface AssignmentBoardRow {
 
 /** لوحة الإسناد: كل موظف مرتبط بحساب مستخدم (شرط نسبة المبيعات) غير منتهي الخدمة،
  *  مع إسناده المفتوح إن وُجد. الاستعلام واحد مجمَّع — لا N+1. */
-export async function listAssignmentBoard(): Promise<AssignmentBoardRow[]> {
+export async function listAssignmentBoard(scopedBranchId: number | null = null): Promise<AssignmentBoardRow[]> {
   const db = requireDb();
   const rows = await db
     .select({
@@ -288,7 +294,13 @@ export async function listAssignmentBoard(): Promise<AssignmentBoardRow[]> {
       and(eq(commissionAssignments.employeeId, employees.id), isNull(commissionAssignments.effectiveTo)),
     )
     .leftJoin(commissionPlans, eq(commissionPlans.id, commissionAssignments.planId))
-    .where(and(sql`${employees.userId} IS NOT NULL`, sql`${employees.employmentStatus} <> 'terminated'`))
+    .where(
+      and(
+        sql`${employees.userId} IS NOT NULL`,
+        sql`${employees.employmentStatus} <> 'terminated'`,
+        scopedBranchId == null ? undefined : eq(employees.branchId, scopedBranchId),
+      ),
+    )
     .orderBy(asc(employees.firstName));
 
   return rows.map((r) => ({
@@ -322,12 +334,19 @@ export interface AssignPlanResult {
   closedPrevious: { assignmentId: number; planId: number; closedAt: string } | null;
 }
 
-export async function assignPlan(input: AssignPlanInput, actor: Actor): Promise<AssignPlanResult> {
+export async function assignPlan(
+  input: AssignPlanInput,
+  actor: Actor,
+  scopedBranchId: number | null = null,
+): Promise<AssignPlanResult> {
   const from = assertPeriod(input.effectiveFrom);
   return withTx(async (tx) => {
     // قفل صفّ الموظف يسلسل الإسنادات المتزامنة لنفس الموظف (بديل قيد استبعاد المدى الغائب في MySQL).
     const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).for("update");
     if (!emp) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود." });
+    if (scopedBranchId != null && Number(emp.branchId) !== scopedBranchId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن تعديل إسناد موظف في فرع آخر." });
+    }
     if (emp.userId == null) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -390,7 +409,7 @@ export interface EndAssignmentInput {
   effectiveTo: string;
 }
 
-export async function endAssignment(input: EndAssignmentInput): Promise<void> {
+export async function endAssignment(input: EndAssignmentInput, scopedBranchId: number | null = null): Promise<void> {
   const to = assertPeriod(input.effectiveTo);
   await withTx(async (tx) => {
     const [a] = await tx
@@ -399,6 +418,16 @@ export async function endAssignment(input: EndAssignmentInput): Promise<void> {
       .where(eq(commissionAssignments.id, input.assignmentId))
       .for("update");
     if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "الإسناد غير موجود." });
+    if (scopedBranchId != null) {
+      const [emp] = await tx
+        .select({ branchId: employees.branchId })
+        .from(employees)
+        .where(eq(employees.id, a.employeeId))
+        .limit(1);
+      if (!emp || Number(emp.branchId) !== scopedBranchId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن إنهاء إسناد موظف في فرع آخر." });
+      }
+    }
     if (a.effectiveTo != null) throw new TRPCError({ code: "BAD_REQUEST", message: "الإسناد مُنهى فعلاً." });
     if (to < a.effectiveFrom) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "شهر الإنهاء قبل شهر البدء." });

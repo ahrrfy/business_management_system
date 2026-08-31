@@ -2,6 +2,8 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, like, lt, or, sql } from "drizzle-orm";
 import {
   customers,
+  invoices,
+  receipts,
   productUnits,
   productVariants,
   products,
@@ -16,12 +18,21 @@ import { localDayStart, localNextDayStart } from "./dateRange";
 import { convertToBaseQuantity } from "./inventoryService";
 import { money, round2, toDateStr } from "./money";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
-import { createSale } from "./saleService";
-import { getOpenShift } from "./shiftService";
-import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
+import { createSaleInTx, notifySaleCustomerAfterCommit } from "./sale/create";
+import { openShiftIdTx } from "./shiftService";
+import {
+  checkIdempotency,
+  findIdempotentRefId,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "./idempotency";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
+import {
+  assertExternalPaymentReplay,
+  consumeConfirmedExternalPaymentAttemptTx,
+} from "./posExternalPayment";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -67,19 +78,23 @@ async function nextQuoteNumber(tx: Tx, branchId: number): Promise<string> {
 }
 
 /** يُنشئ عرض سعر — مستند فقط، بلا أي أثر على المخزون أو الدفتر. */
-export async function createQuotation(input: CreateQuotationInput, actor: Actor) {
+export async function createQuotation(input: CreateQuotationInput, actor: Actor,
+) {
   return withTx(async (tx) => {
-    if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا أصناف" });
+    if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا أصناف",
+      });
 
     // idempotency (F3): طلبٌ بنفس المفتاح يُعيد عرض الإنشاء الأول بلا إنشاء مكرّر. القيد الفريد
     // على (operation, key) يمنع سباق طلبَين متزامنين (الثاني يتلقّى ER_DUP_ENTRY فيُعيد الراوتر
     // المحاولة عبر retryOnDup ⇒ يجد المفتاح هنا فيُعيد الأول).
     if (input.clientRequestId) {
-      const existingId = await findIdempotentRefId(tx, "quotation.create", input.clientRequestId);
+      const existingId = await findIdempotentRefId(tx, "quotation.create", input.clientRequestId,
+      );
       if (existingId != null) {
         const prev = (
           await tx
-            .select({ quoteNumber: quotations.quoteNumber, total: quotations.total })
+            .select({ quoteNumber: quotations.quoteNumber, total: quotations.total,
+            })
             .from(quotations)
             .where(eq(quotations.id, existingId))
             .limit(1)
@@ -100,11 +115,13 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor)
       if (!c[0]) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
       customerTier = c[0].defaultPriceTier as PriceTier;
     }
-    const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
+    const tier = resolveTier({ override: input.priceTier ?? null, customerTier,
+    });
 
     const computed = [];
     for (const l of input.lines) {
-      const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
+      const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId,
+      );
       const unitPrice =
         l.unitPriceOverride != null && l.unitPriceOverride !== ""
           ? money(l.unitPriceOverride)
@@ -164,24 +181,29 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor)
     }
     // سجّل مفتاح الـidempotency بعد نجاح الكتابة (refId = معرّف العرض).
     if (input.clientRequestId) {
-      await recordIdempotencyKey(tx, "quotation.create", input.clientRequestId, quotationId);
+      await recordIdempotencyKey(tx, "quotation.create", input.clientRequestId, quotationId,
+      );
     }
     return { quotationId, quoteNumber, total: totals.total };
   });
 }
 
 /** يعدّل مسودة عرض سعر ذرّياً. العروض المرسلة/المقبولة تبقى لقطة التزام لا تُطمس. */
-export async function updateQuotation(input: UpdateQuotationInput, actor: Actor & { role?: string }) {
+export async function updateQuotation(input: UpdateQuotationInput, actor: Actor & { role?: string },
+) {
   return withTx(async (tx) => {
-    if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا أصناف" });
+    if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا أصناف",
+      });
 
     const current = (
       await tx.select().from(quotations).where(eq(quotations.id, input.quotationId)).for("update").limit(1)
     )[0];
-    if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "عرض السعر غير موجود" });
+    if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "عرض السعر غير موجود",
+      });
     assertQuotationBranchStrict(current, actor);
     if (current.status !== "DRAFT") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعديل عرض السعر بعد إرساله — أنشئ نسخة جديدة" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعديل عرض السعر بعد إرساله — أنشئ نسخة جديدة",
+      });
     }
 
     let customerTier: PriceTier | null = null;
@@ -190,7 +212,8 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
       if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
       customerTier = customer.defaultPriceTier as PriceTier;
     }
-    const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
+    const tier = resolveTier({ override: input.priceTier ?? null, customerTier,
+    });
 
     const computed: Array<{
       variantId: number;
@@ -266,7 +289,8 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
   });
 }
 
-type QuoteStatus = "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED";
+type QuoteStatus =
+  | "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED";
 
 const ALLOWED_TRANSITIONS: Record<QuoteStatus, QuoteStatus[]> = {
   DRAFT: ["SENT", "ACCEPTED", "REJECTED", "EXPIRED"],
@@ -283,23 +307,29 @@ const ALLOWED_TRANSITIONS: Record<QuoteStatus, QuoteStatus[]> = {
  * من تحويل عرض فرع آخر إلى فاتورة تُلزم الشركة قانونياً. مدير الفرع يبقى محصوراً
  * بفرعه على هذين الإجراءين (مختلف عن productionService الذي يعدّ manager مرتفعاً).
  */
-function assertQuotationBranchStrict(q: { branchId: number | string | null }, actor: Actor & { role?: string }) {
+function assertQuotationBranchStrict(q: { branchId: number | string | null }, actor: Actor & { role?: string },
+) {
   if (actor.role === "admin") return;
   if (q.branchId == null || Number(q.branchId) !== Number(actor.branchId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "عرض السعر لا يخصّ فرعك" });
+    throw new TRPCError({ code: "FORBIDDEN", message: "عرض السعر لا يخصّ فرعك",
+    });
   }
 }
 
 /** يحدّث حالة عرض السعر (عدا CONVERTED الذي يتم عبر convertQuotation). */
-export async function setQuotationStatus(quotationId: number, status: QuoteStatus, actor: Actor & { role?: string }) {
+export async function setQuotationStatus(quotationId: number, status: QuoteStatus, actor: Actor & { role?: string },
+) {
   return withTx(async (tx) => {
     const q = (await tx.select().from(quotations).where(eq(quotations.id, quotationId)).for("update").limit(1))[0];
-    if (!q) throw new TRPCError({ code: "NOT_FOUND", message: "عرض السعر غير موجود" });
+    if (!q) throw new TRPCError({ code: "NOT_FOUND", message: "عرض السعر غير موجود",
+      });
     assertQuotationBranchStrict(q, actor);
-    if (status === "CONVERTED") throw new TRPCError({ code: "BAD_REQUEST", message: "التحويل يتم عبر «تحويل لفاتورة»" });
+    if (status === "CONVERTED") throw new TRPCError({ code: "BAD_REQUEST", message: "التحويل يتم عبر «تحويل لفاتورة»",
+      });
     const allowed = ALLOWED_TRANSITIONS[q.status as QuoteStatus] ?? [];
     if (!allowed.includes(status)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: `انتقال غير مسموح: ${q.status} → ${status}` });
+      throw new TRPCError({ code: "BAD_REQUEST", message: `انتقال غير مسموح: ${q.status} → ${status}`,
+      });
     }
     await tx.update(quotations).set({ status }).where(eq(quotations.id, quotationId));
     return { quotationId, status };
@@ -308,67 +338,158 @@ export async function setQuotationStatus(quotationId: number, status: QuoteStatu
 
 export interface ConvertQuotationInput {
   quotationId: number;
-  payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
+  payment?: { amount: string; method: PaymentMethod; reference?: string | null;
+    externalPaymentAttemptId?: number | null;
+    externalPaymentDeviceId?: string | null;
+  } | null;
 }
 
 /** يحوّل عرض السعر إلى فاتورة فعلية (بيع كامل: مخزون + دفتر) مرة واحدة فقط. */
-export async function convertQuotation(input: ConvertQuotationInput, actor: Actor & { role?: string }) {
-  if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
+export async function convertQuotation(input: ConvertQuotationInput, actor: Actor & { role?: string },
+) {
+  if (input.payment) {
+    assertPosPaymentMethodEnabled(input.payment.method);
+    if (input.payment.method === "CASH") {
+      if (
+        input.payment.externalPaymentAttemptId != null ||
+        input.payment.externalPaymentDeviceId?.trim()
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الدفع النقدي لا يحمل محاولة دفع خارجية",
+        });
+      }
+    } else if (!input.payment.externalPaymentAttemptId ||
+      !input.payment.externalPaymentDeviceId?.trim()
+    ) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أكّد الدفع الخارجي قبل تحويل عرض السعر",
+      });
+    }
+  }
 
-  // اقرأ العرض وبنوده خارج معاملة البيع (createSale يفتح معاملته الخاصة).
-  const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير متاحة" });
-  const q = (await db.select().from(quotations).where(eq(quotations.id, input.quotationId)).limit(1))[0];
-  if (!q) throw new TRPCError({ code: "NOT_FOUND", message: "عرض السعر غير موجود" });
+  const conversionHash = idempotencyHash({
+    quotationId: input.quotationId,
+    payment: input.payment
+      ? {
+          amount: money(input.payment.amount).toFixed(2),
+          method: input.payment.method,
+          reference: input.payment.reference?.trim() || null,
+          externalPaymentAttemptId:
+            input.payment.externalPaymentAttemptId ?? null,
+          externalPaymentDeviceId:
+            input.payment.externalPaymentDeviceId?.trim() || null,
+        }
+      : null,
+  });
+
+  const outcome = await withTx(
+    async (tx) => {
+      // العرض هو رأس الانتقال: قفله أولاً يجعل ACCEPTED→CONVERTED يتسلسل مع الرفض/الانتهاء،
+      // ثم تبقى الفاتورة والمخزون والإيصال والرابط في معاملة مالية واحدة تحت بوابة الإقفال الشهرية.
+      const q = (await tx
+          .select().from(quotations).where(eq(quotations.id, input.quotationId)).for("update")
+          .limit(1))[0];
+  if (!q) throw new TRPCError({ code: "NOT_FOUND", message: "عرض السعر غير موجود",
+        });
 
   // عزل الفرع (تدقيق ١٤/٦/٢٦): التحويل = إنشاء فاتورة تُلزم الشركة قانونياً. admin فقط
   // يعبُر الفروع — مدير فرع يبقى محصوراً بفرعه (لا يقدر يحوّل عرض فرع آخر).
   assertQuotationBranchStrict(q, actor);
 
-  // idempotency: عرض مُحوَّل مسبقاً يُعيد الفاتورة نفسها.
-  if (q.status === "CONVERTED" && q.convertedInvoiceId) {
-    const inv = (await db.select().from(quotations).where(eq(quotations.id, input.quotationId)).limit(1))[0];
-    return { quotationId: input.quotationId, invoiceId: Number(q.convertedInvoiceId), alreadyConverted: true, status: inv.status };
+      const storedConversion = await checkIdempotency(
+        tx,
+        "quotation.convert",
+        String(input.quotationId),
+        conversionHash,
+        { requireStoredHash: true },
+      );
+
+      // idempotency على المستند نفسه: بعد قفل العرض، أي محوّل متزامن يرى الرابط الملتزم ويعيد
+      // بيانات الفاتورة الحقيقية نفسها؛ الرابط المكسور يفشل مغلقاً ولا يزعم نجاحاً ناقصاً.
+      if (q.status === "CONVERTED" && q.convertedInvoiceId) {
+    const existing = (await tx
+            .select({
+              id: invoices.id,
+              invoiceNumber: invoices.invoiceNumber,
+              status: invoices.status,
+            }).from(invoices).where(eq(invoices.id, Number(q.convertedInvoiceId)))
+            .limit(1))[0];
+        if (!existing) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "عرض السعر محوّل لكن رابط الفاتورة مفقود — راجع سلامة البيانات",
+          });
+        }
+        if (
+          storedConversion != null &&
+          Number(storedConversion) !== Number(existing.id)
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "تعارض idempotency: رابط تحويل عرض السعر لا يطابق الفاتورة",
+          });
+        }
+        if (input.payment && input.payment.method !== "CASH") {
+          await assertExternalPaymentReplay(
+            tx,
+            Number(existing.id),
+            {
+              branchId: Number(q.branchId),
+              channel: "SALES_COLLECTION",
+              method: input.payment.method,
+              amount: input.payment.amount,
+              attemptId: input.payment.externalPaymentAttemptId,
+              deviceId: input.payment.externalPaymentDeviceId,
+            },
+            actor,
+          );
+        }
+        return {
+          result: {
+            quotationId: input.quotationId, invoiceId: Number(existing.id),
+            invoiceNumber: existing.invoiceNumber, status: existing.status,
+            alreadyConverted: true as const,
+          },
+          notification: null,
+        };
   }
   if (q.status !== "ACCEPTED") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تحويل عرض السعر قبل قبوله" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تحويل عرض السعر قبل قبوله",
+        });
   }
   if (q.validUntil && toDateStr(new Date(q.validUntil as any)) < toDateStr()) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر منتهي الصلاحية" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر منتهي الصلاحية",
+        });
   }
 
-  const items = await db.select().from(quotationItems).where(eq(quotationItems.quotationId, input.quotationId));
-  if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا بنود" });
+  const items = await tx
+        .select().from(quotationItems).where(eq(quotationItems.quotationId, input.quotationId));
+  if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا بنود",
+        });
 
-  // (تدقيق ١٧/٧) التحويل كان يُسقط خصومات الأسطر وخصم الفاتورة والضريبة ⇒ إجمالي الفاتورة ≠ إجمالي
-  // العرض الملتزَم به. نعيد نفس مدخلات الحساب ونمرّر لقطة النسبة المحفوظة بدلاً من
-  // اشتقاقها من مبلغ الضريبة؛ الاشتقاق يفقد الدقة مع التقريب والفواتير التاريخية.
-  const invoiceDiscount = q.discountAmount ?? "0";
-  const taxRatePercent = q.taxRatePercent ?? "0";
-
-  // وردية مفتوحة للدفع النقدي (تدقيق ١٧/٧): createSale يرفض CASH بلا shiftId. نحلّ وردية المُحوِّل
-  // المفتوحة على فرع العرض؛ إن غابت نرفض برسالة واضحة بدل PRECONDITION_FAILED الغامض.
-  let shiftId: number | null = null;
+      // وردية النقد تُحلّ وتُقفل داخل المعاملة نفسها؛ بذلك لا تستطيع وردية أن تُغلق بين الفحص
+      // وكتابة الإيصال، ويبقى سلوك createSaleInTx وحارس اليوم النقدي كما هو.
+      let shiftId: number | null = null;
   const isCashPayment = input.payment?.method === "CASH" && money(input.payment?.amount ?? "0").gt(0);
   if (isCashPayment) {
-    const sh = await getOpenShift(actor.userId, Number(q.branchId));
-    if (!sh) {
+        shiftId = await openShiftIdTx(tx, actor.userId, Number(q.branchId));
+    if (shiftId == null) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "لا توجد وردية مفتوحة — افتح وردية قبل تحصيل دفعة نقدية عند التحويل، أو اختر طريقة دفع أخرى.",
       });
     }
-    shiftId = sh.id;
-  }
+      }
 
-  // أنشئ بيعاً يحفظ الأسعار والخصومات المعروضة كما هي. ORDER يسمح بالآجل مع عميل.
-  const sale = await createSale(
-    {
+      // (تدقيق ١٧/٧) نعيد نفس مدخلات الحساب المحفوظة كي يساوي إجمالي الفاتورة إجمالي العرض.
+      const saleInput = {
       branchId: Number(q.branchId),
       shiftId,
       customerId: q.customerId ? Number(q.customerId) : null,
       priceTier: q.priceTier as PriceTier,
-      sourceType: "ORDER",
+      sourceType: "ORDER" as const,
       clientRequestId: `QUO-${q.id}`,
       lines: items.map((it) => ({
         variantId: Number(it.variantId),
@@ -377,24 +498,121 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
         unitPriceOverride: it.unitPrice,
         discountAmount: it.discountAmount ?? null,
       })),
-      invoiceDiscount,
-      taxRatePercent,
-      payment: input.payment ?? null,
-      notes: `محوّل من عرض السعر ${q.quoteNumber}`,
-      // SALES-01/02: التحويل إجراء مدير (convert=managerProcedure) والأسعار أُقِرّت عند إنشاء العرض
-      // (create=managerProcedure) ⇒ سلطة البيع تحت التكلفة ممنوحة شرعاً (لا يَبلغ الكاشير هذا المسار).
-      priceOverrideApproved: true,
-    },
-    actor
-  );
+      invoiceDiscount: q.discountAmount ?? "0",
+      taxRatePercent: q.taxRatePercent ?? "0",
+      payment: input.payment
+          ? {
+              amount: input.payment.amount,
+              method: input.payment.method,
+              reference: input.payment.reference ?? null,
+            }
+          : null,
+        notes: `محوّل من عرض السعر ${q.quoteNumber}`,
+        // SALES-01/02: التحويل إجراء مدير (convert=managerProcedure) والأسعار أُقِرّت عند إنشاء العرض.
+        priceOverrideApproved: true,
+    };
+      let committedSaleInput = saleInput;
+      const sale =
+        input.payment && input.payment.method !== "CASH"
+          ? await consumeConfirmedExternalPaymentAttemptTx(
+              tx,
+              {
+                branchId: Number(q.branchId),
+                channel: "SALES_COLLECTION",
+                method: input.payment.method,
+                amount: input.payment.amount,
+                attemptId: input.payment.externalPaymentAttemptId,
+                deviceId: input.payment.externalPaymentDeviceId,
+              },
+              actor,
+              async (attempt) => {
+                committedSaleInput = {
+                  ...saleInput,
+                  payment: {
+                    amount: input.payment!.amount,
+                    method: input.payment!.method,
+                    reference: attempt.externalReference,
+                  },
+                };
+                const created = await createSaleInTx(
+                  tx,
+                  committedSaleInput,
+                  actor,
+                );
+                const receipt = (
+                  await tx
+                    .select({
+                      id: receipts.id,
+                      amount: receipts.amount,
+                      paymentMethod: receipts.paymentMethod,
+                      referenceNumber: receipts.referenceNumber,
+                    })
+                    .from(receipts)
+                    .where(
+                      and(
+                        eq(receipts.invoiceId, created.invoiceId),
+                        eq(receipts.direction, "IN"),
+                        eq(receipts.paymentMethod, input.payment!.method),
+                      ),
+                    )
+                    .orderBy(desc(receipts.id))
+                    .limit(1)
+                )[0];
+                if (
+                  !receipt ||
+                  !money(receipt.amount).eq(money(input.payment!.amount)) ||
+                  (receipt.referenceNumber?.trim() || null) !==
+                    attempt.externalReference.trim()
+                ) {
+                  throw new TRPCError({
+                    code: "INTERNAL_SERVER_ERROR",
+                    message:
+                      "لم يُنشأ إيصال مطابق لمحاولة الدفع — تراجع تحويل العرض بالكامل",
+                  });
+                }
+                return {
+                  invoiceId: created.invoiceId,
+                  receiptId: Number(receipt.id),
+                  value: created,
+                };
+              },
+            )
+          : await createSaleInTx(tx, committedSaleInput, actor);
 
-  // اربط الفاتورة وعلّم الحالة CONVERTED (خارج معاملة البيع — قيد منفصل).
-  await db
-    .update(quotations)
+      await tx
+        .update(quotations)
     .set({ status: "CONVERTED", convertedInvoiceId: sale.invoiceId })
     .where(eq(quotations.id, input.quotationId));
+      await recordIdempotencyKey(
+        tx,
+        "quotation.convert",
+        String(input.quotationId),
+        sale.invoiceId,
+        conversionHash,
+      );
 
-  return { quotationId: input.quotationId, invoiceId: sale.invoiceId, invoiceNumber: sale.invoiceNumber, status: sale.status, alreadyConverted: false };
+      return {
+        result: {
+          quotationId: input.quotationId, invoiceId: sale.invoiceId, invoiceNumber: sale.invoiceNumber, status: sale.status, alreadyConverted: false as const,
+        },
+        notification: { input: committedSaleInput, result: sale },
+      };
+},
+    { gate: "FINANCIAL_WRITER" },
+  );
+
+  // أثر خارجي بعد commit حصراً؛ فشله لا يرجع فاتورة/مخزوناً التزما بالفعل.
+  if (outcome.notification) {
+    try {
+      await notifySaleCustomerAfterCommit(
+        outcome.notification.input,
+        outcome.notification.result,
+      );
+    } catch {
+      // createSale العام يتعامل مع الإشعار بالطريقة نفسها: البيع حقيقة مالية لا تُسقَط بفشل الرسالة.
+    }
+  }
+  return outcome.result;
 }
 
 /* ============================ قراءة ============================ */

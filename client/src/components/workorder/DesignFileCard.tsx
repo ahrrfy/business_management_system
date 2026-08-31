@@ -9,6 +9,7 @@
  */
 import { useState } from "react";
 import { ChevronDown, ImageIcon, Loader2, Pencil, X } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +21,19 @@ export interface DesignImage {
   url: string;
   caption: string | null;
   revision?: number | null;
+}
+
+/** يبني حمولة النسخة من حقول ملف التصميم وحدها؛ غياب customizationText هنا مقصود للحفاظ عليه. */
+export function buildDesignSaveInput(workOrderId: number, draft: ImageItem[], note: string) {
+  return {
+    workOrderId,
+    images: draft.map((item, index) => ({
+      url: item.url || item.dataUrl,
+      caption: item.name?.trim() || null,
+      sortOrder: index,
+    })),
+    note: note.trim(),
+  };
 }
 
 export default function DesignFileCard({
@@ -43,11 +57,12 @@ export default function DesignFileCard({
     onSuccess: (r) => {
       notify.ok(
         r.changed
-          ? `حُفظت النسخة ${r.revision}${r.taskNumber ? ` — فُتح طلب موافقة ${r.taskNumber}` : ""}`
+          ? `حُفظت النسخة ${r.revision} — اطلب اعتمادها من بطاقة الحوكمة`
           : "لا تغيير — النسخة كما هي",
       );
       setEditing(false);
       void utils.workOrders.get.invalidate({ workOrderId });
+      void utils.workOrderDesignApproval.getCurrent.invalidate({ workOrderId });
     },
     onError: (e) => notify.err(e),
   });
@@ -56,6 +71,7 @@ export default function DesignFileCard({
   const current = revs.length ? Math.max(...revs) : 1;
   const currentImages = images.filter((i) => Number(i.revision ?? 1) === current);
   const olderImages = images.filter((i) => Number(i.revision ?? 1) < current);
+  const validReason = note.trim().length >= 3;
 
   return (
     <div className="rounded-lg border p-4">
@@ -102,31 +118,26 @@ export default function DesignFileCard({
             value={draft}
             onChange={setDraft}
             maxItems={10}
-            hint="عدّل الصور ثمّ احفظ — تُحفظ **نسخةً جديدة** والقديمة تبقى، ويُفتَح طلبُ موافقةٍ للعميل."
+            hint="عدّل الصور ثمّ احفظ — تُحفظ نسخة جديدة والقديمة تبقى. أي طلب معلق يصبح قديماً، ثم تطلب اعتماد النسخة الجديدة صراحةً."
           />
           <Input
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="سبب التعديل (يظهر في طلب الموافقة)"
+            placeholder="سبب إنشاء النسخة الجديدة (3 محارف على الأقل)"
+            aria-invalid={note.length > 0 && !validReason}
           />
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
-              disabled={save.isPending}
+              disabled={save.isPending || !validReason}
               onClick={() =>
-                save.mutate({
-                  workOrderId,
-                  images: draft.map((d, i) => ({
-                    url: d.url || d.dataUrl,
-                    caption: d.name?.trim() || null,
-                    sortOrder: i,
-                  })),
-                  note: note.trim() || null,
-                })
+                // لا نرسل customizationText إطلاقاً: undefined يعني «حافظ على النص الحالي»،
+                // أما null فيعني مسحه صراحةً وفق عقد الخدمة.
+                save.mutate(buildDesignSaveInput(workOrderId, draft, note))
               }
             >
               {save.isPending ? (
-                <><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> جارٍ الحفظ…</>
+                <><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> {ACTION_LABELS.saving}</>
               ) : (
                 "احفظ نسخةً جديدة"
               )}
@@ -137,7 +148,13 @@ export default function DesignFileCard({
           </div>
         </div>
       ) : (
-        <Grid images={currentImages} onZoom={setZoom} />
+        currentImages.length > 0 ? (
+          <Grid images={currentImages} onZoom={setZoom} />
+        ) : (
+          <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+            النسخة الحالية بلا صور. يمكن أن يكون نص التخصيص وحده مستند التصميم، أو أنشئ نسخة وأضف صوراً.
+          </div>
+        )
       )}
 
       {showOld && olderImages.length > 0 && (

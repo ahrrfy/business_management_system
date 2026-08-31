@@ -1,8 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 import { createSale, processPayment } from "../saleService";
 import { approveVoucher } from "../voucherService";
 import {
@@ -17,18 +22,37 @@ import {
 import { getFinancialPosition } from "../reportsFinancialService";
 import { money } from "../money";
 import {
-  cancelWorkOrder,
   createWorkOrder,
   deliverWorkOrder,
   markWorkOrderReady,
   startWorkOrder,
 } from "../workOrderService";
+import {
+  approveWorkOrderControlRequest,
+  requestWorkOrderControl,
+} from "../workOrder/controlRequests";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
-const actor = { userId: 1, branchId: 1 };
+const actor = { userId: 1, branchId: 1, role: "admin" as const };
 const owner = { userId: 2, branchId: 1, role: "manager" as const };
 
 const TABLES = [
   "idempotencyKeys",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
+  "workOrderEvents",
+  "workOrderControlRequests",
+  "workOrderDesignApprovals",
+  "workOrderDesignRevisions",
+  "taskEvents",
+  "tasks",
+  "serviceTypes",
   "accountingEntries",
   "receipts",
   "inventoryMovements",
@@ -76,6 +100,14 @@ async function seedBase() {
     { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true, isActive: true },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   // M5/M8/M10: عمليات النقد (processPayment CASH هنا) تَستلزم وردية مفتوحة.
   await d.insert(s.shifts).values({
     userId: 1, branchId: 1, status: "OPEN",
@@ -96,6 +128,30 @@ async function seedBase() {
 }
 async function setStock(variantId: number, branchId: number, qty: number) {
   await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
+}
+
+async function approveCurrentDesign(workOrderId: number) {
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId,
+      requestKey: `reports-design-request:${randomUUID()}`,
+      note: "اعتماد التصميم قبل بدء التنفيذ",
+    },
+    actor,
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `reports-design-decision:${randomUUID()}`,
+      decision: "APPROVED",
+      reason: "وافق العميل على التصميم النهائي",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.reports.${randomUUID()}`,
+      },
+    },
+    owner,
+  );
 }
 
 beforeEach(async () => {
@@ -168,8 +224,26 @@ describe("تقارير الذمم الدائنة (AP)", () => {
 
   async function makePO(supplierId: number, qty: number, unitPrice: string, receive: boolean, pay?: string) {
     const po = await createPurchaseOrder(
-      { supplierId, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
+      { supplierId, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
       actor
+    );
+    const submitted = await submitPurchaseOrderForApproval(
+      {
+        purchaseOrderId: po.purchaseOrderId,
+        expectedVersion: po.version,
+        reason: "إرسال أمر تقرير الذمم للمراجعة",
+        requestKey: `reports-po-submit:${randomUUID()}`,
+      },
+      actor,
+    );
+    await decidePurchaseOrderControl(
+      {
+        requestId: submitted.requestId,
+        decisionKey: `reports-po-approve:${randomUUID()}`,
+        approve: true,
+        reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+      },
+      owner,
     );
     if (receive) {
       const poItem = (await db().select().from(s.purchaseOrderItems).where(sql`purchaseOrderId = ${po.purchaseOrderId}`))[0];
@@ -267,6 +341,39 @@ async function seedSecondProduct(opts: { categoryId?: number } = {}) {
   await d.insert(s.productPrices).values({ productUnitId: 3, priceTier: "RETAIL", price: "5.00" });
 }
 
+/**
+ * يزرع حقيقة تقريرية مباشرةً من دون تشغيل مسار المرتجع: التقرير قارئ فقط، وعقده هو عدّادات
+ * invoiceItems التراكمية. بهذا تبقى الحالات مستقلة عن تغيّر عقود الدفع والاسترداد.
+ */
+async function seedAnalyticsInvoice(opts: {
+  id: number;
+  variantId?: number;
+  quantity: number;
+  returnedQuantity: number;
+  returnedRestockedQuantity: number;
+  unitPrice?: number;
+  unitCost?: number;
+  status?: "PAID" | "RETURNED" | "SUPERSEDED";
+}) {
+  const variantId = opts.variantId ?? 1;
+  const unitPrice = opts.unitPrice ?? 10;
+  const unitCost = opts.unitCost ?? 4;
+  const total = opts.quantity * unitPrice;
+  const returnedTotal = opts.quantity > 0 ? total * opts.returnedQuantity / opts.quantity : 0;
+  await db().insert(s.invoices).values({
+    id: opts.id, invoiceNumber: `AN-${opts.id}`, sourceType: "POS", sourceId: `analytics-${opts.id}`,
+    branchId: 1, subtotal: total.toFixed(2), total: total.toFixed(2),
+    costTotal: (opts.quantity * unitCost).toFixed(2), paidAmount: total.toFixed(2),
+    returnedTotal: returnedTotal.toFixed(2), status: opts.status ?? "PAID", invoiceDate: new Date(),
+  });
+  await db().insert(s.invoiceItems).values({
+    invoiceId: opts.id, variantId, quantity: String(opts.quantity), baseQuantity: opts.quantity,
+    returnedBaseQuantity: opts.returnedQuantity,
+    returnedRestockedBaseQuantity: opts.returnedRestockedQuantity,
+    unitPrice: unitPrice.toFixed(2), unitCost: unitCost.toFixed(2), total: total.toFixed(2),
+  });
+}
+
 describe("تقارير المبيعات التحليلية", () => {
   it("getTopProducts: يرتّب بالإيراد افتراضياً ويحسب الربح والهامش بدقّة", async () => {
     await setStock(1, 1, 100);
@@ -309,15 +416,65 @@ describe("تقارير المبيعات التحليلية", () => {
     expect(top[1].qtySold).toBe("12");
   });
 
-  it("getTopProducts يستبعد الفواتير الملغاة", async () => {
+  it("getTopProducts يستبعد الفواتير الملغاة والمستبدلة فقط", async () => {
     await setStock(1, 1, 100);
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 
-    const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }] }, actor);
-    await db().update(s.invoices).set({ status: "CANCELLED" }).where(sql`id = ${sale.invoiceId}`);
+    const cancelled = await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }] }, actor);
+    const superseded = await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }] }, actor);
+    await db().update(s.invoices).set({ status: "CANCELLED" }).where(sql`id = ${cancelled.invoiceId}`);
+    await db().update(s.invoices).set({ status: "SUPERSEDED" }).where(sql`id = ${superseded.invoiceId}`);
 
     const top = await getTopProducts();
     expect(top).toHaveLength(0);
+  });
+
+  it("RETURNED تالف بالكامل: الإيراد صفر وCOGS الأصلي باقٍ كخسارة في المنتج والفئة", async () => {
+    await seedAnalyticsInvoice({ id: 201, quantity: 10, returnedQuantity: 10, returnedRestockedQuantity: 0, status: "RETURNED" });
+
+    const top = await getTopProducts();
+    expect(top).toHaveLength(1);
+    expect(top[0]).toMatchObject({ productId: 1, qtySold: "0", revenue: "0.00", cost: "40.00", profit: "-40.00", marginPct: "0.00", invoicesCount: 1 });
+
+    const categories = await getProfitByCategory();
+    expect(categories).toHaveLength(1);
+    expect(categories[0]).toMatchObject({ categoryName: "بلا فئة", revenue: "0.00", cost: "40.00", profit: "-40.00", marginPct: "0.00", itemsCount: 1 });
+  });
+
+  it("RETURNED معاد بالكامل للمخزون: يحيّد الإيراد والتكلفة والربح", async () => {
+    await seedAnalyticsInvoice({ id: 202, quantity: 10, returnedQuantity: 10, returnedRestockedQuantity: 10, status: "RETURNED" });
+
+    // صفّ صفري الأثر لا يزاحم المبيعات في ترتيب «الأكثر مبيعاً».
+    expect(await getTopProducts()).toHaveLength(0);
+    // لكنه يبقى حقيقةً ضمن تجميع الفئة، وبأثر مالي صفري لا باستبعاد RETURNED من WHERE.
+    const categories = await getProfitByCategory();
+    expect(categories).toHaveLength(1);
+    expect(categories[0]).toMatchObject({ revenue: "0.00", cost: "0.00", profit: "0.00", marginPct: "0.00", itemsCount: 1 });
+  });
+
+  it("مرتجع جزئي مختلط: الإيراد يتبع الصافي وCOGS يطرح المعاد للمخزون وحده", async () => {
+    // بيع 10×10، إرجاع 4 منها: 3 عادت للرف و1 تالفة.
+    // الصافي: qty=6، revenue=60، cost=(10−3)×4=28، profit=32.
+    await seedAnalyticsInvoice({ id: 203, quantity: 10, returnedQuantity: 4, returnedRestockedQuantity: 3 });
+
+    const top = await getTopProducts();
+    expect(top).toHaveLength(1);
+    expect(top[0]).toMatchObject({ qtySold: "6", revenue: "60.00", cost: "28.00", profit: "32.00", marginPct: "53.33" });
+
+    const categories = await getProfitByCategory();
+    expect(categories[0]).toMatchObject({ revenue: "60.00", cost: "28.00", profit: "32.00", marginPct: "53.33" });
+  });
+
+  it("ترتيب Top Products بالإيراد يعتمد الصافي بعد المرتجع لا إجمالي السطر", async () => {
+    await seedSecondProduct();
+    // القلم: إجمالي 1000 لكن 9/10 مرتجع ⇒ صافي 100.
+    await seedAnalyticsInvoice({ id: 204, quantity: 10, returnedQuantity: 9, returnedRestockedQuantity: 9, unitPrice: 100 });
+    // الكرّاسة: إجمالي وصافي 200 ⇒ يجب أن تتصدر رغم أن إجمالي القلم الخام أكبر.
+    await seedAnalyticsInvoice({ id: 205, variantId: 2, quantity: 2, returnedQuantity: 0, returnedRestockedQuantity: 0, unitPrice: 100, unitCost: 2 });
+
+    const top = await getTopProducts({ by: "revenue" });
+    expect(top.map((row) => row.productId)).toEqual([2, 1]);
+    expect(top.map((row) => row.revenue)).toEqual(["200.00", "100.00"]);
   });
 
   it("getProfitByCategory: يجمّع على الفئة و«بلا فئة» للمنتجات بلا تصنيف", async () => {
@@ -426,6 +583,7 @@ describe("FIN-05: عرابين أوامر الشغل غير المُسلَّمة
     expect((await getFinancialPosition({ verify: false })).customerAdvances).toBe("100.00");
 
     // أكمل الدورة حتى التسليم ⇒ الأمر DELIVERED + invoiceId مُعيَّن ⇒ يخرج من نافذة الالتزام.
+    await approveCurrentDesign(wo.workOrderId);
     await startWorkOrder(wo.workOrderId, actor);
     await markWorkOrderReady(wo.workOrderId, actor);
     await deliverWorkOrder({ workOrderId: wo.workOrderId, payment: { amount: "200.00", method: "CASH" } }, actor);
@@ -445,7 +603,30 @@ describe("FIN-05: عرابين أوامر الشغل غير المُسلَّمة
     );
     expect((await getFinancialPosition({ verify: false })).customerAdvances).toBe("150.00");
 
-    await cancelWorkOrder(wo.workOrderId, actor);
+    const [current] = await db()
+      .select({ version: s.workOrders.version })
+      .from(s.workOrders)
+      .where(sql`${s.workOrders.id} = ${wo.workOrderId}`);
+    const [shift] = await db()
+      .select({ id: s.shifts.id })
+      .from(s.shifts)
+      .where(sql`${s.shifts.userId} = ${actor.userId} AND ${s.shifts.status} = 'OPEN'`);
+    const request = await requestWorkOrderControl(
+      {
+        requestKey: `reports-wo-cancel:${randomUUID()}`,
+        workOrderId: wo.workOrderId,
+        requestType: "CANCEL",
+        baseVersion: Number(current.version),
+        reason: "إلغاء أمر الاختبار ورد العربون للعميل",
+        payload: { refundShiftId: Number(shift.id), materials: null },
+      },
+      actor,
+    );
+    await approveWorkOrderControlRequest(
+      Number(request.id),
+      owner,
+      "راجعت سبب الإلغاء ومسار رد العربون",
+    );
 
     const after = await getFinancialPosition({ verify: false });
     // الأمر CANCELLED + العربون مُسترَدّ (receipt OUT) ⇒ لا التزام معلّق.

@@ -644,6 +644,8 @@ export const deliveryReadProcedure = branchScopedProcedure.use(requireModule("st
 // operation narrower than storeFulfillProcedure: only cashier/manager may pay
 // a courier fee from a drawer.
 export const deliveryManagerProcedure = moduleProcedure(["manager"], "store", "FULL");
+/** عمليات توصيل شديدة الحساسية: بوابة store:FULL ثم admin و2FA مركزياً. */
+export const deliveryAdminProcedure = deliveryManagerProcedure.use(requireAdmin);
 export const deliveryCashierProcedure = moduleProcedure(["cashier", "manager"], "store", "FULL");
 // suppliers — القراءة بالخريطة وحدها (كالعملاء): قوالب warehouse/purchasing/auditor/user تعِد
 // بها وكان managerProcedure يصدّها. الكتابة: warehouse/purchasing قالباهما FULL.

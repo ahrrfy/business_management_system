@@ -1,11 +1,22 @@
-import { and, eq, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
-import { createPurchaseOrder, receivePurchase } from "../purchaseService";
-import { approveVoucher } from "../voucherService";
+import { createGoodsReceipt } from "../purchase/goodsReceipts";
+import {
+  createSupplierInvoice,
+  decideSupplierInvoiceApproval,
+  requestSupplierInvoiceApproval,
+} from "../purchase/supplierInvoices";
+import { runThreeWayMatch } from "../purchase/threeWayMatch";
+import { createPurchaseOrder } from "../purchaseService";
 import { truncateTables } from "./__testUtils__";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const PURCHASING = {
   userId: 1,
@@ -27,14 +38,31 @@ const TABLES = [
   "documentPrintEvents",
   "journalLines",
   "journalEntries",
+  "doubleEntrySettings",
   "purchaseReturnItems",
   "purchaseReturns",
+  "purchaseReturnRequestItems",
+  "purchaseReturnRequests",
+  "supplierInvoiceApprovalRequests",
+  "supplierInvoiceMatchAllocations",
+  "supplierInvoiceMatchRuns",
+  "supplierInvoiceLines",
+  "supplierInvoices",
+  "goodsReceiptAccountingLinks",
+  "goodsReceiptItems",
+  "goodsReceipts",
   "idempotencyKeys",
   "auditLogs",
   "accountingEntries",
   "receipts",
   "inventoryMovements",
   "branchStock",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
+  "purchaseControlSettings",
   "purchaseOrderItems",
   "purchaseOrders",
   "productUnits",
@@ -45,6 +73,8 @@ const TABLES = [
   "branches",
   "users",
 ] as const;
+
+const FINALIZE_FAULT_TRIGGER = "trg_test_purchase_return_finalize_fault";
 
 function db() {
   const value = getDb();
@@ -61,6 +91,18 @@ function purchasingCaller() {
       role: PURCHASING.role,
       branchId: PURCHASING.branchId,
       permissionsOverride: { purchases: "FULL" },
+    },
+  } as any);
+}
+
+function approverCaller() {
+  return appRouter.createCaller({
+    req: { headers: {}, ip: "127.0.0.1" },
+    res: { cookie() {}, clearCookie() {} },
+    user: {
+      id: APPROVER.userId,
+      role: APPROVER.role,
+      branchId: APPROVER.branchId,
     },
   } as any);
 }
@@ -107,6 +149,11 @@ async function seedBase() {
     name: "مورد إغلاق المرتجعات",
     currentBalance: "0.00",
   });
+  await db().insert(s.doubleEntrySettings).values({
+    id: 1,
+    mode: "SHADOW",
+    shadowCycleId: "purchase-return-forensic-closure",
+  });
   await db().insert(s.products).values({ id: 1, name: "ورق تصوير" });
   await db().insert(s.productVariants).values({
     id: 1,
@@ -123,22 +170,49 @@ async function seedBase() {
   });
 }
 
+async function dropFinalizeFaultTrigger() {
+  await db().execute(sql.raw(`DROP TRIGGER IF EXISTS \`${FINALIZE_FAULT_TRIGGER}\``));
+}
+
+async function installFinalizeFaultTrigger() {
+  await dropFinalizeFaultTrigger();
+  await db().execute(sql.raw(`
+    CREATE TRIGGER \`${FINALIZE_FAULT_TRIGGER}\`
+    BEFORE UPDATE ON \`purchaseReturns\`
+    FOR EACH ROW
+    BEGIN
+      IF OLD.cashRefundReceiptId IS NULL
+         AND NEW.cashRefundReceiptId IS NOT NULL
+         AND NEW.evidenceReference LIKE 'fault-injection:%' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'purchase return finalize fault';
+      END IF;
+    END
+  `));
+}
+
 beforeEach(async () => {
+  await dropFinalizeFaultTrigger();
   await truncateTables(TABLES);
   await seedBase();
 });
 
 async function makeOrder(args: {
   status: "DRAFT" | "SENT" | "CONFIRMED" | "RECEIVED" | "CANCELLED";
-  receivedBaseQuantity: 0 | 1 | 2;
   unitPrice?: string;
+  currency?: "IQD" | "USD";
+  agreedRate?: string;
+  usdTotal?: string;
 }) {
+  const currency = args.currency ?? "IQD";
   const created = await createPurchaseOrder(
     {
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
+      status: "DRAFT",
       settlementType: "CREDIT",
+      agreedCurrency: currency,
+      agreedRate: currency === "USD" ? args.agreedRate : undefined,
+      usdTotal: currency === "USD" ? args.usdTotal : undefined,
       items: [
         {
           variantId: 1,
@@ -155,29 +229,212 @@ async function makeOrder(args: {
     .from(s.purchaseOrderItems)
     .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
 
-  if (args.receivedBaseQuantity > 0) {
-    await receivePurchase(
+  if (args.status !== "DRAFT" && args.status !== "CANCELLED") {
+    const submitted = await submitPurchaseOrderForApproval(
       {
         purchaseOrderId: created.purchaseOrderId,
-        lines: [
-          {
-            purchaseOrderItemId: Number(item.id),
-            receivedBaseQuantity: args.receivedBaseQuantity,
-          },
-        ],
-        clientRequestId: `return-closure-receive-${created.purchaseOrderId}`,
+        expectedVersion: created.version,
+        reason: "إرسال أمر اختبار الإغلاق الجنائي للمراجعة المستقلة",
+        requestKey: `return-closure-submit:${randomUUID()}`,
       },
-      WAREHOUSE,
+      PURCHASING,
     );
+    if (args.status !== "SENT") {
+      await decidePurchaseOrderControl(
+        {
+          requestId: submitted.requestId,
+          decisionKey: `return-closure-approve:${randomUUID()}`,
+          approve: true,
+          reason: "راجعت المورد والكميات والأسعار واعتمدت أمر الاختبار",
+        },
+        APPROVER,
+      );
+    }
   }
-  await db()
-    .update(s.purchaseOrders)
-    .set({ status: args.status })
-    .where(eq(s.purchaseOrders.id, created.purchaseOrderId));
+
+  if (args.status === "CANCELLED" || args.status === "RECEIVED") {
+    await db()
+      .update(s.purchaseOrders)
+      .set({ status: args.status })
+      .where(eq(s.purchaseOrders.id, created.purchaseOrderId));
+  }
   return {
     purchaseOrderId: created.purchaseOrderId,
     poNumber: created.poNumber,
     purchaseOrderItemId: Number(item.id),
+  };
+}
+
+async function makeGovernedReturnSource(args: {
+  acceptedBaseQuantity: 1 | 2;
+  unitPrice?: string;
+  currency?: "IQD" | "USD";
+  agreedRate?: string;
+  usdTotal?: string;
+  taxAmount?: string;
+  discountAmount?: string;
+  expectedMatchOutcome?: "EXACT" | "WITHIN_TOLERANCE";
+}) {
+  const order = await makeOrder({
+    status: "CONFIRMED",
+    unitPrice: args.unitPrice,
+    currency: args.currency,
+    agreedRate: args.agreedRate,
+    usdTotal: args.usdTotal,
+  });
+  const [approvedOrder] = await db()
+    .select()
+    .from(s.purchaseOrders)
+    .where(eq(s.purchaseOrders.id, order.purchaseOrderId));
+  if (!approvedOrder?.approvedRevisionId) {
+    throw new Error("approved purchase-order revision is missing");
+  }
+
+  const receipt = await createGoodsReceipt(
+    {
+      purchaseOrderId: order.purchaseOrderId,
+      purchaseOrderRevisionId: Number(approvedOrder.approvedRevisionId),
+      expectedOrderVersion: Number(approvedOrder.version),
+      clientRequestId: `return-closure-grn:${randomUUID()}`,
+      supplierDeliveryNote: `DN-${randomUUID()}`,
+      lines: [
+        {
+          purchaseOrderItemId: order.purchaseOrderItemId,
+          acceptedBaseQuantity: args.acceptedBaseQuantity,
+        },
+      ],
+    },
+    WAREHOUSE,
+  );
+  const [goodsReceiptItem] = await db()
+    .select()
+    .from(s.goodsReceiptItems)
+    .where(eq(s.goodsReceiptItems.goodsReceiptId, Number(receipt.goodsReceiptId)));
+  if (!goodsReceiptItem?.purchaseOrderRevisionItemId) {
+    throw new Error("goods-receipt revision source is missing");
+  }
+
+  const invoice = await createSupplierInvoice(
+    {
+      supplierId: 1,
+      branchId: 1,
+      clientRequestId: `return-closure-invoice:${randomUUID()}`,
+      externalInvoiceNumber: `EXT-${randomUUID()}`,
+      invoiceDate: new Date().toISOString().slice(0, 10),
+      currency: args.currency ?? "IQD",
+      agreedRate: args.currency === "USD" ? args.agreedRate : undefined,
+      taxAmount: args.taxAmount,
+      discountAmount: args.discountAmount,
+      evidenceType: "PDF",
+      evidenceReference: `invoice-evidence:${randomUUID()}`,
+      lines: [
+        {
+          purchaseOrderRevisionItemId: Number(
+            goodsReceiptItem.purchaseOrderRevisionItemId,
+          ),
+          description: "ورق تصوير مطابق لمصدر الاستلام",
+          invoicedBaseQuantity: args.acceptedBaseQuantity,
+          unitPrice: args.unitPrice ?? "100.00",
+        },
+      ],
+    },
+    PURCHASING,
+  );
+  const [invoiceRow, invoiceLine] = await Promise.all([
+    db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.id, Number(invoice.supplierInvoiceId)))
+      .then((rows) => rows[0]),
+    db()
+      .select()
+      .from(s.supplierInvoiceLines)
+      .where(
+        eq(
+          s.supplierInvoiceLines.supplierInvoiceId,
+          Number(invoice.supplierInvoiceId),
+        ),
+      )
+      .then((rows) => rows[0]),
+  ]);
+  if (!invoiceRow || !invoiceLine) {
+    throw new Error("supplier-invoice source is missing");
+  }
+
+  const match = await runThreeWayMatch(
+    {
+      supplierInvoiceId: Number(invoice.supplierInvoiceId),
+      expectedInvoiceVersion: Number(invoiceRow.version),
+      matchKey: `return-closure-match:${randomUUID()}`,
+      allocations: [
+        {
+          supplierInvoiceLineId: Number(invoiceLine.id),
+          goodsReceiptItemId: Number(goodsReceiptItem.id),
+          matchedBaseQuantity: args.acceptedBaseQuantity,
+        },
+      ],
+    },
+    PURCHASING,
+  );
+  expect(match.outcome).toBe(args.expectedMatchOutcome ?? "EXACT");
+
+  const [matchedInvoice] = await db()
+    .select()
+    .from(s.supplierInvoices)
+    .where(eq(s.supplierInvoices.id, Number(invoice.supplierInvoiceId)));
+  const approval = await requestSupplierInvoiceApproval(
+    {
+      supplierInvoiceId: Number(invoice.supplierInvoiceId),
+      expectedInvoiceVersion: Number(matchedInvoice.version),
+      requestKey: `return-closure-invoice-approval:${randomUUID()}`,
+      kind: "POST_INVOICE",
+      matchRunId: Number(match.matchRunId),
+      reason: "مطابقة الفاتورة وإذن الاستلام وأمر الشراء مكتملة",
+    },
+    PURCHASING,
+  );
+  await decideSupplierInvoiceApproval(
+    {
+      requestId: Number(approval.requestId),
+      decisionKey: `return-closure-invoice-decision:${randomUUID()}`,
+      action: "APPROVE",
+      reviewReason: "راجعت أدلة المطابقة الثلاثية واعتمدت ترحيل الفاتورة",
+    },
+    APPROVER,
+  );
+
+  const [[postedInvoice], [allocation], [currentOrder]] = await Promise.all([
+    db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.id, Number(invoice.supplierInvoiceId))),
+    db()
+      .select()
+      .from(s.supplierInvoiceMatchAllocations)
+      .where(
+        eq(
+          s.supplierInvoiceMatchAllocations.matchRunId,
+          Number(match.matchRunId),
+        ),
+      ),
+    db()
+      .select()
+      .from(s.purchaseOrders)
+      .where(eq(s.purchaseOrders.id, order.purchaseOrderId)),
+  ]);
+  if (!postedInvoice || !allocation || !currentOrder) {
+    throw new Error("governed return source is incomplete");
+  }
+  expect(postedInvoice.status).toBe("POSTED");
+
+  return {
+    ...order,
+    purchaseOrderStatus: currentOrder.status,
+    supplierInvoiceId: Number(postedInvoice.id),
+    supplierInvoiceVersion: Number(postedInvoice.version),
+    matchRunId: Number(match.matchRunId),
+    matchAllocationId: Number(allocation.id),
+    goodsReceiptItemId: Number(goodsReceiptItem.id),
   };
 }
 
@@ -217,15 +474,15 @@ async function returnEffectCounts() {
 
 describe("إغلاق جنائي لمرتجع الشراء", () => {
   it.each([
-    ["DRAFT", 0],
-    ["SENT", 0],
-    ["CANCELLED", 0],
-    ["CONFIRMED", 0],
-    ["RECEIVED", 0],
+    "DRAFT",
+    "SENT",
+    "CANCELLED",
+    "CONFIRMED",
+    "RECEIVED",
   ] as const)(
-    "يرفض الأمر %s غير القابل للإرجاع/غير المستلم بلا مستند أو حركة أو قيد",
-    async (status, receivedBaseQuantity) => {
-      const order = await makeOrder({ status, receivedBaseQuantity });
+    "يبقي purchaseReturns.create القديم مغلقاً للأمر %s بلا أي أثر",
+    async (status) => {
+      const order = await makeOrder({ status });
       const before = await returnEffectCounts();
 
       await expect(
@@ -239,7 +496,7 @@ describe("إغلاق جنائي لمرتجع الشراء", () => {
           ],
           settlement: "CREDIT",
         }),
-      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
       expect(await returnEffectCounts()).toEqual(before);
     },
@@ -249,118 +506,321 @@ describe("إغلاق جنائي لمرتجع الشراء", () => {
     ["CONFIRMED", 1],
     ["RECEIVED", 2],
   ] as const)(
-    "يقبل الأمر %s المستلم ويثبت مستنداً وحركةً وقيداً واحداً",
+    "ينشئ مرتجع CREDIT محكوماً للأمر %s المستلم بعد اعتماد مستقل فقط",
     async (status, receivedBaseQuantity) => {
-      const order = await makeOrder({ status, receivedBaseQuantity });
+      const source = await makeGovernedReturnSource({
+        acceptedBaseQuantity: receivedBaseQuantity,
+      });
+      expect(source.purchaseOrderStatus).toBe(status);
       const before = await returnEffectCounts();
 
-      const result = await purchasingCaller().purchaseReturns.create({
-        clientRequestId: `return-closure-accepted-${status}`,
-        supplierId: 1,
-        branchId: 1,
-        purchaseOrderRefId: order.purchaseOrderId,
-        items: [
-          { purchaseOrderItemId: order.purchaseOrderItemId, quantity: "1" },
-        ],
+      const requested = await purchasingCaller().purchaseReturnGovernance.requestReturn({
+        supplierInvoiceId: source.supplierInvoiceId,
+        matchRunId: source.matchRunId,
+        expectedInvoiceVersion: source.supplierInvoiceVersion,
+        requestKey: `return-closure-credit-request:${randomUUID()}`,
         settlement: "CREDIT",
+        paymentMethod: "TRANSFER",
+        evidenceType: "RETURN_NOTE",
+        evidenceReference: `credit-return-note:${randomUUID()}`,
+        reason: "إرجاع وحدة معيبة إلى المورد بعد المطابقة الثلاثية",
+        lines: [
+          {
+            matchAllocationId: source.matchAllocationId,
+            baseQuantity: 1,
+            reason: "وحدة تالفة مثبتة بمحضر الفحص",
+          },
+        ],
+      });
+      expect(requested).toMatchObject({ status: "PENDING", idempotent: false });
+      expect(await returnEffectCounts()).toEqual(before);
+
+      const [pendingRequest] = await db()
+        .select()
+        .from(s.purchaseReturnRequests)
+        .where(eq(s.purchaseReturnRequests.id, Number(requested.requestId)));
+      expect(pendingRequest).toMatchObject({
+        status: "PENDING",
+        requestedBy: PURCHASING.userId,
+        reviewedBy: null,
+        baseInvoiceVersion: source.supplierInvoiceVersion,
       });
 
-      expect(result).toMatchObject({
-        returnedTotal: "100.00",
+      await expect(
+        purchasingCaller().purchaseReturnGovernance.decideReturn({
+          requestId: Number(requested.requestId),
+          decisionKey: `return-closure-maker-decision:${randomUUID()}`,
+          action: "APPROVE",
+          reviewReason: "محاولة منشئ الطلب اعتماد طلبه نفسه مرفوضة",
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(await returnEffectCounts()).toEqual(before);
+
+      const approved = await approverCaller().purchaseReturnGovernance.decideReturn({
+        requestId: Number(requested.requestId),
+        decisionKey: `return-closure-credit-decision:${randomUUID()}`,
+        action: "APPROVE",
+        reviewReason: "راجعت المطابقة والكمية والدليل واعتمدت المرتجع",
+      });
+
+      expect(approved).toMatchObject({ status: "APPROVED", idempotent: false });
+      expect(await returnEffectCounts()).toEqual({
+        documents: before.documents + 1,
+        items: before.items + 1,
+        movements: before.movements + 1,
+        entries: before.entries + 1,
+        receipts: before.receipts,
+        idempotency: before.idempotency,
+      });
+
+      const [[document], [item], [decidedRequest]] = await Promise.all([
+        db()
+          .select()
+          .from(s.purchaseReturns)
+          .where(eq(s.purchaseReturns.id, Number(approved.purchaseReturnId))),
+        db()
+          .select()
+          .from(s.purchaseReturnItems)
+          .where(
+            eq(
+              s.purchaseReturnItems.purchaseReturnId,
+              Number(approved.purchaseReturnId),
+            ),
+          ),
+        db()
+          .select()
+          .from(s.purchaseReturnRequests)
+          .where(eq(s.purchaseReturnRequests.id, Number(requested.requestId))),
+      ]);
+      expect(document).toMatchObject({
+        origin: "NATIVE",
+        status: "POSTED",
+        requestId: Number(requested.requestId),
+        supplierInvoiceId: source.supplierInvoiceId,
+        matchRunId: source.matchRunId,
+        purchaseOrderId: source.purchaseOrderId,
+        settlement: "CREDIT",
+        totalAmount: "100.00",
         cashRefundAmount: "0.00",
         creditOffsetAmount: "100.00",
       });
-      expect(await returnEffectCounts()).toEqual({
-        documents: 1,
-        items: 1,
-        movements: 1,
-        entries: 1,
-        receipts: 0,
-        idempotency: before.idempotency + 1,
+      expect(item).toMatchObject({
+        goodsReceiptItemId: source.goodsReceiptItemId,
+        matchAllocationId: source.matchAllocationId,
+        baseQuantity: 1,
+        lineTotal: "100.00",
+      });
+      expect(decidedRequest).toMatchObject({
+        status: "APPROVED",
+        requestedBy: PURCHASING.userId,
+        reviewedBy: APPROVER.userId,
       });
     },
   );
 
-  it("يسوّي CASH جزئياً بقدر المدفوع السابق ويحوّل الباقي إلى خصم ذمة صادق", async () => {
-    const order = await makeOrder({
-      status: "RECEIVED",
-      receivedBaseQuantity: 2,
-      unitPrice: "100.00",
-    });
-    await db().insert(s.shifts).values({
-      id: 1,
-      branchId: 1,
-      userId: PURCHASING.userId,
-      openingBalance: "500.00",
-      status: "OPEN",
-      openGuard: "1:1:RETAIL",
-    });
-    await db().insert(s.receipts).values({
-      branchId: 1,
-      shiftId: null,
-      cashBucket: "TREASURY",
-      direction: "IN",
-      amount: "500.00",
-      paymentMethod: "CASH",
-      status: "COMPLETED",
-      approvalStatus: "APPROVED",
-      referenceNumber: "RETURN-CLOSURE-TREASURY-FUND",
-      createdBy: PURCHASING.userId,
-    });
-
-    const requested = await purchasingCaller().purchases.pay({
-      purchaseOrderId: order.purchaseOrderId,
-      amount: "50.00",
-      method: "CASH",
-      clientRequestId: "return-closure-prior-cash-payment",
-    });
-    await approveVoucher(Number(requested.paymentRequestReceiptId), APPROVER);
-
-    const result = await purchasingCaller().purchaseReturns.create({
-      clientRequestId: "return-closure-partial-cash-refund",
-      supplierId: 1,
-      branchId: 1,
-      purchaseOrderRefId: order.purchaseOrderId,
-      items: [
-        { purchaseOrderItemId: order.purchaseOrderItemId, quantity: "2" },
+  it("يجعل requestKey المتزامن replay واحداً ويرفض الحمولة المختلفة", async () => {
+    const source = await makeGovernedReturnSource({ acceptedBaseQuantity: 2 });
+    const requestKey = `return-closure-concurrent:${randomUUID()}`;
+    const evidenceReference = `concurrent-return-note:${randomUUID()}`;
+    const input = {
+      supplierInvoiceId: source.supplierInvoiceId,
+      matchRunId: source.matchRunId,
+      expectedInvoiceVersion: source.supplierInvoiceVersion,
+      requestKey,
+      settlement: "CREDIT" as const,
+      paymentMethod: "TRANSFER" as const,
+      evidenceType: "RETURN_NOTE" as const,
+      evidenceReference,
+      reason: "طلب متزامن واحد يجب ألا يحجز الكمية أو الرأس مرتين",
+      lines: [
+        {
+          matchAllocationId: source.matchAllocationId,
+          baseQuantity: 1,
+          reason: "وحدة واحدة تالفة",
+        },
       ],
-      settlement: "CASH",
-      paymentMethod: "CASH",
-    });
+    };
 
-    expect(result).toMatchObject({
-      returnedTotal: "200.00",
-      cashRefundAmount: "50.00",
-      creditOffsetAmount: "150.00",
-    });
-    const [document] = await db()
+    const [first, second] = await Promise.all([
+      purchasingCaller().purchaseReturnGovernance.requestReturn(input),
+      purchasingCaller().purchaseReturnGovernance.requestReturn(input),
+    ]);
+    expect(first.requestId).toBe(second.requestId);
+    expect([first.idempotent, second.idempotent].sort()).toEqual([false, true]);
+    const requests = await db()
       .select()
-      .from(s.purchaseReturns)
-      .where(eq(s.purchaseReturns.id, result.purchaseReturnId));
-    expect(document).toMatchObject({
-      totalAmount: "200.00",
-      cashRefundAmount: "50.00",
-      creditOffsetAmount: "150.00",
-    });
+      .from(s.purchaseReturnRequests)
+      .where(eq(s.purchaseReturnRequests.requestKey, requestKey));
+    const items = await db()
+      .select()
+      .from(s.purchaseReturnRequestItems)
+      .where(eq(s.purchaseReturnRequestItems.requestId, Number(first.requestId)));
+    expect(requests).toHaveLength(1);
+    expect(items).toHaveLength(1);
 
-    const [supplier] = await db()
+    await expect(
+      purchasingCaller().purchaseReturnGovernance.requestReturn({
+        ...input,
+        reason: "حمولة مختلفة تحت المفتاح نفسه يجب رفضها",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("يعكس USD بنسبة لقطة الفاتورة ويمتص آخر جزء باقي التقريب مع الضريبة", async () => {
+    await db().insert(s.purchaseControlSettings).values({
+      branchId: 1,
+      totalToleranceAmount: "10.00",
+    });
+    const source = await makeGovernedReturnSource({
+      acceptedBaseQuantity: 2,
+      unitPrice: "0.0250",
+      currency: "USD",
+      agreedRate: "1200.0000",
+      usdTotal: "0.05",
+      taxAmount: "10.00",
+      expectedMatchOutcome: "WITHIN_TOLERANCE",
+    });
+    const [postedSupplier] = await db()
       .select()
       .from(s.suppliers)
       .where(eq(s.suppliers.id, 1));
-    expect(supplier.currentBalance).toBe("0.00");
+    expect(postedSupplier.currentBalance).toBe("70.00");
+    expect(postedSupplier.currentBalanceUsd).toBe("0.05");
+
+    const firstRequest = await purchasingCaller().purchaseReturnGovernance.requestReturn({
+      supplierInvoiceId: source.supplierInvoiceId,
+      matchRunId: source.matchRunId,
+      expectedInvoiceVersion: source.supplierInvoiceVersion,
+      requestKey: `return-closure-usd-first:${randomUUID()}`,
+      settlement: "CREDIT",
+      paymentMethod: "TRANSFER",
+      evidenceType: "RETURN_NOTE",
+      evidenceReference: `usd-return-note-first:${randomUUID()}`,
+      reason: "إرجاع أول نصف من فاتورة USD ذات ضريبة دينارية",
+      lines: [{ matchAllocationId: source.matchAllocationId, baseQuantity: 1 }],
+    });
+    await approverCaller().purchaseReturnGovernance.decideReturn({
+      requestId: Number(firstRequest.requestId),
+      decisionKey: `return-closure-usd-first-decision:${randomUUID()}`,
+      action: "APPROVE",
+      reviewReason: "اعتماد النصف الأول واختبار تقريب ثلاثة سنتات",
+    });
+    const [afterFirst, invoiceAfterFirst] = await Promise.all([
+      db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)).then((rows) => rows[0]!),
+      db().select().from(s.supplierInvoices).where(eq(s.supplierInvoices.id, source.supplierInvoiceId)).then((rows) => rows[0]!),
+    ]);
+    expect(afterFirst.currentBalance).toBe("35.00");
+    expect(afterFirst.currentBalanceUsd).toBe("0.02");
+
+    const secondRequest = await purchasingCaller().purchaseReturnGovernance.requestReturn({
+      supplierInvoiceId: source.supplierInvoiceId,
+      matchRunId: source.matchRunId,
+      expectedInvoiceVersion: Number(invoiceAfterFirst.version),
+      requestKey: `return-closure-usd-final:${randomUUID()}`,
+      settlement: "CREDIT",
+      paymentMethod: "TRANSFER",
+      evidenceType: "RETURN_NOTE",
+      evidenceReference: `usd-return-note-final:${randomUUID()}`,
+      reason: "إرجاع النصف الأخير وامتصاص باقي السنتين بلا تجاوز",
+      lines: [{ matchAllocationId: source.matchAllocationId, baseQuantity: 1 }],
+    });
+    await approverCaller().purchaseReturnGovernance.decideReturn({
+      requestId: Number(secondRequest.requestId),
+      decisionKey: `return-closure-usd-final-decision:${randomUUID()}`,
+      action: "APPROVE",
+      reviewReason: "اعتماد النصف الأخير وإغلاق الرصيد الأصلي تماماً",
+    });
+    const [afterFinal] = await db()
+      .select()
+      .from(s.suppliers)
+      .where(eq(s.suppliers.id, 1));
+    expect(afterFinal.currentBalance).toBe("0.00");
+    expect(afterFinal.currentBalanceUsd).toBe("0.00");
+  });
+
+  it("يثبت مسار CASH المحكوم إيصال المورد وقيدي RETURN وPAYMENT_IN", async () => {
+    const source = await makeGovernedReturnSource({
+      acceptedBaseQuantity: 2,
+      unitPrice: "100.00",
+    });
+    const [supplierBefore] = await db()
+      .select()
+      .from(s.suppliers)
+      .where(eq(s.suppliers.id, 1));
+    const before = await returnEffectCounts();
+    const requested = await purchasingCaller().purchaseReturnGovernance.requestReturn({
+      supplierInvoiceId: source.supplierInvoiceId,
+      matchRunId: source.matchRunId,
+      expectedInvoiceVersion: source.supplierInvoiceVersion,
+      requestKey: `return-closure-cash-request:${randomUUID()}`,
+      settlement: "CASH",
+      paymentMethod: "CASH",
+      evidenceType: "RETURN_NOTE",
+      evidenceReference: `cash-return-note:${randomUUID()}`,
+      reason: "إرجاع كامل الكمية واستلام رد نقدي موثق من المورد",
+      lines: [
+        {
+          matchAllocationId: source.matchAllocationId,
+          baseQuantity: 2,
+          reason: "رفض كامل الشحنة بعد الفحص",
+        },
+      ],
+    });
+    expect(await returnEffectCounts()).toEqual(before);
+
+    const decision = {
+      requestId: Number(requested.requestId),
+      decisionKey: `return-closure-cash-decision:${randomUUID()}`,
+      action: "APPROVE" as const,
+      reviewReason: "تحققت من مذكرة المرتجع واستلام الرد النقدي من المورد",
+    };
+    const approved = await approverCaller().purchaseReturnGovernance.decideReturn(
+      decision,
+    );
+
+    expect(approved).toMatchObject({ status: "APPROVED" });
+    expect(await returnEffectCounts()).toEqual({
+      documents: before.documents + 1,
+      items: before.items + 1,
+      movements: before.movements + 1,
+      entries: before.entries + 1,
+      receipts: before.receipts + 1,
+      idempotency: before.idempotency,
+    });
+    const applied = await returnEffectCounts();
+    const replayed = await approverCaller().purchaseReturnGovernance.decideReturn(
+      decision,
+    );
+    expect(replayed).toMatchObject({
+      status: "APPROVED",
+      purchaseReturnId: approved.purchaseReturnId,
+      idempotent: true,
+    });
+    expect(await returnEffectCounts()).toEqual(applied);
+
+    const [document] = await db()
+      .select()
+      .from(s.purchaseReturns)
+      .where(eq(s.purchaseReturns.id, Number(approved.purchaseReturnId)));
+    expect(document).toMatchObject({
+      settlement: "CASH",
+      totalAmount: "200.00",
+      cashRefundAmount: "200.00",
+      creditOffsetAmount: "0.00",
+    });
 
     const linkedEntries = await db()
       .select()
       .from(s.accountingEntries)
-      .where(eq(s.accountingEntries.purchaseOrderId, order.purchaseOrderId));
+      .where(
+        eq(s.accountingEntries.purchaseOrderId, source.purchaseOrderId),
+      );
     expect(
       linkedEntries.map((entry) => [entry.entryType, entry.amount]),
     ).toEqual(
       expect.arrayContaining([
-        ["PURCHASE", "200.00"],
-        ["PAYMENT_OUT", "50.00"],
         ["RETURN", "-200.00"],
-        ["PAYMENT_IN", "50.00"],
+        ["PAYMENT_IN", "200.00"],
       ]),
     );
     const refundEntry = linkedEntries.find(
@@ -372,66 +832,221 @@ describe("إغلاق جنائي لمرتجع الشراء", () => {
       .from(s.receipts)
       .where(
         and(
-          eq(s.receipts.id, Number(refundEntry?.receiptId)),
+          eq(s.receipts.id, Number(document.cashRefundReceiptId)),
           eq(s.receipts.direction, "IN"),
         ),
       );
     expect(refundReceipt).toMatchObject({
-      amount: "50.00",
+      amount: "200.00",
       paymentMethod: "CASH",
       status: "COMPLETED",
       approvalStatus: "APPROVED",
-      shiftId: 1,
-      cashBucket: "DRAWER",
+      shiftId: null,
+      cashBucket: "TREASURY",
     });
+    expect(refundEntry?.receiptId).toBe(Number(refundReceipt.id));
+    const returnEntry = linkedEntries.find(
+      (entry) => entry.dedupeKey === `PURCHASE_RETURN:${approved.purchaseReturnId}`,
+    );
+    expect(returnEntry).toBeDefined();
+    const journalLines = await db()
+      .select({
+        entryId: s.journalEntries.entryId,
+        role: s.journalLines.role,
+        debit: s.journalLines.debit,
+        credit: s.journalLines.credit,
+      })
+      .from(s.journalLines)
+      .innerJoin(
+        s.journalEntries,
+        eq(s.journalEntries.id, s.journalLines.journalId),
+      )
+      .where(
+        inArray(s.journalEntries.entryId, [
+          Number(returnEntry!.id),
+          Number(refundEntry!.id),
+        ]),
+      );
+    expect(
+      journalLines.map((line) => [
+        Number(line.entryId),
+        line.role,
+        line.debit,
+        line.credit,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        [Number(returnEntry!.id), "AP", "200.00", "0.00"],
+        [Number(refundEntry!.id), "AP", "0.00", "200.00"],
+        [Number(refundEntry!.id), "TREASURY_CASH", "200.00", "0.00"],
+      ]),
+    );
+    const [supplierAfter] = await db()
+      .select()
+      .from(s.suppliers)
+      .where(eq(s.suppliers.id, 1));
+    expect(supplierAfter.currentBalance).toBe(supplierBefore.currentBalance);
+    expect(supplierAfter.currentBalanceUsd).toBe(supplierBefore.currentBalanceUsd);
     const [returnMovement] = await db()
       .select()
       .from(s.inventoryMovements)
       .where(
         and(
           eq(s.inventoryMovements.referenceType, "PURCHASE_RETURN"),
-          eq(s.inventoryMovements.referenceId, result.purchaseReturnId),
+          eq(
+            s.inventoryMovements.referenceId,
+            Number(approved.purchaseReturnId),
+          ),
         ),
       );
     expect(returnMovement).toMatchObject({ movementType: "OUT", quantity: 2 });
   });
 
-  it("يمكّن purchasing بصلاحية purchases:FULL من الحل والإنشاء دون سعر من purchases.get العام", async () => {
-    const order = await makeOrder({
-      status: "RECEIVED",
-      receivedBaseQuantity: 2,
+  it("يردّ الرأس والإيصال والقيد والمخزون والذمم معاً عند فشل التثبيت بعد إنشاء الإيصال", async () => {
+    const source = await makeGovernedReturnSource({
+      acceptedBaseQuantity: 2,
+      unitPrice: "100.00",
+    });
+    const requested = await purchasingCaller().purchaseReturnGovernance.requestReturn({
+      supplierInvoiceId: source.supplierInvoiceId,
+      matchRunId: source.matchRunId,
+      expectedInvoiceVersion: source.supplierInvoiceVersion,
+      requestKey: `return-closure-fault-request:${randomUUID()}`,
+      settlement: "CASH",
+      paymentMethod: "CASH",
+      evidenceType: "RETURN_NOTE",
+      evidenceReference: `fault-injection:${randomUUID()}`,
+      reason: "حقن فشل بعد إنشاء إيصال الاسترداد وقبل تثبيت رأس المرتجع",
+      lines: [{ matchAllocationId: source.matchAllocationId, baseQuantity: 2 }],
+    });
+    const beforeEffects = await returnEffectCounts();
+    const [beforeSupplier] = await db()
+      .select()
+      .from(s.suppliers)
+      .where(eq(s.suppliers.id, 1));
+
+    await installFinalizeFaultTrigger();
+    try {
+      await expect(
+        approverCaller().purchaseReturnGovernance.decideReturn({
+          requestId: Number(requested.requestId),
+          decisionKey: `return-closure-fault-decision:${randomUUID()}`,
+          action: "APPROVE",
+          reviewReason: "تشغيل نقطة الفشل بعد الإيصال لاختبار rollback الكامل",
+        }),
+      ).rejects.toBeDefined();
+    } finally {
+      await dropFinalizeFaultTrigger();
+    }
+
+    expect(await returnEffectCounts()).toEqual(beforeEffects);
+    const [[requestAfter], [supplierAfter], stockAfter] = await Promise.all([
+      db()
+        .select()
+        .from(s.purchaseReturnRequests)
+        .where(eq(s.purchaseReturnRequests.id, Number(requested.requestId))),
+      db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)),
+      db()
+        .select({ quantity: s.branchStock.quantity })
+        .from(s.branchStock)
+        .where(
+          and(
+            eq(s.branchStock.branchId, 1),
+            eq(s.branchStock.variantId, 1),
+          ),
+        ),
+    ]);
+    expect(requestAfter).toMatchObject({
+      status: "PENDING",
+      reviewedBy: null,
+      decisionKey: null,
+    });
+    expect(supplierAfter.currentBalance).toBe(beforeSupplier.currentBalance);
+    expect(supplierAfter.currentBalanceUsd).toBe(beforeSupplier.currentBalanceUsd);
+    expect(stockAfter[0]?.quantity).toBe(2);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(0);
+  });
+
+  it("يبقي purchases.pay وpurchaseReturns.resolveOrder القديمين مغلقين", async () => {
+    const order = await makeOrder({ status: "CONFIRMED" });
+    const before = await returnEffectCounts();
+    const caller = purchasingCaller();
+
+    await expect(
+      caller.purchases.pay({
+        purchaseOrderId: order.purchaseOrderId,
+        amount: "50.00",
+        method: "CASH",
+        clientRequestId: `return-closure-legacy-pay:${randomUUID()}`,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(
+      (caller.purchaseReturns as any).resolveOrder({
+        branchId: 1,
+        reference: order.poNumber,
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(await returnEffectCounts()).toEqual(before);
+  });
+
+  it("يمكّن purchasing بصلاحية purchases:FULL من المصدر المحكوم دون كشف السعر في purchases.get", async () => {
+    const source = await makeGovernedReturnSource({
+      acceptedBaseQuantity: 2,
       unitPrice: "125.00",
     });
     const caller = purchasingCaller();
 
     const publicOrder = await caller.purchases.get({
-      purchaseOrderId: order.purchaseOrderId,
+      purchaseOrderId: source.purchaseOrderId,
     });
     expect(publicOrder?.items[0]?.unitPrice).toBeNull();
 
-    const resolved = await caller.purchaseReturns.resolveOrder({
+    const sources = await caller.purchaseReturnGovernance.returnSources({
       branchId: 1,
-      reference: order.poNumber,
+      limit: 20,
     });
-    expect(resolved.items[0]).toMatchObject({
-      purchaseOrderItemId: order.purchaseOrderItemId,
-      unitPrice: "125.00",
+    const governedSource = sources.find(
+      (row) => row.id === source.supplierInvoiceId,
+    );
+    expect(governedSource).toMatchObject({
+      id: source.supplierInvoiceId,
+      version: source.supplierInvoiceVersion,
+      matchRun: { id: source.matchRunId, outcome: "EXACT" },
     });
-    expect(Number(resolved.items[0].remainingQuantity)).toBe(2);
+    expect(governedSource?.allocations[0]).toMatchObject({
+      id: source.matchAllocationId,
+      availableBaseQuantity: 2,
+      unitPriceIqd: "125.00",
+    });
 
-    const created = await caller.purchaseReturns.create({
-      clientRequestId: "return-closure-purchasing-router",
-      supplierId: resolved.supplierId,
-      branchId: 1,
-      purchaseOrderRefId: resolved.id,
-      items: [
+    const before = await returnEffectCounts();
+    const requested = await caller.purchaseReturnGovernance.requestReturn({
+      supplierInvoiceId: source.supplierInvoiceId,
+      matchRunId: source.matchRunId,
+      expectedInvoiceVersion: source.supplierInvoiceVersion,
+      requestKey: `return-closure-purchasing-router:${randomUUID()}`,
+      settlement: "CREDIT",
+      paymentMethod: "TRANSFER",
+      evidenceType: "RETURN_NOTE",
+      evidenceReference: `purchasing-return-note:${randomUUID()}`,
+      reason: "طلب مرتجع من مصدر الفاتورة والمطابقة المحكوم",
+      lines: [
         {
-          purchaseOrderItemId: resolved.items[0].purchaseOrderItemId,
-          quantity: "1",
+          matchAllocationId: source.matchAllocationId,
+          baseQuantity: 1,
         },
       ],
-      settlement: "CREDIT",
     });
-    expect(created.returnedTotal).toBe("125.00");
+    expect(requested).toMatchObject({ status: "PENDING", idempotent: false });
+    expect(await returnEffectCounts()).toEqual(before);
+
+    const reservedSources = await caller.purchaseReturnGovernance.returnSources({
+      branchId: 1,
+      limit: 20,
+    });
+    expect(
+      reservedSources.find((row) => row.id === source.supplierInvoiceId)
+        ?.allocations[0]?.availableBaseQuantity,
+    ).toBe(1);
   });
 });

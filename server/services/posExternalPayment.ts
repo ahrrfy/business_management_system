@@ -1,18 +1,31 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { digitalSaleIntents, externalPaymentAttempts, invoices, receipts } from "../../drizzle/schema";
+import { digitalSaleIntents, externalPaymentAttempts, invoices, receipts,
+} from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { logger } from "../logger";
 import { money, toDbMoney } from "./money";
 import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
-import { createSaleInTx, DIGITAL_SALE_CAPABILITY, notifySaleCustomerAfterCommit } from "./sale/create";
+import { createSaleInTx, DIGITAL_SALE_CAPABILITY, notifySaleCustomerAfterCommit,
+} from "./sale/create";
 import type { CreateSaleInput, CreateSaleResult } from "./sale/types";
 import { withTx, type Actor } from "./tx";
 
 export type PosExternalPaymentMethod = "CARD" | "CHECK" | "TRANSFER" | "WALLET";
-export type PosExternalPaymentChannel = "POS" | "PRINT_POS";
+export type PosExternalPaymentChannel =
+  | "POS" | "PRINT_POS"
+  | "SALES_COLLECTION";
+
+export type ExternalPaymentVerificationPolicy =
+  | "SELF_TERMINAL"
+  | "INDEPENDENT_APPROVAL";
+
+export type ExternalPaymentBusinessBinding = {
+  type: "INSTALLMENT_LINE";
+  id: number;
+};
 
 export interface ExternalPaymentAttemptInput {
   branchId: number;
@@ -22,6 +35,10 @@ export interface ExternalPaymentAttemptInput {
   reference: string;
   requestId: string;
   deviceId: string;
+  /** سياسة خادمية؛ راوتر الأقساط يفرضها ولا يأخذها من العميل. */
+  verificationPolicy?: ExternalPaymentVerificationPolicy;
+  /** مستند العمل الذي لا يجوز استهلاك المحاولة خارجه. */
+  businessBinding?: ExternalPaymentBusinessBinding | null;
 }
 
 export interface ExternalPaymentBindingInput {
@@ -32,12 +49,144 @@ export interface ExternalPaymentBindingInput {
   attemptId?: number | null;
   deviceId?: string | null;
   digitalSaleIntentId?: number | null;
+  verificationPolicy?: ExternalPaymentVerificationPolicy;
+  businessBinding?: ExternalPaymentBusinessBinding | null;
 }
 
 export type LockedExternalPaymentAttempt = typeof externalPaymentAttempts.$inferSelect;
 
+export const INSTALLMENT_EXTERNAL_PAYMENT_PROVIDER =
+  "INSTALLMENT_DUAL_CONTROL";
+
+function verificationPolicyOf(
+  row: LockedExternalPaymentAttempt,
+): ExternalPaymentVerificationPolicy {
+  return row.providerCode === INSTALLMENT_EXTERNAL_PAYMENT_PROVIDER
+    ? "INDEPENDENT_APPROVAL"
+    : "SELF_TERMINAL";
+}
+
+function providerCodeFor(input: ExternalPaymentAttemptInput): string {
+  return input.verificationPolicy === "INDEPENDENT_APPROVAL"
+    ? INSTALLMENT_EXTERNAL_PAYMENT_PROVIDER
+    : input.method;
+}
+
+function accountReferenceFor(input: {
+  branchId: number;
+  method: string;
+  businessBinding?: ExternalPaymentBusinessBinding | null;
+}): string {
+  const base = `BRANCH:${input.branchId}:${input.method}`;
+  if (!input.businessBinding) return base;
+  return `${base}:${input.businessBinding.type}:${input.businessBinding.id}`;
+}
+
+function assertVerificationInput(
+  input: Pick<
+    ExternalPaymentAttemptInput,
+    "verificationPolicy" | "businessBinding"
+  >,
+): void {
+  const policy = input.verificationPolicy ?? "SELF_TERMINAL";
+  if (policy === "INDEPENDENT_APPROVAL") {
+    if (
+      input.businessBinding?.type !== "INSTALLMENT_LINE" ||
+      !Number.isSafeInteger(input.businessBinding.id) ||
+      input.businessBinding.id <= 0
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "محاولة الاعتماد المستقل يجب أن ترتبط بقسط محدد",
+      });
+    }
+    return;
+  }
+  if (input.businessBinding != null) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "ربط القسط لا يُقبل خارج مسار الاعتماد المستقل",
+    });
+  }
+}
+
+function assertVerificationBinding(
+  row: LockedExternalPaymentAttempt,
+  input: {
+    branchId: number;
+    method?: string;
+    verificationPolicy?: ExternalPaymentVerificationPolicy;
+    businessBinding?: ExternalPaymentBusinessBinding | null;
+  },
+): ExternalPaymentVerificationPolicy {
+  const actualPolicy = verificationPolicyOf(row);
+  const expectedPolicy = input.verificationPolicy ?? "SELF_TERMINAL";
+  if (actualPolicy !== expectedPolicy) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "سياسة توثيق محاولة الدفع لا تطابق مسار الاستهلاك",
+    });
+  }
+  if (
+    row.accountReference !==
+    accountReferenceFor({ ...input, method: input.method ?? row.paymentMethod })
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "محاولة الدفع مرتبطة بمستند أو حساب آخر",
+    });
+  }
+  return actualPolicy;
+}
+
+function assertAttemptActorAuthority(
+  row: LockedExternalPaymentAttempt,
+  policy: ExternalPaymentVerificationPolicy,
+  actor: Actor,
+  trustedDigitalRecovery: boolean,
+): void {
+  if (trustedDigitalRecovery) return;
+  if (policy === "INDEPENDENT_APPROVAL") {
+    if (
+      row.confirmedBy == null ||
+      Number(row.createdBy) === Number(row.confirmedBy)
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "محاولة تحصيل القسط لم تعتمد من موظف مستقل",
+      });
+    }
+    if (Number(row.createdBy) === actor.userId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "منشئ محاولة تحصيل القسط لا يجوز له سدادها",
+      });
+    }
+    if (Number(row.confirmedBy) !== actor.userId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "اعتماد تحصيل القسط يستهلكه الموظف المستقل الذي أكده",
+      });
+    }
+    return;
+  }
+  if (Number(row.createdBy) !== actor.userId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "محاولة الدفع لم ينشئها هذا الكاشير",
+    });
+  }
+  if (row.confirmedBy == null || Number(row.confirmedBy) !== actor.userId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "محاولة الدفع لم يؤكدها هذا الكاشير",
+    });
+  }
+}
+
 export type ConfirmedPosSaleInput = Omit<CreateSaleInput, "payment"> & {
-  payment?: (NonNullable<CreateSaleInput["payment"]> & {
+  payment?:
+    | (NonNullable<CreateSaleInput["payment"]> & {
     externalPaymentAttemptId?: number | null;
     /** حجز داخلي للبطاقات الرقمية؛ لا يقبله راوتر البيع العام. */
     externalPaymentIntentId?: number | null;
@@ -49,15 +198,18 @@ export type ConfirmedPosSaleInput = Omit<CreateSaleInput, "payment"> & {
 function normalizedReference(value: string): string {
   const reference = value.trim();
   if (!reference) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع الدفع الخارجي مطلوب للدفع غير النقدي" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع الدفع الخارجي مطلوب للدفع غير النقدي",
+    });
   }
   if (reference.length > 100) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع الدفع الخارجي أطول من 100 محرف" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع الدفع الخارجي أطول من 100 محرف",
+    });
   }
   return reference.toUpperCase();
 }
 
-function accountReference(branchId: number, method: PosExternalPaymentMethod): string {
+function accountReference(branchId: number, method: PosExternalPaymentMethod,
+): string {
   // الحسابات الخارجية التفصيلية غير مُهيّأة بعد؛ هذا نطاق ثابت وصادق: حساب طريقة الدفع لهذا الفرع.
   return `BRANCH:${branchId}:${method}`;
 }
@@ -67,13 +219,17 @@ function fingerprintMatches(
   input: ExternalPaymentAttemptInput,
   actor: Actor,
 ): boolean {
-  return Number(row.branchId) === input.branchId
+  return (
+    Number(row.branchId) === input.branchId
     && row.channel === input.channel
     && row.paymentMethod === input.method
     && money(row.amount).eq(money(input.amount))
     && row.normalizedReference === normalizedReference(input.reference)
     && row.deviceId === input.deviceId.trim()
-    && Number(row.createdBy) === actor.userId;
+    && Number(row.createdBy) === actor.userId
+    && row.providerCode === providerCodeFor(input)
+    && row.accountReference === accountReferenceFor(input)
+  );
 }
 
 function publicAttempt(row: LockedExternalPaymentAttempt) {
@@ -90,22 +246,27 @@ function publicAttempt(row: LockedExternalPaymentAttempt) {
  * ينشئ INITIATED فقط. لا إيصال ولا فاتورة ولا ذمّة هنا؛ التأكيد والاستهلاك خطوتان منفصلتان.
  * requestId يجعل إعادة إرسال نفس النقرة idempotent، بينما قيد المرجع العالمي يحسم السباق الحقيقي.
  */
-export async function initiateExternalPaymentAttempt(input: ExternalPaymentAttemptInput, actor: Actor) {
+export async function initiateExternalPaymentAttempt(input: ExternalPaymentAttemptInput, actor: Actor,
+) {
   // fail-closed قبل أي قراءة/كتابة: لا يوجد مزوّد موثوق أو تسوية تؤكد القبض.
   assertPosPaymentMethodEnabled(input.method);
+  assertVerificationInput(input);
   const amount = money(input.amount);
   if (!amount.isFinite() || !amount.gt(0)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ محاولة الدفع يجب أن يكون موجباً" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ محاولة الدفع يجب أن يكون موجباً",
+    });
   }
   const reference = input.reference.trim();
   const normalized = normalizedReference(reference);
   const requestId = input.requestId.trim();
   if (!requestId || requestId.length > 80) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "معرّف طلب محاولة الدفع غير صالح" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "معرّف طلب محاولة الدفع غير صالح",
+    });
   }
   const deviceId = input.deviceId.trim();
   if (!deviceId || deviceId.length > 64) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "معرّف جهاز الدفع مطلوب ولا يتجاوز 64 محرفاً" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "معرّف جهاز الدفع مطلوب ولا يتجاوز 64 محرفاً",
+    });
   }
 
   try {
@@ -116,11 +277,13 @@ export async function initiateExternalPaymentAttempt(input: ExternalPaymentAttem
         .where(and(
           eq(externalPaymentAttempts.createdBy, actor.userId),
           eq(externalPaymentAttempts.requestId, requestId),
-        ))
+        ),
+          )
         .limit(1))[0];
       if (existing) {
         if (!fingerprintMatches(existing, input, actor)) {
-          throw new TRPCError({ code: "CONFLICT", message: "معرّف محاولة الدفع مستعمَل لبيانات مختلفة" });
+          throw new TRPCError({ code: "CONFLICT", message: "معرّف محاولة الدفع مستعمَل لبيانات مختلفة",
+          });
         }
         return publicAttempt(existing);
       }
@@ -130,8 +293,8 @@ export async function initiateExternalPaymentAttempt(input: ExternalPaymentAttem
         channel: input.channel,
         paymentMethod: input.method,
         amount: toDbMoney(amount),
-        providerCode: input.method,
-        accountReference: accountReference(input.branchId, input.method),
+        providerCode: providerCodeFor(input),
+        accountReference: accountReferenceFor(input),
         deviceId,
         externalReference: reference,
         normalizedReference: normalized,
@@ -148,14 +311,16 @@ export async function initiateExternalPaymentAttempt(input: ExternalPaymentAttem
 
     // سباق إعادة إرسال requestId نفسه: استرجع الفائز فقط إن كانت البصمة مطابقة.
     const db = getDb();
-    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة",
+      });
     const existing = (await db
       .select()
       .from(externalPaymentAttempts)
       .where(and(
         eq(externalPaymentAttempts.createdBy, actor.userId),
         eq(externalPaymentAttempts.requestId, requestId),
-      ))
+      ),
+        )
       .limit(1))[0];
     if (existing && fingerprintMatches(existing, input, actor)) return publicAttempt(existing);
     throw new TRPCError({
@@ -167,7 +332,10 @@ export async function initiateExternalPaymentAttempt(input: ExternalPaymentAttem
 
 /** انتقال INITIATED→CONFIRMED مسجّل في الخادم؛ لا يغيّر الفاتورة أو الدفتر بعد. */
 export async function confirmExternalPaymentAttempt(
-  input: { attemptId: number; branchId: number; channel: PosExternalPaymentChannel; deviceId: string },
+  input: { attemptId: number; branchId: number; channel: PosExternalPaymentChannel; deviceId: string;
+    verificationPolicy?: ExternalPaymentVerificationPolicy;
+    businessBinding?: ExternalPaymentBusinessBinding | null;
+  },
   actor: Actor,
 ) {
   // لا يجوز تحويل مرجعٍ ذاتي الإدخال إلى CONFIRMED مهما كان الدور.
@@ -179,25 +347,46 @@ export async function confirmExternalPaymentAttempt(
       .where(eq(externalPaymentAttempts.id, input.attemptId))
       .for("update")
       .limit(1))[0];
-    if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "محاولة الدفع غير موجودة" });
-    if (Number(row.branchId) !== input.branchId || row.channel !== input.channel || Number(row.createdBy) !== actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "محاولة الدفع لا تخص هذا الكاشير أو الفرع أو القناة" });
+    if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "محاولة الدفع غير موجودة",
+      });
+    if (Number(row.branchId) !== input.branchId || row.channel !== input.channel) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "محاولة الدفع لا تخص هذا الفرع أو القناة",
+      });
+    }
+    const policy = assertVerificationBinding(row, input);
+    if (policy === "INDEPENDENT_APPROVAL") {
+      if (Number(row.createdBy) === actor.userId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "منشئ محاولة تحصيل القسط لا يجوز له تأكيدها",
+        });
+      }
+    } else if (Number(row.createdBy) !== actor.userId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "محاولة الدفع لا تخص هذا الكاشير",
+      });
     }
     if (row.deviceId !== input.deviceId.trim()) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "محاولة الدفع تخص جهاز كاشير آخر" });
+      throw new TRPCError({ code: "FORBIDDEN", message: "محاولة الدفع تخص جهاز كاشير آخر",
+      });
     }
     if (row.state === "CONFIRMED") return publicAttempt(row);
     if (row.state !== "INITIATED") {
-      throw new TRPCError({ code: "CONFLICT", message: `لا يمكن تأكيد محاولة دفع حالتها ${row.state}` });
+      throw new TRPCError({ code: "CONFLICT", message: `لا يمكن تأكيد محاولة دفع حالتها ${row.state}`,
+      });
     }
     if (row.invoiceId != null || row.receiptId != null) {
-      throw new TRPCError({ code: "CONFLICT", message: "محاولة الدفع مستهلكة مسبقاً" });
+      throw new TRPCError({ code: "CONFLICT", message: "محاولة الدفع مستهلكة مسبقاً",
+      });
     }
     await tx
       .update(externalPaymentAttempts)
-      .set({ state: "CONFIRMED", confirmedBy: actor.userId, confirmedAt: new Date() })
+      .set({ state: "CONFIRMED", confirmedBy: actor.userId, confirmedAt: new Date(),
+      })
       .where(eq(externalPaymentAttempts.id, row.id));
-    return publicAttempt({ ...row, state: "CONFIRMED", confirmedBy: actor.userId, confirmedAt: new Date() });
+    return publicAttempt({ ...row, state: "CONFIRMED", confirmedBy: actor.userId, confirmedAt: new Date(),
+    });
   });
 }
 
@@ -212,10 +401,12 @@ export async function lockConfirmedExternalPaymentAttempt(
 ): Promise<LockedExternalPaymentAttempt> {
   assertPosPaymentMethodEnabled(input.method);
   if (input.method === "CASH") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يرتبط بمحاولة دفع خارجية" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يرتبط بمحاولة دفع خارجية",
+    });
   }
   if (!input.attemptId) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "أكّد الدفع الخارجي قبل إتمام البيع" });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "أكّد الدفع الخارجي قبل إتمام البيع",
+    });
   }
   const row = (await tx
     .select()
@@ -223,24 +414,32 @@ export async function lockConfirmedExternalPaymentAttempt(
     .where(eq(externalPaymentAttempts.id, input.attemptId))
     .for("update")
     .limit(1))[0];
-  if (!row) throw new TRPCError({ code: "BAD_REQUEST", message: "محاولة الدفع الخارجية غير موجودة" });
+  if (!row) throw new TRPCError({ code: "BAD_REQUEST", message: "محاولة الدفع الخارجية غير موجودة",
+    });
   if (Number(row.branchId) !== input.branchId || row.channel !== input.channel) {
-    throw new TRPCError({ code: "CONFLICT", message: "محاولة الدفع تخص فرعاً أو قناةً أخرى" });
+    throw new TRPCError({ code: "CONFLICT", message: "محاولة الدفع تخص فرعاً أو قناةً أخرى",
+    });
   }
+  const verificationPolicy = assertVerificationBinding(row, input);
   if (row.paymentMethod !== input.method) {
-    throw new TRPCError({ code: "CONFLICT", message: "طريقة الدفع لا تطابق المحاولة المؤكدة" });
+    throw new TRPCError({ code: "CONFLICT", message: "طريقة الدفع لا تطابق المحاولة المؤكدة",
+    });
   }
   if (!money(row.amount).eq(money(input.amount))) {
-    throw new TRPCError({ code: "CONFLICT", message: "مبلغ البيع لا يطابق مبلغ المحاولة المؤكدة" });
+    throw new TRPCError({ code: "CONFLICT", message: "مبلغ البيع لا يطابق مبلغ المحاولة المؤكدة",
+    });
   }
   if ((row.deviceId ?? null) !== (input.deviceId?.trim() || null)) {
-    throw new TRPCError({ code: "CONFLICT", message: "جهاز البيع لا يطابق جهاز محاولة الدفع" });
+    throw new TRPCError({ code: "CONFLICT", message: "جهاز البيع لا يطابق جهاز محاولة الدفع",
+    });
   }
   if (row.state !== "CONFIRMED" || row.confirmedAt == null) {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الدفع الخارجي غير مؤكّد" });
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الدفع الخارجي غير مؤكّد",
+    });
   }
   if (row.invoiceId != null || row.receiptId != null || row.consumedAt != null) {
-    throw new TRPCError({ code: "CONFLICT", message: "محاولة الدفع استُهلكت في بيع سابق" });
+    throw new TRPCError({ code: "CONFLICT", message: "محاولة الدفع استُهلكت في بيع سابق",
+    });
   }
   const linkedIntent = (await tx
     .select({ id: digitalSaleIntents.id })
@@ -248,10 +447,12 @@ export async function lockConfirmedExternalPaymentAttempt(
     .where(eq(digitalSaleIntents.externalPaymentAttemptId, row.id))
     .limit(1))[0];
   if (linkedIntent && Number(linkedIntent.id) !== input.digitalSaleIntentId) {
-    throw new TRPCError({ code: "CONFLICT", message: "محاولة الدفع محجوزة لبيع رقمي آخر" });
+    throw new TRPCError({ code: "CONFLICT", message: "محاولة الدفع محجوزة لبيع رقمي آخر",
+    });
   }
   if (input.digitalSaleIntentId != null && (!linkedIntent || Number(linkedIntent.id) !== input.digitalSaleIntentId)) {
-    throw new TRPCError({ code: "CONFLICT", message: "نيّة البيع الرقمي لا تطابق محاولة الدفع المؤكدة" });
+    throw new TRPCError({ code: "CONFLICT", message: "نيّة البيع الرقمي لا تطابق محاولة الدفع المؤكدة",
+    });
   }
   // إنقاذ نيّة رقمية NEEDS_REVIEW ينفّذه مدير بعد إصدار الكروت. الربط الفريد بالنيّة
   // هو التفويض هنا؛ نبقي createdBy/confirmedBy الأصليين ولا ننسب التأكيد إلى المدير.
@@ -259,12 +460,7 @@ export async function lockConfirmedExternalPaymentAttempt(
     && linkedIntent != null
     && Number(linkedIntent.id) === input.digitalSaleIntentId
     && (actor.role === "admin" || actor.role === "manager");
-  if (!trustedDigitalRecovery && Number(row.createdBy) !== actor.userId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "محاولة الدفع لم ينشئها هذا الكاشير" });
-  }
-  if (row.confirmedBy == null || (!trustedDigitalRecovery && Number(row.confirmedBy) !== actor.userId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "محاولة الدفع لم يؤكدها هذا الكاشير" });
-  }
+  assertAttemptActorAuthority(row, verificationPolicy, actor, trustedDigitalRecovery);
   return row;
 }
 
@@ -274,26 +470,72 @@ export async function assertExternalPaymentReplay(
   invoiceId: number,
   input: ExternalPaymentBindingInput,
   actor: Actor,
+  expectedReceiptId?: number | null,
 ): Promise<void> {
   assertPosPaymentMethodEnabled(input.method);
   if (input.method === "CASH") {
-    if (input.attemptId != null) throw new TRPCError({ code: "CONFLICT", message: "بيع نقدي قديم لا يحمل محاولة دفع خارجية" });
+    if (input.attemptId != null) throw new TRPCError({ code: "CONFLICT", message: "بيع نقدي قديم لا يحمل محاولة دفع خارجية",
+      });
     return;
   }
-  if (!input.attemptId) throw new TRPCError({ code: "BAD_REQUEST", message: "أكّد الدفع الخارجي قبل إعادة المحاولة" });
+  if (!input.attemptId) throw new TRPCError({ code: "BAD_REQUEST", message: "أكّد الدفع الخارجي قبل إعادة المحاولة",
+    });
   const row = (await tx
     .select()
     .from(externalPaymentAttempts)
     .where(eq(externalPaymentAttempts.id, input.attemptId))
     .limit(1))[0];
-  if (!row || Number(row.invoiceId) !== invoiceId || row.receiptId == null) {
-    throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: محاولة الدفع مختلفة عن البيع الأصلي" });
+  if (!row ||
+    row.state !== "CONFIRMED" ||
+    row.confirmedAt == null ||
+    row.consumedAt == null ||
+    Number(row.invoiceId) !== invoiceId || row.receiptId == null) {
+    throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: محاولة الدفع مختلفة عن البيع الأصلي",
+    });
   }
-  if (Number(row.branchId) !== input.branchId || row.channel !== input.channel || row.paymentMethod !== input.method || !money(row.amount).eq(money(input.amount))) {
-    throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: بيانات الدفع مختلفة عن البيع الأصلي" });
+  if (
+    expectedReceiptId != null &&
+    Number(row.receiptId) !== Number(expectedReceiptId)
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "تعارض idempotency: محاولة الدفع مرتبطة بإيصالٍ آخر",
+    });
   }
+  const receipt = (
+    await tx
+      .select({
+        id: receipts.id,
+        invoiceId: receipts.invoiceId,
+        amount: receipts.amount,
+        paymentMethod: receipts.paymentMethod,
+        referenceNumber: receipts.referenceNumber,
+      })
+      .from(receipts)
+      .where(eq(receipts.id, Number(row.receiptId)))
+      .limit(1)
+  )[0];
+  if (
+    !receipt ||
+    Number(receipt.invoiceId) !== invoiceId ||
+    receipt.paymentMethod !== row.paymentMethod ||
+    !money(receipt.amount).eq(money(row.amount)) ||
+    (receipt.referenceNumber?.trim() || null) !== row.externalReference.trim()
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "تعارض idempotency: إيصال الدفع لا يطابق المحاولة الأصلية",
+    });
+  }
+  if (
+    Number(row.branchId) !== input.branchId || row.channel !== input.channel || row.paymentMethod !== input.method || !money(row.amount).eq(money(input.amount))) {
+    throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: بيانات الدفع مختلفة عن البيع الأصلي",
+    });
+  }
+  const verificationPolicy = assertVerificationBinding(row, input);
   if (row.deviceId !== (input.deviceId?.trim() || null)) {
-    throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: جهاز الدفع مختلف عن البيع الأصلي" });
+    throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: جهاز الدفع مختلف عن البيع الأصلي",
+    });
   }
   let linkedIntentId: number | null = null;
   if (input.digitalSaleIntentId != null) {
@@ -303,14 +545,13 @@ export async function assertExternalPaymentReplay(
       .where(eq(digitalSaleIntents.externalPaymentAttemptId, row.id))
       .limit(1))[0];
     if (!linkedIntent || Number(linkedIntent.id) !== input.digitalSaleIntentId) {
-      throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: محاولة الدفع لا تخص النيّة الرقمية" });
+      throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: محاولة الدفع لا تخص النيّة الرقمية",
+      });
     }
     linkedIntentId = Number(linkedIntent.id);
   }
   const trustedDigitalRecovery = linkedIntentId != null && (actor.role === "admin" || actor.role === "manager");
-  if (!trustedDigitalRecovery && (Number(row.createdBy) !== actor.userId || Number(row.confirmedBy) !== actor.userId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "محاولة الدفع الأصلية تخص كاشيراً آخر" });
-  }
+  assertAttemptActorAuthority(row, verificationPolicy, actor, trustedDigitalRecovery);
 }
 
 /** يُستهلك الصف المقفول في نفس معاملة invoice+receipt+ledger؛ أي فشل لاحق يعيد الأربعة معاً. */
@@ -328,13 +569,44 @@ export async function bindExternalPaymentAttempt(
       eq(externalPaymentAttempts.state, "CONFIRMED"),
       sql`${externalPaymentAttempts.invoiceId} IS NULL`,
       sql`${externalPaymentAttempts.receiptId} IS NULL`,
-    ));
+    ),
+    );
   if (Number(result?.[0]?.affectedRows ?? result?.affectedRows ?? 0) !== 1) {
-    throw new TRPCError({ code: "CONFLICT", message: "تعذّر استهلاك محاولة الدفع مرةً واحدة" });
+    throw new TRPCError({ code: "CONFLICT", message: "تعذّر استهلاك محاولة الدفع مرةً واحدة",
+    });
   }
 }
 
-function coreSaleInput(input: ConfirmedPosSaleInput, reference?: string): CreateSaleInput {
+/**
+ * منفذ الاستهلاك الحاكم لكل قبضٍ غير نقديّ في نواة المبيعات.
+ *
+ * يقفل المحاولة المؤكدة ويتحقق من الفرع/القناة/الطريقة/المبلغ/الجهاز/الفاعل، ثم يترك
+ * للكاتب المالي إنشاء الفاتورة والإيصال داخل **المعاملة نفسها**، وأخيراً يربط المحاولة
+ * بالإيصال مرةً واحدة. أي فشل في الكاتب أو الربط يُرجع القبض والفاتورة والقيد معاً.
+ */
+export async function consumeConfirmedExternalPaymentAttemptTx<T>(
+  tx: Tx,
+  input: ExternalPaymentBindingInput,
+  actor: Actor,
+  consume: (attempt: LockedExternalPaymentAttempt) => Promise<{
+    invoiceId: number;
+    receiptId: number;
+    value: T;
+  }>,
+): Promise<T> {
+  const attempt = await lockConfirmedExternalPaymentAttempt(tx, input, actor);
+  const consumed = await consume(attempt);
+  await bindExternalPaymentAttempt(
+    tx,
+    Number(attempt.id),
+    consumed.invoiceId,
+    consumed.receiptId,
+  );
+  return consumed.value;
+}
+
+function coreSaleInput(input: ConfirmedPosSaleInput, reference?: string,
+): CreateSaleInput {
   const { requireExternalPaymentAttempt: _required, payment, ...rest } = input;
   return {
     ...rest,
@@ -367,7 +639,8 @@ export async function createConfirmedPosSaleInTx(
   // (أو مستدعٍ جديد) كانت تكفي لتثبيت قبضٍ غير نقديّ بلا أيّ إثبات. النقد وحده يعبُر بلا محاولة.
   if (payment.method === "CASH") {
     if (payment.externalPaymentAttemptId != null) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية",
+      });
     }
     return createSaleInTx(tx, coreSaleInput(input), actor, capability);
   }
@@ -382,7 +655,8 @@ export async function createConfirmedPosSaleInTx(
         .limit(1))[0]
     : null;
   if (existingInvoice) {
-    const replay = await createSaleInTx(tx, coreSaleInput(input), actor, capability);
+    const replay = await createSaleInTx(tx, coreSaleInput(input), actor, capability,
+    );
     await assertExternalPaymentReplay(tx, replay.invoiceId, {
       branchId: input.branchId,
       channel: "POS",
@@ -391,11 +665,12 @@ export async function createConfirmedPosSaleInTx(
       attemptId: payment.externalPaymentAttemptId,
       deviceId: input.deviceId,
       digitalSaleIntentId: payment.externalPaymentIntentId,
-    }, actor);
+    }, actor,
+    );
     return replay;
   }
 
-  const attempt = await lockConfirmedExternalPaymentAttempt(tx, {
+  return consumeConfirmedExternalPaymentAttemptTx(tx, {
     branchId: input.branchId,
     channel: "POS",
     method: payment.method,
@@ -403,8 +678,10 @@ export async function createConfirmedPosSaleInTx(
     attemptId: payment.externalPaymentAttemptId,
     deviceId: input.deviceId,
     digitalSaleIntentId: payment.externalPaymentIntentId,
-  }, actor);
-  const sale = await createSaleInTx(tx, coreSaleInput(input, attempt.externalReference), actor, capability);
+  }, actor,
+    async (attempt) => {
+      const sale = await createSaleInTx(tx, coreSaleInput(input, attempt.externalReference), actor, capability,
+      );
   if (sale.idempotentReplay) {
     await assertExternalPaymentReplay(tx, sale.invoiceId, {
       branchId: input.branchId,
@@ -414,12 +691,19 @@ export async function createConfirmedPosSaleInTx(
       attemptId: payment.externalPaymentAttemptId,
       deviceId: input.deviceId,
       digitalSaleIntentId: payment.externalPaymentIntentId,
-    }, actor);
-    return sale;
+    }, actor,
+        );
+        // هذه الحالة لا تصل عملياً بعد lockConfirmed (المحاولة المستهلكة تُرفض)، لكن إبقاء
+        // الحارس يجعل انحراف idempotency صريحاً بدل ربطٍ ثانٍ إن تغير ترتيب الاستدعاءات.
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تعارض idempotency أثناء استهلاك محاولة الدفع",
+        });
   }
 
   const receipt = (await tx
-    .select({ id: receipts.id, amount: receipts.amount, paymentMethod: receipts.paymentMethod })
+    .select({ id: receipts.id, amount: receipts.amount, paymentMethod: receipts.paymentMethod,
+          })
     .from(receipts)
     .where(eq(receipts.invoiceId, sale.invoiceId))
     .orderBy(desc(receipts.id))
@@ -430,22 +714,29 @@ export async function createConfirmedPosSaleInTx(
       message: "لم يُنشأ إيصال مطابق لمحاولة الدفع — تراجعت الفاتورة بالكامل",
     });
   }
-  await bindExternalPaymentAttempt(tx, Number(attempt.id), sale.invoiceId, Number(receipt.id));
-  return sale;
+      return {
+        invoiceId: sale.invoiceId,
+        receiptId: Number(receipt.id),
+        value: sale,
+      };
+},
+  );
 }
 
 export async function createConfirmedPosSale(
   input: ConfirmedPosSaleInput,
   actor: Actor,
 ): Promise<CreateSaleResult> {
-  const result = await withTx((tx) => createConfirmedPosSaleInTx(tx, input, actor));
+  const result = await withTx((tx) => createConfirmedPosSaleInTx(tx, input, actor),
+  );
 
   // حافظ على عقد createSale: الإشعار best-effort وبعد الالتزام، حتى في المسار النقدي.
   try {
     await notifySaleCustomerAfterCommit(coreSaleInput(input), result);
   } catch (error) {
     logger.warn(
-      { err: error instanceof Error ? error.message : String(error), invoiceId: result.invoiceId },
+      { err: error instanceof Error ? error.message : String(error), invoiceId: result.invoiceId,
+      },
       "confirmed POS sale: تعذّر إرسال إشعار الشكر — تُجوهل",
     );
   }

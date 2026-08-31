@@ -19,19 +19,21 @@
 // v1 (مؤجَّلٌ صريحاً، يُرفَض بأمان): المُرتجَعة (كلياً/جزئياً)، منشأ WORKORDER، الرقمية، التوصيل النشط.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   accountingEntries,
-  deliveryConsignments,
   digitalSaleDetails,
+  externalPaymentAttempts,
   invoiceItems,
   invoices,
   products,
   productVariants,
   receipts,
 } from "../../../drizzle/schema";
-import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
-import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { createPostingIntent, creditLine, debitLine,
+} from "../accounting/postingEngine";
+import { assertCashOutAvailable, lockCashSourceForUpdate,
+} from "../cash/cashAvailability";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
@@ -43,6 +45,17 @@ import { createSaleInTx } from "./create";
 import type { PriceTier } from "../pricing";
 import type { SaleLineInput } from "./types";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
+import { assertInvoiceReversalDeliverySafeTx } from "./invoiceCancellationGuard";
+import {
+  assertExternalPaymentReplay,
+  consumeConfirmedExternalPaymentAttemptTx,
+  lockConfirmedExternalPaymentAttempt,
+  type LockedExternalPaymentAttempt,
+} from "../posExternalPayment";
+import { assertNoActiveInstallmentPlanAfterInvoiceLockTx } from "../installment/guards";
+import { assertPeriodOpen } from "../periodLockService";
+import type { Tx } from "../../db";
+import { assertLockedInvoiceControlSnapshotTx, type InvoiceControlSnapshot } from "./controlSnapshot";
 
 type CorrectionPayMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -60,7 +73,10 @@ export interface CorrectSaleInput {
   dueDate?: string | null;
   notes?: string | null;
   /** دفعةٌ إضافية تُحصَّل الآن حين يزيد المصحّح على المقبوض سلفاً (نقص). */
-  additionalPayment?: { amount: string; method: CorrectionPayMethod; reference?: string | null } | null;
+  additionalPayment?: { amount: string; method: CorrectionPayMethod; reference?: string | null;
+    externalPaymentAttemptId?: number | null;
+    externalPaymentDeviceId?: string | null;
+  } | null;
   /** معالجة الفرق الزائد (المصحّح < المقبوض) — قرار الموظّف الهجين (§١٠). */
   overpayHandling?: "CREDIT" | "CASH_REFUND";
   /** درج الاسترداد النقديّ للفرق الزائد عند تعدّد الدرج المفتوح. */
@@ -72,6 +88,8 @@ export interface CorrectSaleInput {
   /** موافقة على بيعٍ تحت التكلفة في السطور المصحّحة (يضبطها الراوتر). */
   priceOverrideApproved?: boolean;
   clientRequestId?: string | null;
+  /** لقطة طلب التحكم؛ لا تُقبل من الراوتر العام وتُطابَق بعد قفل الأصل. */
+  controlExpectedSnapshot?: InvoiceControlSnapshot | null;
 }
 
 export interface CorrectSaleResult {
@@ -85,20 +103,103 @@ export interface CorrectSaleResult {
   idempotentReplay?: boolean;
 }
 
-export async function correctSale(input: CorrectSaleInput, actor: Actor & { role?: string }): Promise<CorrectSaleResult> {
-  if (input.additionalPayment) assertPosPaymentMethodEnabled(input.additionalPayment.method);
+export async function correctSale(input: CorrectSaleInput, actor: Actor & { role?: string },
+): Promise<CorrectSaleResult> {
+  return withTx((tx) => correctSaleInTx(tx, input, actor));
+}
 
-  return withTx(async (tx) => {
+/** جسم إعادة الإصدار/الاستبدال داخل معاملة قائمة لضمان ذرية الاعتماد مع سجل التحكم. */
+export async function correctSaleInTx(
+  tx: Tx,
+  input: CorrectSaleInput,
+  actor: Actor & { role?: string },
+): Promise<CorrectSaleResult> {
+  if (input.additionalPayment) {
+    assertPosPaymentMethodEnabled(input.additionalPayment.method);
+    if (input.additionalPayment.method === "CASH") {
+      if (
+        input.additionalPayment.externalPaymentAttemptId != null ||
+        input.additionalPayment.externalPaymentDeviceId?.trim()
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الدفع النقدي لا يحمل محاولة دفع خارجية",
+        });
+      }
+    } else if (
+      !input.additionalPayment.externalPaymentAttemptId ||
+      !input.additionalPayment.externalPaymentDeviceId?.trim()
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "أكّد الدفع الخارجي قبل تحصيل فرق التصحيح",
+      });
+    }
+  }
+
     // ── ٠) idempotency: إعادة التشغيل بنفس المفتاح تُعيد التصحيح الأوّل (refId = الفاتورة الجديدة) ──
     if (input.clientRequestId) {
-      const existingNewId = await findIdempotentRefId(tx, "sale.correct", input.clientRequestId);
+      const existingNewId = await findIdempotentRefId(tx, "sale.correct", input.clientRequestId,
+      );
       if (existingNewId != null) {
         const nrow = (await tx
-          .select({ id: invoices.id, number: invoices.invoiceNumber, total: invoices.total, correctionOf: invoices.correctionOfInvoiceId })
+          .select({ id: invoices.id, number: invoices.invoiceNumber, total: invoices.total,
+              branchId: invoices.branchId,
+              correctionOf: invoices.correctionOfInvoiceId,
+            })
           .from(invoices).where(eq(invoices.id, Number(existingNewId))).limit(1))[0];
-        if (!nrow) throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: تصحيحٌ مُسجَّلٌ بلا فاتورة" });
+        if (!nrow) throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: تصحيحٌ مُسجَّلٌ بلا فاتورة",
+          });
+        if (Number(nrow.correctionOf) !== Number(input.originalInvoiceId)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح يخص تصحيح فاتورة أخرى",
+          });
+        }
+        const linkedExternalAttempt = (
+          await tx
+            .select({ id: externalPaymentAttempts.id })
+            .from(externalPaymentAttempts)
+            .where(
+              and(
+                eq(externalPaymentAttempts.invoiceId, Number(nrow.id)),
+                eq(externalPaymentAttempts.channel, "SALES_COLLECTION"),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (
+          linkedExternalAttempt &&
+          (!input.additionalPayment ||
+            input.additionalPayment.method === "CASH")
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "تعارض idempotency: التصحيح الأصلي قبض فرقاً غير نقدي بمحاولة مؤكدة",
+          });
+        }
+        if (
+          input.additionalPayment &&
+          input.additionalPayment.method !== "CASH"
+        ) {
+          await assertExternalPaymentReplay(
+            tx,
+            Number(nrow.id),
+            {
+              branchId: Number(nrow.branchId),
+              channel: "SALES_COLLECTION",
+              method: input.additionalPayment.method,
+              amount: input.additionalPayment.amount,
+              attemptId: input.additionalPayment.externalPaymentAttemptId,
+              deviceId: input.additionalPayment.externalPaymentDeviceId,
+            },
+            actor,
+          );
+        }
         return {
-          originalInvoiceId: Number(nrow.correctionOf ?? input.originalInvoiceId),
+          originalInvoiceId: Number(nrow.correctionOf ?? input.originalInvoiceId,
+          ),
           correctedInvoiceId: Number(nrow.id),
           correctedInvoiceNumber: nrow.number,
           total: nrow.total,
@@ -115,14 +216,25 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     //    نقفل مسبقاً بحسب **المدخلات وحدها** (حتميّ): إمّا طلبٌ صريح باسترداد نقديّ، أو فاتورةٌ
     //    مقبوضةٌ بلا عميلٍ مسجَّل (الزبون العابر لا يحمل رصيداً دائناً ⇒ النقد مخرجه الوحيد).
     const invPreview = (
-      await tx.select({ branchId: invoices.branchId, paidAmount: invoices.paidAmount, customerId: invoices.customerId })
+      await tx.select({ branchId: invoices.branchId, paidAmount: invoices.paidAmount, customerId: invoices.customerId,
+        })
         .from(invoices).where(eq(invoices.id, input.originalInvoiceId)).limit(1)
     )[0];
-    if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة",
+      });
+    if (
+      actor.role !== "admin" &&
+      Number(invPreview.branchId) !== Number(actor.branchId)
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "الفاتورة لا تخصّ فرعك",
+      });
+    }
     const previewPaid = round2(money(invPreview.paidAmount ?? "0"));
     const targetCustomerPreview = input.customerId === undefined
-      ? (invPreview.customerId != null ? Number(invPreview.customerId) : null)
-      : (input.customerId != null ? Number(input.customerId) : null);
+      ? invPreview.customerId != null ? Number(invPreview.customerId) : null
+        : input.customerId != null ? Number(input.customerId) : null;
     const mayNeedCashRefund =
       previewPaid.gt(0) &&
       (input.overpayHandling === "CASH_REFUND" || targetCustomerPreview == null);
@@ -140,32 +252,76 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
       });
     }
 
+    // محاولة القبض غير النقدي مصدرٌ ماليّ أيضاً؛ تُقفل قبل الفاتورة/التوصيل كي لا ينفّذ
+    // التصحيح كلّه ثم يكتشف أن المحاولة استهلكها كاتب آخر. الربط النهائي يبقى بعد إنشاء
+    // الإيصال وفي المعاملة نفسها عبر consumeConfirmedExternalPaymentAttemptTx.
+    let lockedAdditionalAttempt: LockedExternalPaymentAttempt | null = null;
+    if (input.additionalPayment && input.additionalPayment.method !== "CASH") {
+      lockedAdditionalAttempt = await lockConfirmedExternalPaymentAttempt(
+        tx,
+        {
+          branchId: Number(invPreview.branchId),
+          channel: "SALES_COLLECTION",
+          method: input.additionalPayment.method,
+          amount: input.additionalPayment.amount,
+          attemptId: input.additionalPayment.externalPaymentAttemptId,
+          deviceId: input.additionalPayment.externalPaymentDeviceId,
+        },
+        actor,
+      );
+    }
+
+    // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. التصحيح عكسٌ كامل
+    // مثل الإلغاء؛ لذلك لا يكفي غياب DISPATCHED/PARTIAL: DELIVERED+SETTLED وWRITTEN_OFF
+    // يحملان حقيقةً تشغيلية/مالية نهائية لا يجوز محوها بإعادة الإصدار. السماح للحالة الملغاة
+    // الثلاثية الآمنة فقط، تحت نفس gap/row locks، يغلق أيضاً سباق الإسناد مع التصحيح.
+    await assertInvoiceReversalDeliverySafeTx(tx, {
+      invoiceId: input.originalInvoiceId,
+      expectedBranchId: Number(invPreview.branchId),
+      mode: "CORRECT",
+    });
+
     // ── ١) تحميل الأصل تحت قفل الصفّ + الحرّاس ──
     const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.originalInvoiceId)).for("update").limit(1))[0];
-    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
-    if (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُصحَّح فاتورة ملغاة/مرتجعة/مُستبدَلة سلفاً" });
+    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة",
+      });
+    if (Number(inv.branchId) !== Number(invPreview.branchId)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تغيّر فرع الفاتورة أثناء التصحيح؛ أعد المحاولة",
+      });
+    }
+    await assertLockedInvoiceControlSnapshotTx(tx, inv, input.controlExpectedSnapshot);
+    // دفاعٌ إضافي قبل أي نقل للإيصالات أو وسم SUPERSEDED؛ returnSaleInTx يعيد
+    // الفحص أيضاً كي تبقى كل مسارات المرتجع محمية من تعديل شهر مقفل.
+    await assertPeriodOpen(tx, inv.invoiceDate);
+    await assertNoActiveInstallmentPlanAfterInvoiceLockTx(tx, {
+      invoiceId: input.originalInvoiceId,
+      operationLabel: "تصحيح الفاتورة وإعادة إصدارها",
+    });
+    if (
+      inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُصحَّح فاتورة ملغاة/مرتجعة/مُستبدَلة سلفاً",
+      });
     }
     // عزل الفرع (مرآة returnService): مدير فرعٍ لا يصحّح فاتورة فرعٍ آخر (يمسّ دفتره/درجه).
     if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك",
+      });
     }
     if (inv.sourceType === "WORKORDER") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "فاتورة أمر الشغل تُصحَّح من تدفّق أمر الشغل، لا من هنا (المتغيّر الأساس لم يدخل المخزون فعلاً)" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "فاتورة أمر الشغل تُصحَّح من تدفّق أمر الشغل، لا من هنا (المتغيّر الأساس لم يدخل المخزون فعلاً)",
+      });
     }
     if (round2(money(inv.returnedTotal ?? "0")).gt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُصحَّح فاتورةٌ عليها مرتجعٌ سابق — عالِجها عبر المرتجعات" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُصحَّح فاتورةٌ عليها مرتجعٌ سابق — عالِجها عبر المرتجعات",
+      });
     }
     // البطاقات الرقمية: عكسها بقرارٍ إداريّ عبر digitalCards.reversal (الكرت صدر من جهاز المزوّد).
     const digital = await tx.select({ id: digitalSaleDetails.id }).from(digitalSaleDetails).where(eq(digitalSaleDetails.invoiceId, input.originalInvoiceId)).limit(1);
     if (digital.length) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُصحَّح فاتورةٌ فيها كروتٌ رقمية — استعمل «عكس بيع الكروت»" });
-    }
-    // توصيلٌ نشط: عهدةٌ على مندوب — سوِّها/أرجِعها أولاً (تجنّب عكس عهدةٍ متحرّكة).
-    const activeCn = await tx.select({ id: deliveryConsignments.id }).from(deliveryConsignments)
-      .where(and(eq(deliveryConsignments.invoiceId, input.originalInvoiceId), inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]))).limit(1);
-    if (activeCn.length) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة بيد مندوبٍ (توصيلٌ نشط) — سوِّ الإرسالية أو أرجِعها قبل التصحيح" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُصحَّح فاتورةٌ فيها كروتٌ رقمية — استعمل «عكس بيع الكروت»",
+      });
     }
 
     const originalPaid = round2(money(inv.paidAmount));
@@ -195,9 +351,11 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
       eq(receipts.direction, "IN"),
       eq(receipts.status, "COMPLETED"),
       sql`NOT EXISTS (SELECT 1 FROM accountingEntries ae WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD')`,
-    ));
+    ),
+      );
     const detachedIds = payRcpts.map((r) => Number(r.id));
-    const detachedSum = round2(payRcpts.reduce((s, r) => s.plus(money(r.amount)), new Decimal(0)));
+    const detachedSum = round2(payRcpts.reduce((s, r) => s.plus(money(r.amount)), new Decimal(0)),
+    );
     if (!detachedSum.equals(originalPaid)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -212,7 +370,7 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     //    زوراً بـ«لا يُغيَّر العميل». نُطابق الاشتقاق حرفياً لما تمرّره خطوة ⑦ لإعادة الترحيل.
     const targetCustomerId = input.customerId === undefined
       ? originalCustomerId
-      : (input.customerId != null ? Number(input.customerId) : null);
+      : input.customerId != null ? Number(input.customerId) : null;
     if (originalPaid.gt(0) && Number(targetCustomerId ?? 0) !== Number(originalCustomerId ?? 0)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -222,15 +380,19 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
 
     // ── ٢) العكس الكامل عبر منطق المرتجع المُختبَر (كل البنود، بلا ردٍّ نقديّ, مع إعادة للمخزون) ──
     const items = await tx.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, input.originalInvoiceId));
-    if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة بلا بنودٍ لتصحيحها" });
+    if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة بلا بنودٍ لتصحيحها",
+      });
     // ١٨/٨ — رُفع حارسُ «لا تُعكس فاتورة خدمة»: علّته زالت من جذرها. كان يُرفَض لأنّ العكس
     // يكتب حركة مخزونٍ لصنفٍ بلا رصيد (مخزونٌ وهميّ)؛ والآن `returnSaleInTx` يتخطّى
     // `applyMovement` لأصناف الخدمة صراحةً فالعكس ماليٌّ بحت. أثرُ الرفع: **فواتير خدمات
     // الطباعة صارت قابلةً للتصحيح** — وهي نصف سلّة الاستقبال وكانت بلا أيّ مسار تصحيحٍ رغم
     // أنّ الواجهة تُعلن حاجز WORKORDER وحده (بلاغ المالك: «شاشة التصحيح بدائية ولا تعمل»).
     // returnedTotal=0 مضمونٌ أعلاه ⇒ المتبقّي القابل للعكس = كامل الكمية الأساس.
-    const reverseLines = items.map((it) => ({ invoiceItemId: Number(it.id), baseQuantity: Number(it.baseQuantity) }));
-    await returnSaleInTx(tx, { invoiceId: input.originalInvoiceId, lines: reverseLines, refund: null, restock: true, clientRequestId: null, internalCorrectionReversal: true }, actor);
+    const reverseLines = items.map((it) => ({ invoiceItemId: Number(it.id), baseQuantity: Number(it.baseQuantity),
+    }));
+    await returnSaleInTx(tx, { invoiceId: input.originalInvoiceId, lines: reverseLines, refund: null, restock: true, clientRequestId: null, internalCorrectionReversal: true,
+      }, actor,
+    );
 
     // ── ٣) تصحيح الذمّة: العكس خصم −الإجمالي من AR (كأنّ المدفوع يُردّ رصيداً)؛ لكنّه لا يُردّ بل
     //    يُنقَل للجديدة ⇒ نعيده (+المدفوع) فيصير صافي عكس الأصل = −(الإجمالي − المدفوع). ──
@@ -249,7 +411,8 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     // ── ٦) درج الدفعة الإضافية (نقص: المصحّح > المقبوض) — يلزمه درجٌ حين نقدية ──
     let addPayShiftId: number | null = null;
     if (input.additionalPayment && input.additionalPayment.method === "CASH") {
-      const resolved = await resolveBranchCashShiftTx(tx, Number(inv.branchId), null);
+      const resolved = await resolveBranchCashShiftTx(tx, Number(inv.branchId), null,
+      );
       addPayShiftId = resolved.shiftId;
     }
 
@@ -269,8 +432,17 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
       taxRatePercent: input.taxRatePercent ?? null,
       dueDate: input.dueDate ?? null,
       notes: input.notes ?? null,
-      payment: input.additionalPayment ?? null,
-      preCollected: detachedSum.gt(0) ? { amount: detachedSum.toFixed(2), receiptIds: detachedIds } : null,
+      payment: input.additionalPayment
+          ? {
+              amount: input.additionalPayment.amount,
+              method: input.additionalPayment.method,
+              reference:
+                lockedAdditionalAttempt?.externalReference ??
+                input.additionalPayment.reference ??
+                null,
+            }
+          : null,
+        preCollected: detachedSum.gt(0) ? { amount: detachedSum.toFixed(2), receiptIds: detachedIds } : null,
       allowPreCollectedOverpay: true,
       // نسبةُ البيع تبقى للبائع الأصليّ لا للمدير المصحِّح: وعاء العمولة يُجمَّع بـ
       // `invoices.createdBy` (commissions/base.ts) وقيدُ RETURN العكسيّ يُخصَم من الأصليّ ⇒
@@ -282,7 +454,8 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
       managerOverrideByUserId: input.managerOverrideByUserId,
       priceOverrideApproved: input.priceOverrideApproved,
       clientRequestId: correctionReqId,
-    }, actor);
+    }, actor,
+    );
     const newId = repost.invoiceId;
     const newTotal = round2(money(repost.total));
 
@@ -290,13 +463,73 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     //    المدفوع بالإجمالي فيُبتَلع الفائض بلا استرداد). حصِّل الفرق فقط. (الرفض هنا يُرجِع الترحيل ذرّياً.)
     if (input.additionalPayment) {
       const addAmt = round2(money(input.additionalPayment.amount));
-      const shortfall = round2(Decimal.max(new Decimal(0), newTotal.minus(detachedSum)));
+      const shortfall = round2(Decimal.max(new Decimal(0), newTotal.minus(detachedSum)),
+      );
       if (addAmt.gt(shortfall)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: `الدفعة الإضافية (${addAmt.toFixed(2)}) تتجاوز الفرق المستحقّ (${shortfall.toFixed(2)}) — حصِّل الفرق فقط.`,
         });
       }
+    }
+
+    if (input.additionalPayment && input.additionalPayment.method !== "CASH") {
+      const receipt = (
+        await tx
+          .select({
+            id: receipts.id,
+            amount: receipts.amount,
+            paymentMethod: receipts.paymentMethod,
+            referenceNumber: receipts.referenceNumber,
+          })
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.invoiceId, newId),
+              eq(receipts.direction, "IN"),
+              eq(receipts.paymentMethod, input.additionalPayment.method),
+            ),
+          )
+          .orderBy(desc(receipts.id))
+          .limit(1)
+      )[0];
+      if (
+        !receipt ||
+        !money(receipt.amount).eq(money(input.additionalPayment.amount)) ||
+        (receipt.referenceNumber?.trim() || null) !==
+          lockedAdditionalAttempt?.externalReference.trim()
+      ) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            "لم يُنشأ إيصال مطابق لمحاولة دفع فرق التصحيح — تراجع التصحيح بالكامل",
+        });
+      }
+      await consumeConfirmedExternalPaymentAttemptTx(
+        tx,
+        {
+          branchId: Number(inv.branchId),
+          channel: "SALES_COLLECTION",
+          method: input.additionalPayment.method,
+          amount: input.additionalPayment.amount,
+          attemptId: input.additionalPayment.externalPaymentAttemptId,
+          deviceId: input.additionalPayment.externalPaymentDeviceId,
+        },
+        actor,
+        async (attempt) => {
+          if (Number(attempt.id) !== Number(lockedAdditionalAttempt?.id)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "تغيّرت محاولة دفع فرق التصحيح",
+            });
+          }
+          return {
+            invoiceId: newId,
+            receiptId: Number(receipt.id),
+            value: undefined,
+          };
+        },
+      );
     }
 
     // ── ٨) ربط الفاتورتين (نسب التصحيح ثنائية الاتجاه) ──
@@ -307,7 +540,8 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     //    `createSaleInTx` يقصُر `paidNow` على الإجمالي الجديد (allowPreCollectedOverpay) فيبقى
     //    الفرقُ **مالاً دفعه الزبون بلا مقابل** — ولا يجوز أن «يُبتلَع» بصمت. المبدأ المالي الحاكم:
     //    «لا دينار يضيع بصمت… ومالٌ محتجَز يلزمه مسار خروجٍ ممكنٌ دائماً».
-    const overpay = round2(Decimal.max(new Decimal(0), detachedSum.minus(newTotal)));
+    const overpay = round2(Decimal.max(new Decimal(0), detachedSum.minus(newTotal)),
+    );
     let overpayHandled: "CREDIT" | "CASH_REFUND" | undefined = undefined;
     if (overpay.gt(0)) {
       // الزبون العابر لا يحمل رصيداً دائناً ⇒ النقد مخرجه الوحيد. ومع عميلٍ مسجَّل الافتراضُ
@@ -358,7 +592,8 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
           createdBy: actor.userId,
         });
         const refundReceiptId = extractInsertId(refundRes);
-        const refundSource = { roleDebits: { AR: overpay }, roleCredits: { CASH: overpay } };
+        const refundSource = { roleDebits: { AR: overpay }, roleCredits: { CASH: overpay },
+        };
         await postEntry(tx, {
           entryType: "PAYMENT_OUT",
           branchId: Number(inv.branchId),
@@ -382,7 +617,8 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
 
     // ── ١٠) تسجيل مفتاح idempotency (refId = الفاتورة الجديدة) ──
     if (input.clientRequestId) {
-      await recordIdempotencyKey(tx, "sale.correct", input.clientRequestId, newId);
+      await recordIdempotencyKey(tx, "sale.correct", input.clientRequestId, newId,
+      );
     }
 
     return {
@@ -393,5 +629,4 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
       overpay: overpay.toFixed(2),
       overpayHandled,
     };
-  });
 }

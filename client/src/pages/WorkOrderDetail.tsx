@@ -2,6 +2,7 @@ import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
 import { PageHeader } from "@/components/PageHeader";
 import CancelWorkOrderDialog from "@/components/workorder/CancelWorkOrderDialog";
 import DesignFileCard from "@/components/workorder/DesignFileCard";
+import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { ChannelBadge } from "@/components/ChannelBadge";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,7 @@ import { confirm } from "@/lib/confirm";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterInputs } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { printShippingLabel } from "@/lib/printing/shippingLabel";
@@ -37,6 +38,7 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
+import { ErrorState, LoadingState } from "@/components/PageState";
 
 
 /** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
@@ -51,6 +53,15 @@ const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: st
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+type CancelInput = RouterInputs["workOrders"]["cancel"];
+type CancelControlInput = Extract<
+  RouterInputs["workOrders"]["requestControl"],
+  { requestType: "CANCEL" }
+>;
+type PendingCancelAttempt =
+  | { kind: "DIRECT"; input: CancelInput }
+  | { kind: "CONTROL_REQUEST"; input: CancelControlInput };
 
 /** حقل وصفي: عنوان صغير + قيمة. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -93,8 +104,17 @@ export default function WorkOrderDetail() {
   // مرايا بوابات الخادم نفسها: التنفيذ = كاشير/مدير/فني، والمال/التعديل = كاشير/مدير.
   const canExecuteWorkOrder = !!role && moduleAccessAllowed(role, permissions, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
   const canDeliverWorkOrder = !!role && moduleAccessAllowed(role, permissions, "workorders", "FULL", ["cashier", "manager"]);
+  const canRequestControl = canDeliverWorkOrder;
   const canEditWorkOrder = canDeliverWorkOrder;
   const canRequestDesignApproval = canExecuteWorkOrder;
+  const designApproval = trpc.workOrderDesignApproval.getCurrent.useQuery(
+    { workOrderId },
+    { enabled: Number.isFinite(workOrderId) && canRequestDesignApproval },
+  );
+  const controlPreflight = trpc.workOrders.controlPreflight.useQuery(
+    { workOrderId },
+    { enabled: Number.isFinite(workOrderId) && canRequestControl },
+  );
 
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -107,7 +127,32 @@ export default function WorkOrderDetail() {
   const [payReference, setPayReference] = useState("");
   const [partialDispatchMessage, setPartialDispatchMessage] = useState("");
   const deliverRequestIdRef = useRef<string | null>(null);
-  const cancelRequestIdRef = useRef<string | null>(null);
+  const cancelAttemptRef = useRef<PendingCancelAttempt | null>(null);
+  const cancelAttemptStorageKey = `work-order-cancel-attempt:${workOrderId}`;
+  const rememberCancelAttempt = (attempt: PendingCancelAttempt) => {
+    cancelAttemptRef.current = attempt;
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(cancelAttemptStorageKey, JSON.stringify(attempt));
+    }
+  };
+  const forgetCancelAttempt = () => {
+    cancelAttemptRef.current = null;
+    if (typeof window !== "undefined") window.sessionStorage.removeItem(cancelAttemptStorageKey);
+  };
+  const recoverCancelAttempt = (): PendingCancelAttempt | null => {
+    if (cancelAttemptRef.current) return cancelAttemptRef.current;
+    if (typeof window === "undefined") return null;
+    const raw = window.sessionStorage.getItem(cancelAttemptStorageKey);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as PendingCancelAttempt;
+      if ((parsed.kind !== "DIRECT" && parsed.kind !== "CONTROL_REQUEST") || parsed.input.workOrderId !== workOrderId) return null;
+      cancelAttemptRef.current = parsed;
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
 
   useEffect(() => {
     if (!isPosPaymentMethodEnabled(payMethod)) {
@@ -156,6 +201,8 @@ export default function WorkOrderDetail() {
   const refresh = async () => {
     await Promise.all([
       utils.workOrders.get.invalidate({ workOrderId }),
+      utils.workOrderDesignApproval.getCurrent.invalidate({ workOrderId }),
+      utils.workOrders.controlPreflight.invalidate({ workOrderId }),
       utils.workOrders.list.invalidate(),
       utils.workOrders.pendingCancellationRefunds.invalidate(),
       utils.workOrders.cancellationRefundStatus.invalidate({ workOrderId }),
@@ -196,28 +243,13 @@ export default function WorkOrderDetail() {
     },
   });
   const [cancelOpen, setCancelOpen] = useState(false);
-  /**
-   * ٢٠/٨ — الاسترجاع بعد التسليم: كان **بلا زرّ ولا مسار** إطلاقاً؛ الأمرُ المُسلَّم يرفضه
-   * الإلغاء، وفاتورتُه يرفضها `sales.cancel` و`sales.correct`، والمرتجعُ يشترط بنداً
-   * والفاتورةُ الخدميّة بلا بنود. فكان الردّ العمليّ الوحيد «لا شيء يمكن فعله».
-   */
-  const [reverseOpen, setReverseOpen] = useState(false);
-  const [reverseReason, setReverseReason] = useState("");
-  const [reverseReopen, setReverseReopen] = useState(false);
-  const reverse = trpc.workOrders.reverseDelivery.useMutation({
-    onSuccess: async (r) => {
-      setDone(
-        r.delegatedToReturn
-          ? "سُجِّل الاسترجاع كمرتجعٍ كامل للفاتورة."
-          : `عُكِس التسليم — أُرجع ${fmtAr(String(r.refundedTotal ?? "0"))} وسقطت الذمّة.`
-            + (r.status === "READY" ? " والطلب عاد للطابور جاهزاً لإعادة التسليم." : ""),
-      );
-      setReverseOpen(false);
-      setError("");
-      await refresh();
-    },
-    onError: (e) => setError(e.message),
-  });
+  const cancelDeepLinkOpenedRef = useRef(false);
+  useEffect(() => {
+    if (cancelDeepLinkOpenedRef.current || !wo.data || !canRequestControl) return;
+    if (new URLSearchParams(qs || "").get("cancel") !== "1") return;
+    cancelDeepLinkOpenedRef.current = true;
+    setCancelOpen(true);
+  }, [canRequestControl, qs, wo.data]);
   // Slice C (٢٩/٨/٢٦) — الإسناد المتأخّر: زرّ «تغيير طريقة التسليم» يظهر قبل التسليم/الإرسال ⇒
   // موظّف الاستقبال يقلب استلاماً⇄توصيلاً من هذه الشاشة نفسها بلا العودة للطابور (بلاغ المالك:
   // «الإسناد يحتوي على مشكلة، يسند الطلب منذ البداية ولا نعلم هل الشركة أم المندوب»). المكوّن
@@ -241,8 +273,7 @@ export default function WorkOrderDetail() {
       setAwaitingOwnerRefund(notice.awaitingOwner);
       setCancelOutcomeUncertain(false);
       setError("");
-      cancelRequestIdRef.current = null;
-      if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+      forgetCancelAttempt();
       await refresh();
     },
     onError: async (mutationError) => {
@@ -258,8 +289,7 @@ export default function WorkOrderDetail() {
         setAwaitingOwnerRefund(durable.awaitingOwner);
         setCancelOutcomeUncertain(false);
         setError("");
-        cancelRequestIdRef.current = null;
-        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+        forgetCancelAttempt();
         return;
       }
       if (orderCheck.data?.status === "CANCELLED") {
@@ -267,19 +297,64 @@ export default function WorkOrderDetail() {
         setAwaitingOwnerRefund(false);
         setCancelOutcomeUncertain(false);
         setError("");
-        cancelRequestIdRef.current = null;
-        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+        forgetCancelAttempt();
         return;
       }
       setCancelOutcomeUncertain(true);
       setError(`${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
     },
   });
+  const requestControl = trpc.workOrders.requestControl.useMutation({
+    onSuccess: async (result) => {
+      setCancelOpen(false);
+      setCancelOutcomeUncertain(false);
+      setAwaitingOwnerRefund(false);
+      setError("");
+      setDone(result.replayed
+        ? "أُعيد تحميل طلب الإلغاء السابق؛ ما زال القرار بانتظار مراجعٍ مستقل."
+        : "أُرسل طلب الإلغاء بلا أي أثر مالي أو مخزني؛ ينتظر اعتماد مديرٍ مستقل.");
+      forgetCancelAttempt();
+      await Promise.all([
+        controlPreflight.refetch(),
+        utils.workOrders.pendingControlRequests.invalidate(),
+        utils.workOrders.eventTimeline.invalidate({ workOrderId }),
+      ]);
+    },
+    onError: (mutationError) => {
+      setCancelOutcomeUncertain(true);
+      setError(`${mutationError.message} — أعد إرسال الطلب بالحمولة والمعرّف نفسيهما للتحقق الآمن.`);
+    },
+  });
 
-  if (wo.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
-  if (!wo.data) return <div className="p-10 text-center text-muted-foreground">طلب الخدمة غير موجود.</div>;
+  if (wo.isLoading) return <LoadingState message="جارٍ تحميل طلب الخدمة…" />;
+  if (wo.isError) {
+    const code = wo.error.data?.code;
+    return (
+      <ErrorState
+        message={code === "NOT_FOUND"
+          ? "طلب الخدمة غير موجود."
+          : code === "FORBIDDEN"
+            ? "لا تملك صلاحية قراءة طلب الخدمة أو أنه يتبع فرعاً آخر."
+            : "تعذّر تحميل طلب الخدمة؛ لم يُفترض أنه غير موجود."}
+        onRetry={() => void wo.refetch()}
+      />
+    );
+  }
+  if (!wo.data) return <ErrorState message="لم يُرجع الخادم بيانات طلب الخدمة." onRetry={() => void wo.refetch()} />;
   const data = wo.data;
-  const blockedByDesign = !!data.blockingTask;
+  const designApprovalReady =
+    designApproval.data?.revision != null &&
+    designApproval.data.approval?.status === "APPROVED";
+  const blockedByDesign =
+    !canRequestDesignApproval ||
+    designApproval.isLoading ||
+    designApproval.isError ||
+    !designApprovalReady;
+  const designBlockLabel = designApproval.isLoading
+    ? "جارٍ التحقق من اعتماد التصميم…"
+    : designApproval.isError
+      ? "تعذّر التحقق من اعتماد التصميم"
+      : "بانتظار اعتماد التصميم الحالي";
   const displayStatus = data.status === "DELIVERED" && data.consignmentId
     ? (data.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل")
     : workOrderStatusLabel(data.status);
@@ -523,22 +598,21 @@ export default function WorkOrderDetail() {
           <DesignApprovalCard
             workOrderId={Number(data.id)}
             status={String(data.status)}
-            blockingTask={(data.blockingTask as never) ?? null}
             canManage={canRequestDesignApproval}
+            onChanged={() => void refresh()}
           />
 
           {/* **ملفّ التصميم** — كان الخادم يُرسل `images` والشاشة تُهملها كلّياً (صفر استعمال
               في ٦٨٣ سطراً)، فيقف الفنّيّ أمام أمرٍ لا يرى تصميمه. النسخةُ العليا أوّلاً،
               والسابقةُ تُعرَض مطويّةً — سجلٌّ بلا حذف. */}
-          {data.images && data.images.length > 0 && (
-            <DesignFileCard images={data.images as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
-          )}
+          <DesignFileCard images={(data.images ?? []) as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
         </CardContent>
       </Card>
 
       {editingMaterials ? (
         <WorkOrderMaterialsEditor
           workOrderId={data.id}
+          version={Number(data.version)}
           branchId={Number(data.branchId)}
           orderNumber={data.orderNumber}
           status={data.status}
@@ -671,6 +745,14 @@ export default function WorkOrderDetail() {
           سُحب/بُدئ/جُهِّز/سُلّم. يقرأ من workOrders.timeline بعد أن صار صادقاً كاملاً في PR #851. */}
       <WorkOrderTimelineCard workOrderId={workOrderId} statusHue={workOrderStatusHue(data.status)} />
 
+      {cancellationRefundStatus.isError && (
+        <ErrorState
+          className="rounded-md border p-4"
+          message="تعذّر التحقق من حالة ردّ مبالغ الإلغاء؛ لا يمكن افتراض عدم وجود مبلغ معلّق."
+          onRetry={() => void cancellationRefundStatus.refetch()}
+        />
+      )}
+
       {durableRefundNotice && (
         <div
           role="status"
@@ -709,25 +791,23 @@ export default function WorkOrderDetail() {
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
           <p>{error}</p>
-          {cancelOutcomeUncertain && canCancel && (
+          {cancelOutcomeUncertain && canRequestControl && (
             <Button
               type="button"
               variant="outline"
               className="mt-2"
-              disabled={cancel.isPending}
+              disabled={cancel.isPending || requestControl.isPending}
               onClick={() => {
-                const key = `work-order-cancel-request:${workOrderId}`;
-                const clientRequestId = cancelRequestIdRef.current
-                  ?? (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null);
-                if (!clientRequestId) {
-                  setError("تعذّر العثور على معرّف المحاولة السابقة؛ حدّث الصفحة للتحقق من حالة الأمر قبل أي إجراء.");
+                const attempt = recoverCancelAttempt();
+                if (!attempt) {
+                  setError("تعذّر استعادة حمولة المحاولة السابقة كاملةً؛ حدّث الصفحة وتحقق من حالة الأمر قبل أي إجراء.");
                   return;
                 }
-                cancelRequestIdRef.current = clientRequestId;
-                cancel.mutate({ workOrderId, clientRequestId });
+                if (attempt.kind === "DIRECT") cancel.mutate(attempt.input);
+                else requestControl.mutate(attempt.input);
               }}
             >
-              {cancel.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
+              {cancel.isPending || requestControl.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
             </Button>
           )}
         </div>
@@ -761,12 +841,13 @@ export default function WorkOrderDetail() {
             }}
             disabled={start.isPending || blockedByDesign}
           >
-            {start.isPending ? "جارٍ…" : blockedByDesign ? "بانتظار موافقة العميل" : "بدء التنفيذ (خصم المواد)"}
+            {start.isPending ? "جارٍ…" : blockedByDesign ? designBlockLabel : "بدء التنفيذ (خصم المواد)"}
           </Button>
         )}
         {canExecuteWorkOrder && data.status === "IN_PROGRESS" && (
           <Button
             onClick={async () => {
+              if (blockedByDesign) return;
               if (!(await confirm({
                 variant: "info",
                 title: "وضع علامة جاهز للتسليم",
@@ -775,9 +856,9 @@ export default function WorkOrderDetail() {
               }))) return;
               markReady.mutate({ workOrderId });
             }}
-            disabled={markReady.isPending}
+            disabled={markReady.isPending || blockedByDesign}
           >
-            {markReady.isPending ? "جارٍ…" : "وضع علامة جاهز"}
+            {markReady.isPending ? "جارٍ…" : blockedByDesign ? designBlockLabel : "وضع علامة جاهز"}
           </Button>
         )}
         {canDeliverWorkOrder && data.status === "READY" && data.hasDelivery && !data.consignmentId && (
@@ -827,91 +908,31 @@ export default function WorkOrderDetail() {
             {data.hasDelivery ? "تحويل لاستلامٍ مباشر" : "تحويل إلى توصيل"}
           </Button>
         )}
-        {canCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
+        {canRequestControl && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
             onClick={() => setCancelOpen(true)}
-            disabled={cancel.isPending}
+            disabled={cancel.isPending || requestControl.isPending}
           >
-            {cancel.isPending ? "جارٍ…" : "إلغاء الأمر"}
+            {cancel.isPending || requestControl.isPending ? "جارٍ…" : canCancel ? "إلغاء الأمر" : "طلب إلغاء الأمر"}
           </Button>
         )}
-        {canCancel && data.status === "DELIVERED" && data.invoiceId && (
-          <Button variant="destructive" onClick={() => setReverseOpen(true)} disabled={reverse.isPending}>
-            {reverse.isPending ? "جارٍ…" : "استرجاع الطلب المُسلَّم"}
-          </Button>
+        {canRequestControl && data.status === "DELIVERED" && data.invoiceId && (
+          <ReverseDeliveryRequestDialog
+            workOrderId={workOrderId}
+            orderNumber={data.orderNumber}
+            title={data.title}
+            onRequested={(message) => {
+              setDone(message);
+              setError("");
+            }}
+          />
         )}
         {/* رابط الفاتورة كان يوجّه لقائمة الفواتير العامة بدل الفاتورة المحدَّدة. */}
         {data.status === "DELIVERED" && data.invoiceId && (
           <Link href={`/invoices/${data.invoiceId}`}><Button variant="outline">فتح الفاتورة #{data.invoiceId}</Button></Link>
         )}
       </div>
-
-      {reverseOpen && (
-        <div role="dialog" aria-label="استرجاع الطلب المُسلَّم"
-             className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-             onClick={() => !reverse.isPending && setReverseOpen(false)}>
-          <div className="w-full max-w-lg rounded-lg border bg-background p-5 shadow-lg"
-               onClick={(e) => e.stopPropagation()}>
-            <h2 className="mb-1 text-base font-extrabold">استرجاع الطلب المُسلَّم</h2>
-            <p className="mb-3 text-2xs text-muted-foreground">
-              «{data.title}» — <span dir="ltr" className="font-mono">{data.orderNumber}</span>
-            </p>
-            {/* الأرقام تُعرَض **قبل** التأكيد: لا امتصاصَ خفيّ ولا مفاجأةَ بعد النقر (§٥).
-                تنبيه: المقبوضُ من **الفاتورة** لا من `deposit`: الدفعُ عند التسليم لا يمرّ بالعربون
-                إطلاقاً، فكان الحوار يَعِد بردّ صفرٍ بينما يخرج من الدرج كامل المبلغ. */}
-            <div className="mb-3 space-y-1 rounded-md border p-3 text-xs">
-              <div className="flex justify-between"><span>صافي الفاتورة</span>
-                <span dir="ltr" className="tabular-nums font-bold">
-                  {fmtAr(String(data.invoiceTotal ?? data.salePrice ?? "0"))}
-                </span></div>
-              <div className="flex justify-between"><span>المقبوض فعلاً — سيُردّ بطريقة قبضه</span>
-                <span dir="ltr" className="tabular-nums font-bold">
-                  {fmtAr(String(data.invoicePaidAmount ?? "0"))}
-                </span></div>
-              <div className="flex justify-between text-muted-foreground"><span>يسقط من ذمّة العميل</span>
-                <span dir="ltr" className="tabular-nums">
-                  {fmtAr(
-                    String(
-                      Math.max(
-                        0,
-                        Number(data.invoiceTotal ?? data.salePrice ?? 0)
-                          - Number(data.invoicePaidAmount ?? 0),
-                      ),
-                    ),
-                  )}
-                </span></div>
-            </div>
-            <label className="mb-1 block text-xs font-bold">سبب الاسترجاع</label>
-            <Input value={reverseReason} onChange={(e) => setReverseReason(e.target.value)}
-                   placeholder="رفض الزبون العمل المُسلَّم / أعاده المندوب…" maxLength={500} />
-            <label className="mt-3 flex items-start gap-2 text-2xs text-muted-foreground">
-              <input type="checkbox" className="mt-0.5" checked={reverseReopen}
-                     onChange={(e) => setReverseReopen(e.target.checked)} />
-              <span>
-                <b className="text-foreground">أعِده للطابور</b> جاهزاً لإعادة التسليم مصحَّحاً
-                (بدل إغلاقه ملغىً). تُفكّ الفاتورة المرتجعة عنه فيمكن تسليمه ثانيةً.
-              </span>
-            </label>
-            <p className="mt-3 rounded-md bg-muted/50 p-2 text-2xs leading-relaxed text-muted-foreground">
-              يُعكَس قيد البيع والتكلفة، وتسقط ذمّةُ العميل غير المسدَّدة، ويُردّ المقبوض.
-              ولا تعود الخامة للمخزون — استُهلكت فعلاً، واسترجاعُ الخردة تسويةُ مخزونٍ منفصلة.
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setReverseOpen(false)} disabled={reverse.isPending}>تراجع</Button>
-              <Button variant="destructive" disabled={reverse.isPending || reverseReason.trim().length < 3}
-                onClick={() => reverse.mutate({
-                  workOrderId,
-                  reason: reverseReason.trim(),
-                  reopen: reverseReopen,
-                  clientRequestId: newClientRequestId(),
-                })}>
-                {reverse.isPending ? "جارٍ…" : "أكّد الاسترجاع"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <ReclassifyDeliveryDialog
         order={reclassifyOpen ? {
@@ -945,20 +966,50 @@ export default function WorkOrderDetail() {
               }))
             : []
         }
-        pending={cancel.isPending}
+        cashRefundRequired={controlPreflight.data?.cashRefundRequired ?? false}
+        expectedCashRefund={controlPreflight.data?.expectedCashRefund ?? "0"}
+        shifts={controlPreflight.data?.openReceptionShifts ?? []}
+        requiresApproval={!canCancel || controlPreflight.data?.controlRequired.cancel === true}
+        preflightPending={controlPreflight.isLoading || controlPreflight.isFetching}
+        preflightError={controlPreflight.isError}
+        onRetryPreflight={() => { void controlPreflight.refetch(); }}
+        pending={cancel.isPending || requestControl.isPending}
         onConfirm={(d) => {
-          const key = `work-order-cancel-request:${workOrderId}`;
-          cancelRequestIdRef.current ??=
-            (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null)
-            ?? newClientRequestId();
-          if (typeof window !== "undefined") window.sessionStorage.setItem(key, cancelRequestIdRef.current);
-          setCancelOpen(false);
-          cancel.mutate({
+          const preflight = controlPreflight.data;
+          if (!preflight) {
+            setError("لا يمكن تنفيذ الإلغاء قبل اكتمال التحقق من نسخة الأمر والنقد والورديات.");
+            return;
+          }
+          const requiresApproval = !canCancel || preflight.controlRequired.cancel;
+          if (requiresApproval) {
+            const input: CancelControlInput = {
+              requestType: "CANCEL",
+              requestKey: newClientRequestId(),
+              workOrderId,
+              baseVersion: preflight.version,
+              reason: d.reason,
+              payload: {
+                refundShiftId: d.refundShiftId,
+                materials: d.materials,
+              },
+            };
+            const attempt: PendingCancelAttempt = { kind: "CONTROL_REQUEST", input };
+            rememberCancelAttempt(attempt);
+            requestControl.mutate(input);
+            return;
+          }
+          const input: CancelInput = {
             workOrderId,
-            clientRequestId: cancelRequestIdRef.current,
+            expectedVersion: preflight.version,
+            clientRequestId: newClientRequestId(),
+            refundShiftId: d.refundShiftId,
             reason: d.reason,
             materials: d.materials,
-          });
+          };
+          const attempt: PendingCancelAttempt = { kind: "DIRECT", input };
+          rememberCancelAttempt(attempt);
+          setCancelOpen(false);
+          cancel.mutate(input);
         }}
       />
     </div>

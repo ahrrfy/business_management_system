@@ -23,9 +23,10 @@ import {
   recordDailyTreasuryCount,
   reopenDailyCashReconciliation,
 } from "../services/cashDailyReconciliationService";
-import { logAudit } from "../services/auditService";
+import { auditMetadataFromContext, logAudit } from "../services/auditService";
 import { retryOnDup } from "../lib/retryDup";
 import { cashVarianceRouter } from "./cashVarianceRouter";
+import { missedDailyCountExceptionRouter } from "./missedDailyCountExceptionRouter";
 import { branchScopedProcedure, managerBranchScopedProcedure, reportViewerProcedure, requireModule, router, treasuryManagerProcedure } from "../trpc";
 
 const periodEnum = z.enum(["today", "yesterday", "week", "month"]);
@@ -39,6 +40,7 @@ const treasuryDailyRead = reportViewerProcedure.use(requireModule("treasury", "R
 
 export const treasuryRouter = router({
   cashVariance: cashVarianceRouter,
+  missedDailyCount: missedDailyCountExceptionRouter,
   // الرصيد الفعلي/النظامي للخزينة معلومة حساسة؛ لا يقرأها الكاشير حتى لو كان
   // treasury=READ لاحتياج الوردية. القراءة لمشاهدي التقارير الماليين فقط، وتشمل المراجع.
   dailyCashReconciliation: treasuryDailyRead
@@ -62,15 +64,15 @@ export const treasuryRouter = router({
       clientRequestId: z.string().min(1).max(64),
     }))
     .mutation(({ input, ctx }) =>
-      recordDailyTreasuryCount(
+      retryOnDup(() => recordDailyTreasuryCount(
         input,
         {
           userId: ctx.user.id,
           branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
           role: ctx.user.role,
         },
-        ctx,
-      ),
+        auditMetadataFromContext(ctx),
+      )),
     ),
 
   closeDailyCashReconciliation: treasuryManagerProcedure
@@ -87,12 +89,17 @@ export const treasuryRouter = router({
           branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
           role: ctx.user.role,
         },
-        ctx,
+        auditMetadataFromContext(ctx),
       ),
     ),
 
   reopenDailyCashReconciliation: treasuryManagerProcedure
-    .input(z.object({ reconciliationId: z.number().int().positive(), reason: z.string().trim().min(10).max(500) }))
+    .input(z.object({
+      reconciliationId: z.number().int().positive(),
+      expectedVersion: z.number().int().positive(),
+      reason: z.string().trim().min(10).max(500),
+      clientRequestId: z.string().trim().min(1).max(64),
+    }))
     .mutation(({ input, ctx }) =>
       reopenDailyCashReconciliation(
         input,
@@ -101,7 +108,7 @@ export const treasuryRouter = router({
           branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
           role: ctx.user.role,
         },
-        ctx,
+        auditMetadataFromContext(ctx),
       ),
     ),
 

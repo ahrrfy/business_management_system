@@ -24,15 +24,20 @@ import {
 } from "../services/reception";
 import { verifyManagerApproval } from "./saleRouter";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
-import { router, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
+import { router, workordersCashierProcedure, workordersExecProcedure,
+} from "../trpc";
 import { logAudit } from "../services/auditService";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
+} from "@shared/posPaymentPolicy";
 
 /** عزل الفرع (نمط deliveryRouter.effectiveBranch): المرتفعون يعبرون بـbranchId صريح؛
  *  غيرهم يُجبَرون على فرعهم، وغيابه = FORBIDDEN. */
-function effectiveBranch(ctx: { user: { role?: string | null; branchId?: number | null } }, requested?: number | null) {
+function effectiveBranch(ctx: { user: { role?: string | null; branchId?: number | null } }, requested?: number | null,
+) {
   const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
-  if (elevated) return requested ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+  if (elevated) return (
+      requested ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null)
+    );
   return ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
 }
 
@@ -41,7 +46,8 @@ function effectiveBranch(ctx: { user: { role?: string | null; branchId?: number 
 const payMethodEnum = z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]);
 // المحطة لا تقبض بالصكوك (قرار المالك ٢٢/٧) فلا CHECK هنا؛ والـrefine يبقى حارساً على TELECOM.
 const inboundPaymentMethod = payMethodEnum
-  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
+});
 
 // ش٢ — عقود المسوّدة (§٦): بوّابة **exec** (كاشير/مدير/فنّي طباعة — المسوّدة بلا مالٍ فتُحرَّر
 // بأوسع أدوار المحطة)؛ التثبيت والمال يبقيان خلف بوّابة الكاشير (ش٣/ش٤).
@@ -85,10 +91,12 @@ function assertDraftImages(lines: Array<{ designImages?: string | null }>) {
     try {
       parsed = JSON.parse(line.designImages);
     } catch {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "صور المسوّدة بصيغة غير صالحة" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "صور المسوّدة بصيغة غير صالحة",
+      });
     }
     if (!Array.isArray(parsed) || parsed.length > 10) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "صور المسوّدة: ١٠ صور كحدّ أقصى" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "صور المسوّدة: ١٠ صور كحدّ أقصى",
+      });
     }
     for (const img of parsed as Array<{ url?: string }>) {
       if (img?.url) assertValidImageDataUrl(img.url);
@@ -115,7 +123,8 @@ export const receptionRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const branchId = effectiveBranch(ctx, input.branchId);
-      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       return listReceptionInvoices({ ...input, branchId });
     }),
 
@@ -128,8 +137,37 @@ export const receptionRouter = router({
         amount: positiveMoneyString,
         method: inboundPaymentMethod,
         reference: z.string().trim().max(100).nullish(),
-        clientRequestId: z.string().min(1).max(60),
-      }),
+          externalPaymentAttemptId: z.number().int().positive().nullish(),
+          externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
+          clientRequestId: z.string().min(1).max(60),
+      })
+        .superRefine((input, refinement) => {
+          if (input.method !== "CASH" && !input.externalPaymentAttemptId) {
+            refinement.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["externalPaymentAttemptId"],
+              message: "أكّد الدفع الخارجي قبل تسجيل الدفعة",
+            });
+          }
+          if (input.method !== "CASH" && !input.externalPaymentDeviceId) {
+            refinement.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["externalPaymentDeviceId"],
+              message: "جهاز محاولة الدفع مطلوب",
+            });
+          }
+          if (
+            input.method === "CASH" &&
+            (input.externalPaymentAttemptId != null ||
+              input.externalPaymentDeviceId != null)
+          ) {
+            refinement.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["externalPaymentAttemptId"],
+              message: "الدفع النقدي لا يحمل محاولة دفع خارجية",
+            });
+          }
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       const actor = {
@@ -169,7 +207,8 @@ export const receptionRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       if (input.method !== "CASH" && !input.reference?.trim()) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "المرجع إلزاميّ لغير النقد (رقم القسيمة/التحويل)" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: "المرجع إلزاميّ لغير النقد (رقم القسيمة/التحويل)",
+        });
       }
       const actor = {
         userId: ctx.user.id,
@@ -178,7 +217,8 @@ export const receptionRouter = router({
       };
       const result = await retryOnDeadlock(() =>
         collectDeposit(
-          { ...input, reference: input.reference ?? null, telecomSenderPhone: input.telecomSenderPhone ?? null },
+          { ...input, reference: input.reference ?? null, telecomSenderPhone: input.telecomSenderPhone ?? null,
+          },
           actor as never,
         ),
       );
@@ -279,18 +319,23 @@ export const receptionRouter = router({
       shiftId: z.number().int().positive().nullish(),
       header: draftHeaderSchema,
       lines: z.array(draftLineSchema).max(100),
-    }))
+    }),
+    )
     .mutation(async ({ input, ctx }) => {
       const branchId = effectiveBranch(ctx, input.branchId);
-      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       assertDraftImages(input.lines);
       const actor = { userId: ctx.user.id, branchId, role: ctx.user.role };
-      const res = await promoteDraft({ branchId, shiftId: input.shiftId, header: input.header, lines: input.lines }, actor as never);
+      const res = await promoteDraft({ branchId, shiftId: input.shiftId, header: input.header, lines: input.lines,
+        }, actor as never,
+      );
       await logAudit(ctx, {
         action: "reception.draftPromote",
         entityType: "receptionDraft",
         entityId: res.draftId,
-        newValue: { draftNumber: res.draftNumber, lines: input.lines.length, total: res.total },
+        newValue: { draftNumber: res.draftNumber, lines: input.lines.length, total: res.total,
+        },
       });
       return res;
     }),
@@ -298,7 +343,8 @@ export const receptionRouter = router({
   draftGet: workordersExecProcedure
     .input(z.object({ draftId: z.number().int().positive() }))
     .query(({ input, ctx }) => {
-      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null, role: ctx.user.role };
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null, role: ctx.user.role,
+      };
       return getDraft(input.draftId, actor as never);
     }),
 
@@ -310,10 +356,12 @@ export const receptionRouter = router({
       q: z.string().trim().max(80).optional(),
       cursor: z.number().int().positive().optional(),
       limit: z.number().int().min(1).max(50).optional(),
-    }))
+    }),
+    )
     .query(({ input, ctx }) => {
       const branchId = effectiveBranch(ctx, input.branchId);
-      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       const actor = { userId: ctx.user.id, branchId, role: ctx.user.role };
       return listDrafts({ ...input, branchId }, actor as never);
     }),
@@ -324,10 +372,12 @@ export const receptionRouter = router({
       version: z.number().int().min(0),
       header: draftHeaderSchema,
       lines: z.array(draftLineSchema).max(100),
-    }))
+    }),
+    )
     .mutation(async ({ input, ctx }) => {
       assertDraftImages(input.lines);
-      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null, role: ctx.user.role };
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null, role: ctx.user.role,
+      };
       const res = await syncDraft(input, actor as never);
       // I22: تدقيقٌ بقبل/بعد للمبالغ والعناوين فقط — لا designImages/printSpec في الحمولة أبداً.
       await logAudit(ctx, {
@@ -371,7 +421,8 @@ export const receptionRouter = router({
       // الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في وضع الافتتاح).
       openingSellUnavailableConfirmed: z.boolean().optional(),
       managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
-    }))
+    }),
+    )
     .mutation(async ({ input, ctx }) => {
       if (input.couponCode?.trim()) {
         throw new TRPCError({
@@ -380,11 +431,13 @@ export const receptionRouter = router({
         });
       }
       if (input.collectNow && input.collectNow.method !== "CASH" && !input.collectNow.reference?.trim()) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب",
+        });
       }
       const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
       if (!elevated && ctx.user.branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       }
       let approvedBy: number | null = null;
       if (input.managerApproval) {
@@ -418,7 +471,8 @@ export const receptionRouter = router({
           priceApprovedBy: approvedBy ?? (elevated ? ctx.user.id : null),
         },
         actor as never,
-      ));
+      ),
+      );
       if (!result.idempotentReplay) {
         await logAudit(ctx, {
           action: "reception.draftCommit",
@@ -443,9 +497,11 @@ export const receptionRouter = router({
       draftId: z.number().int().positive(),
       version: z.number().int().min(0),
       reason: z.string().trim().min(3).max(500),
-    }))
+    }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null, role: ctx.user.role };
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null, role: ctx.user.role,
+      };
       const res = await cancelDraft(input, actor as never);
       await logAudit(ctx, {
         action: "reception.draftCancel",

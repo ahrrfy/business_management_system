@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS `cashVarianceCases` (
   `variance` decimal(15,2) NOT NULL,
   `cashVarianceReasonCode` enum('COUNT_ERROR','UNRECORDED_CASH_IN','UNRECORDED_CASH_OUT','CUSTODY_LOSS','DOCUMENTATION_ERROR','OTHER') NOT NULL,
   `reason` varchar(500) NOT NULL,
-  `evidenceReference` mediumtext NOT NULL,
+  `evidenceReference` varchar(2000) NOT NULL,
   `responsibleUserId` int NULL,
   `responsibleEmployeeId` bigint NULL,
   `responsibleNameSnapshot` varchar(255) NULL,
@@ -92,3 +92,24 @@ CREATE TABLE IF NOT EXISTS `cashVarianceCaseEvents` (
     (`cashVarianceEventType` <> 'APPROVED' AND `cashVarianceCounterAccountRole` IS NULL AND `resolvedVariance` IS NULL AND `adjustmentReceiptId` IS NULL AND `accountingEntryId` IS NULL AND `advanceId` IS NULL)
   )
 );
+--> statement-breakpoint
+
+DROP TRIGGER IF EXISTS `trg_cash_variance_cases_bu`;
+--> statement-breakpoint
+CREATE TRIGGER `trg_cash_variance_cases_bu` BEFORE UPDATE ON `cashVarianceCases`
+FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'cash variance cases are append-only';
+--> statement-breakpoint
+DROP TRIGGER IF EXISTS `trg_cash_variance_cases_bd`;
+--> statement-breakpoint
+CREATE TRIGGER `trg_cash_variance_cases_bd` BEFORE DELETE ON `cashVarianceCases`
+FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'cash variance cases are append-only';
+--> statement-breakpoint
+DROP TRIGGER IF EXISTS `trg_cash_variance_events_bu`;
+--> statement-breakpoint
+CREATE TRIGGER `trg_cash_variance_events_bu` BEFORE UPDATE ON `cashVarianceCaseEvents`
+FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'cash variance events are append-only';
+--> statement-breakpoint
+DROP TRIGGER IF EXISTS `trg_cash_variance_events_bd`;
+--> statement-breakpoint
+CREATE TRIGGER `trg_cash_variance_events_bd` BEFORE DELETE ON `cashVarianceCaseEvents`
+FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'cash variance events are append-only';

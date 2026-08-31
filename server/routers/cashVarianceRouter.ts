@@ -1,16 +1,22 @@
 import { z } from "zod";
 import {
   CASH_VARIANCE_EVENT_TYPES,
+  CASH_VARIANCE_EVIDENCE_MAX_BYTES,
+  CASH_VARIANCE_EVIDENCE_MIME_TYPES,
+  CASH_VARIANCE_EVIDENCE_REFERENCE_MAX_LENGTH,
+  CASH_VARIANCE_EVIDENCE_REFERENCE_MIN_LENGTH,
   CASH_VARIANCE_REASON_CODES,
+  CASH_VARIANCE_REASON_CODES_BY_SOURCE,
 } from "../../shared/cashVariance";
 import { retryOnDup } from "../lib/retryDup";
-import { logAudit } from "../services/auditService";
+import { auditMetadataFromContext } from "../services/auditService";
 import {
   approveCashVarianceCase,
   getCashVarianceCase,
   listCashVarianceCases,
   listCashVarianceResponsibleUsers,
   proposeCashVarianceCase,
+  registerCashVarianceEvidence,
   rejectCashVarianceCase,
 } from "../services/cashVarianceService";
 import { router, treasuryManagerProcedure } from "../trpc";
@@ -37,17 +43,27 @@ const decisionInput = z.object({
 
 const proposalCommon = {
   sourceId: id,
-  reasonCode: z.enum(CASH_VARIANCE_REASON_CODES),
+  evidenceDocumentId: id,
   reason: z.string().trim().min(10).max(500),
-  evidenceReference: z.string().trim().min(3).max(2_000),
+  evidenceReference: z.string().trim()
+    .min(CASH_VARIANCE_EVIDENCE_REFERENCE_MIN_LENGTH)
+    .max(CASH_VARIANCE_EVIDENCE_REFERENCE_MAX_LENGTH),
   clientRequestId,
 } as const;
 
 const proposalInput = z.discriminatedUnion("sourceType", [
   // مسؤول العهدة مشتق حصراً من عقد المصدر؛ رفض الحقل الزائد يمنع إسنادها لغير صاحبها.
-  z.object({ sourceType: z.literal("CUSTODY"), ...proposalCommon }).strict(),
+  z.object({
+    sourceType: z.literal("CUSTODY"),
+    reasonCode: z.enum(CASH_VARIANCE_REASON_CODES),
+    ...proposalCommon,
+  }).strict(),
   // لا يوجد عقد حيازة غير قابل للتلاعب للخزينة اليومية؛ يمنع العقد إسنادها لموظف.
-  z.object({ sourceType: z.literal("DAILY_TREASURY"), ...proposalCommon }).strict(),
+  z.object({
+    sourceType: z.literal("DAILY_TREASURY"),
+    reasonCode: z.enum(CASH_VARIANCE_REASON_CODES_BY_SOURCE.DAILY_TREASURY),
+    ...proposalCommon,
+  }).strict(),
 ]);
 
 /**
@@ -55,12 +71,30 @@ const proposalInput = z.discriminatedUnion("sourceType", [
  * فلا يعتمد منشئ الحالة أو منفذ العد حتى لو كان Admin.
  */
 export const cashVarianceRouter = router({
+  registerEvidence: treasuryManagerProcedure
+    .input(z.object({
+      branchId: id,
+      fileName: z.string().trim().min(1).max(255),
+      dataUrl: z.string().min(32).max(Math.ceil(CASH_VARIANCE_EVIDENCE_MAX_BYTES / 3) * 4 + 128)
+        .refine((value) => CASH_VARIANCE_EVIDENCE_MIME_TYPES.some((mime) => value.startsWith(`data:${mime};base64,`)), "نوع الملف غير مسموح"),
+      clientRequestId,
+    }))
+    .mutation(({ input, ctx }) => retryOnDup(() => registerCashVarianceEvidence(
+      input,
+      actorOf(ctx),
+      auditMetadataFromContext(ctx),
+    ))),
+
   list: treasuryManagerProcedure
     .input(
       z.object({
         branchId: id.optional(),
         status: z.enum(CASH_VARIANCE_EVENT_TYPES).optional(),
         limit: z.number().int().min(1).max(100).optional(),
+        cursor: z.object({
+          createdAt: z.coerce.date(),
+          id,
+        }).optional(),
       }).optional(),
     )
     .query(({ input, ctx }) => listCashVarianceCases(input ?? {}, actorOf(ctx))),
@@ -75,29 +109,15 @@ export const cashVarianceRouter = router({
 
   propose: treasuryManagerProcedure
     .input(proposalInput)
-    .mutation(async ({ input, ctx }) => {
-      const result = await retryOnDup(() => proposeCashVarianceCase(input, actorOf(ctx)));
-      await logAudit(ctx, {
-        action: "treasury.cash_variance.propose",
-        entityType: "cash_variance_case",
-        entityId: result.caseId,
-        newValue: { sourceType: input.sourceType, sourceId: input.sourceId, reasonCode: input.reasonCode },
-      });
-      return result;
-    }),
+    .mutation(({ input, ctx }) => retryOnDup(() => proposeCashVarianceCase(
+      input, actorOf(ctx), auditMetadataFromContext(ctx),
+    ))),
 
   approve: treasuryManagerProcedure
     .input(decisionInput)
-    .mutation(async ({ input, ctx }) => {
-      const result = await retryOnDup(() => approveCashVarianceCase(input, actorOf(ctx)));
-      await logAudit(ctx, {
-        action: "treasury.cash_variance.approve",
-        entityType: "cash_variance_case",
-        entityId: result.caseId,
-        newValue: { version: result.version },
-      });
-      return result;
-    }),
+    .mutation(({ input, ctx }) => retryOnDup(() => approveCashVarianceCase(
+      input, actorOf(ctx), auditMetadataFromContext(ctx),
+    ))),
 
   reject: treasuryManagerProcedure
     .input(z.object({
@@ -106,14 +126,7 @@ export const cashVarianceRouter = router({
       clientRequestId,
       reason: z.string().trim().min(10).max(500),
     }))
-    .mutation(async ({ input, ctx }) => {
-      const result = await retryOnDup(() => rejectCashVarianceCase(input, actorOf(ctx)));
-      await logAudit(ctx, {
-        action: "treasury.cash_variance.reject",
-        entityType: "cash_variance_case",
-        entityId: result.caseId,
-        newValue: { version: result.version, reason: input.reason },
-      });
-      return result;
-    }),
+    .mutation(({ input, ctx }) => retryOnDup(() => rejectCashVarianceCase(
+      input, actorOf(ctx), auditMetadataFromContext(ctx),
+    ))),
 });

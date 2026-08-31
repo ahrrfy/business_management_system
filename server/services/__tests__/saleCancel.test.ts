@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { cancelSale } from "../sale/cancel";
+import { correctSale } from "../sale/correct";
 import { cancelDeliveryAssignment } from "../delivery/cancellation";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import { processPayment } from "../sale/payment";
@@ -951,5 +952,185 @@ describe("cancelSale — حارس التوصيل الموحّد", () => {
     ).rejects.toThrow(/طلب المتجر.*COD|عهدة/);
     expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).not.toBe("CANCELLED");
     expect(await stockOf(1, 1)).toBe(9);
+  });
+
+  it.each([
+    {
+      label: "DELIVERED + SETTLED",
+      status: "DELIVERED" as const,
+      parcelStatus: "DELIVERED" as const,
+      moneyStatus: "SETTLED" as const,
+    },
+    {
+      label: "WRITTEN_OFF",
+      status: "WRITTEN_OFF" as const,
+      parcelStatus: "DELIVERED" as const,
+      moneyStatus: "WRITTEN_OFF" as const,
+    },
+  ])("correctSale يرفض إرسالية $label بلا أي عكس أو إعادة إصدار", async (deliveryState) => {
+    await setStock(1, 1, 10);
+    await seedDeliveryParty();
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      admin,
+    );
+    const dispatched = await dispatchInvoice(sale.invoiceId, `correct-${deliveryState.status.toLowerCase()}`);
+    await db()
+      .update(s.deliveryConsignments)
+      .set({
+        status: deliveryState.status,
+        parcelStatus: deliveryState.parcelStatus,
+        moneyStatus: deliveryState.moneyStatus,
+        collectedAmount: "1000.00",
+        settledAt: new Date(),
+      })
+      .where(eq(s.deliveryConsignments.id, dispatched.consignmentId));
+    const invoiceCountBefore = await db().select({ n: sql<number>`COUNT(*)` }).from(s.invoices);
+    const idempotencyCountBefore = await db().select({ n: sql<number>`COUNT(*)` }).from(s.idempotencyKeys);
+
+    await expect(
+      correctSale(
+        {
+          originalInvoiceId: sale.invoiceId,
+          lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+          clientRequestId: `correct-blocked-${deliveryState.status.toLowerCase()}`,
+        },
+        admin,
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).toBe("PENDING");
+    expect(await stockOf(1, 1)).toBe(9);
+    expect(Number((await db().select({ n: sql<number>`COUNT(*)` }).from(s.invoices))[0]?.n ?? 0))
+      .toBe(Number(invoiceCountBefore[0]?.n ?? 0));
+    expect(Number((await db().select({ n: sql<number>`COUNT(*)` }).from(s.idempotencyKeys))[0]?.n ?? 0))
+      .toBe(Number(idempotencyCountBefore[0]?.n ?? 0));
+    const reversalEntries = await db()
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(s.accountingEntries)
+      .where(sql`${s.accountingEntries.invoiceId}=${sale.invoiceId} AND ${s.accountingEntries.entryType}='RETURN'`);
+    expect(Number(reversalEntries[0]?.n ?? 0)).toBe(0);
+  });
+
+  it("correctSale يسمح فقط بعد وصول الإرسالية إلى الإلغاء الثلاثي الآمن", async () => {
+    await setStock(1, 1, 10);
+    await seedDeliveryParty();
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      admin,
+    );
+    const dispatched = await dispatchInvoice(sale.invoiceId, "correct-safe-cancelled");
+    await cancelDeliveryAssignment(
+      {
+        consignmentId: dispatched.consignmentId,
+        reason: "إلغاء الإسناد قبل تصحيح الفاتورة",
+        clientRequestId: "release-before-sale-correct",
+      },
+      admin,
+    );
+
+    const corrected = await correctSale(
+      {
+        originalInvoiceId: sale.invoiceId,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        clientRequestId: "correct-after-safe-cancel",
+      },
+      admin,
+    );
+
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).toBe("SUPERSEDED");
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, dispatched.consignmentId)))[0])
+      .toMatchObject({ status: "CANCELLED", parcelStatus: "CANCELLED", moneyStatus: "CANCELLED" });
+    expect(corrected.correctedInvoiceId).toBeGreaterThan(sale.invoiceId);
+    expect(await stockOf(1, 1)).toBe(9);
+  });
+
+  it("correctSale يرفض طلب متجر قديم SHIPPED بلا عكس أو استهلاك idempotency", async () => {
+    await setStock(1, 1, 10);
+    await seedDeliveryParty();
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ONLINE",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      admin,
+    );
+    await db().insert(s.onlineOrders).values({
+      orderNumber: "WEB-CORRECT-GUARD-1",
+      customerId: 1,
+      branchId: 1,
+      invoiceId: sale.invoiceId,
+      subtotal: "1000.00",
+      total: "1000.00",
+      status: "SHIPPED",
+      deliveryPartyId: 1,
+    });
+    const idempotencyBefore = await db().select({ n: sql<number>`COUNT(*)` }).from(s.idempotencyKeys);
+
+    await expect(
+      correctSale(
+        {
+          originalInvoiceId: sale.invoiceId,
+          lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+          clientRequestId: "correct-legacy-shipped",
+        },
+        admin,
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).toBe("PENDING");
+    expect(await stockOf(1, 1)).toBe(9);
+    expect(Number((await db().select({ n: sql<number>`COUNT(*)` }).from(s.idempotencyKeys))[0]?.n ?? 0))
+      .toBe(Number(idempotencyBefore[0]?.n ?? 0));
+  });
+
+  it("سباق الإسناد مع correctSale لا ينتهي أبداً بفاتورة مستبدلة وطرد حي", async () => {
+    await setStock(1, 1, 10);
+    await seedDeliveryParty();
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      admin,
+    );
+
+    const results = await Promise.allSettled([
+      correctSale(
+        {
+          originalInvoiceId: sale.invoiceId,
+          lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+          clientRequestId: "race-sale-correct",
+        },
+        admin,
+      ),
+      dispatchInvoice(sale.invoiceId, "correct-race"),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    const consignment = (
+      await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, sale.invoiceId)).limit(1)
+    )[0];
+    const liveConsignment = consignment != null && (
+      consignment.status !== "CANCELLED"
+      || consignment.parcelStatus !== "CANCELLED"
+      || consignment.moneyStatus !== "CANCELLED"
+    );
+    expect(invoice.status === "SUPERSEDED" && liveConsignment).toBe(false);
   });
 });

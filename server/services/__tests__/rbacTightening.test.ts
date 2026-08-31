@@ -1,6 +1,6 @@
 /**
  * اختبارات شريحة «تَمتين RBAC» (٢٣/٦/٢٦):
- *  1) inventory.stockByBranch / movements / onHand / movementsRich — مدير الفرع لا يَستعلم عن فرع آخر.
+ *  1) inventory.onHand / movements / movementsRich — مدير الفرع لا يَستعلم عن فرع آخر.
  *  2) workOrders.assignableStaff — لا يَكشف admin/manager للكاشير (يُعيد التَنفيذيين فقط).
  *  3) verifyManagerApproval — admin عابر-الفرع يُسجَّل سطر «adminCrossBranch» في audit.
  */
@@ -78,28 +78,28 @@ beforeEach(async () => { await reset(); await seed(); });
 // (سابقاً ٢٣/٧: «قراءة الكل، كتابة فرعه»؛ أُلغي.) الكتابة مُغطّاةٌ في inventoryBranchScope.test.ts +
 // managerBranchIsolation.test.ts.
 describe("inventory — مدير الفرع يقرأ فرعه فقط (قرار المالك ١٢/٨)", () => {
-  it("stockByBranch: مدير ف١ يطلب ف٢ ⇒ يُقصَر على فرعه ف١ (لا يعبُر)", async () => {
+  it("onHand: مدير ف١ يطلب ف٢ ⇒ يُقصَر على فرعه ف١ (لا يعبُر)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(2))); // مدير ف١
-    const rows = await caller.inventory.stockByBranch({ branchId: 2 });
+    const rows = await caller.inventory.onHand({ branchId: 2 });
     expect(rows.every((r) => Number(r.branchId) === 1)).toBe(true);
   });
 
-  it("stockByBranch: مدير ف١ يطلب ف١ ⇒ يَعمل (فرعه)", async () => {
+  it("onHand: مدير ف١ يطلب ف١ ⇒ يَعمل (فرعه)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(2)));
-    const rows = await caller.inventory.stockByBranch({ branchId: 1 });
+    const rows = await caller.inventory.onHand({ branchId: 1 });
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((r) => Number(r.branchId) === 1)).toBe(true);
   });
 
-  it("stockByBranch: مدير ف٢ يطلب ف١ ⇒ يُقصَر على فرعه ف٢ (لا يعبُر)", async () => {
+  it("onHand: مدير ف٢ يطلب ف١ ⇒ يُقصَر على فرعه ف٢ (لا يعبُر)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(3))); // مدير ف٢
-    const rows = await caller.inventory.stockByBranch({ branchId: 1 });
+    const rows = await caller.inventory.onHand({ branchId: 1 });
     expect(rows.every((r) => Number(r.branchId) === 2)).toBe(true);
   });
 
-  it("stockByBranch: admin يَعبر أيّ فرع", async () => {
+  it("onHand: admin يَعبر أيّ فرع", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1)));
-    const rows = await caller.inventory.stockByBranch({ branchId: 2 });
+    const rows = await caller.inventory.onHand({ branchId: 2 });
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((r) => Number(r.branchId) === 2)).toBe(true);
   });
@@ -107,7 +107,7 @@ describe("inventory — مدير الفرع يقرأ فرعه فقط (قرار �
   it("الكاشير لا يَختار branchId ⇒ يُجبَر على فرعه (sanity — السلوك الموجود)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(4))); // كاشير ف١
     // حتى لو مرّر branchId=2، scopedBranchId=1 يَجبره. النتيجة: مخزون ف١.
-    const rows = await caller.inventory.stockByBranch({ branchId: 2 });
+    const rows = await caller.inventory.onHand({ branchId: 2 });
     expect(rows.every((r) => Number(r.branchId) === 1)).toBe(true);
   });
 });

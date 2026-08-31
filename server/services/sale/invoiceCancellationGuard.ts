@@ -15,6 +15,12 @@ export interface InvoiceCancellationGuardInput {
   expectedBranchId: number;
 }
 
+export type InvoiceReversalMode = "CANCEL" | "CORRECT";
+
+export interface InvoiceReversalDeliveryGuardInput extends InvoiceCancellationGuardInput {
+  mode: InvoiceReversalMode;
+}
+
 export interface InvoiceCancellationGuardResult {
   consignmentId: number | null;
   onlineOrderId: number | null;
@@ -40,12 +46,15 @@ const PARCEL_STATUS_AR: Record<string, string> = {
  * السماح ضيق عمداً:
  * - الإرسالية الحديثة: CANCELLED/CANCELLED/CANCELLED فقط، بلا تحصيل/توريد/عهدة وبصافي دفتر صفر.
  * - طلب متجر قديم بلا إرسالية: CANCELLED فقط، وبلا أي دليل تحصيل COD أو قيد عهدة مندوب.
- * - طلب متجر حديث مرتبط بإرسالية ملغاة بأمان قد يبقى SHIPPED حتى يغلقه sale.cancel ذرّياً.
+ * - في CANCEL فقط: طلب متجر حديث مرتبط بإرسالية ملغاة بأمان قد يبقى SHIPPED حتى يغلقه
+ *   sale.cancel ذرّياً. أمّا CORRECT فلا يملك انتقال الطلب، فيلزمه CANCELLED فعلياً.
  */
-export async function assertInvoiceCancellationDeliverySafeTx(
+export async function assertInvoiceReversalDeliverySafeTx(
   tx: Tx,
-  input: InvoiceCancellationGuardInput,
+  input: InvoiceReversalDeliveryGuardInput,
 ): Promise<InvoiceCancellationGuardResult> {
+  const operation = input.mode === "CORRECT" ? "تصحيح" : "إلغاء";
+  const duringOperation = input.mode === "CORRECT" ? "أثناء التصحيح" : "أثناء الإلغاء";
   const consignmentPreview = (
     await tx
       .select({
@@ -84,7 +93,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
     if (!party) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "رابط جهة توصيل الفاتورة غير متسق — أصلح الإرسالية قبل إلغاء الفاتورة",
+        message: `رابط جهة توصيل الفاتورة غير متسق — أصلح الإرسالية قبل ${operation} الفاتورة`,
       });
     }
   }
@@ -96,7 +105,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
     .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
     .for("update");
   if (lockedConsignments.length > 1) {
-    throw new TRPCError({ code: "CONFLICT", message: "الفاتورة مرتبطة بأكثر من إرسالية — يلزم تصحيح البيانات قبل الإلغاء" });
+    throw new TRPCError({ code: "CONFLICT", message: `الفاتورة مرتبطة بأكثر من إرسالية — يلزم تصحيح البيانات قبل ${operation}` });
   }
   const consignment = lockedConsignments[0] ?? null;
   if (
@@ -106,7 +115,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "تغيّرت إرسالية الفاتورة أثناء الإلغاء؛ أعد المحاولة",
+      message: `تغيّرت إرسالية الفاتورة ${duringOperation}؛ أعد المحاولة`,
     });
   }
 
@@ -117,7 +126,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
     .where(eq(onlineOrders.invoiceId, input.invoiceId))
     .for("update");
   if (lockedOnlineOrders.length > 1) {
-    throw new TRPCError({ code: "CONFLICT", message: "الفاتورة مرتبطة بأكثر من طلب متجر — يلزم تصحيح البيانات قبل الإلغاء" });
+    throw new TRPCError({ code: "CONFLICT", message: `الفاتورة مرتبطة بأكثر من طلب متجر — يلزم تصحيح البيانات قبل ${operation}` });
   }
   const onlineOrder = lockedOnlineOrders[0] ?? null;
   if (
@@ -127,7 +136,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "تغيّر طلب المتجر المرتبط أثناء إلغاء الفاتورة؛ أعد المحاولة",
+      message: `تغيّر طلب المتجر المرتبط ${duringOperation}؛ أعد المحاولة`,
     });
   }
 
@@ -135,7 +144,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
     if (Number(consignment.branchId) !== Number(input.expectedBranchId)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "فرع الإرسالية لا يطابق فرع الفاتورة — أصلح الربط قبل الإلغاء",
+        message: `فرع الإرسالية لا يطابق فرع الفاتورة — أصلح الربط قبل ${operation}`,
       });
     }
 
@@ -147,7 +156,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
       const parcelLabel = PARCEL_STATUS_AR[consignment.parcelStatus] ?? consignment.parcelStatus;
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `لا يمكن إلغاء الفاتورة: الإرسالية ${consignment.consignmentNumber} غير ملغاة نهائياً (${parcelLabel}). ألغِ إسناد التوصيل أولاً، أو أعد الطرد وسوِّ عهدته من مركز التوصيل.`,
+        message: `لا يمكن ${operation} الفاتورة: الإرسالية ${consignment.consignmentNumber} غير ملغاة نهائياً (${parcelLabel}). ألغِ إسناد التوصيل أولاً، أو أعد الطرد وسوِّ عهدته من مركز التوصيل.`,
       });
     }
 
@@ -185,7 +194,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
     if (unsafeFinancialState) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `الإرسالية ${consignment.consignmentNumber} ملغاة تشغيلياً، لكن عليها تحصيل أو عهدة أو أثر مالي مفتوح. سوِّ COD/التوريد من مركز التوصيل قبل إلغاء الفاتورة.`,
+        message: `الإرسالية ${consignment.consignmentNumber} ملغاة تشغيلياً، لكن عليها تحصيل أو عهدة أو أثر مالي مفتوح. سوِّ COD/التوريد من مركز التوصيل قبل ${operation} الفاتورة.`,
       });
     }
   }
@@ -194,7 +203,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
     if (onlineOrder.branchId != null && Number(onlineOrder.branchId) !== Number(input.expectedBranchId)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "فرع طلب المتجر لا يطابق فرع الفاتورة — أصلح الربط قبل الإلغاء",
+        message: `فرع طلب المتجر لا يطابق فرع الفاتورة — أصلح الربط قبل ${operation}`,
       });
     }
 
@@ -202,7 +211,7 @@ export async function assertInvoiceCancellationDeliverySafeTx(
       && consignment.sourceType === "ONLINE_ORDER"
       && Number(consignment.sourceId) === Number(onlineOrder.id);
     const safeOrderStatus = onlineOrder.status === "CANCELLED"
-      || (linkedToSafeConsignment && onlineOrder.status === "SHIPPED");
+      || (input.mode === "CANCEL" && linkedToSafeConsignment && onlineOrder.status === "SHIPPED");
     if (!safeOrderStatus) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -245,4 +254,12 @@ export async function assertInvoiceCancellationDeliverySafeTx(
     consignmentId: consignment == null ? null : Number(consignment.id),
     onlineOrderId: onlineOrder == null ? null : Number(onlineOrder.id),
   };
+}
+
+/** توافقٌ صريح لمسار الإلغاء القائم؛ كلا المسارين يمران الآن بجسم الحارس والقفل نفسيهما. */
+export async function assertInvoiceCancellationDeliverySafeTx(
+  tx: Tx,
+  input: InvoiceCancellationGuardInput,
+): Promise<InvoiceCancellationGuardResult> {
+  return assertInvoiceReversalDeliverySafeTx(tx, { ...input, mode: "CANCEL" });
 }

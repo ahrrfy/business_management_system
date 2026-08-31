@@ -1,12 +1,12 @@
 import { TRPCError } from "@trpc/server";
-import { failOpaque } from "../lib/opaqueFailure";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, users } from "../../drizzle/schema";
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { returnSale, returnSaleInTx } from "../services/returnService";
+import { returnSaleInTx } from "../services/returnService";
+import { requestSalesControl } from "../services/sale/controlRequests";
 import { withTx } from "../services/tx";
 import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
@@ -21,8 +21,8 @@ import {
 } from "../services/returns/requests";
 import { nonNegMoneyString } from "../lib/schemas";
 import { escLike } from "../lib/sqlLike";
-import { isDupEntry } from "@shared/errorMap.ar";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
+import { randomUUID } from "node:crypto";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const walkInResolution = z.object({
@@ -56,45 +56,38 @@ export const returnRouter = router({
         /** إلزامي خادمياً إذا كانت الفاتورة بلا customerId؛ لا يغيّر عقد العميل المسجّل. */
         resolution: walkInResolution.optional(),
         restock: z.boolean().optional(),
+        reason: z.string().trim().min(3).max(500).optional(),
         // idempotency: نفس المفتاح ⇒ مرتجع واحد (لا استرداد/إرجاع/خصم AR مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       // G3 (١٩/٦/٢٦): استبدال fallback `?? 1` — مرتجع يؤثّر على ذمم وصندوق فرع محدّد، لا فرع افتراضي.
-      if (ctx.user.branchId == null) {
+      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء مرتجع" });
       }
-      const actorBranchId = Number(ctx.user.branchId);
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          // G8: تمرير role لتمكين فحص ملكية الفرع داخل returnSale (admin يتجاوز).
-          // retryOnDeadlock (مراجعة نهائية ١٠/٨): returnSale يقفل فاتورة+مخزوناً+ذمّة عميل بترتيبٍ
-          // قد يعاكس إرسال/تسوية توصيلٍ متزامن على نفس الفاتورة (مسار «تعذّر التسليم» يستدعيه) ⇒
-          // deadlock عرضيّ من MySQL؛ يمتصّه هنا. سباق المفتاح (ER_DUP) يبقى للحلقة الخارجية.
-          const res = await retryOnDeadlock(() => returnSale(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role }));
-          await logAudit(ctx, {
-            action: "return.create", entityType: "invoice", entityId: input.invoiceId,
-            newValue: {
-              lines: input.lines.length,
-              refund: input.refund?.amount ?? input.resolution?.amount,
-              resolution: input.resolution?.kind ?? null,
-              reason: input.resolution?.reason ?? null,
-              disposition: input.resolution?.disposition ?? null,
-            },
-          });
-          return res;
-        } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue; // سباق نفس المفتاح ⇒ أعد المحاولة فيُرى المرتجع الأول replay
-          if (e instanceof TRPCError) throw e;
-          failOpaque(e, {
-            op: "returns.create",
-            userMessage: "تعذّر إتمام المرتجع",
-            context: { userId: ctx.user.id, invoiceId: input.invoiceId, lines: input.lines.length },
-          });
-        }
-      }
-      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام المرتجع (تكرار)" });
+      const actorBranchId = Number(ctx.user.branchId ?? 0);
+      const { invoiceId, clientRequestId, reason: explicitReason, ...payload } = input;
+      const reason = explicitReason ?? input.resolution?.reason ?? "";
+      const res = await requestSalesControl({
+        requestKey: clientRequestId ?? randomUUID(),
+        invoiceId,
+        requestType: "SALES_RETURN",
+        reason,
+        payload,
+      }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
+      await logAudit(ctx, {
+        action: "return.request",
+        entityType: "invoice",
+        entityId: invoiceId,
+        newValue: {
+          requestId: res.id,
+          payloadHash: res.payloadHash,
+          lines: input.lines.length,
+          reason,
+        },
+      });
+      return { requestId: res.id, status: res.status, replayed: res.replayed };
     }),
 
   // ════════ طلبات الإرجاع من المحطة (١٩/٨ — قرار المالك: طلب موظف + اعتماد مدير) ════════

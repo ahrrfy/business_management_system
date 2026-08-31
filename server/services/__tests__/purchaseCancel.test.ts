@@ -1,10 +1,16 @@
 // إلغاء أمر شراء — قلب حالة خالص: createPurchaseOrder لا يكتب قيداً/AP/مخزوناً/إيصالاً،
 // فالإلغاء قبل أي استلام لا يحتاج عكساً مالياً. أمرٌ استُلم منه شيء ⇒ مرتجع شراء لا إلغاء.
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase } from "../purchaseService";
+import { createPurchaseOrder, receivePurchase } from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  requestPurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -19,6 +25,8 @@ async function reset() {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const t of [
     "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
+    "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations",
+    "purchaseOrderRevisionItems", "purchaseOrderRevisions",
     "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices",
     "productUnits", "productVariants", "products", "suppliers", "branches", "users",
   ]) {
@@ -30,7 +38,10 @@ async function reset() {
 async function seed() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 9, openId: "purchase-reviewer", name: "مراجع مستقل", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
   await d.insert(s.products).values({ id: 1, name: "ورق" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "P-1", costPrice: "0.00" });
@@ -44,13 +55,54 @@ beforeEach(async () => {
 
 async function makeConfirmedPO(qty = 10, unitPrice = "5.00"): Promise<{ purchaseOrderId: number; itemId: number }> {
   const po = await createPurchaseOrder(
-    { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
+    { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
     actor,
   );
+  await approvePurchaseOrder(po, actor);
   const item = (
     await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
   )[0];
   return { purchaseOrderId: po.purchaseOrderId, itemId: Number(item.id) };
+}
+
+async function approvePurchaseOrder(
+  po: Awaited<ReturnType<typeof createPurchaseOrder>>,
+  creatorActor: { userId: number; branchId: number; role?: string },
+) {
+  const submitted = await submitPurchaseOrderForApproval({
+    purchaseOrderId: po.purchaseOrderId,
+    expectedVersion: po.version,
+    reason: "إرسال أمر اختبار الإلغاء للمراجعة المستقلة",
+    requestKey: `purchase-cancel-submit:${randomUUID()}`,
+  }, creatorActor);
+  await decidePurchaseOrderControl({
+    requestId: submitted.requestId,
+    decisionKey: `purchase-cancel-approve:${randomUUID()}`,
+    approve: true,
+    reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+  }, { userId: 9, branchId: 1, role: "manager" });
+}
+
+async function cancelGoverned(purchaseOrderId: number) {
+  const [po] = await db().select({
+    version: s.purchaseOrders.version,
+    revisionId: s.purchaseOrders.currentRevisionId,
+  }).from(s.purchaseOrders).where(eq(s.purchaseOrders.id, purchaseOrderId));
+  const request = await requestPurchaseOrderControl({
+    purchaseOrderId,
+    revisionId: po?.revisionId ?? null,
+    expectedVersion: Number(po?.version ?? 1),
+    kind: "CANCEL_ORDER",
+    requestKey: `purchase-cancel-request:${randomUUID()}`,
+    reason: "إلغاء أمر الشراء بعد مراجعة عدم وجود استلام أو دفعات",
+  }, actor);
+  const decided = await decidePurchaseOrderControl({
+    requestId: request.requestId,
+    decisionKey: `purchase-cancel-decision:${randomUUID()}`,
+    approve: true,
+    reason: "تحققت من سلامة الإلغاء واعتمدته",
+  }, { userId: 9, branchId: 1, role: "manager" });
+  return { status: decided.orderStatus, purchaseOrderId };
 }
 
 const countRows = async (table: any): Promise<number> => {
@@ -62,7 +114,7 @@ describe("إلغاء أمر شراء لم يُستلم", () => {
   it("CONFIRMED بلا استلام ⇒ CANCELLED، وصفر صفوف جديدة في الدفتر/الحركات/الإيصالات", async () => {
     const { purchaseOrderId } = await makeConfirmedPO();
 
-    const res = await cancelPurchaseOrder(purchaseOrderId, actor);
+    const res = await cancelGoverned(purchaseOrderId);
     expect(res.status).toBe("CANCELLED");
     expect(res.purchaseOrderId).toBe(purchaseOrderId);
 
@@ -86,7 +138,7 @@ describe("حواجز الإلغاء", () => {
       { purchaseOrderId, lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 4 }] },
       actor,
     );
-    await expect(cancelPurchaseOrder(purchaseOrderId, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(cancelGoverned(purchaseOrderId)).rejects.toMatchObject({ code: "BAD_REQUEST" });
     // الحالة بقيت CONFIRMED (استلام جزئي).
     const po = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, purchaseOrderId)))[0];
     expect(po.status).toBe("CONFIRMED");
@@ -94,17 +146,17 @@ describe("حواجز الإلغاء", () => {
 
   it("إلغاء مزدوج ⇒ الثاني يُرفض BAD_REQUEST", async () => {
     const { purchaseOrderId } = await makeConfirmedPO();
-    await cancelPurchaseOrder(purchaseOrderId, actor);
-    await expect(cancelPurchaseOrder(purchaseOrderId, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await cancelGoverned(purchaseOrderId);
+    await expect(cancelGoverned(purchaseOrderId)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("أمر غير موجود ⇒ NOT_FOUND", async () => {
-    await expect(cancelPurchaseOrder(99999, actor)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(cancelGoverned(99999)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("استلام على أمر CANCELLED يبقى مرفوضاً (انحدار)", async () => {
     const { purchaseOrderId, itemId } = await makeConfirmedPO();
-    await cancelPurchaseOrder(purchaseOrderId, actor);
+    await cancelGoverned(purchaseOrderId);
     await expect(
       receivePurchase({ purchaseOrderId, lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 1 }] }, actor),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -119,9 +171,10 @@ describe("SOD-06: اعتماد الشراء بفصل المهام (مُستلِ�
     await db().insert(s.users).values({ id: 2, openId: "wh", name: "مخزن", role: "warehouse", loginMethod: "local" });
     const wh = { userId: 2, branchId: 1, role: "warehouse" };
     const po = await createPurchaseOrder(
-      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }] },
+      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }] },
       wh,
     );
+    await approvePurchaseOrder(po, wh);
     const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
 
     // نفس المُنشئ (غير أدمن) يُحاول الاستلام ⇒ مرفوض.

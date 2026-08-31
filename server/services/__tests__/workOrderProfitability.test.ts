@@ -5,6 +5,7 @@
 // → markWorkOrderReady → deliverWorkOrder (فاتورة WORKORDER + قيد SALE) — ثم يُضبط
 // workSeconds/deliveredAt مباشرةً بعد التسليم فقط (قيمهما الحقيقية زمن-تشغيلية:
 // TIMESTAMPDIFF وNOW() — غير قابلة للتثبيت عبر الخدمات في اختبار).
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -13,6 +14,10 @@ import { workOrderProfitability } from "../reports/workOrderProfitability";
 import { createWorkOrder } from "../workOrder/create";
 import { deliverWorkOrder } from "../workOrder/deliver";
 import { markWorkOrderReady, startWorkOrder } from "../workOrder/lifecycle";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const admin = { userId: 1, branchId: 1, role: "admin" as const };
 
@@ -21,10 +26,16 @@ const TABLES = [
   "receipts",
   "invoiceItems",
   "invoices",
+  "workOrderEvents",
+  "workOrderDesignApprovals",
+  "workOrderDesignRevisions",
+  "taskEvents",
+  "tasks",
   "workOrderMaterials",
   "workOrderItems",
   "workOrderImages",
   "workOrders",
+  "serviceTypes",
   "inventoryMovements",
   "branchStock",
   "productUnits",
@@ -60,12 +71,29 @@ async function seedBase() {
     { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
-  await d.insert(s.users).values({
-    id: 1,
-    openId: "local_test",
-    name: "admin",
-    role: "admin",
-    loginMethod: "local",
+  await d.insert(s.users).values([
+    {
+      id: 1,
+      openId: "local_test",
+      name: "admin",
+      role: "admin",
+      loginMethod: "local",
+    },
+    {
+      id: 2,
+      openId: "profitability_design_reviewer",
+      name: "مراجع التصميم",
+      role: "admin",
+      loginMethod: "local",
+    },
+  ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
   });
   // creditLimit=null ⇒ بلا حدّ (يسمح بالتسليم الآجل بلا دفعة ولا وردية نقدية).
   await d.insert(s.customers).values({ id: CUSTOMER_ID, name: "عميل المطبعة" });
@@ -81,6 +109,30 @@ async function seedBase() {
     { variantId: VARIANT_ID, branchId: 1, quantity: 1000 },
     { variantId: VARIANT_ID, branchId: 2, quantity: 1000 },
   ]);
+}
+
+async function approveCurrentDesign(workOrderId: number, branchId: number) {
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId,
+      requestKey: `profitability-design-request:${randomUUID()}`,
+      note: "اعتماد التصميم قبل بدء التنفيذ في اختبار الربحية",
+    },
+    { userId: 1, branchId, role: "admin" },
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `profitability-design-approve:${randomUUID()}`,
+      decision: "APPROVED",
+      reason: "راجع العميل التصميم النهائي ووافق عليه",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.profitability.${randomUUID()}`,
+      },
+    },
+    { userId: 2, branchId, role: "admin" },
+  );
 }
 
 /** دورة كاملة بالخدمات الحقيقية حتى DELIVERED، ثم تثبيت workSeconds/deliveredAt للحتمية. */
@@ -108,6 +160,7 @@ async function makeDeliveredWO(opts: {
     },
     { userId: 1, branchId },
   );
+  await approveCurrentDesign(workOrderId, branchId);
   await startWorkOrder(workOrderId, { ...admin, branchId });
   await markWorkOrderReady(workOrderId, { ...admin, branchId });
   // تسليم آجل بلا دفعة ⇒ لا وردية مطلوبة؛ الذمم تُعدَّل على العميل.
@@ -258,6 +311,7 @@ describe("workOrderProfitability — النطاق والفلاتر", () => {
       },
       { userId: 1, branchId: 1 },
     );
+    await approveCurrentDesign(workOrderId, 1);
     await startWorkOrder(workOrderId, admin);
     await markWorkOrderReady(workOrderId, admin);
 

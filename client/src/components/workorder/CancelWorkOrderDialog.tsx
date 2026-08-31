@@ -8,7 +8,7 @@
  * فهنا سطرٌ لكلّ خامة: **راجع** و**تالف**، مجموعُهما = المستهلَك (يفرضه الخادم أيضاً)، وقيمةُ
  * الهدر تظهر **قبل** التأكيد — لا امتصاصَ خفيّ (§٥).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, PackageX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -25,7 +25,14 @@ export interface CancelMaterialRow {
 
 export interface CancelDecision {
   reason: string;
+  refundShiftId?: number;
   materials: Array<{ workOrderMaterialId: number; returnBase: number; wasteBase: number }> | undefined;
+}
+
+export interface CancellationCashShift {
+  id: number;
+  userName: string | null;
+  expectedCash: string | null;
 }
 
 /** أسبابٌ جاهزة — نقرةٌ بدل كتابة، والحقلُ الحرّ يبقى لما لا يُحصى. */
@@ -44,6 +51,13 @@ export default function CancelWorkOrderDialog({
   title,
   /** أسطر الخامة المستهلَكة — فارغةٌ إن لم يبدأ التنفيذ (فلا جدولَ ولا هدر). */
   materials,
+  cashRefundRequired,
+  expectedCashRefund,
+  shifts,
+  requiresApproval,
+  preflightPending,
+  preflightError,
+  onRetryPreflight,
   pending,
   onConfirm,
 }: {
@@ -52,11 +66,27 @@ export default function CancelWorkOrderDialog({
   orderNumber: string;
   title: string;
   materials: CancelMaterialRow[];
+  cashRefundRequired: boolean;
+  expectedCashRefund: string;
+  shifts: CancellationCashShift[];
+  requiresApproval: boolean;
+  preflightPending?: boolean;
+  preflightError?: boolean;
+  onRetryPreflight?: () => void;
   pending?: boolean;
   onConfirm: (d: CancelDecision) => void;
 }) {
   const [reason, setReason] = useState("");
   const [waste, setWaste] = useState<Record<number, number>>({});
+  const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setRefundShiftId((current) => {
+      if (current != null && shifts.some((shift) => shift.id === current)) return current;
+      return shifts.length === 1 ? shifts[0]!.id : null;
+    });
+  }, [open, shifts]);
 
   const hasMaterials = materials.length > 0;
   const anyWaste = materials.some((m) => (waste[m.id] ?? 0) > 0);
@@ -182,8 +212,43 @@ export default function CancelWorkOrderDialog({
             </p>
           )}
 
+          {preflightPending ? (
+            <p className="rounded-md border p-3 text-sm text-muted-foreground">جارٍ التحقق من النقد والورديات المفتوحة…</p>
+          ) : preflightError ? (
+            <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+              <p>تعذّر التحقق من وردية ردّ المبلغ؛ أُوقف الإلغاء حتى نجاح التحقق.</p>
+              {onRetryPreflight && <Button type="button" variant="outline" size="sm" className="mt-2" onClick={onRetryPreflight}>إعادة المحاولة</Button>}
+            </div>
+          ) : cashRefundRequired ? (
+            <div className="rounded-md border p-3">
+              <Label htmlFor="cancel-refund-shift" className="text-xs font-bold">درج ردّ النقد</Label>
+              <p className="mt-1 text-2xs text-muted-foreground">
+                سيخرج <span dir="ltr" className="font-bold tabular-nums">{fmtAr(expectedCashRefund)}</span> د.ع من الوردية المحددة ويُسجّل في مطابقة اليوم.
+              </p>
+              {shifts.length === 0 ? (
+                <p role="alert" className="mt-2 text-xs font-bold text-destructive">لا توجد وردية استقبال مفتوحة في فرع الأمر؛ افتح ورديةً قبل ردّ النقد.</p>
+              ) : (
+                <select
+                  id="cancel-refund-shift"
+                  className="mt-2 h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={refundShiftId ?? ""}
+                  onChange={(event) => setRefundShiftId(event.target.value ? Number(event.target.value) : null)}
+                >
+                  <option value="">اختر الوردية التي سيخرج منها النقد…</option>
+                  {shifts.map((shift) => (
+                    <option key={shift.id} value={shift.id}>
+                      #{shift.id} — {shift.userName ?? "مستخدم غير معروف"} — المتوقع {shift.expectedCash == null ? "غير متاح" : `${fmtAr(shift.expectedCash)} د.ع`}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          ) : null}
+
           <p className="text-2xs text-muted-foreground">
-            العربون المقبوض (إن وُجد) يُردّ بطريقة قبضه، وأمانة أجرة التوصيل تُردّ كذلك.
+            {requiresApproval
+              ? "الإرسال هنا ينشئ طلباً معلّقاً بلا أثر مالي أو مخزني؛ مدير مستقل يراجعه ويعتمده أو يرفضه."
+              : "العربون المقبوض (إن وُجد) يُردّ بطريقة قبضه، وأمانة أجرة التوصيل تُردّ كذلك."}
           </p>
         </div>
 
@@ -191,10 +256,11 @@ export default function CancelWorkOrderDialog({
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>تراجع</Button>
           <Button
             variant="destructive"
-            disabled={pending || reason.trim().length < 3}
+            disabled={pending || preflightPending || preflightError || reason.trim().length < 3 || (cashRefundRequired && refundShiftId == null)}
             onClick={() =>
               onConfirm({
                 reason: reason.trim(),
+                refundShiftId: refundShiftId ?? undefined,
                 // بلا هدرٍ ⇒ لا نُرسل الحقل إطلاقاً: العقد يقرأ غيابه «رجوعٌ كامل» — أقصرُ
                 // حمولةً وأصدقُ نيّةً من إرسال أصفارٍ صريحة.
                 materials: anyWaste
@@ -207,7 +273,9 @@ export default function CancelWorkOrderDialog({
               })
             }
           >
-            {pending ? (<><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> جارٍ…</>) : "أكّد الإلغاء"}
+            {pending
+              ? (<><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> جارٍ…</>)
+              : requiresApproval ? "إرسال طلب الإلغاء" : "أكّد الإلغاء"}
           </Button>
         </DialogFooter>
       </DialogContent>

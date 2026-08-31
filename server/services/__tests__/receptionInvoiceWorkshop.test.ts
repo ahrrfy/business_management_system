@@ -15,6 +15,7 @@
  *  C3 — نقديّ بلا وردية مفتوحة ⇒ PRECONDITION_FAILED برسالة «درجك أنت».
  *  R1 — بوّابة الطابور: warehouse/auditor ⇒ FORBIDDEN، والكاشير ومشغّل الطباعة يمران للقراءة فقط.
  */
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -25,12 +26,17 @@ import { checkoutReception } from "../receptionCheckoutService";
 import { createWorkOrder } from "../workOrder/create";
 import { deliverWorkOrder } from "../workOrder/deliver";
 import { listReceptionInvoices } from "../reception";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
-  "workOrderMaterials", "workOrderImages", "workOrders",
+  "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks",
+  "workOrderMaterials", "workOrderImages", "workOrders", "serviceTypes",
   "productPrices", "productUnits", "productVariants", "products",
   "shifts", "customers", "branches", "users",
 ];
@@ -61,6 +67,14 @@ async function seed() {
     { id: 7, openId: "aud", name: "مدقق", email: "a@t.test", role: "auditor", loginMethod: "local", branchId: 1 },
     { id: 8, openId: "po", name: "فني طباعة", email: "p@t.test", role: "print_operator", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.customers).values([{ id: 1, name: "عميل آجل", phone: "+9647700000009", currentBalance: "0.00", creditLimit: "1000000.00" }]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "NB-1", costPrice: "500.00" }]);
@@ -91,6 +105,24 @@ function makeCtx(user: { id: number }) {
 async function callerFor(userId: number) {
   const u = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
   return appRouter.createCaller(makeCtx(u as never));
+}
+
+async function approveCurrentDesign(workOrderId: number) {
+  const approval = await requestWorkOrderDesignApproval({
+    workOrderId,
+    requestKey: `invoice-workshop-design-request:${randomUUID()}`,
+    note: "اعتماد التصميم قبل التسليم",
+  }, CASHIER);
+  await decideWorkOrderDesignApproval({
+    approvalId: Number(approval.approval.id),
+    decisionKey: `invoice-workshop-design-approve:${randomUUID()}`,
+    decision: "APPROVED",
+    reason: "وافق العميل على التصميم النهائي",
+    evidence: {
+      type: "WHATSAPP_MESSAGE",
+      reference: `wamid.invoice-workshop.${randomUUID()}`,
+    },
+  }, { userId: 1, branchId: 1, role: "manager" });
 }
 
 beforeEach(async () => {
@@ -177,6 +209,7 @@ describe("Q — طابور فواتير المحطة", () => {
       salePrice: "50000", quantity: 1, deposit: "20000", paymentMethod: "CASH",
     }, CASHIER);
     const workOrderId = (wo as { workOrderId: number }).workOrderId;
+    await approveCurrentDesign(workOrderId);
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, workOrderId));
     const res = await deliverWorkOrder({ workOrderId, payment: { amount: "10000", method: "CASH" } }, CASHIER);
 
@@ -197,6 +230,7 @@ describe("C — تسديد دفعة من المحطة (reception.collectOnInvoic
       salePrice: "30000", quantity: 1, deposit: "10000", paymentMethod: "CASH",
     }, CASHIER);
     const workOrderId = (wo as { workOrderId: number }).workOrderId;
+    await approveCurrentDesign(workOrderId);
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, workOrderId));
     const delivered = await deliverWorkOrder({ workOrderId }, CASHIER); // بلا دفعة تسليم ⇒ متبقٍّ ٢٠٬٠٠٠ آجلاً
 

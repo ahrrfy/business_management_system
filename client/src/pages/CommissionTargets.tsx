@@ -24,11 +24,13 @@ import { useMemo, useState } from "react";
 
 export default function CommissionTargets() {
   const utils = trpc.useUtils();
-  // بوّابة عرض مطابقة للخادم: الكتابة commissionsManagerProcedure(["manager"],"commissions","FULL")
-  // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد. القراءة (accountant/auditor) شبكة للعرض فقط.
+  // مدير الفرع يحرر موظفي فرعه فقط؛ المالية المركزية/الأدمن يحرران الشركة عند FULL.
   const me = trpc.auth.me.useQuery();
-  const canWrite = !!me.data?.role &&
+  const hasFull = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "commissions", "FULL", ["manager"]);
+  const isCompanyAuthority = me.data?.role === "admin" || me.data?.isOwner === true ||
+    (me.data?.role === "accountant" && me.data?.branchId == null);
+  const canWrite = hasFull && (isCompanyAuthority || (me.data?.role === "manager" && me.data?.branchId != null));
   const [period, setPeriod] = useState<string>(thisMonth());
   const grid = trpc.commissions.targets.grid.useQuery({ period });
   const rows = grid.data ?? [];

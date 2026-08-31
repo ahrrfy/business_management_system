@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -8,6 +9,10 @@ import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift } from "../shiftService";
 import { createWorkOrder, deliverWorkOrder, markWorkOrderReady, startWorkOrder } from "../workOrderService";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 const cashierA = { userId: 2, branchId: 1, role: "cashier" };
@@ -18,6 +23,7 @@ const TABLES = [
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
+  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions", "serviceTypes",
   "shifts", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
 ];
 
@@ -45,7 +51,16 @@ async function seedBase() {
     { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" },
     { id: 2, openId: "cashierA", name: "أ", role: "cashier", branchId: 1, loginMethod: "local" },
     { id: 3, openId: "cashierB", name: "ب", role: "cashier", branchId: 2, loginMethod: "local" },
+    { id: 4, openId: "designReviewer", name: "مراجع تصميم", role: "manager", branchId: 1, loginMethod: "local" },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
@@ -132,18 +147,41 @@ describe("WORKORDER — إرجاع لا يُعيد المتغيّر الأساس
   it("returnSale على فاتورة WORKORDER يَفرض restock=false", async () => {
     await setStock(1, 1, 5); // مواد كافية للبدء (نستخدم variantId 1 كمواد + كأساس للتبسيط)
     // M10: تسليم WO نقداً يَستوجب وردية مفتوحة لمستخدم actor.
-    await openShift(1, 1);
+    const shiftId = await openShift(1, 1);
     const wo = await createWorkOrder(
       { branchId: 1, baseVariantId: 1, title: "درع", salePrice: "100.00", materials: [{ variantId: 1, baseQuantity: 1 }] },
       actor,
     );
+    const approval = await requestWorkOrderDesignApproval({
+      workOrderId: wo.workOrderId,
+      requestKey: `financial-medium-design-request:${randomUUID()}`,
+      note: "اعتماد النسخة الحالية قبل التنفيذ",
+    }, actor);
+    await decideWorkOrderDesignApproval({
+      approvalId: Number(approval.approval.id),
+      decisionKey: `financial-medium-design-decision:${randomUUID()}`,
+      decision: "APPROVED",
+      reason: "ثبتت موافقة العميل على النسخة الحالية",
+      evidence: { type: "WHATSAPP_MESSAGE", reference: `wamid.financial-medium.${randomUUID()}` },
+    }, { userId: 4, branchId: 1, role: "manager" });
     await startWorkOrder(wo.workOrderId, actor);
     await markWorkOrderReady(wo.workOrderId, actor);
     const deliver = await deliverWorkOrder({ workOrderId: wo.workOrderId, payment: { amount: "100.00", method: "CASH" } }, actor);
 
     const stockBefore = (await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity;
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, deliver.invoiceId)))[0];
-    await returnSale({ invoiceId: deliver.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "100.00", method: "CASH" } }, actor);
+    await returnSale({
+      invoiceId: deliver.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "100.00",
+        shiftId,
+        reason: "مرتجع أمر شغل مخصص لا يعود إلى مخزون الرف",
+        disposition: "DAMAGED",
+      },
+    }, actor);
     const stockAfter = (await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity;
     expect(stockAfter).toBe(stockBefore); // لا تغيير — لم يُعَد المنتج الأساس وهمياً
   });

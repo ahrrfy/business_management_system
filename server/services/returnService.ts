@@ -24,6 +24,9 @@ import { userNameSnapshot } from "./userSnapshot";
 import { classifyGiftPosting } from "./sale/giftPosting";
 import { paymentAssetRole } from "./sale/paymentPosting";
 import { nextVoucherNumber } from "./voucher/helpers";
+import { assertNoActiveInstallmentPlanAfterInvoiceLockTx } from "./installment/guards";
+import { assertPeriodOpen } from "./periodLockService";
+import { assertLockedInvoiceControlSnapshotTx, type InvoiceControlSnapshot } from "./sale/controlSnapshot";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 export type ReturnDisposition = "RESTOCK" | "DAMAGED";
@@ -56,6 +59,8 @@ export interface ReturnSaleInput {
   restock?: boolean;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة المرتجع الأول (لا استرداد/إرجاع مزدوج). */
   clientRequestId?: string | null;
+  /** لقطة داخلية من طلب التحكم؛ تُطابَق بعد قفل الفاتورة وقبل أول أثر. */
+  controlExpectedSnapshot?: InvoiceControlSnapshot | null;
   /**
    * **تفويضٌ داخليّ حصراً — لا يقبله أيّ راوتر.** عكسُ `correctSale` الكامل قبل إعادة الإصدار.
    * يُعفي من حارس «الزبون العابر يجب أن يُردّ له»: المال هنا لا يُحتجَز بلا طرف، بل يُنقل
@@ -246,6 +251,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     if (Number(inv.branchId) !== Number(invPreview.branchId)) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء المرتجع؛ أعد المحاولة" });
     }
+    await assertLockedInvoiceControlSnapshotTx(tx, inv, input.controlExpectedSnapshot);
+    // المرتجع يغيّر الفاتورة وبنودها والمخزون والذمم تاريخياً. قيدٌ بتاريخ اليوم لا
+    // يبرر إعادة كتابة حقيقة فاتورة داخل شهر مقفل؛ التصحيح السابق يجب أن يمر بمسار
+    // prior-period adjustment مستقل بدلاً من تعديل المستند الأصلي.
+    await assertPeriodOpen(tx, inv.invoiceDate);
     // المُستبدَلة كانت محجوبةً **بالمصادفة** لا بالتصميم: التصحيح يعكس كل الأسطر فيصير المتبقّي
     // صفراً، فيسقط الطلب برسالة «كمية الإرجاع تتجاوز المتبقّي للبند ####» — رحلةٌ تنتهي بخطأ
     // تقنيّ غامض بدل توجيهٍ صريح. ولو أُضيف بندٌ بعد التصحيح لتغيّر الحساب وسقط الدفاع.
@@ -263,6 +273,10 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
     }
+    await assertNoActiveInstallmentPlanAfterInvoiceLockTx(tx, {
+      invoiceId: input.invoiceId,
+      operationLabel: "إرجاع الفاتورة كلياً أو جزئياً",
+    });
     const isWalkInReturn = inv.customerId == null && !input.internalCorrectionReversal;
     if (isWalkInReturn) {
       const resolution = input.resolution;

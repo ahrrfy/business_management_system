@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -6,12 +6,8 @@ import { appRouter } from "../../routers";
 import { todayUtcDate } from "../businessDay";
 
 /**
- * اختبارات شريحة «حركات المخزون اليدوية» — تغطّي:
- *  (أ) IN يدوي يزيد الرصيد ويسجّل referenceType="MANUAL_IN".
- *  (ب) OUT يدوي يخصم؛ يُرفض عند نقص المخزون.
- *  (ج) RETURN يدوي يزيد المخزون + referenceType="MANUAL_RETURN".
- *  (د) movementsRich يفلتر بالنوع والتاريخ والفرع.
- *  (هـ) warehouse role لا يستطيع إنشاء حركة في فرع غير فرعه (يُجبَر على فرعه).
+ * اختبارات سجلّ حركات المخزون التاريخي: movementsRich يفلتر بالنوع والتاريخ والفرع
+ * ويحافظ على عزل أمين المخزن. الإنشاء اليدوي أُلغي؛ التسويات تمرّ بمسار الاعتماد.
  */
 
 const TABLES = [
@@ -72,89 +68,14 @@ async function userRow(id: number) {
   return (await db().select().from(s.users).where(eq(s.users.id, id)).limit(1))[0];
 }
 
-async function stockOf(variantId: number, branchId: number): Promise<number> {
-  const r = await db()
-    .select({ q: s.branchStock.quantity })
-    .from(s.branchStock)
-    .where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, branchId)))
-    .limit(1);
-  return r[0]?.q ?? 0;
-}
-
 beforeEach(async () => {
   await reset();
   await seed();
 });
 
-describe("inventory.createManualMovement", () => {
-  it("يرفض IN اليدوي حتى للأدمن لأنه بلا مستند مصدر", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userRow(1))); // admin
-    await expect(caller.inventory.createManualMovement({
-      variantId: 1, branchId: 1, movementType: "IN", productUnitId: 1,
-      quantity: "5", reason: "STOCK_TAKE", notes: "جرد افتتاحي",
-    })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(await stockOf(1, 1)).toBe(20);
-    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
-  });
-
-  it("(ب) OUT (شطب) يُرفَض على الحركة اليدوية — يُوجَّه لتسوية معتمَدة (فصل مهام #٦)", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    await expect(
-      caller.inventory.createManualMovement({
-        variantId: 1, branchId: 1, movementType: "OUT",
-        productUnitId: 1, quantity: "7", reason: "DAMAGE", notes: "كسر شحنة",
-      })
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(await stockOf(1, 1)).toBe(20); // بلا تغيير — الشطب لا يُطبَّق بفاعلٍ واحد
-  });
-
-  it("يرفض RETURN اليدوي ويوجّه إلى شاشة المرتجع الموثّق", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    await expect(caller.inventory.createManualMovement({
-      variantId: 1, branchId: 1, movementType: "RETURN",
-      productUnitId: 1, quantity: "3", reason: "OTHER",
-    })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(await stockOf(1, 1)).toBe(20);
-  });
-
-  it("أمين المخزن لا يستطيع إنشاء كمية في فرعه أو فرع آخر", async () => {
-    const wh2 = appRouter.createCaller(makeCtx(await userRow(3)));
-    await expect(wh2.inventory.createManualMovement({
-      variantId: 1, branchId: 1,
-      movementType: "IN",
-      productUnitId: 1, quantity: "4", reason: "CORRECTION",
-    })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(await stockOf(1, 1)).toBe(20);
-    expect(await stockOf(1, 2)).toBe(5);
-  });
-
-  it("الكاشير ممنوع من إنشاء حركة يدوية (warehouse فأعلى)", async () => {
-    // أضف كاشيراً مؤقتاً.
-    await db().insert(s.users).values({ id: 10, openId: "local_c1", name: "كاشير", email: "c1@m.test", role: "cashier", loginMethod: "local", branchId: 1 });
-    const cashier = appRouter.createCaller(makeCtx(await userRow(10)));
-    await expect(
-      cashier.inventory.createManualMovement({
-        variantId: 1, branchId: 1, movementType: "IN",
-        productUnitId: 1, quantity: "1", reason: "OTHER",
-      })
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-  });
-
-  it("كمية تنتج baseQuantity كسرياً (مثل 0.5 من قطعة) تُرفض", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    await expect(
-      caller.inventory.createManualMovement({
-        variantId: 1, branchId: 1, movementType: "IN",
-        productUnitId: 1, quantity: "0.5", reason: "OTHER",
-      })
-    ).rejects.toThrow();
-    expect(await stockOf(1, 1)).toBe(20); // بلا تغيير.
-  });
-});
-
 describe("inventory.movementsRich", () => {
   async function seedMovements() {
-    // بيانات تاريخية لتمرين شاشة الكاردكس؛ endpoint اليدوي الجديد مغلق ولا يُستخدم للتهيئة.
+    // بيانات تاريخية لتمرين شاشة الكاردكس؛ لا يوجد endpoint إنشاء يدوي في العقد الحالي.
     await db().insert(s.inventoryMovements).values([
       { variantId: 1, branchId: 1, movementType: "IN", quantity: 2, referenceType: "MANUAL_IN", createdBy: 1 },
       { variantId: 1, branchId: 1, movementType: "RETURN", quantity: 1, referenceType: "MANUAL_RETURN", createdBy: 1 },

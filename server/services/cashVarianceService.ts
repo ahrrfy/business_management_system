@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   cashCustodyCounts,
   cashDailyReconciliations,
+  cashVarianceEvidenceDocuments,
   cashVarianceCaseEvents,
   cashVarianceCases,
   employeeAdvances,
@@ -18,7 +19,14 @@ import type {
   CashVarianceReasonCode,
   CashVarianceSourceType,
 } from "../../shared/cashVariance";
-import { CASH_VARIANCE_COUNTER_ACCOUNT_POLICY } from "../../shared/cashVariance";
+import {
+  CASH_VARIANCE_COUNTER_ACCOUNT_POLICY,
+  CASH_VARIANCE_EVIDENCE_MAX_BYTES,
+  CASH_VARIANCE_EVIDENCE_MIME_TYPES,
+  CASH_VARIANCE_EVIDENCE_REFERENCE_MAX_LENGTH,
+  CASH_VARIANCE_EVIDENCE_REFERENCE_MIN_LENGTH,
+  isCashVarianceReasonAllowed,
+} from "../../shared/cashVariance";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import {
@@ -38,7 +46,15 @@ import { buildDailyCashEvidenceTx } from "./cashDailyReconciliationService";
 import { postEntry, type EntryType } from "./ledgerService";
 import { money, toDbMoney } from "./money";
 import { todayUtcDate } from "./businessDay";
+import { logAuditTx, type AuditMetadata } from "./auditService";
 import { requireDb, withTx, type Actor } from "./tx";
+
+export interface RegisterCashVarianceEvidenceInput {
+  branchId: number;
+  fileName: string;
+  dataUrl: string;
+  clientRequestId: string;
+}
 
 export interface ProposeCashVarianceInput {
   sourceType: CashVarianceSourceType;
@@ -46,6 +62,7 @@ export interface ProposeCashVarianceInput {
   sourceId: number;
   reasonCode: CashVarianceReasonCode;
   reason: string;
+  evidenceDocumentId: number;
   evidenceReference: string;
   clientRequestId: string;
 }
@@ -223,6 +240,132 @@ function eventStatus(eventType: CashVarianceEventType) {
   return eventType;
 }
 
+const EVIDENCE_MIME_SET = new Set<string>(CASH_VARIANCE_EVIDENCE_MIME_TYPES);
+
+function parseEvidenceDataUrl(dataUrl: string) {
+  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
+  if (!match || !EVIDENCE_MIME_SET.has(match[1])) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "نوع ملف دليل فرق النقد غير مسموح" });
+  }
+  const content = Buffer.from(match[2], "base64");
+  if (
+    content.length === 0 ||
+    content.length > CASH_VARIANCE_EVIDENCE_MAX_BYTES ||
+    content.toString("base64").replace(/=+$/, "") !== match[2].replace(/=+$/, "")
+  ) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "ملف دليل فرق النقد فارغ أو تالف أو يتجاوز 5MB" });
+  }
+  return {
+    content,
+    contentType: match[1],
+    evidenceType: match[1] === "application/pdf" ? "PDF" as const : "IMAGE" as const,
+    contentHash: createHash("sha256").update(content).digest("hex"),
+  };
+}
+
+async function lockEvidenceTx(
+  tx: Tx,
+  input: { id: number; branchId: number; ownerUserId: number; expectedHash?: string | null },
+) {
+  const row = (
+    await tx.select().from(cashVarianceEvidenceDocuments)
+      .where(eq(cashVarianceEvidenceDocuments.id, input.id)).for("update").limit(1)
+  )[0];
+  if (!row || Number(row.branchId) !== input.branchId || Number(row.createdByUserId) !== input.ownerUserId) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "دليل فرق النقد غير موجود أو لا يخص المنشئ والفرع" });
+  }
+  const content = Buffer.from(row.content);
+  const actualHash = createHash("sha256").update(content).digest("hex");
+  if (
+    !EVIDENCE_MIME_SET.has(row.contentType) ||
+    content.length === 0 ||
+    content.length > CASH_VARIANCE_EVIDENCE_MAX_BYTES ||
+    actualHash !== row.contentHash ||
+    (input.expectedHash != null && actualHash !== input.expectedHash)
+  ) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "سلامة دليل فرق النقد أو بصمته غير صالحة" });
+  }
+  return row;
+}
+
+export async function registerCashVarianceEvidence(
+  input: RegisterCashVarianceEvidenceInput,
+  actor: Actor,
+  auditCtx: AuditMetadata = { userId: actor.userId, branchId: actor.branchId },
+) {
+  assertDecisionRole(actor);
+  assertBranchScope(actor, input.branchId);
+  const fileName = normalizeRequiredText(input.fileName, "اسم ملف الدليل", 1, 255);
+  const parsed = parseEvidenceDataUrl(input.dataUrl);
+  const requestHash = hashRequest({
+    branchId: input.branchId,
+    fileName,
+    contentType: parsed.contentType,
+    contentHash: parsed.contentHash,
+    actorUserId: actor.userId,
+  });
+  return withTx(async (tx) => {
+    const replay = (
+      await tx.select().from(cashVarianceEvidenceDocuments)
+        .where(eq(cashVarianceEvidenceDocuments.registrationClientRequestId, input.clientRequestId))
+        .limit(1)
+    )[0];
+    if (replay) {
+      if (replay.registrationRequestHash !== requestHash) {
+        throw new TRPCError({ code: "CONFLICT", message: "مفتاح تسجيل الدليل مستعمل لملف مختلف" });
+      }
+      await lockEvidenceTx(tx, {
+        id: Number(replay.id), branchId: input.branchId, ownerUserId: actor.userId,
+        expectedHash: parsed.contentHash,
+      });
+      return { evidenceDocumentId: Number(replay.id), contentHash: replay.contentHash, idempotent: true };
+    }
+    const inserted = await tx.insert(cashVarianceEvidenceDocuments).values({
+      branchId: input.branchId,
+      evidenceType: parsed.evidenceType,
+      fileName,
+      contentType: parsed.contentType,
+      contentHash: parsed.contentHash,
+      content: parsed.content,
+      createdByUserId: actor.userId,
+      registrationClientRequestId: input.clientRequestId,
+      registrationRequestHash: requestHash,
+    });
+    const evidenceDocumentId = extractInsertId(inserted);
+    await logAuditTx(tx, auditCtx, {
+      action: "treasury.cash_variance.evidence.register",
+      entityType: "cash_variance_evidence",
+      entityId: evidenceDocumentId,
+      branchId: input.branchId,
+      newValue: { fileName, contentType: parsed.contentType, contentHash: parsed.contentHash, byteLength: parsed.content.length },
+    });
+    return { evidenceDocumentId, contentHash: parsed.contentHash, idempotent: false };
+  });
+}
+
+function cashVarianceDecisionPolicy(
+  row: Pick<
+    typeof cashVarianceCases.$inferSelect,
+    "proposedByUserId" | "countedByUserId" | "responsibleUserId"
+  >,
+  status: CashVarianceEventType,
+  actor: Actor,
+) {
+  if (status !== "PROPOSED") {
+    return { canDecide: false, blockedReason: "حُسمت حالة فرق النقد بالفعل." } as const;
+  }
+  if (Number(row.proposedByUserId) === actor.userId) {
+    return { canDecide: false, blockedReason: "لا يمكنك اعتماد تسوية اقترحتها أنت." } as const;
+  }
+  if (Number(row.countedByUserId) === actor.userId) {
+    return { canDecide: false, blockedReason: "لا يمكنك اعتماد فرق العد الذي نفذته أنت." } as const;
+  }
+  if (row.responsibleUserId != null && Number(row.responsibleUserId) === actor.userId) {
+    return { canDecide: false, blockedReason: "لا يمكنك اعتماد قضية فرق نقد أنت مسؤول عنها." } as const;
+  }
+  return { canDecide: true, blockedReason: null } as const;
+}
+
 async function loadIdempotentProposal(
   tx: Tx,
   input: ProposeCashVarianceInput,
@@ -244,6 +387,15 @@ async function loadIdempotentProposal(
       message: "مفتاح محاولة الاقتراح مستعمل لحمولة مختلفة",
     });
   }
+  if (existing.evidenceDocumentId == null || existing.evidenceContentHash == null) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "قضية فرق النقد لا تحمل دليلاً موثقاً" });
+  }
+  await lockEvidenceTx(tx, {
+    id: Number(existing.evidenceDocumentId),
+    branchId: Number(existing.branchId),
+    ownerUserId: Number(existing.proposedByUserId),
+    expectedHash: existing.evidenceContentHash,
+  });
   const latest = await latestEventTx(tx, Number(existing.id));
   if (!latest) throw new TRPCError({ code: "CONFLICT", message: "سجل حالة فرق النقد ناقص" });
   return {
@@ -416,14 +568,21 @@ async function loadProposalSourceTx(
 export async function proposeCashVarianceCase(
   input: ProposeCashVarianceInput,
   actor: Actor,
+  auditCtx: AuditMetadata = { userId: actor.userId, branchId: actor.branchId },
 ) {
   assertDecisionRole(actor);
+  if (!isCashVarianceReasonAllowed(input.sourceType, input.reasonCode)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "سبب فرق النقد غير صالح لنوع المصدر المحدد",
+    });
+  }
   const reason = normalizeRequiredText(input.reason, "سبب فرق النقد", 10, 500);
   const evidenceReference = normalizeRequiredText(
     input.evidenceReference,
     "دليل فرق النقد",
-    5,
-    2_000_000,
+    CASH_VARIANCE_EVIDENCE_REFERENCE_MIN_LENGTH,
+    CASH_VARIANCE_EVIDENCE_REFERENCE_MAX_LENGTH,
   );
   const requestHash = hashRequest({
     sourceType: input.sourceType,
@@ -431,6 +590,7 @@ export async function proposeCashVarianceCase(
     reasonCode: input.reasonCode,
     reason,
     evidenceReference,
+    evidenceDocumentId: input.evidenceDocumentId,
     proposedByUserId: actor.userId,
   });
 
@@ -448,6 +608,11 @@ export async function proposeCashVarianceCase(
     });
     // LOCK ORDER 2/3: source document follows the branch lock.
     const source = await loadProposalSourceTx(tx, input, branchId);
+    const evidence = await lockEvidenceTx(tx, {
+      id: input.evidenceDocumentId,
+      branchId,
+      ownerUserId: actor.userId,
+    });
     if (!money(source.actualAmount).minus(source.expectedAmount).eq(source.variance)) {
       throw new TRPCError({ code: "CONFLICT", message: "مبالغ فرق النقد غير متسقة" });
     }
@@ -551,6 +716,8 @@ export async function proposeCashVarianceCase(
       reasonCode: input.reasonCode,
       reason,
       evidenceReference,
+      evidenceDocumentId: Number(evidence.id),
+      evidenceContentHash: evidence.contentHash,
       responsibleUserId,
       responsibleEmployeeId: responsibleEmployee == null ? null : Number(responsibleEmployee.id),
       responsibleNameSnapshot:
@@ -570,6 +737,19 @@ export async function proposeCashVarianceCase(
       clientRequestId: input.clientRequestId,
       requestHash,
       actorUserId: actor.userId,
+    });
+    await logAuditTx(tx, auditCtx, {
+      action: "treasury.cash_variance.propose",
+      entityType: "cash_variance_case",
+      entityId: caseId,
+      branchId,
+      newValue: {
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        reasonCode: input.reasonCode,
+        evidenceDocumentId: Number(evidence.id),
+        evidenceContentHash: evidence.contentHash,
+      },
     });
     return {
       caseId,
@@ -720,6 +900,7 @@ async function lockDecisionSourceTx(tx: Tx, candidate: typeof cashVarianceCases.
 export async function approveCashVarianceCase(
   input: DecideCashVarianceInput,
   actor: Actor,
+  auditCtx: AuditMetadata = { userId: actor.userId, branchId: actor.branchId },
 ) {
   assertDecisionRole(actor);
   const note = input.note?.trim() || null;
@@ -763,6 +944,15 @@ export async function approveCashVarianceCase(
         .limit(1)
     )[0];
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "حالة فرق النقد غير موجودة" });
+    if (row.evidenceDocumentId == null || row.evidenceContentHash == null) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يمكن اعتماد قضية بلا دليل موثق" });
+    }
+    await lockEvidenceTx(tx, {
+      id: Number(row.evidenceDocumentId),
+      branchId: Number(row.branchId),
+      ownerUserId: Number(row.proposedByUserId),
+      expectedHash: row.evidenceContentHash,
+    });
 
     const replay = (
       await tx
@@ -1011,6 +1201,13 @@ export async function approveCashVarianceCase(
       accountingEntryId: Number(accountingEntry.id),
       advanceId,
     });
+    await logAuditTx(tx, auditCtx, {
+      action: "treasury.cash_variance.approve",
+      entityType: "cash_variance_case",
+      entityId: Number(row.id),
+      branchId: Number(row.branchId),
+      newValue: { version, evidenceDocumentId: Number(row.evidenceDocumentId), evidenceContentHash: row.evidenceContentHash },
+    });
     return {
       caseId: Number(row.id),
       status: "APPROVED" as const,
@@ -1026,6 +1223,7 @@ export async function approveCashVarianceCase(
 export async function rejectCashVarianceCase(
   input: DecideCashVarianceInput & { reason: string },
   actor: Actor,
+  auditCtx: AuditMetadata = { userId: actor.userId, branchId: actor.branchId },
 ) {
   assertDecisionRole(actor);
   const reason = normalizeRequiredText(input.reason, "سبب رفض التسوية", 10, 500);
@@ -1048,12 +1246,21 @@ export async function rejectCashVarianceCase(
       shiftId: null,
     });
     await lockDecisionSourceTx(tx, candidate);
-    await tx
-      .select({ id: cashVarianceCases.id })
+    const row = (await tx
+      .select()
       .from(cashVarianceCases)
       .where(eq(cashVarianceCases.id, input.caseId))
       .for("update")
-      .limit(1);
+      .limit(1))[0];
+    if (!row || row.evidenceDocumentId == null || row.evidenceContentHash == null) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يمكن رفض قضية بلا دليل موثق" });
+    }
+    await lockEvidenceTx(tx, {
+      id: Number(row.evidenceDocumentId),
+      branchId: Number(row.branchId),
+      ownerUserId: Number(row.proposedByUserId),
+      expectedHash: row.evidenceContentHash,
+    });
     const replay = (
       await tx.select().from(cashVarianceCaseEvents).where(eq(cashVarianceCaseEvents.clientRequestId, input.clientRequestId)).limit(1)
     )[0];
@@ -1087,39 +1294,107 @@ export async function rejectCashVarianceCase(
       actorUserId: actor.userId,
       note: reason,
     });
+    await logAuditTx(tx, auditCtx, {
+      action: "treasury.cash_variance.reject",
+      entityType: "cash_variance_case",
+      entityId: input.caseId,
+      branchId: Number(row.branchId),
+      newValue: { version, reason, evidenceDocumentId: Number(row.evidenceDocumentId), evidenceContentHash: row.evidenceContentHash },
+    });
     return { caseId: input.caseId, status: "REJECTED" as const, version, idempotent: false };
   });
 }
 
 export async function listCashVarianceCases(
-  input: { branchId?: number; status?: CashVarianceEventType; limit?: number },
+  input: {
+    branchId?: number;
+    status?: CashVarianceEventType;
+    limit?: number;
+    cursor?: { createdAt: Date; id: number } | null;
+  },
   actor: Actor,
 ) {
   assertDecisionRole(actor);
   const branchId = input.branchId ?? actor.branchId;
   assertBranchScope(actor, branchId);
-  const rows = await requireDb()
-    .select()
-    .from(cashVarianceCases)
-    .where(eq(cashVarianceCases.branchId, branchId))
-    .orderBy(desc(cashVarianceCases.createdAt))
-    .limit(Math.min(Math.max(input.limit ?? 50, 1), 100));
-  if (rows.length === 0) return [];
-  const events = await requireDb()
-    .select()
+  const runner = requireDb();
+  const latestVersions = runner
+    .select({
+      caseId: cashVarianceCaseEvents.caseId,
+      version: sql<number>`MAX(${cashVarianceCaseEvents.version})`.as("latestVersion"),
+    })
     .from(cashVarianceCaseEvents)
-    .where(inArray(cashVarianceCaseEvents.caseId, rows.map((row) => Number(row.id))))
-    .orderBy(desc(cashVarianceCaseEvents.version));
-  const latestByCase = new Map<number, (typeof events)[number]>();
-  for (const event of events) {
-    const caseId = Number(event.caseId);
-    if (!latestByCase.has(caseId)) latestByCase.set(caseId, event);
-  }
-  return rows.flatMap((row) => {
-    const latest = latestByCase.get(Number(row.id));
-    if (!latest || (input.status && latest.eventType !== input.status)) return [];
-    return [{ ...row, status: latest.eventType, version: Number(latest.version), latestEvent: latest }];
-  });
+    .groupBy(cashVarianceCaseEvents.caseId)
+    .as("cashVarianceLatestVersions");
+  const baseWhere = and(
+    eq(cashVarianceCases.branchId, branchId),
+    input.status ? eq(cashVarianceCaseEvents.eventType, input.status) : undefined,
+  );
+  const oldestFirst = input.status === "PROPOSED";
+  const cursorWhere = input.cursor == null
+    ? undefined
+    : oldestFirst
+      ? or(
+          gt(cashVarianceCases.createdAt, input.cursor.createdAt),
+          and(
+            eq(cashVarianceCases.createdAt, input.cursor.createdAt),
+            gt(cashVarianceCases.id, input.cursor.id),
+          ),
+        )
+      : or(
+          lt(cashVarianceCases.createdAt, input.cursor.createdAt),
+          and(
+            eq(cashVarianceCases.createdAt, input.cursor.createdAt),
+            lt(cashVarianceCases.id, input.cursor.id),
+          ),
+        );
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  const total = Number((await runner
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(cashVarianceCases)
+    .innerJoin(latestVersions, eq(latestVersions.caseId, cashVarianceCases.id))
+    .innerJoin(
+      cashVarianceCaseEvents,
+      and(
+        eq(cashVarianceCaseEvents.caseId, cashVarianceCases.id),
+        eq(cashVarianceCaseEvents.version, latestVersions.version),
+      ),
+    )
+    .where(baseWhere))[0]?.count ?? 0);
+  const pageRows = await runner
+    .select({ case: cashVarianceCases, latestEvent: cashVarianceCaseEvents })
+    .from(cashVarianceCases)
+    .innerJoin(latestVersions, eq(latestVersions.caseId, cashVarianceCases.id))
+    .innerJoin(
+      cashVarianceCaseEvents,
+      and(
+        eq(cashVarianceCaseEvents.caseId, cashVarianceCases.id),
+        eq(cashVarianceCaseEvents.version, latestVersions.version),
+      ),
+    )
+    .where(and(baseWhere, cursorWhere))
+    .orderBy(
+      oldestFirst ? asc(cashVarianceCases.createdAt) : desc(cashVarianceCases.createdAt),
+      oldestFirst ? asc(cashVarianceCases.id) : desc(cashVarianceCases.id),
+    )
+    .limit(limit + 1);
+  const hasMore = pageRows.length > limit;
+  const page = hasMore ? pageRows.slice(0, limit) : pageRows;
+  const rows = page.map(({ case: row, latestEvent }) => ({
+    ...row,
+    status: latestEvent.eventType,
+    version: Number(latestEvent.version),
+    latestEvent,
+  }));
+  const last = page.at(-1)?.case;
+  return {
+    rows,
+    hasMore,
+    nextCursor: hasMore && last
+      ? { createdAt: last.createdAt, id: Number(last.id) }
+      : null,
+    total,
+  };
 }
 
 export async function getCashVarianceCase(caseId: number, actor: Actor) {
@@ -1150,6 +1425,7 @@ export async function getCashVarianceCase(caseId: number, actor: Actor) {
     version: Number(latest.version),
     latestEvent: latest,
     events,
+    decisionPolicy: cashVarianceDecisionPolicy(row, latest.eventType, actor),
   };
 }
 

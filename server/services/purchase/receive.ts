@@ -12,7 +12,7 @@ import { lockInventoryVariants } from "../inventory/stockLock";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
-import { assertNonPhysicalOutReceipt, lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { createSystemPaymentRequestTx } from "../voucher/create";
 import {
@@ -22,7 +22,6 @@ import {
   purchaseOrderPayableBalanceTx,
 } from "./internal";
 import type { ReceivePurchaseInput } from "./types";
-import { paymentAssetRole } from "../sale/paymentPosting";
 import { expenseAccrualRecognition } from "../accounting/accrualPosting";
 import {
   createAccrualObligationTx,
@@ -54,25 +53,26 @@ export function cumulativePurchaseTax(
 }
 
 export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor & { role?: string }) {
+  // حرّاس العقد قبل فتح الاتصال/المعاملة: المستدعي الداخلي يتلقى رفضاً واضحاً ولا يبدأ أي أثر DB.
+  assertUniqueReceiveLines(input.lines);
+  if (
+    input.shippingPaymentMethod != null &&
+    !["CASH", "CARD", "TRANSFER", "WALLET"].includes(
+      String(input.shippingPaymentMethod),
+    )
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "الصكوك غير مدعومة في تسوية مصروفات الشراء",
+    });
+  }
+  if (input.payment && input.payment.method !== "CASH") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "الدفع غير النقدي للمورد يتطلب سند صرف موثقاً بمرجع الأداة المالية",
+    });
+  }
   return withTx(async (tx) => {
-    assertUniqueReceiveLines(input.lines);
-    if (
-      input.shippingPaymentMethod != null &&
-      !["CASH", "CARD", "TRANSFER", "WALLET"].includes(
-        String(input.shippingPaymentMethod),
-      )
-    ) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "الصكوك غير مدعومة في تسوية مصروفات الشراء",
-      });
-    }
-    if (input.payment && input.payment.method !== "CASH") {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "الدفع غير النقدي للمورد يتطلب سند صرف موثقاً بمرجع الأداة المالية",
-      });
-    }
     // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة الاستلام الأول بلا تكرار للمخزون أو AP.
     // قبل أيّ replay، نتحقّق أنّ المفتاح المخزَّن يخصّ نفس أمر الشراء وفرعه والكميات المطلوبة.
     // كان الـreplay يَعود بنتيجة مضلِّلة (receivedTotal=0.00) دون أيّ تحقّق ⇒ مفتاح يُعاد استعماله
@@ -702,7 +702,6 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       });
     }
     const paidNow = automaticCashSettlement ? receivedTotal : explicitPaidNow;
-    const supplierPaymentMethod = input.payment?.method ?? "CASH";
     if (paidNow.gt(0)) {
       if (po.agreedCurrency === "USD") {
         throw new TRPCError({
@@ -730,83 +729,27 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز المستحق المتاح على أمر الشراء (${poAvailable.toFixed(2)}) بعد الطلبات المعلّقة`,
         });
       }
-      if (supplierPaymentMethod === "CASH") {
-        if (!treasuryPrelocked) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل مصدر طلب دفعة المورد النقدية" });
-        }
-        const paymentRequest = await createSystemPaymentRequestTx(tx, {
-          branchId: Number(po.branchId),
-          amount: toDbMoney(paidNow),
-          paymentMethod: "CASH",
-          partyType: "SUPPLIER",
-          partyId: Number(po.supplierId),
-          description: `دفعة مورد عند استلام أمر الشراء ${po.poNumber}`,
-          referenceNumber: `PO-PAY-${po.poNumber}-${paymentRequestToken}`,
-          clientRequestId: `purchase-supplier-${paymentRequestToken}`,
-        }, actor, {
-          kind: "PURCHASE_SUPPLIER",
-          purchaseOrderId: input.purchaseOrderId,
-          requestToken: paymentRequestToken,
-          expectedAmount: toDbMoney(paidNow),
-          sourceTotal: toDbMoney(po.total),
-          liabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
-        });
-        supplierPaymentRequestReceiptId = paymentRequest.receiptId;
-      } else {
-        assertNonPhysicalOutReceipt({
-          classification: "NON_CASH_METHOD",
-          paymentMethod: input.payment!.method,
-          cashBucket: null,
-          operation: "دفع المورد عند الاستلام بوسيلة غير نقدية",
-        });
-        const receiptRes = await tx.insert(receipts).values({
-          branchId: Number(po.branchId),
-          shiftId: null,
-          cashBucket: null,
-          direction: "OUT",
-          amount: toDbMoney(paidNow),
-          paymentMethod: input.payment!.method,
-          status: "COMPLETED",
-          approvalStatus: "APPROVED",
-          referenceNumber: `PO-PAY-${po.poNumber}`,
-          createdBy: actor.userId,
-        });
-        const receiptId = extractInsertId(receiptRes);
-        const supplierPaymentAssetRole = paymentAssetRole(input.payment!.method, null, "OUT");
-        const supplierPaymentPostingSource = {
-          roleDebits: { [purchaseSettlementRole]: paidNow },
-          roleCredits: { [supplierPaymentAssetRole]: paidNow },
-        };
-        await postEntry(tx, {
-          entryType: "PAYMENT_OUT",
-          branchId: Number(po.branchId),
-          createdBy: actor.userId,
-          purchaseOrderId: input.purchaseOrderId,
-          purchaseLiabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
-          supplierId: Number(po.supplierId),
-          receiptId,
-          amount: paidNow,
-          postingIntent: createPostingIntent(
-            useCashClearing
-              ? "PAYMENT_OUT_PURCHASE_CASH_CLEARING"
-              : "PAYMENT_OUT_SUPPLIER",
-            "PAYMENT_OUT",
-            [
-              debitLine(purchaseSettlementRole, paidNow),
-              creditLine(supplierPaymentAssetRole, paidNow),
-            ],
-            supplierPaymentPostingSource,
-          ),
-          postingSourceComponents: supplierPaymentPostingSource,
-        });
-        if (!useCashClearing) {
-          await adjustSupplierBalance(tx, Number(po.supplierId), paidNow.neg());
-        }
-        await tx
-          .update(purchaseOrders)
-          .set({ paidAmount: toDbMoney(money(po.paidAmount).plus(paidNow)) })
-          .where(eq(purchaseOrders.id, input.purchaseOrderId));
+      if (!treasuryPrelocked) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل مصدر طلب دفعة المورد النقدية" });
       }
+      const paymentRequest = await createSystemPaymentRequestTx(tx, {
+        branchId: Number(po.branchId),
+        amount: toDbMoney(paidNow),
+        paymentMethod: "CASH",
+        partyType: "SUPPLIER",
+        partyId: Number(po.supplierId),
+        description: `دفعة مورد عند استلام أمر الشراء ${po.poNumber}`,
+        referenceNumber: `PO-PAY-${po.poNumber}-${paymentRequestToken}`,
+        clientRequestId: `purchase-supplier-${paymentRequestToken}`,
+      }, actor, {
+        kind: "PURCHASE_SUPPLIER",
+        purchaseOrderId: input.purchaseOrderId,
+        requestToken: paymentRequestToken,
+        expectedAmount: toDbMoney(paidNow),
+        sourceTotal: toDbMoney(po.total),
+        liabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
+      });
+      supplierPaymentRequestReceiptId = paymentRequest.receiptId;
     }
 
     // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = أمر الشراء).

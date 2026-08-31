@@ -751,7 +751,10 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
     const externalLifecycleFiles = [
       "assets/create.ts",
       "assets/lifecycle.ts",
+      "purchase/purchaseCharges.ts",
       "purchase/receive.ts",
+      "purchase/returnGovernance.ts",
+      "purchase/supplierPayments.ts",
       "exchange/deposit.ts",
       "digitalCards/walletOpsService.ts",
       "voucher/approval.ts",

@@ -63,6 +63,8 @@ async function reset() {
 
 const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
+const OWNER = { userId: 4, branchId: 1, role: "admin" };
+const WRITE_OFF_EVIDENCE = { evidenceNote: "محضر مطابقة عهدة موقع من طرفين" } as const;
 
 async function seed() {
   const d = db();
@@ -74,6 +76,7 @@ async function seed() {
     { id: 1, openId: "local_mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_cashier", name: "كاشير", email: "c@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_courier", name: "مندوب", email: "d@t.test", role: "courier", loginMethod: "local", branchId: 1 },
+    { id: 4, openId: "local_owner", name: "مالك", email: "o@t.test", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values([{ id: 1, name: "عميل التوصيل", phone: "+9647700000000" }]);
   await d.insert(s.products).values([{ id: 1, name: "كتاب مطبوع" }]);
@@ -192,8 +195,8 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     await simulateCounterPayment(disp.invoiceId, 1, "3000.00");
 
     await writeOffDeliveryShortfall(
-      { branchId: 1, partyId, amount: "8000", reason: "ضياع نقد المندوب", consignmentId: disp.consignmentId },
-      MANAGER,
+      { branchId: 1, partyId, amount: "8000", reason: "ضياع نقد المندوب", consignmentId: disp.consignmentId, ...WRITE_OFF_EVIDENCE },
+      OWNER,
     );
 
     // قيد الشطب: amount كامل (مطابقة العهدة) — cost/profit على الجزء الحقيقي 5000 وحده.
@@ -229,7 +232,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
         settleDeliveryBalance({ branchId, partyId, amount: "1000" }, MANAGER),
       ).rejects.toThrow(/لا فرع مسند/);
       await expect(
-        writeOffDeliveryShortfall({ branchId, partyId, amount: "1000", reason: "سبب كافٍ" }, MANAGER),
+        writeOffDeliveryShortfall({ branchId, partyId, amount: "1000", reason: "سبب كافٍ", ...WRITE_OFF_EVIDENCE }, OWNER),
       ).rejects.toThrow(/لا فرع مسند/);
       await expect(
         recoverDeliveryWriteOff({ branchId, partyId, amount: "1000" }, MANAGER),

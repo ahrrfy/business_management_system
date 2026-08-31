@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -6,6 +7,10 @@ import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { createQuotation } from "../quotationService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -13,6 +18,8 @@ const TABLES = [
   "idempotencyKeys",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
   "quotationItems", "quotations",
+  "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems", "purchaseOrderRevisions",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
@@ -34,7 +41,10 @@ async function reset() {
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الفرع", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" },
+    { id: 2, openId: "idempotency_reviewer", name: "مراجع مستقل", role: "manager", loginMethod: "local", isOwner: true },
+  ]);
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
@@ -48,6 +58,27 @@ async function seedBase() {
 
 async function setStock(variantId: number, branchId: number, qty: number) {
   await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
+}
+
+async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchaseOrder>>) {
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار التكرار للمراجعة المستقلة",
+      requestKey: `idempotency-po-submit:${randomUUID()}`,
+    },
+    actor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `idempotency-po-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت الأمر واعتمدته قبل اختبار الاستلام المتكرر",
+    },
+    { userId: 2, branchId: 1, role: "manager" },
+  );
 }
 
 beforeEach(async () => {
@@ -128,6 +159,7 @@ describe("Idempotency — النقر المزدوج لا يُنشئ عمليات
       { supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "2.00" }] },
       actor,
     );
+    await approvePurchaseOrder(po);
     const it = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
     const reqId = "rcv-req-001";
     await receivePurchase(
@@ -159,6 +191,7 @@ describe("Idempotency — النقر المزدوج لا يُنشئ عمليات
       { supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "2.00" }] },
       actor,
     );
+    await approvePurchaseOrder(po);
     const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
     const clientRequestId = "rcv-req-payload-conflict";
     await receivePurchase(

@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { hasCashVariance } from "@shared/cashDailyReconciliation";
 import { and, desc, eq, gt, inArray, like, sql } from "drizzle-orm";
 import {
   expenses,
@@ -39,7 +40,6 @@ import { validateCashBreakdown } from "./cash/countValidation";
  */
 export type ShiftType = "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
 
-const VARIANCE_EPSILON = money("0.005");
 /** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION/PRINT_SERVICES). */
 export async function openShift(
   input: {
@@ -214,6 +214,8 @@ export async function closeShift(
     managerApprovedByUserId?: number | null;
     /** تضبطها بوابة API. تُترك اختيارية لتوافق مهام الصيانة/الاختبارات الداخلية القديمة. */
     enforceCashGovernance?: boolean;
+    /** توافق عملاء API السابقين: يحفظ النقد كعهدة معلقة على مالك الوردية ولا يدخله الخزينة. */
+    allowLegacySelfCustody?: boolean;
   },
   actor: Actor & { role?: string },
 ) {
@@ -325,7 +327,7 @@ export async function closeShift(
     );
     const counted = money(input.countedCash);
     const variance = counted.minus(expected);
-    const hasVariance = variance.abs().gt(VARIANCE_EPSILON);
+    const hasVariance = hasCashVariance(variance);
     const isMaterialVariance = variance.abs().gte(MATERIAL_SHIFT_VARIANCE_IQD);
     const reason = (input.varianceReason ?? "").trim();
     const reasonCode = input.varianceReasonCode ?? null;
@@ -359,12 +361,19 @@ export async function closeShift(
       inReceiptId: number;
       recipientUserId: number;
       recipientName: string;
+      assignmentMode: "INDEPENDENT_RECIPIENT" | "LEGACY_SELF_CUSTODY";
     } | null = null;
     if (counted.gt(0)) {
       // عقود الإنتاج كلها (ويب/Android/API) تمرر مستلماً صريحاً. الاختيار الآلي باقٍ
       // لاختبارات الخدمات التاريخية فقط كي لا تصبح قناة تشغيلية تتجاوز سلسلة الحيازة.
-      const legacyAutoRecipient = input.handoverToUserId == null && process.env.NODE_ENV === "test";
+      const legacySelfCustody =
+        input.handoverToUserId == null && input.allowLegacySelfCustody === true;
+      const legacyAutoRecipient =
+        input.handoverToUserId == null && !legacySelfCustody && process.env.NODE_ENV === "test";
       let recipientUserId = input.handoverToUserId ?? null;
+      if (recipientUserId == null && legacySelfCustody) {
+        recipientUserId = Number(sh.userId);
+      }
       if (recipientUserId == null && !legacyAutoRecipient) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -420,6 +429,7 @@ export async function closeShift(
           recipientUserId,
           shiftOwnerUserId: Number(sh.userId),
           legacyAutoRecipient,
+          legacySelfCustody,
         },
         { ...actor, role: actor.role ?? "cashier" },
       );

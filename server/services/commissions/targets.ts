@@ -27,7 +27,7 @@ export interface TargetGridRow {
 }
 
 /** شبكة أهداف الشهر: الموظفون المؤهَّلون + هدفهم الحالي + فعليّ الشهر السابق. */
-export async function getTargetsGrid(period: string): Promise<TargetGridRow[]> {
+export async function getTargetsGrid(period: string, scopedBranchId: number | null = null): Promise<TargetGridRow[]> {
   const p = assertPeriod(period);
   const db = requireDb();
 
@@ -47,7 +47,13 @@ export async function getTargetsGrid(period: string): Promise<TargetGridRow[]> {
     .from(employees)
     .leftJoin(branches, eq(branches.id, employees.branchId))
     .leftJoin(salesTargets, and(eq(salesTargets.employeeId, employees.id), eq(salesTargets.period, p)))
-    .where(and(sql`${employees.userId} IS NOT NULL`, sql`${employees.employmentStatus} <> 'terminated'`))
+    .where(
+      and(
+        sql`${employees.userId} IS NOT NULL`,
+        sql`${employees.employmentStatus} <> 'terminated'`,
+        scopedBranchId == null ? undefined : eq(employees.branchId, scopedBranchId),
+      ),
+    )
     .orderBy(asc(employees.firstName));
 
   const lastMonth = await computeNetSalesByUser(db, prevPeriod(p));
@@ -74,7 +80,11 @@ export interface SaveTargetsInput {
 }
 
 /** حفظ أهداف الشهر دفعةً واحدة — upsert على uq_target_emp_period داخل معاملة واحدة. */
-export async function saveTargets(input: SaveTargetsInput, actor: Actor): Promise<{ saved: number; removed: number }> {
+export async function saveTargets(
+  input: SaveTargetsInput,
+  actor: Actor,
+  scopedBranchId: number | null = null,
+): Promise<{ saved: number; removed: number }> {
   const p = assertPeriod(input.period);
   if (!Array.isArray(input.rows) || input.rows.length === 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا صفوف للحفظ." });
@@ -83,6 +93,16 @@ export async function saveTargets(input: SaveTargetsInput, actor: Actor): Promis
     let saved = 0;
     let removed = 0;
     for (const row of input.rows) {
+      const [emp] = await tx
+        .select({ id: employees.id, userId: employees.userId, branchId: employees.branchId })
+        .from(employees)
+        .where(eq(employees.id, row.employeeId))
+        .for("update")
+        .limit(1);
+      if (!emp) throw new TRPCError({ code: "NOT_FOUND", message: `موظف غير موجود (${row.employeeId}).` });
+      if (scopedBranchId != null && Number(emp.branchId) !== scopedBranchId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن تعديل هدف موظف في فرع آخر." });
+      }
       if (row.target == null || row.target.trim() === "") {
         const res = await tx
           .delete(salesTargets)
@@ -94,12 +114,6 @@ export async function saveTargets(input: SaveTargetsInput, actor: Actor): Promis
       if (t.lte(0)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الهدف يجب أن يكون أكبر من صفر (أو اتركه فارغاً لحذفه)." });
       }
-      const [emp] = await tx
-        .select({ id: employees.id, userId: employees.userId })
-        .from(employees)
-        .where(eq(employees.id, row.employeeId))
-        .limit(1);
-      if (!emp) throw new TRPCError({ code: "NOT_FOUND", message: `موظف غير موجود (${row.employeeId}).` });
       if (emp.userId == null) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا هدف لموظف بلا حساب مستخدم — نسبة المبيعات تتبع الحساب." });
       }
@@ -120,7 +134,11 @@ export interface CopyTargetsInput {
 }
 
 /** نسخ أهداف الشهر السابق إلى هذا الشهر (للموظفين الذين ما زالوا مؤهَّلين). */
-export async function copyTargetsFromPrevious(input: CopyTargetsInput, actor: Actor): Promise<{ copied: number }> {
+export async function copyTargetsFromPrevious(
+  input: CopyTargetsInput,
+  actor: Actor,
+  scopedBranchId: number | null = null,
+): Promise<{ copied: number }> {
   const p = assertPeriod(input.period);
   const prev = prevPeriod(p);
   return withTx(async (tx) => {
@@ -133,6 +151,7 @@ export async function copyTargetsFromPrevious(input: CopyTargetsInput, actor: Ac
           eq(salesTargets.period, prev),
           sql`${employees.userId} IS NOT NULL`,
           sql`${employees.employmentStatus} <> 'terminated'`,
+          scopedBranchId == null ? undefined : eq(employees.branchId, scopedBranchId),
         ),
       );
     if (prevRows.length === 0) {
@@ -142,7 +161,13 @@ export async function copyTargetsFromPrevious(input: CopyTargetsInput, actor: Ac
       const [existing] = await tx
         .select({ cnt: sql<number>`COUNT(*)` })
         .from(salesTargets)
-        .where(eq(salesTargets.period, p));
+        .innerJoin(employees, eq(employees.id, salesTargets.employeeId))
+        .where(
+          and(
+            eq(salesTargets.period, p),
+            scopedBranchId == null ? undefined : eq(employees.branchId, scopedBranchId),
+          ),
+        );
       if (Number(existing?.cnt ?? 0) > 0) {
         throw new TRPCError({
           code: "CONFLICT",

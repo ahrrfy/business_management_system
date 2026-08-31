@@ -31,6 +31,7 @@ import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { computeReturnTotal } from "@/lib/returnTotal";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type RefundRail = "CASH" | "CARD";
 
@@ -106,6 +107,11 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
   );
 
   const options = inv?.refundOptions ?? [];
+  // الزبون العابر لا يملك ذمةً تُرحّل إليها القيمة، وعقد الخادم يقبل CASH فقط.
+  // لا نعرض رافداً آخر ولو أعاده خادم قديم/منجرف ضمن الخيارات.
+  const visibleRefundOptions = isWalkIn
+    ? options.filter((option) => option.method === "CASH")
+    : options;
   const activeOption = options.find((o) => o.method === rail);
   /** السقف الفعليّ = الأقلّ من قيمة المرتجع وسقف الرافد — **نفس معادلة الخادم حرفياً**. */
   const railCap = useMemo(() => {
@@ -196,11 +202,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
 
   const create = trpc.returns.create.useMutation({
     onSuccess: async (res) => {
-      setDone(
-        res.fullyReturned
-          ? "تمّ تسجيل المرتجع — الفاتورة مرتجعة بالكامل."
-          : "تمّ تسجيل المرتجع بنجاح.",
-      );
+      setDone(`أُرسل طلب المرتجع #${res.requestId} للاعتماد — لم يتغيّر المخزون أو المال بعد.`);
       setQty({});
       setManualAmount(null);
       setCardReference("");
@@ -208,10 +210,8 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
       setClientRequestId(crypto.randomUUID());
       await Promise.all([
         utils.returns.getInvoice.invalidate({ invoiceId }),
-        utils.sales.list.invalidate(),
-        utils.sales.listPage.invalidate(),
+        utils.salesControl.list.invalidate(),
       ]);
-      onDone?.({ fullyReturned: res.fullyReturned, returnedTotal: res.returnedTotal });
     },
     onError: (e) => setError(e.message),
   });
@@ -262,7 +262,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
       return `الدرج المحدّد لا يحمل المبلغ كاملاً (المتاح ${fmt(selectedShift.expectedCash)} د.ع). اختر درجاً صالحاً أو موّله أولاً.`;
     }
     if (needsReference && !cardReference.trim()) return "أدخِل مرجع عملية الاسترداد من جهاز الدفع.";
-    if (isWalkIn && reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق التسوية.";
+    if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
   }, [isLocked, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, needsShift, shifts.length, shiftId, selectedShift, refundD, needsReference, cardReference, reason]);
 
@@ -323,6 +323,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
       refund,
       resolution,
       ...(!isWalkIn ? { restock } : {}),
+      reason: reason.trim(),
       clientRequestId,
     });
   }
@@ -475,6 +476,24 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         </Card>
       )}
 
+      {!isWalkIn && (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-base">سبب المرتجع</CardTitle></CardHeader>
+          <CardContent className="space-y-1">
+            <Label htmlFor="ret-reason">السبب التشغيلي *</Label>
+            <Input
+              id="ret-reason"
+              value={reason}
+              maxLength={500}
+              disabled={isLocked}
+              onChange={(event) => { setReason(event.target.value); setError(""); }}
+              placeholder="مثال: صنف خاطئ أو تلف أو رفض العميل"
+            />
+            <p className="text-[11px] text-muted-foreground">يُحفظ السبب مع الحمولة والبصمة ولا يمكن تبديله عند الاعتماد.</p>
+          </CardContent>
+        </Card>
+      )}
+
       {/* ④ كيف يستلم الزبون ماله — رافدان فقط، سقفُ كلٍّ من الخادم، والمحجوب معطَّلٌ بسببه ظاهراً.
           بلا مالٍ يخرج (فاتورةٌ لم تُقبض، أو الذمّة تغطّي المرتجع) تُستبدل البطاقةُ كلّها
           بإفصاحٍ صريح: لا رافد ولا درج ولا مرجع — والحفظ متاح (بلاغ المالك ١٨/٨). */}
@@ -499,7 +518,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         <CardHeader className="pb-2"><CardTitle className="text-base">كيف يستلم الزبون ماله؟</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className={`grid gap-2 ${isWalkIn ? "grid-cols-1" : "grid-cols-2"}`} role="radiogroup" aria-label="طريقة الاسترداد">
-            {options.map((o) => {
+            {visibleRefundOptions.map((o) => {
               const m = o.method as RefundRail;
               const picked = rail === m;
               const blocked = !!o.blockedReason;
@@ -602,7 +621,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
 
       <div className="flex flex-wrap items-center gap-2">
         <Button onClick={submit} disabled={!!blockReason || create.isPending || approve.isPending}>
-          {create.isPending ? "جارٍ التسجيل…" : "تأكيد المرتجع"}
+          {create.isPending ? ACTION_LABELS.sending : approvingRequestId ? "اعتماد وتنفيذ المرتجع" : "إرسال طلب المرتجع"}
         </Button>
         <Button variant="outline" onClick={() => { setQty({}); setManualAmount(null); setCardReference(""); setReason(""); setError(""); setDone(""); }}>
           إعادة ضبط

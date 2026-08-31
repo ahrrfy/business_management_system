@@ -18,13 +18,18 @@ import { deliverWorkOrder } from "../workOrder/deliver";
 import { dispatchToDelivery } from "../delivery/dispatch";
 import { openShift } from "../shiftService";
 import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryConsignments",
   "deliveryParties", "orderPayments", "idempotencyKeys", "auditLogs", "accountingEntries",
+  "workOrderDesignApprovals", "workOrderDesignRevisions",
   "receipts", "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
-  "products", "shifts", "customers", "branches", "users",
+  "products", "shifts", "customers", "serviceTypes", "branches", "users",
 ];
 
 /** مستقبِل الطلب — البائع الحقيقيّ. */
@@ -52,6 +57,10 @@ beforeEach(async () => {
     { id: 2, openId: "seller", name: "بائع الاستقبال", email: "s@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "deliv", name: "كاشير التسليم", email: "d@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم", defaultKind: "SERVICE_REQUEST", defaultPriority: "HIGH",
+    slaHours: 24, isActive: true, blocksExecution: true,
+  });
   await d.insert(s.customers).values([
     { id: 1, name: "عميل", phone: "+9647701234567", currentBalance: "0.00", creditLimit: null },
   ]);
@@ -69,6 +78,18 @@ async function orderBySeller(hasDelivery: boolean, reqId: string) {
     ...(hasDelivery ? { hasDelivery: true, deliveryAddress: "بغداد", deliveryPhone: "+9647701234567" } : {}),
   } as never, SELLER);
   const woId = Number((wo as { workOrderId: number }).workOrderId);
+  const approval = await requestWorkOrderDesignApproval({
+    workOrderId: woId,
+    requestKey: `${reqId}-design-request`,
+    note: "اعتماد التصميم قبل إسناد الفاتورة",
+  }, SELLER);
+  await decideWorkOrderDesignApproval({
+    approvalId: Number(approval.approval.id),
+    decisionKey: `${reqId}-design-approve`,
+    decision: "APPROVED",
+    reason: "ثبتت موافقة العميل على النسخة النهائية",
+    evidence: { type: "WHATSAPP_MESSAGE", reference: `wamid.${reqId}` },
+  }, { userId: 1, branchId: 1, role: "manager" });
   await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
   return { woId, sellerShiftId: shift.shiftId };
 }

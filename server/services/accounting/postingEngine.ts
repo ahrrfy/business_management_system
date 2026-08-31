@@ -28,6 +28,7 @@ export const ACCOUNT_ROLES = [
   "DIGITAL_WALLET",
   "DELIVERY_FLOAT",
   "AP",
+  "GRNI",
   "CONSIGNMENT_PAYABLE",
   "ACCRUED_SALARY",
   "PAYROLL_TAX_PAYABLE",
@@ -92,6 +93,10 @@ export type PostingProfile =
   | "PURCHASE_DIGITAL"
   | "PURCHASE_CONSIGNMENT"
   | "PURCHASE_CONSIGNMENT_SHORTAGE"
+  | "PURCHASE_GRNI_RECEIPT"
+  | "PURCHASE_GRNI_RECEIPT_REVERSAL"
+  | "SUPPLIER_INVOICE_GRNI"
+  | "SUPPLIER_INVOICE_GRNI_REVERSAL"
   | "PAYMENT_IN_CUSTOMER"
   | "PAYMENT_IN_SUPPLIER_REFUND"
   | "PAYMENT_IN_PURCHASE_CASH_CLEARING"
@@ -304,6 +309,10 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "RETURN_PURCHASE_CONSIGNMENT",
   ],
   ADJUST: [
+    "PURCHASE_GRNI_RECEIPT",
+    "PURCHASE_GRNI_RECEIPT_REVERSAL",
+    "SUPPLIER_INVOICE_GRNI",
+    "SUPPLIER_INVOICE_GRNI_REVERSAL",
     "ADJUST_INVENTORY_GAIN",
     "ADJUST_INVENTORY_LOSS",
     "ADJUST_WIP_CONSUME",
@@ -868,6 +877,54 @@ export const PROFILE_POLICIES = Object.freeze({
         "TAX_PAYABLE",
         "OTHER_LIABILITY",
       ],
+    },
+  ),
+  PURCHASE_GRNI_RECEIPT: profilePolicy(
+    "ADJUST",
+    ["INVENTORY"],
+    ["GRNI"],
+    {
+      sourceAssertions: [
+        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["INVENTORY"]),
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["GRNI"]),
+      ],
+      requireRoleComponents: ["INVENTORY", "GRNI"],
+    },
+  ),
+  PURCHASE_GRNI_RECEIPT_REVERSAL: profilePolicy(
+    "ADJUST",
+    ["GRNI", "PURCHASE_PRICE_VARIANCE"],
+    ["INVENTORY", "PURCHASE_PRICE_VARIANCE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("cost", "CREDIT_MINUS_DEBIT", ["INVENTORY"]),
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["GRNI"]),
+      ],
+      requireRoleComponents: ["GRNI", "INVENTORY", "PURCHASE_PRICE_VARIANCE"],
+    },
+  ),
+  SUPPLIER_INVOICE_GRNI: profilePolicy(
+    "ADJUST",
+    ["GRNI", "TAX_PAYABLE", "PURCHASE_PRICE_VARIANCE"],
+    ["AP", "PURCHASE_PRICE_VARIANCE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["AP"]),
+        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["GRNI"]),
+      ],
+      requireRoleComponents: ["GRNI", "TAX_PAYABLE", "AP", "PURCHASE_PRICE_VARIANCE"],
+    },
+  ),
+  SUPPLIER_INVOICE_GRNI_REVERSAL: profilePolicy(
+    "ADJUST",
+    ["AP", "PURCHASE_PRICE_VARIANCE"],
+    ["GRNI", "TAX_PAYABLE", "PURCHASE_PRICE_VARIANCE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["AP"]),
+        sourceAssertion("cost", "CREDIT_MINUS_DEBIT", ["GRNI"]),
+      ],
+      requireRoleComponents: ["AP", "GRNI", "TAX_PAYABLE", "PURCHASE_PRICE_VARIANCE"],
     },
   ),
   PURCHASE_FIXED_ASSET: profilePolicy("PURCHASE", ["FIXED_ASSETS"], ["AP"], {
@@ -2496,6 +2553,10 @@ export const PROFILE_POLICIES = Object.freeze({
  * 30-day observation window happened not to exercise that path.
  */
 export const ACTIVATION_REQUIRED_POSTING_PROFILES = Object.freeze([
+  "PURCHASE_GRNI_RECEIPT",
+  "PURCHASE_GRNI_RECEIPT_REVERSAL",
+  "SUPPLIER_INVOICE_GRNI",
+  "SUPPLIER_INVOICE_GRNI_REVERSAL",
   "PURCHASE_INVENTORY_CASH_CLEARING",
   "PAYMENT_OUT_PURCHASE_CASH_CLEARING",
   "PAYMENT_IN_PURCHASE_CASH_CLEARING",
@@ -2530,6 +2591,7 @@ export const ACTIVATION_REQUIRED_POSTING_PROFILES = Object.freeze([
 ] as const satisfies readonly PostingProfile[]);
 
 export const ACTIVATION_REQUIRED_ACCOUNT_ROLES = Object.freeze([
+  "GRNI",
   "OTHER_LIABILITY",
   "PAYROLL_TAX_PAYABLE",
   "SOCIAL_SECURITY_PAYABLE",

@@ -5,6 +5,16 @@ export const CASH_VARIANCE_SOURCE_TYPES = [
 export type CashVarianceSourceType =
   (typeof CASH_VARIANCE_SOURCE_TYPES)[number];
 
+export const CASH_VARIANCE_EVIDENCE_REFERENCE_MIN_LENGTH = 5;
+export const CASH_VARIANCE_EVIDENCE_REFERENCE_MAX_LENGTH = 2_000;
+export const CASH_VARIANCE_EVIDENCE_MAX_BYTES = 5 * 1024 * 1024;
+export const CASH_VARIANCE_EVIDENCE_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "application/pdf",
+] as const;
+
 export const CASH_VARIANCE_REASON_CODES = [
   "COUNT_ERROR",
   "UNRECORDED_CASH_IN",
@@ -15,6 +25,32 @@ export const CASH_VARIANCE_REASON_CODES = [
 ] as const;
 export type CashVarianceReasonCode =
   (typeof CASH_VARIANCE_REASON_CODES)[number];
+
+/**
+ * الأسباب الصالحة لكل مصدر. «عجز العهدة» يحمّل ذمةً على صاحب عهدةٍ موثّق،
+ * لذلك لا يجوز استعماله لمطابقة الخزينة اليومية التي لا تحمل عقد حيازة شخصياً.
+ */
+export const CASH_VARIANCE_REASON_CODES_BY_SOURCE = {
+  CUSTODY: CASH_VARIANCE_REASON_CODES,
+  DAILY_TREASURY: [
+    "COUNT_ERROR",
+    "UNRECORDED_CASH_IN",
+    "UNRECORDED_CASH_OUT",
+    "DOCUMENTATION_ERROR",
+    "OTHER",
+  ],
+} as const satisfies Record<
+  CashVarianceSourceType,
+  readonly CashVarianceReasonCode[]
+>;
+
+export function isCashVarianceReasonAllowed(
+  sourceType: CashVarianceSourceType,
+  reasonCode: CashVarianceReasonCode,
+): boolean {
+  return (CASH_VARIANCE_REASON_CODES_BY_SOURCE[sourceType] as readonly CashVarianceReasonCode[])
+    .includes(reasonCode);
+}
 
 export const CASH_VARIANCE_REASON_LABELS: Record<
   CashVarianceReasonCode,

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
@@ -18,7 +18,9 @@ function db() {
 
 const MANAGER = 71;
 const CHECKER = 72;
-const DATE = new Date().toISOString().slice(0, 10);
+const REOPENER = 73;
+const TEST_NOW = new Date("2026-08-31T12:00:00.000Z");
+const DATE = "2026-08-31";
 
 function actor(userId: number) {
   return { userId, branchId: 1, role: "manager" as const };
@@ -26,16 +28,21 @@ function actor(userId: number) {
 
 function auditCtx(userId: number) {
   return {
-    user: { id: userId, branchId: 1, role: "manager", name: `manager-${userId}` },
-    req: { headers: {} },
-  } as any;
+    userId,
+    branchId: 1,
+    ipAddress: "127.0.0.1",
+    screenPath: "/treasury/day-close",
+  };
 }
 
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(TEST_NOW);
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const table of [
     "auditLogs",
+    "idempotencyKeys",
     "cashVarianceCaseEvents",
     "cashVarianceCases",
     "advanceSettlements",
@@ -53,6 +60,7 @@ beforeEach(async () => {
   await d.insert(s.users).values([
     { id: MANAGER, openId: "daily-manager", name: "Counter", role: "manager", loginMethod: "local", branchId: 1 },
     { id: CHECKER, openId: "daily-checker", name: "Checker", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: REOPENER, openId: "daily-reopener", name: "Reopener", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.receipts).values({
     branchId: 1,
@@ -64,7 +72,13 @@ beforeEach(async () => {
     approvalStatus: "APPROVED",
     referenceNumber: "TEST-DAILY-TREASURY",
     createdBy: MANAGER,
+    createdAt: TEST_NOW,
+    approvedAt: TEST_NOW,
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("daily physical treasury reconciliation", () => {
@@ -124,9 +138,14 @@ describe("daily physical treasury reconciliation", () => {
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     await reopenDailyCashReconciliation(
-      { reconciliationId: Number(counted.id), reason: "إعادة فتح اليوم لتسجيل حركة تشغيلية جديدة" },
-      actor(MANAGER),
-      auditCtx(MANAGER),
+      {
+        reconciliationId: Number(counted.id),
+        expectedVersion: Number(closed.version),
+        reason: "إعادة فتح اليوم لتسجيل حركة تشغيلية جديدة",
+        clientRequestId: "daily-reopen-1",
+      },
+      actor(REOPENER),
+      auditCtx(REOPENER),
     );
     await expect(
       openShift(
@@ -154,6 +173,125 @@ describe("daily physical treasury reconciliation", () => {
     expect(status.expectedTreasuryCash).toBe("100000.00");
     expect(status.actions.canClose).toBe(false);
     expect(status.blockers.map((item) => item.code)).toContain("TREASURY_VARIANCE");
+  });
+
+  it("reopens with optimistic concurrency and never lets an old replay reopen a newer certificate", async () => {
+    const counted = await recordDailyTreasuryCount(
+      {
+        branchId: 1,
+        businessDate: DATE,
+        countedCash: "100000.00",
+        countedBreakdown: { "50000": 2 },
+        expectedVersion: 0,
+        clientRequestId: "reopen-contract-count-1",
+      },
+      actor(MANAGER),
+      auditCtx(MANAGER),
+    );
+    const closed = await closeDailyCashReconciliation(
+      {
+        reconciliationId: Number(counted.id),
+        expectedVersion: Number(counted.version),
+        clientRequestId: "reopen-contract-close-1",
+      },
+      actor(CHECKER),
+      auditCtx(CHECKER),
+    );
+
+    await expect(
+      reopenDailyCashReconciliation(
+        {
+          reconciliationId: Number(closed.id),
+          expectedVersion: Number(closed.version) - 1,
+          reason: "محاولة إعادة فتح بنسخة شهادة قديمة",
+          clientRequestId: "reopen-contract-stale",
+        },
+        actor(REOPENER),
+        auditCtx(REOPENER),
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const reopenInput = {
+      reconciliationId: Number(closed.id),
+      expectedVersion: Number(closed.version),
+      reason: "إعادة فتح موثقة لإجراء جرد تشغيلي جديد",
+      clientRequestId: "reopen-contract-request-1",
+    };
+    const [firstAttempt, secondAttempt] = await Promise.all([
+      reopenDailyCashReconciliation(reopenInput, actor(REOPENER), auditCtx(REOPENER)),
+      reopenDailyCashReconciliation(reopenInput, actor(REOPENER), auditCtx(REOPENER)),
+    ]);
+    const reopened = [firstAttempt, secondAttempt].find((result) => !result.idempotent);
+    const immediateReplay = [firstAttempt, secondAttempt].find((result) => result.idempotent);
+    expect(reopened).toMatchObject({
+      status: "REOPENED",
+      version: Number(closed.version) + 1,
+      idempotent: false,
+    });
+    expect(immediateReplay).toMatchObject({
+      status: "REOPENED",
+      version: Number(reopened?.version),
+      idempotent: true,
+    });
+
+    await expect(
+      reopenDailyCashReconciliation(
+        { ...reopenInput, reason: "سبب مختلف على المفتاح نفسه يجب رفضه" },
+        actor(REOPENER),
+        auditCtx(REOPENER),
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const recounted = await recordDailyTreasuryCount(
+      {
+        branchId: 1,
+        businessDate: DATE,
+        countedCash: "100000.00",
+        countedBreakdown: { "50000": 2 },
+        expectedVersion: Number(reopened?.version),
+        clientRequestId: "reopen-contract-count-2",
+      },
+      actor(MANAGER),
+      auditCtx(MANAGER),
+    );
+    const newerClosed = await closeDailyCashReconciliation(
+      {
+        reconciliationId: Number(recounted.id),
+        expectedVersion: Number(recounted.version),
+        clientRequestId: "reopen-contract-close-2",
+      },
+      actor(CHECKER),
+      auditCtx(CHECKER),
+    );
+
+    const oldReplay = await reopenDailyCashReconciliation(
+      reopenInput,
+      actor(REOPENER),
+      auditCtx(REOPENER),
+    );
+    expect(oldReplay).toMatchObject({
+      status: "CLOSED",
+      version: Number(newerClosed.version),
+      reopenedVersion: Number(closed.version) + 1,
+      idempotent: true,
+    });
+    const persisted = await db().query.cashDailyReconciliations.findFirst({
+      where: (table, { eq }) => eq(table.id, Number(closed.id)),
+    });
+    expect(persisted).toMatchObject({ status: "CLOSED", version: Number(newerClosed.version) });
+
+    const auditRows = await db()
+      .select()
+      .from(s.auditLogs)
+      .where(sql`${s.auditLogs.action} = 'treasury.dailyCash.reopen'`);
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({ userId: REOPENER, entityId: String(closed.id) });
+    expect(auditRows[0]?.oldValue).toMatchObject({ status: "CLOSED", version: Number(closed.version) });
+    expect(auditRows[0]?.newValue).toMatchObject({
+      status: "REOPENED",
+      version: Number(closed.version) + 1,
+      clientRequestId: reopenInput.clientRequestId,
+    });
   });
 
   it("attributes a delayed maker-checker receipt to its approval day, not its creation day", async () => {

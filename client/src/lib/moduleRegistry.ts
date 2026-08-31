@@ -5,7 +5,7 @@ import {
   Receipt, ScanLine, Server, Settings, ShoppingCart, Sparkles, Store, Truck, Users, Wallet,
   WalletCards,
 } from "lucide-react";
-import { INVOICE_LIST_GATE, type RoleGate } from "@/lib/navVisibility";
+import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE, type RoleGate } from "@/lib/navVisibility";
 
 export type AppSectionId = 1 | 2 | 3 | 4 | 5;
 
@@ -25,7 +25,15 @@ export type ApplicationModule = RoleGate & {
 export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "pos", href: "/pos", label: "نقطة البيع", description: "مبيعات وورديات", section: 1, icon: ShoppingCart },
   { id: "priceChecker", href: "/price-checker", label: "قارئ الأسعار", description: "فحص السعر والرصيد بالباركود", section: 1, icon: ScanLine },
-  { id: "workOrders", href: "/work-orders", label: "المطبعة والإنتاج", description: "أوامر الشغل والتخصيص", section: 4, icon: Printer, module: "workorders" },
+  {
+    id: "workOrders",
+    href: "/work-orders",
+    label: "المطبعة والإنتاج",
+    description: "أوامر الشغل والتخصيص",
+    section: 4,
+    icon: Printer,
+    ...WORK_ORDERS_HUB_GATE,
+  },
   { id: "crm", href: "/crm", label: "CRM والعلاقات", description: "عملاء ومحادثات وعروض", section: 1, icon: Users, module: "crm" },
   { id: "myWork", href: "/my-work", label: "مطلوب مني الآن", description: "قرارات ومهام تنتظر الإجراء", section: 4, icon: ClipboardCheck },
   { id: "tasks", href: "/tasks", label: "المهام والتذاكر", description: "إسناد ومتابعة وSLA", section: 4, icon: ListChecks, module: "tasks" },
@@ -38,7 +46,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "productStudio", href: "/catalog/image-studio", label: "استوديو المنتجات", description: "صور المنتجات والكتالوج", section: 4, icon: Images, roles: ["admin", "manager", "print_operator", "auditor"], module: "productStudio" },
   { id: "contentDrafts", href: "/products/content-drafts", label: "مسودّات المحتوى", description: "مراجعة المحتوى المولّد للمنتجات", section: 4, icon: Sparkles, roles: ["admin", "manager"], module: "products" },
   { id: "inventory", href: "/inventory", label: "المخزون والبضاعة", description: "الأرصدة والتسويات", section: 2, icon: Boxes },
-  { id: "purchases", href: "/purchases", label: "المشتريات", description: "أوامر الشراء والاستلام", section: 2, icon: Package },
+  { id: "purchases", href: "/purchases", label: "المشتريات", description: "أوامر الشراء والاستلام", section: 2, icon: Package, module: "purchases" },
   { id: "suppliers", href: "/suppliers", label: "الموردون", description: "إدارة الموردين وذممهم", section: 2, icon: Building2 },
   { id: "gifts", href: "/gifts", label: "الهدايا والمجانيات", description: "الحوافز والهدايا المجانية", section: 2, icon: Gift, roles: ["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"], module: "gifts" },
   { id: "digitalCards", href: "/digital-cards", label: "البطاقات الرقمية", description: "مخزون وتسليم البطاقات", section: 2, icon: WalletCards, roles: ["admin", "manager", "accountant", "auditor"], module: "digital_cards" },

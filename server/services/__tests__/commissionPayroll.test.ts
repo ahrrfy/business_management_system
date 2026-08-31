@@ -4,7 +4,7 @@
  * الثابت الحاكم (I5): التشغيلة المعتمدة تُلتقط في مسيّر شهرها **مرّة واحدة بالضبط**:
  *  - بند «commission» لكل موظف + net يشملها + totalCommission في الرأس + ربط payrollRunId.
  *  - حذف مسودة المسيّر يفكّ الربط تلقائياً (ON DELETE SET NULL) فيلتقطها التوليد التالي — لا ازدواج.
- *  - لا تشغيلة معتمدة (مسودة أو غياب) ⇒ commission=0 بلا فشل ولا ربط.
+ *  - لا تشغيلة معتمدة (مسودة أو غياب مع إسناد فعّال) ⇒ قد تتولد المسودة، لكن اعتمادها/دفعها fail-closed.
  *  - مفصول بعد البيع وله عمولة ⇒ بند أجرٍ صفري يصرفها (تسوية نهائية).
  *  - الدفع يقيّد PAYMENT_OUT بصافي البند (شاملاً العمولة) — انحدار مسار الدفع.
  */
@@ -26,6 +26,7 @@ const TABLES = [
   "receipts",
   "payrollItems",
   "payrollRuns",
+  "commissionRunApprovalRequests",
   "commissionRunLines",
   "commissionRuns",
   "commissionAssignments",
@@ -140,7 +141,7 @@ describe("commissionPayroll — الالتقاط مرّة واحدة بالضب�
     expect(Number(relinked.payrollRunId)).toBe(Number(second!.id));
   });
 
-  it("تشغيلة مسودة (غير معتمدة) لا تُلتقط: commission=0 وبلا ربط وبلا فشل", async () => {
+  it("تشغيلة مسودة لا تُلتقط ولا يمكن اعتماد مسيّر الرواتب قبل اعتمادها", async () => {
     const { planId } = await createPlan(
       { name: "خطة", tierMode: "AMOUNT_SLAB", tiers: [{ threshold: "0", ratePct: "1", fixedBonus: "0" }] },
       COMPUTER,
@@ -164,6 +165,24 @@ describe("commissionPayroll — الالتقاط مرّة واحدة بالضب�
     expect(Number(item.net)).toBe(1000000);
     const [c] = await db().select().from(s.commissionRuns).where(eq(s.commissionRuns.id, cRun.runId));
     expect(c.payrollRunId).toBeNull();
+    await expect(approvePayroll(Number(run!.id), APPROVER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("غياب تشغيلة العمولة مع إسناد فعال يمنع الاعتماد ودفع مسيّر قديم معتمد", async () => {
+    const { planId } = await createPlan(
+      { name: "خطة", tierMode: "AMOUNT_SLAB", tiers: [{ threshold: "0", ratePct: "1", fixedBonus: "0" }] },
+      COMPUTER,
+    );
+    await assignPlan({ employeeId: 11, planId, effectiveFrom: "2026-01" }, COMPUTER);
+    const run = await generatePayroll("2026-06", COMPUTER);
+    await expect(approvePayroll(Number(run!.id), APPROVER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    // يحاكي مسيّراً معتمداً قبل إضافة الحارس: الدفع يعيد الفحص ولا يمر على أثر عمولة مفقود.
+    await db().update(s.payrollRuns).set({ status: "approved" }).where(eq(s.payrollRuns.id, Number(run!.id)));
+    await expect(payRun(Number(run!.id), APPROVER, {
+      paymentMethod: "CARD",
+      referenceNumber: "1234",
+    })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
   it("مفصول بعد البيع وله عمولة ⇒ بند أجرٍ صفري يصرف عمولته (تسوية نهائية)", async () => {

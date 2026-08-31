@@ -2,16 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrpcContext } from "../../context";
 
 const mocks = vi.hoisted(() => ({
-  returnSale: vi.fn(async () => ({ invoiceId: 77, returnedTotal: "1250.00", fullyReturned: true })),
   returnSaleInTx: vi.fn(),
+  requestSalesControl: vi.fn(async () => ({ id: 101, status: "PENDING", payloadHash: "abc", replayed: false })),
   logAudit: vi.fn(async () => undefined),
 }));
 
 vi.mock("../../services/returnService", () => ({
-  returnSale: mocks.returnSale,
   returnSaleInTx: mocks.returnSaleInTx,
 }));
-vi.mock("../../services/auditService", () => ({ logAudit: mocks.logAudit }));
+vi.mock("../../services/sale/controlRequests", () => ({ requestSalesControl: mocks.requestSalesControl }));
+vi.mock("../../services/auditService", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../services/auditService")>()),
+  logAudit: mocks.logAudit,
+}));
 
 import { returnRouter } from "../returnRouter";
 
@@ -34,8 +37,8 @@ const base = {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe("returns.create — عقد resolution للزبون العابر", () => {
-  it("يمرّر resolution الكامل إلى الخدمة ويسجّل السبب والتصرف في التدقيق", async () => {
+describe("returns.create — طلب صفري الأثر للزبون العابر", () => {
+  it("يحفظ resolution الكامل في حمولة الطلب ولا ينفّذ المرتجع", async () => {
     const caller = returnRouter.createCaller(context());
     await caller.create({
       ...base,
@@ -49,16 +52,17 @@ describe("returns.create — عقد resolution للزبون العابر", () =>
       },
     });
 
-    expect(mocks.returnSale).toHaveBeenCalledWith(expect.objectContaining({
-      resolution: expect.objectContaining({
+    expect(mocks.requestSalesControl).toHaveBeenCalledWith(expect.objectContaining({
+      requestType: "SALES_RETURN",
+      reason: "المنتج غير مطابق",
+      payload: expect.objectContaining({ resolution: expect.objectContaining({
         method: "CASH", amount: "1250.00", shiftId: 9,
         reason: "المنتج غير مطابق", disposition: "RESTOCK",
-      }),
+      }) }),
     }), expect.objectContaining({ userId: 1, branchId: 1, role: "admin" }));
     expect(mocks.logAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       newValue: expect.objectContaining({
-        refund: "1250.00", resolution: "IMMEDIATE_REFUND",
-        reason: "المنتج غير مطابق", disposition: "RESTOCK",
+        requestId: 101, payloadHash: "abc", reason: "المنتج غير مطابق",
       }),
     }));
   });
@@ -79,7 +83,7 @@ describe("returns.create — عقد resolution للزبون العابر", () =>
       delete invalid[missing];
       await expect(caller.create({ ...base, resolution: invalid } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
     }
-    expect(mocks.returnSale).not.toHaveBeenCalled();
+    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
   });
 
   it("لا يكسر حمولة العميل المسجّل التاريخية؛ refund/restock يبقيان مقبولين", async () => {
@@ -88,10 +92,14 @@ describe("returns.create — عقد resolution للزبون العابر", () =>
       ...base,
       refund: { amount: "10.00", method: "CASH", shiftId: 9 },
       restock: false,
+      reason: "إرجاع عميل مسجل",
     });
-    expect(mocks.returnSale).toHaveBeenCalledWith(expect.objectContaining({
-      refund: { amount: "10.00", method: "CASH", shiftId: 9 },
-      restock: false,
+    expect(mocks.requestSalesControl).toHaveBeenCalledWith(expect.objectContaining({
+      requestType: "SALES_RETURN",
+      payload: expect.objectContaining({
+        refund: { amount: "10.00", method: "CASH", shiftId: 9 },
+        restock: false,
+      }),
     }), expect.anything());
   });
 });

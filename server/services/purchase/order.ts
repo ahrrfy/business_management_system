@@ -13,9 +13,12 @@ import {
   restoreVariantsToActiveOpeningStocktakes,
 } from "../stocktake/openingEligibility";
 import type { Tx } from "../../db";
-import { requireDb, withTx, type Actor } from "../tx";
+import { withTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
-import type { CreatePurchaseOrderInput, PurchaseDocumentInput, UpdatePurchaseOrderInput } from "./types";
+import type { ConfirmPurchaseOrderInput, CreatePurchaseOrderInput, PurchaseDocumentInput, UpdatePurchaseOrderInput } from "./types";
+import { submitPurchaseOrderForApproval } from "./controls";
+import { replacePurchaseOrderRevisionAllocationsTx } from "./requisitions";
+import { appendPurchaseOrderEventTx, createPurchaseOrderRevisionTx } from "./revisions";
 
 /** تسلسل سعر ضمني لعمود decimal(15,4) — نظير toDbRate في exchangeHouseService. */
 const toDbRate = (x: Decimal): string => x.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
@@ -307,6 +310,13 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
 }
 
 export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor: Actor) {
+  // دفاع الخدمة نفسها: لا يستطيع مستدعٍ داخلي/قديم تجاوز maker-checker بإنشاء أمر معتمد.
+  if (input.status != null && input.status !== "DRAFT") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "إنشاء أمر الشراء يحفظ مسودة فقط؛ أرسله ثم اعتمده مستخدم مستقل من قائمة المشتريات",
+    });
+  }
   return withTx(async (tx) => {
     // IDEM-06: idempotency check — نفس clientRequestId يعيد نفس المعرّف بدل إنشاء أمر مزدوج.
     // المسار ج-٥ (١٧/٨): المفتاح وحده كان يُطابَق ⇒ طلبٌ بنفس المفتاح لكن **بمورّدٍ أو أسطرٍ أو
@@ -318,7 +328,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       supplierId: input.supplierId,
       branchId: input.branchId,
       settlementType: input.settlementType ?? "CREDIT",
-      status: input.status ?? null,
+      status: "DRAFT",
       taxRatePercent: input.taxRatePercent ?? null,
       agreedCurrency: input.agreedCurrency ?? null,
       usdTotal: input.usdTotal ?? null,
@@ -349,7 +359,34 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
         payloadHash,
         { requireStoredHash: true },
       );
-      if (existing != null) return { purchaseOrderId: existing, idempotent: true };
+      if (existing != null) {
+        const [saved] = await tx
+          .select({
+            poNumber: purchaseOrders.poNumber,
+            total: purchaseOrders.total,
+            status: purchaseOrders.status,
+            version: purchaseOrders.version,
+            revisionId: purchaseOrders.currentRevisionId,
+          })
+          .from(purchaseOrders)
+          .where(eq(purchaseOrders.id, existing))
+          .limit(1);
+        if (!saved) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "سجل إعادة الطلب يشير إلى أمر شراء غير موجود",
+          });
+        }
+        return {
+          purchaseOrderId: existing,
+          poNumber: saved.poNumber,
+          total: String(saved.total),
+          status: saved.status,
+          version: Number(saved.version),
+          revisionId: saved.revisionId == null ? null : Number(saved.revisionId),
+          idempotent: true as const,
+        };
+      }
     }
 
     // نفس قفل الفرع الذي تبدأ به جلسة الجرد: يمنع سباق «التقاط نطاق OPENING ↔ إنشاء قائمة شراء».
@@ -411,7 +448,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       customsCost: customsCost.toFixed(2),
       total: total.toFixed(2),
       settlementType,
-      status: input.status ?? "CONFIRMED",
+      status: "DRAFT",
       agreedCurrency,
       usdTotal: usdTotalVal ? usdTotalVal.toFixed(2) : null,
       // خصم فاتورة المورّد (0204): إفصاحٌ وإعادةُ تحميلٍ للمحرّر — الأعمدة المالية مخزَّنة صافيةً
@@ -427,32 +464,63 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     for (const r of rows) {
       await tx.insert(purchaseOrderItems).values({ purchaseOrderId, ...r });
     }
+    const revision = await createPurchaseOrderRevisionTx(tx, {
+      purchaseOrderId,
+      actorUserId: actor.userId,
+      reason: input.revisionReason?.trim() || "إنشاء أمر الشراء",
+    });
+    await replacePurchaseOrderRevisionAllocationsTx(tx, {
+      branchId: input.branchId,
+      revisionItems: revision.revisionItems,
+      allocations: input.requisitionAllocations,
+    });
+    await tx
+      .update(purchaseOrders)
+      .set({ currentRevisionId: revision.revisionId, lastEditedBy: actor.userId })
+      .where(eq(purchaseOrders.id, purchaseOrderId));
+    const [governed] = await tx
+      .select({ version: purchaseOrders.version })
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, purchaseOrderId))
+      .limit(1);
+    await appendPurchaseOrderEventTx(tx, {
+      eventKey: `PO-CREATED:${input.clientRequestId ?? purchaseOrderId}`,
+      purchaseOrderId,
+      revisionId: revision.revisionId,
+      branchId: input.branchId,
+      eventType: "ORDER_CREATED",
+      reason: input.revisionReason?.trim() || "إنشاء أمر الشراء",
+      actorUserId: actor.userId,
+      payload: { poNumber, version: governed.version, revisionNo: revision.revisionNo },
+    });
     // قائمة الشراء غير الملغاة تخرج الصنف فوراً من أي جرد افتتاحي نشط في الفرع، حتى لو بدأ العد.
     await removeVariantsFromActiveOpeningStocktakes(tx, input.branchId, uniqueVariantIds);
     // IDEM-06: سجّل مفتاح الـidempotency — طلب متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK).
     if (input.clientRequestId)
       await recordIdempotencyKey(tx, "purchase.create", input.clientRequestId, purchaseOrderId, payloadHash);
-    return { purchaseOrderId, poNumber, total: total.toFixed(2) };
+    return {
+      purchaseOrderId,
+      poNumber,
+      total: total.toFixed(2),
+      status: "DRAFT" as const,
+      version: Number(governed.version),
+      revisionId: revision.revisionId,
+      revisionNo: revision.revisionNo,
+    };
   });
 }
 
-/** اعتماد مسودة أمر شراء: انتقال حالة فقط؛ لا مخزون ولا قيد ولا ذمة قبل الاستلام. */
-export async function confirmPurchaseOrder(purchaseOrderId: number, actor: Actor & { role?: string }) {
-  return withTx(async (tx) => {
-    const [po] = await tx
-      .select()
-      .from(purchaseOrders)
-      .where(eq(purchaseOrders.id, purchaseOrderId))
-      .for("update")
-      .limit(1);
-    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
-    assertPurchaseBranch(po, actor);
-    if (po.status !== "DRAFT" && po.status !== "SENT") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُعتمَد إلا أمر شراء مسوّدة أو مُرسَل" });
-    }
-    await tx.update(purchaseOrders).set({ status: "CONFIRMED" }).where(eq(purchaseOrders.id, purchaseOrderId));
-    return { purchaseOrderId, status: "CONFIRMED" as const };
-  });
+/** توافق اسمي: «التأكيد» صار إرسالاً وطلب اعتماد صفري الأثر، ولا يفتح الاستلام مباشرة. */
+export async function confirmPurchaseOrder(input: ConfirmPurchaseOrderInput, actor: Actor & { role?: string }) {
+  return submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: input.purchaseOrderId,
+      expectedVersion: input.expectedVersion,
+      reason: input.reason,
+      requestKey: input.clientRequestId,
+    },
+    actor,
+  );
 }
 
 /**
@@ -463,7 +531,7 @@ export async function confirmPurchaseOrder(purchaseOrderId: number, actor: Actor
  * دفعة، فسطوره **مسوّدةٌ خالصة** لا مرجع لها من أيّ جدولٍ آخر، واستبدالها أبسط وأقلّ عرضةً
  * للانجراف من مطابقةٍ سطريّة. الحرّاس أدناه هي ما يضمن بقاءنا في تلك المنطقة الآمنة:
  *
- *   • الحالة ∈ {DRAFT, SENT, CONFIRMED} — المستلَم/الملغى يُعالَج بمرتجع شراء لا بتعديل.
+ *   • الحالة ∈ {DRAFT, SENT} — CONFIRMED وما بعدها غير قابل للتعديل.
  *   • لا سطر بكمّيةٍ مستلَمة — ولو جزئياً (وإلّا صار للسطر مخزونٌ وقيدٌ يشير إليه).
  *   • لا دفعة مسجَّلة (ديناراً أو دولاراً) — الدفع لا يحدث إلّا مع الاستلام، فوجوده يعني
  *     أنّ الأمر غادر منطقة المسوّدة ولو لم يُعلَم استلامه.
@@ -495,10 +563,16 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     )[0];
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
     assertPurchaseBranch(po, actor);
-    if (po.status === "RECEIVED" || po.status === "CANCELLED") {
+    if (Number(po.version) !== input.expectedVersion) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تغيّر أمر الشراء؛ حدّث الصفحة ثم أعد المحاولة",
+      });
+    }
+    if (po.status !== "DRAFT") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يُعدَّل أمر شراء مستلَم أو ملغى — استعمل مرتجع شراء أو أنشئ أمراً جديداً",
+        message: "لا يُعدَّل إلا أمر شراء مسوّدة؛ أعده من مسار القرار أو أنشئ مراجعة جديدة محكومة",
       });
     }
 
@@ -530,6 +604,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal } =
       await computePurchaseDocument(tx, input);
 
+    const previousRevisionId = po.currentRevisionId == null ? null : Number(po.currentRevisionId);
     await tx.update(purchaseOrders).set({
       supplierId: input.supplierId,
       subtotal: subtotal.toFixed(2),
@@ -547,6 +622,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
       usdInvoiceDiscount: usdInvoiceDiscountVal ? usdInvoiceDiscountVal.toFixed(2) : null,
       agreedRate: agreedRateVal ? toDbRate(agreedRateVal) : null,
       notes: input.notes ?? null,
+      lastEditedBy: actor.userId,
     }).where(eq(purchaseOrders.id, input.purchaseOrderId));
 
     await tx.delete(purchaseOrderItems).where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
@@ -563,12 +639,50 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
       await restoreVariantsToActiveOpeningStocktakes(tx, Number(po.branchId), droppedVariantIds);
     }
     await removeVariantsFromActiveOpeningStocktakes(tx, Number(po.branchId), nextVariantIds);
+    const revision = await createPurchaseOrderRevisionTx(tx, {
+      purchaseOrderId: input.purchaseOrderId,
+      actorUserId: actor.userId,
+      reason: input.revisionReason,
+    });
+    await replacePurchaseOrderRevisionAllocationsTx(tx, {
+      branchId: Number(po.branchId),
+      previousRevisionId,
+      revisionItems: revision.revisionItems,
+      allocations: input.requisitionAllocations,
+    });
+    await tx
+      .update(purchaseOrders)
+      .set({ currentRevisionId: revision.revisionId, lastEditedBy: actor.userId })
+      .where(eq(purchaseOrders.id, input.purchaseOrderId));
+    const [governed] = await tx
+      .select({ version: purchaseOrders.version })
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, input.purchaseOrderId))
+      .limit(1);
+    await appendPurchaseOrderEventTx(tx, {
+      eventKey: `PO-REVISION:${input.purchaseOrderId}:${revision.revisionNo}`,
+      purchaseOrderId: input.purchaseOrderId,
+      revisionId: revision.revisionId,
+      branchId: Number(po.branchId),
+      eventType: "REVISION_CREATED",
+      reason: input.revisionReason,
+      actorUserId: actor.userId,
+      payload: {
+        previousRevisionId,
+        revisionNo: revision.revisionNo,
+        previousVersion: input.expectedVersion,
+        version: governed.version,
+      },
+    });
 
     return {
       purchaseOrderId: input.purchaseOrderId,
       poNumber: po.poNumber,
       total: total.toFixed(2),
       status: po.status,
+      version: Number(governed.version),
+      revisionId: revision.revisionId,
+      revisionNo: revision.revisionNo,
     };
   });
 }
@@ -579,59 +693,10 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
  * أمرٌ استُلمت منه بضاعة يُعالَج بمرتجع شراء لا بالإلغاء.
  */
 export async function cancelPurchaseOrder(purchaseOrderId: number, actor: Actor & { role?: string }) {
-  // Resolve the immutable branch before opening the transaction. A normal read
-  // inside a MySQL REPEATABLE READ transaction would freeze a snapshot *before*
-  // waiting on the branch lock and could miss a concurrently committed second
-  // purchase order. The transactional first read below is therefore the branch
-  // locking read, and all later eligibility reads observe everything committed
-  // before that lock was acquired.
-  const initialPo = (
-    await requireDb().select().from(purchaseOrders).where(eq(purchaseOrders.id, purchaseOrderId)).limit(1)
-  )[0];
-  if (!initialPo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
-  assertPurchaseBranch(initialPo, actor);
-
-  return withTx(async (tx) => {
-    const branch = (
-      await tx
-        .select({ id: branches.id })
-        .from(branches)
-        .where(eq(branches.id, initialPo.branchId))
-        .for("update")
-        .limit(1)
-    )[0];
-    if (!branch) throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
-
-    const po = (
-      await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, purchaseOrderId)).for("update").limit(1)
-    )[0];
-    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
-    assertPurchaseBranch(po, actor);
-    if (po.status === "RECEIVED" || po.status === "CANCELLED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء مستلَم أو ملغى" });
-    }
-
-    const items = await tx
-      .select({
-        variantId: purchaseOrderItems.variantId,
-        receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity,
-      })
-      .from(purchaseOrderItems)
-      .where(eq(purchaseOrderItems.purchaseOrderId, purchaseOrderId));
-    if (items.some((i) => (i.receivedBaseQuantity ?? 0) > 0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء أمر استُلمت منه بضاعة — استعمل مرتجع شراء" });
-    }
-    // دفاع متعمّق: الدفع للمورد يحدث فقط عند الاستلام ⇒ أمرٌ بلا استلام لا يحمل دفعة.
-    if (money(po.paidAmount).gt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء عليه دفعة مسجَّلة — لا يمكن إلغاؤه" });
-    }
-
-    await tx.update(purchaseOrders).set({ status: "CANCELLED" }).where(eq(purchaseOrders.id, purchaseOrderId));
-    await restoreVariantsToActiveOpeningStocktakes(
-      tx,
-      Number(po.branchId),
-      items.map((item) => Number(item.variantId)),
-    );
-    return { purchaseOrderId, status: "CANCELLED" as const };
+  void purchaseOrderId;
+  void actor;
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: "الإلغاء المباشر متوقف؛ أنشئ طلب CANCEL_ORDER ليعتمده مستخدم مستقل",
   });
 }

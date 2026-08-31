@@ -1,156 +1,129 @@
 /**
- * عكس فاتورة خدمةٍ صفريّة البنود (١٩/٨) — آخر فاتورةٍ كانت بلا مخرج.
- *
- * الحالة واقعُ المطبعة: أمرُ تخصيصٍ خالصٍ بلا منتجٍ كتالوجيّ (درعٌ/تصميم) ⇒ فاتورتُه تُنشأ
- * **بصفر `invoiceItems`** (قيد FK على `variantId`). فتُرفَض من المرتجع (يشترط أسطراً) ومن
- * التصحيح (يشترط بنوداً) ومن الإلغاء (يرفض منشأ WORKORDER) — فاتورةٌ حيّةٌ بلا فعلٍ واحد.
- *
- * الثوابت المحروسة:
- *  ① العكس يقع كاملاً: إيرادٌ معكوس، ذمّةٌ ساقطة، فاتورةٌ مرتجعة، وأمرٌ ملغى.
- *  ② المقبوض **لا يُصرَف صامتاً** — يبقى أمانةً يردّها سند صرفٍ موثَّق.
- *  ③ الحصر البنيويّ: فاتورةٌ لها بندٌ واحد تُرفَض (مخرجها المرتجع المُختبَر).
- *  ④ لا عكسَ مرّتين، وفصلُ المهام قائم.
+ * اسم reverseServiceInvoice توافقي فقط: ينشئ طلب REVERSE_DELIVERY صفري الأثر، ولا يحتفظ
+ * بمسار مالي مختلف لفاتورة WORKORDER صفريّة البنود أو ذات البنود.
  */
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
+import { openShift } from "../shiftService";
+import { approveWorkOrderControlRequest } from "../workOrder/controlRequests";
 import { createWorkOrder } from "../workOrder/create";
 import { deliverWorkOrder } from "../workOrder/deliver";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 import { reverseServiceInvoice } from "../workOrder/reverseServiceInvoice";
-import { openShift } from "../shiftService";
-import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 
 const TABLES = [
-  "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
-  "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
-  "inventoryMovements", "branchStock", "productPrices", "productUnits",
-  "productVariants", "products", "shifts", "customers", "branches", "users",
+  "idempotencyKeys", "auditLogs", "workOrderEvents", "workOrderControlRequests",
+  "workOrderDesignApprovals", "workOrderDesignRevisions",
+  "accountingEntries", "receipts", "workOrderMaterials", "workOrders",
+  "invoiceItems", "invoices", "inventoryMovements", "branchStock",
+  "productPrices", "productUnits", "productVariants", "products", "shifts",
+  "customers", "serviceTypes", "branches", "users",
 ];
 
 const SELLER = { userId: 2, branchId: 1, role: "cashier" };
-const MANAGER = { userId: 1, branchId: 1, role: "manager" };
+const REQUESTER = { userId: 1, branchId: 1, role: "manager" };
+const REVIEWER = { userId: 3, branchId: 1, role: "manager" };
 
 function db() {
-  const d = getDb();
-  if (!d) throw new Error("DATABASE_URL not set for tests");
-  return d;
+  const value = getDb();
+  if (!value) throw new Error("DATABASE_URL not set for tests");
+  return value;
 }
 
 beforeEach(async () => {
-  const d = db();
-  await d.transaction(async (tx) => {
+  const database = db();
+  await database.transaction(async (tx) => {
     await tx.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-    for (const t of TABLES) await tx.execute(sql.raw(`DELETE FROM \`${t}\``));
+    for (const table of TABLES) await tx.execute(sql.raw(`DELETE FROM \`${table}\``));
     await tx.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
   });
-  await ensureFinancialPostingGate(d);
-  await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values([
-    { id: 1, openId: "m", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
-    { id: 2, openId: "c", name: "بائع", email: "c@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+  await ensureFinancialPostingGate(database);
+  await database.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
+  await database.insert(s.users).values([
+    { id: 1, openId: "requester", name: "طالب العكس", email: "req@t.test", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "seller", name: "البائع", email: "seller@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "reviewer", name: "مراجع مستقل", email: "review@t.test", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
-  await d.insert(s.customers).values([
-    { id: 1, name: "عميل", phone: "+9647701234567", currentBalance: "0.00", creditLimit: null },
-  ]);
-  await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
-  await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "NB", costPrice: "400.00" }]);
-  await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
-  await d.insert(s.branchStock).values([{ variantId: 1, branchId: 1, quantity: 100 }]);
+  await database.insert(s.serviceTypes).values({
+    name: "موافقة تصميم", defaultKind: "SERVICE_REQUEST", defaultPriority: "HIGH",
+    slaHours: 24, isActive: true, blocksExecution: true,
+  });
+  await database.insert(s.customers).values({ id: 1, name: "عميل", phone: "+9647701234567", currentBalance: "0.00" });
+  await database.insert(s.products).values({ id: 1, name: "دفتر" });
+  await database.insert(s.productVariants).values({ id: 1, productId: 1, sku: "NB", costPrice: "400.00" });
+  await database.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+  await database.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
+  await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, SELLER);
 });
 
-/** أمرُ تخصيصٍ **خالص**: بلا `baseVariantId` ⇒ فاتورةٌ صفريّة البنود عند التسليم. */
-async function pureServiceOrder(reqId: string, paid: string | null) {
-  await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
-  const wo = await createWorkOrder({
-    branchId: 1, customerId: 1, title: "درع تخصيص", quantity: 1,
-    salePrice: "50000.00", materials: [], deposit: "0", clientRequestId: reqId,
+async function deliveredOrder(key: string, withLine: boolean) {
+  const created = await createWorkOrder({
+    branchId: 1,
+    customerId: 1,
+    title: withLine ? "خدمة مع منتج" : "خدمة تخصيص خالصة",
+    baseVariantId: withLine ? 1 : null,
+    quantity: 1,
+    salePrice: "50000.00",
+    materials: [],
+    deposit: "0",
+    clientRequestId: key,
   } as never, SELLER);
-  const woId = Number((wo as { workOrderId: number }).workOrderId);
-  await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
-  const res = await deliverWorkOrder(
-    { workOrderId: woId, payment: paid ? { amount: paid, method: "CASH" } : null },
-    SELLER,
-  );
-  return { woId, invoiceId: res.invoiceId };
+  const workOrderId = Number((created as { workOrderId: number }).workOrderId);
+  const approval = await requestWorkOrderDesignApproval({
+    workOrderId,
+    requestKey: `${key}-design-request`,
+    note: "اعتماد النسخة الحالية قبل التسليم",
+  }, SELLER);
+  await decideWorkOrderDesignApproval({
+    approvalId: Number(approval.approval.id),
+    decisionKey: `${key}-design-approve`,
+    decision: "APPROVED",
+    reason: "ثبتت موافقة العميل على التصميم النهائي",
+    evidence: { type: "WHATSAPP_MESSAGE", reference: `wamid.${key}` },
+  }, REVIEWER);
+  await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, workOrderId));
+  const delivered = await deliverWorkOrder({ workOrderId, payment: null }, SELLER);
+  const row = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, workOrderId)))[0];
+  return { workOrderId, invoiceId: delivered.invoiceId, version: Number(row.version) };
 }
-const invoiceOf = async (id: number) =>
-  (await db().select().from(s.invoices).where(eq(s.invoices.id, id)))[0];
-const balanceOf = async () =>
-  Number((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance);
 
-describe("عكس فاتورة الخدمة الصفريّة", () => {
-  it("⭐ فاتورةٌ آجلة بلا بنود: تُعكَس كاملاً — إيرادٌ وذمّةٌ وأمرٌ", async () => {
-    const { woId, invoiceId } = await pureServiceOrder("rsv-1", null);
-    // إثباتُ الحالة: صفر بنود، وذمّةٌ كاملة على العميل.
-    expect(await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId))).toHaveLength(0);
-    expect(await balanceOf()).toBe(50000);
+describe("reverseServiceInvoice compatibility wrapper", () => {
+  it("ينشئ طلباً صفري الأثر ثم ينفّذ العكس فقط عند اعتماد مستقل", async () => {
+    const delivered = await deliveredOrder("wrapper-zero", false);
+    const requested = await reverseServiceInvoice({
+      workOrderId: delivered.workOrderId,
+      expectedVersion: delivered.version,
+      reason: "رفض العميل الخدمة بعد التسليم",
+      clientRequestId: "wrapper-zero-reverse",
+    }, REQUESTER);
 
-    const res = await reverseServiceInvoice(
-      { workOrderId: woId, reason: "العميل رفض الدرع بعد التسليم", clientRequestId: "rev-1" },
-      MANAGER,
-    );
+    expect(requested.status).toBe("PENDING");
+    expect((await db().select().from(s.workOrders).where(eq(s.workOrders.id, delivered.workOrderId)))[0].status).toBe("DELIVERED");
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, delivered.invoiceId)))[0].status).not.toBe("RETURNED");
 
-    expect(res.reversedTotal).toBe("50000.00");
-    const inv = await invoiceOf(invoiceId);
-    expect(inv.status).toBe("RETURNED");
-    expect(inv.returnedTotal).toBe("50000.00");
-    expect(await balanceOf()).toBe(0); // الذمّة سقطت
-    // القيد المعكوس موجودٌ بإيرادٍ سالب.
-    const ret = (await db().select().from(s.accountingEntries))
-      .filter((e) => e.entryType === "RETURN" && Number(e.invoiceId) === invoiceId);
-    expect(ret).toHaveLength(1);
-    expect(Number(ret[0].revenue)).toBe(-50000);
-    // والأمر لم يعد «مُسلَّماً».
-    const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];
-    expect(wo.status).toBe("CANCELLED");
+    await approveWorkOrderControlRequest(Number(requested.id), REVIEWER);
+    expect((await db().select().from(s.workOrders).where(eq(s.workOrders.id, delivered.workOrderId)))[0].status).toBe("CANCELLED");
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, delivered.invoiceId)))[0].status).toBe("RETURNED");
   });
 
-  it("⭐ المقبوض يبقى أمانةً ولا يُصرَف صامتاً من هنا", async () => {
-    const { woId, invoiceId } = await pureServiceOrder("rsv-2", "50000.00");
-    const receiptsBefore = (await db().select().from(s.receipts)).length;
+  it("يمرّر الفاتورة ذات البنود إلى المسار الموحد نفسه", async () => {
+    const delivered = await deliveredOrder("wrapper-line", true);
+    const requested = await reverseServiceInvoice({
+      workOrderId: delivered.workOrderId,
+      expectedVersion: delivered.version,
+      reason: "عكس خدمة ذات بند عبر المسار الموحد",
+      clientRequestId: "wrapper-line-reverse",
+    }, REQUESTER);
+    await approveWorkOrderControlRequest(Number(requested.id), REVIEWER);
 
-    const res = await reverseServiceInvoice(
-      { workOrderId: woId, reason: "إلغاء بعد التسليم", clientRequestId: "rev-2" },
-      MANAGER,
-    );
-
-    expect(res.refundableAmount).toBe("50000.00");
-    // صفرُ إيصالِ صرفٍ جديد — الردّ قرارٌ موثَّق بسندٍ مستقل لا أثرٌ جانبيّ لهذا المسار.
-    expect((await db().select().from(s.receipts)).length).toBe(receiptsBefore);
-    expect((await invoiceOf(invoiceId)).status).toBe("RETURNED");
-    expect(await balanceOf()).toBe(0);
-  });
-
-  it("⭐ الحصر البنيويّ: فاتورةٌ لها بندٌ واحد تُرفَض (مخرجها المرتجع)", async () => {
-    const { woId, invoiceId } = await pureServiceOrder("rsv-3", null);
-    // حقنُ بندٍ يدوياً لمحاكاة أمرٍ له منتجٌ أساس.
-    await db().insert(s.invoiceItems).values({
-      invoiceId, variantId: 1, productUnitId: 1, quantity: "1.000", baseQuantity: 1,
-      unitPrice: "50000.00", unitCost: "0.00", discountAmount: "0", total: "50000.00",
-    });
-
-    await expect(reverseServiceInvoice(
-      { workOrderId: woId, reason: "محاولة", clientRequestId: "rev-3" },
-      MANAGER,
-    )).rejects.toThrowError(/للفاتورة بنودٌ|للفاتورة بنود/);
-  });
-
-  it("لا عكسَ مرّتين، وسببٌ إلزاميّ", async () => {
-    const { woId } = await pureServiceOrder("rsv-4", null);
-    await expect(reverseServiceInvoice({ workOrderId: woId, reason: "لا" }, MANAGER))
-      .rejects.toThrowError(/سبب العكس/);
-    await reverseServiceInvoice({ workOrderId: woId, reason: "سببٌ كافٍ", clientRequestId: "rev-4" }, MANAGER);
-    await expect(reverseServiceInvoice({ workOrderId: woId, reason: "ثانيةً", clientRequestId: "rev-4b" }, MANAGER))
-      .rejects.toThrowError(/لا تُعكَس مرّتين|لا تعكس مرتين/);
-  });
-
-  it("فصل المهام: مُصدر الفاتورة لا يعكسها", async () => {
-    const { woId } = await pureServiceOrder("rsv-5", null);
-    // البائع نفسه هو مُصدر الفاتورة (نسبتُها له بعد إصلاح ١٩/٨).
-    await expect(reverseServiceInvoice(
-      { workOrderId: woId, reason: "محاولة ذاتية", clientRequestId: "rev-5" },
-      { ...SELLER, role: "manager" },
-    )).rejects.toThrowError(/أصدرتها بنفسك/);
+    const line = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, delivered.invoiceId)))[0];
+    expect(line.returnedBaseQuantity).toBe(line.baseQuantity);
+    expect(line.returnedRestockedBaseQuantity).toBe(0);
   });
 });

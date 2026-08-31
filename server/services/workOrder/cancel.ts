@@ -1,7 +1,7 @@
 // إلغاء أمر شغل: يعيد المواد المُستهلَكة للمخزون ويسترد العربون المقبوض (إن وُجد).
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, like, notLike, or, sql } from "drizzle-orm";
-import { accountingEntries, customers, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
+import { accountingEntries, customers, invoices, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { applyMovement } from "../inventoryService";
@@ -18,6 +18,10 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { logAuditTx } from "../auditService";
 import type { TrpcContext } from "../../context";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { recordWorkOrderEvent } from "../workOrderEvents";
+import type { ApprovedWorkOrderControl } from "./update";
+import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
+import { computeWorkOrderInvoiceNetPaidInTx } from "./reverseDelivery";
 
 async function resolveLockedReceptionCashShift(
   tx: Tx,
@@ -71,28 +75,36 @@ export interface WorkOrderCancelMaterialDecision {
   wasteBase: number;
 }
 
-export async function cancelWorkOrder(
+export interface CancelWorkOrderOptions {
+  refundShiftId?: number | null;
+  clientRequestId?: string | null;
+  expectedVersion?: number;
+  reason?: string | null;
+  materials?: readonly WorkOrderCancelMaterialDecision[] | null;
+}
+
+export async function cancelWorkOrderInTx(
+  tx: Tx,
   workOrderId: number,
   actor: Actor & { role?: string },
-  opts: {
-    refundShiftId?: number | null;
-    clientRequestId?: string | null;
-    /** سببُ الإلغاء — يُكتب على الأمر نفسه لا في سجلّ التدقيق وحده (0237). */
-    reason?: string | null;
-    /**
-     * مصيرُ كلّ مادّة. **غيابُه = رجوعٌ كامل** (السلوك القائم). ووجودُه يلزمه أن يغطّي
-     * **كلّ** أسطر المواد بالضبط — لا سطرَ ضمنيّ ولا مكرَّر.
-     */
-    materials?: readonly WorkOrderCancelMaterialDecision[] | null;
-  } = {},
+  opts: CancelWorkOrderOptions = {},
+  control: ApprovedWorkOrderControl = {},
 ) {
-  return withTx(async (tx) => {
+    const reason = opts.reason?.trim() ?? "";
+    if (reason.length < 3 || reason.length > 500) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الإلغاء مطلوب (3-500 محرف)" });
+    }
+    if (!Number.isInteger(opts.expectedVersion) || Number(opts.expectedVersion) <= 0) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "نسخة أمر الشغل المتوقعة مطلوبة" });
+    }
     const clientRequestId = opts.clientRequestId?.trim() || null;
     const requestFingerprint = clientRequestId
       // القرارُ جزءٌ من البصمة: إعادةُ محاولةٍ بقرارِ هدرٍ مختلف **ليست** نفس الطلب.
       ? idempotencyHash({
           workOrderId,
           refundShiftId: opts.refundShiftId ?? null,
+          expectedVersion: opts.expectedVersion,
+          reason,
           materials: (opts.materials ?? [])
             .map((m) => [Number(m.workOrderMaterialId), Number(m.returnBase), Number(m.wasteBase)])
             .sort((a, b) => a[0] - b[0]),
@@ -130,6 +142,9 @@ export async function cancelWorkOrder(
     const pendingRefundReceiptIds: number[] = [];
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
+    if (Number(wo.version) !== opts.expectedVersion) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر أمر الشغل منذ فتحه — حدّث الصفحة ثم أعد المحاولة" });
+    }
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED")
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء أمر مُسلَّم أو مُلغى" });
     // ١٨/٨: الحالة وحدها لا تكفي — الأمر يبقى READY والطرد بيد المندوب. بلا هذا الحارس كان
@@ -143,6 +158,23 @@ export async function cancelWorkOrder(
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: `صدرت فاتورة لهذا الطلب (#${Number(wo.invoiceId)}) — لا يُلغى بعد الفوترة؛ استعمل الاسترجاع (مرتجع) ليُعكس البيع والذمّة معاً`,
+      });
+    }
+    const existingMaterials = await tx
+      .select({ id: workOrderMaterials.id })
+      .from(workOrderMaterials)
+      .where(eq(workOrderMaterials.workOrderId, workOrderId));
+    const heldFeeBeforeCancel = await workOrderFeeHeldNet(tx, workOrderId);
+    const appliedDepositsBeforeCancel = await appliedCollectionsForWorkOrder(tx, workOrderId);
+    const riskyCancellation = wo.status !== "RECEIVED"
+      || money(wo.deposit ?? "0").gt(0)
+      || appliedDepositsBeforeCancel.length > 0
+      || existingMaterials.length > 0
+      || heldFeeBeforeCancel.gt(0);
+    if (riskyCancellation && control.approvedControlRequestId == null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "إلغاء أمرٍ له عربون أو مواد أو أجرة أو بدأ إنتاجه يتطلب طلباً واعتماد مديرٍ آخر",
       });
     }
     if (wo.status === "IN_PROGRESS" || wo.status === "READY") {
@@ -536,10 +568,19 @@ export async function cancelWorkOrder(
       status: "CANCELLED",
       // 0237: السببُ على المستند لا في سجلّ التدقيق وحده — الأخير بذلٌ أفضل ومُعقَّم وليس
       // سطحَ قراءةٍ للأعمال، فبلا هذه الأعمدة يذوب «لم يحضر العميل» في إلغاءٍ مجهول.
-      cancelReason: opts.reason?.trim() || null,
+      cancelReason: reason,
       cancelledAt: new Date(),
       cancelledBy: actor.userId,
     }).where(eq(workOrders.id, workOrderId));
+    await recordWorkOrderEvent(tx, {
+      workOrderId,
+      eventType: "CANCELLED",
+      fromStatus: wo.status,
+      toStatus: "CANCELLED",
+      payload: { reason, controlRequestId: control.approvedControlRequestId ?? null },
+      actorUserId: actor.userId,
+      branchId: Number(wo.branchId),
+    });
     if (clientRequestId) {
       await recordIdempotencyKey(
         tx,
@@ -549,8 +590,15 @@ export async function cancelWorkOrder(
         requestFingerprint,
       );
     }
-    return { workOrderId, status: "CANCELLED" as const, pendingRefundReceiptIds, replayed: false as const };
-  });
+    return { workOrderId, status: "CANCELLED" as const, pendingRefundReceiptIds, replayed: false as const, version: Number(opts.expectedVersion) + 1 };
+}
+
+export async function cancelWorkOrder(
+  workOrderId: number,
+  actor: Actor & { role?: string },
+  opts: CancelWorkOrderOptions = {},
+) {
+  return withTx((tx) => cancelWorkOrderInTx(tx, workOrderId, actor, opts));
 }
 
 /**
@@ -618,7 +666,7 @@ export async function approveWorkOrderCancellationRefund(
     )[0];
     if (
       !wo ||
-      wo.status !== "CANCELLED" ||
+      (wo.status !== "CANCELLED" && wo.status !== "READY") ||
       Number(wo.branchId) !== Number(refund.branchId) ||
       Number(wo.customerId ?? 0) !== Number(refund.partyId ?? 0)
     ) {
@@ -745,7 +793,8 @@ export async function approveWorkOrderCancellationRefund(
       source.direction !== "IN" ||
       source.status !== "COMPLETED" ||
       source.approvalStatus !== "APPROVED" ||
-      (resolvesLikeDirect && !round2(money(source.amount)).eq(round2(money(refund.amount))))
+      (refundKind === "DIRECT" && !round2(money(source.amount)).eq(round2(money(refund.amount)))) ||
+      (isReverseKind && round2(money(refund.amount)).gt(round2(money(source.amount))))
     ) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "مصدر العربون لم يعد إيصال IN منفذاً ومعتمداً" });
     }
@@ -809,6 +858,7 @@ export async function approveWorkOrderCancellationRefund(
     await postEntry(tx, {
       entryType: "PAYMENT_OUT",
       branchId: Number(refund.branchId),
+      invoiceId: refund.invoiceId != null ? Number(refund.invoiceId) : null,
       receiptId,
       customerId: refund.partyId != null ? Number(refund.partyId) : null,
       amount,
@@ -822,6 +872,17 @@ export async function approveWorkOrderCancellationRefund(
       ),
       postingSourceComponents: postingSource,
     });
+    // رأس الفاتورة لا يسبق النقد: الرد غير النقدي لا يخفض paidAmount وهو PENDING،
+    // ويُشتق الصافي من IN المنفذ ناقص OUT المنفذ لحظة الاعتماد فقط.
+    if (refund.invoiceId != null) {
+      const paidAmount = await computeWorkOrderInvoiceNetPaidInTx(
+        tx,
+        workOrderId,
+        Number(refund.invoiceId),
+        wo.deposit,
+      );
+      await tx.update(invoices).set({ paidAmount }).where(eq(invoices.id, Number(refund.invoiceId)));
+    }
     await logAuditTx(tx, auditContext, {
       action: "workOrder.refund.approve",
       entityType: "receipt",

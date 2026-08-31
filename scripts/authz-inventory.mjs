@@ -425,6 +425,14 @@ const PROCEDURES = {
     roles: ["manager"],
     branch: "required",
   },
+  // مركّبة runtime: deliveryManagerProcedure ثم requireAdmin؛ شرط admin تشديدٌ إضافي.
+  deliveryAdminProcedure: {
+    authority: "module-gate",
+    module: "store",
+    level: "FULL",
+    roles: ["admin"],
+    branch: false,
+  },
   deliveryCashierProcedure: {
     authority: "module-gate",
     module: "store",

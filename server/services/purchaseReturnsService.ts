@@ -142,23 +142,8 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       prelockedCash = resolved;
     }
 
-    const [supplier] = await tx
-      .select({ id: suppliers.id, kind: suppliers.supplierKind })
-      .from(suppliers)
-      .where(eq(suppliers.id, input.supplierId))
-      .for("update")
-      .limit(1);
-    if (!supplier) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "المورّد غير موجود" });
-    }
-    if (supplier.kind === "CONSIGNOR") {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message:
-          "مرتجع مودِع الأمانة يُسجّل بسند سحب/استبدال الأمانة، لا كمرتجع شراء",
-      });
-    }
-
+    // ترتيب الأقفال العام لمسارات الشراء: مصدر النقد → أمر الشراء → المورد → البنود/المخزون.
+    // كان المرتجع يقفل المورد قبل PO بعكس receive/pay، فتتكون دورة انتظار تحت التزامن.
     // أمر الشراء المرجعي إلزامي: نُثبّت عزل الفاعل وملكية المورد/الفرع وسقف الكميّات.
     let refPo: typeof purchaseOrders.$inferSelect | undefined;
     let refItems: (typeof purchaseOrderItems.$inferSelect)[] = [];
@@ -179,6 +164,22 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     }
     if (Number(refPo.branchId) !== input.branchId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء لا يخصّ هذا الفرع" });
+    }
+    const [supplier] = await tx
+      .select({ id: suppliers.id, kind: suppliers.supplierKind })
+      .from(suppliers)
+      .where(eq(suppliers.id, input.supplierId))
+      .for("update")
+      .limit(1);
+    if (!supplier) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "المورّد غير موجود" });
+    }
+    if (supplier.kind === "CONSIGNOR") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "مرتجع مودِع الأمانة يُسجّل بسند سحب/استبدال الأمانة، لا كمرتجع شراء",
+      });
     }
     refItems = await tx.select().from(purchaseOrderItems)
       .where(eq(purchaseOrderItems.purchaseOrderId, Number(refPo.id)))
@@ -357,6 +358,9 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     const returnInsert = await tx.insert(purchaseReturns).values({
       returnNumber,
       clientRequestId: input.clientRequestId,
+      // هذا الكاتب القديم مغلقٌ على حد API ويُبقى فقط لاختبارات/ترحيل السجل
+      // التاريخي؛ لا يجوز أن ينتحل مستند NATIVE المحكوم بطلب ومطابقة وفاتورة.
+      origin: "LEGACY",
       purchaseOrderId: input.purchaseOrderRefId,
       supplierId: input.supplierId,
       branchId: input.branchId,

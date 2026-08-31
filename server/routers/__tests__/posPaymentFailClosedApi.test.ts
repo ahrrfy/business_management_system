@@ -100,7 +100,7 @@ describe("عقد الدفع الخارجي على حدود الـAPI", () => {
     await expectNoExternalMoneyTrail();
   });
 
-  it("تحصيل دفعة لاحقة غير نقدية بلا مرجع يُرفض، ورصيد زين مرفوض دائماً", async () => {
+  it("تحصيل دفعة لاحقة غير نقدية بلا محاولة مؤكدة يُرفض، ورصيد زين مرفوض دائماً", async () => {
     const owner = appRouter.createCaller(context("admin", 11));
 
     await expect(owner.sales.pay({
@@ -108,7 +108,7 @@ describe("عقد الدفع الخارجي على حدود الـAPI", () => {
       amount: "100.00",
       method: "CARD",
       clientRequestId: "PAY-NO-REF",
-    })).rejects.toThrow(/مرجع عملية البطاقة\/التحويل مطلوب/);
+    })).rejects.toThrow(/أكّد الدفع الخارجي قبل تسجيل الدفعة/);
 
     await expect(owner.sales.pay({
       invoiceId: 1,

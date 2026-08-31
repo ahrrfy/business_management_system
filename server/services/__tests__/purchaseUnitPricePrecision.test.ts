@@ -1,8 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createPurchaseOrder, receivePurchase, updatePurchaseOrder } from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 /**
  * بلاغ المالك (١٧/٨/٢٦): «سعر الشراء لا يمكن أن يكون 1,450.99، وبالدولار لا يقبل 3.4566».
@@ -30,7 +35,9 @@ async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const t of [
-    "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
+    "idempotencyKeys", "purchaseOrderEvents", "purchaseOrderControlRequests",
+    "purchaseOrderRequisitionAllocations", "purchaseOrderRevisionItems", "purchaseOrderRevisions",
+    "accountingEntries", "receipts", "inventoryMovements",
     "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices",
     "productUnits", "productVariants", "products", "suppliers", "branches", "users",
   ]) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
@@ -66,6 +73,29 @@ const readOrder = async (purchaseOrderId: number) => ({
   item: (await db().select().from(s.purchaseOrderItems)
     .where(eq(s.purchaseOrderItems.purchaseOrderId, purchaseOrderId)))[0],
 });
+
+async function approvePurchaseOrder(
+  created: Awaited<ReturnType<typeof createPurchaseOrder>>,
+) {
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: created.purchaseOrderId,
+      expectedVersion: created.version,
+      reason: "إرسال أمر اختبار دقة السعر للمراجعة",
+      requestKey: `price-po-submit:${randomUUID()}`,
+    },
+    actor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `price-po-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت دقة السعر والعملة واعتمدت الأمر",
+    },
+    { userId: 2, branchId: 1, role: "manager" },
+  );
+}
 
 describe("دقّة سعر شراء الوحدة حسب عملة الأمر", () => {
   it("الدينار: 1450.99 تُحفَظ كما هي ويُشتقّ الإجمالي منها (نواة البلاغ)", async () => {
@@ -203,6 +233,8 @@ describe("دقّة سعر شراء الوحدة حسب عملة الأمر", () 
 
     await updatePurchaseOrder({
       purchaseOrderId: created.purchaseOrderId,
+      expectedVersion: created.version,
+      revisionReason: "تعديل ملاحظة لاختبار دقة الدولار",
       supplierId: 1,
       notes: "تعديل ملاحظة فقط",
       agreedCurrency: "USD",
@@ -334,6 +366,8 @@ describe("خصم فاتورة المورّد على أمر الشراء", () => 
 
     await updatePurchaseOrder({
       purchaseOrderId: created.purchaseOrderId,
+      expectedVersion: Number(before.po.version),
+      revisionReason: "إعادة حفظ أسعار ما قبل الخصم",
       supplierId: 1,
       notes: "إعادة حفظ",
       // نفس ما يُعيد المحرّر إرساله: أسعارُ ما قبل الخصم + الخصم كما هو.
@@ -388,10 +422,11 @@ describe("خصم فاتورة المورّد على أمر الشراء", () => 
     const created = await createPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
+      status: "DRAFT",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "1000" }],
       invoiceDiscount: "1000", // ١٠٪ ⇒ الصافي 9,000 وتكلفة القطعة 900
     }, actor);
+    await approvePurchaseOrder(created);
     const { item } = await readOrder(created.purchaseOrderId);
 
     await receivePurchase({

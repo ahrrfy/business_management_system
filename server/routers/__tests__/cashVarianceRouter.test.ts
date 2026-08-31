@@ -69,4 +69,15 @@ describe("عقد API لفروقات النقد", () => {
       clientRequestId: "variance-daily-no-employee-contract",
     } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
+
+  it("يرفض سبب عجز العهدة لمصدر المطابقة اليومية قبل بلوغ الخدمة", async () => {
+    await expect(cashVarianceRouter.createCaller(context("manager")).propose({
+      sourceType: "DAILY_TREASURY",
+      sourceId: 1,
+      reasonCode: "CUSTODY_LOSS",
+      reason: "فرق يومي لا يجوز تحميله على عهدة موظف",
+      evidenceReference: "evidence://daily/not-custody",
+      clientRequestId: "variance-daily-reason-contract",
+    } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
 });

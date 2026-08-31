@@ -248,11 +248,12 @@ async function writeSaleJournal(
   entryId: number,
   input?: { branchId?: number; entryDate?: string; amount?: string },
 ) {
+  const entryDate = input?.entryDate ?? "2026-08-15";
   await withTx(async (tx) =>
     writeJournal(
       tx,
       entryId,
-      new Date(`${input?.entryDate ?? "2026-08-15"}T00:00:00.000Z`),
+      new Date(`${entryDate}T00:00:00.000Z`),
       input?.branchId ?? BRANCH_MAIN,
       postingLinesFor({
         entryType: "SALE",
@@ -262,6 +263,12 @@ async function writeSaleJournal(
       { cycleId: CYCLE_ID, postingProfile: "SALE_INVENTORY" },
     ),
   );
+  // هذه fixture تاريخية وساعتها NOW ثابتة. اترك رأس اليومية داخل النافذة نفسها
+  // بدلاً من defaultNow() الحقيقي كي تختبر البوابة النطاق المقصود بلا اعتماد على ساعة التشغيل.
+  await db()
+    .update(s.journalEntries)
+    .set({ createdAt: new Date(`${entryDate}T12:00:00.000Z`) })
+    .where(eq(s.journalEntries.entryId, entryId));
 }
 
 async function seedShadow(startedAt = THIRTY_DAYS_AGO) {
@@ -1205,6 +1212,10 @@ describe("canActivate — بوابة ACTIVE", () => {
         { cycleId: CYCLE_ID },
       ),
     );
+    await db()
+      .update(s.journalEntries)
+      .set({ createdAt: new Date("2026-08-11T12:00:00.000Z") })
+      .where(eq(s.journalEntries.entryId, gapEntry));
     await insertSale({ createdAt: new Date("2026-08-12T00:00:00.000Z") });
 
     const gate = await canActivate({ now: NOW });

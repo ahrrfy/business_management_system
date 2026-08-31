@@ -4,7 +4,7 @@
  * الرقم المعدود ليس مصدراً مالياً بحد ذاته. أي فرق عن الرصيد الدفتري يحتاج
  * دليلاً (عدّ الفئات) وتفسيراً، والفروق الجوهرية تحتاج فصلاً للواجبات.
  */
-export const IQD_DENOMINATIONS = [50_000, 25_000, 10_000, 5_000, 1_000, 500, 250] as const;
+export { IQD_DENOMINATIONS } from "./cashDailyReconciliation";
 
 export const SHIFT_VARIANCE_CODES = [
   "COUNT_ERROR",

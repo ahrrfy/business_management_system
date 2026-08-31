@@ -21,6 +21,10 @@ import { createProduct } from "../catalogService";
 import { createSupplier } from "../supplierService";
 import { createSale } from "../sale/create";
 import { createConsignmentNote } from "../consignment/noteService";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 import { markWorkOrderReady } from "../workOrder/lifecycle";
 import { sendViaApi as sendArViaApi } from "../arRemindersService";
 import { sendViaApi as sendApViaApi } from "../apRemindersService";
@@ -100,6 +104,8 @@ let fetchSpy: ReturnType<typeof vi.spyOn> | undefined;
 beforeEach(() => {
   process.env.INTEGRATIONS_ENCRYPTION_KEY = TEST_KEY_HEX;
   __resetKeyCacheForTests();
+  vi.mocked(flowNotifyMocked).mockReset();
+  vi.mocked(flowNotifyMocked).mockImplementation(flowNotifyReal);
   fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
     async () =>
       new Response(JSON.stringify({ messages: [{ id: "wamid.TEST" }] }), { status: 200, headers: { "content-type": "application/json" } }),
@@ -578,6 +584,22 @@ describe("sendViaApi — تذكيرات AR/AP عبر Cloud API", () => {
 describe("order_ready — markWorkOrderReady", () => {
   beforeEach(async () => {
     await seedBranchAndUser();
+    await db().insert(s.users).values({
+      id: 2,
+      openId: "t42_design_reviewer",
+      name: "مراجع تصميم مستقل",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+    });
+    await db().insert(s.serviceTypes).values({
+      name: "موافقة تصميم",
+      defaultKind: "SERVICE_REQUEST",
+      defaultPriority: "HIGH",
+      slaHours: 24,
+      blocksExecution: true,
+      isActive: true,
+    });
   });
 
   async function seedInProgressWorkOrder(customerId: number | null): Promise<number> {
@@ -591,10 +613,35 @@ describe("order_ready — markWorkOrderReady", () => {
     return insertId(res);
   }
 
+  async function approveCurrentDesign(workOrderId: number): Promise<void> {
+    const requested = await requestWorkOrderDesignApproval(
+      {
+        workOrderId,
+        requestKey: `t42-design-request-${workOrderId}`,
+        note: "اعتماد تصميم أمر اختبار الإشعار",
+      },
+      { userId: 1, branchId: 1, role: "manager" },
+    );
+    await decideWorkOrderDesignApproval(
+      {
+        approvalId: Number(requested.approval.id),
+        decisionKey: `t42-design-decision-${workOrderId}`,
+        decision: "APPROVED",
+        reason: "وافق العميل على التصميم النهائي",
+        evidence: {
+          type: "WHATSAPP_MESSAGE",
+          reference: `wamid.t42.design.${workOrderId}`,
+        },
+      },
+      { userId: 2, branchId: 1, role: "manager" },
+    );
+  }
+
   it("flowOrderReady OFF ⇒ لا outbox والانتقال إلى READY ينجح كالمعتاد", async () => {
     await setWaHubSettings({ flowOrderReady: false });
     const custId = await seedCustomer();
     const woId = await seedInProgressWorkOrder(custId);
+    await approveCurrentDesign(woId);
     const res = await markWorkOrderReady(woId);
     expect(res.status).toBe("READY");
     expect(await db().select().from(s.waOutbox)).toHaveLength(0);
@@ -608,6 +655,7 @@ describe("order_ready — markWorkOrderReady", () => {
     await seedTemplate("order_ready");
     const custId = await seedCustomer({ name: "عميل الأمر" });
     const woId = await seedInProgressWorkOrder(custId);
+    await approveCurrentDesign(woId);
     const res = await markWorkOrderReady(woId);
     expect(res.status).toBe("READY");
     const rows = await db().select().from(s.waOutbox).where(eq(s.waOutbox.dedupeKey, `WO_READY:${woId}`));
@@ -622,6 +670,7 @@ describe("order_ready — markWorkOrderReady", () => {
     await seedTemplate("order_ready");
     const custId = await seedCustomer();
     const woId = await seedInProgressWorkOrder(custId);
+    await approveCurrentDesign(woId);
 
     vi.mocked(flowNotifyMocked).mockRejectedValueOnce(new Error("محقون: فشل متعمّد للاختبار"));
 

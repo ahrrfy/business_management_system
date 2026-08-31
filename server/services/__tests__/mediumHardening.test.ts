@@ -150,7 +150,7 @@ describe("escLike — تهريب محارف LIKE الخاصة (ESCAPE '!')", () 
   it("البحث بـ% لا يُعيد كل المنتجات (يُهرَّب لـ!%)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1)));
     // % بعد الهروب = !% ⇒ LIKE '%!%%' ESCAPE '!' ⇒ يطلب % حرفياً لا wildcard
-    // onHand هي الـendpoint التي تحمل فلتر LIKE (stockByBranch لا تقبل q)
+    // onHand هي endpoint الأرصدة الحاكمة وتحمل فلتر LIKE.
     const rows = await caller.inventory.onHand({ branchId: 1, q: "%" });
     expect(rows.length).toBe(0); // لا منتج اسمه «%»
   });

@@ -18,10 +18,32 @@ describe("عقد واجهة تسوية فروقات النقد", () => {
     expect(panel).toContain("<ErrorState");
     expect(panel).toContain("approveM.isPending || rejectM.isPending");
     expect(panel).toContain("expectedVersion: selected.version");
-    expect(panel).toContain("لا يستطيع المنشئ أو منفذ العد أو الموظف المسؤول اعتماد الحالة");
+    expect(panel).toContain("selected.decisionPolicy.canDecide");
+    expect(panel).toContain("selected.decisionPolicy.blockedReason");
+    expect(panel).toContain("قرار فصل المهام صادر من الخادم");
     expect(panel).not.toContain("responsibleUserId");
     expect(panel).not.toContain("cashVariance.responsibleUsers");
     expect(panel).toContain('sourceType === "CUSTODY"');
     expect(panel).toContain("لا يعيّن موظفاً");
+  });
+
+  it("يفصل فرع السجل عن نموذج المصدر ويعرض الحقائق والأثر قبل قرار مؤكد", () => {
+    expect(panel).toContain("filterBranchId");
+    expect(panel).toContain("فرع سجل فروقات النقد");
+    expect(panel).toContain("CASH_VARIANCE_REASON_CODES_BY_SOURCE[sourceType]");
+    for (const label of ["المتوقع", "الفعلي", "الفرق", "المسؤول", "الأثر المحاسبي"]) {
+      expect(panel).toContain(label);
+    }
+    expect(panel).toContain("await confirm({");
+    expect(panel).toContain("اعتماد وترحيل القيد");
+  });
+
+  it("يحمّل طابور الاعتماد كاملاً ولا يخفي القضايا الأقدم بعد حد الصفحة", () => {
+    expect(panel).toContain("cashVariance.list.useInfiniteQuery");
+    expect(panel).toContain("pages.flatMap((page) => page.rows)");
+    expect(panel).toContain("getNextPageParam");
+    expect(panel).toContain("listQ.fetchNextPage()");
+    expect(panel).toContain("listQ.hasNextPage");
+    expect(panel).toContain("إجمالي الحالات");
   });
 });

@@ -208,8 +208,8 @@ describe("P2/Sh2 — treasury and delivery posting contracts", () => {
   it("wires every treasury movement to its approved explicit profile", () => {
     const expectedByFile: Record<string, string[]> = {
       "cashHandoverService.ts": [
-        "CASH_HANDOVER_TO_TREASURY",
-        "TREASURY_CASH",
+        "CASH_HANDOVER_TO_TRANSIT",
+        "CASH_IN_TRANSIT",
         "CASH",
       ],
       "cashDropService.ts": ["CASH_DROP_TO_TRANSIT", "CASH_IN_TRANSIT", "CASH"],

@@ -19,6 +19,7 @@ export interface HandoverResult {
   inReceiptId: number;
   recipientUserId: number;
   recipientName: string;
+  assignmentMode: "INDEPENDENT_RECIPIENT" | "LEGACY_SELF_CUSTODY";
 }
 
 async function nextHandoverNumber(tx: Tx, branchId: number): Promise<string> {
@@ -66,6 +67,8 @@ export async function settleShiftReturnTx(
     shiftOwnerUserId: number;
     /** توافق لمستدعي الخدمة الداخليين السابقين فقط؛ بوابة API لا تمرره. */
     legacyAutoRecipient?: boolean;
+    /** عميل API قديم بلا حقل مستلم: تُحفظ العهدة باسم مالك الوردية وتبقى معلقة لإعادة الإسناد. */
+    legacySelfCustody?: boolean;
     notes?: string | null;
   },
   actor: Actor,
@@ -82,7 +85,12 @@ export async function settleShiftReturnTx(
   if (!recipient || !recipient.isActive) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد غير موجود أو معطّل" });
   }
-  if (recipient.role !== "admin" && recipient.role !== "manager") {
+  const legacySelfCustody = input.legacySelfCustody === true;
+  if (
+    recipient.role !== "admin" &&
+    recipient.role !== "manager" &&
+    !(legacySelfCustody && Number(recipient.id) === Number(input.shiftOwnerUserId))
+  ) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون مديراً أو إدارياً" });
   }
   if (
@@ -95,6 +103,11 @@ export async function settleShiftReturnTx(
     Number(recipient.id) === Number(actor.userId) ||
     Number(recipient.id) === Number(input.shiftOwnerUserId)
   ) {
+    if (!(legacySelfCustody && Number(recipient.id) === Number(input.shiftOwnerUserId))) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "يجب فصل مُسلِّم النقد عن مستلمه" });
+    }
+  }
+  if (legacySelfCustody && Number(recipient.id) !== Number(input.shiftOwnerUserId)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "يجب فصل مُسلِّم النقد عن مستلمه" });
   }
   const recipientName = recipient.name ?? `#${recipient.id}`;
@@ -135,7 +148,9 @@ export async function settleShiftReturnTx(
     referenceNumber: handoverNumber,
     status: "PENDING",
     partyType: "OTHER",
-    description: `عهدة إغلاق وردية #${input.shiftId} بانتظار عدّ ${recipientName}`,
+    description: legacySelfCustody
+      ? `عهدة إغلاق وردية #${input.shiftId} محفوظة باسم مالك الوردية ${recipientName}؛ بانتظار إعادة الإسناد والعدّ المستقل`
+      : `عهدة إغلاق وردية #${input.shiftId} بانتظار عدّ ${recipientName}`,
     createdBy: Number(recipient.id),
   });
   const inReceiptId = extractInsertId(inRes);
@@ -160,5 +175,6 @@ export async function settleShiftReturnTx(
     inReceiptId,
     recipientUserId: Number(recipient.id),
     recipientName,
+    assignmentMode: legacySelfCustody ? "LEGACY_SELF_CUSTODY" : "INDEPENDENT_RECIPIENT",
   };
 }

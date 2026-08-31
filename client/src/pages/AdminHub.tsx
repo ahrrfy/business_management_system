@@ -11,6 +11,7 @@ const Roles = lazy(() => import("@/pages/Roles"));
 const KioskDevices = lazy(() => import("@/pages/KioskDevices"));
 const AuditLogs = lazy(() => import("@/pages/AuditLogs"));
 const LegacyDataRepair = lazy(() => import("@/pages/LegacyDataRepair"));
+const SystemHealth = lazy(() => import("@/pages/SystemHealth"));
 
 const TABS: HubTab[] = [
   { value: "settings", label: "الإعدادات", gate: { managerOnly: true }, Component: Settings },
@@ -20,6 +21,7 @@ const TABS: HubTab[] = [
   { value: "roles", label: "الأدوار والصلاحيات", gate: { adminOnly: true }, Component: Roles },
   { value: "devices", label: "أجهزة قارئ الأسعار", gate: { adminOnly: true }, Component: KioskDevices },
   { value: "audit", label: "سجلّ التدقيق", gate: { adminOnly: true }, Component: AuditLogs },
+  { value: "system-health", label: "صحة النظام", gate: { adminOnly: true }, Component: SystemHealth },
   { value: "delivery-data-repair", label: "معالجة بيانات التوصيل", gate: { adminOnly: true }, Component: LegacyDataRepair },
 ];
 
