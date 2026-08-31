@@ -244,6 +244,24 @@ async function insertSale(input: {
   return Number(rows[0].id);
 }
 
+/**
+ * `journalEntries.createdAt` = `defaultNow()` — ساعة القاعدة الحقيقيّة لا ثوابت الاختبار،
+ * و**نافذة الظلّ تُرشِّح بـ`createdAt` لا بـ`entryDate`** (`reconcileDoubleEntryShadowWindow`:
+ * `gte/lte(journalEntries.createdAt, from/to)`)، وحدُها الأعلى ثابتٌ (`NOW` ≡ 2026-08-31T00:00Z)
+ * ⇒ رأسُ اليومية يسقط **خارج** النافذة لحظة تجاوز ساعةِ الجهاز ذلك الثابت، فتعود
+ * `heads` فارغةً ويُرجِع المُصالِح صفراً بلا أيّ مانع. قنبلةٌ موقوتة انفجرت عند
+ * منتصف ليل UTC لـ٣١/٨/٢٠٢٦ وتبقى حمراء أبداً (الساعة لا ترجع) — ولذلك
+ * يُثبّت الاختبار طابعَ رأس اليومية كما يُثبّت `insertSale` طابعَ مصدرها.
+ */
+const JOURNAL_WRITTEN_AT = new Date("2026-08-20T00:00:00.000Z");
+
+async function pinJournalWrittenAt(entryId: number) {
+  await db()
+    .update(s.journalEntries)
+    .set({ createdAt: JOURNAL_WRITTEN_AT })
+    .where(eq(s.journalEntries.entryId, entryId));
+}
+
 async function writeSaleJournal(
   entryId: number,
   input?: { branchId?: number; entryDate?: string; amount?: string },
@@ -262,6 +280,7 @@ async function writeSaleJournal(
       { cycleId: CYCLE_ID, postingProfile: "SALE_INVENTORY" },
     ),
   );
+  await pinJournalWrittenAt(entryId);
 }
 
 async function seedShadow(startedAt = THIRTY_DAYS_AGO) {
@@ -1179,12 +1198,7 @@ describe("canActivate — بوابة ACTIVE", () => {
     expect(gate.unmappedEntryTypes).toEqual([]);
   });
 
-  // Slice DFP2 (٣١/٨/٢٦): مُعطَّل مؤقتاً — الفشل موجودٌ على main بعد #860 (statutory
-  // accounting compliance): `canActivate` صار يعود بـ`OPERATIONAL_RECONCILIATION` أوّلاً
-  // فلا يصل الاختبار إلى `UNMAPPED_GAPS`. الإصلاح الحقيقيّ يتطلّب فهم تغييرات #860 على
-  // reconcileService — خارج نطاق DFP2 (منظومة التوصيل). TODO(#TBD): إعادة تفعيل + توسيع
-  // arrayContaining ليشمل OPERATIONAL_RECONCILIATION + فحص سبب اختفاء gapCount.
-  it.skip("تحجب فجوة أو حدثاً مفقوداً أو انحرافاً في أي فرع خلال نافذة الظل", async () => {
+  it("تحجب فجوة أو حدثاً مفقوداً أو انحرافاً في أي فرع خلال نافذة الظل", async () => {
     await seedShadow();
 
     const drifted = await insertSale({
@@ -1210,6 +1224,7 @@ describe("canActivate — بوابة ACTIVE", () => {
         { cycleId: CYCLE_ID },
       ),
     );
+    await pinJournalWrittenAt(gapEntry);
     await insertSale({ createdAt: new Date("2026-08-12T00:00:00.000Z") });
 
     const gate = await canActivate({ now: NOW });
@@ -1233,9 +1248,7 @@ describe("canActivate — بوابة ACTIVE", () => {
     );
   });
 
-  // Slice DFP2 (٣١/٨/٢٦): مُعطَّل مؤقتاً — نفس السبب أعلاه (#860): `scopeMismatchCount`
-  // في reconcileService لم يعد يُحسب/يُبلَّغ بالطريقة السابقة. TODO(#TBD): مراجعة #860.
-  it.skip("تحجب يوميةً مرتبطة بالمصدر لكنها منسوبة إلى فرع مختلف", async () => {
+  it("تحجب يوميةً مرتبطة بالمصدر لكنها منسوبة إلى فرع مختلف", async () => {
     await seedShadow();
     const entryId = await insertSale({
       branchId: BRANCH_MAIN,
@@ -1848,6 +1861,14 @@ describe("تغيير وضع الدفتر — انتقالات ذرّية مُد�
         "فجوة متزامنة",
         { cycleId: CYCLE_ID },
       );
+      // داخل المعاملة نفسها (`tx` لا `db()`) — القفل محجوزٌ هنا عمداً، فنداءٌ من
+      // اتّصالٍ آخر سيتعلّق عليه. وبلا التثبيت يسقط رأسُ الفجوة خارج النافذة
+      // فيُحجَب التفعيل بـ`MISSING_JOURNALS` بدل الفجوة نفسها ⇒ اختبارٌ يمرّ لسببٍ
+      // غير الذي يدّعيه اسمُه («ثمّ ترى فجوتها»).
+      await tx
+        .update(s.journalEntries)
+        .set({ createdAt: JOURNAL_WRITTEN_AT })
+        .where(eq(s.journalEntries.entryId, Number(inserted[0].id)));
       writerHasLock();
       await writerCanCommit;
     });
