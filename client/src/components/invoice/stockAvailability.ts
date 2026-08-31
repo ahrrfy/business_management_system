@@ -3,6 +3,8 @@ import type { InvoiceLine } from "./types";
 export interface LineStockState {
   isKnown: boolean;
   isService: boolean;
+  /** «يُباع بالطلب»: الخادم يقبله قبل التوريد ⇒ لا نافد ولا ناقص، والرصيد يبقى معروضاً كما هو. */
+  allowBackorder: boolean;
   isOut: boolean;
   isShort: boolean;
   onHandBase: number;
@@ -32,7 +34,12 @@ function finiteNumber(value: unknown): number {
  */
 export function getLineStockState(line: InvoiceLine, demandBase: number): LineStockState {
   const isService = line.isService === true;
-  const isKnown = isService || line.availableBase != null;
+  // «يُباع بالطلب» (0318): الخادم يُعفيه من حارس النفاد إعفاءً دائماً، فوسمُه «نافذاً» هنا
+  // يكذب على المستخدم ويحجب حفظاً سينجح. يُعامَل معاملة الخدمة **في الوسم وحده** — الرصيد
+  // الفعليّ (`onHandBase`) يبقى معروضاً بصدق، سالباً كان أو موجباً، فهو عدّاد المطلوب توريده.
+  const allowBackorder = line.allowBackorder === true;
+  const stockExempt = isService || allowBackorder;
+  const isKnown = stockExempt || line.availableBase != null;
   // الرصيد الفعلي يبقى موقّعاً كي لا نخفي عجزاً حقيقياً في البيانات؛ الذي لا يجوز أن يكون
   // سالباً في العرض التشغيلي هو «المتاح للبيع» فقط.
   const onHandBase = finiteNumber(line.stockBase);
@@ -46,8 +53,9 @@ export function getLineStockState(line: InvoiceLine, demandBase: number): LineSt
   return {
     isKnown,
     isService,
-    isOut: isKnown && !isService && availableBase <= 0,
-    isShort: isKnown && !isService && availableBase > 0 && requested > availableBase,
+    allowBackorder,
+    isOut: isKnown && !stockExempt && availableBase <= 0,
+    isShort: isKnown && !stockExempt && availableBase > 0 && requested > availableBase,
     onHandBase,
     reservedBase,
     availableBase,

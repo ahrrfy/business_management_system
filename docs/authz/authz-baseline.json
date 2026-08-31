@@ -122,7 +122,6 @@
     "storefrontRouter.settings@server/routers/storefrontRouter.ts",
     "storefrontRouter.trackBanner@server/routers/storefrontRouter.ts",
     "storefrontRouter.trackConversion@server/routers/storefrontRouter.ts",
-    "storefrontRouter.trackOrder@server/routers/storefrontRouter.ts",
     "supplierRouter.delete@server/routers/supplierRouter.ts",
     "supplierRouter.summary@server/routers/supplierRouter.ts",
     "systemRouter.backupNow@server/routers/systemRouter.ts",

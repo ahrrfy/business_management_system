@@ -114,7 +114,7 @@ describe("operational UI permission parity", () => {
     expect(remitAuthority).toMatch(
       /moduleAccessAllowed\([\s\S]*?"store",\s*"FULL",\s*\["cashier", "manager"\]/,
     );
-    expect(remitAction).toContain("title={listStillLoading ?");
+    expect(remitAction).toMatch(/title=\{\s*listStillLoading\s*\?/);
 
     expect(
       moduleAccessAllowed("cashier", null, "store", "FULL", [

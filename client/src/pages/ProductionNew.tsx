@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, pct, round2 } from "@/lib/money";
+import { D, fmt, fmtInt, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
@@ -153,12 +153,44 @@ export default function ProductionNew() {
     { enabled: previewEnabled }
   );
   const pv = preview.data;
+  /*
+   * **خطأ المعاينة يُعرَض ولا يُبتلَع.** `runPreview` يرفض حالاتٍ مشروعةً برسائل عربية
+   * دقيقة تسمّي المكوّن والرقم: «استهلاك «X» (4000.5) ليس عدداً صحيحاً — عدّل الدفعة أو
+   * الوصفة» · «الوصفة معطّلة» · «الوصفة بلا مكوّنات» · «وحدة ناتج الوصفة غير صالحة».
+   *
+   * وكانت الشاشة تُسقط `preview.error` كلّه: `pv` يبقى undefined ⇒ بطاقة الإنتاجية
+   * تختفي، وزرّ الترحيل يبقى معطَّلاً أبداً (`disabled={… || !pv || …}`) **بلا سطرٍ واحد
+   * يقول لماذا**. فيرى المستعمل دفعةً تعمل عند رقمٍ وتتجمّد عند غيره بلا تفسير — وهو
+   * بلاغ المالك: «لا تقبل إلا 100». الرسالة موجودة خادمياً منذ البداية؛ ينقصها العرض.
+   */
+  const previewErrorMsg = preview.error?.message ?? null;
+
+  /*
+   * **سقفُ الإنتاج يُسأل عنه مستقلاً عن الدفعة.** `runPreview` يرمي على الدفعة غير الصالحة
+   * ⇒ لا يملك جواباً للسؤال «كم أستطيع؟» في اللحظة التي يُسأل فيها. ولذلك مسارٌ ثانٍ لا
+   * يأخذ دفعةً أصلاً: يبقى الرقم المقترَح ظاهراً حتى وقتَ الخطأ، وهو أنفعُ ما يُعرَض عندئذٍ.
+   * ولا يتبع `dBatch` عمداً — لا يُعاد جلبُه مع كل ضغطة حرف.
+   */
+  const capacity = trpc.production.recipeCapacity.useQuery(
+    { recipeId: Number(recipeId), branchId: effectiveBranch },
+    { enabled: mode === "recipe" && !!recipeId && !needsBranchChoice },
+  );
+  /*
+   * **لا يُعلَن سقفٌ لوصفةٍ معطّلة.** `runPreview` ومسارُ الترحيل يرفضان المعطّلة صراحةً،
+   * فإظهارُ «الأقصى الممكن إنتاجه» وزرِّ زرعه بجانب رسالة «الوصفة معطّلة» يجعل الشاشة
+   * تناقض نفسها وتدعو إلى فعلٍ محكومٍ بالفشل. (أمسكها Codex على #911: رابطٌ محفوظ
+   * `?recipe=` لوصفةٍ معطّلة، أو تعطيلُها من جلسةٍ أخرى والصفحة مفتوحة.)
+   */
+  const cap = capacity.data?.isActive ? capacity.data : null;
 
   const create = trpc.production.create.useMutation({
     onSuccess: (r: any) => {
       setClientRequestId(crypto.randomUUID());
       notify.ok("تم ترحيل المستند", `رقم ${r.docNumber} — حُدِّث المخزون.`);
       utils.production.list.invalidate();
+      // السقف مشتقٌّ من الرصيد ⇒ يُبطَل مع بقيّة قرّاء المخزون. بدونه يعيش الرقم القديم
+      // ٦٠ ثانية (staleTime العام) فيقترح الزرّ دفعةً لم يعد المخزون يحتملها.
+      utils.production.recipeCapacity.invalidate();
       utils.inventory.onHand.invalidate();
       utils.inventory.movementsRich.invalidate();
       navigate(`/production/${r.productionOrderId}`);
@@ -183,7 +215,8 @@ export default function ProductionNew() {
     if (needsBranchChoice) return setError("اختر الفرع أولاً.");
     if (!recipeId) return setError("اختر وصفة أولاً.");
     if (!(Number(batch) > 0)) return setError("أدخل عدد الدفعة (عدد موجب).");
-    if (!pv) return setError("انتظر اكتمال المعاينة.");
+    // Ctrl+S يتجاوز الزرّ المعطَّل ⇒ الرسالة هنا يجب أن تقول السبب الحقيقيّ لا «انتظر».
+    if (!pv) return setError(previewErrorMsg ?? "انتظر اكتمال المعاينة.");
     if (pv.anyShort) return setError("المخزون لا يكفي لأحد المدخلات — قلّل الدفعة أو جهّز المخزون.");
     setError("");
     const noteParts = [notes.trim(), selectedWO ? `مرتبط بطلب خدمة: ${selectedWO.orderNumber}` : ""].filter(Boolean);
@@ -343,6 +376,37 @@ export default function ProductionNew() {
                         <div className="h-9 flex items-center gap-1 font-bold badge-status-active rounded-md px-3" dir="ltr">{fmt(pv?.good ?? Math.max(0, Math.trunc(Number(batch) || 0) - Math.trunc(Number(scrap) || 0)))} <span className="text-xs text-muted-foreground font-normal">{pv?.outputUnitName}</span></div>
                       </div>
                     </div>
+                    {cap && (
+                      <div className="rounded-md border bg-muted/30 p-2.5 text-sm flex flex-wrap items-center gap-x-4 gap-y-2">
+                        <span className="flex items-center gap-1.5">
+                          الأقصى الممكن إنتاجه الآن:
+                          <b className="tabular-nums" dir="ltr">{fmtInt(cap.maxBatch)}</b>
+                          <span className="text-xs text-muted-foreground">{cap.outputUnitName}</span>
+                        </span>
+                        {cap.maxBatch > 0 && (
+                          <Button type="button" variant="outline" size="sm" onClick={() => setBatch(String(cap.maxBatch))}>
+                            استعمل هذا العدد
+                          </Button>
+                        )}
+                        {cap.limitingComponent && (
+                          <span className="text-xs text-muted-foreground">المحدِّد: {cap.limitingComponent}</span>
+                        )}
+                        {cap.batchMultipleNote && (
+                          <span className="text-xs text-[var(--sem-warn)]">{cap.batchMultipleNote}</span>
+                        )}
+                        {cap.maxBatch === 0 && cap.maxByStock > 0 && (
+                          <span className="text-xs text-[var(--sem-warn)]">
+                            المخزون يكفي {fmtInt(cap.maxByStock)} فقط — دون أصغر دفعة صالحة ({fmtInt(cap.batchMultiple)}).
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {previewErrorMsg && (
+                      <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-sm text-destructive space-y-1">
+                        <div className="font-medium">تعذّر حساب هذه الدفعة — الترحيل موقوف:</div>
+                        <div>{previewErrorMsg}</div>
+                      </div>
+                    )}
                     {pv && (
                       <div>
                         <Meter value={pv.good} max={pv.batch || 1} tone={pv.yieldPct >= 1 - Number(pv.wasteStdPct) ? "ok" : "warn"} label="الإنتاجية (Yield)" right={pct(pv.yieldPct)} />
@@ -438,9 +502,10 @@ export default function ProductionNew() {
                 </div>
 
                 {error && <p className="text-sm text-destructive">{error}</p>}
+                {!error && previewErrorMsg && <p className="text-sm text-destructive">{previewErrorMsg}</p>}
                 <div className="flex gap-2 flex-wrap">
                   <Button onClick={submitRecipe} disabled={create.isPending || needsBranchChoice || !pv || pv.anyShort || !(pv.good > 0)}>
-                    {create.isPending ? "جارٍ الترحيل…" : needsBranchChoice ? "اختر الفرع أولاً" : pv?.anyShort ? "المخزون لا يكفي" : "ترحيل المستند"}
+                    {create.isPending ? "جارٍ الترحيل…" : needsBranchChoice ? "اختر الفرع أولاً" : previewErrorMsg ? "تعذّر حساب الدفعة" : pv?.anyShort ? "المخزون لا يكفي" : "ترحيل المستند"}
                   </Button>
                   <Button variant="outline" onClick={printOrder} disabled={!pv}><Printer aria-hidden className="size-4" /> طباعة أمر تشغيل</Button>
                   <Link href="/production"><Button variant="ghost">إلغاء</Button></Link>

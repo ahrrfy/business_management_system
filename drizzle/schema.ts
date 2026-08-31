@@ -623,6 +623,20 @@ export const products = mysqlTable(
     // branchStock ولا يَكتب inventoryMovements (يُتجاوَز في inventoryService.applyMovement).
     // التَحويل بين الفُروع مَمنوع. الإيراد يَدخل كَالعَادة، التَكلفة من productVariants.cost.
     isService: boolean("isService").default(false).notNull(),
+    // «يُباع بالطلب» (هجرة 0318، ٣١/٨/٢٦) — بيعٌ قبل التوريد لصنفٍ **مخزنيّ** يُغذَّى لاحقاً.
+    // الحالة الحاكمة (بلاغ المالك): عملُ طباعةٍ نبيعه للزبون ثمّ نُوفّره — إمّا **شراءً جاهزاً
+    // من مطبعة أخرى** (فاتورة شراء ترفع الرصيد وتسجّل المورّد وذمّته والتكلفة بـWAVG)، أو
+    // **إنتاجاً داخلياً** بوصفة الصنف. الطريقان قائمان ويعملان؛ الناقص وحده كان السماح بالبيع
+    // **قبل** التغذية — فيظهر «نافذ» ويُرفض، والفاتورة لا تُنشأ.
+    //
+    // فالرصيد السالب هنا **ليس عطباً بل عدّاد التزام**: عدد الأعمال المُباعة ولم تُورَّد بعد،
+    // ويعود صفراً حتماً بأوّل شراءٍ أو إنتاجٍ يُغطّيها. ولذلك يُعفى هذا الصنف من حارس النفاد
+    // إعفاءً **دائماً** — لا بنافذة «وضع الافتتاح» ولا بشرط `openedAt IS NULL` (كلاهما ينكسر
+    // بعد أوّل استلامٍ يَسِم الصنف مُفتتَحاً، فتعود الشاشة تقول «نافذ» في الدورة الثانية).
+    //
+    // ⛔ ثلاثة استثناءات بنيويّة (CHECK أدناه): الخدمة (بلا رصيد أصلاً ⇒ لا معنى للسالب) ·
+    // البكج (رصيده رصيد مكوّناته) · الأمانة (سالبُها يُلفّق التزاماً لمودِعٍ لم يُودِع — §٥-ج).
+    allowBackorder: boolean("allowBackorder").default(false).notNull(),
     // توجيه الخدمة لنقطة خدمة العملاء (الاستقبال): خدمة طباعة (productType=PRINT_SERVICE) مفعَّلة هنا
     // تَظهر أيضاً في كاشير الاستقبال وتُباع عبر مسار createPrintSale المدقَّق (خصم المواد + COGS).
     showInReception: boolean("showInReception").default(false).notNull(),
@@ -668,6 +682,14 @@ export const products = mysqlTable(
     bundleIdx: index("idx_product_is_bundle").on(table.isBundle),
     // بضاعة الأمانة: كشف أصناف مودِع بعينه (سند الإيداع، التقارير، حارس التعطيل).
     consignorIdx: index("idx_product_consignor").on(table.consignorId),
+    // شاشة «المطلوب توريده» تصفّي بها قبل ضمّ الرصيد السالب.
+    backorderIdx: index("idx_product_allow_backorder").on(table.allowBackorder),
+    // الاستثناءات بنيويّةً لا بالنيّة: الوسم بلا معنى على خدمة/بكج (لا رصيد ذاتيّ لهما)،
+    // وخطِرٌ على الأمانة (بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع).
+    backorderStockedOnlyCheck: check(
+      "chk_product_backorder_stocked_only",
+      sql`(${table.allowBackorder} = 0 OR (${table.isService} = 0 AND ${table.isBundle} = 0 AND ${table.isConsignment} = 0))`,
+    ),
   }),
 );
 
@@ -7720,6 +7742,16 @@ export const onlineOrders = mysqlTable(
     shippingCost: decimal("shippingCost", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    // لقطة عرض الشحن المجاني للطلب نفسه. shippingCost هو ما يدفعه الزبون (صفر عند الهدية)،
+    // أمّا deliveryWaivedAmount فهو أجرة المندوب الفعلية التي تحمّلتها المكتبة. تنتقل اللقطة
+    // إلى الفاتورة/الإرسالية عند dispatch ولا تُشتق لاحقاً من جدول أسعار قابل للتعديل.
+    deliveryFree: boolean("deliveryFree").default(false).notNull(),
+    deliveryWaivedAmount: decimal("deliveryWaivedAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -7742,6 +7774,11 @@ export const onlineOrders = mysqlTable(
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
     longitude: decimal("longitude", { precision: 10, scale: 7 }),
     clientRequestId: varchar("clientRequestId", { length: 80 }),
+    // تتبّع الضيف: الرمز الخام لا يُخزّن. publicId عشوائي بلا PII يسمح بإعادة إصدار الرمز
+    // الحتميّ عند idempotent replay، وhash هو مفتاح الاسترجاع/الإبطال. انتهاءٌ صريح محدود.
+    guestTrackingPublicId: varchar("guestTrackingPublicId", { length: 32 }),
+    guestTrackingTokenHash: varchar("guestTrackingTokenHash", { length: 64 }),
+    guestTrackingExpiresAt: timestamp("guestTrackingExpiresAt", { fsp: 3 }),
     // كوبون المتجر المحقق خادمياً؛ يُستهلك عند إصدار الفاتورة الحقيقية.
     couponCode: varchar("couponCode", { length: 64 }),
     couponDiscount: decimal("couponDiscount", { precision: 15, scale: 2 }).default("0").notNull(),
@@ -7761,6 +7798,12 @@ export const onlineOrders = mysqlTable(
       table.reservationExpiresAt,
     ),
     clientReqUq: unique("uq_online_order_client_req").on(table.clientRequestId),
+    guestTrackingPublicIdUq: unique("uq_online_order_guest_tracking_public_id").on(
+      table.guestTrackingPublicId,
+    ),
+    guestTrackingTokenHashUq: unique("uq_online_order_guest_tracking_hash").on(
+      table.guestTrackingTokenHash,
+    ),
     deliveryPartyIdx: index("idx_order_delivery_party").on(
       table.deliveryPartyId,
     ),
@@ -7769,6 +7812,64 @@ export const onlineOrders = mysqlTable(
 
 export type OnlineOrder = typeof onlineOrders.$inferSelect;
 export type InsertOnlineOrder = typeof onlineOrders.$inferInsert;
+
+/**
+ * حجز قسيمة لطلب متجر. ACTIVE لا يعني «مستهلكة»: يمنع استعمالها في طلب/فاتورة أخرى فقط.
+ * عند الإرسال تتحول REDEEMED مع couponRedemptions داخل المعاملة نفسها؛ وعند إلغاء/انتهاء
+ * الطلب قبل الإرسال تتحول RELEASED. بعد SHIPPED لا تُعاد تلقائياً (سياسة مكافحة إساءة مستقلة).
+ */
+export const couponReservations = mysqlTable(
+  "couponReservations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    couponId: bigint("couponId", { mode: "number" })
+      .notNull()
+      .references(() => coupons.id),
+    programId: bigint("programId", { mode: "number" })
+      .notNull()
+      .references(() => couponPrograms.id),
+    onlineOrderId: bigint("onlineOrderId", { mode: "number" })
+      .notNull()
+      .references(() => onlineOrders.id, { onDelete: "cascade" }),
+    customerId: bigint("customerId", { mode: "number" })
+      .notNull()
+      .references(() => customers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 })
+      .notNull(),
+    status: mysqlEnum("status", [
+      "ACTIVE",
+      "REDEEMED",
+      "RELEASED",
+    ])
+      .default("ACTIVE")
+      .notNull(),
+    // null بعد CONFIRMED: التأكيد حوّل الحجز المؤقت إلى وعدٍ يبقى حتى الإرسال أو الإلغاء.
+    expiresAt: timestamp("expiresAt", { fsp: 3 }),
+    reservedAt: timestamp("reservedAt", { fsp: 3 }).defaultNow().notNull(),
+    redeemedAt: timestamp("redeemedAt", { fsp: 3 }),
+    releasedAt: timestamp("releasedAt", { fsp: 3 }),
+    releaseReason: varchar("releaseReason", { length: 120 }),
+  },
+  (table) => ({
+    orderUq: unique("uq_coupon_reservation_order").on(table.onlineOrderId),
+    couponStatusIdx: index("idx_coupon_reservation_coupon_status").on(
+      table.couponId,
+      table.status,
+      table.expiresAt,
+    ),
+    programCustomerStatusIdx: index("idx_coupon_reservation_program_customer_status").on(
+      table.programId,
+      table.customerId,
+      table.status,
+      table.expiresAt,
+    ),
+  }),
+);
+
+export type CouponReservation = typeof couponReservations.$inferSelect;
 
 export const onlineOrderItems = mysqlTable(
   "onlineOrderItems",

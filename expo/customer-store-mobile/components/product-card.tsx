@@ -1,12 +1,10 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Image } from "expo-image";
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import { AnimatedEntrance } from "@/components/animated-entrance";
-import { useCart } from "@/lib/cart-context";
-import { formatIqd, formatLatinNumber, productDiscountPercent, storefrontDisplayPrice } from "@/lib/storefront-api";
+import { formatIqd, productDiscountPercent, storefrontDisplayPrice } from "@/lib/storefront-api";
 import { useWishlist } from "@/lib/wishlist-context";
 import type { Product } from "@/shared/storefront";
 
@@ -20,24 +18,10 @@ type ProductCardProps = {
   animationDelay?: number;
 };
 
-export function ProductCard({ product, variant = "grid", fullWidth = false, quickAddLabel = false, onQuickView, onAddedToCart, animationDelay = 0 }: ProductCardProps) {
-  const { addProduct, quantityFor } = useCart();
+export function ProductCard({ product, variant = "grid", fullWidth = false, quickAddLabel = false, onQuickView, animationDelay = 0 }: ProductCardProps) {
   const { isSaved, toggle } = useWishlist();
-  const [justAdded, setJustAdded] = useState(false);
-  const quantity = quantityFor(product.id);
   const discount = productDiscountPercent(product);
-
-  useEffect(() => {
-    if (!justAdded) return;
-    const timer = setTimeout(() => setJustAdded(false), 760);
-    return () => clearTimeout(timer);
-  }, [justAdded]);
-
-  const add = () => {
-    addProduct(product);
-    setJustAdded(true);
-    onAddedToCart?.();
-  };
+  const chooseOptions = () => router.push(`/product/${product.id}` as never);
 
   return (
     <AnimatedEntrance delay={animationDelay} style={[styles.card, variant === "rail" && styles.railCard, fullWidth && styles.fullWidth]}>
@@ -45,7 +29,7 @@ export function ProductCard({ product, variant = "grid", fullWidth = false, quic
         <TouchableOpacity accessibilityLabel={`عرض ${product.title}`} activeOpacity={0.86} onPress={() => router.push(`/product/${product.id}` as never)} style={styles.productTap}>
           <View style={styles.cover}>
             {product.imageUrl ? <Image cachePolicy="memory-disk" contentFit="contain" contentPosition="center" priority="high" recyclingKey={product.imageUrl} source={product.imageUrl} style={styles.productImage} transition={140} /> : <MaterialIcons color="#0F5A4A" name={product.icon} size={46} />}
-            <View style={styles.availability}><MaterialIcons color="#0E806A" name="check-circle" size={13} /><Text style={styles.availabilityText}>{product.availability}</Text></View>
+            <View style={[styles.availability, product.isCustomizable && styles.specialOrder]}><MaterialIcons color={product.isCustomizable ? "#8A5A15" : "#0E806A"} name={product.isCustomizable ? "info-outline" : "check-circle"} size={13} /><Text style={[styles.availabilityText, product.isCustomizable && styles.specialOrderText]}>{product.isCustomizable ? "طلب خاص" : product.availability}</Text></View>
             {discount != null && <View style={styles.discountBadge}><Text style={styles.discountText}>-{discount}%</Text></View>}
           </View>
           <View style={styles.copy}>
@@ -62,8 +46,8 @@ export function ProductCard({ product, variant = "grid", fullWidth = false, quic
             <Text style={styles.price}>{formatIqd(storefrontDisplayPrice(product))}</Text>
             {discount != null && <Text style={styles.oldPrice}>{formatIqd(product.price)}</Text>}
           </View>
-          <TouchableOpacity accessibilityLabel={`إضافة ${product.title} إلى السلة. الكمية الحالية ${formatLatinNumber(quantity)}`} activeOpacity={0.82} onPress={add} style={[styles.addButton, quantity > 0 && styles.addButtonAdded, quickAddLabel && styles.addButtonLabeled]}>
-            {justAdded ? <><MaterialIcons color="#FFFFFF" name="check" size={19} /><Text style={styles.addLabel}>تمت الإضافة</Text></> : quantity > 0 ? <><Text style={styles.quantity}>{formatLatinNumber(quantity)}</Text><MaterialIcons color="#FFFFFF" name="add" size={19} /></> : quickAddLabel ? <><MaterialIcons color="#FFFFFF" name="add-shopping-cart" size={18} /><Text style={styles.addLabel}>إضافة</Text></> : <MaterialIcons color="#FFFFFF" name="add" size={22} />}
+          <TouchableOpacity accessibilityHint={product.isCustomizable ? "يفتح تفاصيل المنتج وحالة توفر الطلب" : "يفتح صفحة اختيار البديل ووحدة البيع قبل الإضافة"} accessibilityLabel={product.isCustomizable ? `عرض تفاصيل ${product.title}، غير متاح للطلب الإلكتروني مؤقتاً` : `اختر خيارات ${product.title}`} accessibilityRole="button" activeOpacity={0.82} onPress={chooseOptions} style={[styles.addButton, styles.addButtonLabeled]}>
+            <MaterialIcons color="#FFFFFF" name={product.isCustomizable ? "info-outline" : "tune"} size={18} />{quickAddLabel && <Text style={styles.addLabel}>{product.isCustomizable ? "التفاصيل" : "اختيار"}</Text>}
           </TouchableOpacity>
         </View>
       </View>
@@ -81,6 +65,8 @@ const styles = StyleSheet.create({
   productImage: { height: "100%", width: "100%" },
   availability: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#E2EEE7", borderRadius: 12, borderWidth: 1, bottom: 9, flexDirection: "row-reverse", gap: 4, paddingHorizontal: 8, paddingVertical: 4, position: "absolute", right: 9 },
   availabilityText: { color: "#0E806A", fontFamily: "Cairo_700Bold", fontSize: 10 },
+  specialOrder: { backgroundColor: "#FFF7E8", borderColor: "#EBD4A8" },
+  specialOrderText: { color: "#8A5A15" },
   discountBadge: { backgroundColor: "#F05D53", borderRadius: 10, left: 9, paddingHorizontal: 8, paddingVertical: 4, position: "absolute", top: 9 },
   discountText: { color: "#FFFFFF", fontFamily: "Cairo_800ExtraBold", fontSize: 11 },
   favorite: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#E6E9E6", borderRadius: 16, borderWidth: 1, elevation: 2, height: 34, justifyContent: "center", position: "absolute", right: 19, top: 19, width: 34 },

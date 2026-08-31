@@ -120,13 +120,17 @@ export function computePartyExposure(input: {
 /**
  * تسميات عربية للعرض في الواجهة — مصدر الحقيقة الوحيد. أيّ شاشة تُعرِّف نصّاً محلّياً
  * تكسر اتّساق تسمية الأعمدة عبر الشاشات (نفس بلاء 7 قواميس invoiceStatus).
+ *
+ * Slice DFP2 (٣١/٨/٢٦): إزالة التشكيل — الفحص البصريّ أظهر أنّ خطّ الواجهة (Cairo/Tajawal)
+ * يرسم «مُ + كلمة» + تشكيل كأنّه «ف + كلمة» في حجم < 14px، فيقرأ الكاشير المصطلحات خاطئةً
+ * («سُلِّم» ⇒ «شلَم»، «المُحصَّل» ⇒ «الفَحصل»). النسخة الأدبيّة الكاملة بتشكيلٍ في `deliveryTerminology.prose`.
  */
 export const PARTY_EXPOSURE_LABEL_AR = Object.freeze({
   cashInHand:           "نقد بيده",
   parcelsInTransit:     "طرود بالطريق",
-  deliveredUncollected: "سُلِّم لم يُحصَّل",
-  feesOwedToThem:       "أجور مستحقّة له",
-  netResponsibility:    "صافي المسؤوليّة",
+  deliveredUncollected: "سلم لم يحصل",
+  feesOwedToThem:       "أجور له",
+  netResponsibility:    "صافي المسؤولية",
 } as const);
 
 /** توكينات لونيّة موصى بها لكل عمود (المستهلك يترجم إلى `var(--sem-*)`). */

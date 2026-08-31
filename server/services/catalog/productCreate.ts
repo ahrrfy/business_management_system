@@ -44,6 +44,8 @@ export interface CreateProductInput {
   // بند بلا مخزون: البيع لا يُحرّك branchStock، ورصيد افتتاحي يُتجاهَل.
   // false صريحة تعني ناتجاً مخزنياً يمكن شراؤه أو إنتاجه حتى لو عُرض في نقطة الطباعة.
   isService?: boolean;
+  /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يُسمح ببيعه قبل توريده (شراءً من مورّد أو إنتاجاً داخلياً). */
+  allowBackorder?: boolean;
   // print-catalog: توجيه البَند لنقطة بَيع الطباعة (productType=PRINT_SERVICE).
   // هذه راية عرض ومسار بيع، ولا تفرض كونه بلا مخزون عند تمرير isService=false صراحةً.
   printService?: boolean;
@@ -229,6 +231,17 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
     // نحترم false الصريحة حتى يكون البند نفسه ناتجاً مخزنياً قابلاً للشراء أو الإنتاج.
     // عند غياب isService نحافظ على التوافق السابق: بند الطباعة يكون بلا مخزون افتراضياً.
     const isService = input.isService ?? !!input.printService;
+    // «يُباع بالطلب» (0318): يُرفض على الخدمة/البكج/الأمانة برسالةٍ تشرح السبب، بدل ارتداد
+    // CHECK القاعدة بنصٍّ خامّ. الثلاثة بلا رصيدٍ ذاتيّ (أو رصيدُها ليس ملكاً لنا).
+    const allowBackorder = input.allowBackorder === true;
+    if (allowBackorder) {
+      if (isService)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على الخدمة — الخدمة بلا رصيد أصلاً فهي تُباع دائماً بلا فحص مخزون" });
+      if (isBundle)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على البكج — رصيده رصيد مكوّناته، فعِّله على المكوّن الناقص" });
+      if (input.isConsignment)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» ممنوع على بضاعة الأمانة — بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع" });
+    }
     const pRes = await tx.insert(products).values({
       name: composedName,
       productType: input.printService ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
@@ -245,6 +258,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       categoryId: input.categoryId ?? null,
       isCustomizable: input.isCustomizable ?? false,
       isService,
+      allowBackorder,
       showInReception: !!input.showInReception,
       // 0262 (٢٤/٨): الرؤية في شبكة الطباعة صارت قراراً مستقلاً — يظلّ `printService` يوسم
       // `productType='PRINT_SERVICE'` (لبقاء التوافق مع مسارات البيع/التصنيف الأخرى)، وفي

@@ -25,7 +25,7 @@ import { COOKIE_NAME } from "@shared/const";
 import * as s from "../../../drizzle/schema";
 import { signSession } from "../../auth/session";
 import { getDb } from "../../db";
-import { imageRouter } from "../../imageRoute";
+import { imageRouter, productImageUrl } from "../../imageRoute";
 import {
   __resetImageStoreForTest,
   contentHash,
@@ -315,6 +315,8 @@ describe("GET /api/img/product/:id — مشتق معتمد من المخزن ا�
       contentHash: hash,
       mime: "image/jpeg",
       bytes: JPEG_BYTES.length,
+      width: 1200,
+      height: 1200,
       thumbDataUrl,
       reviewStatus: "APPROVED",
     });
@@ -331,6 +333,48 @@ describe("GET /api/img/product/:id — مشتق معتمد من المخزن ا�
       expect(res.headers.get("cross-origin-resource-policy")).toBe("same-origin");
       expect(Buffer.from(await res.arrayBuffer())).toEqual(JPEG_BYTES);
     });
+  });
+
+  it("يخدم مشتق 320 المعتمد من DB دون فتح R2 وبسقف كاش قصير قابل لإعادة التحقق", async () => {
+    const { imageId, hash } = await seedStored(97);
+    const getBuffer = vi.spyOn(getImageStore(), "getBuffer");
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}&w=320`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-image-variant")).toBe("320");
+      expect(res.headers.get("cache-control")).toContain("max-age=300");
+      expect(res.headers.get("cache-control")).not.toContain("immutable");
+      expect(Number(res.headers.get("content-length"))).toBeLessThanOrEqual(128 * 1024);
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(THUMB_BYTES);
+    });
+    expect(getBuffer).not.toHaveBeenCalled();
+  });
+
+  it("يقيد w إلى 320/640/1200 ويعلن fallback للأصل عند غياب مشتق الحجم", async () => {
+    const { imageId, hash } = await seedStored(98);
+    await withServer(async (base) => {
+      expect((await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}&w=321`)).status).toBe(400);
+      for (const width of [640, 1200]) {
+        const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}&w=${width}`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get("x-image-variant")).toBe("original-fallback");
+        expect(Buffer.from(await res.arrayBuffer())).toEqual(JPEG_BYTES);
+      }
+    });
+  });
+
+  it("يعيد محاولة قراءة R2 العابرة مرة واحدة قبل السقوط إلى المصغّرة", async () => {
+    const { imageId, hash } = await seedStored(99);
+    const getBuffer = vi.spyOn(getImageStore(), "getBuffer")
+      .mockRejectedValueOnce(new ImageStoreUnavailableError("upstream", "get"))
+      .mockResolvedValueOnce(JPEG_BYTES);
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}&w=1200`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-image-fallback")).toBeNull();
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(JPEG_BYTES);
+    });
+    expect(getBuffer).toHaveBeenCalledTimes(2);
   });
 
   it("يعيد 304 من البصمة قبل فتح كائن المخزن", async () => {
@@ -372,7 +416,7 @@ describe("GET /api/img/product/:id — مشتق معتمد من المخزن ا�
     const { imageId, hash } = await seedStored(88);
     // قيمة url مختلفة عمداً: لو استعملها fallback بدل thumbDataUrl لكشف الاختبار ذلك.
     await db().update(s.productImages).set({ url: JPEG_DATA_URL }).where(eq(s.productImages.id, imageId));
-    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValueOnce(new ImageStoreUnavailableError("upstream", "get"));
+    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValue(new ImageStoreUnavailableError("upstream", "get"));
 
     await withServer(async (base) => {
       const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`);
@@ -409,7 +453,7 @@ describe("GET /api/img/product/:id — مشتق معتمد من المخزن ا�
     const { imageId } = await approveStudioTask(admin, taskId);
     const [published] = await db().select().from(s.productImages).where(eq(s.productImages.id, imageId));
     expect(published?.thumbDataUrl).toBe(WEBP_1X1);
-    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValueOnce(new ImageStoreUnavailableError("upstream", "get"));
+    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValue(new ImageStoreUnavailableError("upstream", "get"));
 
     await withServer(async (base) => {
       const res = await fetch(`${base}${published!.url}`);
@@ -454,7 +498,7 @@ describe("GET /api/img/product/:id — مشتق معتمد من المخزن ا�
 
   it("خطأ body العابر قبل اكتماله يعيد المصغّرة وحدها بلا partial أو كاش", async () => {
     const { imageId, hash } = await seedStored(93);
-    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValueOnce(new ImageStoreUnavailableError(
+    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValue(new ImageStoreUnavailableError(
       "upstream",
       "get",
       Object.assign(new Error("body reset"), { code: "ECONNRESET" }),
@@ -521,8 +565,13 @@ describe("storefrontService — العقد الثلاثيّ لصورة المن�
   it("data URL ⇒ رابط النقطة ببصمة المحتوى (لا base64 في الردّ)", async () => {
     const imageId = await seedProduct({ productId: 8 });
     const item = await storefrontProduct(8, 1);
-    expect(item?.imageUrl).toMatch(new RegExp(`^/api/img/product/${imageId}\\?v=[0-9a-f]{16}$`));
+    expect(item?.imageUrl).toMatch(new RegExp(`^/api/img/product/${imageId}\\?v=[0-9a-f]{16}&w=1200$`));
     expect(item?.imageUrl).not.toContain("base64");
+  });
+
+  it("يبني روابط الأحجام المسموحة فقط وبمفتاح كاش مستقل", () => {
+    expect(productImageUrl(7, JPEG_DATA_URL, 320)).toMatch(/^\/api\/img\/product\/7\?v=[0-9a-f]{16}&w=320$/);
+    expect(() => productImageUrl(7, JPEG_DATA_URL, 321 as never)).toThrow();
   });
 
   /** انحدار #207: تحويل **أيّ** قيمة ليست data URL إلى null ⇒ صورةٌ تعمل تختفي بصمت. */

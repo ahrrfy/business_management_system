@@ -33,7 +33,14 @@ export default function TabLayout() {
           shadowOffset: { width: 0, height: -4 },
           shadowRadius: 12,
         },
-        tabBarLabelStyle: { fontFamily: "Cairo_600SemiBold", fontSize: 10, marginTop: 1 },
+        // Cairo glyphs exceed React Navigation's implicit 10px line box on web,
+        // which visually clips Arabic labels even when the tab bar itself fits.
+        tabBarLabelStyle: {
+          fontFamily: "Cairo_600SemiBold",
+          fontSize: 10,
+          lineHeight: 16,
+          marginTop: 0,
+        },
         tabBarIconStyle: { marginTop: 1 },
       }}
     >

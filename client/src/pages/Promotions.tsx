@@ -36,7 +36,8 @@ import { WagePackageFields, wageValueFromEmployee, type WagePackageValue } from 
 import { TERMINATION_TYPES } from "@shared/hr";
 import { describeWageDiff, type WageProfileShape } from "@shared/wageDiff";
 import { CheckCircle2, Printer, RotateCcw, TrendingUp, UserMinus, Wallet } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearch } from "wouter";
 
 const today = () => new Date().toISOString().slice(0, 10);
 const selectCls =
@@ -110,7 +111,12 @@ function EmpCell({ name, color, photoUrl }: { name: string; color?: string | nul
 }
 
 export default function Promotions() {
-  const [tab, setTab] = useState("promotions");
+  // `sub` تُميَّز عن `tab` عمداً: الأخيرة يستهلكها `PageTabs` للـhub، فتسميةٌ واحدة
+  // للاثنين تجعل تبويبَ الشاشة يبتلع تبويبَ الوحدة أو العكس.
+  const search = useSearch();
+  const [tab, setTab] = useState(() =>
+    new URLSearchParams(search).get("sub") === "terminations" ? "terminations" : "promotions",
+  );
   const [query, setQuery] = useState("");
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -191,6 +197,34 @@ export default function Promotions() {
   const [tEvidenceNote, setTEvidenceNote] = useState("");
   const [tZeroAmountsAttested, setTZeroAmountsAttested] = useState(false);
   const [tReason, setTReason] = useState("");
+  const selectedTermEmp = useMemo(() => activeEmps.find((e) => String(e.id) === tEmp), [activeEmps, tEmp]);
+  /**
+   * نيّةُ الإنهاء القادمة من بطاقة الموظف (Codex P2، ٣١/٨) — تُطبَّق على مرحلتين لأنّ
+   * القائمة تصل لاحقاً: التبويب فوراً، وانتقاءُ الموظف بعد وصول `employees`.
+   * `useSearch` تفاعليّ ⇒ يُطبَّق بلا remount أيضاً (نمط DeliveryHub، Codex P1 ٢٣/٨).
+   */
+  const subIntentRef = useRef<string | null>(null);
+  const empIntentRef = useRef<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    if (params.get("sub") !== "terminations") return;
+    if (subIntentRef.current !== search) { subIntentRef.current = search; setTab("terminations"); }
+    const wanted = params.get("employee");
+    if (!wanted || empIntentRef.current === search) return;
+    // لا يُحكَم بالغياب قبل وصول القائمة، وإلّا صار كلّ رابطٍ «موظفاً غير مُدرَج».
+    if (!employees.isSuccess) return;
+    empIntentRef.current = search;
+    const match = activeEmps.find((e) => String(e.id) === wanted);
+    if (!match) {
+      // ⛔ لا تُفتَح النافذة بموظفٍ غير مُنتقى: المستعمل جاء بنيّةِ «هذا الموظف»، ونافذةٌ
+      // بقائمةٍ فارغة الاختيار تدعوه لانتقاء الاسم المجاور — وهو الخطر عينه الذي جاء
+      // الرابط ليُغلقه. الغيابُ يُقال صراحةً (القائمة تقتصر على الفعّالين، ٢٠٠ سقفاً).
+      notify.err("هذا الموظف غير مُدرَج في قائمة إنهاء الخدمة (تشمل الفعّالين فقط) — راجع حالته أو اختره يدوياً.");
+      return;
+    }
+    setTEmp(String(match.id));
+    setTermOpen(true);
+  }, [search, employees.isSuccess, activeEmps]);
   const tSettlement = terminationSettlementTotal(tBreakdown);
   const tEarnedNet = terminationEarnedNet(tBreakdown);
   const advanceBalance = trpc.payroll.advanceBalance.useQuery(
@@ -238,11 +272,17 @@ export default function Promotions() {
   });
   const completeTerm = trpc.promotions.completeTermination.useMutation({
     onSuccess: async (data) => {
+      // الأثران الأمنيّان يُصرَّح بهما بدل أن يمرّا صامتين — الخدمة تُرجعهما فعلاً.
+      const sideEffects = [
+        data?.userDisabled ? "وعُطِّل حساب دخوله للنظام" : null,
+        data?.deviceLinksReleased ? `وحُدَّ ربطه بجهاز الحضور بيوم العمل الأخير (${data.deviceLinksReleased})` : null,
+      ].filter(Boolean).join(" ");
+      const suffix = sideEffects ? ` — ${sideEffects}` : "";
       if (data?.settlementVoucher) {
         // تسوية المستحقات صارت سند صرفٍ مُعلَّق يعتمده مديرٌ آخر (فصل مهام #٦) — أبلِغ المستخدم بوجهة الفعل.
-        notify.ok(`اكتمل إنهاء الخدمة. تسوية المستحقات صُدِّرت كسند صرف مُعلَّق (${data.settlementVoucher.voucherNumber}) — يعتمده مديرٌ آخر من شاشة السندات.`);
+        notify.ok(`اكتمل إنهاء الخدمة${suffix}. تسوية المستحقات صُدِّرت كسند صرف مُعلَّق (${data.settlementVoucher.voucherNumber}) — يعتمده مديرٌ آخر من شاشة السندات.`);
       } else {
-        notify.ok("اكتمل إنهاء الخدمة وأُنهيت خدمة الموظف");
+        notify.ok(`اكتمل إنهاء الخدمة وأُنهيت خدمة الموظف${suffix}`);
       }
       await Promise.all([utils.promotions.listTerminations.invalidate(), utils.employees.list.invalidate()]);
     },
@@ -788,6 +828,19 @@ export default function Promotions() {
               </div>
               <div className="space-y-1"><Label htmlFor="t-lastday">آخر يوم عمل</Label><Input id="t-lastday" type="date" dir="ltr" value={tLastDay} onChange={(e) => setTLastDay(e.target.value)} /></div>
             </div>
+            {selectedTermEmp && (selectedTermEmp.userId != null || selectedTermEmp.deviceLinked) && (
+              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs space-y-1" data-testid="termination-preflight">
+                <div className="font-medium text-[var(--sem-warn)]">سيُنفَّذ تلقائياً عند إكمال الإجراء (لا عند تسجيله):</div>
+                <ul className="list-disc ps-4 space-y-0.5 text-muted-foreground">
+                  {selectedTermEmp.userId != null && <li>تعطيل حساب دخوله للنظام وإنهاء جلساته المفتوحة فوراً.</li>}
+                  {selectedTermEmp.deviceLinked && (
+                    // حدٌّ لا قطع (0207): الإكمال يقع بعد يوم العمل الأخير، فقطعُ الربط
+                    // يمحو نسبةَ بصمات ذلك اليوم إن لم تُطوَ بعد — وهو يومُ أجرٍ كامل.
+                    <li>حدُّ ربطه بجهاز الحضور بيوم العمل الأخير ({tLastDay}) — بصماتُ ذلك اليوم تُنسَب إليه، وما بعده لا يُنسب. أيام حضوره المسجّلة تبقى.</li>
+                  )}
+                </ul>
+              </div>
+            )}
             <div className="rounded-md border p-3 space-y-3" data-testid="termination-breakdown">
               <div>
                 <div className="text-sm font-medium">تفكيك التسوية اليدوي المعتمد</div>

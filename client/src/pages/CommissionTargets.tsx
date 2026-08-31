@@ -15,6 +15,7 @@ import { CommissionGuide } from "@/components/commissions/CommissionGuide";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { iqd } from "@/lib/hr/ui";
+import { employmentStatusLabel } from "@shared/hr";
 import { trpc } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -190,7 +191,7 @@ export default function CommissionTargets() {
                         <div className="font-medium whitespace-nowrap">{r.employeeName}</div>
                         <div className="text-xs text-muted-foreground whitespace-nowrap">
                           {r.position || "—"}
-                          {r.employmentStatus === "leave" ? " · في إجازة" : ""}
+                          {r.employmentStatus === "leave" ? ` · ${employmentStatusLabel("leave")}` : ""}
                         </div>
                       </td>
                       <td className="p-2 text-muted-foreground">{r.branchName || "—"}</td>

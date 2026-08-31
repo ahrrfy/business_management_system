@@ -11,11 +11,15 @@ import {
   useConnectivity,
 } from "@/lib/offline/connectivity";
 import { shouldMountGlobalStudioTools } from "@/lib/productStudio/coldOfflinePolicy";
+import {
+  fetchWithStorefrontDeadline,
+  shouldRetryStorefrontCreateOrder,
+} from "@/lib/storefrontRequestPolicy";
 import { trpc } from "@/lib/trpc";
 import { screenAttributionHeaders } from "@/lib/screenAttribution";
 import { UNAUTHED_ERR_MSG } from "@shared/const";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { httpBatchLink, TRPCClientError } from "@trpc/client";
+import { httpBatchLink, retryLink, TRPCClientError } from "@trpc/client";
 import { ThemeProvider } from "next-themes";
 import { createRoot } from "react-dom/client";
 import { useLocation } from "wouter";
@@ -79,6 +83,9 @@ const queryClient = new QueryClient({
       },
       retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 15_000),
     },
+    // Mutations are never retried generically. storefront.createOrder has a dedicated retryLink
+    // below because its durable clientRequestId makes one transport retry idempotent.
+    mutations: { retry: false },
   },
 });
 
@@ -119,6 +126,19 @@ initConnectivity({ onBackOnline: () => void queryClient.invalidateQueries() });
 
 const trpcClient = trpc.createClient({
   links: [
+    retryLink({
+      retry({ op, attempts, error }) {
+        const httpStatus = (
+          error.data as { httpStatus?: number } | null | undefined
+        )?.httpStatus;
+        return shouldRetryStorefrontCreateOrder({
+          path: op.path,
+          attempts,
+          httpStatus,
+        });
+      },
+      retryDelayMs: () => 600,
+    }),
     httpBatchLink({
       url: "/api/trpc",
       transformer: superjson,
@@ -131,7 +151,15 @@ const trpcClient = trpc.createClient({
       // كل نداء tRPC يغذّي كاشف الاتصال: وصول أي ردّ HTTP (ولو 4xx/5xx) = الشبكة والخادم
       // موصولان؛ رفض fetch نفسه (بلا ردّ) = انقطاع. AbortError إلغاء داخلي لا إشارة شبكة.
       fetch(input, init) {
-        return fetch(input, { ...(init ?? {}), credentials: "include" }).then(
+        return fetchWithStorefrontDeadline(
+          (target, requestInit) =>
+            globalThis.fetch(target, {
+              ...(requestInit ?? {}),
+              credentials: "include",
+            }),
+          input,
+          init,
+        ).then(
           (res) => {
             noteRequestSuccess();
             return res;

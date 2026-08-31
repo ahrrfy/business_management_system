@@ -246,14 +246,14 @@ async function insertSale(input: {
 
 async function writeSaleJournal(
   entryId: number,
-  input?: { branchId?: number; entryDate?: string; amount?: string },
+  input?: { branchId?: number; entryDate?: string; amount?: string; createdAt?: Date },
 ) {
-  const entryDate = input?.entryDate ?? "2026-08-15";
+  const entryDate = new Date(`${input?.entryDate ?? "2026-08-15"}T00:00:00.000Z`);
   await withTx(async (tx) =>
     writeJournal(
       tx,
       entryId,
-      new Date(`${entryDate}T00:00:00.000Z`),
+      entryDate,
       input?.branchId ?? BRANCH_MAIN,
       postingLinesFor({
         entryType: "SALE",
@@ -263,11 +263,28 @@ async function writeSaleJournal(
       { cycleId: CYCLE_ID, postingProfile: "SALE_INVENTORY" },
     ),
   );
-  // هذه fixture تاريخية وساعتها NOW ثابتة. اترك رأس اليومية داخل النافذة نفسها
-  // بدلاً من defaultNow() الحقيقي كي تختبر البوابة النطاق المقصود بلا اعتماد على ساعة التشغيل.
+  /**
+   * `writeJournal` لا يقبل `createdAt` صراحةً (يستعمل `defaultNow()` من المخطّط). لكنّ نافذة
+   * التسوية `reconcileDoubleEntryShadowWindow` تصفّي `journalEntries.createdAt ∈ [startedAt, NOW]`،
+   * وNOW في اختباراتنا ثابت (2026-08-31)، فلو تُرك `createdAt` على `NOW()` الحقيقيّ صار خارج
+   * النافذة عند تشغيل الاختبارات بعد 2026-08-31 ⇒ تُستبعد ولا تُحسب انحرافاً/فجوة.
+   * الحل الآمن: بعد الكتابة نُحدِّث `createdAt` إلى تاريخ ضمن النافذة (entryDate افتراضياً).
+   */
+  const createdAt = input?.createdAt ?? entryDate;
   await db()
     .update(s.journalEntries)
-    .set({ createdAt: new Date(`${entryDate}T12:00:00.000Z`) })
+    .set({ createdAt })
+    .where(eq(s.journalEntries.entryId, entryId));
+}
+
+/**
+ * ضبط `createdAt` لرأس يوميّة UNMAPPED (فجوة) بعد `writeJournalGap` كي يقع داخل نافذة
+ * التسوية `[startedAt, NOW]`. مطلوب لنفس السبب أعلاه.
+ */
+async function setGapCreatedAt(entryId: number, createdAt: Date) {
+  await db()
+    .update(s.journalEntries)
+    .set({ createdAt })
     .where(eq(s.journalEntries.entryId, entryId));
 }
 
@@ -1212,10 +1229,8 @@ describe("canActivate — بوابة ACTIVE", () => {
         { cycleId: CYCLE_ID },
       ),
     );
-    await db()
-      .update(s.journalEntries)
-      .set({ createdAt: new Date("2026-08-11T12:00:00.000Z") })
-      .where(eq(s.journalEntries.entryId, gapEntry));
+    // نشدّ createdAt للفجوة داخل نافذة التسوية (وإلّا استُبعدت من reconcileDoubleEntryShadowWindow).
+    await setGapCreatedAt(gapEntry, new Date("2026-08-11T00:00:00.000Z"));
     await insertSale({ createdAt: new Date("2026-08-12T00:00:00.000Z") });
 
     const gate = await canActivate({ now: NOW });
@@ -1230,11 +1245,15 @@ describe("canActivate — بوابة ACTIVE", () => {
         }),
       ]),
     );
+    // Slice DFP2 (٣١/٨/٢٦، تصحيح Codex #908): توسعة arrayContaining لتشمل OPERATIONAL_RECONCILIATION
+    // (blocker جديد من #860 statutory accounting — يُطلق عند أي مطابقة تشغيليّة غير متطابقة).
+    // arrayContaining يقبل superset ⇒ إن ظهرت blockers إضافية فلا فشل ما دام الأربعة موجودين.
     expect(keys).toEqual(
       expect.arrayContaining([
         "UNMAPPED_GAPS",
         "MISSING_JOURNALS",
         "RECONCILIATION_DRIFT",
+        "OPERATIONAL_RECONCILIATION",
       ]),
     );
   });
@@ -1852,6 +1871,14 @@ describe("تغيير وضع الدفتر — انتقالات ذرّية مُد�
         "فجوة متزامنة",
         { cycleId: CYCLE_ID },
       );
+      // نفس علّة `setGapCreatedAt` أعلاه، لكنّ التثبيت هنا **داخل المعاملة** (`tx` لا `db()`):
+      // القفل محجوزٌ هنا عمداً لاختبار التنازع، فنداءٌ من اتّصالٍ آخر يتعلّق عليه ويُجمّد الاختبار.
+      // وبلا التثبيت يسقط رأسُ الفجوة خارج النافذة فيُحجَب التفعيل بـ`MISSING_JOURNALS`
+      // (مصدرٌ بلا يومية) بدل الفجوة نفسها ⇒ الاختبار يمرّ لسببٍ غير الذي يدّعيه اسمُه.
+      await tx
+        .update(s.journalEntries)
+        .set({ createdAt: new Date("2026-08-30T00:00:00.000Z") })
+        .where(eq(s.journalEntries.entryId, Number(inserted[0].id)));
       writerHasLock();
       await writerCanCommit;
     });
@@ -1879,5 +1906,13 @@ describe("تغيير وضع الدفتر — انتقالات ذرّية مُد�
     expect((await db().select().from(s.doubleEntrySettings))[0].mode).toBe(
       "SHADOW",
     );
+    // برهانُ أنّ الفجوة المُلتزَمة **رُئيت فعلاً** (ملاحظة Codex P2): رفضُ
+    // `PRECONDITION_FAILED` وحدَه لا يُثبت شيئاً هنا — `activateDoubleEntry` يستدعي
+    // `canActivate({ requireStatutoryCompliance: true })` و`seedShadow` لا يعتمد ملفاً نظامياً،
+    // فالرفضُ مضمونٌ بـ`STATUTORY_COMPLIANCE` وحدها ⇒ يبقى الاختبار أخضرَ ولو لم
+    // يُطابق التثبيتُ صفاً أو عادت الفجوة خارج النافذة. فيُقاس الأثرُ صراحةً:
+    const postGate = await canActivate({ now: NOW });
+    expect(postGate.gapCount).toBe(1);
+    expect(postGate.blockers.map((b) => b.key)).toContain("UNMAPPED_GAPS");
   });
 });

@@ -25,7 +25,12 @@ describe("employee advance repayment UI contract", () => {
     expect(panel).toContain("new Map<string, EmployeeBalance>()");
     expect(panel).toContain("employeeBranchKey(employeeId, branchId)");
     expect(panel).toContain("employeeBranchKey(row.employeeId, row.branchId) === employeeScopeKey");
-    expect(panel).toContain('employee.employmentStatus === "terminated" ? "منتهي الخدمة" : "على رأس العمل"');
+    // قاموس حالة التوظيف مصدره الوحيد @shared/hr — ثلاث حالات لا حالتان:
+    // تعبير ثنائي محليّ كان يعرض الموظف «leave» «على رأس العمل» — عكس الحقيقة.
+    expect(panel).toContain('import { employmentStatusLabel } from "@shared/hr"');
+    expect(panel).toContain('employee.employmentStatus ? employmentStatusLabel(employee.employmentStatus) : "—"');
+    expect(panel).not.toContain('"منتهي الخدمة"');
+    expect(panel).not.toContain('"على رأس العمل"');
     expect(panel).toContain("إجمالي الرصيد ضمن النطاق");
     expect(panel).toContain("لا تعرض هذه اللوحة أجور الموظفين أو تفاصيل مسيّرات الرواتب");
     expect(panel).not.toContain("payroll.list.useQuery");

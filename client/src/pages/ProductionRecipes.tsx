@@ -8,6 +8,7 @@ import { confirm, confirmDelete } from "@/lib/confirm";
 import { D, fmt, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { coefficientBatchMultiple, requiredBatchMultiple } from "@shared/batchDivisibility";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -122,6 +123,18 @@ export default function ProductionRecipes() {
     const delta = stored && stored.gt(0) ? round2(stdUnit.minus(stored)) : null;
     return { materials: round2(materials), labor: round2(lab), direct, waste, stdUnit, absorb, stored, delta };
   }, [comps, labor, wastePct, out]);
+
+  /*
+   * **قيدُ الدفعة يُعلَن وقتَ تأليف الوصفة، لا وقتَ فشل التشغيل.** استهلاك المكوّن =
+   * `qtyPerOutputBase × الدفعة`، والمخزون عددٌ صحيح بالوحدة الأساس ⇒ المعامِل الكسريّ
+   * يجعل دفعاتٍ بعينها صالحةً وغيرَها لا. وهو قيدٌ **غير تصاعديّ**: معامِل 0.01 يقبل 100
+   * و200 ويرفض 50 — فيبدو للمستعمل أنّ النظام «لا يقبل إلا 100» والمواد وافرة.
+   * الحسبة هنا هي نفسها في الخادم (`shared/batchDivisibility`) ⇒ ما يُحذَّر منه هو
+   * ما سيُرفض بالضبط. تحذيرٌ لا حجب: المعامِل الكسريّ مشروع، وإنّما يلزم أن يُعرَف.
+   */
+  const compCoefficients = comps.map((c) => compBaseQty(c).toFixed(4));
+  const recipeBatchMultiple = requiredBatchMultiple(compCoefficients);
+  const fractionalComps = comps.filter((c) => coefficientBatchMultiple(compBaseQty(c).toFixed(4)) > 1);
 
   function validate(): string | null {
     if (!name.trim()) return "اسم الوصفة مطلوب.";
@@ -257,6 +270,25 @@ export default function ProductionRecipes() {
               </CardContent>
             </Card>
 
+            {recipeBatchMultiple > 1 && (
+              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-sm space-y-1">
+                <div className="font-medium text-[var(--sem-warn)]">
+                  تنبيه: هذه الوصفة ستقبل دفعاتٍ مضاعفةً لـ{recipeBatchMultiple} فقط
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  ({recipeBatchMultiple} · {recipeBatchMultiple * 2} · {recipeBatchMultiple * 3} …) — وأيّ دفعةٍ أخرى تُرفَض عند التشغيل
+                  ولو كانت المواد وافرة، لأنّ المخزون يُخصَم بوحداتٍ صحيحة ولا يُخصَم جزءُ وحدة.
+                </div>
+                <ul className="list-disc ps-4 text-xs text-muted-foreground space-y-0.5">
+                  {fractionalComps.map((c) => (
+                    <li key={c.key}>
+                      «{c.productName}» = <span dir="ltr" className="tabular-nums">{compBaseQty(c).toFixed(4)}</span> بالوحدة الأساس
+                      {" — "}اجعلها عدداً صحيحاً لتعمل كل الدفعات.
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {error && <p className="text-sm text-destructive">{error}</p>}
             <div className="flex gap-2">
               <Button onClick={save} disabled={busy}>{busy ? "جارٍ الحفظ…" : "حفظ الوصفة"}</Button>

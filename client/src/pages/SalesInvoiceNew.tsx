@@ -315,6 +315,7 @@ export default function SalesInvoiceNew() {
             reservedBase: row.reservedBase,
             availableBase: row.availableBase,
             isService: row.isService,
+            allowBackorder: row.allowBackorder,
           },
         ]),
       ),

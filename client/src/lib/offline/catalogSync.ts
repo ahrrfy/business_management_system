@@ -148,6 +148,10 @@ export interface OfflinePosRow {
    *  META_STOCK_BRANCH ⇒ POS.tsx يعرض «جارٍ التحقّق» بأمان). Codex P1×٤ على PR #737. */
   availableBase: number | null;
   isService: boolean;
+  /** «يُباع بالطلب» (0318): يُحفَظ في لقطة الأوفلاين كي لا تعود الشاشة تقول «نافذ» بلا اتصال
+   *  على صنفٍ يقبله الخادم — مسارُ الأوفلاين متساهلٌ أصلاً (`allowNegativeStock`)، والوسمُ
+   *  وحده كان سيحجب الكاشير المنقطع عن بيعٍ سيُرحَّل بنجاح عند العودة. */
+  allowBackorder: boolean;
   isCustomizable: boolean;
   isPrintService: boolean;
   isContractPrice: boolean;
@@ -201,6 +205,7 @@ async function toPosRow(
     reservedBase,
     availableBase,
     isService: row.isService,
+    allowBackorder: row.allowBackorder,
     isCustomizable: row.isCustomizable,
     isPrintService: row.isPrintService,
     // أسعار العقود والعروض والكوبونات أونلاين فقط (قرار الخطة) — الحقول بثوابتها المحايدة.
