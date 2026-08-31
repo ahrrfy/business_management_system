@@ -218,7 +218,18 @@ export default function WorkOrderDetail() {
     branchId: wo.data?.branchId ?? null,
     requiredShiftType: "RECEPTION",
     emptyLabel: "وردية استقبال",
-    estimatedAmount: reverseCashOut.toFixed(2),
+    /**
+     * ⛔ **بلا تقديرٍ عمداً — لا نُحذّر برقمٍ لا نملكه.**
+     *
+     * `invoicePaidAmount` **إجماليُّ** المقبوض بكلّ الطرق، و`reverseDelivery` لا يُخرج نقداً
+     * إلّا عن إيصالات `CASH`/`TELECOM` ([`reverseDelivery.ts`](../../../server/services/workOrder/reverseDelivery.ts)).
+     * فالشاشةُ لا تعرف الشقّ النقديّ. وتمريرُ الإجماليّ يُنتج تحذيرَ عجزٍ **كاذباً** على
+     * فاتورةٍ نصفُها بطاقة: يُطالب الكاشير بتمويل درجٍ لمالٍ لن يخرج منه.
+     *
+     * والتحذيرُ زينةٌ لا حارس (لا يحجب) ⇒ إسقاطُه أصدقُ من تخمينه: المنتقي يبقى ظاهراً،
+     * وحدُّ النقد المتاح يبقى معروضاً بجانب كلّ درج، والخادمُ يبقى الحَكَم النهائيّ.
+     */
+    estimatedAmount: null,
   });
   const reverse = trpc.workOrders.reverseDelivery.useMutation({
     onSuccess: async (r) => {

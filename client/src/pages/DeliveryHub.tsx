@@ -631,7 +631,7 @@ function InTransitTab() {
     setReturnTarget({
       consignmentId: r.id,
       label: `الإرسالية ${r.consignmentNumber ?? r.id}`,
-      estimatedRefund: r.collectedAmount ?? null,
+      estimatedRefund: r.invoicePaidAmount ?? null,
     });
   }
 
@@ -1716,7 +1716,7 @@ function SettleTab() {
                               onClick={() => setReturnTarget({
                                 consignmentId: c.id,
                                 label: `الإرسالية ${c.consignmentNumber}`,
-                                estimatedRefund: c.collectedAmount ?? null,
+                                estimatedRefund: c.invoicePaidAmount ?? null,
                               })}
                             ><RotateCcw aria-hidden className="inline size-3" /> مُرتجَع</button>
                           )}

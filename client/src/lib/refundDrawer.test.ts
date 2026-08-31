@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  drawerShortfallWarning,
   eligibleRefundDrawers,
   pickDefaultRefundDrawer,
   refundDrawerBlockReason,
@@ -91,6 +92,43 @@ describe("refundDrawerBlockReason — الحجبُ يسبق الرفض", () => {
   it("الدرجُ المختار أُغلق بين التحميل والضغط ⇒ يُحجَب بدل إرسالٍ يُرفَض", () => {
     expect(refundDrawerBlockReason({ needed: true, drawers: two, selectedShiftId: 77, emptyLabel: "وردية استقبال" }))
       .toContain("لم يعد مفتوحاً");
+  });
+});
+
+describe("drawerShortfallWarning — تحذيرٌ لا حجب، ولا تخمينَ بلا رقم", () => {
+  const drawers = [
+    drawer({ shiftId: 1, userName: "المدير", expectedCash: "570000.00" }),
+    drawer({ shiftId: 2, userName: "نور", expectedCash: "30000.00" }),
+  ];
+
+  it("الدرجُ يغطّي المبلغ ⇒ لا تحذير", () => {
+    expect(drawerShortfallWarning({ drawers, selectedShiftId: 1, estimatedAmount: "70000" })).toBeNull();
+  });
+
+  it("الدرجُ لا يغطّي ⇒ تحذيرٌ بالرقمين", () => {
+    const w = drawerShortfallWarning({ drawers, selectedShiftId: 2, estimatedAmount: "70000" });
+    expect(w).toEqual({ shiftId: 2, availableCash: "30000.00", needed: "70000" });
+  });
+
+  it("بلا اختيارٍ ⇒ لا تحذير (لا درجَ يُقاس عليه)", () => {
+    expect(drawerShortfallWarning({ drawers, selectedShiftId: null, estimatedAmount: "70000" })).toBeNull();
+  });
+
+  /**
+   * ⭐ السلوكُ الذي يعتمد عليه مسارُ **استرجاع التسليم**: الشاشةُ لا تعرف الشقّ النقديّ من
+   * `invoicePaidAmount` (قد يكون نصفُه بطاقة)، فتُمرّر `null`. تحذيرٌ على رقمٍ مجهول يُطالب
+   * الكاشير بتمويل درجٍ لمالٍ لن يخرج منه — إسقاطُه أصدقُ من تخمينه.
+   */
+  it("⭐ تقديرٌ غائب/صفر/معطوب ⇒ لا تحذير إطلاقاً", () => {
+    expect(drawerShortfallWarning({ drawers, selectedShiftId: 2, estimatedAmount: null })).toBeNull();
+    expect(drawerShortfallWarning({ drawers, selectedShiftId: 2, estimatedAmount: "0" })).toBeNull();
+    expect(drawerShortfallWarning({ drawers, selectedShiftId: 2, estimatedAmount: "" })).toBeNull();
+    expect(drawerShortfallWarning({ drawers, selectedShiftId: 2, estimatedAmount: "abc" })).toBeNull();
+  });
+
+  it("درجٌ بلا `expectedCash` معلوم ⇒ لا تحذير (لا نُنذر بما لا نعرف)", () => {
+    const unknown = [drawer({ shiftId: 9, expectedCash: null })];
+    expect(drawerShortfallWarning({ drawers: unknown, selectedShiftId: 9, estimatedAmount: "70000" })).toBeNull();
   });
 });
 
