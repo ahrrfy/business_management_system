@@ -12,6 +12,7 @@ import os from "node:os";
 import {
   coordRootFor, sessionKeyFor, ensureCoordDirs, sessionsDir, writeJson, readJson,
 } from "./coord-core.mjs";
+import { defaultTestDatabaseUrl, testDbNameForWorktree } from "./lib/test-db-name.mjs";
 
 function git(args, { capture = true } = {}) {
   return execFileSync("git", args, { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit" });
@@ -87,18 +88,47 @@ function pickPort(preferred) {
 }
 
 // أنشئ قاعدتَي التطوير والاختبار للجلسة (idempotent). يفشل ناعماً إن كان Docker متوقّفاً.
-function provisionDbs(dbName, testDbName) {
-  const container = process.env.DB_CONTAINER ?? "erp-mysql";
-  const pw = process.env.DB_ROOT_PW ?? "erp_root_pw";
-  const sql =
-    `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` +
-    `CREATE DATABASE IF NOT EXISTS \`${testDbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`;
+/** إنشاءُ قاعدةٍ واحدة على حاويةٍ بعينها. */
+function createDbIn(container, pw, dbName) {
+  const sql = `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`;
   try {
     execFileSync("docker", ["exec", container, "mysql", "-uroot", `-p${pw}`, "-e", sql], { stdio: ["ignore", "ignore", "pipe"] });
     return { ok: true };
   } catch (e) {
     return { ok: false, err: e?.message ?? String(e) };
   }
+}
+
+/**
+ * **حاويتان لا واحدة** (٣١/٨) — وهذا جوهرُ الإصلاح.
+ *
+ * كانت القاعدتان تُنشآن معاً على حاوية **التطوير** (3306)، ويُشتقّ `TEST_DATABASE_URL` من
+ * `DATABASE_URL` في `.env` الجذر ⇒ يرث المنفذ 3306. ونتيجتُه عطبٌ مزدوج:
+ *
+ *  ١) **حرّاسُ السلامة ترفضه فوراً**: [`init-test-db.mjs`](./init-test-db.mjs) و
+ *     [`__setup__.ts`](../server/services/__tests__/__setup__.ts) يرفضان المنفذ 3306 صراحةً
+ *     ⇒ **جلسةٌ جديدة لا تستطيع تشغيل اختبارٍ واحد** حتى يُعدَّل `.env` يدوياً.
+ *  ٢) **وأخطر**: على هذا الجهاز حاويةُ 3306 هي `erp-mysql-prod` — مرآةُ الإنتاج، وخطٌّ أحمر
+ *     في CLAUDE.md. فكان السكربت يُنشئ قواعدَ اختبارٍ داخل مرآة الإنتاج، وقاعدةُ الاختبار
+ *     يمسحها `__setup__.ts` **كلَّ صفوفِ كلِّ جداولها** بعد كل ملفّ.
+ *
+ * ⇒ قاعدةُ التطوير على حاوية التطوير، وقاعدةُ الاختبار على **صندوق الاختبار 3310** الذي
+ * يفترضه `TEST_DB_BASE` أصلاً — فيتوافق السكربت مع الاشتقاق التلقائيّ بدل أن ينقضه.
+ */
+function provisionDbs(dbName, testDbName) {
+  const devContainer = process.env.DB_CONTAINER ?? "erp-mysql";
+  const devPw = process.env.DB_ROOT_PW ?? "erp_root_pw";
+  const testContainer = process.env.TEST_DB_CONTAINER ?? "erp-test-db";
+  const testPw = process.env.TEST_DB_ROOT_PW ?? "testpw";
+  const dev = createDbIn(devContainer, devPw, dbName);
+  const test = createDbIn(testContainer, testPw, testDbName);
+  return {
+    ok: dev.ok && test.ok,
+    dev,
+    test,
+    devContainer,
+    testContainer,
+  };
 }
 
 // اكتب .env للـ worktree من قالب الجذر مع تجاوز المفاتيح الثلاثة (دون طمس الأسرار إن وُجد الملف).
@@ -162,24 +192,47 @@ function cmdNew() {
   if (!res.ok) fail(`فشل إنشاء شجرة العمل:\n${res.err}`);
 
   const dbName = `erp_${name.replace(/-/g, "_")}`;
-  const testDbName = `${dbName}_test`;
+  /**
+   * اسمُ قاعدة الاختبار **مشتقٌّ من مجلّد شجرة العمل** بنفس دالّة الاشتقاق التلقائيّ
+   * ([`lib/test-db-name.mjs`](./lib/test-db-name.mjs)) — لا `${dbName}_test`.
+   * فالاسمُ الذي يكتبه السكربت هو عينُه الذي يحسبه `vitest` حين يغيب `TEST_DATABASE_URL`
+   * ⇒ لا انحرافَ ممكنٌ بين الاثنين، ولا قاعدةٌ يتيمةٌ يُنشئها أحدُهما ويبحث عنها الآخر.
+   */
+  const testDbName = testDbNameForWorktree(dir);
   const port = pickPort(flagVal("--port"));
 
-  // ٢) قاعدتا البيانات
+  // ٢) قاعدتا البيانات — كلٌّ على حاويتها (تطوير 3306 · اختبار 3310)
   if (!noDb) {
     const prov = provisionDbs(dbName, testDbName);
-    if (prov.ok) console.log(`• قاعدتان جاهزتان: ${dbName} (تطوير) + ${testDbName} (اختبار)`);
-    else warn(`تعذّر إنشاء القاعدتين تلقائياً (Docker متوقّف؟). أنشئهما يدوياً:\n` +
-      `   docker exec erp-mysql mysql -uroot -perp_root_pw -e "CREATE DATABASE \\\`${dbName}\\\`; CREATE DATABASE \\\`${testDbName}\\\`;"`);
+    if (prov.ok) {
+      console.log(`• قاعدتان جاهزتان: ${dbName} على ${prov.devContainer} (تطوير) + ${testDbName} على ${prov.testContainer} (اختبار)`);
+    } else {
+      if (!prov.dev.ok) {
+        warn(`تعذّر إنشاء قاعدة التطوير (Docker متوقّف؟). أنشئها يدوياً:\n` +
+          `   docker exec ${prov.devContainer} mysql -uroot -perp_root_pw -e "CREATE DATABASE \\\`${dbName}\\\`;"`);
+      }
+      if (!prov.test.ok) {
+        warn(`تعذّر إنشاء قاعدة الاختبار على صندوق الاختبار. أنشئها يدوياً:\n` +
+          `   docker exec ${prov.testContainer} mysql -uroot -ptestpw -e "CREATE DATABASE \\\`${testDbName}\\\`;"\n` +
+          `   (أو شغّل داخل المجلّد: pnpm test:db:init)`);
+      }
+    }
   }
 
   // ٣) ‎.env للجلسة (منفذ + قاعدتان مستقلّتان)
   const rootEnv = existsSync(path.join(root, ".env")) ? parseEnv(readFileSync(path.join(root, ".env"), "utf8")) : new Map();
   const baseUrl = rootEnv.get("DATABASE_URL") || "mysql://root:erp_root_pw@127.0.0.1:3306/erp";
+  /**
+   * ⛔ **لا يُشتقّ رابطُ الاختبار من `DATABASE_URL`** — هذا كان الجذر: يرث منه المنفذ 3306
+   * (مرآةَ الإنتاج على هذا الجهاز) فترفضه حرّاسُ الاختبار، ويُلغي في الوقت نفسه الاشتقاقَ
+   * التلقائيّ الصحيح لأنّ الكتابةَ الصريحة تسبقه.
+   * مصدرُه الآن `TEST_DB_BASE` (3310) عبر `defaultTestDatabaseUrl` — أي **نفسُ القيمة**
+   * التي كان سيحسبها vitest لو غاب المفتاح، مكتوبةً صراحةً كي تكون مرئيّةً في `.env`.
+   */
   const envFile = writeWorktreeEnv(dir, {
     PORT: String(port),
     DATABASE_URL: withDb(baseUrl, dbName),
-    TEST_DATABASE_URL: withDb(baseUrl, testDbName),
+    TEST_DATABASE_URL: defaultTestDatabaseUrl(dir),
   });
   console.log(`• ‎.env مكتوب: ${path.relative(parent, envFile)} (PORT=${port})`);
 
