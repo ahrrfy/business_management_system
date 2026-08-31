@@ -7,8 +7,8 @@ import { createServer as createViteServer, type InlineConfig, type UserConfig, t
 import viteConfig from "../vite.config";
 
 /**
- * **`vite.config.ts` يُصدّر دالّةً لا كائناً** (`defineConfig(({ mode }) => …)` — صار كذلك حين
- * احتاج قراءة البيئة عبر `loadEnv`). ونشرُ دالّةٍ بـ`...` يُنتج **كائناً فارغاً**: الدوالّ بلا
+ * **`vite.config.ts` يُصدّر دالّةً لا كائناً** (`defineConfig(({ mode }) => …)` — صار كذلك في
+ * 9bc2c33d حين احتاج قراءة البيئة عبر `loadEnv`). ونشرُ دالّةٍ بـ`...` يُنتج **كائناً فارغاً**: الدوالّ بلا
  * خصائصَ قابلةٍ للتعداد. فكان خادمُ التطوير يفقد الإعداد كلَّه — وأهمُّه `root: client/`
  * ومُعرِّفا `@`/`@shared` — فيسقط `root` إلى مجلّد التشغيل ويصير `/src/main.tsx` مسارَ ملفٍّ
  * لا وجود له:
@@ -36,6 +36,9 @@ async function resolveViteConfig(): Promise<UserConfig> {
  * من الشيء الذي يُنفَّذ، وهذه الدالّة هي هو.
  *
  * ⇒ `setupVite` **لا يبني الإعداد بنفسه**: يستدعي هذه ويُمرّر ناتجَها كما هو.
+ *
+ * ⓘ **دمجُ #922:** أُصلح العطبُ نفسه على `main` مضمَّناً داخل `setupVite`. المنطقُ واحدٌ
+ * حرفياً، وأُبقي هذا الشكلُ المُستخرَج لأنّه وحدَه يجعل الحارسَ يقرأ من المُنفَّذ.
  */
 export async function buildDevServerConfig(server?: Server): Promise<InlineConfig> {
   return {

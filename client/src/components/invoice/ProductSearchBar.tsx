@@ -42,6 +42,8 @@ interface NormalizedRow {
   availableBase: number; // المتاح التشغيلي للبيع = max(0, stockBase − reservedBase)
   /** خدمة بلا مخزون ذاتيّ — createSale يوسّع وصفتها لخصم المواد. */
   isService: boolean;
+  /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يقبله الخادم قبل توريده ⇒ لا يُوسَم نافداً. */
+  allowBackorder: boolean;
   /** Sale price (sale side) OR cost (purchase side) — already in the unit, decimal string. */
   price: string;
   /** Cost in base unit (purchase side carries this; sale side gets it null when hidden). */
@@ -109,6 +111,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         reservedBase: 0, // الشراء لا يعنيه المحجوز
         availableBase: r.stockBase ?? 0,
         isService: false,
+        allowBackorder: false, // جانب الشراء لا يعنيه وسمُ البيع بالطلب.
         price: r.costPriceBase, // purchase price defaults to last cost (base)
         costBase: r.costPriceBase,
       }));
@@ -127,6 +130,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       reservedBase: r.reservedBase ?? 0,
       availableBase: r.availableBase ?? (r.stockBase ?? 0),
       isService: r.isService || r.isPrintService,
+      allowBackorder: r.allowBackorder === true,
       price: r.price ?? "0",
       // التكلفة تصل من الخادم (`catalog.posList`) للمستخدم المخوَّل برؤيتها (مدير/أدمن)، ويُحجب
       // إلى null لغير المخوَّلين (كاشير) في `catalogRouter.redactPosCost` قبل الإرسال ⇒ لا تسرب.
@@ -165,6 +169,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       reservedBase: r.reservedBase,
       availableBase: r.availableBase,
       isService: r.isService,
+      allowBackorder: r.allowBackorder,
       price: r.price || "0",
       costBase: r.costBase || "0",
       discount: "0",
@@ -201,6 +206,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           reservedBase: row.reservedBase ?? 0,
           availableBase: row.availableBase ?? (row.stockBase ?? 0),
           isService: row.isService || row.isPrintService,
+          allowBackorder: row.allowBackorder === true,
           price: row.price ?? "0",
           costBase: "0",
         });

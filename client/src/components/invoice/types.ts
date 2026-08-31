@@ -39,6 +39,8 @@ export interface InvoiceLine {
   availableBase?: number;
   /** خدمة (١٢/٨/٢٦): الخدمة بلا مخزون ذاتيّ ⇒ لا نُظهر تحذير «خارج المخزون»؛ createSale يخصم موادها من الوصفة. */
   isService?: boolean;
+  /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يقبله الخادم قبل توريده ⇒ لا يُوسَم «نافذاً» ولا «ناقصاً». */
+  allowBackorder?: boolean;
   /** Unit price (decimal string). */
   price: string;
   /** Cost per base unit (decimal string) — hidden from cashier; required by purchases. */
@@ -105,7 +107,7 @@ export type InvoiceAction =
   | { type: "SET_TIER_PRICES"; tier: PriceTier; pricesByUnitId: Record<number, string> }
   | {
       type: "SET_STOCK_SNAPSHOTS";
-      snapshotsByUnitId: Record<number, { stockBase: number; stockBranchId: number; reservedBase: number; availableBase: number; isService: boolean }>;
+      snapshotsByUnitId: Record<number, { stockBase: number; stockBranchId: number; reservedBase: number; availableBase: number; isService: boolean; allowBackorder: boolean }>;
     }
   | { type: "MARK_STOCK_STALE" }
   | { type: "SET_ENTITY"; id: number | null }

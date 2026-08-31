@@ -63,6 +63,7 @@ export default defineConfig({
       "client/src/pages/__tests__/purchaseShippingAccrualUi.test.ts",
       "client/src/components/scan/BarcodeSearchCue.test.ts",
       "client/src/components/invoice/__tests__/paymentTerms.test.ts",
+      "client/src/components/invoice/__tests__/stockAvailability.test.ts",
       "client/src/components/invoice/__tests__/priceCellPrecision.test.ts",
       "client/src/components/invoice/__tests__/supplierInvoiceMatch.test.ts",
       "client/src/lib/unitPrice.test.ts",

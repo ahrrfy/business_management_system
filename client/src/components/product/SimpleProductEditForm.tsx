@@ -123,6 +123,10 @@ export default function SimpleProductEditForm({
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isActive, setIsActive] = useState(true);
+  // «يُباع بالطلب» (0318): يجب أن يكون هنا لا في المحرّر المتقدّم وحده — الصنف أحاديّ المتغيّر
+  // (وهو حالة البند المُجهَّز خارجياً بالضبط) يفتح **هذا** المحرّر افتراضياً، فوجودُ التبديل
+  // في المتقدّم فقط يعني ميزةً مبنيّةً لا يجدها من يحتاجها.
+  const [allowBackorder, setAllowBackorder] = useState(false);
   // صور المنتج العامّة (مشتركة) — تُحمَّل من الخادم وتُحفَظ بمطابقة المعرّف (lib/productImages).
   const [images, setImages] = useState<ImageItem[]>([]);
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
@@ -154,6 +158,7 @@ export default function SimpleProductEditForm({
     setIsCustomizable(d.isCustomizable);
     setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsActive(d.isActive);
+    setAllowBackorder(d.allowBackorder);
     if (v) {
       variantId.current = v.id;
       setSku(v.sku);
@@ -211,8 +216,8 @@ export default function SimpleProductEditForm({
   );
   // ── كشف «تعديلات غير محفوظة»: نقارن توقيع النموذج بلقطة الأساس المُلتقَطة بعد التعبئة ──
   const formSig = useMemo(
-    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, units, imagesSig }),
-    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, units, imagesSig]
+    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, units, imagesSig }),
+    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, units, imagesSig]
   );
   useEffect(() => {
     if (hydrated && baseline.current === null) baseline.current = formSig;
@@ -349,6 +354,7 @@ export default function SimpleProductEditForm({
       isCustomizable,
       allowAutoCartRecommendations,
       isActive,
+      allowBackorder,
       unitTemplate,
       variants: [
         {
@@ -614,6 +620,25 @@ export default function SimpleProductEditForm({
             <div className="flex items-center gap-2 h-9">
               <Switch checked={isActive} onCheckedChange={setIsActive} />
               <span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span>
+            </div>
+          </Field>
+          <Field
+            label="يُباع بالطلب (قبل التوريد)"
+            hint={
+              consignment.isConsignment
+                ? "غير متاح لبضاعة الأمانة — بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع."
+                : allowBackorder
+                  ? "يُباع ولو كان الرصيد صفراً أو سالباً؛ السالب = عدد الأعمال المُباعة ولم تُورَّد، ويعود صفراً بفاتورة شراء من مورّد أو بإنتاجٍ داخليّ."
+                  : "البيع يتوقّف عند نفاد الرصيد (السلوك المعتاد)."
+            }
+          >
+            <div className="flex items-center gap-2 h-9">
+              <Switch
+                checked={allowBackorder}
+                onCheckedChange={setAllowBackorder}
+                disabled={consignment.isConsignment}
+              />
+              <span className="text-xs text-muted-foreground">{allowBackorder ? "مسموح" : "متوقف"}</span>
             </div>
           </Field>
           <Field label="الرصيد الحالي (قراءة فقط)" hint="يُدار عبر الجرد/الحركات.">

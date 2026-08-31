@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-import { estimatedWorkOrderCancelCashOut, workOrderCancelNeedsCashDrawer } from "@/lib/refundDrawer";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { RefundDrawerPicker, useRefundDrawer } from "./RefundDrawerPicker";
 
 export interface CancelMaterialRow {
@@ -50,7 +50,31 @@ export function CancelWorkOrderDialogById({
     { enabled: workOrderId != null },
   );
   const d = q.data;
-  if (workOrderId == null || !d) return null;
+  if (workOrderId == null) return null;
+  /**
+   * **نقرةٌ لا تُنتج شيئاً ليست خياراً.** كان الغلافُ يُرجع `null` ريثما تصل التفاصيل، فالضغط
+   * على «إلغاء الأمر» في اللوحة يبدو بلا أثرٍ إطلاقاً على أوّل فتحٍ (قبل تخبئة الاستعلام) —
+   * فيُعيد الموظّف الضغطَ ظانّاً أنّ الزرّ معطوب. نُظهر قشرةَ الحوار بحالتها الصادقة بدلاً منها.
+   */
+  if (!d) {
+    return (
+      <Dialog open onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <PackageX aria-hidden className="size-4" /> إلغاء طلب الخدمة
+            </DialogTitle>
+            <DialogDescription>
+              {q.isError ? "تعذّر تحميل تفاصيل الطلب — أغلِق الحوار وأعد المحاولة." : ACTION_LABELS.loading}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => onOpenChange(false)}>إغلاق</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
   return (
     <CancelWorkOrderDialog
       open
@@ -125,25 +149,19 @@ export default function CancelWorkOrderDialog({
   const [waste, setWaste] = useState<Record<number, number>>({});
 
   /**
-   * أمانةُ أجرة التوصيل تُردّ **نقداً دائماً** عند الإلغاء ولو كان العربون بطاقة
-   * ([`cancel.ts`](../../../../server/services/workOrder/cancel.ts)) — فهي رافدٌ ثالثٌ
-   * يستوجب الدرج وحدَه.
+   * **التمهيدُ الخادميّ** بدل تخمين العربون: يشمل حصصَ العربون المطبَّقة من مسوّدة الاستقبال
+   * (`orderPayments`) وأمانةَ أجرة التوصيل معاً — وهما ما كان التخمينُ يعميه، فيُخفي المنتقي
+   * على أمرٍ يطلب الخادمُ درجَه (مراجعة Codex P1).
    */
-  const feeHeldQ = trpc.workOrders.deliveryFeeHeld.useQuery(
-    { workOrderId },
+  const preflightQ = trpc.workOrders.refundPreflight.useQuery(
+    { workOrderId, operation: "CANCEL" },
     { enabled: open, staleTime: 0 },
   );
-  const cashOutArgs = { deposit, paymentMethod, deliveryFeeHeldNet: feeHeldQ.data?.net ?? null };
-  const needsCashDrawer = workOrderCancelNeedsCashDrawer(cashOutArgs);
   const drawer = useRefundDrawer({
-    needed: open && needsCashDrawer,
-    branchId,
-    // مسارُ أمر الشغل يقصر على RECEPTION (resolveLockedReceptionCashShift) — عرضُ درج POS
-    // هنا يُعيد نفسَ رسالة الرفض بعد الاختيار.
-    requiredShiftType: "RECEPTION",
+    preflight: open ? preflightQ.data ?? null : null,
     emptyLabel: "وردية استقبال",
-    estimatedAmount: estimatedWorkOrderCancelCashOut(cashOutArgs),
   });
+  const needsCashDrawer = preflightQ.data?.needsCashDrawer === true;
 
   // فتحٌ جديد ⇒ حالةٌ نظيفة: سببٌ قديم أو درجٌ أُغلق بينهما يُنتجان تأكيداً يكذب.
   useEffect(() => {
