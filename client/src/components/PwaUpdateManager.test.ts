@@ -3,6 +3,7 @@ import {
   automaticStorefrontPersistenceIsSafe,
   clearPwaAutoAttempt,
   decidePwaUpdateDelivery,
+  pwaOfflineReadyMessage,
   readPwaAutoAttempt,
   requestStorefrontPersistence,
   resolveWaitingWorkerVersion,
@@ -74,6 +75,19 @@ describe("PWA update delivery policy", () => {
 
     expect(decidePwaUpdateDelivery({ ...waiting, pathname: "/" })).toBe("PROMPT");
     expect(decidePwaUpdateDelivery({ ...waiting, pathname: "/store" })).toBe("AUTO_APPLY");
+  });
+});
+
+describe("PWA offline claim", () => {
+  it("describes a cached storefront shell without claiming offline commerce", () => {
+    const message = pwaOfflineReadyMessage({
+      hostname: "alarabiya.online",
+      pathname: "/store",
+    });
+
+    expect(message).toContain("واجهة مكتبة العربية");
+    expect(message).toContain("يحتاج اتصالاً بالإنترنت");
+    expect(message).not.toContain("جاهز للعمل دون اتصال");
   });
 });
 

@@ -449,6 +449,9 @@ export function defaultWebCandidateOperations(
   const publicViteBuildEnvironment = normalizeViteBuildEnvironment(
     viteBuildEnvironment,
   );
+  const sentryBuildEnvironment = normalizeSentryBuildEnvironment(
+    options.sentryBuildEnvironment ?? parentEnvironment,
+  );
   return Object.freeze({
     createWorktree: (sourceRoot, expectedSha) =>
       executeFile(
@@ -480,6 +483,9 @@ export function defaultWebCandidateOperations(
         env: {
           ...controlSubprocessEnvironment(parentEnvironment),
           ...publicViteBuildEnvironment,
+          // build-only allowlist: auth token reaches the Sentry uploader child only. It is
+          // neither VITE-prefixed nor inherited by PM2/runtime.
+          ...sentryBuildEnvironment,
           [VITE_DISABLE_DOTENV_ENV_KEY]: VITE_DISABLE_DOTENV_ENV_VALUE,
         },
       }),
@@ -1771,6 +1777,21 @@ export function normalizeViteBuildEnvironment(parsed) {
     }
   }
   return environment;
+}
+
+const SENTRY_BUILD_ENV_KEYS = [
+  "SENTRY_AUTH_TOKEN",
+  "SENTRY_ORG",
+  "SENTRY_PROJECT",
+  "SENTRY_RELEASE",
+];
+
+export function normalizeSentryBuildEnvironment(environment) {
+  return Object.fromEntries(
+    SENTRY_BUILD_ENV_KEYS
+      .filter((key) => typeof environment?.[key] === "string" && environment[key].trim())
+      .map((key) => [key, environment[key].trim()]),
+  );
 }
 
 function reloadWebProcess() {

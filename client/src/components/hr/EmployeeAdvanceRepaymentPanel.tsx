@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { confirm } from "@/lib/confirm";
 import { iqd } from "@/lib/hr/ui";
+import { employmentStatusLabel } from "@shared/hr";
 import { D, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -344,7 +345,7 @@ function RepaymentEvidenceDialog({
   return <Dialog open={open} onOpenChange={(value) => !value && onClose()}><DialogContent>
     <DialogHeader><DialogTitle>{returning ? "طلب إعادة سداد سابق للموظف" : "تسجيل طلب قبض سداد سلفة"}</DialogTitle></DialogHeader>
     <div className="space-y-3 py-1">
-      {!returning && <div><Label htmlFor="advrep-employee">الموظف والفرع ورصيد السلف</Label><AppSelect id="advrep-employee" value={employeeScopeKey} onValueChange={setEmployeeScopeKey} className="w-full"><option value="">اختر موظفاً وفرعاً…</option>{employees.map((employee) => <option key={employeeBranchKey(employee.employeeId, employee.branchId)} value={employeeBranchKey(employee.employeeId, employee.branchId)}>{employee.employeeName} — {employee.branchName ?? `فرع #${employee.branchId}`} — {employee.employmentStatus === "terminated" ? "منتهي الخدمة" : "على رأس العمل"} — {iqd(employee.remaining)} د.ع</option>)}</AppSelect></div>}
+      {!returning && <div><Label htmlFor="advrep-employee">الموظف والفرع ورصيد السلف</Label><AppSelect id="advrep-employee" value={employeeScopeKey} onValueChange={setEmployeeScopeKey} className="w-full"><option value="">اختر موظفاً وفرعاً…</option>{employees.map((employee) => <option key={employeeBranchKey(employee.employeeId, employee.branchId)} value={employeeBranchKey(employee.employeeId, employee.branchId)}>{employee.employeeName} — {employee.branchName ?? `فرع #${employee.branchId}`} — {employee.employmentStatus ? employmentStatusLabel(employee.employmentStatus) : "—"} — {iqd(employee.remaining)} د.ع</option>)}</AppSelect></div>}
       {returning && <div className="rounded-md border p-3 text-sm"><div className="font-medium">{mode.request.employeeName || `موظف #${mode.request.employeeId}`}</div><div className="text-muted-foreground">إعادة كاملة للطلب الأصلي #{mode.request.id} بمبلغ <b dir="ltr">{iqd(mode.request.amount)} د.ع</b>. لا تسمح اليومية بعكس جزئي مبهم.</div></div>}
       {!returning && <div><Label htmlFor="advrep-amount">المبلغ (د.ع)</Label><MoneyInput id="advrep-amount" value={amount} onChange={setAmount} decimals={2} placeholder="0" ariaLabel="مبلغ سداد السلفة" /><p className="mt-1 text-xs text-muted-foreground">الحد الأقصى: {iqd(selected?.remaining ?? 0)} د.ع.</p></div>}
       <div><Label htmlFor="advrep-method">طريقة الحركة</Label><AppSelect id="advrep-method" value={method} onValueChange={(value) => { setMethod(value as PaymentMethod); setReference(""); setLastFour(""); }} className="w-full"><option value="TRANSFER">تحويل مصرفي</option><option value="CARD">بطاقة</option><option value="WALLET">محفظة دفع</option><option value="CASH">نقداً من درج الوردية</option></AppSelect></div>

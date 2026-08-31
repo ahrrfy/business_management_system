@@ -18,6 +18,10 @@ export function reduceTurnstileStatus(
   return state;
 }
 
+export function turnstileStatusAllowsRetry(status: TurnstileStatus): boolean {
+  return status === "error" || status === "expired";
+}
+
 interface TurnstileApi {
   render(
     container: HTMLElement,
@@ -91,6 +95,7 @@ export function TurnstileWidget({ siteKey, resetKey, onTokenChange, autoRetry = 
   const onTokenChangeRef = useRef(onTokenChange);
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [status, dispatch] = useReducer(reduceTurnstileStatus, "loading");
+  const [retryNonce, requestRetry] = useReducer((value: number) => value + 1, 0);
   onTokenChangeRef.current = onTokenChange;
 
   useEffect(() => {
@@ -140,7 +145,7 @@ export function TurnstileWidget({ siteKey, resetKey, onTokenChange, autoRetry = 
       if (widgetIdRef.current) window.turnstile?.remove(widgetIdRef.current);
       widgetIdRef.current = null;
     };
-  }, [autoRetry, siteKey]);
+  }, [autoRetry, retryNonce, siteKey]);
 
   useEffect(() => {
     const widgetId = widgetIdRef.current;
@@ -157,6 +162,21 @@ export function TurnstileWidget({ siteKey, resetKey, onTokenChange, autoRetry = 
       : status === "error"
         ? "تعذّر تحميل تحقق الأمان؛ تحقق من الاتصال ثم أعد المحاولة."
         : "التحقق من أن الطلب صادر من شخص حقيقي";
+  const retryVerification = () => {
+    onTokenChangeRef.current(null);
+    if (resetTimerRef.current) {
+      clearTimeout(resetTimerRef.current);
+      resetTimerRef.current = null;
+    }
+    if (widgetIdRef.current && window.turnstile) {
+      window.turnstile.reset(widgetIdRef.current);
+      dispatch("RESET");
+      return;
+    }
+    containerRef.current?.replaceChildren();
+    dispatch("RESET");
+    requestRetry();
+  };
 
   return (
     <div
@@ -175,6 +195,15 @@ export function TurnstileWidget({ siteKey, resetKey, onTokenChange, autoRetry = 
       >
         {message}
       </p>
+      {turnstileStatusAllowsRetry(status) && (
+        <button
+          type="button"
+          onClick={retryVerification}
+          className="mt-3 min-h-11 w-full rounded-xl border border-[#1e4a63] bg-white px-4 py-2 text-xs font-black text-[#1e4a63] transition hover:bg-[#eef5f7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1e4a63] focus-visible:ring-offset-2"
+        >
+          إعادة تحميل تحقق الأمان
+        </button>
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 
 import { getDb, getPool } from "../../db";
+import { logger } from "../../logger";
 import { decryptSecret, encryptSecret } from "../cryptoService";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
@@ -9,6 +10,11 @@ const EXPO_TOKEN_RE = /^(?:Expo|Exponent)PushToken\[[A-Za-z0-9_-]{8,256}\]$/;
 const SAFE_PATH_RE = /^\/(?:|search|categories|cart|orders|product\/\d+)$/;
 const MAX_DELIVERY_ATTEMPTS = 4;
 const STALE_LOCK_SECONDS = 5 * 60;
+export const STOREFRONT_PUSH_WORKER_LIMITS = {
+  maxConcurrency: 4,
+  batchSize: 50,
+  intervalMs: 5_000,
+} as const;
 
 export const STOREFRONT_PUSH_CAMPAIGN_STATUSES = ["DRAFT", "APPROVED", "SCHEDULED", "RUNNING", "COMPLETED", "CANCELLED"] as const;
 export type StorefrontPushCampaignStatus = (typeof STOREFRONT_PUSH_CAMPAIGN_STATUSES)[number];
@@ -218,10 +224,13 @@ async function claimDeliveries(limit: number): Promise<DeliveryRow[]> {
         WHERE d.status IN ('PENDING','RETRY') AND d.availableAt <= CURRENT_TIMESTAMP
         ORDER BY d.availableAt, d.id LIMIT ${Math.max(1, Math.min(limit, 100))} FOR UPDATE SKIP LOCKED`,
     );
-    for (const row of rows) {
+    if (rows.length) {
+      const placeholders = rows.map(() => "?").join(",");
       await connection.execute(
-        "UPDATE storefrontPushDeliveries SET status = 'PROCESSING', attemptCount = attemptCount + 1, lockedAt = CURRENT_TIMESTAMP, errorCode = NULL WHERE id = ?",
-        [row.id],
+        `UPDATE storefrontPushDeliveries
+            SET status = 'PROCESSING', lockedAt = CURRENT_TIMESTAMP, errorCode = NULL
+          WHERE id IN (${placeholders}) AND status IN ('PENDING','RETRY')`,
+        rows.map((row) => row.id),
       );
     }
     await connection.commit();
@@ -248,6 +257,21 @@ async function sendExpoPush(token: string, row: DeliveryRow): Promise<{ status: 
   return { status: errorCode === "DeviceNotRegistered" ? "GONE" : "FAILED", ticketId: null, errorCode: errorCode.slice(0, 64) };
 }
 
+/** allSettled على موجات محدودة؛ الفشل في عنصر لا يوقف بقية الموجة ولا يفتح التزامن بلا سقف. */
+export async function runStorefrontPushSettled<T, TResult>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<TResult>,
+): Promise<Array<PromiseSettledResult<TResult>>> {
+  const boundedConcurrency = Math.max(1, Math.min(Math.trunc(concurrency) || 1, STOREFRONT_PUSH_WORKER_LIMITS.maxConcurrency));
+  const results: Array<PromiseSettledResult<TResult>> = [];
+  for (let offset = 0; offset < items.length; offset += boundedConcurrency) {
+    const wave = items.slice(offset, offset + boundedConcurrency);
+    results.push(...await Promise.allSettled(wave.map((item) => worker(item))));
+  }
+  return results;
+}
+
 async function finishCampaigns(): Promise<void> {
   await requirePool().execute(
     `UPDATE storefrontPushCampaigns c SET status = 'COMPLETED', completedAt = CURRENT_TIMESTAMP
@@ -257,43 +281,103 @@ async function finishCampaigns(): Promise<void> {
   );
 }
 
-export async function runStorefrontPushDeliveryBatch(limit = 50) {
-  const queuedCampaigns = await queueDueStorefrontPushCampaigns();
-  const rows = await claimDeliveries(limit);
-  let sent = 0;
-  let retried = 0;
-  let gone = 0;
-  let failed = 0;
+type StorefrontPushDeliveryOutcome = "sent" | "retried" | "gone" | "failed" | "ignored";
+
+async function finishClaimedDelivery(row: DeliveryRow): Promise<StorefrontPushDeliveryOutcome> {
   const pool = requirePool();
-  for (const row of rows) {
-    const attempt = Number(row.attemptCount) + 1;
-    let result: Awaited<ReturnType<typeof sendExpoPush>>;
-    try {
-      const token = decryptSecret(row.tokenCiphertext);
-      if (!token) throw new Error("missing token");
-      result = await sendExpoPush(token, row);
-    } catch {
-      result = { status: "FAILED", ticketId: null, errorCode: "DELIVERY_FAILED" };
-    }
-    if (result.status === "SENT") {
-      sent += 1;
-      await pool.execute("UPDATE storefrontPushDeliveries SET status = 'SENT', sentAt = CURRENT_TIMESTAMP, lockedAt = NULL, providerTicketId = ? WHERE id = ?", [result.ticketId, row.id]);
-      await pool.execute("UPDATE storefrontPushCampaigns SET sentCount = sentCount + 1 WHERE id = ?", [row.campaignId]);
-    } else if (result.status === "GONE") {
-      gone += 1;
-      await pool.execute("UPDATE storefrontPushDeliveries SET status = 'GONE', lockedAt = NULL, errorCode = ? WHERE id = ?", [result.errorCode, row.id]);
-      await pool.execute("UPDATE storefrontPushDevices SET revokedAt = CURRENT_TIMESTAMP WHERE id = ? AND revokedAt IS NULL", [row.deviceId]);
-    } else if (attempt >= MAX_DELIVERY_ATTEMPTS) {
-      failed += 1;
-      await pool.execute("UPDATE storefrontPushDeliveries SET status = 'FAILED', lockedAt = NULL, errorCode = ? WHERE id = ?", [result.errorCode, row.id]);
+  let attempted = false;
+  let result: Awaited<ReturnType<typeof sendExpoPush>>;
+  try {
+    const token = decryptSecret(row.tokenCiphertext);
+    if (!token) {
+      result = { status: "GONE", ticketId: null, errorCode: "TOKEN_UNAVAILABLE" };
     } else {
-      retried += 1;
-      const next = new Date(Date.now() + 15_000 * 2 ** (attempt - 1));
-      await pool.execute("UPDATE storefrontPushDeliveries SET status = 'RETRY', availableAt = ?, lockedAt = NULL, errorCode = ? WHERE id = ?", [next, result.errorCode, row.id]);
+      // التحقق قبل ضبط attempted: token تالف/غير قابل للإرسال لا يستهلك محاولة مزوّد.
+      validateExpoPushToken(token);
+      attempted = true;
+      result = await sendExpoPush(token, row);
+    }
+  } catch {
+    result = attempted
+      ? { status: "FAILED", ticketId: null, errorCode: "DELIVERY_FAILED" }
+      : { status: "GONE", ticketId: null, errorCode: "TOKEN_UNAVAILABLE" };
+  }
+
+  const incrementAttempt = attempted ? "attemptCount = attemptCount + 1," : "";
+  const attempt = Number(row.attemptCount) + (attempted ? 1 : 0);
+  if (result.status === "SENT") {
+    const [transition] = await pool.execute<ResultSetHeader>(
+      `UPDATE storefrontPushDeliveries
+          SET status = 'SENT', ${incrementAttempt} sentAt = CURRENT_TIMESTAMP,
+              lockedAt = NULL, providerTicketId = ?, errorCode = NULL
+        WHERE id = ? AND status = 'PROCESSING'`,
+      [result.ticketId, row.id],
+    );
+    if (!transition.affectedRows) return "ignored";
+    await pool.execute("UPDATE storefrontPushCampaigns SET sentCount = sentCount + 1 WHERE id = ?", [row.campaignId]);
+    return "sent";
+  }
+  if (result.status === "GONE") {
+    const [transition] = await pool.execute<ResultSetHeader>(
+      `UPDATE storefrontPushDeliveries
+          SET status = 'GONE', ${incrementAttempt} lockedAt = NULL, errorCode = ?
+        WHERE id = ? AND status = 'PROCESSING'`,
+      [result.errorCode, row.id],
+    );
+    if (!transition.affectedRows) return "ignored";
+    await pool.execute("UPDATE storefrontPushDevices SET revokedAt = CURRENT_TIMESTAMP WHERE id = ? AND revokedAt IS NULL", [row.deviceId]);
+    return "gone";
+  }
+  if (attempt >= MAX_DELIVERY_ATTEMPTS) {
+    const [transition] = await pool.execute<ResultSetHeader>(
+      `UPDATE storefrontPushDeliveries
+          SET status = 'FAILED', ${incrementAttempt} lockedAt = NULL, errorCode = ?
+        WHERE id = ? AND status = 'PROCESSING'`,
+      [result.errorCode, row.id],
+    );
+    return transition.affectedRows ? "failed" : "ignored";
+  }
+  const next = new Date(Date.now() + 15_000 * 2 ** Math.max(0, attempt - 1));
+  const [transition] = await pool.execute<ResultSetHeader>(
+    `UPDATE storefrontPushDeliveries
+        SET status = 'RETRY', ${incrementAttempt} availableAt = ?, lockedAt = NULL, errorCode = ?
+      WHERE id = ? AND status = 'PROCESSING'`,
+    [next, result.errorCode, row.id],
+  );
+  return transition.affectedRows ? "retried" : "ignored";
+}
+
+export async function runStorefrontPushDeliveryBatch(
+  limit = STOREFRONT_PUSH_WORKER_LIMITS.batchSize,
+  options: { shouldStop?: () => boolean } = {},
+) {
+  const queuedCampaigns = await queueDueStorefrontPushCampaigns();
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit) || STOREFRONT_PUSH_WORKER_LIMITS.batchSize, 100));
+  const summary = { queuedCampaigns, claimed: 0, sent: 0, retried: 0, gone: 0, failed: 0, errored: 0 };
+  while (summary.claimed < boundedLimit && !options.shouldStop?.()) {
+    // لا نطالب إلا موجة ستبدأ الآن؛ stop بين الموجات لا يترك عشرات الصفوف PROCESSING بلا إرسال.
+    const wave = await claimDeliveries(Math.min(
+      STOREFRONT_PUSH_WORKER_LIMITS.maxConcurrency,
+      boundedLimit - summary.claimed,
+    ));
+    if (!wave.length) break;
+    summary.claimed += wave.length;
+    const settled = await runStorefrontPushSettled(
+      wave,
+      STOREFRONT_PUSH_WORKER_LIMITS.maxConcurrency,
+      finishClaimedDelivery,
+    );
+    for (const outcome of settled) {
+      if (outcome.status === "rejected") {
+        summary.errored += 1;
+        logger.error({ err: outcome.reason }, "storefront push: delivery finalization failed");
+      } else if (outcome.value !== "ignored") {
+        summary[outcome.value] += 1;
+      }
     }
   }
   await finishCampaigns();
-  return { queuedCampaigns, claimed: rows.length, sent, retried, gone, failed };
+  return summary;
 }
 
 export async function trackStorefrontPushInteraction(input: { deliveryId: number; event: "OPEN" | "CLICK" }) {
@@ -314,30 +398,87 @@ export async function trackStorefrontPushInteraction(input: { deliveryId: number
   return { ok: true as const };
 }
 
-let timer: NodeJS.Timeout | null = null;
-let running = false;
+export interface StorefrontPushWorkerRuntime {
+  start(): boolean;
+  runNow(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export function createStorefrontPushWorkerRuntime(options: {
+  intervalMs: number;
+  initialDelayMs?: number;
+  runBatch: (shouldStop: () => boolean) => Promise<unknown>;
+  onError: (error: unknown) => void;
+}): StorefrontPushWorkerRuntime {
+  const intervalMs = Math.max(1_000, Math.min(Math.trunc(options.intervalMs) || STOREFRONT_PUSH_WORKER_LIMITS.intervalMs, 60_000));
+  const initialDelayMs = Math.max(0, Math.min(Math.trunc(options.initialDelayMs ?? 0), intervalMs));
+  let timer: NodeJS.Timeout | null = null;
+  let activeTick: Promise<void> | null = null;
+  let stopping = true;
+
+  const runNow = async (): Promise<void> => {
+    if (activeTick) return activeTick;
+    if (stopping) return;
+    const task = (async () => {
+      try {
+        await options.runBatch(() => stopping);
+      } catch (error) {
+        options.onError(error);
+      }
+    })();
+    activeTick = task;
+    try {
+      await task;
+    } finally {
+      if (activeTick === task) activeTick = null;
+    }
+  };
+
+  return {
+    start() {
+      if (timer || activeTick) return false;
+      stopping = false;
+      const begin = () => {
+        if (stopping) return;
+        timer = setInterval(() => void runNow(), intervalMs);
+        timer.unref();
+        void runNow();
+      };
+      timer = initialDelayMs > 0 ? setTimeout(begin, initialDelayMs) : setInterval(() => void runNow(), intervalMs);
+      timer.unref();
+      if (initialDelayMs === 0) void runNow();
+      return true;
+    },
+    runNow,
+    async stop() {
+      stopping = true;
+      if (timer) clearInterval(timer);
+      timer = null;
+      if (activeTick) await activeTick;
+    },
+  };
+}
+
+let workerRuntime: StorefrontPushWorkerRuntime | null = null;
 
 export function startStorefrontPushCampaignWorker(): boolean {
-  if (process.env.NODE_ENV === "test" || timer) return false;
-  const tick = async () => {
-    if (running) return;
-    running = true;
-    try { await runStorefrontPushDeliveryBatch(); } finally { running = false; }
-  };
-  // إزاحة طور (فحص الحمل ٣١/٨/٢٦): عاملُ دفع الإشعارات الأصيلة يدقّ كل ٥ث أيضاً وكلاهما يبدأ
-  // في اللحظة نفسها من index.ts، فيتصادمان في كل دقّة. نصفُ الدورة (٢.٥ث) يوزّعهما بالتناوب.
-  // `timer` يحمل المؤقّت الأوّل ثم الدوريّ — و`clearInterval` في Node يُلغي كليهما، فالإيقاف
-  // أثناء نافذة الإزاحة يمنع بدء الدورية أصلاً.
-  timer = setTimeout(() => {
-    timer = setInterval(() => void tick(), 5_000);
-    timer.unref();
-    void tick();
-  }, 2_500);
-  timer.unref();
+  if (process.env.NODE_ENV === "test" || workerRuntime) return false;
+  const runtime = createStorefrontPushWorkerRuntime({
+    intervalMs: STOREFRONT_PUSH_WORKER_LIMITS.intervalMs,
+    // إزاحة نصف دورة عن عامل native push الذي يدق كل 5ث أيضاً، مع إبقاء stop الرشيق مسؤولاً
+    // عن إلغاء مؤقت البدء أو انتظار الدورة الجارية من runtime نفسه.
+    initialDelayMs: STOREFRONT_PUSH_WORKER_LIMITS.intervalMs / 2,
+    runBatch: (shouldStop) => runStorefrontPushDeliveryBatch(STOREFRONT_PUSH_WORKER_LIMITS.batchSize, { shouldStop }),
+    onError: (error) => logger.error({ err: error }, "storefront push: worker tick failed"),
+  });
+  if (!runtime.start()) return false;
+  workerRuntime = runtime;
   return true;
 }
 
-export function stopStorefrontPushCampaignWorker(): void {
-  if (timer) clearInterval(timer);
-  timer = null;
+export async function stopStorefrontPushCampaignWorker(): Promise<void> {
+  const runtime = workerRuntime;
+  if (!runtime) return;
+  await runtime.stop();
+  if (workerRuntime === runtime) workerRuntime = null;
 }

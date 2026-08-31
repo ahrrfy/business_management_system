@@ -1,0 +1,53 @@
+name: Storefront read-only browser gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: HTTPS origin hosting the storefront candidate
+        required: true
+        type: string
+        default: https://alarabiya.online
+  workflow_call:
+    inputs:
+      base_url:
+        description: HTTPS origin hosting the storefront candidate
+        required: false
+        type: string
+        default: https://alarabiya.online
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storefront-readonly-e2e-${{ inputs.base_url }}
+  cancel-in-progress: true
+
+jobs:
+  browser-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      STOREFRONT_E2E_BASE_URL: ${{ inputs.base_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:storefront:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storefront-browser-diagnostics
+          path: |
+            output/playwright/storefront
+            playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
