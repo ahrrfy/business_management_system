@@ -153,6 +153,17 @@ export default function ProductionNew() {
     { enabled: previewEnabled }
   );
   const pv = preview.data;
+  /*
+   * **خطأ المعاينة يُعرَض ولا يُبتلَع.** `runPreview` يرفض حالاتٍ مشروعةً برسائل عربية
+   * دقيقة تسمّي المكوّن والرقم: «استهلاك «X» (4000.5) ليس عدداً صحيحاً — عدّل الدفعة أو
+   * الوصفة» · «الوصفة معطّلة» · «الوصفة بلا مكوّنات» · «وحدة ناتج الوصفة غير صالحة».
+   *
+   * وكانت الشاشة تُسقط `preview.error` كلّه: `pv` يبقى undefined ⇒ بطاقة الإنتاجية
+   * تختفي، وزرّ الترحيل يبقى معطَّلاً أبداً (`disabled={… || !pv || …}`) **بلا سطرٍ واحد
+   * يقول لماذا**. فيرى المستعمل دفعةً تعمل عند رقمٍ وتتجمّد عند غيره بلا تفسير — وهو
+   * بلاغ المالك: «لا تقبل إلا 100». الرسالة موجودة خادمياً منذ البداية؛ ينقصها العرض.
+   */
+  const previewErrorMsg = preview.error?.message ?? null;
 
   const create = trpc.production.create.useMutation({
     onSuccess: (r: any) => {
@@ -183,7 +194,8 @@ export default function ProductionNew() {
     if (needsBranchChoice) return setError("اختر الفرع أولاً.");
     if (!recipeId) return setError("اختر وصفة أولاً.");
     if (!(Number(batch) > 0)) return setError("أدخل عدد الدفعة (عدد موجب).");
-    if (!pv) return setError("انتظر اكتمال المعاينة.");
+    // Ctrl+S يتجاوز الزرّ المعطَّل ⇒ الرسالة هنا يجب أن تقول السبب الحقيقيّ لا «انتظر».
+    if (!pv) return setError(previewErrorMsg ?? "انتظر اكتمال المعاينة.");
     if (pv.anyShort) return setError("المخزون لا يكفي لأحد المدخلات — قلّل الدفعة أو جهّز المخزون.");
     setError("");
     const noteParts = [notes.trim(), selectedWO ? `مرتبط بطلب خدمة: ${selectedWO.orderNumber}` : ""].filter(Boolean);
@@ -343,6 +355,12 @@ export default function ProductionNew() {
                         <div className="h-9 flex items-center gap-1 font-bold badge-status-active rounded-md px-3" dir="ltr">{fmt(pv?.good ?? Math.max(0, Math.trunc(Number(batch) || 0) - Math.trunc(Number(scrap) || 0)))} <span className="text-xs text-muted-foreground font-normal">{pv?.outputUnitName}</span></div>
                       </div>
                     </div>
+                    {previewErrorMsg && (
+                      <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-sm text-destructive space-y-1">
+                        <div className="font-medium">تعذّر حساب هذه الدفعة — الترحيل موقوف:</div>
+                        <div>{previewErrorMsg}</div>
+                      </div>
+                    )}
                     {pv && (
                       <div>
                         <Meter value={pv.good} max={pv.batch || 1} tone={pv.yieldPct >= 1 - Number(pv.wasteStdPct) ? "ok" : "warn"} label="الإنتاجية (Yield)" right={pct(pv.yieldPct)} />
@@ -438,9 +456,10 @@ export default function ProductionNew() {
                 </div>
 
                 {error && <p className="text-sm text-destructive">{error}</p>}
+                {!error && previewErrorMsg && <p className="text-sm text-destructive">{previewErrorMsg}</p>}
                 <div className="flex gap-2 flex-wrap">
                   <Button onClick={submitRecipe} disabled={create.isPending || needsBranchChoice || !pv || pv.anyShort || !(pv.good > 0)}>
-                    {create.isPending ? "جارٍ الترحيل…" : needsBranchChoice ? "اختر الفرع أولاً" : pv?.anyShort ? "المخزون لا يكفي" : "ترحيل المستند"}
+                    {create.isPending ? "جارٍ الترحيل…" : needsBranchChoice ? "اختر الفرع أولاً" : previewErrorMsg ? "تعذّر حساب الدفعة" : pv?.anyShort ? "المخزون لا يكفي" : "ترحيل المستند"}
                   </Button>
                   <Button variant="outline" onClick={printOrder} disabled={!pv}><Printer aria-hidden className="size-4" /> طباعة أمر تشغيل</Button>
                   <Link href="/production"><Button variant="ghost">إلغاء</Button></Link>
