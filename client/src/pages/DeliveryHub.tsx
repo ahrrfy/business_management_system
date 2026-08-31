@@ -46,6 +46,8 @@ import {
   SHORTFALL_REASON_DESCRIPTION_AR,
   type ShortfallReason,
 } from "@shared/shortfallReason";
+import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
+import { DELIVERY_TERMS as DT } from "@shared/deliveryTerminology";
 import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
@@ -671,11 +673,11 @@ function InTransitTab() {
           className="h-10 max-w-md"
         />
         <div className="ms-auto flex flex-wrap items-center gap-2 text-xs">
-          <span className="rounded-md border bg-muted/40 px-2 py-1 font-bold">
+          <span className="rounded-md border bg-muted/40 px-2 py-1 font-bold" title="طرودٌ لم تُغلَق ماليّاً بعد (بالطريق أو مُسلَّمة بلا توريد نقدها)">
             طرود مفتوحة: <span className="tabular-nums">{list.length}</span>
           </span>
-          <span className="rounded-md border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-2 py-1 font-bold text-[var(--sem-warn)]">
-            تعرّض التحصيل: <span className="tabular-nums" dir="ltr">{fmt(totals.codDue)}</span> د.ع
+          <span className="rounded-md border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-2 py-1 font-bold text-[var(--sem-warn)]" title="مبالغُ COD المطلوب تحصيلها من العملاء (لا تشمل الأجور)">
+            قيد التحصيل من العملاء: <span className="tabular-nums" dir="ltr">{fmt(totals.codDue)}</span> د.ع
           </span>
           <span className="rounded-md border border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)] px-2 py-1 font-bold text-[var(--sem-info)]">
             قيمة البضاعة المفتوحة: <span className="tabular-nums" dir="ltr">{fmt(totals.goodsValue)}</span> د.ع
@@ -759,7 +761,7 @@ function InTransitTab() {
                           <span className="rounded bg-[var(--sem-info-bg)] px-1 py-px text-[9px] font-bold text-[var(--sem-info)]" title="جهةٌ تُدار بالكشف — لا بوّابة مندوب">كشف</span>
                         )}
                       </div>
-                      <div className="text-[11px] text-muted-foreground">{r.driverName ?? "بلا سائق مُسنَد"}</div>
+                      <div className="text-[11px] text-muted-foreground">{r.driverName ?? "بلا سائق مسند"}</div>
                     </td>
                     <td className="p-2">
                       <div>{r.recipientName ?? r.customerName ?? "—"}</div>
@@ -813,7 +815,7 @@ function InTransitTab() {
                           ينقل الكاشير إلى «تسوية المناديب» بالجهة مختارةً سلفاً كي يُدخل الكشف.
                         */}
                         {canFulfil && r.viewKey === "DELIVERED_AWAITING_REMIT" && (
-                          <Button size="sm" variant="default" asChild title="اذهب لتسجيل النقد المُحصَّل من هذه الجهة">
+                          <Button size="sm" variant="default" asChild title="اذهب لتسجيل النقد المقبوض من هذه الجهة">
                             <Link href={`/delivery?tab=settle&party=${r.partyId}`}>
                               <Wallet aria-hidden className="size-3" /> سجّل التحصيل
                             </Link>
@@ -1041,7 +1043,7 @@ function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTran
           <>
             <Label htmlFor="staff-amount" className="text-xs">المبلغ الذي قبضه المندوب فعلاً</Label>
             <div className="mb-3">
-              <MoneyInput id="staff-amount" value={amount} onChange={(v) => setAmount(v)} ariaLabel="المبلغ المُحصَّل" />
+              <MoneyInput id="staff-amount" value={amount} onChange={(v) => setAmount(v)} ariaLabel="المبلغ المقبوض" />
             </div>
             {isOver && (
               <p className="mb-3 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-2 text-xs font-medium text-[var(--sem-neg)]">
@@ -1495,19 +1497,25 @@ function SettleTab() {
         </div>
       )}
 
-      {/* ─── جدول التزامات الجهات — الأقدم أولاً ─── */}
+      {/* ─── جدول التزامات الجهات — الأقدم أولاً (Slice DFP2: تسميات مُوحَّدة من deliveryTerminology) ─── */}
       {(obligations.data ?? []).length === 0 ? (
-        <EmptyState icon={Wallet} title="لا التزامات مفتوحة" description="كل الجهات مسدَّدة الالتزامات — لا شيء بذمّة أحدٍ حالياً." />
+        <EmptyState icon={Wallet} title="لا مسؤوليات مالية مفتوحة" description="كل الجهات سوّت مسؤوليّاتها الماليّة — لا نقدٌ بيد أحدٍ ولا طرودٌ مفتوحة." />
       ) : (
         <div className="rounded-xl border bg-card">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-            <span className="text-sm font-bold">التزامات الجهات ({(obligations.data ?? []).length})</span>
+            <span className="text-sm font-bold">مسؤولية الجهات ({(obligations.data ?? []).length})</span>
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="rounded-md border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-2 py-1 font-bold text-[var(--sem-warn)]">
-                تعرّض إجماليّ: <span className="tabular-nums" dir="ltr">{fmt(totalObligationExposure)}</span> د.ع
+              <span
+                className="rounded-md border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-2 py-1 font-bold text-[var(--sem-warn)]"
+                title={DT.deliveredUncollected.tooltip}
+              >
+                قيد التحصيل من العملاء: <span className="tabular-nums" dir="ltr">{fmt(totalObligationExposure)}</span> د.ع
               </span>
-              <span className="rounded-md border border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)] px-2 py-1 font-bold text-[var(--sem-info)]">
-                أجور مستحقة: <span className="tabular-nums" dir="ltr">{fmt(totalFeesDue)}</span> د.ع
+              <span
+                className="rounded-md border border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)] px-2 py-1 font-bold text-[var(--sem-info)]"
+                title={DT.feesOwedToCourier.tooltip}
+              >
+                {DT.feesOwedToCourier.compact}: <span className="tabular-nums" dir="ltr">{fmt(totalFeesDue)}</span> د.ع
               </span>
             </div>
           </div>
@@ -1516,12 +1524,12 @@ function SettleTab() {
               <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
                 <tr>
                   <th className="p-2 text-start">الجهة</th>
-                  <th className="p-2 text-end">بذمّتها</th>
-                  <th className="p-2 text-end">طرود مفتوحة</th>
-                  <th className="p-2 text-end">تعرّض التحصيل</th>
-                  <th className="p-2 text-end">أقدم طرد</th>
-                  <th className="p-2 text-end">أجور مستحقة</th>
-                  <th className="p-2 text-end">آخر توريد</th>
+                  <th className="p-2 text-end" title={DT.cashInHand.tooltip}>{PARTY_EXPOSURE_LABEL_AR.cashInHand}</th>
+                  <th className="p-2 text-end" title={DT.openParcelsCount.tooltip}>{DT.openParcelsCount.compact}</th>
+                  <th className="p-2 text-end" title={DT.deliveredUncollected.tooltip}>قيد التحصيل</th>
+                  <th className="p-2 text-end" title={DT.oldestOpenAge.tooltip}>{DT.oldestOpenAge.compact}</th>
+                  <th className="p-2 text-end" title={DT.feesOwedToCourier.tooltip}>{PARTY_EXPOSURE_LABEL_AR.feesOwedToThem}</th>
+                  <th className="p-2 text-end" title={DT.lastRemittanceAt.tooltip}>{DT.lastRemittanceAt.compact}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1537,23 +1545,23 @@ function SettleTab() {
                       <td className="p-2">
                         <div className="flex items-center gap-1.5 font-bold">
                           {p.name}
-                          {!p.hasPortal && <span className="rounded bg-[var(--sem-info-bg)] px-1 py-px text-[9px] font-bold text-[var(--sem-info)]" title="تُدار بالكشف">كشف</span>}
+                          {!p.hasPortal && <span className="rounded bg-[var(--sem-info-bg)] px-1 py-px text-[9px] font-bold text-[var(--sem-info)]" title="تُدار بكشف الشركة لا ببوّابة سائق">كشف</span>}
                         </div>
                       </td>
-                      <td className="p-2 text-end font-bold tabular-nums" dir="ltr">{fmt(p.currentBalance)}</td>
+                      <td className="p-2 text-end font-bold tabular-nums" dir="ltr" title={DT.cashInHand.tooltip}>{fmt(p.currentBalance)}</td>
                       <td className="p-2 text-end">
                         <span className="tabular-nums">{p.openCount}</span>
-                        {/* ٢٣/٨: جسر التسليم–التحصيل. طرودٌ سُلِّمت ونقدها بيد الجهة ⇒ شارةٌ صريحة. */}
+                        {/* Slice DFP2: النصّ بلا تشكيل («سلم» بدل «سُلِّم») + فاصلة بصريّة كبيرة. */}
                         {p.deliveredAwaitingRemitCount > 0 && (
                           <span
-                            className="ms-1.5 rounded-md bg-[var(--sem-pos-bg)] px-1.5 py-0.5 text-[10px] font-black text-[var(--sem-pos)]"
-                            title={`${p.deliveredAwaitingRemitCount} طرود سُلِّمت — النقد بذمّة الجهة`}
+                            className="ms-2 rounded-md bg-[var(--sem-pos-bg)] px-1.5 py-0.5 text-[10px] font-black text-[var(--sem-pos)]"
+                            title={`${p.deliveredAwaitingRemitCount} طرود سُلِّمت للعميل — النقد بعدُ بيد المندوب`}
                           >
-                            سُلِّم {p.deliveredAwaitingRemitCount}
+                            سلم {p.deliveredAwaitingRemitCount}
                           </span>
                         )}
                       </td>
-                      <td className="p-2 text-end font-black tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(p.codDueTotal)}</td>
+                      <td className="p-2 text-end font-black tabular-nums text-[var(--sem-warn)]" dir="ltr" title={DT.deliveredUncollected.tooltip}>{fmt(p.codDueTotal)}</td>
                       <td className="p-2 text-end">
                         {p.oldestOpenAgeHours != null ? (
                           <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-black", DELIVERY_AGE_CLS[ageLevel])} dir="ltr">
@@ -1561,7 +1569,7 @@ function SettleTab() {
                           </span>
                         ) : "—"}
                       </td>
-                      <td className="p-2 text-end tabular-nums text-money-positive" dir="ltr">{fmt(p.feeDueTotal)}</td>
+                      <td className="p-2 text-end tabular-nums text-money-positive" dir="ltr" title={DT.feesOwedToCourier.tooltip}>{fmt(p.feeDueTotal)}</td>
                       <td className="p-2 text-end text-[11px] text-muted-foreground">
                         {p.lastRemittanceAt ? fmtDateTime(p.lastRemittanceAt as unknown as string) : "—"}
                       </td>
@@ -1581,7 +1589,7 @@ function SettleTab() {
           <select className="h-11 min-w-64 max-w-md rounded-md border bg-transparent px-3 text-sm" value={partyId} onChange={(e) => { setPartyId(e.target.value); setRows({}); setRemitReqId(crypto.randomUUID()); }}>
             <option value="">— اختر —</option>
             {(obligations.data ?? []).map((p) => (
-              <option key={p.partyId} value={p.partyId}>{p.name} — بذمّته {fmt(p.currentBalance)} د.ع</option>
+              <option key={p.partyId} value={p.partyId}>{p.name} — نقد بيده {fmt(p.currentBalance)} د.ع</option>
             ))}
           </select>
           {partyId && partyName && (
@@ -1620,15 +1628,17 @@ function SettleTab() {
         <>
           <ScrollTableShell className="bg-card">
             <table className="w-full text-sm">
+              {/* Slice DFP2: أسماء أعمدة صريحة — «الحالة» تحوّلت إلى «قرار المندوب»
+                  لأنّ محتواها زرّ إجراء لا شارة حالة. «المتوقَّع (COD)» → «المطلوب تحصيله». */}
               <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
                 <tr>
                   <th className="p-3 text-right">الإرسالية</th>
                   <th className="p-3 text-right">الفاتورة</th>
                   <th className="p-3 text-right">العميل</th>
                   <th className="p-3 text-end">العمر</th>
-                  <th className="p-3 text-left">المتوقَّع (COD)</th>
-                  <th className="p-3 text-center">الحالة</th>
-                  <th className="p-3 text-left">المُحصَّل</th>
+                  <th className="p-3 text-left" title="مبلغُ COD المطلوب تحصيله من الزبون">المطلوب تحصيله</th>
+                  <th className="p-3 text-center">قرار المندوب</th>
+                  <th className="p-3 text-left">المبلغ المقبوض</th>
                 </tr>
               </thead>
               <tbody>
@@ -1668,7 +1678,8 @@ function SettleTab() {
                               type="button"
                               className={cn("rounded px-2 py-1 text-xs font-bold", st.outcome === "COLLECTED" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-muted text-muted-foreground")}
                               onClick={() => setRows((r) => ({ ...r, [c.id]: { outcome: st.outcome === "COLLECTED" ? "NONE" : "COLLECTED", collected: st.outcome === "COLLECTED" ? "0" : String(remaining) } }))}
-                            ><Check aria-hidden className="inline size-3" /> {st.outcome === "COLLECTED" ? "مُحدَّد" : "حدّد"}</button>
+                              title={st.outcome === "COLLECTED" ? "المندوب حصّل هذا الطرد — انقر لإلغاء" : "انقر لتأكيد أنّ المندوب حصّل هذا الطرد"}
+                            ><Check aria-hidden className="inline size-3" /> {st.outcome === "COLLECTED" ? "حصل" : "لم يحصل"}</button>
                           )}
                           {canReturn && returnable && (
                             <button
@@ -1746,35 +1757,78 @@ function SettleTab() {
             )}
           </div>
 
+          {/**
+           * Slice DFP2 (٣١/٨/٢٦) — إعادة تصميم بطاقة توريد التسوية:
+           *   ١) حذف صفّ «الأجور» الفارغ من الرقم (كان نصّاً وحسب — يبدو خالياً).
+           *   ٢) تصحيح كذبة «عجز يبقى ذمّةً على المندوب» — مسار remittance يبقي العجز على
+           *      **العميل** (moneyStatus=PARTIAL بلا SHORTFALL_ASSIGNED). التسمية القديمة كانت
+           *      كذبةً محاسبيّة على الكاشير.
+           *   ٣) إزالة اللون الأحمر من «فرق العدّ» عند countedCash=0 (لم يبدأ العدّ بعد) —
+           *      كان يفتح الشاشة برسالة خطأ مقلقة بلا سبب.
+           *   ٤) الزرّ بلون رمادي واضح عند تعذّر التسوية بدل أزرق نشط مضلِّل.
+           */}
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-xl border bg-card p-4 text-sm">
-              <div className="flex justify-between border-b py-1.5"><span className="text-muted-foreground">إجمالي التحصيل (COD)</span><span dir="ltr" className="font-bold tabular-nums">{fmt(String(totals.collected))} د.ع</span></div>
-              <div className="flex justify-between border-b py-1.5"><span className="text-muted-foreground">الأجور</span><span className="text-xs text-muted-foreground">تُدفع بسند مستقل — استعمل زرّ الصرف المجمّع أعلاه</span></div>
-              <div className="flex justify-between border-b py-1.5"><span className="font-bold">النقد المورَّد للمكتبة</span><span dir="ltr" className="font-extrabold tabular-nums text-primary">{fmt(String(totals.net))} د.ع</span></div>
-              <div className={cn("flex items-center justify-between py-1.5 font-bold", totals.shortfall > 0.01 ? "text-destructive" : "text-money-positive")}>
-                <span className="inline-flex items-center gap-1">{totals.shortfall > 0.01 && <AlertTriangle aria-hidden className="size-3.5" />} {totals.shortfall > 0.01 ? "عجز يبقى ذمّةً على المندوب" : "مطابق"}</span>
-                <span dir="ltr" className="tabular-nums">{fmt(String(Math.max(0, totals.shortfall)))} د.ع</span>
+              <div className="flex justify-between border-b py-1.5">
+                <span className="text-muted-foreground">إجمالي التحصيل (COD)</span>
+                <span dir="ltr" className="font-bold tabular-nums">{fmt(String(totals.collected))} د.ع</span>
               </div>
-              <div className={cn("flex items-center justify-between border-t py-1.5 font-bold", Math.abs(countedCash - totals.net) > 0.01 ? "text-money-negative" : "text-money-positive")}>
-                <span>{Math.abs(countedCash - totals.net) > 0.01 ? "فرق العدّ — لا يمكن التسوية" : "النقد المعدود مطابق للصافي"}</span>
-                <span dir="ltr" className="tabular-nums">{fmt(String(countedCash - totals.net))} د.ع</span>
+              <div className="flex justify-between border-b py-1.5">
+                <span className="font-bold">النقد المتوقَّع توريده</span>
+                <span dir="ltr" className="font-extrabold tabular-nums text-primary">{fmt(String(totals.net))} د.ع</span>
               </div>
-              {canRemit && (
-                <Button
-                  className="mt-3 w-full"
-                  onClick={submit}
-                  disabled={remit.isPending || companyStatement.isPending || listStillLoading || Math.abs(countedCash - totals.net) > 0.01}
-                  title={listStillLoading ? "جارٍ تحميل باقي الإرساليات — التوريد بعد اكتمال العدّ" : undefined}
-                >
-                  {remit.isPending || companyStatement.isPending
-                    ? "جارٍ…"
-                    : listStillLoading
-                      ? "جارٍ تحميل باقي الإرساليات…"
-                      : statementMode
-                        ? `تسجيل كشف الشركة ${statementNumber.trim()} وتوريد الصافي`
-                        : "تأكيد التسوية وتوريد الصافي"}
-                </Button>
+              {totals.shortfall > 0.01 && (
+                <div className="flex items-center justify-between border-b py-1.5 font-bold text-[var(--sem-warn)]">
+                  <span className="inline-flex items-center gap-1" title={DT.requestedFromCustomer.tooltip}>
+                    <AlertTriangle aria-hidden className="size-3.5" />
+                    متبقٍّ على العميل (لم يُقبَض من المندوب بعد)
+                  </span>
+                  <span dir="ltr" className="tabular-nums">{fmt(String(totals.shortfall))} د.ع</span>
+                </div>
               )}
+              {(() => {
+                const cashDiff = countedCash - totals.net;
+                const hasStartedCounting = countedCash > 0;
+                const isMismatch = hasStartedCounting && Math.abs(cashDiff) > 0.01;
+                const isMatch = hasStartedCounting && !isMismatch;
+                const tone = isMismatch ? "text-money-negative"
+                  : isMatch ? "text-money-positive"
+                  : "text-muted-foreground";
+                const label = isMismatch ? "فرق العدّ — سوِّ المعدود قبل التسوية"
+                  : isMatch ? "النقد المعدود مطابق للصافي"
+                  : "أدخل النقد المعدود لبدء التسوية";
+                return (
+                  <div className={cn("flex items-center justify-between border-t py-1.5 font-bold", tone)}>
+                    <span>{label}</span>
+                    <span dir="ltr" className="tabular-nums">{hasStartedCounting ? `${fmt(String(cashDiff))} د.ع` : "—"}</span>
+                  </div>
+                );
+              })()}
+              {canRemit && (() => {
+                const cashMatched = countedCash > 0 && Math.abs(countedCash - totals.net) < 0.01;
+                const isBlocked = remit.isPending || companyStatement.isPending || listStillLoading || !cashMatched;
+                return (
+                  <Button
+                    className="mt-3 w-full"
+                    variant={isBlocked ? "secondary" : "default"}
+                    onClick={submit}
+                    disabled={isBlocked}
+                    title={
+                      listStillLoading ? "جارٍ تحميل باقي الإرساليات — التوريد بعد اكتمال العدّ"
+                      : !cashMatched ? "أدخل النقد المعدود المطابق للصافي المتوقَّع قبل التوريد"
+                      : undefined
+                    }
+                  >
+                    {remit.isPending || companyStatement.isPending
+                      ? "جارٍ…"
+                      : listStillLoading
+                        ? "جارٍ تحميل باقي الإرساليات…"
+                        : statementMode
+                          ? `تسجيل كشف الشركة ${statementNumber.trim()} وتوريد الصافي`
+                          : "تأكيد التسوية وتوريد الصافي"}
+                  </Button>
+                );
+              })()}
             </div>
             <CashCounter value={countedBreakdown} onChange={(c, total) => { setCountedBreakdown(c); setCountedCash(Number(total)); }} />
           </div>
@@ -1795,7 +1849,7 @@ function SettleTab() {
                       <th className="p-2 text-start">رقم السند</th>
                       <th className="p-2 text-start">التاريخ</th>
                       <th className="p-2 text-end">إجمالي التحصيل</th>
-                      <th className="p-2 text-end">صافي المورَّد</th>
+                      <th className="p-2 text-end">صافي التوريد</th>
                       <th className="p-2 text-end">العجز</th>
                       <th className="p-2 text-start">المستلم</th>
                     </tr>
