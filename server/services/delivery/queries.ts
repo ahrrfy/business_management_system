@@ -171,6 +171,8 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       collectedAmount: deliveryConsignments.collectedAmount,
       /** ما سدّده الزبون بالكاونتر بعد ثبوت التسليم (0249) — الشاشة تعرض به المتبقّي الحيّ. */
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      /** المقبوضُ على المستند — تقديرُ ما يخرج من الدرج عند الإرجاع (انظر `listInTransitConsignments`). */
+      invoicePaidAmount: invoices.paidAmount,
       deliveryFee: deliveryConsignments.deliveryFee,
       feeDue,
       feeCollection: deliveryConsignments.feeCollection,
@@ -260,6 +262,14 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       /** صافي مستند البيع للشاشة (الإجماليّ والمرتجع) — يُشتقّ منهما صافي الفاتورة بلا نداء ثانٍ. */
       invoiceTotal: invoices.total,
       invoiceReturnedTotal: invoices.returnedTotal,
+      /**
+       * **المقبوضُ على المستند** — هو ما يقيس به `returnConsignment` خروجَ النقد
+       * (`previewNeedsCash = paidAmount > 0 || feeNet > 0`، [`returns.ts`](./returns.ts)).
+       * تعرضه الشاشةُ لتقدير ما سيخرج من الدرج عند الإرجاع؛ و`collectedAmount` **لا يصلح
+       * بديلاً**: لا يشمل ما سُدِّد بالكاونتر (`counterSettledAmount`) فيُنقِص التقدير.
+       * الجدولُ مضمومٌ أصلاً (`leftJoin(invoices)`) ⇒ عمودٌ بلا كلفةِ ضمٍّ جديدة.
+       */
+      invoicePaidAmount: invoices.paidAmount,
       /**
        * المتبقّي تحصيله على هذا الطرد — التعرّض الفعليّ الظاهر للإدارة لحظةً بلحظة، بالصيغة
        * الحاكمة للمتبقّي الحيّ: codAmount − collectedAmount − counterSettledAmount (ما غطّاه

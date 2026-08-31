@@ -37,6 +37,8 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
+import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
+import { RefundDrawerPicker, useRefundDrawer } from "@/components/workorder/RefundDrawerPicker";
 
 
 /** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
@@ -108,6 +110,13 @@ export default function WorkOrderDetail() {
   const [partialDispatchMessage, setPartialDispatchMessage] = useState("");
   const deliverRequestIdRef = useRef<string | null>(null);
   const cancelRequestIdRef = useRef<string | null>(null);
+  /**
+   * **حمولةُ الإلغاء كاملةً** (مراجعة Codex P1 #920) — لا معرّفُها وحده. بصمةُ الـidempotency
+   * الخادميّة تشمل `materials`/`refundShiftId`، فإعادةُ إرسالٍ ناقصة تُنتج تضارباً على محاولةٍ
+   * التزمت، أو **إلغاءً مختلفاً عمّا أقرّه المستخدم** إن لم تصل الأولى. تُحفَظ في
+   * `sessionStorage` كذلك كي تنجو من إعادة تحميل الصفحة أثناء الانقطاع.
+   */
+  const cancelPayloadRef = useRef<Parameters<typeof cancel.mutate>[0] | null>(null);
 
   useEffect(() => {
     if (!isPosPaymentMethodEnabled(payMethod)) {
@@ -204,6 +213,22 @@ export default function WorkOrderDetail() {
   const [reverseOpen, setReverseOpen] = useState(false);
   const [reverseReason, setReverseReason] = useState("");
   const [reverseReopen, setReverseReopen] = useState(false);
+  /**
+   * **التمهيدُ الخادميّ للاسترجاع** — يجمع إيصالات IN **النقدية وحدها**.
+   *
+   * كان المحفِّز `invoicePaidAmount` الإجماليّ، فأمرٌ مُسلَّمٌ مدفوعٌ **بالبطاقة كاملاً** يطلب
+   * درجاً؛ ومع انعدام الوردية يُعطَّل الزرّ ⇒ **استحالةُ الاسترجاع** بينما الخادم لا يحتاج
+   * درجاً أصلاً لغير النقد (مراجعة Codex P1 — حائطٌ أنشأته الشريحةُ نفسها).
+   */
+  const reversePreflightQ = trpc.workOrders.refundPreflight.useQuery(
+    { workOrderId, operation: "REVERSE_DELIVERY" },
+    { enabled: reverseOpen && Number.isFinite(workOrderId), staleTime: 0 },
+  );
+  const reverseDrawer = useRefundDrawer({
+    preflight: reverseOpen ? reversePreflightQ.data ?? null : null,
+    emptyLabel: "وردية استقبال",
+  });
+  const reverseNeedsDrawer = reversePreflightQ.data?.needsCashDrawer === true;
   const reverse = trpc.workOrders.reverseDelivery.useMutation({
     onSuccess: async (r) => {
       setDone(
@@ -242,7 +267,8 @@ export default function WorkOrderDetail() {
       setCancelOutcomeUncertain(false);
       setError("");
       cancelRequestIdRef.current = null;
-      if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+      cancelPayloadRef.current = null;
+      if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-payload:${workOrderId}`);
       await refresh();
     },
     onError: async (mutationError) => {
@@ -259,7 +285,8 @@ export default function WorkOrderDetail() {
         setCancelOutcomeUncertain(false);
         setError("");
         cancelRequestIdRef.current = null;
-        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+      cancelPayloadRef.current = null;
+        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-payload:${workOrderId}`);
         return;
       }
       if (orderCheck.data?.status === "CANCELLED") {
@@ -268,11 +295,22 @@ export default function WorkOrderDetail() {
         setCancelOutcomeUncertain(false);
         setError("");
         cancelRequestIdRef.current = null;
-        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+      cancelPayloadRef.current = null;
+        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-payload:${workOrderId}`);
         return;
       }
-      setCancelOutcomeUncertain(true);
-      setError(`${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
+      /**
+       * ⚠️ «مجهولٌ» ليست مرادفَ «فشل». الرفضُ بكودٍ صريح (`PRECONDITION_FAILED` مثلاً:
+       * «حدّد درج الاسترداد») يقع **قبل أيّ كتابة** داخل `withTx` ⇒ لم يحدث شيء يقيناً.
+       * وسمُه «لم يثبت الخادم التنفيذ؛ أعد المحاولة بالمعرّف نفسه» كان يدفع الموظّف لتكرار
+       * محاولةٍ تفشل بنفس الطريقة أبداً بدل معالجة السبب المذكور. نفسُ الإصلاح جرى في
+       * [`Reception.tsx`](./Reception.tsx) على بلاغٍ حيّ (١٩/٨) ولم يُكنَس إلى هنا.
+       */
+      const deterministic = serverAnsweredDeterministically(mutationError);
+      setCancelOutcomeUncertain(!deterministic);
+      setError(deterministic
+        ? mutationError.message
+        : `${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
     },
   });
 
@@ -484,8 +522,16 @@ export default function WorkOrderDetail() {
 
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="سعر البيع" value={data.salePrice} strong />
+              {/*
+                تنبيه: `SummaryRow` **يُنسّق بنفسه** (`fmtAr` ⇒ `D(value)`)، فتمريرُ نصٍّ منسَّقٍ سلفاً
+                يُسقط الشاشة كلَّها: القيمة كانت «ناقص + fmt(العربون)» = «−70,000» بإشارةِ ناقصٍ
+                يونيكوديّة (U+2212) وفاصلةِ آلاف ⇒ `DecimalError: Invalid argument` يبتلعه حدُّ
+                الخطأ فيُظهر «حدث خطأ غير متوقّع» مكانَ الصفحة بأكملها.
+                ⇒ أيُّ أمرِ شغلٍ بعربونٍ موجب كان **يتعذّر فتح تفاصيله إطلاقاً**.
+                وبقيّةُ النداءات تُمرّر القيمةَ خامّاً؛ فلتُمرَّر هذه خامّةً سالبةً كذلك.
+              */}
               {D(data.deposit ?? 0).gt(0) && (
-                <SummaryRow label="العربون المقبوض" value={`−${fmt(data.deposit ?? "0")}`} />
+                <SummaryRow label="العربون المقبوض" value={D(data.deposit ?? 0).neg().toFixed(2)} />
               )}
               {/* Slice D (٢٩/٨/٢٦): إظهار «إجمالي ما سيدفعه العميل» شاملاً التوصيل في بطاقة الأمر —
                   بلاغ المالك: «يجب أن يعلم الزبون بالمبلغ الكلي النهائي شاملاً التوصيل». يظهر عند
@@ -716,15 +762,20 @@ export default function WorkOrderDetail() {
               className="mt-2"
               disabled={cancel.isPending}
               onClick={() => {
-                const key = `work-order-cancel-request:${workOrderId}`;
-                const clientRequestId = cancelRequestIdRef.current
-                  ?? (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null);
-                if (!clientRequestId) {
-                  setError("تعذّر العثور على معرّف المحاولة السابقة؛ حدّث الصفحة للتحقق من حالة الأمر قبل أي إجراء.");
+                const key = `work-order-cancel-payload:${workOrderId}`;
+                let payload = cancelPayloadRef.current;
+                if (!payload && typeof window !== "undefined") {
+                  const raw = window.sessionStorage.getItem(key);
+                  if (raw) { try { payload = JSON.parse(raw); } catch { payload = null; } }
+                }
+                if (!payload) {
+                  setError("تعذّر العثور على حمولة المحاولة السابقة؛ حدّث الصفحة للتحقق من حالة الأمر قبل أي إجراء.");
                   return;
                 }
-                cancelRequestIdRef.current = clientRequestId;
-                cancel.mutate({ workOrderId, clientRequestId });
+                cancelPayloadRef.current = payload;
+                cancelRequestIdRef.current = payload.clientRequestId ?? null;
+                // الحمولةُ حرفياً — أيُّ نقصٍ يغيّر البصمة فيغيّر النتيجة.
+                cancel.mutate(payload);
               }}
             >
               {cancel.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
@@ -897,14 +948,31 @@ export default function WorkOrderDetail() {
               يُعكَس قيد البيع والتكلفة، وتسقط ذمّةُ العميل غير المسدَّدة، ويُردّ المقبوض.
               ولا تعود الخامة للمخزون — استُهلكت فعلاً، واسترجاعُ الخردة تسويةُ مخزونٍ منفصلة.
             </p>
+            {reverseNeedsDrawer && (
+              <div className="mt-3">
+                <RefundDrawerPicker
+                  state={reverseDrawer}
+                  needed
+                  hint="وردية القبض قد تكون أُغلقت منذ أيّام — النقد يخرج من درجٍ مفتوحٍ الآن."
+                />
+              </div>
+            )}
+            {/* سببُ التعطيل مقروءٌ دائماً — زرٌّ معطَّلٌ بلا سبب هو نصفُ البابِ المسدود. */}
+            {(reverseDrawer.blockReason || reverseReason.trim().length < 3) && (
+              <p className="mt-2 text-2xs font-bold text-[var(--sem-warn)]">
+                {reverseReason.trim().length < 3 ? "اكتب سبب الاسترجاع (٣ أحرف على الأقل)." : reverseDrawer.blockReason}
+              </p>
+            )}
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setReverseOpen(false)} disabled={reverse.isPending}>تراجع</Button>
-              <Button variant="destructive" disabled={reverse.isPending || reverseReason.trim().length < 3}
+              <Button variant="destructive"
+                disabled={reverse.isPending || reverseReason.trim().length < 3 || reverseDrawer.blockReason != null}
                 onClick={() => reverse.mutate({
                   workOrderId,
                   reason: reverseReason.trim(),
                   reopen: reverseReopen,
                   clientRequestId: newClientRequestId(),
+                  refundShiftId: reverseDrawer.refundShiftId,
                 })}>
                 {reverse.isPending ? "جارٍ…" : "أكّد الاسترجاع"}
               </Button>
@@ -932,8 +1000,12 @@ export default function WorkOrderDetail() {
       <CancelWorkOrderDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
+        workOrderId={workOrderId}
+        branchId={data.branchId}
         orderNumber={data.orderNumber}
         title={data.title}
+        deposit={data.deposit}
+        paymentMethod={data.paymentMethod}
         // الخامة تُعرَض فقط بعد البدء — قبله لا استهلاك، فجدولُ الهدر يكذب لو ظهر.
         materials={
           data.status === "IN_PROGRESS" || data.status === "READY"
@@ -947,18 +1019,19 @@ export default function WorkOrderDetail() {
         }
         pending={cancel.isPending}
         onConfirm={(d) => {
-          const key = `work-order-cancel-request:${workOrderId}`;
-          cancelRequestIdRef.current ??=
-            (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null)
-            ?? newClientRequestId();
-          if (typeof window !== "undefined") window.sessionStorage.setItem(key, cancelRequestIdRef.current);
-          setCancelOpen(false);
-          cancel.mutate({
+          const key = `work-order-cancel-payload:${workOrderId}`;
+          cancelRequestIdRef.current ??= newClientRequestId();
+          const payload = {
             workOrderId,
             clientRequestId: cancelRequestIdRef.current,
             reason: d.reason,
             materials: d.materials,
-          });
+            refundShiftId: d.refundShiftId,
+          };
+          cancelPayloadRef.current = payload;
+          if (typeof window !== "undefined") window.sessionStorage.setItem(key, JSON.stringify(payload));
+          setCancelOpen(false);
+          cancel.mutate(payload);
         }}
       />
     </div>
