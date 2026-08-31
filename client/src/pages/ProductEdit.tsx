@@ -138,6 +138,9 @@ export default function ProductEdit() {
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isService, setIsService] = useState(false);
+  // «يُباع بالطلب» (0318): صنفٌ مخزنيّ يُسمح ببيعه قبل توريده — يُغذَّى بفاتورة شراءٍ من مورّد
+  // أو بإنتاجٍ داخليّ بوصفته، ورصيدُه السالب عدّاد «مُباعٌ لم يُورَّد».
+  const [allowBackorder, setAllowBackorder] = useState(false);
   const [isActive, setIsActive] = useState(true);
   // ٢٤/٨ — متابعةُ PR #755 (هجرة 0262): توجيه العرض قابل للتحرير بعد الإنشاء.
   // كان يُضبط مرّةً واحدةً عند الإنشاء عبر ServiceForm ثم يتعذّر تعديله ⇒ لا وسيلةَ لإخفاء
@@ -183,7 +186,7 @@ export default function ProductEdit() {
   }, [
     hydrated, costPrice, units, variants, images, colors, sizes, categoryId,
     originalName, productType, brand, modelName, description,
-    isCustomizable, allowAutoCartRecommendations, isService, isActive, showInReception, showInPrintPos, consignment, baseSku,
+    isCustomizable, allowAutoCartRecommendations, isService, allowBackorder, isActive, showInReception, showInPrintPos, consignment, baseSku,
   ]);
   useUnsavedGuard(touched);
 
@@ -200,6 +203,7 @@ export default function ProductEdit() {
     setIsCustomizable(d.isCustomizable);
     setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsService(d.isService);
+    setAllowBackorder(d.allowBackorder);
     setIsActive(d.isActive);
     setShowInReception(d.showInReception);
     setShowInPrintPos(d.showInPrintPos);
@@ -473,6 +477,9 @@ export default function ProductEdit() {
       isCustomizable,
       allowAutoCartRecommendations,
       isService,
+      // التبديل معطَّلٌ بصرياً على الخدمة، لكن قيمةً قديمة قد تبقى في الحالة لو قُلب «خِدمة»
+      // بعد تفعيلها ⇒ نُصفّرها هنا صراحةً فلا تصل تركيبةٌ يرفضها CHECK القاعدة أصلاً.
+      allowBackorder: isService ? false : allowBackorder,
       isActive,
       showInReception,
       showInPrintPos,
@@ -688,6 +695,25 @@ export default function ProductEdit() {
             <CostCoachRow costPrice={costPrice} baseRetail={units.find((u) => u.isBase)?.retail ?? ""} categoryId={categoryId === "" ? null : Number(categoryId)} brand={brand} productType={productType} productId={productId} />
           </Field>
           <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
+          <Field
+            label="يُباع بالطلب (قبل التوريد)"
+            hint={
+              isService || product.data?.isBundle || product.data?.isConsignment
+                ? "غير متاح: يخصّ السلع المخزنية وحدها (لا خدمة ولا بكج ولا أمانة)."
+                : allowBackorder
+                  ? "يُباع ولو كان الرصيد صفراً أو سالباً؛ السالب = عدد الأعمال المُباعة ولم تُورَّد، ويعود صفراً بفاتورة شراء من مورّد أو بإنتاجٍ داخليّ."
+                  : "البيع يتوقّف عند نفاد الرصيد (السلوك المعتاد)."
+            }
+          >
+            <div className="flex items-center gap-2 h-9">
+              <Switch
+                checked={allowBackorder}
+                onCheckedChange={setAllowBackorder}
+                disabled={isService || !!product.data?.isBundle || !!product.data?.isConsignment}
+              />
+              <span className="text-xs text-muted-foreground">{allowBackorder ? "مسموح" : "متوقف"}</span>
+            </div>
+          </Field>
           <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
           <Field label="التوصيات الآلية" hint="يكمل العلاقات اليدوية بمنتجات متاحة من نفس التصنيف."><div className="flex items-center gap-2 h-9"><Switch checked={allowAutoCartRecommendations} onCheckedChange={setAllowAutoCartRecommendations} /><span className="text-xs text-muted-foreground">{allowAutoCartRecommendations ? "مسموح" : "متوقف"}</span></div></Field>
           <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span></div></Field>
