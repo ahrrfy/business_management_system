@@ -20,6 +20,7 @@ const SeasonPlanning = lazy(() => import("@/pages/SeasonPlanning"));
 const Categories = lazy(() => import("@/pages/Categories"));
 const BarcodeLabels = lazy(() => import("@/pages/BarcodeLabels"));
 const PriceWaves = lazy(() => import("@/pages/PriceWaves"));
+const CostWaves = lazy(() => import("@/pages/CostWaves"));
 
 const TABS: HubTab[] = [
   { value: "stock", label: "الأرصدة", Component: Inventory },
@@ -39,6 +40,8 @@ const TABS: HubTab[] = [
   { value: "barcodes", label: "ملصقات الباركود", gate: { module: "products", level: "READ" }, Component: BarcodeLabels },
   // gstack B10 (٧/٧/٢٦): موجات الأسعار كتبويب ضمن المخزون (managerOnly — تُعدّل أسعاراً جماعياً).
   { value: "price-waves", label: "موجات الأسعار", gate: { managerOnly: true }, Component: PriceWaves },
+  // التكلفة أصلٌ مالي: تبويب مستقلّ عن سعر البيع، بمعاينة واعتمادين وتطبيق ذري.
+  { value: "cost-waves", label: "موجات التكلفة", gate: { managerOnly: true }, Component: CostWaves },
 ];
 
 /**

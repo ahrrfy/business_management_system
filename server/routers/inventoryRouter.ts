@@ -9,7 +9,7 @@ import { alias } from "drizzle-orm/mysql-core";
 // استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode).
 const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 import { z } from "zod";
-import { branches, branchStock, inventoryMovements, productVariants, products, stockAdjustmentRequests, stockTransfers, users, variantBranchThresholds } from "../../drizzle/schema";
+import { branches, branchStock, costUpdateWaves, inventoryMovements, productVariants, products, stockAdjustmentRequests, stockTransfers, users, variantBranchThresholds } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { createAppNotification } from "../services/appNotificationService";
 import { logAudit } from "../services/auditService";
@@ -52,6 +52,14 @@ import {
   listCostRevaluations,
   getCostRevaluationPreview,
 } from "../services/inventory/costRevaluationRequest";
+import {
+  approveCostWave,
+  getCostWave,
+  listCostWaves,
+  previewCostWave,
+  rejectCostWave,
+  submitCostWave,
+} from "../services/inventory/costWaveService";
 import { withTx } from "../services/tx";
 import { retryOnDup } from "../lib/retryDup";
 import { inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
@@ -82,6 +90,109 @@ const TRANSFER_REASONS = {
 } as const;
 type TransferReason = keyof typeof TRANSFER_REASONS;
 const TRANSFER_REASON_KEYS = Object.keys(TRANSFER_REASONS) as [TransferReason, ...TransferReason[]];
+
+const costWaveFiltersSchema = z.object({
+  scope: z.enum(["FILTERED", "SELECTED", "ALL"]),
+  categoryId: z.number().int().positive().nullable().optional(),
+  productSearch: z.string().trim().max(200).nullable().optional(),
+  variantIds: z.array(z.number().int().positive()).max(500).nullable().optional(),
+});
+const costWavePreviewSchema = z.object({
+  purpose: z.enum(["CORRECTION", "IMPAIRMENT"]),
+  ruleType: z.enum(["SET_COST", "INCREASE_PERCENT", "DECREASE_PERCENT"]),
+  changeValue: z.string().trim().regex(/^\d+(?:\.\d{1,4})?$/).max(30),
+  filters: costWaveFiltersSchema,
+});
+
+function costWaveActor(user: {
+  id: number;
+  branchId?: number | null;
+  role: string;
+  isOwner?: boolean | null;
+}) {
+  if (user.branchId == null) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يوجد فرع مسند للمستخدم" });
+  }
+  return {
+    userId: Number(user.id),
+    branchId: Number(user.branchId),
+    role: user.role,
+    isOwner: user.isOwner ?? false,
+  };
+}
+
+async function notifyCostWaveApprovers(input: {
+  waveId: number;
+  branchId: number;
+  excludeUserIds: number[];
+  body: string;
+}): Promise<void> {
+  const db = getDb();
+  if (!db) return;
+  const candidates = await db
+    .select({ id: users.id, role: users.role, permissionsOverride: users.permissionsOverride })
+    .from(users)
+    .where(
+      and(
+        eq(users.isActive, true),
+        or(eq(users.role, "admin"), and(eq(users.role, "manager"), eq(users.branchId, input.branchId))),
+      ),
+    );
+  const excluded = new Set(input.excludeUserIds);
+  await Promise.all(
+    candidates
+      .filter(
+        (user) =>
+          !excluded.has(Number(user.id)) &&
+          resolvePermissions(
+            user.role as RoleKey,
+            (user.permissionsOverride ?? null) as Record<string, AccessLevel> | null,
+          ).inventory === "FULL",
+      )
+      .map((user) =>
+        createAppNotification({
+          userId: Number(user.id),
+          kind: "APPROVAL_REQUIRED",
+          title: "موجة تكلفة بانتظار الاعتماد",
+          body: input.body,
+          route: `/inventory?tab=cost-waves&wave=${input.waveId}`,
+          eventKey: `cost-wave:${input.waveId}:approval:${user.id}`,
+          entityType: "costUpdateWave",
+          entityId: input.waveId,
+          requiresAction: true,
+        }).catch(() => undefined),
+      ),
+  );
+}
+
+async function notifyCostWaveCreator(
+  waveId: number,
+  title: string,
+  body: string,
+  eventSuffix: string,
+): Promise<void> {
+  const db = getDb();
+  if (!db) return;
+  const wave = (
+    await db
+      .select({ createdBy: costUpdateWaves.createdBy })
+      .from(costUpdateWaves)
+      .where(eq(costUpdateWaves.id, waveId))
+      .limit(1)
+  )[0];
+  if (!wave) return;
+  await createAppNotification({
+    userId: Number(wave.createdBy),
+    kind: "APPROVAL_REQUIRED",
+    title,
+    body,
+    route: `/inventory?tab=cost-waves&wave=${waveId}`,
+    eventKey: `cost-wave:${waveId}:${eventSuffix}`,
+    entityType: "costUpdateWave",
+    entityId: waveId,
+    push: false,
+  }).catch(() => undefined);
+}
 
 /**
  * سجلّ سندات التحويل ببحثٍ برقم السند + مدى تاريخ — امتدادٌ محليّ لـ`listStockTransfers`
@@ -665,6 +776,92 @@ export const inventoryRouter = router({
         role: ctx.user.role,
       })
     ),
+
+  /* ── موجات التكلفة: مستند جماعي + اعتمادان مستقلان + تطبيق ذري ─────────────── */
+  previewCostWave: inventoryManagerProcedure
+    .input(costWavePreviewSchema)
+    .mutation(({ input, ctx }) => previewCostWave(input, costWaveActor(ctx.user))),
+
+  submitCostWave: inventoryManagerProcedure
+    .input(
+      costWavePreviewSchema.extend({
+        name: z.string().trim().min(3).max(255),
+        description: z.string().trim().max(2000).nullable().optional(),
+        reason: z.string().trim().min(10).max(500),
+        previewFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const actor = costWaveActor(ctx.user);
+      const result = await submitCostWave(input, actor);
+      await notifyCostWaveApprovers({
+        waveId: result.waveId,
+        branchId: actor.branchId,
+        excludeUserIds: [actor.userId],
+        body: `${input.name} · ${input.purpose === "IMPAIRMENT" ? "هبوط قيمة" : "تصحيح تكلفة"}`,
+      });
+      return result;
+    }),
+
+  costWaves: inventoryManagerProcedure
+    .input(
+      z
+        .object({
+          view: z.enum(["AWAITING_MINE", "MY_REQUESTS", "HISTORY"]).optional(),
+          status: z.enum(["PENDING_APPROVAL", "APPLIED", "REJECTED", "CONFLICTED"]).optional(),
+          limit: z.number().int().min(1).max(200).optional(),
+        })
+        .optional(),
+    )
+    .query(({ input, ctx }) => listCostWaves(input ?? {}, costWaveActor(ctx.user))),
+
+  costWave: inventoryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(({ input, ctx }) => getCostWave(input.id, costWaveActor(ctx.user))),
+
+  approveCostWave: inventoryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = costWaveActor(ctx.user);
+      const result = await approveCostWave(input.id, actor);
+      if (result.status === "PENDING_APPROVAL") {
+        const detail = await getCostWave(input.id, actor);
+        await notifyCostWaveApprovers({
+          waveId: input.id,
+          branchId: detail.wave.branchId,
+          excludeUserIds: [Number(detail.wave.createdBy), actor.userId],
+          body: `${detail.wave.name} · اكتمل الاعتماد الأول ويلزم اعتماد ثانٍ مستقل`,
+        });
+      } else if (result.status === "APPLIED") {
+        await notifyCostWaveCreator(
+          input.id,
+          "تم تطبيق موجة التكلفة",
+          `الموجة #${input.id} طُبّقت بعد اعتمادين مستقلين`,
+          "applied",
+        );
+      } else {
+        await notifyCostWaveCreator(
+          input.id,
+          "تعارضت موجة التكلفة",
+          `الموجة #${input.id} لم تُطبّق لأن التكلفة أو الكمية تغيّرت`,
+          "conflicted",
+        );
+      }
+      return result;
+    }),
+
+  rejectCostWave: inventoryManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), reason: z.string().trim().min(10).max(500) }))
+    .mutation(async ({ input, ctx }) => {
+      const result = await rejectCostWave(input.id, input.reason, costWaveActor(ctx.user));
+      await notifyCostWaveCreator(
+        input.id,
+        "رُفضت موجة التكلفة",
+        `الموجة #${input.id} · ${input.reason}`,
+        "rejected",
+      );
+      return result;
+    }),
 
   pendingAdjustments: inventoryReadProcedure
     .input(z.object({ status: z.enum(["PENDING_APPROVAL", "APPROVED", "REJECTED"]).optional() }).optional())

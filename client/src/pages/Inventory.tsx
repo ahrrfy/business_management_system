@@ -32,7 +32,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
+import { CheckCircle2, ExternalLink, Layers3, Scale, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 
@@ -403,11 +403,20 @@ export default function Inventory() {
         title="المخزون"
         description="الأرصدة الحالية لكل منتج مع تسوية يدوية (جرد/تلف/تصحيح) تُسجَّل كحركة تدقيق، وسجلّ آخر الحركات."
         actions={
-          lowCount > 0 ? (
-            <span className="badge-stock-low rounded-full px-3 py-1 text-xs">
-              {fmtInt(lowCount)} منتج تحت الحد الأدنى
-            </span>
-          ) : undefined
+          <div className="flex flex-wrap items-center gap-2">
+            {lowCount > 0 && (
+              <span className="badge-stock-low rounded-full px-3 py-1 text-xs">
+                {fmtInt(lowCount)} منتج تحت الحد الأدنى
+              </span>
+            )}
+            {canInlineAdjust && (
+              <Button asChild size="sm" variant="outline">
+                <Link href="/inventory?tab=cost-waves">
+                  <Layers3 aria-hidden /> موجات التكلفة
+                </Link>
+              </Button>
+            )}
+          </div>
         }
       />
 

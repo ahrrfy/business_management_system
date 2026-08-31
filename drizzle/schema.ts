@@ -1546,6 +1546,166 @@ export const costRevaluationRequests = mysqlTable(
 export type CostRevaluationRequest =
   typeof costRevaluationRequests.$inferSelect;
 
+/* ============================ موجات تغيير تكلفة المخزون ============================
+ *
+ * مستندٌ جماعيّ مستقلّ عن موجات سعر البيع. لا يغيّر شيئاً عند الإنشاء: يجمّد تكلفة كل
+ * متغيّر وكمياته حسب الفروع وأثره الدفتري، ثم يحتاج اعتمادين من مستخدمين مختلفين عن المنشئ.
+ * الاعتماد الثاني يعيد فحص اللقطة ويطبّق الموجة كاملةً داخل معاملة واحدة؛ أي انحراف يجعلها
+ * CONFLICTED بلا تطبيق جزئي. سجل الأحداث يحمل لقطةً موقّعة بالبصمة في كل مرحلة.
+ */
+export const costUpdateWaves = mysqlTable(
+  "costUpdateWaves",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    purpose: mysqlEnum("costWavePurpose", ["CORRECTION", "IMPAIRMENT"]).notNull(),
+    ruleType: mysqlEnum("costWaveRuleType", [
+      "SET_COST",
+      "INCREASE_PERCENT",
+      "DECREASE_PERCENT",
+    ]).notNull(),
+    changeValue: decimal("changeValue", { precision: 15, scale: 4 }).notNull(),
+    /** نطاق الطلب كاملاً؛ لا يعاد استنتاجه من واجهة المستخدم بعد الإرسال. */
+    scopeJson: json("scopeJson").notNull(),
+    previewFingerprint: char("previewFingerprint", { length: 64 }).notNull(),
+    itemCount: int("itemCount").notNull(),
+    skippedCount: int("skippedCount").default(0).notNull(),
+    expectedQuantity: int("expectedQuantity").notNull(),
+    inventoryValueBefore: decimal("inventoryValueBefore", { precision: 20, scale: 2 }).notNull(),
+    inventoryValueAfter: decimal("inventoryValueAfter", { precision: 20, scale: 2 }).notNull(),
+    expectedValueDelta: decimal("expectedValueDelta", { precision: 20, scale: 2 }).notNull(),
+    requiredApprovals: tinyint("requiredApprovals").default(2).notNull(),
+    approvalCount: tinyint("approvalCount").default(0).notNull(),
+    status: mysqlEnum("costWaveStatus", [
+      "PENDING_APPROVAL",
+      "APPLIED",
+      "REJECTED",
+      "CONFLICTED",
+    ])
+      .default("PENDING_APPROVAL")
+      .notNull(),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    appliedBy: int("appliedBy").references(() => users.id),
+    appliedAt: timestamp("appliedAt"),
+    rejectedBy: int("rejectedBy").references(() => users.id),
+    rejectedAt: timestamp("rejectedAt"),
+    rejectionReason: varchar("rejectionReason", { length: 500 }),
+    conflictReason: varchar("conflictReason", { length: 1000 }),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    statusCreatedIdx: index("idx_costwave_status_created").on(table.status, table.createdAt),
+    creatorIdx: index("idx_costwave_creator").on(table.createdBy, table.createdAt),
+    branchIdx: index("idx_costwave_branch").on(table.branchId, table.createdAt),
+    approvalsCheck: check(
+      "chk_costwave_approvals",
+      sql`${table.requiredApprovals} = 2 AND ${table.approvalCount} BETWEEN 0 AND 2`,
+    ),
+    countsCheck: check(
+      "chk_costwave_counts",
+      sql`${table.itemCount} > 0 AND ${table.skippedCount} >= 0 AND ${table.expectedQuantity} >= 0`,
+    ),
+  }),
+);
+
+export const costUpdateWaveItems = mysqlTable(
+  "costUpdateWaveItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    waveId: bigint("waveId", { mode: "number" })
+      .notNull()
+      .references(() => costUpdateWaves.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" })
+      .notNull()
+      .references(() => productVariants.id),
+    productNameSnapshot: varchar("productNameSnapshot", { length: 255 }).notNull(),
+    variantLabelSnapshot: varchar("variantLabelSnapshot", { length: 255 }),
+    skuSnapshot: varchar("skuSnapshot", { length: 100 }),
+    categoryNameSnapshot: varchar("categoryNameSnapshot", { length: 255 }),
+    oldCost: decimal("oldCost", { precision: 15, scale: 2 }).notNull(),
+    newCost: decimal("newCost", { precision: 15, scale: 2 }).notNull(),
+    expectedQuantity: int("expectedQuantity").notNull(),
+    branchQuantities: json("branchQuantities").notNull(),
+    inventoryValueBefore: decimal("inventoryValueBefore", { precision: 20, scale: 2 }).notNull(),
+    inventoryValueAfter: decimal("inventoryValueAfter", { precision: 20, scale: 2 }).notNull(),
+    expectedValueDelta: decimal("expectedValueDelta", { precision: 20, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    waveVariantUq: unique("uq_costwave_item_variant").on(table.waveId, table.variantId),
+    variantIdx: index("idx_costwave_item_variant").on(table.variantId),
+    valueCheck: check(
+      "chk_costwave_item_values",
+      sql`${table.oldCost} >= 0 AND ${table.newCost} >= 0 AND ${table.expectedQuantity} >= 0`,
+    ),
+  }),
+);
+
+export const costUpdateWaveApprovals = mysqlTable(
+  "costUpdateWaveApprovals",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    waveId: bigint("waveId", { mode: "number" })
+      .notNull()
+      .references(() => costUpdateWaves.id, { onDelete: "cascade" }),
+    approverId: int("approverId")
+      .notNull()
+      .references(() => users.id),
+    decision: mysqlEnum("costWaveDecision", ["APPROVED", "REJECTED"]).notNull(),
+    reason: varchar("reason", { length: 500 }),
+    snapshotFingerprint: char("snapshotFingerprint", { length: 64 }).notNull(),
+    decidedAt: timestamp("decidedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    waveApproverUq: unique("uq_costwave_approval_actor").on(table.waveId, table.approverId),
+    approverIdx: index("idx_costwave_approver").on(table.approverId, table.decidedAt),
+  }),
+);
+
+export const costUpdateWaveEvents = mysqlTable(
+  "costUpdateWaveEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    waveId: bigint("waveId", { mode: "number" })
+      .notNull()
+      .references(() => costUpdateWaves.id, { onDelete: "cascade" }),
+    stage: mysqlEnum("costWaveEventStage", [
+      "SUBMITTED",
+      "APPROVAL_1",
+      "APPROVAL_2",
+      "APPLIED",
+      "REJECTED",
+      "CONFLICTED",
+    ]).notNull(),
+    actorUserId: int("actorUserId")
+      .notNull()
+      .references(() => users.id),
+    snapshotFingerprint: char("snapshotFingerprint", { length: 64 }).notNull(),
+    snapshotJson: json("snapshotJson").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    waveStageIdx: index("idx_costwave_event_wave_stage").on(
+      table.waveId,
+      table.stage,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type CostUpdateWave = typeof costUpdateWaves.$inferSelect;
+export type CostUpdateWaveItem = typeof costUpdateWaveItems.$inferSelect;
+export type CostUpdateWaveApproval = typeof costUpdateWaveApprovals.$inferSelect;
+export type CostUpdateWaveEvent = typeof costUpdateWaveEvents.$inferSelect;
+
 /* ============================ تحويلات المخزون بخطوتين (بالطريق ← استلام) ============================ */
 
 /**

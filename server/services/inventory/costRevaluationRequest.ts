@@ -28,11 +28,8 @@
  * لذلك لا يطلبها مديرُ فرعٍ إلّا إن كان الرصيد محصوراً في فرعه (`assertBranchAuthority`).
  */
 import { TRPCError } from "@trpc/server";
-import Decimal from "decimal.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import {
-  auditLogs,
-  branchStock,
   branches,
   costRevaluationRequests,
   productVariants,
@@ -41,21 +38,24 @@ import {
 } from "../../../drizzle/schema";
 import { canCrossBranches } from "../../lib/branchAuthority";
 import { extractInsertId } from "../../lib/insertId";
-import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { isBundleVariant, isServiceVariant } from "../inventoryService";
-import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
+import {
+  assertCostRevaluationBranchAuthority,
+  loadBranchQuantitySnapshot,
+  lockAndCheckCostRevaluationSnapshot,
+  parseBranchQuantitySnapshot,
+  postLockedCostRevaluation,
+  totalBranchQuantity,
+  type BranchQuantitySnapshot,
+  type CostRevaluationPurpose,
+} from "./costRevaluationPosting";
 
-export type CostRevaluationPurpose = "CORRECTION" | "IMPAIRMENT";
+export type { BranchQuantitySnapshot, CostRevaluationPurpose } from "./costRevaluationPosting";
 
 /** أقلّ طول سببٍ مقبول — نفس عتبة حارس السبب في `catalogRouter.assertCostChangeReasonOrThrow`. */
 const MIN_REASON_LENGTH = 10;
-
-export interface BranchQuantitySnapshot {
-  branchId: number;
-  quantity: number;
-}
 
 export interface RequestCostRevaluationInput {
   variantId: number;
@@ -80,66 +80,6 @@ export interface ApproveCostRevaluationResult {
   /** عدد قيود ADJUST المُرحَّلة — واحدٌ لكل فرعٍ له رصيد (صفرٌ إن لا رصيد لأحد). */
   postedEntries: number;
   totalValueDelta: string;
-}
-
-/**
- * لقطة الكمية المملوكة لكل فرع. تُقرأ مقفولةً عند الاعتماد كي لا تتحرّك بين حساب القيمة
- * وترحيل القيد. تُستثنى الأصفار: لا قيمة لها في القيد ولا في المقارنة.
- */
-async function loadBranchQuantities(
-  tx: Parameters<typeof postEntry>[0],
-  variantId: number,
-  lock: boolean,
-): Promise<BranchQuantitySnapshot[]> {
-  const base = tx
-    .select({ branchId: branchStock.branchId, quantity: branchStock.quantity })
-    .from(branchStock)
-    .where(eq(branchStock.variantId, variantId));
-  const rows = lock ? await base.for("update") : await base;
-  return rows
-    .map((r) => ({ branchId: Number(r.branchId), quantity: Number(r.quantity ?? 0) }))
-    .filter((r) => r.quantity !== 0)
-    .sort((a, b) => a.branchId - b.branchId);
-}
-
-function totalOf(rows: BranchQuantitySnapshot[]): number {
-  return rows.reduce((sum, r) => sum + r.quantity, 0);
-}
-
-function sameSnapshot(a: BranchQuantitySnapshot[], b: BranchQuantitySnapshot[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((row, i) => row.branchId === b[i].branchId && row.quantity === b[i].quantity);
-}
-
-function parseSnapshot(raw: unknown): BranchQuantitySnapshot[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map((r) => ({
-      branchId: Number((r as BranchQuantitySnapshot)?.branchId),
-      quantity: Number((r as BranchQuantitySnapshot)?.quantity),
-    }))
-    .filter((r) => Number.isFinite(r.branchId) && Number.isFinite(r.quantity))
-    .sort((a, b) => a.branchId - b.branchId);
-}
-
-/**
- * التكلفة عامّةٌ لكل الفروع ⇒ إعادة تقييمها تمسّ أصل كل فرعٍ له رصيد. مديرُ الفرع (لا يعبُر
- * الفروع بقرار المالك) لا يطلبها ولا يعتمدها إلّا إن كان الرصيد كلُّه في فرعه — وإلّا لكتب
- * على ميزانية فرعٍ آخر من حيث لا يراه أحد.
- */
-function assertBranchAuthority(
-  rows: BranchQuantitySnapshot[],
-  actor: Actor & { isOwner?: boolean | null },
-  verb: string,
-): void {
-  if (canCrossBranches(actor)) return;
-  const foreign = rows.filter((r) => Number(r.branchId) !== Number(actor.branchId));
-  if (foreign.length > 0) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: `التكلفة عامّة لكل الفروع، ولهذا الصنف رصيدٌ في فرعٍ آخر — لا يمكن ${verb} إعادة تقييمه إلّا من الإدارة.`,
-    });
-  }
 }
 
 /**
@@ -189,6 +129,7 @@ export async function requestCostRevaluation(
         .from(productVariants)
         .innerJoin(products, eq(products.id, productVariants.productId))
         .where(eq(productVariants.id, input.variantId))
+        .for("update")
         .limit(1)
     )[0];
     if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
@@ -226,10 +167,10 @@ export async function requestCostRevaluation(
       });
     }
 
-    const rows = await loadBranchQuantities(tx, input.variantId, false);
-    assertBranchAuthority(rows, actor, "طلب");
+    const rows = await loadBranchQuantitySnapshot(tx, input.variantId, false);
+    assertCostRevaluationBranchAuthority(rows, actor, "طلب");
 
-    const quantity = totalOf(rows);
+    const quantity = totalBranchQuantity(rows);
     const valueDelta = round2(newCost.minus(oldCost).times(quantity));
 
     // طلبٌ معلَّقٌ واحدٌ لكل متغيّر: طلبان معلَّقان يحسبان أثرهما من نفس التكلفة القديمة، فاعتمادُ
@@ -315,111 +256,29 @@ export async function approveCostRevaluation(
     assertApprover(r.createdBy != null ? Number(r.createdBy) : null, actor, "اعتماد");
 
     const variantId = Number(r.variantId);
-    const variant = (
-      await tx
-        .select({
-          costPrice: productVariants.costPrice,
-          isConsignment: products.isConsignment,
-        })
-        .from(productVariants)
-        .innerJoin(products, eq(products.id, productVariants.productId))
-        .where(eq(productVariants.id, variantId))
-        .for("update")
-        .limit(1)
-    )[0];
-    if (!variant) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
-    if (variant.isConsignment) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "صار الصنف بضاعة أمانة بعد الطلب — ارفض الطلب بدل اعتماده",
-      });
-    }
-    const liveRows = await loadBranchQuantities(tx, variantId, true);
-    assertBranchAuthority(liveRows, actor, "اعتماد");
-
-    // انحراف التكلفة: قيمة القيد تُحسب من الفرق، فلو تحرّكت التكلفة منذ الطلب (استلامٌ غيّر WAVG
-    // مثلاً) لرحّلنا فرقاً محسوباً على أساسٍ زال — والنتيجة تكلفةٌ نهائية صحيحة بقيدٍ خاطئ.
-    const liveCost = round2(money(variant.costPrice ?? "0"));
-    const snapCost = round2(money(r.oldCost));
-    if (!liveCost.equals(snapCost)) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: `تغيّرت تكلفة الصنف منذ الطلب (كانت ${snapCost.toFixed(2)}، الآن ${liveCost.toFixed(2)}) — أعد الطلب على الأساس الجديد`,
-      });
-    }
-    // انحراف الكمّية: نفس السبب — الأثر = Δالتكلفة × الكمية.
-    const snapRows = parseSnapshot(r.branchQuantities);
-    if (!sameSnapshot(snapRows, liveRows)) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: `تغيّرت كميّات الصنف منذ الطلب (كانت ${totalOf(snapRows)}، الآن ${totalOf(liveRows)}) — أعد الطلب بالأرصدة الحالية`,
-      });
-    }
-
-    const newCost = round2(money(r.newCost));
-    const perUnitDelta = round2(newCost.minus(liveCost));
-
-    await tx
-      .update(productVariants)
-      .set({ costPrice: toDbMoney(newCost) })
-      .where(eq(productVariants.id, variantId));
-
-    // أثرٌ مُدقَّقٌ مُهيكَل على حقلٍ ماليٍّ حسّاس — داخل المعاملة فيرتدّ التعديل إن فشل السجلّ.
-    await tx.insert(auditLogs).values({
-      userId: actor.userId,
-      branchId: actor.branchId ?? null,
-      action: "product.costRevaluation",
-      entityType: "productVariant",
-      entityId: String(variantId),
-      oldValue: { costPrice: liveCost.toFixed(2) },
-      newValue: {
-        costPrice: newCost.toFixed(2),
-        purpose: r.purpose,
-        reason: r.reason,
-        requestId: id,
-        requestedBy: r.createdBy != null ? Number(r.createdBy) : null,
-      },
+    const checked = await lockAndCheckCostRevaluationSnapshot(tx, {
+      variantId,
+      expectedOldCost: money(r.oldCost).toFixed(2),
+      expectedBranchQuantities: parseBranchQuantitySnapshot(r.branchQuantities),
+      actor,
+      authorityVerb: "اعتماد",
     });
-
-    // قيدٌ لكل فرعٍ له رصيد: أصل المخزون يُقرأ لكل فرعٍ على حدة، فقيدٌ واحدٌ بالمجموع كان يُحمّل
-    // فرعَ المُعتمِد أثرَ فروعٍ أخرى. صفر رصيدٍ ⇒ صفر قيد (تصحيح تكلفةٍ لصنفٍ نفد لا يمسّ أصلاً).
-    let postedEntries = 0;
-    let totalDelta = new Decimal(0);
-    for (const row of liveRows) {
-      const delta = round2(perUnitDelta.times(row.quantity));
-      if (delta.isZero()) continue;
-      const gain = delta.isPositive();
-      const abs = delta.abs();
-      const postingSourceComponents = gain
-        ? { roleDebits: { INVENTORY: abs }, roleCredits: { OTHER_REVENUE: abs } }
-        : { roleDebits: { LOSSES: abs }, roleCredits: { INVENTORY: abs } };
-      await postEntry(tx, {
-        entryType: "ADJUST",
-        branchId: row.branchId,
-        // مرآة تسوية المخزون: cost سالبٌ للربح (تكلفةٌ تنخفض) وprofit موقَّعٌ بالاتجاه، وamount صفر (بلا نقد).
-        cost: delta.neg(),
-        profit: delta,
-        amount: money(0),
-        dedupeKey: `COST_REVAL:${id}:${row.branchId}`,
-        notes: `إعادة تقييم تكلفة (طلب #${id}، ${r.purpose === "IMPAIRMENT" ? "هبوط قيمة" : "تصحيح تكلفة"}) — ${r.reason}`,
-        postingIntent: gain
-          ? createPostingIntent(
-            "ADJUST_INVENTORY_GAIN",
-            "ADJUST",
-            [debitLine("INVENTORY", abs), creditLine("OTHER_REVENUE", abs)],
-            { roleDebits: { INVENTORY: abs }, roleCredits: { OTHER_REVENUE: abs } },
-          )
-          : createPostingIntent(
-            "ADJUST_INVENTORY_LOSS",
-            "ADJUST",
-            [debitLine("LOSSES", abs), creditLine("INVENTORY", abs)],
-            { roleDebits: { LOSSES: abs }, roleCredits: { INVENTORY: abs } },
-          ),
-        postingSourceComponents,
+    if (!checked.ok) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `${checked.message.replace("منذ إنشاء المستند", "منذ الطلب")} — أعد الطلب على الأساس الجديد`,
       });
-      postedEntries += 1;
-      totalDelta = totalDelta.plus(delta);
     }
+
+    const posted = await postLockedCostRevaluation(tx, checked.target, {
+      newCost: money(r.newCost).toFixed(2),
+      purpose: r.purpose as CostRevaluationPurpose,
+      reason: r.reason,
+      actor,
+      requestedBy: r.createdBy != null ? Number(r.createdBy) : null,
+      sourceType: "REQUEST",
+      sourceId: id,
+    });
 
     await tx
       .update(costRevaluationRequests)
@@ -429,10 +288,10 @@ export async function approveCostRevaluation(
     return {
       requestId: id,
       variantId,
-      oldCost: liveCost.toFixed(2),
-      newCost: newCost.toFixed(2),
-      postedEntries,
-      totalValueDelta: round2(totalDelta).toFixed(2),
+      oldCost: checked.target.oldCost.toFixed(2),
+      newCost: money(r.newCost).toFixed(2),
+      postedEntries: posted.postedEntries,
+      totalValueDelta: posted.totalValueDelta,
     };
   });
 }
@@ -582,7 +441,7 @@ export async function getCostRevaluationPreview(
         .limit(1)
     )[0];
     if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
-    const allRows = await loadBranchQuantities(tx, variantId, false);
+    const allRows = await loadBranchQuantitySnapshot(tx, variantId, false);
     const rows = canCrossBranches(actor)
       ? allRows
       : allRows.filter((r) => Number(r.branchId) === Number(actor.branchId));
@@ -598,7 +457,7 @@ export async function getCostRevaluationPreview(
       costPrice: money(v.costPrice ?? 0).toFixed(2),
       isConsignment: !!v.isConsignment,
       branches: rows.map((r) => ({ branchId: r.branchId, branchName: nameOf.get(r.branchId) ?? null, quantity: r.quantity })),
-      totalQuantity: totalOf(rows),
+      totalQuantity: totalBranchQuantity(rows),
     };
   });
 }

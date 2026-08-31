@@ -98,6 +98,8 @@ export default defineConfig({
       "client/src/lib/statutoryAccountingExport.test.ts",
       "client/src/lib/statutoryAccountingImport.test.ts",
       "shared/priceWaveRule.test.ts",
+      "shared/costWave.test.ts",
+      "client/src/pages/__tests__/CostWaves.test.tsx",
       "shared/deliveryAging.test.ts",
       "shared/consignmentView.test.ts",
       "shared/shortfallReason.test.ts",
