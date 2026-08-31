@@ -44,57 +44,64 @@ function isManager(actor: ProductStudioActor): boolean {
   return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
 }
 
+/*
+ * ⚠️ فخّ Drizzle حاسمٌ في كل ما تحت (بلاغ المالك «الكشف لا يُظهر البدائل الناقصة»، ٣١/٨):
+ * كتابةُ `${products.id}` مباشرةً داخل قالب `sql\`\`` لِـsubquery مُترابط تُترجَم إلى `` `id` ``
+ * **بلا تأهيلٍ بالجدول**، فيربطه MySQL بالجدول الداخليّ (`productImages`/`productVariants`) الذي
+ * له عمودُ `id` نفسه ⇒ `where productImages.productId = productImages.id` = صفرٌ صامت (لا استثناء).
+ * أثبتَه `.toSQL()`: بلا scope ⇒ `= \`id\``، ومعه ⇒ `= \`products\`.\`id\``. لذا **كلّ** subquery
+ * مُترابط هنا يُبنى عبر `scope` مستقلّ ثمّ يُسنَد بـ`${scope}` — الطريقة الوحيدة المُثبَتة للتأهيل.
+ * راجع ذاكرة [[drizzle-correlated-subquery-column-qualification]].
+ */
+
+/** عدد الصور المعتمَدة للمنتج (كل المستويات). */
+function approvedImageCountSql() {
+  const scope = sql`from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED'`;
+  return sql<number>`(select count(*) ${scope})`;
+}
+/** عدد الصور المعتمَدة على **مستوى الأمّ** (variantId IS NULL) — الصورة المشتركة للبدائل. */
+function parentLevelImageCountSql() {
+  const scope = sql`from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.variantId} is null and ${productImages.reviewStatus} = 'APPROVED'`;
+  return sql<number>`(select count(*) ${scope})`;
+}
+/** عدد متغيّرات المنتج النشطة (بدائل + تنويعات). */
+function activeVariantCountSql() {
+  const scope = sql`from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1`;
+  return sql<number>`(select count(*) ${scope})`;
+}
+/** EXISTS مُترابط: هل لهذا المتغيّر صورةٌ معتمَدةٌ **خاصّةٌ به** (variantId=المتغيّر)؟ */
+function ownVariantImageExistsScope() {
+  return sql`select 1 from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.variantId} = ${productVariants.id} and ${productImages.reviewStatus} = 'APPROVED'`;
+}
+/** عدد المتغيّرات النشطة التي **تنقصها** صورتُها الخاصّة (تعتمد على صورة الأمّ أو بلا صورة). */
+function variantsMissingOwnImageCountSql() {
+  const scope = sql`from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1 and not exists (${ownVariantImageExistsScope()})`;
+  return sql<number>`(select count(distinct ${productVariants.id}) ${scope})`;
+}
+/** عدد المتغيّرات النشطة التي **لها** صورتُها الخاصّة. */
+function variantsWithOwnImageCountSql() {
+  const scope = sql`from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1 and exists (${ownVariantImageExistsScope()})`;
+  return sql<number>`(select count(distinct ${productVariants.id}) ${scope})`;
+}
+
 /**
  * تعبيرُ SQL يحسب حالةَ صحّة الصور لكل منتج داخل الاستعلام مباشرةً. يُغني عن جولةٍ في
- * Node لتصنيف الصفوف. ترتيبُ CASE مهمّ: الأكثرُ خطورةً أوّلاً.
+ * Node لتصنيف الصفوف. ترتيبُ CASE مهمّ: الأكثرُ خطورةً أوّلاً. كلّ عدّادٍ مُترابطٍ مبنيٌّ
+ * بنمط `scope` (انظر التحذير أعلاه) وإلّا عاد صفراً صامتاً فصنّف كلَّ منتجٍ NO_IMAGES.
  */
 function healthCaseSql() {
+  const approved = approvedImageCountSql();
+  const activeVariants = activeVariantCountSql();
+  const variantsMissing = variantsMissingOwnImageCountSql();
+  const parentImages = parentLevelImageCountSql();
   return sql<ImageHealthState>`(
     case
-      when (
-        (select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') = 0
-      ) then (
+      when (${approved}) = 0 then (
         case when ${products.isBundle} = 1 then 'BUNDLE_NO_IMAGE' else 'NO_IMAGES' end
       )
-      when (
-        (select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') = 1
-      ) then 'SINGLE_IMAGE'
-      when (
-        (select count(*) from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1) > 0
-        and (
-          select count(distinct ${productVariants.id})
-          from ${productVariants}
-          where ${productVariants.productId} = ${products.id}
-            and ${productVariants.isActive} = 1
-            and not exists (
-              select 1 from ${productImages}
-              where ${productImages.productId} = ${products.id}
-                and ${productImages.variantId} = ${productVariants.id}
-                and ${productImages.reviewStatus} = 'APPROVED'
-            )
-        ) > 0
-        and (
-          select count(*) from ${productImages}
-          where ${productImages.productId} = ${products.id}
-            and ${productImages.variantId} is null
-            and ${productImages.reviewStatus} = 'APPROVED'
-        ) > 0
-      ) then 'PARENT_ONLY_HAS_VARIANTS'
-      when (
-        (select count(*) from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1) > 0
-        and (
-          select count(distinct ${productVariants.id})
-          from ${productVariants}
-          where ${productVariants.productId} = ${products.id}
-            and ${productVariants.isActive} = 1
-            and not exists (
-              select 1 from ${productImages}
-              where ${productImages.productId} = ${products.id}
-                and ${productImages.variantId} = ${productVariants.id}
-                and ${productImages.reviewStatus} = 'APPROVED'
-            )
-        ) > 0
-      ) then 'VARIANTS_INCOMPLETE'
+      when (${approved}) = 1 then 'SINGLE_IMAGE'
+      when (${activeVariants}) > 0 and (${variantsMissing}) > 0 and (${parentImages}) > 0 then 'PARENT_ONLY_HAS_VARIANTS'
+      when (${activeVariants}) > 0 and (${variantsMissing}) > 0 then 'VARIANTS_INCOMPLETE'
       else 'HEALTHY'
     end
   )`;
@@ -107,15 +114,22 @@ function healthCaseSql() {
 export async function getImageHealthCounts(actor: ProductStudioActor) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const db = requireDb();
-  const health = healthCaseSql();
-  const rows = await db
-    .select({
-      health,
-      n: sql<number>`count(*)`,
-    })
+  // نحسب الحالةَ لكلّ منتجٍ في subquery داخليّ ثمّ نجمّع بالـalias في الخارج. **لا نجمّع مباشرةً
+  // على `healthCaseSql()`**: بعد تأهيل الـsubqueries المُترابطة (الفخّ أعلاه) صارت تشير إلى
+  // `products.id`، وMySQL يرفض `GROUP BY` تعبيرٍ فيه subquery مُترابط بـONLY_FULL_GROUP_BY
+  // (`ER_WRONG_FIELD_WITH_GROUP`). التغليفُ يجعل الـGROUP BY على عمودٍ مسمّى بسيط.
+  const inner = db
+    .select({ health: healthCaseSql().as("health") })
     .from(products)
     .where(and(eq(products.isActive, true), eq(products.isService, false)))
-    .groupBy(health);
+    .as("h");
+  const rows = await db
+    .select({
+      health: inner.health,
+      n: sql<number>`count(*)`,
+    })
+    .from(inner)
+    .groupBy(inner.health);
   const counts: Record<ImageHealthState, number> = {
     NO_IMAGES: 0,
     BUNDLE_NO_IMAGE: 0,
@@ -200,20 +214,11 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
   // على `inner.variantCount` كان يُدخل الـsubquery الصلبيّ الخام (يشير إلى `products.id`
   // خارج نطاقه) في ORDER BY الخارجيّ ⇒ Unknown column على الإنتاج (بلاغ ٢٩/٨).
   // الحسابُ هنا في السطر يضمن أن يظهر كعمودٍ مسمّى في alias `d`، فالمرجع من الخارج آمن.
-  const approvedImagesSql = sql<number>`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED')`;
-  const variantCountSql = sql<number>`(select count(*) from ${productVariants} where ${productVariants.productId} = ${products.id} and ${productVariants.isActive} = 1)`;
-  const variantsWithImagesSql = sql<number>`(
-    select count(distinct ${productVariants.id})
-    from ${productVariants}
-    where ${productVariants.productId} = ${products.id}
-      and ${productVariants.isActive} = 1
-      and exists (
-        select 1 from ${productImages}
-        where ${productImages.productId} = ${products.id}
-          and ${productImages.variantId} = ${productVariants.id}
-          and ${productImages.reviewStatus} = 'APPROVED'
-      )
-  )`;
+  // نفس عدّادات `healthCaseSql` المبنيّة بنمط `scope` (التأهيل إلزاميّ — انظر التحذير أعلاه)،
+  // تُعرَض هنا كأعمدةٍ للفرز والعرض. بلا `scope` كانت تعود صفراً صامتاً فيَظهر «٠ بدائل ناقصة».
+  const approvedImagesSql = approvedImageCountSql();
+  const variantCountSql = activeVariantCountSql();
+  const variantsWithImagesSql = variantsWithOwnImageCountSql();
   const inner = db
     .select({
       id: products.id,
@@ -283,22 +288,34 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
 export async function getTopGapCategories(actor: ProductStudioActor, limit = 10) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const db = requireDb();
-  const health = healthCaseSql();
-  const rows = await db
+  // نحسب حالةَ كلّ منتجٍ في subquery داخليّ ثمّ نجمّع بالفئة في الخارج — كي لا يقع أيُّ
+  // subquery مُترابط (المؤهَّل الآن) داخل GROUP BY أو الدوالّ التجميعيّة (نفس فخّ
+  // `getImageHealthCounts`: `ER_WRONG_FIELD_WITH_GROUP` تحت ONLY_FULL_GROUP_BY).
+  const inner = db
     .select({
       categoryId: products.categoryId,
       categoryName: categories.name,
-      total: sql<number>`count(*)`,
-      noImages: sql<number>`sum(case when (${health}) in ('NO_IMAGES','BUNDLE_NO_IMAGE') then 1 else 0 end)`,
-      singleImage: sql<number>`sum(case when (${health}) = 'SINGLE_IMAGE' then 1 else 0 end)`,
-      variantsIncomplete: sql<number>`sum(case when (${health}) in ('PARENT_ONLY_HAS_VARIANTS','VARIANTS_INCOMPLETE') then 1 else 0 end)`,
+      health: healthCaseSql().as("health"),
     })
     .from(products)
     .leftJoin(categories, eq(categories.id, products.categoryId))
     .where(and(eq(products.isActive, true), eq(products.isService, false)))
-    .groupBy(products.categoryId, categories.name)
-    .having(sql`sum(case when (${health}) in ('NO_IMAGES','BUNDLE_NO_IMAGE','SINGLE_IMAGE','PARENT_ONLY_HAS_VARIANTS','VARIANTS_INCOMPLETE') then 1 else 0 end) > 0`)
-    .orderBy(desc(sql`sum(case when (${health}) in ('NO_IMAGES','BUNDLE_NO_IMAGE') then 1 else 0 end)`))
+    .as("h");
+  const gapTotalSql = sql<number>`sum(case when ${inner.health} in ('NO_IMAGES','BUNDLE_NO_IMAGE','SINGLE_IMAGE','PARENT_ONLY_HAS_VARIANTS','VARIANTS_INCOMPLETE') then 1 else 0 end)`;
+  const noImagesSql = sql<number>`sum(case when ${inner.health} in ('NO_IMAGES','BUNDLE_NO_IMAGE') then 1 else 0 end)`;
+  const rows = await db
+    .select({
+      categoryId: inner.categoryId,
+      categoryName: inner.categoryName,
+      total: sql<number>`count(*)`,
+      noImages: noImagesSql,
+      singleImage: sql<number>`sum(case when ${inner.health} = 'SINGLE_IMAGE' then 1 else 0 end)`,
+      variantsIncomplete: sql<number>`sum(case when ${inner.health} in ('PARENT_ONLY_HAS_VARIANTS','VARIANTS_INCOMPLETE') then 1 else 0 end)`,
+    })
+    .from(inner)
+    .groupBy(inner.categoryId, inner.categoryName)
+    .having(sql`${gapTotalSql} > 0`)
+    .orderBy(desc(noImagesSql))
     .limit(Math.max(1, Math.min(limit, 50)));
   void isNull; // silence unused-import warning; kept for future filters
   return rows.map((r) => ({
