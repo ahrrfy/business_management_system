@@ -100,9 +100,54 @@ export default function EmployeeDetail() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Link href={`/hr/employees/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>
-            {isTerminated ? (
-              <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "info", title: "إعادة الموظف للعمل", description: `إعادة الموظف «${e.fullName}» إلى الخدمة الفعّالة؟`, confirmText: "إعادة للعمل" }))) return; setStatus.mutate({ id, status: "active" }); }} disabled={setStatus.isPending}>إعادة للعمل</Button>
+            {/*
+             * مبدّل الحالة **زوجٌ كامل** — لكل حالةٍ طريقُ رجوع. كان «إعادة للعمل» مشروطاً
+             * بـ`isTerminated` وحده، فالموظف الموضوع على «في إجازة» يعلق فيها بلا أيّ مخرجٍ
+             * في الويب: خيارُه الوحيد المعروض كان «إنهاء الخدمة». وتطبيق أندرويد يملك
+             * الزرَّين معاً (`HrAdminScreen.kt`) ⇒ يُوضَع بإجازةٍ من هناك ولا يُعاد من هنا.
+             *
+             * والعلوقُ ليس تجميلياً: `employmentStatus='active'` شرطٌ في منتقي التسجيل
+             * اليدوي للحضور (`attendanceService`) وفي تسجيل العهدة (`assets/lifecycle`)
+             * وفي قائمة المدراء المرشّحين (`employeeService`) ⇒ الموظف يختفي من هذه
+             * المسارات كلّها وهو على رأس عمله.
+             *
+             * ⛔ «إنهاء الخدمة» خارج هذا المبدّل عمداً — الراوتر يرفض `status:"terminated"`
+             * صراحةً ويحيل إلى مسار التسوية الرسميّ (فصلُ مهامٍ واعتمادٌ ثانٍ).
+             */}
+            {e.employmentStatus === "active" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={setStatus.isPending}
+                onClick={async () => {
+                  if (!(await confirm({
+                    variant: "warning",
+                    title: "وضع الموظف في إجازة",
+                    description: `سيُوسَم «${e.fullName}» «في إجازة»: يختفي من منتقي تسجيل الحضور اليدوي ومن قائمة المدراء المرشّحين، ويُمنع تسجيل عهدة جديدة عليه. أعِده من الزرّ نفسه متى رجع.`,
+                    confirmText: "وضع بإجازة",
+                  }))) return;
+                  setStatus.mutate({ id, status: "leave" });
+                }}
+              >وضع بإجازة</Button>
             ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={setStatus.isPending}
+                onClick={async () => {
+                  if (!(await confirm({
+                    variant: "info",
+                    title: "إعادة الموظف للعمل",
+                    description: isTerminated
+                      ? `إعادة «${e.fullName}» إلى الخدمة الفعّالة؟ يُرفَع حدُّ ربطه بجهاز الحضور فتعود بصماته تُسجَّل.`
+                      : `إنهاء إجازة «${e.fullName}» وإعادته إلى رأس العمل؟ يعود إلى منتقي الحضور اليدوي وقائمة المدراء المرشّحين، ويُسمح بتسجيل العهدة عليه.`,
+                    confirmText: "إعادة للعمل",
+                  }))) return;
+                  setStatus.mutate({ id, status: "active" });
+                }}
+              >إعادة للعمل</Button>
+            )}
+            {!isTerminated && (
               <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenTerminate(true)}>إنهاء الخدمة</Button>
             )}
           </div>

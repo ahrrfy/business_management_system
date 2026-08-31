@@ -106,6 +106,7 @@ export default defineConfig({
       "server/lib/__tests__/opaqueFailure.test.ts",
       "server/lib/__tests__/paymentModeCod.test.ts",
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",
+      "client/src/pages/__tests__/employmentStatusToggleContract.test.ts",
       "server/auth/password.test.ts",
       "server/lib/imageStore/__tests__/imageStore.test.ts",
       "server/lib/imageStore/__tests__/resilience.test.ts",
