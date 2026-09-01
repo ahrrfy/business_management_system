@@ -4,6 +4,8 @@ import { deriveWorkOrderFlowSteps } from "@shared/workOrderFlowSteps";
 import { PageHeader } from "@/components/PageHeader";
 import CancelWorkOrderDialog from "@/components/workorder/CancelWorkOrderDialog";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
+import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import DesignFileCard from "@/components/workorder/DesignFileCard";
 import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
@@ -33,7 +35,7 @@ import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDia
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
-import { canSeeCost, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { canSeeCost, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
@@ -119,12 +121,25 @@ export default function WorkOrderDetail() {
    * فالمصدرُ الواحد `mayRequestWorkOrderControl` يفرّق بينهما، والخادمُ يُنفّذ الفرق نفسه.
    */
   const canRequestCancel = mayRequestWorkOrderControl("CANCEL", role, permissions);
+  /**
+   * **إسنادُ المندوب يقرأ بوّابةَ التوصيل لا بوّابةَ أمر الشغل** (مراجعة Codex P2): الحوارُ
+   * يستعلم `delivery.listParties` (`store:READ`) وينفّذ `delivery.dispatch` (`store:FULL` +
+   * كاشير/مدير). ودورٌ مخصّصٌ بـ`workorders:FULL` و`store:NONE` كان يرى الزرَّ ثمّ يصطدم
+   * بـFORBIDDEN. مرآةُ `canDispatch` في `DeliveryHub` حرفياً.
+   */
+  const canDispatchDelivery = !!role && moduleAccessAllowed(role, permissions, "store", "FULL", ["cashier", "manager"]);
   const canRequestCommercialControl = mayRequestWorkOrderControl("COMMERCIAL_EDIT", role, permissions);
   const canEditWorkOrder = canDeliverWorkOrder;
   const canRequestDesignApproval = canExecuteWorkOrder;
+  /**
+   * ⚠️ **يُفعَّل لكلّ من يفتح الصفحة** (مراجعة Codex P2): البوّابةُ `workordersReadProcedure`،
+   * وتقييدُه بسلطة التنفيذ كان يُنتج تناقضاً على الشاشة نفسها — شريطُ المسار يقول «بانتظار
+   * اعتماد التصميم» وبطاقةُ الاعتماد تحته تقول «معتمد» (لأنّها تستعلم بنفسها)، وبطاقةُ الملفّ
+   * تقول «لم تُثبَّت نسخة». القارئُ يرى الحقيقة أو لا يرى شيئاً — لا ثلاثَ روايات.
+   */
   const designApproval = trpc.workOrderDesignApproval.getCurrent.useQuery(
     { workOrderId },
-    { enabled: Number.isFinite(workOrderId) && canRequestDesignApproval },
+    { enabled: Number.isFinite(workOrderId) },
   );
   const controlPreflight = trpc.workOrders.controlPreflight.useQuery(
     { workOrderId },
@@ -994,7 +1009,7 @@ export default function WorkOrderDetail() {
           الحوارُ هو `DispatchDialog` عينه (لا ازدواجَ منطق) ومسارُ الخادم `delivery.dispatch`
           نفسه ببوّابته نفسها. ورابطُ لوحة التوصيل يبقى لمن يريد الطابور كلَّه.
         */}
-        {canDeliverWorkOrder && data.status === "READY" && data.hasDelivery && !data.consignmentId && (
+        {canDispatchDelivery && data.status === "READY" && data.hasDelivery && !data.consignmentId && (
           <>
             <Button onClick={() => setDispatchOpen(true)} disabled={dispatchMut.isPending}>
               <Truck aria-hidden className="me-1 size-4" />
@@ -1109,17 +1124,50 @@ export default function WorkOrderDetail() {
         parties={dispatchParties.data ?? []}
         pending={dispatchMut.isPending}
         onClose={() => setDispatchOpen(false)}
-        onConfirm={({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
-          dispatchMut.mutate({
-            workOrderId,
-            partyId,
-            deliveryFee: fee,
-            recipientName: recipientName || undefined,
-            recipientPhone: recipientPhone || undefined,
-            deliveryAddress: data.deliveryAddress ?? undefined,
-            clientRequestId: dispatchRequestIdRef.current ?? (dispatchRequestIdRef.current = newClientRequestId()),
-            assignedUserId,
-          });
+        /**
+         * **الطردُ لا يخرج بلا أوراقه** (مراجعة Codex P2): `DeliveryHub` و`ReceptionOrderQueue`
+         * كلاهما يفتح نافذةَ الملصق **قبل** الطفرة (وإلّا حجبها مانعُ النوافذ لأنّها لم تعد
+         * ردّاً على نقرة) ثمّ يطبع ملصقَ الشحن وبوليصةَ التوصيل. مسارٌ ثالثٌ يُنشئ الإرسالية
+         * ولا يطبع يترك الموظّف بطردٍ مُسنَدٍ بلا مستند — فيبحث عن شاشةٍ أخرى ليطبع يدوياً،
+         * وهو نقيضُ تقليل النقرات. نفسُ الدالّتين المشتركتين، بلا ازدواج منطق.
+         */
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
+          const party = (dispatchParties.data ?? []).find((p) => Number(p.id) === partyId);
+          const labelWin = preopenShippingLabelWindow();
+          try {
+            const r = await dispatchMut.mutateAsync({
+              workOrderId,
+              partyId,
+              deliveryFee: fee,
+              recipientName: recipientName || undefined,
+              recipientPhone: recipientPhone || undefined,
+              deliveryAddress: data.deliveryAddress ?? undefined,
+              clientRequestId: dispatchRequestIdRef.current ?? (dispatchRequestIdRef.current = newClientRequestId()),
+              assignedUserId,
+            });
+            const printable = {
+              orderNumber: data.orderNumber,
+              title: data.title,
+              quantity: Number(data.quantity),
+              salePrice: data.salePrice,
+              deposit: data.deposit ?? null,
+              customerName: data.customerName ?? null,
+              customerPhone: data.customerPhone ?? null,
+              deliveryAddress: data.deliveryAddress ?? null,
+              deliveryCost: data.deliveryCost ?? null,
+              deliveryFeeCollection: (data as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
+            };
+            void printReadyOrderLabel(printable, {
+              partyName: party?.name ?? null,
+              trackingNumber: r.consignmentNumber,
+              cod: r.codAmount,
+              into: labelWin,
+            });
+            printDeliverySlip(printable, party, r);
+          } catch {
+            // فشلُ الإسناد يُبلَّغ من `onError`؛ هنا نغلق نافذةً فُتحت لمستندٍ لن يوجد.
+            labelWin?.close();
+          }
         }}
       />
 

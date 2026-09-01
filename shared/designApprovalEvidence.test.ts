@@ -12,6 +12,7 @@ import {
   DESIGN_APPROVAL_REFERENCE_MIN,
   defaultDesignApprovalEvidenceReference,
   designApprovalEvidenceLabel,
+  designApprovalEvidenceReference,
 } from "./designApprovalEvidence";
 
 describe("قاموس دليل اعتماد التصميم", () => {
@@ -60,6 +61,29 @@ describe("قاموس دليل اعتماد التصميم", () => {
     });
     expect(blank.endsWith("—")).toBe(false);
     expect(blank).not.toContain("——");
+  });
+
+  it("⭐ المرجعُ يتبع القرار — «رفض» لا يُوثَّق بعبارة «موافقة» (مراجعة Codex P1)", () => {
+    const ctx = { orderNumber: "WO-55", revision: 3, customerName: "سارة" };
+    const approved = designApprovalEvidenceReference("APPROVED", ctx);
+    const rejected = designApprovalEvidenceReference("REJECTED", ctx);
+
+    expect(approved).toContain("موافقة العميل");
+    expect(rejected).toContain("رفض العميل");
+    // ⛔ سجلٌّ حالتُه REJECTED ودليلُه يبدأ بـ«موافقة» يُوثّق قبولاً لم يقع.
+    expect(rejected.startsWith("موافقة")).toBe(false);
+    expect(rejected).not.toContain("موافقة العميل");
+
+    // كلاهما يحمل الأمرَ والنسخة والعميل ويتجاوز حدَّ الخادم.
+    for (const ref of [approved, rejected]) {
+      expect(ref).toContain("WO-55");
+      expect(ref).toContain("3");
+      expect(ref).toContain("سارة");
+      expect(ref.trim().length).toBeGreaterThanOrEqual(DESIGN_APPROVAL_REFERENCE_MIN);
+    }
+
+    // الغلافُ القديم يبقى مرادفاً لمسار الموافقة وحده.
+    expect(defaultDesignApprovalEvidenceReference(ctx)).toBe(approved);
   });
 
   it("كل سببٍ جاهزٍ يتجاوز حدَّ الخادم (٣ محارف) فلا يُقدَّم خيارٌ يُرفض", () => {

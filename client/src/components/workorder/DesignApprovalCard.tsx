@@ -34,8 +34,8 @@ import {
   DESIGN_APPROVAL_EVIDENCE_LABELS,
   DESIGN_APPROVAL_REASONS,
   DESIGN_REJECTION_REASONS,
-  defaultDesignApprovalEvidenceReference,
   designApprovalEvidenceLabel,
+  designApprovalEvidenceReference,
   type DesignApprovalEvidenceTypeKey,
 } from "@shared/designApprovalEvidence";
 import { Button } from "@/components/ui/button";
@@ -355,8 +355,9 @@ function DesignDecisionInline({
   const presets = decision === "APPROVED" ? DESIGN_APPROVAL_REASONS : DESIGN_REJECTION_REASONS;
   const [reason, setReason] = useState<string>(presets[0]);
   const [evidenceType, setEvidenceType] = useState<DesignApprovalEvidenceTypeKey>("OTHER");
+  // المرجعُ المُهيَّأ يتبع القرارَ نصّاً — «رفض» لا يُوثَّق بعبارة «موافقة» (مراجعة Codex P1).
   const [evidenceReference, setEvidenceReference] = useState(() =>
-    defaultDesignApprovalEvidenceReference({
+    designApprovalEvidenceReference(decision, {
       orderNumber,
       revision,
       stampedAt: new Date().toLocaleDateString("ar-IQ-u-nu-latn"),

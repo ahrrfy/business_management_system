@@ -47,6 +47,7 @@ import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifec
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
 import { setWorkOrderDesign } from "../services/workOrder/design";
+import { maySeeDrawerCash as sharedMaySeeDrawerCash } from "@shared/workOrderControlAuthority";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
@@ -438,16 +439,9 @@ function workOrdersFullAccess(user: { role: string; permissionsOverride?: unknow
  * بلا صندوق — يتلقّى أرصدةَ كلّ درجٍ مفتوحٍ بالفرع، وهو نقضٌ لعزل الأدراج المقرَّر في تدقيق ٢/٧.)
  */
 function maySeeDrawerCash(user: { role?: string | null; permissionsOverride?: unknown }): boolean {
-  // ⚠️ **لا تُمرّر قائمةَ أدوارٍ فارغة** (مراجعة Codex P2): `moduleAccessAllowed` عندئذٍ يتخطّى
-  // `hasModuleAccess` كلّياً ويسقط إلى الفحص الصريح وحده — فمديرٌ قالبُه `treasury: FULL` بلا
-  // تجاوزٍ يُحجَب رقمُه رغم امتلاكه الخزينة. `hasModuleAccess` يحترم القالبَ والتجاوزَ معاً.
-  if (String(user.role ?? "") === "admin") return true;
-  return hasModuleAccess(
-    String(user.role ?? ""),
-    (user.permissionsOverride ?? null) as PermissionMap | null,
-    "treasury",
-    "READ",
-  );
+  // المنطقُ نفسه انتقل إلى `@shared/workOrderControlAuthority` لأنّ `controlPreflight` صار
+  // يحتاجه أيضاً — نسختان لسياسة إفصاحٍ واحدة تنجرفان حتماً (§٥).
+  return sharedMaySeeDrawerCash(user.role ?? "", (user.permissionsOverride ?? null) as never);
 }
 
 export const workOrderRouter = router({

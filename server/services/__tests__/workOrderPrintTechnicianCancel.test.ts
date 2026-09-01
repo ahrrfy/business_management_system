@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
+import { extractInsertId } from "../../lib/insertId";
 import { createWorkOrder } from "../workOrder/create";
 import { openShift } from "../shiftService";
 import { cancelWorkOrder } from "../workOrder/cancel";
@@ -231,7 +232,37 @@ describe("تمهيدُ التحكّم كما يراه الفنّي", () => {
     const cashierView = await getWorkOrderControlPreflight(workOrderId, CASHIER);
 
     expect(techView.openReceptionShifts.map((shift) => shift.id)).toContain(shiftId);
-    expect(techView.openReceptionShifts).toEqual(cashierView.openReceptionShifts);
+    // نفسُ الأدراج للاثنين — الفارقُ في الإفصاح عن الرصيد وحده (`treasury:READ`).
+    expect(techView.openReceptionShifts.map((shift) => shift.id))
+      .toEqual(cashierView.openReceptionShifts.map((shift) => shift.id));
+  });
+
+  /**
+   * ⭐ **سطحٌ ماليٌّ بلا فعلٍ يبرّره** (مراجعة Codex P1): توسيعُ التمهيد إلى أدوار التنفيذ كان
+   * يُسلّم الفنّيَّ — بمجرّد فتح صفحة أمرٍ مُسلَّم — صافي المدفوع ومصادرَ الردّ وحالةَ تسوية
+   * الإرسالية وأرصدةَ الأدراج، وهو **لا يملك طلبَ العكس أصلاً**.
+   */
+  it("⭐ لا يُسلّم الفنّيَّ سطحَ عكس التسليم ولا أرصدةَ الأدراج", async () => {
+    const shiftId = await openReceptionShift();
+    await db().update(s.shifts).set({ expectedCash: "7500.00" }).where(eq(s.shifts.id, shiftId));
+    const workOrderId = await createOrder({ deposit: "2000.00" });
+    // أمرٌ مُسلَّمٌ بفاتورة — الحالة الوحيدة التي يُحسَب فيها `reverseDelivery`.
+    const invoiceId = extractInsertId(await db().insert(s.invoices).values({
+      invoiceNumber: "INV-TECH-1", branchId: 1, customerId: 1, status: "PENDING",
+      subtotal: "10000.00", total: "10000.00", paidAmount: "0.00", createdBy: CASHIER.userId,
+    } as never));
+    await db().update(s.workOrders)
+      .set({ status: "DELIVERED", invoiceId })
+      .where(eq(s.workOrders.id, workOrderId));
+
+    const techView = await getWorkOrderControlPreflight(workOrderId, TECH);
+    expect(techView.reverseDelivery).toBeNull();
+    for (const shift of techView.openReceptionShifts) expect(shift.expectedCash).toBeNull();
+
+    // والكاشير — صاحبُ طلب العكس — يراه كاملاً بأرصدته.
+    const cashierView = await getWorkOrderControlPreflight(workOrderId, CASHIER);
+    expect(cashierView.reverseDelivery).not.toBeNull();
+    expect(cashierView.openReceptionShifts.map((shift) => shift.expectedCash)).toEqual(["7500.00"]);
   });
 
   it("⭐ الفنّي يختار درج الردّ في طلبه فيصرف المديرُ منه عند الاعتماد", async () => {

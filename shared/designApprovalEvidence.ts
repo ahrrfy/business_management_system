@@ -65,19 +65,31 @@ export interface DesignApprovalEvidenceContext {
 }
 
 /**
- * مرجعُ الدليل الافتراضيّ للموافقة الحضورية/الهاتفية: يُملأ بنقرةٍ ويبقى **قابلاً للتحرير**.
- * يحمل ما يُعيد بناءَ الواقعة: أيُّ أمرٍ، أيُّ نسخة، أيُّ عميل، ومتى — بلا ملفٍّ مرفوع.
+ * مرجعُ الدليل الافتراضيّ: يُملأ بنقرةٍ ويبقى **قابلاً للتحرير**. يحمل ما يُعيد بناءَ الواقعة:
+ * أيُّ أمرٍ، أيُّ نسخة، أيُّ عميل، ومتى — بلا ملفٍّ مرفوع.
+ *
+ * ⛔ **النصُّ يتبع القرار** (مراجعة Codex P1): مرجعٌ مبدوءٌ بـ«موافقة العميل» على سجلٍّ حالتُه
+ * `REJECTED` يُوثّق قبولاً لم يقع — وهو أخطرُ من غياب الدليل، لأنّه يبدو إثباتاً. والحقلُ
+ * مُهيَّأٌ سلفاً فيُقبَل كما هو غالباً، فلا يُعوَّل على تصحيح المراجع له.
  */
-export function defaultDesignApprovalEvidenceReference(
+export function designApprovalEvidenceReference(
+  decision: "APPROVED" | "REJECTED",
   ctx: DesignApprovalEvidenceContext,
 ): string {
-  const parts = [
-    `موافقة العميل على نسخة التصميم ${ctx.revision}`,
-    `أمر ${ctx.orderNumber}`,
-  ];
+  const head = decision === "APPROVED"
+    ? `موافقة العميل على نسخة التصميم ${ctx.revision}`
+    : `رفض العميل نسخة التصميم ${ctx.revision}`;
+  const parts = [head, `أمر ${ctx.orderNumber}`];
   const customer = ctx.customerName?.trim();
   if (customer) parts.push(customer);
   const stamp = ctx.stampedAt?.trim();
   if (stamp) parts.push(stamp);
   return parts.join(" — ");
+}
+
+/** غلافُ توافقٍ لمسار الموافقة وحده. */
+export function defaultDesignApprovalEvidenceReference(
+  ctx: DesignApprovalEvidenceContext,
+): string {
+  return designApprovalEvidenceReference("APPROVED", ctx);
 }

@@ -14,7 +14,7 @@
  * وما عدا الإلغاء (تعديلٌ تجاريّ، تعديلُ خامة، عكسُ تسليم) يبقى على أهله — كاشير/مدير —
  * فتوسيعُ الإلغاء لا يُوسّع معه بابَ التسعير والفوترة والعكس.
  */
-import { moduleAccessAllowed, type PermissionMap } from "./permissions";
+import { hasModuleAccess, moduleAccessAllowed, type PermissionMap } from "./permissions";
 
 export const WORK_ORDER_CONTROL_TYPES = [
   "COMMERCIAL_EDIT",
@@ -79,6 +79,28 @@ export function workOrderControlDeniedMessage(requestType: WorkOrderControlTypeK
     default:
       return "تعديل بنود الأمر أو مواده محصور بكاشير أو مدير — الفنّي يطلب الإلغاء فقط";
   }
+}
+
+/**
+ * **الإفصاح عن أرصدة الأدراج** — `treasury:READ` لا سلطةُ أمر الشغل.
+ *
+ * الأدراجُ تُعرَض لكلّ من يملك الفعل (وإلّا انسدّ بابُ اختيار الدرج)، لكنّ **الرقم** يبقى
+ * على مالك الخزينة. مَن حُجب عنه يكفيه علَمُ `sufficient` (`shared/refundPreflight.ts`).
+ *
+ * ⚠️ **لا تُمرّر قائمةَ أدوارٍ لـ`moduleAccessAllowed` هنا**: تخطّي `hasModuleAccess` يحجب
+ * رقمَ مديرٍ قالبُه `treasury: FULL` بلا تجاوز (مراجعة Codex P2 على #928).
+ */
+export function maySeeDrawerCash(
+  role: string | null | undefined,
+  override: Override,
+): boolean {
+  if (String(role ?? "") === "admin") return true;
+  return hasModuleAccess(
+    String(role ?? ""),
+    (override ?? null) as PermissionMap | null,
+    "treasury",
+    "READ",
+  );
 }
 
 /**

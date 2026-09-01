@@ -15,6 +15,8 @@ import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { idempotencyHash } from "../idempotency";
 import {
+  hasWorkOrderCommercialAuthority,
+  maySeeDrawerCash,
   mayRequestWorkOrderControl,
   workOrderControlDeniedMessage,
   type WorkOrderControlTypeKey,
@@ -519,9 +521,31 @@ export async function getWorkOrderControlPreflight(
     }).from(shifts)
       .innerJoin(users, eq(users.id, shifts.userId))
       .where(and(eq(shifts.branchId, Number(wo.branchId)), eq(shifts.status, "OPEN"), eq(shifts.shiftType, "RECEPTION")));
-    const reverseDelivery = wo.status === "DELIVERED" && wo.invoiceId != null
+    /**
+     * ⛔ **`reverseDelivery` لمن يملك طلبَ العكس وحده** (مراجعة Codex P1).
+     *
+     * لمّا وُسِّعت هذه النقطة إلى `workordersExecProcedure` (ليطلب فنّي المطبعة الإلغاء) صار
+     * مجرّدُ فتح صفحة أمرٍ **مُسلَّم** يُسلّمه هذا الكائنَ المتشعّب: صافي المدفوع، ومصادرُ الردّ
+     * على مستوى الإيصال بطرقها، وحالةُ تسوية الإرسالية، وأرصدةُ أدراج الاستقبال — وهو **لا
+     * يملك طلبَ العكس أصلاً** (`mayRequestWorkOrderControl` يرفضه). سطحٌ ماليٌّ كامل بلا فعلٍ
+     * يبرّره. والحسبةُ نفسها تُوفَّر: لا استعلامَ لمن لا يستفيد.
+     */
+    const mayReverse = hasWorkOrderCommercialAuthority(
+      actor.role ?? "",
+      (actor.permissionsOverride ?? null) as never,
+    );
+    const reverseDelivery = mayReverse && wo.status === "DELIVERED" && wo.invoiceId != null
       ? await getWorkOrderReverseDeliveryPreflightInTx(tx, workOrderId, actor)
       : null;
+    /**
+     * وأرصدةُ الأدراج تتبع سياسةَ الإفصاح الواحدة (`treasury:READ`) كما في `refundPreflight` —
+     * القائمةُ تُعرَض ليُختار الدرج، والرقمُ لا. (عملياً هذا العمود `NULL` لكلّ وردية مفتوحة
+     * لأنّه يُكتب عند الإغلاق، لكنّ السياسة لا تُبنى على مصادفةٍ في البيانات.)
+     */
+    const exposeDrawerCash = maySeeDrawerCash(
+      actor.role ?? "",
+      (actor.permissionsOverride ?? null) as never,
+    );
     return {
       workOrderId,
       branchId: Number(wo.branchId),
@@ -557,7 +581,9 @@ export async function getWorkOrderControlPreflight(
         id: Number(shift.id),
         userId: Number(shift.userId),
         userName: shift.userName,
-        expectedCash: shift.expectedCash == null ? null : round2(money(shift.expectedCash)).toFixed(2),
+        expectedCash: !exposeDrawerCash || shift.expectedCash == null
+          ? null
+          : round2(money(shift.expectedCash)).toFixed(2),
       })),
     };
   }, { gate: "NONE" });
