@@ -569,6 +569,14 @@ const PROCEDURES = {
     roles: ["manager"],
     branch: "required",
   },
+  // الإلغاءُ المباشر لأمر الشغل + تمهيدُ استرداده (١/٩/٢٦): مدير أو فنّي مطبعة — بلا الكاشير.
+  workordersDirectCancelProcedure: {
+    authority: "module-gate",
+    module: "workorders",
+    level: "FULL",
+    roles: ["manager", "print_operator"],
+    branch: "required",
+  },
   treasuryManagerProcedure: {
     authority: "module-gate",
     module: "treasury",

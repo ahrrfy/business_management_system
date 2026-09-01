@@ -16,6 +16,13 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import { idempotencyHash } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
+import {
+  hasWorkOrderCommercialAuthority,
+  maySeeDrawerCash,
+  mayRequestWorkOrderControl,
+  workOrderControlDeniedMessage,
+  type WorkOrderControlTypeKey,
+} from "@shared/workOrderControlAuthority";
 import type { RefundRail } from "@shared/refundRail";
 import { type Actor, requireDb, withTx } from "../tx";
 import { recordWorkOrderEvent } from "../workOrderEvents";
@@ -85,6 +92,25 @@ function normalizedReason(reason: string, label = "الطلب"): string {
   return normalized;
 }
 
+/** فاعلُ التحكّم — يحمل قالبَ دوره وتجاوزَه معاً كي تُقرأ سلطتُه من القاموس المشترك. */
+export type WorkOrderControlActor = Actor & {
+  role?: string;
+  permissionsOverride?: unknown;
+};
+
+/**
+ * بوّابةُ نوع الطلب (١/٩/٢٦): الإلغاءُ وحده مفتوحٌ لفنّي المطبعة، وما سواه على كاشير/مدير.
+ * تُفرَض هنا لا في الراوتر وحده — الخدمةُ قد تُستدعى من قناةٍ أخرى (أوفلاين/أندرويد).
+ */
+function assertControlRequestAuthority(
+  requestType: WorkOrderControlTypeKey,
+  actor: WorkOrderControlActor,
+): void {
+  if (!mayRequestWorkOrderControl(requestType, actor.role ?? "", (actor.permissionsOverride ?? null) as never)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: workOrderControlDeniedMessage(requestType) });
+  }
+}
+
 function assertManager(actor: Actor): void {
   if (actor.role !== "manager" && actor.role !== "admin") {
     throw new TRPCError({ code: "FORBIDDEN", message: "مراجعة طلبات التحكم محصورة بمدير أو أدمن" });
@@ -123,8 +149,9 @@ async function loadExistingByKey(tx: Tx, requestKey: string) {
 
 export async function requestWorkOrderControl(
   input: RequestWorkOrderControlInput,
-  actor: Actor & { role?: string },
+  actor: WorkOrderControlActor,
 ) {
+  assertControlRequestAuthority(input.requestType, actor);
   const requestKey = input.requestKey.trim();
   if (!requestKey || requestKey.length > 120) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح طلب التحكم مطلوب وبحد أقصى 120 محرفاً" });
@@ -476,8 +503,7 @@ export async function rejectWorkOrderControlRequest(
 
 export async function getWorkOrderControlPreflight(
   workOrderId: number,
-  actor: Actor & { role?: string },
-  opts: { exposeCash: boolean } = { exposeCash: true },
+  actor: WorkOrderControlActor,
 ) {
   return withTx(async (tx) => {
     const wo = (
@@ -515,10 +541,34 @@ export async function getWorkOrderControlPreflight(
       .innerJoin(users, eq(users.id, shifts.userId))
       .where(and(eq(shifts.branchId, Number(wo.branchId)), eq(shifts.status, "OPEN"), eq(shifts.shiftType, "RECEPTION")));
     /**
+     * ⛔ **`reverseDelivery` لمن يملك طلبَ العكس وحده** (مراجعة Codex P1 على #929).
+     *
+     * لمّا وُسِّعت هذه النقطة إلى `workordersExecProcedure` (ليطلب فنّي المطبعة الإلغاء) صار
+     * مجرّدُ فتح صفحة أمرٍ **مُسلَّم** يُسلّمه هذا الكائنَ المتشعّب: صافي المدفوع، ومصادرُ الردّ
+     * على مستوى الإيصال بطرقها، وحالةُ تسوية الإرسالية، وأرصدةُ أدراج الاستقبال — وهو **لا
+     * يملك طلبَ العكس أصلاً** (`mayRequestWorkOrderControl` يرفضه). سطحٌ ماليٌّ كامل بلا فعلٍ
+     * يبرّره. والحسبةُ نفسها تُوفَّر: لا استعلامَ لمن لا يستفيد.
+     */
+    const mayReverse = hasWorkOrderCommercialAuthority(
+      actor.role ?? "",
+      (actor.permissionsOverride ?? null) as never,
+    );
+    const reverseDelivery = mayReverse && wo.status === "DELIVERED" && wo.invoiceId != null
+      ? await getWorkOrderReverseDeliveryPreflightInTx(tx, workOrderId, actor)
+      : null;
+    /**
+     * أرصدةُ الأدراج تتبع سياسةَ الإفصاح الواحدة (`treasury:READ`) كما في `refundPreflight`:
+     * القائمةُ تُعرَض ليُختار الدرج، والرقمُ الحسّاس يُحجَب عمّن لا يملكها (يكفيه علَمُ `sufficient`).
+     */
+    const exposeDrawerCash = maySeeDrawerCash(
+      actor.role ?? "",
+      (actor.permissionsOverride ?? null) as never,
+    );
+    /**
      * ⚠️ **النقدُ المتاح يُحسَب حيّاً لا من عمود `shifts.expectedCash`** (بلاغ المالك بالصورة ١/٩،
-     * ومراجعة Codex): ذلك العمودُ لقطةٌ تُكتب **عند إغلاق الوردية** فيكون `NULL` لكلّ وردية مفتوحة،
-     * فتعرض الشاشةُ «0 د.ع» على درجٍ يحمل ٥٦٬٠٠٠. `computeDrawerCashBalance` يقيسه بنفس صيغة
-     * `assertCashOutAvailable` — فما تعرضه الشاشة هو ما يقبله الحارسُ عند التنفيذ.
+     * ومراجعة Codex على #930): ذلك العمودُ لقطةٌ تُكتب **عند إغلاق الوردية** فيكون `NULL` لكلّ
+     * وردية مفتوحة، فتعرض الشاشةُ «0 د.ع» على درجٍ يحمل ٥٦٬٠٠٠. `computeDrawerCashBalance` يقيسه
+     * بنفس صيغة `assertCashOutAvailable` — فما تعرضه الشاشة هو ما يقبله الحارسُ عند التنفيذ.
      */
     const expectedCashRefundAmt = round2(cashRefund.plus(appliedCashRefund).plus(feeHeld));
     const openReceptionShifts = await Promise.all(
@@ -528,18 +578,12 @@ export async function getWorkOrderControlPreflight(
           id: Number(shift.id),
           userId: Number(shift.userId),
           userName: shift.userName,
-          // ⚠️ الرقمُ الحسّاس يُحجَب عمّن لا يملك `treasury:READ` (مراجعة Codex P2 على #930):
-          // هذا الإجراءُ يمرّ بـ`workordersCashierProcedure`، فدورٌ بلا خزينةٍ كان يرى الرصيدَ
-          // الحيَّ لكلّ درجٍ مفتوح. المحجوبُ عنه يكفيه علَمُ `sufficient` للقرار.
-          expectedCash: opts.exposeCash ? toDbMoney(available) : null,
+          expectedCash: exposeDrawerCash ? toDbMoney(available) : null,
           sufficient: available.gte(expectedCashRefundAmt),
         };
       }),
     );
     const treasuryAvailable = round2(await computeTreasuryCashBalance(tx, Number(wo.branchId)));
-    const reverseDelivery = wo.status === "DELIVERED" && wo.invoiceId != null
-      ? await getWorkOrderReverseDeliveryPreflightInTx(tx, workOrderId, actor)
-      : null;
     return {
       workOrderId,
       branchId: Number(wo.branchId),
@@ -553,6 +597,18 @@ export async function getWorkOrderControlPreflight(
       // البطاقةُ ممنوعةٌ حين يوجد جزءٌ نقديٌّ لا يقبلها (حصصٌ مطبَّقة أو أمانةُ أجرة تُردّان
       // نقداً حتماً) — فاختيارُها يُنشئ طلبَ تحكّمٍ يستحيل اعتمادُه (مراجعة Codex P2 على #930).
       cardRefundAllowed: !(appliedCashRefund.gt(0) || feeHeld.gt(0)),
+      /**
+       * **هل في الإلغاء مالٌ فعلاً؟** (قرار المالك ١/٩/٢٦) — هذا وحده ما يستدعي مديراً حين
+       * يطلب فنّي المطبعة الإلغاء. متعمَّدٌ **ألّا** يكون مرادفاً لـ`controlRequired.cancel`:
+       * تلك تشترط زيادةً خلوَّ الأمر من أسطر خامةٍ ولو لم تُستهلَك بعد، وهو تشدّدٌ بلا أثرٍ
+       * في `RECEIVED` (الإلغاء لا يمسّ المخزون إلّا من `IN_PROGRESS`/`READY`). فصلُهما يُبقي
+       * بوّابةَ المدير كما هي حرفياً بينما يصير شرطُ الفنّي هو شرطَ المالك نصّاً.
+       */
+      cancelMoneyAtStake:
+        money(wo.deposit ?? "0").gt(0) ||
+        appliedDeposits.length > 0 ||
+        cashRefund.gt(0) ||
+        feeHeld.gt(0),
       controlRequired: {
         commercial:
           wo.status !== "RECEIVED" ||
@@ -564,7 +620,7 @@ export async function getWorkOrderControlPreflight(
       reverseDelivery,
       openReceptionShifts,
       // نقدُ الخزينة الإدارية — محجوبُ الرقم عمّن لا يملك treasury:READ، مع علَمِ كفايةٍ باقٍ.
-      treasuryCash: opts.exposeCash ? toDbMoney(treasuryAvailable) : null,
+      treasuryCash: exposeDrawerCash ? toDbMoney(treasuryAvailable) : null,
       treasurySufficient: treasuryAvailable.gte(expectedCashRefundAmt),
     };
   }, { gate: "NONE" });

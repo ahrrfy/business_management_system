@@ -20,6 +20,11 @@ import type { TrpcContext } from "../../context";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { refundRailIsImmediate, refundRailNeedsReference, refundRailReceiptShape, type RefundRail } from "@shared/refundRail";
 import { recordWorkOrderEvent } from "../workOrderEvents";
+import {
+  hasWorkOrderDirectCancelAuthority,
+  hasWorkOrderManagerAuthority,
+  mayCancelWorkOrderWithoutApproval,
+} from "@shared/workOrderControlAuthority";
 import type { ApprovedWorkOrderControl } from "./update";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import { computeWorkOrderInvoiceNetPaidInTx } from "./reverseDelivery";
@@ -98,7 +103,7 @@ export interface CancelWorkOrderOptions {
 export async function cancelWorkOrderInTx(
   tx: Tx,
   workOrderId: number,
-  actor: Actor & { role?: string },
+  actor: Actor & { role?: string; permissionsOverride?: unknown },
   opts: CancelWorkOrderOptions = {},
   control: ApprovedWorkOrderControl = {},
 ) {
@@ -183,15 +188,55 @@ export async function cancelWorkOrderInTx(
       .where(eq(workOrderMaterials.workOrderId, workOrderId));
     const heldFeeBeforeCancel = await workOrderFeeHeldNet(tx, workOrderId);
     const appliedDepositsBeforeCancel = await appliedCollectionsForWorkOrder(tx, workOrderId);
+    /**
+     * **بوّابةُ المدير القائمة — لم تُمَسّ حرفاً.** بقيت هي هي بكلّ حدودها المتشدّدة، لأنّ
+     * تخفيفَها كان سيوسّع سلطةً قائمةً بلا طلب.
+     */
     const riskyCancellation = wo.status !== "RECEIVED"
       || money(wo.deposit ?? "0").gt(0)
       || appliedDepositsBeforeCancel.length > 0
       || existingMaterials.length > 0
       || heldFeeBeforeCancel.gt(0);
-    if (riskyCancellation && control.approvedControlRequestId == null) {
+    /**
+     * **شرطُ الإلغاء المباشر لغير المدير** (فنّي المطبعة/الكاشير — قرار المالك ١/٩/٢٦):
+     * أمرٌ لم يبدأ تنفيذُه ولا مالَ فيه. أسطرُ الخامة **المخطَّطة** لا تدخل الحساب: الإلغاء
+     * من `RECEIVED` لا يُنتج أيَّ حركة مخزون أصلاً (الاستهلاك يقع في `startWorkOrder`)،
+     * ولو حُوسِبت لأُلغِيت الصلاحيةُ عملياً — فأغلبُ أوامر الطباعة يحمل أسطرَها منذ الإنشاء.
+     *
+     * ⚠️ الحارسُ هنا في **الخدمة** لا في الراوتر وحده: البوّابةُ التي تُقرأ من قناةٍ واحدة
+     * تُعمي القنواتِ الأخرى (أوفلاين/أندرويد/استيراد) — §٢ قاعدة الطبقات.
+     */
+    const moneyAtStake = money(wo.deposit ?? "0").gt(0)
+      || appliedDepositsBeforeCancel.length > 0
+      || heldFeeBeforeCancel.gt(0);
+    const directCancelAllowed = mayCancelWorkOrderWithoutApproval({
+      role: actor.role ?? "",
+      override: (actor.permissionsOverride ?? null) as never,
+      status: wo.status,
+      moneyAtStake,
+      managerControlRequired: riskyCancellation,
+    });
+    if (!directCancelAllowed && control.approvedControlRequestId == null) {
+      // **٤٠٣ لِمَن ليس له القرار، و٤١٢ لِمَن له القرار وحالةُ الأمر تمنعه** — رمزان مختلفان
+      // لسببَين مختلفَين. الكاشير يقع في الأوّل (مسارُه الطلب) ولو كان الأمرُ خالياً من المال.
+      if (!hasWorkOrderDirectCancelAuthority(actor.role ?? "", (actor.permissionsOverride ?? null) as never)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "الإلغاء المباشر لدورك غير متاح — أرسل طلب إلغاء ليعتمده مدير",
+        });
+      }
+      const isManager = hasWorkOrderManagerAuthority(
+        actor.role ?? "",
+        (actor.permissionsOverride ?? null) as never,
+      );
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "إلغاء أمرٍ له عربون أو مواد أو أجرة أو بدأ إنتاجه يتطلب طلباً واعتماد مديرٍ آخر",
+        // رسالةٌ تقول **لِمَ** مُنع وما البديل — لا «غير مسموح» عمياء توقف الموظّف بلا مخرج.
+        message: isManager
+          ? "إلغاء أمرٍ له عربون أو مواد أو أجرة أو بدأ إنتاجه يتطلب طلباً واعتماد مديرٍ آخر"
+          : moneyAtStake
+            ? "في الطلب عربون أو مبلغ مقبوض — أرسل طلب إلغاء ليعتمده المدير ويردّ المبلغ من درجه"
+            : "بدأ تنفيذ الطلب — أرسل طلب إلغاء ليقرّر المدير مصير الخامة المستهلَكة",
       });
     }
     if (wo.status === "IN_PROGRESS" || wo.status === "READY") {
@@ -692,7 +737,7 @@ export async function cancelWorkOrderInTx(
 
 export async function cancelWorkOrder(
   workOrderId: number,
-  actor: Actor & { role?: string },
+  actor: Actor & { role?: string; permissionsOverride?: unknown },
   opts: CancelWorkOrderOptions = {},
 ) {
   return withTx((tx) => cancelWorkOrderInTx(tx, workOrderId, actor, opts));

@@ -1,6 +1,11 @@
 import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
+import { WorkOrderFlowStepper } from "@/components/workorder/WorkOrderFlowStepper";
+import { deriveWorkOrderFlowSteps } from "@shared/workOrderFlowSteps";
 import { PageHeader } from "@/components/PageHeader";
 import CancelWorkOrderDialog from "@/components/workorder/CancelWorkOrderDialog";
+import { DispatchDialog } from "@/components/delivery/DispatchDialog";
+import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import DesignFileCard from "@/components/workorder/DesignFileCard";
 import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
@@ -37,7 +42,13 @@ import { Link, useParams, useSearch } from "wouter";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";
-import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
+import { cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
+import {
+  hasWorkOrderCommercialAuthority,
+  hasWorkOrderExecAuthority,
+  mayCancelWorkOrderWithoutApproval,
+  mayRequestWorkOrderControl,
+} from "@shared/workOrderControlAuthority";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
 
@@ -99,22 +110,40 @@ export default function WorkOrderDetail() {
   // materialsCost/laborCost/unitCost بالفعل (null) لغير المخوَّلين، والواجهة تُخفي الصفوف/الأعمدة
   // كاملةً بدل عرضها فارغة («—») بلا داعٍ.
   const showCost = me.data ? canSeeCost(me.data.role) : true;
-  const canCancel = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
   const role = me.data?.role as RoleKey | undefined;
   const permissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   // مرايا بوابات الخادم نفسها: التنفيذ = كاشير/مدير/فني، والمال/التعديل = كاشير/مدير.
-  const canExecuteWorkOrder = !!role && moduleAccessAllowed(role, permissions, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
-  const canDeliverWorkOrder = !!role && moduleAccessAllowed(role, permissions, "workorders", "FULL", ["cashier", "manager"]);
-  const canRequestControl = canDeliverWorkOrder;
+  const canExecuteWorkOrder = hasWorkOrderExecAuthority(role, permissions);
+  const canDeliverWorkOrder = hasWorkOrderCommercialAuthority(role, permissions);
+  /**
+   * **طلبُ الإلغاء صار من حقّ فنّي المطبعة** (قرار المالك ١/٩/٢٦): هو أوّلُ من يتحدّث مع
+   * العميل وإليه يتّصل ليُلغي. أمّا التعديلُ التجاريّ وعكسُ التسليم فيبقيان على كاشير/مدير —
+   * فالمصدرُ الواحد `mayRequestWorkOrderControl` يفرّق بينهما، والخادمُ يُنفّذ الفرق نفسه.
+   */
+  const canRequestCancel = mayRequestWorkOrderControl("CANCEL", role, permissions);
+  /**
+   * **إسنادُ المندوب يقرأ بوّابةَ التوصيل لا بوّابةَ أمر الشغل** (مراجعة Codex P2): الحوارُ
+   * يستعلم `delivery.listParties` (`store:READ`) وينفّذ `delivery.dispatch` (`store:FULL` +
+   * كاشير/مدير). ودورٌ مخصّصٌ بـ`workorders:FULL` و`store:NONE` كان يرى الزرَّ ثمّ يصطدم
+   * بـFORBIDDEN. مرآةُ `canDispatch` في `DeliveryHub` حرفياً.
+   */
+  const canDispatchDelivery = !!role && moduleAccessAllowed(role, permissions, "store", "FULL", ["cashier", "manager"]);
+  const canRequestCommercialControl = mayRequestWorkOrderControl("COMMERCIAL_EDIT", role, permissions);
   const canEditWorkOrder = canDeliverWorkOrder;
   const canRequestDesignApproval = canExecuteWorkOrder;
+  /**
+   * ⚠️ **يُفعَّل لكلّ من يفتح الصفحة** (مراجعة Codex P2): البوّابةُ `workordersReadProcedure`،
+   * وتقييدُه بسلطة التنفيذ كان يُنتج تناقضاً على الشاشة نفسها — شريطُ المسار يقول «بانتظار
+   * اعتماد التصميم» وبطاقةُ الاعتماد تحته تقول «معتمد» (لأنّها تستعلم بنفسها)، وبطاقةُ الملفّ
+   * تقول «لم تُثبَّت نسخة». القارئُ يرى الحقيقة أو لا يرى شيئاً — لا ثلاثَ روايات.
+   */
   const designApproval = trpc.workOrderDesignApproval.getCurrent.useQuery(
     { workOrderId },
-    { enabled: Number.isFinite(workOrderId) && canRequestDesignApproval },
+    { enabled: Number.isFinite(workOrderId) },
   );
   const controlPreflight = trpc.workOrders.controlPreflight.useQuery(
     { workOrderId },
-    { enabled: Number.isFinite(workOrderId) && canRequestControl },
+    { enabled: Number.isFinite(workOrderId) && canRequestCancel },
   );
 
   const [error, setError] = useState("");
@@ -244,13 +273,39 @@ export default function WorkOrderDetail() {
     },
   });
   const [cancelOpen, setCancelOpen] = useState(false);
+  /**
+   * **إسنادُ المندوب من شاشة الأمر** — الاستعلام يُفعَّل عند فتح الحوار فقط: قائمةُ الجهات
+   * ليست من شأن كلّ زائرٍ لصفحة أمرٍ ليس فيها توصيل.
+   */
+  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const dispatchRequestIdRef = useRef<string | null>(null);
+  const dispatchParties = trpc.delivery.listParties.useQuery(
+    { activeOnly: true },
+    { enabled: dispatchOpen },
+  );
+  const dispatchMut = trpc.delivery.dispatch.useMutation({
+    onSuccess: async (r) => {
+      setDispatchOpen(false);
+      dispatchRequestIdRef.current = null;
+      setError("");
+      setDone(`أُسنِد الطلب للمندوب — إرسالية ${r.consignmentNumber} (تحصيل ${fmtAr(r.codAmount)} د.ع)`);
+      await Promise.all([
+        utils.workOrders.get.invalidate({ workOrderId }),
+        utils.workOrders.list.invalidate(),
+      ]);
+    },
+    onError: (e) => {
+      // مفتاحُ الطلب يُستهلَك مع الحمولة الناجحة وحدها؛ الفشلُ يُبقيه ليكون التكرارُ آمناً.
+      setError(e.message);
+    },
+  });
   const cancelDeepLinkOpenedRef = useRef(false);
   useEffect(() => {
-    if (cancelDeepLinkOpenedRef.current || !wo.data || !canRequestControl) return;
+    if (cancelDeepLinkOpenedRef.current || !wo.data || !canRequestCancel) return;
     if (new URLSearchParams(qs || "").get("cancel") !== "1") return;
     cancelDeepLinkOpenedRef.current = true;
     setCancelOpen(true);
-  }, [canRequestControl, qs, wo.data]);
+  }, [canRequestCancel, qs, wo.data]);
   // Slice C (٢٩/٨/٢٦) — الإسناد المتأخّر: زرّ «تغيير طريقة التسليم» يظهر قبل التسليم/الإرسال ⇒
   // موظّف الاستقبال يقلب استلاماً⇄توصيلاً من هذه الشاشة نفسها بلا العودة للطابور (بلاغ المالك:
   // «الإسناد يحتوي على مشكلة، يسند الطلب منذ البداية ولا نعلم هل الشركة أم المندوب»). المكوّن
@@ -353,7 +408,27 @@ export default function WorkOrderDetail() {
   }
   if (!wo.data) return <ErrorState message="لم يُرجع الخادم بيانات طلب الخدمة." onRetry={() => void wo.refetch()} />;
   const data = wo.data;
-  const cancellationRequiresApproval = !canCancel || controlPreflight.data?.controlRequired.cancel === true;
+  /**
+   * **الحدُّ الفاصل صار المالَ لا الدور** (قرار المالك ١/٩/٢٦): يُشتقّ من تمهيد الخادم نفسه
+   * (`controlPreflight`) عبر القاموس المشترك، فما تراه الشاشةُ هو ما سينفّذه `cancelWorkOrderInTx`
+   * حرفياً. الدورُ وحده كان يكذب في الاتجاهين: يَعِد المديرَ بإلغاءٍ مباشر لأمرٍ فيه عربون،
+   * ويحجب عن الفنّي إلغاءً لا أثرَ له إطلاقاً.
+   */
+  const cancelDirectAllowed =
+    controlPreflight.data != null &&
+    mayCancelWorkOrderWithoutApproval({
+      role,
+      override: permissions,
+      status: controlPreflight.data.status,
+      moneyAtStake: controlPreflight.data.cancelMoneyAtStake,
+      managerControlRequired: controlPreflight.data.controlRequired.cancel,
+    });
+  const cancellationRequiresApproval = !cancelDirectAllowed;
+  /**
+   * مسارُ الاعتماد يُركّب تمهيدَه من `controlPreflight` (المتاح لفاعل الطلب)؛ والمسارُ المباشر
+   * يترك الحوارَ يسأل `workOrders.refundPreflight` — وهي البوّابةُ التي تتبع فعلَ الإلغاء
+   * نفسه، فتصل الفنّيَّ والكاشيرَ كما تصل المدير، بأرقامٍ حيّة لا لقطةِ عمود.
+   */
   const approvalRefundPreflight = cancellationRequiresApproval
     ? controlPreflight.data == null
       ? null
@@ -392,6 +467,22 @@ export default function WorkOrderDetail() {
     : designApproval.isError
       ? "تعذّر التحقق من اعتماد التصميم"
       : "بانتظار اعتماد التصميم الحالي";
+  /**
+   * **المسارُ يُشتقّ مرّةً واحدة** من نفس المعطيات التي تحكم الأزرار — فما يقوله الشريطُ هو
+   * ما سيفعله الزرّ. اشتقاقان منفصلان كانا سيتباعدان في أوّل تعديل.
+   */
+  const flowSteps = deriveWorkOrderFlowSteps({
+    status: String(data.status),
+    designApprovalStatus: designApproval.isError
+      ? undefined
+      : ((designApproval.data?.approval?.status ?? null) as
+          | "PENDING" | "APPROVED" | "REJECTED" | "SUPERSEDED" | null),
+    hasDelivery: data.hasDelivery === true,
+    consignmentId: data.consignmentId == null ? null : Number(data.consignmentId),
+    courierDeliveredAt: (data as { courierDeliveredAt?: unknown }).courierDeliveredAt ?? null,
+    kanbanState: (data as { kanbanState?: string | null }).kanbanState ?? null,
+    blockedReason: (data as { blockedReason?: string | null }).blockedReason ?? null,
+  });
   const displayStatus = data.status === "DELIVERED" && data.consignmentId
     ? (data.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل")
     : workOrderStatusLabel(data.status);
@@ -547,6 +638,8 @@ export default function WorkOrderDetail() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* مسارُ الطلب أوّلاً: أين نحن وما التالي ولِمَ توقّفنا — قبل أيّ تفصيل. */}
+          <WorkOrderFlowStepper steps={flowSteps} />
           <div className="grid gap-5 md:grid-cols-3">
             {/* سياق الأمر — كان فقيراً (رقم/عميل/كمية/استحقاق فقط) رغم أنّ الخادم يُعيد القناة
              *  والأولوية والمنفّذ وتاريخ الإنشاء والتوصيل بلا استهلاك في الشاشة. */}
@@ -650,7 +743,7 @@ export default function WorkOrderDetail() {
           {/* **ملفّ التصميم** — كان الخادم يُرسل `images` والشاشة تُهملها كلّياً (صفر استعمال
               في ٦٨٣ سطراً)، فيقف الفنّيّ أمام أمرٍ لا يرى تصميمه. النسخةُ العليا أوّلاً،
               والسابقةُ تُعرَض مطويّةً — سجلٌّ بلا حذف. */}
-          <DesignFileCard images={(data.images ?? []) as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
+          <DesignFileCard images={(data.images ?? []) as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} pinnedRevision={designApproval.data?.revision == null ? null : Number(designApproval.data.revision.revision)} />
         </CardContent>
       </Card>
 
@@ -836,7 +929,7 @@ export default function WorkOrderDetail() {
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
           <p>{error}</p>
-          {cancelOutcomeUncertain && canRequestControl && (
+          {cancelOutcomeUncertain && canRequestCancel && (
             <Button
               type="button"
               variant="outline"
@@ -906,10 +999,22 @@ export default function WorkOrderDetail() {
             {markReady.isPending ? "جارٍ…" : blockedByDesign ? designBlockLabel : "وضع علامة جاهز"}
           </Button>
         )}
-        {canDeliverWorkOrder && data.status === "READY" && data.hasDelivery && !data.consignmentId && (
-          <Button asChild>
-            <Link href="/delivery"><Truck aria-hidden className="me-1 size-4" /> إسناد للتوصيل</Link>
-          </Button>
+        {/*
+          **الإسنادُ في مكانه** (١/٩/٢٦): كان الزرُّ ينقل إلى `/delivery` ثمّ يبحث الموظّفُ عن
+          طلبه في طابور «جاهز للإرسال» ليفتح الحوارَ نفسه — شاشتان وبحثٌ لعملٍ يعرف صاحبَه.
+          الحوارُ هو `DispatchDialog` عينه (لا ازدواجَ منطق) ومسارُ الخادم `delivery.dispatch`
+          نفسه ببوّابته نفسها. ورابطُ لوحة التوصيل يبقى لمن يريد الطابور كلَّه.
+        */}
+        {canDispatchDelivery && data.status === "READY" && data.hasDelivery && !data.consignmentId && (
+          <>
+            <Button onClick={() => setDispatchOpen(true)} disabled={dispatchMut.isPending}>
+              <Truck aria-hidden className="me-1 size-4" />
+              {dispatchMut.isPending ? "جارٍ الإسناد…" : "إسناد لمندوب التوصيل"}
+            </Button>
+            <Button asChild variant="ghost">
+              <Link href="/delivery">لوحة التوصيل</Link>
+            </Button>
+          </>
         )}
         {canDeliverWorkOrder && data.status === "READY" && !data.hasDelivery && (
           <Button
@@ -953,16 +1058,19 @@ export default function WorkOrderDetail() {
             {data.hasDelivery ? "تحويل لاستلامٍ مباشر" : "تحويل إلى توصيل"}
           </Button>
         )}
-        {canRequestControl && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
+        {canRequestCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
             onClick={() => setCancelOpen(true)}
             disabled={cancel.isPending || requestControl.isPending}
           >
-            {cancel.isPending || requestControl.isPending ? "جارٍ…" : canCancel ? "إلغاء الأمر" : "طلب إلغاء الأمر"}
+            {/* الزرُّ يقول ما سيقع فعلاً: إلغاءٌ فوريّ أم طلبٌ ينتظر مديراً — لا ما يقوله الدور. */}
+            {cancel.isPending || requestControl.isPending
+              ? "جارٍ…"
+              : cancelDirectAllowed ? "إلغاء الأمر" : "طلب إلغاء الأمر"}
           </Button>
         )}
-        {canRequestControl && data.status === "DELIVERED" && data.invoiceId && (
+        {canRequestCommercialControl && data.status === "DELIVERED" && data.invoiceId && (
           <ReverseDeliveryRequestDialog
             workOrderId={workOrderId}
             orderNumber={data.orderNumber}
@@ -995,6 +1103,70 @@ export default function WorkOrderDetail() {
         onConfirm={(payload) => setDeliveryMethodMut.mutate({ workOrderId, ...payload })}
       />
 
+      <DispatchDialog
+        order={dispatchOpen ? {
+          id: workOrderId,
+          orderNumber: data.orderNumber,
+          title: data.title,
+          customerName: data.customerName,
+          customerPhone: data.customerPhone,
+          salePrice: data.salePrice,
+          deposit: data.deposit,
+          deliveryAddress: data.deliveryAddress,
+          deliveryPhone: data.deliveryPhone,
+          deliveryCost: data.deliveryCost,
+          deliveryFeeCollection: (data as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
+        } : null}
+        parties={dispatchParties.data ?? []}
+        pending={dispatchMut.isPending}
+        onClose={() => setDispatchOpen(false)}
+        /**
+         * **الطردُ لا يخرج بلا أوراقه** (مراجعة Codex P2): `DeliveryHub` و`ReceptionOrderQueue`
+         * كلاهما يفتح نافذةَ الملصق **قبل** الطفرة (وإلّا حجبها مانعُ النوافذ لأنّها لم تعد
+         * ردّاً على نقرة) ثمّ يطبع ملصقَ الشحن وبوليصةَ التوصيل. مسارٌ ثالثٌ يُنشئ الإرسالية
+         * ولا يطبع يترك الموظّف بطردٍ مُسنَدٍ بلا مستند — فيبحث عن شاشةٍ أخرى ليطبع يدوياً،
+         * وهو نقيضُ تقليل النقرات. نفسُ الدالّتين المشتركتين، بلا ازدواج منطق.
+         */
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
+          const party = (dispatchParties.data ?? []).find((p) => Number(p.id) === partyId);
+          const labelWin = preopenShippingLabelWindow();
+          try {
+            const r = await dispatchMut.mutateAsync({
+              workOrderId,
+              partyId,
+              deliveryFee: fee,
+              recipientName: recipientName || undefined,
+              recipientPhone: recipientPhone || undefined,
+              deliveryAddress: data.deliveryAddress ?? undefined,
+              clientRequestId: dispatchRequestIdRef.current ?? (dispatchRequestIdRef.current = newClientRequestId()),
+              assignedUserId,
+            });
+            const printable = {
+              orderNumber: data.orderNumber,
+              title: data.title,
+              quantity: Number(data.quantity),
+              salePrice: data.salePrice,
+              deposit: data.deposit ?? null,
+              customerName: data.customerName ?? null,
+              customerPhone: data.customerPhone ?? null,
+              deliveryAddress: data.deliveryAddress ?? null,
+              deliveryCost: data.deliveryCost ?? null,
+              deliveryFeeCollection: (data as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
+            };
+            void printReadyOrderLabel(printable, {
+              partyName: party?.name ?? null,
+              trackingNumber: r.consignmentNumber,
+              cod: r.codAmount,
+              into: labelWin,
+            });
+            printDeliverySlip(printable, party, r);
+          } catch {
+            // فشلُ الإسناد يُبلَّغ من `onError`؛ هنا نغلق نافذةً فُتحت لمستندٍ لن يوجد.
+            labelWin?.close();
+          }
+        }}
+      />
+
       <CancelWorkOrderDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
@@ -1014,6 +1186,7 @@ export default function WorkOrderDetail() {
         }
         requiresApproval={cancellationRequiresApproval}
         refundPreflight={approvalRefundPreflight}
+        // حالةُ التمهيد تخصّ مسارَ الاعتماد وحده؛ المسارُ المباشر يحمل حالةَ استعلامه بنفسه.
         refundPreflightPending={cancellationRequiresApproval && (controlPreflight.isLoading || controlPreflight.isFetching)}
         refundPreflightError={cancellationRequiresApproval && controlPreflight.isError}
         onRetryRefundPreflight={() => { void controlPreflight.refetch(); }}
@@ -1024,7 +1197,13 @@ export default function WorkOrderDetail() {
             setError("لا يمكن تنفيذ الإلغاء قبل اكتمال التحقق من نسخة الأمر والنقد والورديات.");
             return;
           }
-          const requiresApproval = !canCancel || preflight.controlRequired.cancel;
+          const requiresApproval = !mayCancelWorkOrderWithoutApproval({
+            role,
+            override: permissions,
+            status: preflight.status,
+            moneyAtStake: preflight.cancelMoneyAtStake,
+            managerControlRequired: preflight.controlRequired.cancel,
+          });
           if (requiresApproval) {
             const input: CancelControlInput = {
               requestType: "CANCEL",
