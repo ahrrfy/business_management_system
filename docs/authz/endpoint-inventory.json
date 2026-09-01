@@ -7,7 +7,7 @@
       "query": 584
     },
     "byAuthority": {
-      "module-gate": 625,
+      "module-gate": 627,
       "module-map": 385,
       "admin": 67,
       "none": 52,
@@ -18,7 +18,6 @@
       "platform": 6,
       "public-read": 6,
       "token": 2,
-      "unknown": 2,
       "device-bootstrap": 1
     },
     "bySensitivity": {
@@ -27,7 +26,7 @@
       "HIGH": 170
     },
     "byModule": {
-      "(none)": 187,
+      "(none)": 185,
       "reports": 100,
       "hr": 100,
       "store": 95,
@@ -37,7 +36,7 @@
       "inventory": 69,
       "products": 62,
       "productStudio": 48,
-      "workorders": 45,
+      "workorders": 47,
       "crm": 42,
       "sales": 33,
       "campaigns": 29,
@@ -72,8 +71,7 @@
       "UNAUTHENTICATED": 37,
       "READ_WITHOUT_MODULE_GATE": 29,
       "WRITE_WITHOUT_MODULE_GATE": 23,
-      "HANDLER_ROLE_CHECK": 6,
-      "PROCEDURE_UNKNOWN": 2
+      "HANDLER_ROLE_CHECK": 6
     },
     "expressRoutes": 21,
     "expressMounts": 12,
@@ -20397,14 +20395,14 @@
       "name": "cancel",
       "kind": "mutation",
       "procedure": "workordersDirectCancelProcedure",
-      "authority": "unknown",
-      "module": "",
-      "level": "",
-      "roles": "",
-      "branch": "unknown",
+      "authority": "module-gate",
+      "module": "workorders",
+      "level": "FULL",
+      "roles": "manager|print_operator",
+      "branch": "required",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
-      "flags": "PROCEDURE_UNKNOWN|SENSITIVE_ACTION",
+      "flags": "SENSITIVE_ACTION",
       "loc": "server/routers/workOrderRouter.ts:1741"
     },
     {
@@ -20669,14 +20667,14 @@
       "name": "refundPreflight",
       "kind": "query",
       "procedure": "workordersDirectCancelProcedure",
-      "authority": "unknown",
-      "module": "",
-      "level": "",
-      "roles": "",
-      "branch": "unknown",
+      "authority": "module-gate",
+      "module": "workorders",
+      "level": "FULL",
+      "roles": "manager|print_operator",
+      "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "PROCEDURE_UNKNOWN",
+      "flags": "",
       "loc": "server/routers/workOrderRouter.ts:1832"
     },
     {
