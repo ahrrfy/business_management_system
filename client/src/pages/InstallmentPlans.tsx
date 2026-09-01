@@ -193,7 +193,7 @@ export default function InstallmentPlans() {
             <AppSelect
               value={String(branchFilter ?? "")}
               onValueChange={(value) => { setBranchFilter(value ? Number(value) : undefined); setOffset(0); }}
-              className="h-9 -input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="">كل الفروع</option>
               {(branches.data ?? []).map((b) => (
@@ -207,7 +207,7 @@ export default function InstallmentPlans() {
           <AppSelect
             value={statusFilter}
             onValueChange={(value) => { setStatusFilter(value as typeof statusFilter); setOffset(0); }}
-            className="h-9 -input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <option value="">كل الحالات</option>
             <option value="ACTIVE">نشطة</option>
@@ -812,7 +812,7 @@ function CreatePlanDialog({
                     setTotal("");
                     setLines([]);
                   }}
-                  className="h-9 -input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   {branches.map((b) => (
                     <option key={b.id} value={b.id}>{b.name}</option>

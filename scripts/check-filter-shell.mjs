@@ -34,6 +34,17 @@ const BASELINE = existsSync(BASELINE_PATH)
   ? JSON.parse(readFileSync(BASELINE_PATH, "utf8"))
   : {};
 
+/**
+ * شاشاتٌ **خارج نطاق نظام مكوّنات الإدارة عمداً** — لا تُعدّ ديناً ولا تُنتظَر هجرتها.
+ *
+ * `Storefront.tsx` واجهةُ زبونٍ عامّة: هويّةٌ بصريّة مستقلّة (ألوانٌ ثابتة لا توكنز)، و**عقدُ
+ * تخزينٍ مسبق للعمل دون اتصال** يفرضه `verify-storefront-pwa-build.mjs`. سحبُ مكوّنات
+ * الإدارة إليها (Radix Select ومعه uiContracts) أسقط بناءَ الإنتاج فعلياً على PR #931
+ * بـ`STOREFRONT_PRECACHE_STATIC_IMPORT_MISSING`، وكان سيُثقل حزمةَ الزبون دون اتصال
+ * بلا مقابل: منتقياتُها الأصلية تعمل وتطابق تصميمها.
+ */
+const OUT_OF_SCOPE = new Set(["client/src/pages/Storefront.tsx"]);
+
 /** مفردات الفلاتر التي يجب أن تأتي من `FILTER_LABELS` لا من الشاشة. */
 const FILTER_VOCAB = [
   "مسح الفلاتر",
@@ -83,6 +94,7 @@ for (const file of walkTsx(SCAN_ROOT)) {
    *      إلزامُ تلك الحالة بـFilterShell كان سيكون خطأً: لا بطاقةَ فلاتر هناك أصلاً.
    */
   if (
+    OUT_OF_SCOPE.has(rel) ||
     /<FilterShell[\s/>]/.test(code) ||
     /FILTER_LABELS/.test(code)
   ) continue;

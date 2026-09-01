@@ -485,7 +485,7 @@ function RepairDialog({
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="legacy-party">جهة التوصيل المختارة</Label>
-                    <AppSelect id="legacy-party" value={state.partyId ?? ""} onValueChange={(next) => patch({ partyId: next })} className="h-10 -input px-3 text-sm">
+                    <AppSelect id="legacy-party" value={state.partyId ?? ""} onValueChange={(next) => patch({ partyId: next })} className="h-10 border-input px-3 text-sm">
                       <option value="">اختر الجهة…</option>
                       {(report?.options.parties ?? []).map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
                     </AppSelect>
@@ -500,7 +500,7 @@ function RepairDialog({
               {needsGateway && (
                 <div className="space-y-1.5">
                   <Label htmlFor="legacy-gateway">حساب المندوب</Label>
-                  <AppSelect id="legacy-gateway" value={state.gatewayUserId ?? ""} onValueChange={(next) => patch({ gatewayUserId: next })} className="h-10 -input px-3 text-sm">
+                  <AppSelect id="legacy-gateway" value={state.gatewayUserId ?? ""} onValueChange={(next) => patch({ gatewayUserId: next })} className="h-10 border-input px-3 text-sm">
                     <option value="">اختر حساباً نشطاً…</option>
                     {(report?.options.courierAccounts ?? []).map((account) => (
                       <option key={account.id} value={account.id} disabled={account.linkedPartyId != null && account.linkedPartyId !== state.targetId}>
@@ -529,7 +529,7 @@ function RepairDialog({
                         id="legacy-fee-settlement"
                         value={state.feeSettlementAction ?? ""}
                         onValueChange={(next) => patch({ feeSettlementAction: next as RepairDialogState["feeSettlementAction"] })}
-                        className="h-10 -input px-3 text-sm"
+                        className="h-10 border-input px-3 text-sm"
                       >
                         <option value="">اختر ما يثبته السجل فقط…</option>
                         <option value="EARN_ONLY">تثبيت استحقاق الأجرة فقط — الدفع/الصرف غير مثبت</option>
@@ -549,7 +549,7 @@ function RepairDialog({
                     id="legacy-customer-balance"
                     value={state.customerBalanceAction ?? ""}
                     onValueChange={(next) => patch({ customerBalanceAction: next as RepairDialogState["customerBalanceAction"] })}
-                    className="h-10 -input px-3 text-sm"
+                    className="h-10 border-input px-3 text-sm"
                   >
                     <option value="">اختر بعد مراجعة السجل…</option>
                     <option value="IDENTITY_ONLY">استعادة الهوية فقط — الذمة مسجلة مسبقاً</option>

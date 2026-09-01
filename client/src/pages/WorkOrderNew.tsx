@@ -810,7 +810,7 @@ export default function WorkOrderNew() {
             <Label htmlFor="assignee">المنفّذ المسؤول</Label>
             <AppSelect
               id="assignee"
-              className="h-9 -input px-3 text-sm focus-visible:ring-1 focus-visible:ring-ring"
+              className="h-9 border-input px-3 text-sm focus-visible:ring-1 focus-visible:ring-ring"
               value={String(assignedTo)}
               onValueChange={(next) => setAssignedTo(next ? Number(next) : "")}
             >
@@ -824,7 +824,7 @@ export default function WorkOrderNew() {
             <Label htmlFor="dm">طريقة التسليم</Label>
             <AppSelect
               id="dm"
-              className="h-9 -input px-3 text-sm focus-visible:ring-1 focus-visible:ring-ring"
+              className="h-9 border-input px-3 text-sm focus-visible:ring-1 focus-visible:ring-ring"
               value={deliveryMethod}
               onValueChange={(next) => setDeliveryMethod(next)}
             >

@@ -512,7 +512,7 @@ export default function Attendance() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="att-emp">الموظف</Label>
-              <AppSelect id="att-emp" className="h-9 -input px-2 text-sm" value={form.employeeId} onValueChange={(next) => setForm({ ...form, employeeId: next })}>
+              <AppSelect id="att-emp" className="h-9 border-input px-2 text-sm" value={form.employeeId} onValueChange={(next) => setForm({ ...form, employeeId: next })}>
                 <option value="">— اختر موظفاً بالساعة —</option>
                 {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
               </AppSelect>

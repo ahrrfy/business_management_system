@@ -178,7 +178,7 @@ export default function KioskDevices() {
             <AppSelect
               value={String(branchId)}
               onValueChange={(next) => setBranchId(next ? Number(next) : "")}
-              className="h-9 -input px-3 text-sm min-w-[180px]"
+              className="h-9 border-input px-3 text-sm min-w-[180px]"
             >
               <option value="">— اختر الفرع —</option>
               {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}

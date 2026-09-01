@@ -751,7 +751,7 @@ function BranchOverridesPanel(props: {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label>الفرع</Label>
-              <AppSelect className="h-9 -input px-3 text-sm"
+              <AppSelect className="h-9 border-input px-3 text-sm"
                 value={String(addBranchId ?? "")}
                 onValueChange={(next) => setAddBranchId(next === "" ? null : Number(next))}>
                 <option value="">— اختر الفرع —</option>

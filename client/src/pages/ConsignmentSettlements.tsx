@@ -149,7 +149,7 @@ export default function ConsignmentSettlements() {
               <Label htmlFor="cs-branch">الفرع <span className="text-destructive">*</span></Label>
               <AppSelect
                 id="cs-branch"
-                className="h-9 w-56 -input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="h-9 w-56 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 value={pickedBranch ?? ""}
                 onValueChange={(next) => setPickedBranch(next ? Number(next) : null)}
               >
@@ -165,7 +165,7 @@ export default function ConsignmentSettlements() {
             <Label htmlFor="cs-method">طريقة دفع التسوية</Label>
             <AppSelect
               id="cs-method"
-              className="h-9 w-40 -input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="h-9 w-40 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               value={settlementMethod}
               onValueChange={(next) => setSettlementMethod(next as typeof settlementMethod)}
             >

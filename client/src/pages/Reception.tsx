@@ -2253,7 +2253,7 @@ export default function Reception() {
               <label htmlFor="rec-branch" className="mb-1.5 block text-sm font-bold">الفرع <span className="text-destructive">*</span></label>
               <AppSelect
                 id="rec-branch"
-                className="h-12 -input px-3 text-base focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="h-12 border-input px-3 text-base focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 value={pickedBranch ?? ""}
                 onValueChange={(value) => setPickedBranch(value ? Number(value) : null)}
               >

@@ -313,7 +313,7 @@ export default function ARReminders() {
           <AppSelect
             value={effectiveScope === "opening" ? "opening" : String(effectiveScope ?? "")}
             onValueChange={(value) => setScope(value === "opening" ? "opening" : Number(value))}
-            className="h-9 -input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {(branches.data ?? []).map((b) => (
               <option key={b.id} value={b.id}>{b.name}</option>

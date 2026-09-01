@@ -304,7 +304,7 @@ export default function Branches() {
               <AppSelect
                 value={fType}
                 onValueChange={(next) => setFType(next as BranchType)}
-                className="h-9 -input px-3 text-sm"
+                className="h-9 border-input px-3 text-sm"
               >
                 <option value="SALES">مبيعات</option>
                 <option value="MAIN">رئيسي (كل الخدمات)</option>

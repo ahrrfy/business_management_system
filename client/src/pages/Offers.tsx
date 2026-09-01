@@ -300,7 +300,7 @@ export default function Offers() {
               <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
             </Field>
             <Field label="نوع الخصم" required hint={editingId != null ? "ثابت منذ الإنشاء — أنشئ عرضاً جديداً لتغييره" : undefined}>
-              <AppSelect value={type} onValueChange={(next) => setType(next as PromoType)} disabled={editingId != null} className="h-9 -input px-3 py-1 text-sm disabled:opacity-60">
+              <AppSelect value={type} onValueChange={(next) => setType(next as PromoType)} disabled={editingId != null} className="h-9 border-input px-3 py-1 text-sm disabled:opacity-60">
                 <option value="PERCENT">نسبة (%)</option>
                 <option value="AMOUNT">مبلغ ثابت (لكل وحدة)</option>
               </AppSelect>
@@ -318,19 +318,19 @@ export default function Offers() {
               <Input type="number" min={0} max={999} value={priority} onChange={(e) => setPriority(e.target.value)} />
             </Field>
             <Field label="الحملة (اختياري)" hint={editingId != null ? "ثابتة منذ الإنشاء" : undefined}>
-              <AppSelect value={campaignId} onValueChange={(next) => setCampaignId(next)} disabled={editingId != null} className="h-9 -input px-3 py-1 text-sm disabled:opacity-60">
+              <AppSelect value={campaignId} onValueChange={(next) => setCampaignId(next)} disabled={editingId != null} className="h-9 border-input px-3 py-1 text-sm disabled:opacity-60">
                 <option value="">عرض مستقل</option>
                 {(campaignsQ.data ?? []).map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
               </AppSelect>
             </Field>
             <Field label="طريقة التطبيق" hint="الكوبون لا يعمل تلقائياً">
-              <AppSelect value={applicationMode} onValueChange={(next) => setApplicationMode(next as ApplicationMode)} className="h-9 -input px-3 py-1 text-sm">
+              <AppSelect value={applicationMode} onValueChange={(next) => setApplicationMode(next as ApplicationMode)} className="h-9 border-input px-3 py-1 text-sm">
                 <option value="AUTO">تلقائي</option>
                 <option value="COUPON">بكوبون صالح فقط</option>
               </AppSelect>
             </Field>
             <Field label="قناة العرض">
-              <AppSelect value={channel} onValueChange={(next) => setChannel(next as "POS" | "STORE")} className="h-9 -input px-3 py-1 text-sm">
+              <AppSelect value={channel} onValueChange={(next) => setChannel(next as "POS" | "STORE")} className="h-9 border-input px-3 py-1 text-sm">
                 <option value="POS">نقطة البيع</option>
                 <option value="STORE">المتجر الإلكتروني</option>
               </AppSelect>
@@ -342,7 +342,7 @@ export default function Offers() {
               <Input type="date" value={effectiveTo} onChange={(e) => setEffectiveTo(e.target.value)} />
             </Field>
             <Field label="فئة العميل (اختياري)">
-              <AppSelect value={customerTier} onValueChange={(next) => setCustomerTier(next as Tier)} className="h-9 -input px-3 py-1 text-sm">
+              <AppSelect value={customerTier} onValueChange={(next) => setCustomerTier(next as Tier)} className="h-9 border-input px-3 py-1 text-sm">
                 <option value="">جميع الفئات</option>
                 <option value="RETAIL">مفرد</option>
                 <option value="WHOLESALE">جملة</option>

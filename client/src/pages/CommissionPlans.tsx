@@ -373,7 +373,7 @@ export default function CommissionPlans() {
                 <AppSelect
                   value={fMode}
                   onValueChange={(next) => setFMode(next as TierMode)}
-                  className="h-9 -input px-3 text-sm"
+                  className="h-9 border-input px-3 text-sm"
                 >
                   <option value="TARGET_PCT">حسب نسبة تحقيق الهدف — يلزم تحديد هدف شهري لكل موظف</option>
                   <option value="AMOUNT_SLAB">حسب مبلغ المبيعات — بلا حاجة إلى هدف</option>
@@ -526,7 +526,7 @@ export default function CommissionPlans() {
                         <AppSelect
                           value={draftPlan[r.employeeId] ?? ""}
                           onValueChange={(next) => setDraftPlan((prev) => ({ ...prev, [r.employeeId]: next }))}
-                          className="h-8 w-44 -input px-2 text-xs"
+                          className="h-8 w-44 border-input px-2 text-xs"
                           aria-label={`خطة ${r.employeeName}`}
                         >
                           <option value="">اختر خطة…</option>

@@ -236,7 +236,7 @@ export default function ContractPrices() {
             <Label htmlFor="cp-branch">الفرع <span className="text-destructive">*</span></Label>
             <AppSelect
               id="cp-branch"
-              className="h-9 max-w-xs -input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="h-9 max-w-xs border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               value={pickedBranch ?? ""}
               onValueChange={(next) => setPickedBranch(next ? Number(next) : null)}
             >

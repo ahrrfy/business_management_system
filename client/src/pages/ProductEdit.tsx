@@ -654,7 +654,7 @@ export default function ProductEdit() {
               <AppSelect
                 value={String(categoryId)}
                 onValueChange={(next) => setCategoryId(next === "" ? "" : Number(next))}
-                className="h-9 -input px-3 text-sm"
+                className="h-9 border-input px-3 text-sm"
               >
                 <option value="">— بلا فئة —</option>
                 {categoryOptionElements(categoriesQ.data ?? [])}
@@ -779,7 +779,7 @@ export default function ProductEdit() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">الفرع:
-              <AppSelect value={String(branchId)} onValueChange={(next) => setPickedBranch(Number(next))} className="h-8 -input px-2 text-xs text-foreground">
+              <AppSelect value={String(branchId)} onValueChange={(next) => setPickedBranch(Number(next))} className="h-8 border-input px-2 text-xs text-foreground">
                 {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
               </AppSelect>
             </label>

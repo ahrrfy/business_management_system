@@ -601,7 +601,7 @@ export default function ProductNew() {
               <AppSelect
                 value={String(categoryId)}
                 onValueChange={(next) => setCategoryId(next === "" ? "" : Number(next))}
-                className="h-9 -input px-3 text-sm"
+                className="h-9 border-input px-3 text-sm"
               >
                 <option value="">— بلا فئة —</option>
                 {categoryOptionElements(categoriesQ.data ?? [])}
@@ -739,7 +739,7 @@ export default function ProductNew() {
               <AppSelect
                 value={String(branchId)}
                 onValueChange={(next) => setPickedBranch(Number(next))}
-                className="h-8 -input px-2 text-xs text-foreground"
+                className="h-8 border-input px-2 text-xs text-foreground"
               >
                 {branches.map((b) => (
                   <option key={b.id} value={b.id}>{b.name}</option>

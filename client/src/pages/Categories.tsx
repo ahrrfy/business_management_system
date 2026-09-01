@@ -383,7 +383,7 @@ export default function Categories() {
                 value={fParentId === "" ? "" : String(fParentId)}
                 onValueChange={(next) => setFParentId(next === "" ? "" : Number(next))}
                 disabled={editHasChildren}
-                className="h-9 -input px-3 text-sm disabled:opacity-50"
+                className="h-9 border-input px-3 text-sm disabled:opacity-50"
               >
                 <option value="">— فئة رئيسية (بلا أب) —</option>
                 {rows.filter((r) => r.parentId == null && r.id !== editId).map((r) => (
@@ -433,7 +433,7 @@ export default function Categories() {
               <AppSelect
                 value={reassignTo == null ? "" : String(reassignTo)}
                 onValueChange={(next) => setReassignTo(next === "" ? null : Number(next))}
-                className="h-9 -input px-3 text-sm"
+                className="h-9 border-input px-3 text-sm"
               >
                 <option value="">— بلا فئة —</option>
                 {categoryOptionElements(rows.filter((r) => r.id !== delTarget.id))}
@@ -463,7 +463,7 @@ export default function Categories() {
             <AppSelect
               value={mergeTarget == null ? "" : String(mergeTarget)}
               onValueChange={(next) => setMergeTarget(next === "" ? null : Number(next))}
-              className="h-9 -input px-3 text-sm"
+              className="h-9 border-input px-3 text-sm"
             >
               {selectedRows.map((r) => <option key={r.id} value={r.id}>{r.name} ({num(r.productCount)} منتج)</option>)}
             </AppSelect>
