@@ -72,6 +72,10 @@ interface AppSelectProps {
    * تبقى على `<select>` خامّ لأنّ المكوّن الموحّد لا يسعها.
    */
   style?: React.CSSProperties;
+  /** حقلٌ إلزاميّ في نموذج — يُمرَّر إلى Select الأساس ليشارك في تحقّق النموذج. */
+  required?: boolean;
+  /** ربطُ الحقل بتلميحه/خطئه (§A11y) — تستعمله نماذج المتجر والتوظيف. */
+  "aria-describedby"?: string;
   /** أطفال `<option>`/`<optgroup>` — يُحلَّلون بنيوياً إلى SelectItem/SelectGroup. */
   children: React.ReactNode;
 }
@@ -161,6 +165,8 @@ export function AppSelect({
   title,
   dir,
   style,
+  required,
+  "aria-describedby": ariaDescribedBy,
   children,
 }: AppSelectProps) {
   // نستخرج placeholder من `<option value="">` إن وُجد ولم يُمرَّر placeholder صريحاً.
@@ -182,6 +188,7 @@ export function AppSelect({
       open={open}
       onOpenChange={onOpenChange}
       name={name}
+      required={required}
     >
       <SelectTrigger
         id={id}
@@ -192,6 +199,7 @@ export function AppSelect({
         title={title}
         dir={dir}
         style={style}
+        aria-describedby={ariaDescribedBy}
       >
         <SelectValue placeholder={resolvedPlaceholder} />
       </SelectTrigger>

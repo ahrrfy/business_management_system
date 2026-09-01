@@ -3,6 +3,7 @@
 // startWorkOrder) − كلفة عملٍ اختيارية بالزمن الفعلي المُقاس (workSeconds × كلفة الساعة).
 // حقل «كلفة ساعة العمل» ماذا-لو: تغييره يُعيد الاستعلام فيعيد حساب الربح/الهامش فوراً.
 import { useEffect, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { Clock3, FileSpreadsheet, Loader2 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -153,11 +154,11 @@ export default function WorkOrderProfitability() {
         <DateRangeFilter value={range} onChange={changeRange} />
         <div className="flex flex-col gap-1">
           <Label className="text-xs text-muted-foreground">الفرع</Label>
-          <select
-            className={selectCls}
-            value={branchId}
-            onChange={(e) => {
-              setBranchId(e.target.value ? Number(e.target.value) : "");
+          <AppSelect
+            className="h-9"
+            value={String(branchId)}
+            onValueChange={(next) => {
+              setBranchId(next ? Number(next) : "");
               setPage(0);
             }}
           >
@@ -167,7 +168,7 @@ export default function WorkOrderProfitability() {
                 {b.name}
               </option>
             ))}
-          </select>
+          </AppSelect>
         </div>
         <div className="flex flex-col gap-1">
           <Label className="text-xs text-muted-foreground">كلفة ساعة العمل (د.ع) — اختياري</Label>

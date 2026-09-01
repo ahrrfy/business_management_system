@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { ProductSearchPicker, type PurchaseRow } from "@/components/production/ProductSearchPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -205,9 +206,9 @@ export default function ProductionRecipes() {
                         <div className="truncate"><span className="font-medium">{out.productName}</span> <span className="text-xs text-muted-foreground font-mono" dir="ltr">{out.sku}</span></div>
                         <div className="flex items-center gap-2 shrink-0">
                           {out.units.length > 0 && (
-                            <select className={selectClsFull + " w-auto"} value={out.unitId} onChange={(e) => setOut({ ...out, unitId: Number(e.target.value) })}>
+                            <AppSelect className={selectClsFull + " w-auto"} value={String(out.unitId)} onValueChange={(next) => setOut({ ...out, unitId: Number(next) })}>
                               {out.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{u.isBaseUnit ? " (أساس)" : ""}</option>)}
-                            </select>
+                            </AppSelect>
                           )}
                           <button type="button" className="text-[var(--sem-neg)] text-sm" onClick={() => setOut(null)}>تغيير</button>
                         </div>
@@ -253,12 +254,12 @@ export default function ProductionRecipes() {
                       <Input dir="ltr" value={c.qty} onChange={(e) => setComps((p) => p.map((x) => x.key === c.key ? { ...x, qty: e.target.value } : x))} placeholder="كمية" />
                     </div>
                     <div className="col-span-5 md:col-span-3">
-                      <select className={selectClsFull} value={c.productUnitId ?? ""} onChange={(e) => {
-                        const u = c.units.find((x) => x.productUnitId === Number(e.target.value));
-                        setComps((p) => p.map((x) => x.key === c.key ? { ...x, productUnitId: Number(e.target.value), conversionFactor: u?.conversionFactor ?? "1" } : x));
+                      <AppSelect className="h-9" value={String(c.productUnitId ?? "")} onValueChange={(next) => {
+                        const u = c.units.find((x) => x.productUnitId === Number(next));
+                        setComps((p) => p.map((x) => x.key === c.key ? { ...x, productUnitId: Number(next), conversionFactor: u?.conversionFactor ?? "1" } : x));
                       }}>
                         {c.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{Number(u.conversionFactor) !== 1 ? ` ×${u.conversionFactor}` : ""}</option>)}
-                      </select>
+                      </AppSelect>
                     </div>
                     <div className="col-span-2 md:col-span-2 text-left text-sm font-semibold tabular-nums" dir="ltr">{fmt(compLineCost(c).toString())}</div>
                     <div className="col-span-1 text-start">

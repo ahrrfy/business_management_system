@@ -4,6 +4,7 @@
 // وتُعرض متداخلة تحت أبيها. نقل منتجات محدّدة بين الفئات يتمّ من شاشة المنتجات
 // (تحديد + «نقل إلى فئة»). كل العمليات عبر catalog.* (managerProcedure) وتُحدِّث القوائم تلقائياً.
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -378,17 +379,17 @@ export default function Categories() {
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium">الفئة الرئيسية (اختياري)</label>
-              <select
+              <AppSelect
                 value={fParentId === "" ? "" : String(fParentId)}
-                onChange={(e) => setFParentId(e.target.value === "" ? "" : Number(e.target.value))}
+                onValueChange={(next) => setFParentId(next === "" ? "" : Number(next))}
                 disabled={editHasChildren}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm disabled:opacity-50"
+                className="h-9 -input px-3 text-sm disabled:opacity-50"
               >
                 <option value="">— فئة رئيسية (بلا أب) —</option>
                 {rows.filter((r) => r.parentId == null && r.id !== editId).map((r) => (
                   <option key={r.id} value={r.id}>{r.name}</option>
                 ))}
-              </select>
+              </AppSelect>
               {editHasChildren ? (
                 <p className="text-xs text-muted-foreground">
                   هذه الفئة تحوي فئات فرعية، فلا يمكن أن تصبح فرعيةً لأخرى.
@@ -429,14 +430,14 @@ export default function Categories() {
           {delChildrenCount === 0 && delTarget && delTarget.productCount > 0 && (
             <div className="space-y-1">
               <label className="text-sm font-medium">نقل المنتجات إلى</label>
-              <select
+              <AppSelect
                 value={reassignTo == null ? "" : String(reassignTo)}
-                onChange={(e) => setReassignTo(e.target.value === "" ? null : Number(e.target.value))}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+                onValueChange={(next) => setReassignTo(next === "" ? null : Number(next))}
+                className="h-9 -input px-3 text-sm"
               >
                 <option value="">— بلا فئة —</option>
                 <CategoryOptionList categories={rows.filter((r) => r.id !== delTarget.id)} />
-              </select>
+              </AppSelect>
             </div>
           )}
           <DialogFooter>
@@ -459,13 +460,13 @@ export default function Categories() {
           </DialogHeader>
           <div className="space-y-1">
             <label className="text-sm font-medium">الفئة الهدف (تبقى)</label>
-            <select
+            <AppSelect
               value={mergeTarget == null ? "" : String(mergeTarget)}
-              onChange={(e) => setMergeTarget(e.target.value === "" ? null : Number(e.target.value))}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+              onValueChange={(next) => setMergeTarget(next === "" ? null : Number(next))}
+              className="h-9 -input px-3 text-sm"
             >
               {selectedRows.map((r) => <option key={r.id} value={r.id}>{r.name} ({num(r.productCount)} منتج)</option>)}
-            </select>
+            </AppSelect>
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setMergeOpen(false)}>إلغاء</Button>

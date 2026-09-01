@@ -433,19 +433,19 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
       <div className="flex flex-wrap items-center gap-2">
         {/* منتقي الفرع للمرتفعين فقط (Codex P2): غير المرتفع مُقيَّد بفرعه خادمياً، فإظهاره يضلّله. */}
         {fixedBranchId == null && (role === "admin" || role === "manager") && (branches.data?.length ?? 0) > 1 && (
-          <select
-            className={selectCls}
-            value={effectiveBranch ?? ""}
-            onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : null)}
+          <AppSelect
+            className="h-9"
+            value={String(effectiveBranch ?? "")}
+            onValueChange={(next) => setBranchId(next ? Number(next) : null)}
             aria-label="الفرع"
           >
             {branches.data?.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
+          </AppSelect>
         )}
-        <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as "" | ReservationStatus)} aria-label="الحالة">
+        <AppSelect className="h-9" value={status} onValueChange={(next) => setStatus(next as "" | ReservationStatus)} aria-label="الحالة">
           <option value="">كل الحالات</option>
           {(Object.keys(STATUS_LABEL) as ReservationStatus[]).map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-        </select>
+        </AppSelect>
         <AppSelect
           value={sort}
           onValueChange={(v) => setSort(v as SortKey)}
@@ -1018,9 +1018,9 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label htmlFor="res-channel">طريقة وصول الحجز</Label>
-              <select id="res-channel" className={`${selectCls} w-full`} value={channel} onChange={(e) => setChannel(e.target.value as Channel)}>
+              <AppSelect id="res-channel" className={`${selectCls} w-full`} value={channel} onValueChange={(next) => setChannel(next as Channel)}>
                 {CHANNELS.map((c) => <option key={c} value={c}>{CHANNEL_LABEL[c]}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label htmlFor="res-hours">مدّة الحجز (ساعات، ≤٧٢)</Label>

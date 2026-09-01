@@ -1,4 +1,5 @@
 import { ProductSearchPicker, type PurchaseRow } from "@/components/production/ProductSearchPicker";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,14 +39,14 @@ function BranchPicker({
   return (
     <div className="space-y-1">
       <Label>الفرع {needsChoice && <span className="text-destructive">*</span>}</Label>
-      <select
-        className={selectCls}
-        value={needsChoice ? "" : value}
-        onChange={(e) => onChange(e.target.value ? Number(e.target.value) : "")}
+      <AppSelect
+        className="h-9"
+        value={String(needsChoice ? "" : value)}
+        onValueChange={(next) => onChange(next ? Number(next) : "")}
       >
         {needsChoice && <option value="">— اختر الفرع —</option>}
         {branches.map((b) => <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>)}
-      </select>
+      </AppSelect>
       {needsChoice && <p className="text-xs text-destructive">يلزم اختيار الفرع قبل الترحيل.</p>}
     </div>
   );
