@@ -12,7 +12,7 @@ import { and, eq, inArray, isNull, notLike, or, sql } from "drizzle-orm";
 import { deliveryConsignments, invoiceItems, invoices, receipts, shifts, users, workOrders } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
-import { computeDrawerCashBalance } from "../cash/cashAvailability";
+import { computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { appliedCollectionsForWorkOrder } from "../reception/deposits";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import type { RefundDrawerCandidate, RefundPreflight, WorkOrderRefundOperation } from "@shared/refundPreflight";
@@ -156,6 +156,25 @@ async function reverseCashOut(
   ));
 }
 
+
+/**
+ * نقدُ **الخزينة الإدارية** المتاح — بنفس صيغة `assertCashOutAvailable` لدلو `TREASURY`،
+ * فما تعرضه الشاشة هو ما يقيس به الحارسُ عند التنفيذ. ويُحجَب رقمُه كالأدراج عمّن لا يملك
+ * `treasury:READ`؛ ويبقى `treasurySufficient` كافياً للقرار بلا كشفِ رصيد.
+ */
+async function treasurySnapshot(
+  tx: Tx,
+  branchId: number,
+  needed: ReturnType<typeof money>,
+  exposeCash: boolean,
+): Promise<{ treasuryCash: string | null; treasurySufficient: boolean }> {
+  const available = await computeTreasuryCashBalance(tx, branchId);
+  return {
+    treasuryCash: exposeCash ? toDbMoney(round2(available)) : null,
+    treasurySufficient: available.gte(needed),
+  };
+}
+
 /** تمهيدُ إلغاء/استرجاع أمر شغل. */
 export async function workOrderRefundPreflight(
   tx: Tx,
@@ -183,6 +202,9 @@ export async function workOrderRefundPreflight(
     branchId,
     // لا نُحمّل الأدراج حين لا نقدَ يخرج — استعلامٌ بلا مستهلك.
     drawers: needsCashDrawer ? await eligibleDrawers(tx, branchId, "RECEPTION", { needed: cashOut, exposeCash: opts.exposeCash }) : [],
+    ...(needsCashDrawer
+      ? await treasurySnapshot(tx, branchId, cashOut, opts.exposeCash)
+      : { treasuryCash: null, treasurySufficient: false }),
   };
 }
 
@@ -253,5 +275,8 @@ export async function consignmentReturnPreflight(
     branchId,
     // مسارُ التوصيل يقبل أيّ درجٍ مفتوح بالفرع (`resolveBranchCashShiftTx`) — لا RECEPTION وحدها.
     drawers: needsCashDrawer ? await eligibleDrawers(tx, branchId, null, { needed: cashOut, exposeCash: opts.exposeCash }) : [],
+    ...(needsCashDrawer
+      ? await treasurySnapshot(tx, branchId, cashOut, opts.exposeCash)
+      : { treasuryCash: null, treasurySufficient: false }),
   };
 }

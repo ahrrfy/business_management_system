@@ -5,6 +5,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
 import { canCrossBranches } from "../lib/branchAuthority";
+import { REFUND_RAILS } from "@shared/refundRail";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   auditLogs,
@@ -1721,6 +1722,10 @@ export const workOrderRouter = router({
       // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه استرداد العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
+      /** رافدُ ردّ العربون النقديّ (قرار المالك ١/٩) — الافتراض DRAWER. */
+      refundRail: z.enum(REFUND_RAILS).optional(),
+      /** مرجعُ تنفيذ الاسترداد الخارجيّ — إلزاميّ لرافد CARD (تفرضه الخدمة). */
+      refundReference: z.string().trim().min(3).max(100).optional(),
       clientRequestId: z.string().trim().min(1).max(100).optional(),
       /** سببُ الإلغاء — يُكتب على الأمر (0237) فيصير قابلاً للقراءة والتقرير لا حبيسَ التدقيق. */
       reason: workOrderControlReason,

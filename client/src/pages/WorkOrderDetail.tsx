@@ -378,6 +378,9 @@ export default function WorkOrderDetail() {
             // مجهولٌ ⇒ لا نَحكم بعدمِ الكفاية؛ الخادمُ هو الحَكَم عند التنفيذ.
             sufficient: true,
           })),
+          // مسارُ الاعتماد لا يُبلّغ عن الخزينة — لا نَدّعي كفايةً لا نعرفها.
+          treasuryCash: null,
+          treasurySufficient: false,
         }
     : undefined;
   const designApprovalReady =
@@ -1048,6 +1051,9 @@ export default function WorkOrderDetail() {
             expectedVersion: preflight.version,
             clientRequestId: newClientRequestId(),
             refundShiftId: d.refundShiftId,
+            // رافدُ الردّ ومرجعُه — الخادمُ يفرض المرجع للبطاقة ويضمّهما إلى بصمة الـidempotency.
+            refundRail: d.refundRail,
+            refundReference: d.refundReference,
             reason: d.reason,
             materials: d.materials,
           };

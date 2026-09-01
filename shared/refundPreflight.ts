@@ -57,6 +57,13 @@ export interface RefundPreflight {
   branchId: number;
   /** الأدراجُ المؤهَّلة (فارغةٌ ⇒ لا وردية مفتوحة تصلح لهذه العملية). */
   drawers: RefundDrawerCandidate[];
+  /**
+   * نقدُ **الخزينة الإدارية** المتاح في الفرع — يُحجَب عمّن لا يملك `treasury:READ` كالأدراج.
+   * `null` ⇒ محجوبٌ أو غيرُ منطبق؛ ومعه `treasurySufficient` يكفي للقرار بلا كشفِ رصيد.
+   */
+  treasuryCash?: string | null;
+  /** أتكفي الخزينةُ المبلغَ المتوقَّع؟ — بديلٌ غيرُ حسّاس. */
+  treasurySufficient: boolean;
 }
 
 /** عمليّاتُ أمر الشغل التي قد تُخرج نقداً. */
@@ -68,4 +75,6 @@ export const EMPTY_REFUND_PREFLIGHT: RefundPreflight = {
   estimatedCashOut: "0.00",
   branchId: 0,
   drawers: [],
+  treasuryCash: null,
+  treasurySufficient: false,
 };

@@ -19,6 +19,14 @@ import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import type { RefundPreflight } from "@shared/refundPreflight";
 import { RefundDrawerPicker, useRefundDrawer } from "./RefundDrawerPicker";
+import {
+  REFUND_RAILS,
+  REFUND_RAIL_HINT,
+  REFUND_RAIL_LABEL,
+  refundRailNeedsReference,
+  refundRailNeedsShift,
+  type RefundRail,
+} from "@shared/refundRail";
 
 export interface CancelMaterialRow {
   id: number;
@@ -103,8 +111,12 @@ export function CancelWorkOrderDialogById({
 export interface CancelDecision {
   reason: string;
   materials: Array<{ workOrderMaterialId: number; returnBase: number; wasteBase: number }> | undefined;
-  /** درجُ الاسترداد النقديّ — يُرسَل فقط حين يخرج نقدٌ فعلاً. */
+  /** درجُ الاسترداد النقديّ — يُرسَل فقط حين يخرج نقدٌ فعلاً من **درج**. */
   refundShiftId: number | undefined;
+  /** رافدُ الردّ — `undefined` ⇒ لا نقدَ يخرج (فلا رافد). */
+  refundRail: RefundRail | undefined;
+  /** مرجعُ التنفيذ الخارجيّ — لرافد البطاقة وحده. */
+  refundReference: string | undefined;
 }
 
 /** أسبابٌ جاهزة — نقرةٌ بدل كتابة، والحقلُ الحرّ يبقى لما لا يُحصى. */
@@ -175,8 +187,41 @@ export default function CancelWorkOrderDialog({
     preflight: open ? effectivePreflight : null,
     emptyLabel: "وردية استقبال",
   });
-  const { refundShiftId } = drawer;
+  const { refundShiftId: pickedShiftId } = drawer;
   const needsCashDrawer = effectivePreflight?.needsCashDrawer === true;
+  const [rail, setRail] = useState<RefundRail>("DRAWER");
+  const [refundReference, setRefundReference] = useState("");
+
+  /**
+   * **الرافدُ الافتراضيّ يتبع ما يكفي فعلاً** (بلاغ المالك ١/٩): عربونٌ ٧٠٬٠٠٠ وأوسعُ درجٍ
+   * مفتوح ٥٦٬٠٠٠ ⇒ بدءُ الحوار على «الدرج» يعني باباً مسدوداً بنقرةٍ واحدة. فإن لم يكفِ أيُّ
+   * درجٍ وكفت الخزينةُ نبدأ عليها — والموظّفُ يبقى حرّاً في التغيير.
+   */
+  useEffect(() => {
+    if (!open || !needsCashDrawer || !effectivePreflight) return;
+    const anyDrawerFits = effectivePreflight.drawers.some((d) => d.sufficient);
+    if (!anyDrawerFits && effectivePreflight.treasurySufficient) setRail("TREASURY");
+  }, [open, needsCashDrawer, effectivePreflight]);
+
+  /**
+   * سببُ الحجب **بحسب الرافد**: الدرجُ وحده يلزمه اختيارُ وردية، والبطاقةُ وحدها مرجعٌ خارجيّ.
+   * (بلا هذا كان حجبُ الدرج يسري على الخزينة فيمنع مساراً لا يحتاج درجاً إطلاقاً.)
+   */
+  // على مسار الاعتماد الرافدُ درجٌ حتماً (الحمولة لا تحمل غيره) — فلا يُحجَب بمرجعٍ لا يُطلب.
+  const effectiveRail: RefundRail = requiresApproval ? "DRAWER" : rail;
+  /**
+   * الدرجُ المُرسَل — **لرافد الدرج وحده**. الخزينةُ والبطاقةُ لا وردية لهما، وإرسالُ درجٍ معهما
+   * يخلط مصدرَ المال في البصمة والتدقيق.
+   */
+  const refundShiftId = needsCashDrawer && refundRailNeedsShift(effectiveRail) ? pickedShiftId : undefined;
+
+  const railBlockReason = !needsCashDrawer
+    ? null
+    : refundRailNeedsShift(effectiveRail)
+      ? drawer.blockReason
+      : refundRailNeedsReference(effectiveRail) && refundReference.trim().length < 3
+        ? "أدخِل مرجع تنفيذ الاسترداد من جهاز الدفع (٣ محارف على الأقل)."
+        : null;
 
   // فتحٌ جديد ⇒ حالةٌ نظيفة: سببٌ قديم أو درجٌ أُغلق بينهما يُنتجان تأكيداً يكذب.
   useEffect(() => {
@@ -341,14 +386,86 @@ export default function CancelWorkOrderDialog({
             نقديّ غيرَ قابلٍ للإلغاء كلّما فُتحت ورديتان. ويظهر خصوصاً في الإلغاء **بعد أيّام**:
             وردية القبض مُغلقةٌ يقيناً، فالنقد يخرج من درج اليوم.
           */}
-          {needsCashDrawer && (
-            <div className="space-y-1.5">
-              <Label className="text-xs font-bold">درج ردّ النقد</Label>
-              <RefundDrawerPicker
-                state={drawer}
-                needed
-                hint="وردية قبض العربون قد تكون أُغلقت — النقد يخرج من درجٍ مفتوحٍ الآن."
-              />
+          {/*
+            (!) لا نعرض روافدَ على مسار الاعتماد: حمولةُ طلب التحكّم (`CancelControlInput`)
+            تحمل `refundShiftId` و`materials` وحدهما، فاختيارُ «الخزينة» أو «البطاقة» كان
+            سيُسقَط صامتاً ويُنفَّذ الإلغاءُ من الدرج — أي اختيارٌ ماليٌّ يُهمَل بلا علم صاحبه.
+            وعرضُ خيارٍ لا أثرَ له أسوأ من عدم عرضه. (توسيعُ الحمولة في عقد جلسةٍ أخرى — مرفوع.)
+          */}
+          {needsCashDrawer && requiresApproval && (
+            <p className="rounded-md bg-[var(--sem-warn-bg)] px-2.5 py-2 text-2xs font-bold text-[var(--sem-warn)]">
+              على مسار الاعتماد يُردّ المبلغ من درج الاستقبال. للردّ من الخزينة أو على البطاقة،
+              يلزم أن ينفّذ الإلغاءَ مديرٌ يملك صلاحيته مباشرةً.
+            </p>
+          )}
+
+          {needsCashDrawer && !requiresApproval && (
+            <div className="space-y-2">
+              <Label className="text-xs font-bold">من أين يُردّ المبلغ؟</Label>
+              {/*
+                ثلاثةُ روافد لأنّ الدرجَ وحده بابٌ مسدودٌ واقعيّ: بلاغُ المالك (١/٩) كان
+                عربوناً ٧٠٬٠٠٠ وأوسعُ درجٍ مفتوح ٥٦٬٠٠٠ — لا اختيارَ يُصلح نقصَ المصدر.
+              */}
+              <div className="flex flex-wrap gap-1.5">
+                {REFUND_RAILS.map((r) => {
+                  const fits = r === "TREASURY"
+                    ? effectivePreflight?.treasurySufficient
+                    : r === "DRAWER"
+                      ? effectivePreflight?.drawers.some((d) => d.sufficient)
+                      : true;
+                  return (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setRail(r)}
+                      className={`rounded-full border px-2.5 py-1 text-2xs font-bold transition-colors ${
+                        rail === r ? "border-transparent bg-primary text-primary-foreground" : "hover:bg-muted"
+                      }`}
+                    >
+                      {REFUND_RAIL_LABEL[r]}
+                      {/* «لا يكفي» إرشادٌ لا حجب — الخادمُ هو الحَكَم، وقد يتغيّر الرصيد. */}
+                      {fits === false ? " — قد لا يكفي" : ""}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-2xs text-muted-foreground">{REFUND_RAIL_HINT[rail]}</p>
+
+              {refundRailNeedsShift(rail) && (
+                <div className="space-y-1">
+                  <Label className="text-2xs font-bold">درج ردّ النقد</Label>
+                  <RefundDrawerPicker
+                    state={drawer}
+                    needed
+                    hint="وردية قبض العربون قد تكون أُغلقت — النقد يخرج من درجٍ مفتوحٍ الآن."
+                  />
+                </div>
+              )}
+
+              {rail === "TREASURY" && effectivePreflight?.treasuryCash != null && (
+                <p className="text-2xs text-muted-foreground">
+                  نقدُ الخزينة المتاح:{" "}
+                  <span dir="ltr" className="tabular-nums font-bold">{fmtAr(effectivePreflight.treasuryCash)}</span> د.ع
+                </p>
+              )}
+
+              {refundRailNeedsReference(rail) && (
+                <div className="space-y-1">
+                  <Label className="text-2xs font-bold text-[var(--sem-warn)]">
+                    مرجع تنفيذ الاسترداد من جهاز الدفع
+                  </Label>
+                  <Input
+                    value={refundReference}
+                    onChange={(e) => setRefundReference(e.target.value)}
+                    placeholder="رقم عملية الاسترداد…"
+                    maxLength={100}
+                  />
+                  <p className="text-2xs text-muted-foreground">
+                    نفّذ الاسترداد على الجهاز أولاً، ثم أدخِل مرجعه هنا. لا يخرج مال ولا يُسجَّل
+                    قيد حتى يعتمده المالك.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -356,7 +473,7 @@ export default function CancelWorkOrderDialog({
         <DialogFooter>
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             {/* سببُ التعطيل مقروءٌ دائماً — زرٌّ معطَّلٌ بلا سبب هو نصفُ البابِ المسدود. */}
-            {(preflightPending || preflightFailed || drawer.blockReason || reason.trim().length < 3) && (
+            {(preflightPending || preflightFailed || railBlockReason || reason.trim().length < 3) && (
               <span className="text-2xs font-bold text-[var(--sem-warn)] sm:me-auto">
                 {preflightPending
                   ? "جارٍ التحقق من النقد والورديات المفتوحة…"
@@ -364,14 +481,14 @@ export default function CancelWorkOrderDialog({
                     ? "تعذّر التحقق من وردية ردّ المبلغ."
                     : reason.trim().length < 3
                       ? "اكتب سبب الإلغاء (٣ أحرف على الأقل)."
-                      : drawer.blockReason}
+                      : railBlockReason}
               </span>
             )}
             <div className="flex items-center justify-end gap-2">
               <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>تراجع</Button>
               <Button
                 variant="destructive"
-                disabled={pending || preflightPending || preflightFailed || reason.trim().length < 3 || drawer.blockReason != null}
+                disabled={pending || preflightPending || preflightFailed || reason.trim().length < 3 || railBlockReason != null}
                 onClick={() =>
                   onConfirm({
                     reason: reason.trim(),
@@ -384,7 +501,12 @@ export default function CancelWorkOrderDialog({
                           returnBase: m.baseQuantity - (waste[m.id] ?? 0),
                         }))
                       : undefined,
+                    // الدرجُ يُرسَل لرافد الدرج وحده — الخزينةُ والبطاقةُ لا وردية لهما.
                     refundShiftId: refundShiftId ?? undefined,
+                    refundRail: needsCashDrawer ? effectiveRail : undefined,
+                    refundReference: needsCashDrawer && refundRailNeedsReference(effectiveRail)
+                      ? refundReference.trim()
+                      : undefined,
                   })
                 }
               >
