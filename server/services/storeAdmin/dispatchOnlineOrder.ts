@@ -24,6 +24,7 @@ import {
 } from "../catalog/variantAvailability";
 import { money } from "../money";
 import { consumeReservedCoupon, lockCouponForSale, prelockCouponForOnlineDispatch } from "../couponService";
+import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignService";
 
 export interface DispatchOnlineOrderInput {
   onlineOrderId: number;
@@ -237,6 +238,12 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       clientRequestId: `online-parcel:${cur.id}`,
     }, actor);
     await tx.update(onlineOrders).set({ deliveryPartyId: input.partyId, status: "SHIPPED" }).where(eq(onlineOrders.id, cur.id));
+    await enqueueStorefrontOrderStatusPush(tx, {
+      orderId: Number(cur.id),
+      orderNumber: cur.orderNumber,
+      customerId: cur.customerId == null ? null : Number(cur.customerId),
+      status: "SHIPPED",
+    });
     return {
       cancelled: false as const,
       result: { orderId: Number(cur.id), invoiceId, invoiceNumber, partyId: input.partyId, total },

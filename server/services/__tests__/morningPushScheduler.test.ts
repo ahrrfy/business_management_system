@@ -1,6 +1,6 @@
 /**
- * اختبار دورة إرسال «برنامج اليوم» — إعداد مستخدمين + اشتراكات + بيانات morningBrief ثم تشغيل runMorningBriefPush
- * ومحاكاة web-push. نتحقّق من: RBAC (admin/manager فقط)، تخطّي الأصفار، idempotency (لا إعادة نفس اليوم).
+ * اختبار دورة «برنامج اليوم» الدائمة — تُنشئ appNotification ثم يتولى صندوقا Web/Native الدفع.
+ * نتحقّق من: RBAC، العمل بلا اشتراك Web، تخطّي الأصفار، وعدم تكرار نفس اليوم.
  */
 import { sql } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,7 +18,7 @@ vi.mock("web-push", () => ({
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { subscribeUserToPush } from "../pushService";
-import { runMorningBriefPush } from "../morningPushScheduler";
+import { notifyUpcomingPayrollDue, runMorningBriefPush } from "../morningPushScheduler";
 
 function db() {
   const d = getDb();
@@ -32,6 +32,11 @@ beforeAll(() => {
 });
 
 const TABLES = [
+  "payrollObligations",
+  "nativePushOutbox",
+  "webPushOutbox",
+  "appNotifications",
+  "appNotificationPreferences",
   "pushDailyClaim",
   "pushNotificationLog",
   "pushSubscriptions",
@@ -97,6 +102,31 @@ const SUB = {
 };
 
 describe("runMorningBriefPush", () => {
+  it("ينبّه الإدارة مرة واحدة عندما تستحق التزامات الرواتب غداً", async () => {
+    await db().insert(s.payrollObligations).values({
+      kind: "SALARY_NET",
+      originalAmount: "1250000",
+      remainingAmount: "1250000",
+      dueDate: "2026-09-02",
+      status: "OPEN",
+      sourceType: "OPENING_CERTIFICATE",
+      sourceKey: "payroll-due-alert-test",
+    });
+    const now = new Date("2026-09-01T05:00:00.000Z");
+
+    expect(await notifyUpcomingPayrollDue(now)).toEqual({ created: 1, skippedAlreadySent: 0 });
+    expect(await notifyUpcomingPayrollDue(now)).toEqual({ created: 0, skippedAlreadySent: 1 });
+    const [notice] = await db().select().from(s.appNotifications);
+    expect(notice).toMatchObject({
+      userId: 1,
+      kind: "SYSTEM",
+      family: "ADMIN",
+      title: "رواتب مستحقة غداً",
+      route: "/payroll",
+    });
+    expect(notice.body).not.toContain("1250000");
+  });
+
   it("يُرسل لمدير الأدمن حين المحتوى غير فارغ", async () => {
     await subscribeUserToPush(SUB, 1);
     await seedOverdueWo(1, "WO-A");
@@ -105,32 +135,33 @@ describe("runMorningBriefPush", () => {
     expect(r.candidates).toBe(1);
     expect(r.sent).toBe(1);
     expect(r.skippedEmpty).toBe(0);
-    expect(mockSendNotification).toHaveBeenCalledTimes(1);
+    const [notice] = await db().select().from(s.appNotifications);
+    const [outbox] = await db().select().from(s.webPushOutbox);
     // نتحقّق من الجسم — يحوي «١ أمر شغل متأخّر» ولا يحوي اسم عميل. الرابط: أمر شغل متأخّر فقط (بلا
     // تذكيرات AR) ⇒ pickMorningBriefUrl يوجّه لمركز أوامر الشغل التشغيلي لا /dashboard الثابت
     // (gap-audit ٥/٧ بند ١٠ — الرابط صار ديناميكياً حسب المحتوى المستحقّ فعلياً).
-    const [, payload] = mockSendNotification.mock.calls[0];
-    const parsed = JSON.parse(payload as string);
-    expect(parsed.kind).toBe("MORNING_BRIEF");
-    expect(parsed.url).toBe("/work-orders?branch=1");
-    expect(parsed.body).toContain("أمر شغل متأخّر");
-    expect(parsed.body).not.toContain("عميل-1"); // لا تسريب أسماء عملاء في جسم الإشعار
+    expect(notice).toMatchObject({ kind: "SYSTEM", family: "ADMIN", route: "/work-orders?branch=1" });
+    expect(notice.body).toContain("أمر شغل متأخّر");
+    expect(notice.body).not.toContain("عميل-1"); // لا تسريب أسماء عملاء في جسم الإشعار
+    expect(outbox.payload).toMatchObject({ kind: "SYSTEM", url: "/work-orders?branch=1", body: notice.body });
   });
 
   it("يتخطّى الكاشير (RBAC — admin/manager فقط)", async () => {
     await subscribeUserToPush({ ...SUB, endpoint: SUB.endpoint + "-cashier" }, 2);
     await seedOverdueWo(2, "WO-B");
     const r = await runMorningBriefPush();
-    expect(r.candidates).toBe(0);
-    expect(r.sent).toBe(0);
-    expect(mockSendNotification).not.toHaveBeenCalled();
+    expect(r.candidates).toBe(1); // الأدمن الفعّال مرشّح دائماً؛ الكاشير ليس مرشّحاً.
+    expect(r.sent).toBe(1);
+    const notices = await db().select().from(s.appNotifications);
+    expect(notices.map((row) => row.userId)).toEqual([1]);
   });
 
   it("يتخطّى المدير غير الفعّال (isActive=false)", async () => {
     await subscribeUserToPush({ ...SUB, endpoint: SUB.endpoint + "-inactive" }, 3);
     await seedOverdueWo(3, "WO-C");
     const r = await runMorningBriefPush();
-    expect(r.candidates).toBe(0);
+    expect(r.candidates).toBe(1); // الأدمن فقط؛ المدير المعطّل مستبعد.
+    expect((await db().select().from(s.appNotifications)).map((row) => row.userId)).toEqual([1]);
   });
 
   it("يتخطّى المحتوى الفارغ (لا متابعات ⇒ لا إشعار)", async () => {
@@ -160,9 +191,9 @@ describe("runMorningBriefPush", () => {
 
     const r = await runMorningBriefPush();
 
-    expect(r.candidates).toBe(1);
+    expect(r.candidates).toBe(2);
     expect(r.sent).toBe(0);
-    expect(r.skippedEmpty).toBe(1);
+    expect(r.skippedEmpty).toBe(2);
     expect(mockSendNotification).not.toHaveBeenCalled();
   });
 
@@ -205,12 +236,9 @@ describe("runMorningBriefPush", () => {
     const r = await runMorningBriefPush();
 
     expect(r.sent).toBe(1);
-    const [, payload] = mockSendNotification.mock.calls[0];
-    const parsed = JSON.parse(payload as string);
-    expect(parsed.counts.arRemindersDue).toBe(1);
-    expect(parsed.counts.promisedToday).toBe(1);
-    expect(parsed.body).toMatch(/^1 بند للمتابعة/);
-    expect(parsed.body).toContain("1 تذكير (منها 1 موعود اليوم)");
+    const [notice] = await db().select().from(s.appNotifications);
+    expect(notice.body).toMatch(/^1 بند للمتابعة/);
+    expect(notice.body).toContain("1 تذكير (منها 1 موعود اليوم)");
   });
 
   it("لا يحتسب المهمة المتأخرة المسندة للمستخدم مرتين في الإجمالي", async () => {
@@ -231,12 +259,9 @@ describe("runMorningBriefPush", () => {
     const r = await runMorningBriefPush();
 
     expect(r.sent).toBe(1);
-    const [, payload] = mockSendNotification.mock.calls[0];
-    const parsed = JSON.parse(payload as string);
-    expect(parsed.counts.myOpenTasks).toBe(1);
-    expect(parsed.counts.overdueTasks).toBe(1);
-    expect(parsed.body).toMatch(/^1 بند للمتابعة/);
-    expect(parsed.body).toContain("1 مهمة مفتوحة (منها 1 متأخرة)");
+    const [notice] = await db().select().from(s.appNotifications);
+    expect(notice.body).toMatch(/^1 بند للمتابعة/);
+    expect(notice.body).toContain("1 مهمة مفتوحة (منها 1 متأخرة)");
   });
 
   it("idempotency: إعادة التشغيل نفس اليوم لا يُرسل ثانيةً", async () => {
@@ -249,15 +274,33 @@ describe("runMorningBriefPush", () => {
     const r2 = await runMorningBriefPush();
     expect(r2.sent).toBe(0);
     expect(r2.skippedAlreadySent).toBe(1);
-    expect(mockSendNotification).toHaveBeenCalledTimes(1); // مرّة واحدة إجماليّاً
+    expect(await db().select().from(s.appNotifications)).toHaveLength(1);
   });
 
-  it("مستخدم بلا اشتراك نشط لا يظهر كـcandidate", async () => {
+  it("المستخدم الإداري بلا اشتراك نشط يبقى مرشحاً ويستلم الصندوق الداخلي", async () => {
     // مدير بحساب فعّال بلا اشتراك.
     await seedOverdueWo(1, "WO-E");
     const r = await runMorningBriefPush();
-    expect(r.candidates).toBe(0);
-    expect(r.sent).toBe(0);
+    expect(r.candidates).toBe(1);
+    expect(r.sent).toBe(1);
+  });
+
+  it("ينشئ تنبيه إدارة دائم للأدمن بلا اشتراك Web Push كي يظهر داخل النظام وعلى التطبيق الأصلي", async () => {
+    await seedOverdueWo(1, "WO-NATIVE-ONLY");
+
+    const r = await runMorningBriefPush();
+
+    expect(r.candidates).toBe(1);
+    expect(r.sent).toBe(1);
+    const notices = await db().select().from(s.appNotifications);
+    expect(notices).toEqual([expect.objectContaining({
+      userId: 1,
+      kind: "SYSTEM",
+      family: "ADMIN",
+      title: "برنامج اليوم — الرؤية العربية",
+    })]);
+    expect(await db().select().from(s.nativePushOutbox)).toHaveLength(1);
+    expect(await db().select().from(s.webPushOutbox)).toHaveLength(1);
   });
 
   it("لا يخلط إشعار فرع الأدمن مديني الرصيد الافتتاحي غير المنتمين إلى قائمة ذلك الفرع", async () => {
@@ -307,8 +350,8 @@ describe("runMorningBriefPush", () => {
     });
 
     const r = await runMorningBriefPush();
-    expect(r.candidates).toBe(1); // المدير فقط (الأدمن id=1 بلا اشتراك في هذا الاختبار)
+    expect(r.candidates).toBe(2); // الأدمن والمدير كلاهما مرشحان ولو بلا اشتراك Web.
     expect(r.sent).toBe(0);
-    expect(r.skippedEmpty).toBe(1); // arRemindersDue=0 للمدير ⇒ محتوى فارغ ⇒ لا إشعار
+    expect(r.skippedEmpty).toBe(2); // arRemindersDue=0 لكليهما ⇒ محتوى فارغ ⇒ لا إشعار
   });
 });

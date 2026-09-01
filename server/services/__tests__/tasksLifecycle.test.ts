@@ -22,7 +22,21 @@ function db() {
   return d;
 }
 
-const TABLES = ["taskEvents", "tasks", "waKeywordRules", "serviceTypes", "users", "branches"];
+const TABLES = [
+  "nativePushOutbox",
+  "webPushOutbox",
+  "appNotificationOutbox",
+  "appNotifications",
+  "appNotificationPreferences",
+  "nativePushDevices",
+  "pushSubscriptions",
+  "taskEvents",
+  "tasks",
+  "waKeywordRules",
+  "serviceTypes",
+  "users",
+  "branches",
+];
 
 async function reset() {
   const d = db();
@@ -223,5 +237,63 @@ describe("tasks — آلة الحالات (FSM)", () => {
     // كاشير أ (المُسنَد إليه الآن فعلاً) ما زال يراها بعد السحب.
     const listAAfter = await cashierA.tasks.list({});
     expect(listAAfter.rows.find((r) => Number(r.id) === created.taskId)).toBeDefined();
+  });
+
+  it("9) يسلّم إسناد المهمة ودورة حياتها إلى أصحابها عبر صندوق متين وبالعائلة الصحيحة", async () => {
+    const manager = await callerFor(2);
+    const cashierA = await callerFor(3);
+
+    const assigned = await manager.tasks.create({
+      branchId: 1,
+      title: "متابعة طلب العميل",
+      assignedTo: 3,
+    });
+    const assignedNotice = (
+      await db()
+        .select()
+        .from(s.appNotifications)
+        .where(eq(s.appNotifications.entityId, assigned.taskId))
+    ).find((row) => row.userId === 3 && row.title === "أُسندت إليك مهمة");
+    expect(assignedNotice).toMatchObject({ family: "OPERATIONS", requiresAction: true });
+    expect(
+      await db()
+        .select()
+        .from(s.appNotificationOutbox)
+        .where(eq(s.appNotificationOutbox.eventKey, assignedNotice!.eventKey)),
+    ).toEqual([expect.objectContaining({ status: "DELIVERED" })]);
+
+    const incoming = await manager.tasks.create({ branchId: 1, title: "استفسار وارد" });
+    await cashierA.tasks.claim({ taskId: incoming.taskId });
+    const managerNoticesAfterClaim = await db()
+      .select()
+      .from(s.appNotifications)
+      .where(eq(s.appNotifications.userId, 2));
+    expect(managerNoticesAfterClaim).toContainEqual(expect.objectContaining({
+      entityId: incoming.taskId,
+      family: "ADMIN",
+      title: "بدأ تنفيذ المهمة",
+    }));
+
+    await manager.tasks.addComment({ taskId: incoming.taskId, note: "راجع العميل قبل الإغلاق" });
+    const assigneeNotices = await db()
+      .select()
+      .from(s.appNotifications)
+      .where(eq(s.appNotifications.userId, 3));
+    expect(assigneeNotices).toContainEqual(expect.objectContaining({
+      entityId: incoming.taskId,
+      family: "OPERATIONS",
+      title: "تعليق جديد على المهمة",
+    }));
+
+    await cashierA.tasks.resolve({ taskId: incoming.taskId });
+    const managerNoticesAfterResolve = await db()
+      .select()
+      .from(s.appNotifications)
+      .where(eq(s.appNotifications.userId, 2));
+    expect(managerNoticesAfterResolve).toContainEqual(expect.objectContaining({
+      entityId: incoming.taskId,
+      family: "ADMIN",
+      title: "اكتملت المهمة",
+    }));
   });
 });

@@ -56,7 +56,10 @@ beforeEach(async () => {
   ]);
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
-  await d.insert(s.users).values({ id: 1, openId: "a", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "a", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "m", name: "مدير الفرع", role: "manager", loginMethod: "local", branchId: 1 },
+  ]);
   await d.insert(s.employees).values([
     // أسعارُ أيامه **في ملفّه** — لا في ثابتٍ بالكود. كان الاختبار يعتمد `DAY_RATES_DEFAULT`
     // (الأربعاء=٥٠٠٠) وهو رقمٌ لم يُدخله أحد؛ إسنادُه للملفّ يجعل الحارس أقوى لا أضعف:
@@ -270,7 +273,24 @@ describe("الطيّ إلى الحضور (ج٢–ج٤)", () => {
         .where(eq(s.attendance.employeeId, 1));
       expect(notices[0].entityId).toBe(attendanceRow.id);
 
-      let outbox = await db().select().from(s.nativePushOutbox);
+      const managerNotices = await db()
+        .select()
+        .from(s.appNotifications)
+        .where(eq(s.appNotifications.userId, 2));
+      expect(managerNotices).toHaveLength(1);
+      expect(managerNotices[0]).toMatchObject({
+        title: "أحمد علي الجبوري سجّل الحضور",
+        body: "08:05 • الرئيسي • جهاز الرئيسي",
+        requiresAction: false,
+      });
+      expect(managerNotices[0].eventKey).toBe(
+        `attendance:supervisor:2:1:${today}:ATTENDANCE_CHECK_IN`,
+      );
+
+      let outbox = await db()
+        .select()
+        .from(s.nativePushOutbox)
+        .where(eq(s.nativePushOutbox.userId, 1));
       expect(outbox).toHaveLength(1);
       expect(outbox[0].payload).toMatchObject({
         kind: "ATTENDANCE",
@@ -280,6 +300,18 @@ describe("الطيّ إلى الحضور (ج٢–ج٤)", () => {
         sensitive: "false",
       });
       expect(JSON.stringify(outbox[0].payload)).not.toContain("أحمد");
+      const managerOutbox = await db()
+        .select()
+        .from(s.nativePushOutbox)
+        .where(eq(s.nativePushOutbox.userId, 2));
+      expect(managerOutbox).toHaveLength(1);
+      expect(managerOutbox[0].payload).toMatchObject({
+        kind: "ATTENDANCE",
+        title: "أحمد علي الجبوري سجّل الحضور",
+        body: "08:05 • الرئيسي • جهاز الرئيسي",
+        destination: "alrueya://app/module/hr/browse",
+        sensitive: "false",
+      });
 
       // البصمة الأولى لا تُختلق منها حركة انصراف. وصول الحركة الثانية يعيد الطيّ،
       // يصطدم حدث الحضور بالمفتاح نفسه، ثم يضيف الانصراف مرة واحدة فقط.
@@ -291,7 +323,10 @@ describe("الطيّ إلى الحضور (ج٢–ج٤)", () => {
         .select()
         .from(s.appNotifications)
         .where(eq(s.appNotifications.userId, 1));
-      outbox = await db().select().from(s.nativePushOutbox);
+      outbox = await db()
+        .select()
+        .from(s.nativePushOutbox)
+        .where(eq(s.nativePushOutbox.userId, 1));
       expect(notices).toHaveLength(2);
       expect(outbox).toHaveLength(2);
       expect(notices.map((row) => row.title).sort()).toEqual(
@@ -304,8 +339,8 @@ describe("الطيّ إلى الحضور (ج٢–ج٤)", () => {
         { enrollId: 7, punchAt: `${today} 16:42:00`, mode: "fp" },
       ]);
       expect((await processPendingFolds()).days).toBe(0);
-      expect(await db().select().from(s.appNotifications)).toHaveLength(2);
-      expect(await db().select().from(s.nativePushOutbox)).toHaveLength(2);
+      expect(await db().select().from(s.appNotifications)).toHaveLength(4);
+      expect(await db().select().from(s.nativePushOutbox)).toHaveLength(4);
     } finally {
       if (previousWorkplacePolicy === undefined) {
         delete process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE;

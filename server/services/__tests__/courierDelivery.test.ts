@@ -27,6 +27,7 @@ import { hashCouponCode } from "../couponService";
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
 
 const TABLES = [
+  "storefrontPushDeliveries", "storefrontPushCampaigns", "storefrontPushDevices",
   "idempotencyKeys", "creditApprovals", "accountingEntries", "receipts",
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
@@ -129,6 +130,13 @@ async function partyBalance(id: number): Promise<string> {
 async function stockOf(variantId: number): Promise<number> {
   return Number((await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, 1))).limit(1))[0]?.q ?? 0);
 }
+async function orderPush(orderId: number, status: "SHIPPED" | "DELIVERED" | "CANCELLED") {
+  return (await db()
+    .select()
+    .from(s.storefrontPushCampaigns)
+    .where(eq(s.storefrontPushCampaigns.eventKey, `storefront-order:${orderId}:status:${status}`))
+    .limit(1))[0];
+}
 async function reconcileClean() {
   expect(await reconcileCustomerBalances()).toEqual([]);
   expect(await reconcileDeliveryFloat()).toEqual([]);
@@ -159,6 +167,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(inv.status).toBe("PAID");
     expect(await customerBalance(1)).toBe("0.00"); // AR صُفّي
     expect(await partyBalance(partyA)).toBe("20.00"); // عهدة المندوب = المُحصَّل
+    expect(await orderPush(o.orderId, "DELIVERED")).toMatchObject({ kind: "TRANSACTIONAL", destination: "/orders" });
     const portal = await listMyDeliveries(3);
     expect(portal.financialSummary?.cashInCustody).toBe("20.00"); // قيد المتجر القديم party-level لا يسقط من حساب الفرد
     await reconcileClean();
@@ -190,6 +199,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     const second = await confirmCourierDelivery({ onlineOrderId: o.orderId }, { userId: 3 });
     expect(second.alreadyDelivered).toBe(true);
     expect(second.collected).toBe("0.00");
+    expect((await db().select().from(s.storefrontPushCampaigns)).filter((row) => row.eventKey === `storefront-order:${o.orderId}:status:DELIVERED`)).toHaveLength(1);
     expect(await customerBalance(1)).toBe("0.00");
     expect(await partyBalance(partyA)).toBe("10.00"); // لم تتضاعف
     await reconcileClean();
@@ -281,6 +291,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     const ord = await order(o.orderId);
     expect(ord.status).toBe("CANCELLED");
     expect(ord.cancelReason).toBe("رفض الزبون الاستلام");
+    expect(await orderPush(o.orderId, "CANCELLED")).toMatchObject({ kind: "TRANSACTIONAL", destination: "/orders" });
     expect(await partyBalance(partyA)).toBe("0.00"); // بلا عهدة (لم يُحصَّل)
     await reconcileClean();
   });
@@ -363,6 +374,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(String(row.total)).toBe("3020.00"); // ما يدفعه الزبون للمندوب (بضاعة + أجرته) يبقى على الطلب
     expect(Number(row.invoiceId)).toBe(res.invoiceId);
     expect(Number(row.deliveryPartyId)).toBe(partyA);
+    expect(await orderPush(o.orderId, "SHIPPED")).toMatchObject({ kind: "TRANSACTIONAL", destination: "/orders" });
     const inv = await invoice(res.invoiceId);
     expect(inv.total).toBe("20.00");
     expect(inv.sourceType).toBe("ONLINE");

@@ -86,7 +86,9 @@ describe("native push security contract", () => {
       destination: "alrueya://app/module/hr/view/payroll_8",
       urgency: "information",
       sensitive: true,
+      family: "EMPLOYEE",
     });
+    expect(payload.family).toBe("EMPLOYEE");
     expect(payload.title).toBe("تحديث آمن");
     expect(payload.body).toBe("افتح سوبر العربية لعرض التفاصيل.");
     expect(JSON.stringify(payload)).not.toContain("راتب شهر آب");

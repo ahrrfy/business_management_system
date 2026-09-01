@@ -133,9 +133,29 @@ data class SelfServiceWorkspace(
     val leaveBalances: LeaveBalances?,
 )
 
+enum class NotificationFamily(val arabicLabel: String) {
+    OPERATIONS("العمليات"),
+    ADMIN("الإدارة"),
+    EMPLOYEE("الموظف"),
+    SYSTEM("النظام"),
+    APPROVAL("الاعتمادات");
+
+    companion object {
+        fun fromWire(value: String?, kind: String): NotificationFamily =
+            values().firstOrNull { it.name == value } ?: when (kind) {
+                "TASK_ASSIGNED" -> OPERATIONS
+                "SESSION_EVENT" -> ADMIN
+                "PAYROLL_READY", "ATTENDANCE", "LEAVE_STATUS" -> EMPLOYEE
+                "APPROVAL_REQUIRED" -> APPROVAL
+                else -> SYSTEM
+            }
+    }
+}
+
 data class PersonalNotification(
     val id: Long,
     val kind: String,
+    val family: NotificationFamily,
     val title: String,
     val body: String,
     val createdAt: String?,
