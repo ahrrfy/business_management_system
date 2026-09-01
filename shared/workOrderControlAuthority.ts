@@ -31,6 +31,13 @@ export const WORK_ORDER_EXEC_ROLES = ["cashier", "manager", "print_operator"] as
 export const WORK_ORDER_COMMERCIAL_ROLES = ["cashier", "manager"] as const;
 /** مديرُ الوحدة (مرآة `workordersManagerProcedure`). */
 export const WORK_ORDER_MANAGER_ROLES = ["manager"] as const;
+/**
+ * **الإلغاءُ المباشر** (مرآة `workordersDirectCancelProcedure`): مدير أو فنّي مطبعة.
+ *
+ * ⛔ **الكاشير خارجها عمداً.** قرارُ المالك أضاف صلاحيةً للفنّي، ولم يُعِد توزيعَ السلطة؛
+ * ومسارُ الكاشير يبقى `requestControl` كما كان — وهو عقدُ RBAC مُختبَرٌ صراحةً.
+ */
+export const WORK_ORDER_DIRECT_CANCEL_ROLES = ["manager", "print_operator"] as const;
 
 type Override = PermissionMap | null | undefined;
 
@@ -51,7 +58,15 @@ export function hasWorkOrderCommercialAuthority(role: string | null | undefined,
   return allowed(role, override, WORK_ORDER_COMMERCIAL_ROLES);
 }
 
-/** سلطةُ المدير: الإلغاءُ المباشر ذو الأثر، واعتمادُ طلبات التحكّم. */
+/** مَن يجوز له محاولةُ إلغاءٍ مباشر أصلاً — قبل النظر في حالة الأمر أو ماله. */
+export function hasWorkOrderDirectCancelAuthority(
+  role: string | null | undefined,
+  override: Override,
+): boolean {
+  return allowed(role, override, WORK_ORDER_DIRECT_CANCEL_ROLES);
+}
+
+/** سلطةُ المدير: اعتمادُ طلبات التحكّم، والإلغاءُ المباشر بحدوده القائمة. */
 export function hasWorkOrderManagerAuthority(role: string | null | undefined, override: Override): boolean {
   return allowed(role, override, WORK_ORDER_MANAGER_ROLES);
 }
@@ -121,8 +136,10 @@ export function mayCancelWorkOrderWithoutApproval(input: {
   managerControlRequired: boolean;
 }): boolean {
   if (input.moneyAtStake) return false;
+  // مَن لا يملك الإلغاءَ المباشر أصلاً (الكاشير مثلاً) ⇒ مسارُه الطلبُ والاعتماد.
+  if (!hasWorkOrderDirectCancelAuthority(input.role, input.override)) return false;
   // المديرُ يبقى على بوّابته القائمة حرفياً — لا توسيعَ ولا تضييقَ لسلطةٍ قائمة.
   if (hasWorkOrderManagerAuthority(input.role, input.override)) return !input.managerControlRequired;
-  // الفنّي/الكاشير: أمرٌ لم يبدأ ولا مالَ فيه ⇒ إلغاءٌ مباشر بسببٍ مكتوب.
-  return input.status === "RECEIVED" && hasWorkOrderExecAuthority(input.role, input.override);
+  // الفنّي: أمرٌ لم يبدأ ولا مالَ فيه ⇒ إلغاءٌ مباشر بسببٍ مكتوب.
+  return input.status === "RECEIVED";
 }

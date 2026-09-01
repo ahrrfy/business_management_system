@@ -703,6 +703,17 @@ export const workordersReadProcedure = branchScopedProcedure.use(requireModule("
 export const workordersCashierProcedure = moduleProcedure(["cashier", "manager"], "workorders", "FULL");
 export const workordersExecProcedure = moduleProcedure(["cashier", "manager", "print_operator"], "workorders", "FULL");
 export const workordersManagerProcedure = moduleProcedure(["manager"], "workorders", "FULL");
+/**
+ * **الإلغاءُ المباشر لأمر الشغل** — مدير **أو فنّي مطبعة** (قرار المالك ١/٩/٢٦: الفنّي أوّلُ من
+ * يتحدّث مع العميل وإليه يتّصل ليُلغي). والحدُّ الفاصل بعد البوّابة هو **المال**: الخدمة ترفض
+ * أيَّ إلغاءٍ مباشر فيه عربونٌ أو مقبوضٌ أو أمانةُ أجرة، أو بدأ إنتاجُه.
+ *
+ * ⛔ **الكاشير ليس منها عمداً**: مساره `requestControl` كما كان قبل هذه الشريحة. توسيعُه إلى
+ * `workordersExecProcedure` كان سيسحبه معه صامتاً وينقض عقد RBAC المُختبَر («الكاشير ممنوع من
+ * العمليات الإدارية: لا يلغي أمر شغل») — والمالكُ طلب صلاحيةً للفنّي لا إعادةَ توزيعٍ للسلطة.
+ * والبوّابةُ هنا لا في الخدمة وحدها: عقدُ RBAC يتوقّع `FORBIDDEN` **قبل** تحقّق المدخلات.
+ */
+export const workordersDirectCancelProcedure = moduleProcedure(["manager", "print_operator"], "workorders", "FULL");
 
 // ─── F7 (تدقيق ٢/٧): بوّابات الوحدة المالية «treasury» ─────────────────────────
 // «محاسب» قالبه treasury=FULL ووصفه المعلن يشمل الخزينة والسندات — كان مصدوداً.

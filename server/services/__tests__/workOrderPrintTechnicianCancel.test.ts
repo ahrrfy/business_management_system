@@ -131,6 +131,16 @@ describe("إلغاء الطلب بيد فنّي المطبعة", () => {
     expect(outbound).toHaveLength(0);
   });
 
+  it("⛔⭐ الكاشير لا يُلغي مباشرةً ولو خلا الأمرُ من المال — عقدُ RBAC القائم", async () => {
+    const workOrderId = await createOrder();
+    const before = await order(workOrderId);
+    await expect(cancelWorkOrder(workOrderId, CASHIER, {
+      expectedVersion: Number(before.version),
+      reason: "العميل ألغى الطلب",
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await order(workOrderId)).status).toBe("RECEIVED");
+  });
+
   it("يُرفض إلغاؤه المباشر بعد بدء التنفيذ — مصيرُ الخامة قرارُ مدير", async () => {
     const workOrderId = await createOrder();
     await db().update(s.workOrders).set({ status: "IN_PROGRESS" }).where(eq(s.workOrders.id, workOrderId));

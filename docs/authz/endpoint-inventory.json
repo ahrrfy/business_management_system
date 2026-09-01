@@ -7,7 +7,7 @@
       "query": 584
     },
     "byAuthority": {
-      "module-gate": 627,
+      "module-gate": 625,
       "module-map": 385,
       "admin": 67,
       "none": 52,
@@ -18,6 +18,7 @@
       "platform": 6,
       "public-read": 6,
       "token": 2,
+      "unknown": 2,
       "device-bootstrap": 1
     },
     "bySensitivity": {
@@ -26,7 +27,7 @@
       "HIGH": 170
     },
     "byModule": {
-      "(none)": 185,
+      "(none)": 187,
       "reports": 100,
       "hr": 100,
       "store": 95,
@@ -36,7 +37,7 @@
       "inventory": 69,
       "products": 62,
       "productStudio": 48,
-      "workorders": 47,
+      "workorders": 45,
       "crm": 42,
       "sales": 33,
       "campaigns": 29,
@@ -71,7 +72,8 @@
       "UNAUTHENTICATED": 37,
       "READ_WITHOUT_MODULE_GATE": 29,
       "WRITE_WITHOUT_MODULE_GATE": 23,
-      "HANDLER_ROLE_CHECK": 6
+      "HANDLER_ROLE_CHECK": 6,
+      "PROCEDURE_UNKNOWN": 2
     },
     "expressRoutes": 21,
     "expressMounts": 12,
@@ -20394,15 +20396,15 @@
       "proposedPermission": "workorders.work_order.void",
       "name": "cancel",
       "kind": "mutation",
-      "procedure": "workordersExecProcedure",
-      "authority": "module-gate",
-      "module": "workorders",
-      "level": "FULL",
-      "roles": "cashier|manager|print_operator",
-      "branch": "required",
+      "procedure": "workordersDirectCancelProcedure",
+      "authority": "unknown",
+      "module": "",
+      "level": "",
+      "roles": "",
+      "branch": "unknown",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
-      "flags": "SENSITIVE_ACTION",
+      "flags": "PROCEDURE_UNKNOWN|SENSITIVE_ACTION",
       "loc": "server/routers/workOrderRouter.ts:1741"
     },
     {
@@ -20420,7 +20422,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:1847"
+      "loc": "server/routers/workOrderRouter.ts:1848"
     },
     {
       "surface": "trpc",
@@ -20666,16 +20668,16 @@
       "proposedPermission": "workorders.work_order.refund",
       "name": "refundPreflight",
       "kind": "query",
-      "procedure": "workordersExecProcedure",
-      "authority": "module-gate",
-      "module": "workorders",
-      "level": "FULL",
-      "roles": "cashier|manager|print_operator",
-      "branch": "required",
+      "procedure": "workordersDirectCancelProcedure",
+      "authority": "unknown",
+      "module": "",
+      "level": "",
+      "roles": "",
+      "branch": "unknown",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:1831"
+      "flags": "PROCEDURE_UNKNOWN",
+      "loc": "server/routers/workOrderRouter.ts:1832"
     },
     {
       "surface": "trpc",

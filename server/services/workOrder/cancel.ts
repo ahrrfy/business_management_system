@@ -21,6 +21,7 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import { refundRailIsImmediate, refundRailNeedsReference, refundRailReceiptShape, type RefundRail } from "@shared/refundRail";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import {
+  hasWorkOrderDirectCancelAuthority,
   hasWorkOrderManagerAuthority,
   mayCancelWorkOrderWithoutApproval,
 } from "@shared/workOrderControlAuthority";
@@ -216,6 +217,14 @@ export async function cancelWorkOrderInTx(
       managerControlRequired: riskyCancellation,
     });
     if (!directCancelAllowed && control.approvedControlRequestId == null) {
+      // **٤٠٣ لِمَن ليس له القرار، و٤١٢ لِمَن له القرار وحالةُ الأمر تمنعه** — رمزان مختلفان
+      // لسببَين مختلفَين. الكاشير يقع في الأوّل (مسارُه الطلب) ولو كان الأمرُ خالياً من المال.
+      if (!hasWorkOrderDirectCancelAuthority(actor.role ?? "", (actor.permissionsOverride ?? null) as never)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "الإلغاء المباشر لدورك غير متاح — أرسل طلب إلغاء ليعتمده مدير",
+        });
+      }
       const isManager = hasWorkOrderManagerAuthority(
         actor.role ?? "",
         (actor.permissionsOverride ?? null) as never,

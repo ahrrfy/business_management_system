@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   hasWorkOrderCommercialAuthority,
+  hasWorkOrderDirectCancelAuthority,
   hasWorkOrderExecAuthority,
   hasWorkOrderManagerAuthority,
   mayCancelWorkOrderWithoutApproval,
@@ -112,6 +113,30 @@ describe("الإلغاء المباشر بلا اعتماد", () => {
     ).toBe(true);
   });
 
+  it("⛔⭐ الكاشير خارج الإلغاء المباشر — عقدُ RBAC القائم لم يُمَسّ", () => {
+    // المالكُ أضاف صلاحيةً للفنّي ولم يُعِد توزيعَ السلطة؛ مسارُ الكاشير يبقى الطلبَ والاعتماد.
+    expect(hasWorkOrderDirectCancelAuthority("cashier", null)).toBe(false);
+    expect(
+      mayCancelWorkOrderWithoutApproval({ ...base, role: "cashier", override: null }),
+    ).toBe(false);
+    // ولو كان الأمرُ خالياً من المال والخامة معاً.
+    expect(
+      mayCancelWorkOrderWithoutApproval({
+        ...base, role: "cashier", override: null, managerControlRequired: false, moneyAtStake: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("سلطةُ الإلغاء المباشر = مدير أو فنّي مطبعة (مرآة workordersDirectCancelProcedure)", () => {
+    expect(hasWorkOrderDirectCancelAuthority("manager", null)).toBe(true);
+    expect(hasWorkOrderDirectCancelAuthority("print_operator", null)).toBe(true);
+    expect(hasWorkOrderDirectCancelAuthority("admin", null)).toBe(true);
+    expect(hasWorkOrderDirectCancelAuthority("cashier", null)).toBe(false);
+    expect(hasWorkOrderDirectCancelAuthority("courier", null)).toBe(false);
+    // منحٌ صريح يفتحها لدورٍ خارج القائمة (نمط moduleAccessAllowed نفسه).
+    expect(hasWorkOrderDirectCancelAuthority("sales_rep", { workorders: "FULL" } as never)).toBe(true);
+  });
+
   it("لا يمنح دوراً بلا سلطةِ تنفيذٍ شيئاً", () => {
     expect(
       mayCancelWorkOrderWithoutApproval({ ...base, role: "courier", override: null }),
@@ -119,5 +144,6 @@ describe("الإلغاء المباشر بلا اعتماد", () => {
     expect(
       mayCancelWorkOrderWithoutApproval({ ...base, role: "print_operator", override: { workorders: "READ" } as never }),
     ).toBe(false);
+    expect(hasWorkOrderDirectCancelAuthority("print_operator", { workorders: "READ" } as never)).toBe(false);
   });
 });

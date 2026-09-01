@@ -48,7 +48,7 @@ import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
 import { setWorkOrderDesign } from "../services/workOrder/design";
 import { maySeeDrawerCash as sharedMaySeeDrawerCash } from "@shared/workOrderControlAuthority";
-import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
+import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersDirectCancelProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -1732,13 +1732,13 @@ export const workOrderRouter = router({
     }),
 
   /**
-   * **الإلغاءُ المباشر** — `workordersExecProcedure` بقرار المالك (١/٩/٢٦): فنّي المطبعة أوّلُ
-   * من يتحدّث مع العميل عن الطلب، وإليه يتّصل ليُلغي. والحدُّ الفاصلُ ليس الدورَ بل **المال**:
+   * **الإلغاءُ المباشر** — مدير أو فنّي مطبعة بقرار المالك (١/٩/٢٦): الفنّي أوّلُ من يتحدّث
+   * مع العميل عن الطلب، وإليه يتّصل ليُلغي. والحدُّ الفاصلُ بعد البوّابة ليس الدورَ بل **المال**:
    * `cancelWorkOrderInTx` يرفض أيَّ إلغاءٍ مباشر فيه عربونٌ أو مقبوضٌ أو أمانةُ أجرة، أو بدأ
    * إنتاجُه — فيُحال إلى `requestControl` ليعتمده مديرٌ يردّ المبلغ من درجه. بوّابةُ المدير
-   * القائمة (`riskyCancellation`) لم تُمَسّ حرفاً.
+   * القائمة (`riskyCancellation`) لم تُمَسّ حرفاً، **والكاشير يبقى خارجها كما كان**.
    */
-  cancel: workordersExecProcedure
+  cancel: workordersDirectCancelProcedure
     .input(z.object({
       workOrderId: z.number().int().positive(),
       expectedVersion: z.number().int().positive(),
@@ -1824,11 +1824,12 @@ export const workOrderRouter = router({
    * `treasury.getOpenShifts`، فدورٌ مخوَّلٌ للإلغاء وممنوعٌ من الخزينة يتلقّى FORBIDDEN ⇒
    * قائمةٌ فارغة ⇒ **فعلُه المصرَّح به معطَّلٌ نهائياً** (مراجعة Codex P1 #920).
    *
-   * ولمّا صار الإلغاءُ نفسه `workordersExecProcedure` (فنّي المطبعة، قرار المالك ١/٩/٢٦)
-   * تبعته البوّابةُ هنا حرفياً — وإلّا عاد العطبُ نفسه لفاعلٍ جديد. ولا يُسرّب سطحَ الخزينة:
-   * `exposeCash` يحجب **الرقم** عمّن لا يملك `treasury:READ` ويُبقي له علَمَ الكفاية وحده.
+   * ولمّا صار الإلغاءُ نفسه لمديرٍ أو فنّي مطبعة (قرار المالك ١/٩/٢٦) تبعته البوّابةُ هنا
+   * **حرفياً بنفس الإجراء** — وإلّا عاد العطبُ نفسه لفاعلٍ جديد، أو انفتح تمهيدٌ لمن لا يملك
+   * فعلَه. ولا يُسرّب سطحَ الخزينة: `exposeCash` يحجب **الرقم** عمّن لا يملك `treasury:READ`
+   * ويُبقي له علَمَ الكفاية وحده.
    */
-  refundPreflight: workordersExecProcedure
+  refundPreflight: workordersDirectCancelProcedure
     .input(z.object({
       workOrderId: z.number().int().positive(),
       operation: z.enum(["CANCEL", "REVERSE_DELIVERY"]),
