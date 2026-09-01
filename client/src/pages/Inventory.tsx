@@ -1,7 +1,9 @@
+import { FilterField } from "@/components/filters/FilterField";
+import { FilterShell } from "@/components/filters/FilterShell";
+import { SearchField } from "@/components/filters/SearchField";
 import { RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
@@ -29,7 +31,6 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { groupCategoriesTree } from "@/lib/categoryTree";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
@@ -353,9 +354,6 @@ export default function Inventory() {
     setF({ q: code, cat: "all", low: "", neg: "" });
     setPage(0);
   }, [setF]);
-  const barcodeInput = useBarcodeInput(handleInventoryBarcode, {
-    enabled: editing == null,
-  });
   useBarcodeScanner(handleInventoryBarcode, {
     enabled:
       editing == null &&
@@ -387,7 +385,12 @@ export default function Inventory() {
   // مصفوفة صرفة بلا COUNT — صفحة مكتملة تعني غالباً وجود المزيد (تقريب paginateKeyset في وضع offset).
   const hasMore = rows.length === PAGE_SIZE;
   const lowCount = rows.filter((r) => r.isLow).length;
-  const anyFilter = f.q || f.cat !== "all" || f.low || f.neg || f.branch;
+  /**
+   * عدّاد الفلاتر المفعّلة — **بلا حقل البحث** (اصطلاح ListToolbar القائم) كي لا يقفز
+   * العدّاد مع كل حرف يكتبه الموظّف. زرّ التصفير في FilterShell يظهر تبعاً له.
+   */
+  const activeFilterCount =
+    (f.cat !== "all" ? 1 : 0) + (f.low ? 1 : 0) + (f.neg ? 1 : 0) + (f.branch ? 1 : 0) + (f.q ? 1 : 0);
 
   const exportColumns = [
     { key: "productName" as const, header: "المنتج" },
@@ -411,84 +414,77 @@ export default function Inventory() {
         }
       />
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">الفلاتر</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-          {canPickBranch && (
-            <div className="space-y-1">
-              <Label htmlFor="inv-branch">الفرع</Label>
-              <AppSelect
-                id="inv-branch"
-                value={String(branchId)}
-                onValueChange={(v) => patchF({ branch: v })}
-              >
-                {(branches.data ?? []).map((b) => (
-                  <option key={Number(b.id)} value={String(Number(b.id))}>{b.name}</option>
-                ))}
-              </AppSelect>
-            </div>
-          )}
-          <div className="space-y-1">
-            <Label>بحث (اسم/SKU/متغيّر/باركود)</Label>
-            <div className="relative">
-              <Input
-                value={f.q}
-                onChange={(e) => {
-                  setLastScannedBarcode(null);
-                  patchF({ q: e.target.value });
-                }}
-                onKeyDown={(event) =>
-                  barcodeInput.handleKeyDown(event, (value) => {
-                    setLastScannedBarcode(null);
-                    patchF({ q: value });
-                  })
-                }
-                className={barcodeSearchInputClass}
-                placeholder="اكتب الاسم أو SKU أو امسح أي باركود"
-              />
-              <BarcodeSearchCue />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="inv-category">الفئة</Label>
-            <AppSelect id="inv-category" value={f.cat} onValueChange={(v) => patchF({ cat: v })}>
-              <option value="all">كل الفئات</option>
-              <option value="0">— بلا فئة —</option>
-              {groupCategoriesTree(categoriesQ.data ?? []).map(({ top, children }) =>
-                children.length ? (
-                  <optgroup key={top.id} label={top.name}>
-                    <option value={String(top.id)}>{top.name} (عام)</option>
-                    {children.map((c) => (
-                      <option key={c.id} value={String(c.id)}>{c.name}</option>
-                    ))}
-                  </optgroup>
-                ) : (
-                  <option key={top.id} value={String(top.id)}>{top.name}</option>
-                ),
-              )}
+      {/*
+        الموجة ١ من حملة توحيد الواجهات (docs/ui-unification-campaign.md):
+        كان هذا الغلاف يدوياً بتوقيع شبكةٍ خاصّ (`grid-cols-1 md:grid-cols-3 items-end`)
+        ومفاتيحَ ثنائية محشورةً في خلايا الشبكة بارتفاعٍ مزيَّف (`h-9`)، وتسميةِ بحثٍ
+        غير مربوطة بحقلها، و`ml-1` فيزيائيّ (يقلب اتّجاهه في RTL).
+      */}
+      <FilterShell
+        columns={3}
+        activeCount={activeFilterCount}
+        onReset={() => {
+          setLastScannedBarcode(null);
+          resetF();
+          setPage(0);
+        }}
+        toggles={
+          <>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" className="size-4" checked={lowOnly} onChange={(e) => patchF({ low: e.target.checked ? "1" : "" })} />
+              <span className="text-muted-foreground">تحت الحد الأدنى فقط</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" className="size-4" checked={negativeOnly} onChange={(e) => patchF({ neg: e.target.checked ? "1" : "" })} />
+              <span className="text-muted-foreground">السوالب فقط (بانتظار الجرد الافتتاحي)</span>
+            </label>
+          </>
+        }
+      >
+        {canPickBranch && (
+          <FilterField label="الفرع" htmlFor="inv-branch">
+            <AppSelect
+              id="inv-branch"
+              value={String(branchId)}
+              onValueChange={(v) => patchF({ branch: v })}
+            >
+              {(branches.data ?? []).map((b) => (
+                <option key={Number(b.id)} value={String(Number(b.id))}>{b.name}</option>
+              ))}
             </AppSelect>
-          </div>
-          <label className="flex items-center gap-2 h-9 text-sm">
-            <input type="checkbox" className="size-4" checked={lowOnly} onChange={(e) => patchF({ low: e.target.checked ? "1" : "" })} />
-            <span className="text-muted-foreground">تحت الحد الأدنى فقط</span>
-          </label>
-          <label className="flex items-center gap-2 h-9 text-sm">
-            <input type="checkbox" className="size-4" checked={negativeOnly} onChange={(e) => patchF({ neg: e.target.checked ? "1" : "" })} />
-            <span className="text-muted-foreground">السوالب فقط (بانتظار الجرد الافتتاحي)</span>
-          </label>
-          {anyFilter && (
-            <div className="flex items-center h-9">
-              <Button variant="ghost" size="sm" onClick={() => {
-                setLastScannedBarcode(null);
-                resetF();
-                setPage(0);
-              }}>
-                <XCircle aria-hidden className="size-4 ml-1" /> مسح الفلاتر
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          </FilterField>
+        )}
+        <FilterField label="بحث (اسم/SKU/متغيّر/باركود)" wide>
+          <SearchField
+            value={f.q}
+            barcode
+            placeholder="اكتب الاسم أو SKU أو امسح أي باركود"
+            onChange={(value) => {
+              setLastScannedBarcode(null);
+              patchF({ q: value });
+            }}
+            onScan={handleInventoryBarcode}
+          />
+        </FilterField>
+        <FilterField label="الفئة" htmlFor="inv-category">
+          <AppSelect id="inv-category" value={f.cat} onValueChange={(v) => patchF({ cat: v })}>
+            <option value="all">كل الفئات</option>
+            <option value="0">— بلا فئة —</option>
+            {groupCategoriesTree(categoriesQ.data ?? []).map(({ top, children }) =>
+              children.length ? (
+                <optgroup key={top.id} label={top.name}>
+                  <option value={String(top.id)}>{top.name} (عام)</option>
+                  {children.map((c) => (
+                    <option key={c.id} value={String(c.id)}>{c.name}</option>
+                  ))}
+                </optgroup>
+              ) : (
+                <option key={top.id} value={String(top.id)}>{top.name}</option>
+              ),
+            )}
+          </AppSelect>
+        </FilterField>
+      </FilterShell>
 
       {scannedSearchActive && scannedLookupLoading && (
         <div ref={scanIdentityRef}>

@@ -1,4 +1,5 @@
 import { CopyInline } from "@/components/CopyButton";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -576,7 +577,7 @@ export default function Customers() {
                   </label>
                 </FilterField>
                 {hasAnyFilter && (
-                  <Button type="button" variant="ghost" size="sm" onClick={() => resetAllFilters()}>مسح كل الفلاتر</Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => resetAllFilters()}>{FILTER_LABELS.reset}</Button>
                 )}
               </>
             }
@@ -812,7 +813,7 @@ export default function Customers() {
                       <span>لا عملاء مطابقين.</span>
                       {hasAnyFilter ? (
                         <Button type="button" variant="outline" size="sm" onClick={() => { resetAllFilters(); setPage(0); }}>
-                          مسح كل الفلاتر
+                          {FILTER_LABELS.reset}
                         </Button>
                       ) : (
                         <span className="text-xs">أضِف عميلاً جديداً أو غيّر البحث.</span>

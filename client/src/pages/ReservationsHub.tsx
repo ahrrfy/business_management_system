@@ -2,6 +2,7 @@
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
 import { receptionChannelLabel } from "@shared/receptionChannel";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -465,7 +466,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="بحث برقم الحجز أو اسم/هاتف العميل…" className="pe-9" />
         </div>
         <Button size="sm" variant="outline" onClick={clearFilters} disabled={!hasFilters}>
-          <FilterX aria-hidden className="size-4 me-1" /> مسح الفلاتر
+          <FilterX aria-hidden className="size-4 me-1" /> {FILTER_LABELS.reset}
         </Button>
         <Button size="sm" variant="outline" onClick={exportAll} disabled={effectiveBranch == null}>
           <Download aria-hidden className="size-4 me-1" /> تصدير Excel

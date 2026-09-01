@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { FilterField, ListToolbar } from "@/components/list";
@@ -211,7 +212,7 @@ export default function Employees() {
                         <div className="space-y-2">
                           <div>لا موظفين مطابقين للفلاتر الحالية.</div>
                           <Button variant="outline" size="sm" onClick={() => { resetF(); setPage(0); }}>
-                            مسح الفلاتر
+                            {FILTER_LABELS.reset}
                           </Button>
                         </div>
                       ) : canCreate ? (

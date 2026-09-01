@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { CopyInline } from "@/components/CopyButton";
@@ -694,7 +695,7 @@ export default function Vouchers() {
               className="text-muted-foreground"
             >
               <X aria-hidden className="size-4" />
-              مسح الفلاتر
+              {FILTER_LABELS.reset}
             </Button>
           )}
         </CardHeader>

@@ -5,6 +5,7 @@
  * الأقسام: حالة الجسر + الهجرة | جدول الأجهزة (+أوامر/ربط) | البصمات الخام (طابور المراجعة).
  * trpc.hrDevices.* — القراءة hr/READ والأزرار الكاتبة hr/FULL. */
 import { Button } from "@/components/ui/button";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -663,8 +664,8 @@ export default function HrDevices() {
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  aria-label="مسح الفلاتر"
-                  title="مسح الفلاتر"
+                  aria-label={FILTER_LABELS.reset}
+                  title={FILTER_LABELS.reset}
                   onClick={resetDeviceFilters}
                 >
                   <X aria-hidden className="size-3.5" />
@@ -1198,7 +1199,7 @@ export default function HrDevices() {
                 onClick={resetPunchFilters}
                 className="text-muted-foreground"
               >
-                <X aria-hidden className="size-4" /> مسح الفلاتر
+                <X aria-hidden className="size-4" /> {FILTER_LABELS.reset}
               </Button>
             )}
           </div>

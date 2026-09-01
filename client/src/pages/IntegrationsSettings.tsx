@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -1378,7 +1379,7 @@ pnpm prod:deploy
                   <option value="ALL">كل الفروع</option>
                   {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
                 </AppSelect>
-                <Button variant="outline" onClick={clearFilters} disabled={!hasFilters}>مسح الفلاتر</Button>
+                <Button variant="outline" onClick={clearFilters} disabled={!hasFilters}>{FILTER_LABELS.reset}</Button>
               </div>
               <div className="mt-3 text-xs text-muted-foreground">
                 عرض {filteredIntegrations.length} من {summary.total} اتصال
@@ -1406,7 +1407,7 @@ pnpm prod:deploy
               <CardContent className="space-y-3 py-10 text-center">
                 <Search aria-hidden className="mx-auto size-6 text-muted-foreground" />
                 <div className="font-medium">لا توجد نتائج مطابقة</div>
-                <Button variant="outline" onClick={clearFilters}>مسح الفلاتر</Button>
+                <Button variant="outline" onClick={clearFilters}>{FILTER_LABELS.reset}</Button>
               </CardContent>
             </Card>
           ) : (

@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
@@ -214,7 +215,7 @@ export default function AssetRegister() {
                         <div className="space-y-2">
                           <div>لا أصول مطابقة للفلاتر الحالية.</div>
                           <Button variant="outline" size="sm" onClick={resetF}>
-                            مسح الفلاتر
+                            {FILTER_LABELS.reset}
                           </Button>
                         </div>
                       ) : canWrite ? (
