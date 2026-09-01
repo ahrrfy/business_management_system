@@ -569,7 +569,7 @@ export async function rejectSalesControlRequest(
 }
 
 /**
- * ⭐ **سحبُ الطالب لطلبه** — مخرجُ الطريق المسدود (تدقيق ١/٩/٢٦، هجرة 0319).
+ * ⭐ **سحبُ الطالب لطلبه** — مخرجُ الطريق المسدود (تدقيق ١/٩/٢٦، هجرة 0323).
  *
  * `assertReviewerSeparation` يحجب الطالبَ ومنشئَ الفاتورة عن **الاعتماد والرفض معاً**.
  * فحين يكون الطالبُ هو المديرَ الوحيد (و`returns.create` محصورٌ بمديرٍ فأعلى ⇒ الطالبُ مديرٌ
@@ -613,7 +613,7 @@ export async function withdrawSalesControlRequest(
     await tx.update(salesControlRequests).set({
       status: "WITHDRAWN",
       // `reviewedBy` = الساحب = الطالب. يستثنيه `chk_sales_control_maker_checker` للحالة
-      // WITHDRAWN وحدها (هجرة 0319)، ويبقى مُلزِماً على APPROVED/REJECTED.
+      // WITHDRAWN وحدها (هجرة 0323)، ويبقى مُلزِماً على APPROVED/REJECTED.
       reviewedBy: actor.userId,
       reviewedAt,
       reviewNote: note,

@@ -23,6 +23,7 @@
 import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertMonotonicDescent } from "./ratchet-core.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -92,8 +93,23 @@ for (const [file, count] of current) {
 // إبلاغ عن الملفات النظيفة التي كانت في الأساس (للمساعدة على تخفيضه بعد الترحيل)
 const staleBaseline = Object.keys(RAW_TABLE_BASELINE).filter((f) => !current.has(f));
 
+/**
+ * ⭐ المِسنَنة التنازلية (١/٩/٢٦): لا يكفي منعُ الانتهاك الجديد — يجب منع **رفع الأساس**
+ * لتمريره. بدونها كان الحارس أخضرَ إلى الأبد على ١١٢ ملفاً. التفصيل: scripts/ratchet-core.mjs.
+ */
+const descent = assertMonotonicDescent({
+  baselinePath: "scripts/raw-tables-baseline.json",
+  baseline: RAW_TABLE_BASELINE,
+  label: "اعتماد DataTable",
+});
+if (!descent.ok) {
+  console.error(descent.message);
+  process.exit(1);
+}
+
 if (findings.length === 0) {
   console.log(`✓ اعتماد DataTable محفوظ — ${current.size} ملف ضمن خطّ الأساس.`);
+  if (!descent.skipped) console.log(descent.message);
   if (staleBaseline.length > 0) {
     console.log(`ℹ️  ${staleBaseline.length} ملف نظيف يمكن حذفه من خطّ الأساس في scripts/check-raw-tables.mjs:`);
     for (const f of staleBaseline) console.log(`   - ${f}`);

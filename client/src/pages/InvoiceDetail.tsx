@@ -1627,15 +1627,15 @@ export default function InvoiceDetail() {
             {paidAmountForRefund.gt(0) && (
               <div className="space-y-1">
                 <Label htmlFor="cancel-method">جهة الاسترداد (إلزاميّة)</Label>
-                <select
+                <AppSelect
                   id="cancel-method"
-                  className={selectCls}
+                  className="h-9"
                   value={cancelMethod}
-                  onChange={(e) => setCancelMethod(e.target.value as typeof cancelMethod)}
+                  onValueChange={(value) => setCancelMethod(value as typeof cancelMethod)}
                 >
                   {METHODS.map((m) => (
                     <option key={m.v} value={m.v}>{m.label}</option>))}
-                </select>
+                </AppSelect>
                 <p className="text-xs text-muted-foreground">
                   النقد يخرج من درج الوردية المفتوحة (أو من الخزينة الإدارية إن كنت مديراً بلا وردية).
                 </p>

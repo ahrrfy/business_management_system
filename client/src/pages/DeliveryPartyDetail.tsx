@@ -259,17 +259,17 @@ function PartyMembersTab({ partyId, canEdit }: { partyId: number; canEdit: boole
     <div className="space-y-3">
       {canEdit && (
         <div className="grid gap-2 rounded-xl border bg-card p-3 sm:grid-cols-[1fr_180px_auto]">
-          <select value={userId} onChange={(e) => setUserId(e.target.value)} className="rounded-lg border bg-background px-3 py-2 text-sm">
+          <AppSelect value={userId} onValueChange={(next) => setUserId(next)} className="px-3 py-2 text-sm">
             <option value="">اختر حساب دخول نشطاً</option>
             {(accounts.data ?? []).filter((a) => a.linkedPartyId == null || Number(a.linkedPartyId) === partyId).map((a) => (
               <option key={a.id} value={a.id}>{a.name} {a.username ? `(${a.username})` : ""}</option>
             ))}
-          </select>
-          <select value={memberRole} onChange={(e) => setMemberRole(e.target.value as typeof memberRole)} className="rounded-lg border bg-background px-3 py-2 text-sm">
+          </AppSelect>
+          <AppSelect value={memberRole} onValueChange={(next) => setMemberRole(next as typeof memberRole)} className="px-3 py-2 text-sm">
             <option value="DRIVER">سائق</option>
             <option value="MANAGER">مدير الشركة</option>
             <option value="ACCOUNTANT">محاسب الشركة</option>
-          </select>
+          </AppSelect>
           <Button disabled={!userId || addM.isPending} onClick={() => addM.mutate({ partyId, userId: Number(userId), memberRole })}>إضافة الحساب</Button>
         </div>
       )}
@@ -373,20 +373,20 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
                       <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
                       {c.failureReason && <div className="mb-1 text-destructive">{c.failureReason}</div>}
                       {canEdit && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") && (
-                        <select
-                          value={c.assignedUserId ?? ""}
+                        <AppSelect
+                          value={String(c.assignedUserId ?? "")}
                           disabled={reassignM.isPending}
-                          onChange={(e) => reassignM.mutate({
+                          onValueChange={(next) => reassignM.mutate({
                             partyId,
                             consignmentId: Number(c.id),
-                            assignedUserId: e.target.value ? Number(e.target.value) : null,
+                            assignedUserId: next ? Number(next) : null,
                             clientRequestId: crypto.randomUUID(),
                           })}
-                          className="w-full rounded-md border bg-background px-2 py-1"
+                          className="px-2 py-1"
                         >
                           <option value="">مشترك لكل السائقين</option>
                           {drivers.map((d) => <option key={d.userId} value={d.userId}>{d.name ?? d.username ?? `#${d.userId}`}</option>)}
-                        </select>
+                        </AppSelect>
                       )}
                     </td>
                     <td className="p-2.5 text-xs text-muted-foreground">{c.dispatchedAt ? fmtDate(c.dispatchedAt) : "—"}</td>
@@ -908,16 +908,16 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
             <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="mt-1 h-10" />
           </label>
           <label className="block text-sm font-bold">حساب بوابة الجهة
-            <select
-              className="mt-1 h-10 w-full rounded-md border bg-transparent px-3 text-sm"
-              value={form.userId ?? ""}
-              onChange={(e) => setForm({ ...form, userId: e.target.value ? Number(e.target.value) : null })}
+            <AppSelect
+              className="mt-1 h-10 px-3 text-sm"
+              value={String(form.userId ?? "")}
+              onValueChange={(next) => setForm({ ...form, userId: next ? Number(next) : null })}
             >
               <option value="">بلا حساب دخول</option>
               {(accounts.data ?? [])
                 .filter((a) => a.linkedPartyId == null || a.linkedPartyId === party.id)
                 .map((a) => <option key={a.id} value={a.id}>{a.name}{a.username ? ` (${a.username})` : ""}</option>)}
-            </select>
+            </AppSelect>
             <span className="mt-1 block text-xs font-normal text-muted-foreground">ربط أو تغيير الحساب ممنوع تلقائياً إذا كان سيُخفي إرساليات مفتوحة عن مستخدم قائم.</span>
           </label>
           <div className="flex gap-2 pt-1">

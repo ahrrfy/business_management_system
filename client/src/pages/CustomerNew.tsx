@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -223,16 +224,16 @@ export default function CustomerNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="type">النوع</Label>
-            <select
+            <AppSelect
               id="type"
-              className={selectCls}
+              className="h-9"
               value={customerType}
-              onChange={(e) => onTypeChange(e.target.value as CustomerType)}
+              onValueChange={(value) => onTypeChange(value as CustomerType)}
             >
               {TYPE_OPTIONS.map((t) => (
                 <option key={t} value={t}>{t}</option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         </CardContent>
       </Card>
@@ -342,19 +343,19 @@ export default function CustomerNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="tier">فئة السعر الافتراضية</Label>
-            <select
+            <AppSelect
               id="tier"
-              className={selectCls}
+              className="h-9"
               value={defaultPriceTier}
-              onChange={(e) => {
+              onValueChange={(value) => {
                 setTierTouched(true);
-                setDefaultPriceTier(e.target.value as PriceTier);
+                setDefaultPriceTier(value as PriceTier);
               }}
             >
               {PRICE_OPTIONS.map((o) => (
                 <option key={o.v} value={o.v}>{o.l}</option>
               ))}
-            </select>
+            </AppSelect>
             {tierMismatch && (
               <p className="text-[11px] text-[var(--sem-warn)]">
                 النوع «{customerType}» يُسعَّر عادةً «{PRICE_OPTIONS.find((o) => o.v === suggestedTier(customerType))?.l}».
@@ -366,16 +367,16 @@ export default function CustomerNew() {
           {isElevated ? (
             <div className="space-y-1">
               <Label htmlFor="creditMode">سقف الائتمان (البيع الآجل)</Label>
-              <select
+              <AppSelect
                 id="creditMode"
-                className={selectCls}
+                className="h-9"
                 value={creditMode}
-                onChange={(e) => setCreditMode(e.target.value as CreditMode)}
+                onValueChange={(value) => setCreditMode(value as CreditMode)}
               >
                 <option value="none">نقدي فقط (بلا بيع آجل)</option>
                 <option value="limit">سقف محدّد…</option>
                 <option value="unlimited">بلا سقف (بيع آجل مسموح دائماً)</option>
-              </select>
+              </AppSelect>
               {creditMode === "limit" && (
                 <MoneyInput
                   id="credit"
@@ -415,15 +416,15 @@ export default function CustomerNew() {
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
               <Label htmlFor="openDir">اتجاه الرصيد</Label>
-              <select
+              <AppSelect
                 id="openDir"
-                className={selectCls}
+                className="h-9"
                 value={openingDir}
-                onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
+                onValueChange={(value) => setOpeningDir(value as "OWED_TO_US" | "OWED_BY_US")}
               >
                 <option value="OWED_TO_US">لنا على العميل (مدين لنا)</option>
                 <option value="OWED_BY_US">للعميل علينا (رصيد دائن / دفعة مقدّمة)</option>
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label htmlFor="openAmt">المبلغ (د.ع)</Label>

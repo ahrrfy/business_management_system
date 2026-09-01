@@ -3,6 +3,7 @@
 // يكشف تآكل الهامش (بيع عالٍ بهامش منخفض) عبر شارة تحذير على الصفوف منخفضة الهامش.
 // يُركّب endpoints موجودة (topProducts/profitByCategory/salesByDimension المُرقّى). عرض + Excel + طباعة A4.
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { AlertTriangle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -189,16 +190,16 @@ export default function ProfitabilityReport() {
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">البُعد</label>
-            <select className={selectCls} value={dim} onChange={(e) => setDim(e.target.value as Dim)}>
+            <AppSelect className="h-9" value={dim} onValueChange={(next) => setDim(next as Dim)}>
               {(Object.keys(DIM_LABEL) as Dim[]).map((d) => (<option key={d} value={d}>{DIM_LABEL[d]}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <PeriodFilter value={period} onChange={setPeriod} />
         </div>

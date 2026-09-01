@@ -1,4 +1,4 @@
-import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
+import { hasWorkOrderManagerAuthority } from "@shared/workOrderControlAuthority";
 
 export const WORK_ORDER_REFUND_REFERENCE_MIN = 3;
 export const WORK_ORDER_REFUND_REFERENCE_MAX = 100;
@@ -7,18 +7,20 @@ export function normalizedRefundReference(value: string): string {
   return value.trim();
 }
 
-/** مرآة workordersManagerProcedure: roles=[manager] + workorders/FULL. */
+/**
+ * **سلطةُ المدير على أمر الشغل**: roles=[manager] + workorders/FULL (مع admin والمنح الصريح).
+ *
+ * ⚠️ **لم تعد مرآةَ بوّابةِ الإجراء `workOrders.cancel`** — تلك وُسّعت إلى أدوار التنفيذ
+ * (فنّي المطبعة، قرار المالك ١/٩/٢٦) والحدُّ الفاصل انتقل إلى **المال** داخل الخدمة. هذه
+ * الدالّة تعني اليوم: «هل يملك هذا المستخدم الإلغاءَ المباشر ذا الأثر الماليّ/المخزنيّ؟».
+ * مَن يملك إلغاءً مباشراً **بلا** أثر يُشتقّ من `mayCancelWorkOrderWithoutApproval` بمعطيات
+ * `controlPreflight` — لا من الدور وحده.
+ */
 export function canCancelWorkOrder(
   role: string | null | undefined,
   override: unknown,
 ): boolean {
-  return !!role && moduleAccessAllowed(
-    role,
-    (override ?? null) as PermissionMap | null,
-    "workorders",
-    "FULL",
-    ["manager"],
-  );
+  return hasWorkOrderManagerAuthority(role, override as never);
 }
 
 export function refundReferenceError(value: string): string | null {

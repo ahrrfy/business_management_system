@@ -4,6 +4,7 @@
  * بطاقة كل متقدّم: الاسم، الوظيفة، شارة المصدر، نجوم التقييم، الهاتف، وزر الانتقال للمرحلة التالية.
  */
 import { Badge } from "@/components/ui/badge";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -270,18 +271,18 @@ export default function Recruitment() {
             className={selectClsSm + " w-56"}
             aria-label="بحث"
           />
-          <select className={selectClsSm} value={stage} onChange={(e) => setStage(e.target.value)} aria-label="المرحلة">
+          <AppSelect className="h-9" value={stage} onValueChange={(next) => setStage(next)} aria-label="المرحلة">
             <option value="">كل المراحل</option>
             {APPLICANT_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-          </select>
-          <select className={selectClsSm} value={source} onChange={(e) => setSource(e.target.value)} aria-label="المصدر">
+          </AppSelect>
+          <AppSelect className="h-9" value={source} onValueChange={(next) => setSource(next)} aria-label="المصدر">
             <option value="">كل المصادر</option>
             {APPLICANT_SOURCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-          </select>
-          <select className={selectClsSm} value={vacancyFilter} onChange={(e) => setVacancyFilter(e.target.value)} aria-label="الوظيفة">
+          </AppSelect>
+          <AppSelect className="h-9" value={vacancyFilter} onValueChange={(next) => setVacancyFilter(next)} aria-label="الوظيفة">
             <option value="">كل الوظائف</option>
             {(vacancyOptsQ.data ?? []).map((v) => <option key={v.id} value={String(v.id)}>{v.title}</option>)}
-          </select>
+          </AppSelect>
           <Button size="sm" variant="outline" className="ms-auto" disabled={!rows.length} onClick={exportApplicants}>
             <FileSpreadsheet className="size-3.5" /> تصدير Excel
           </Button>
@@ -603,16 +604,16 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
           </div>
           <div className="space-y-1.5">
             <Label>المصدر</Label>
-            <select className={selectClsSm + " w-full"} value={source} onChange={(e) => setSource(e.target.value as "paper" | "archive")}>
+            <AppSelect className={selectClsSm + " w-full"} value={source} onValueChange={(next) => setSource(next as "paper" | "archive")}>
               <option value="paper">استمارة ورقية</option>
               <option value="archive">أرشيف</option>
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1.5">
             <Label>المرحلة</Label>
-            <select className={selectClsSm + " w-full"} value={stage} onChange={(e) => setStage(e.target.value)}>
+            <AppSelect className={selectClsSm + " w-full"} value={stage} onValueChange={(next) => setStage(next)}>
               {APPLICANT_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
             <Label>التقييم المبدئي</Label>
@@ -915,9 +916,9 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
           </div>
           <div className="space-y-1.5">
             <Label>نوع التعاقد</Label>
-            <select className={selectClsSm + " w-full"} value={employmentType} onChange={(e) => setEmploymentType(e.target.value)}>
+            <AppSelect className={selectClsSm + " w-full"} value={employmentType} onValueChange={(next) => setEmploymentType(next)}>
               {EMPLOYMENT_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1.5">
             <Label>المكان / الفرع</Label>

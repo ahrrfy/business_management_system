@@ -1,12 +1,14 @@
 import { EntityPicker } from "@/components/invoice/EntityPicker";
+import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
+import { DataTable } from "@/components/data-table/DataTable";
+import { ActorCell } from "@/components/data-table/ActorCell";
+import type { ColumnDef } from "@tanstack/react-table";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
-import { ErrorState } from "@/components/PageState";
 import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Input } from "@/components/ui/input";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
@@ -117,6 +119,74 @@ export default function SalesReturns() {
 
   const from = total === 0 ? 0 : page * PAGE + 1;
   const to = Math.min((page + 1) * PAGE, total);
+  /**
+   * أعمدة مرتجعات البيع — منقولة حرفياً من صفوف JSX. «منفّذ المرتجع» صار يقرأ تسميته
+   * من عقد الإسناد ({ATTRIBUTION_LABELS.performedBy}) فلا تنفرد الشاشة بصياغتها.
+   */
+  const returnColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
+    { id: "id", header: "رقم القيد", accessorFn: (r) => r.id, meta: { kind: "number", width: "id" } },
+    {
+      id: "entryDate", header: "التاريخ",
+      // entryDate حقل تاريخ بلا وقت ⇒ نعرض التاريخ فقط (لا timeStyle مُختلَق).
+      accessorFn: (r) => (r.entryDate ? String(r.entryDate) : ""),
+      cell: ({ row }) => fmtDate(row.original.entryDate),
+      meta: { kind: "date" },
+    },
+    { id: "invoiceNumber", header: "رقم الفاتورة", accessorFn: (r) => r.invoiceNumber ?? "—", meta: { kind: "code" } },
+    // customerName فارغ = بيع نقدي بلا عميل مسجَّل.
+    { id: "customerName", header: "العميل", accessorFn: (r) => r.customerName ?? "—", meta: { kind: "text", wrap: true } },
+    { id: "branch", header: "الفرع", accessorFn: (r) => branchName(r.branchId), meta: { kind: "text" } },
+    {
+      id: "performedBy", header: ATTRIBUTION_LABELS.performedBy,
+      accessorFn: (r) => r.performedByName ?? "غير موثّق",
+      cell: ({ row }) => <ActorCell actor={{ name: row.original.performedByName }} />,
+      meta: { kind: "actor" },
+    },
+    {
+      id: "amount", header: "القيمة المرتجعة",
+      accessorFn: (r) => Number(returned(r.amount)),
+      cell: ({ row }) => fmt(returned(row.original.amount)),
+      meta: { kind: "money" },
+    },
+    {
+      id: "notes", header: "ملاحظات",
+      accessorFn: (r) => noteText(r.notes),
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{noteText(row.original.notes)}</span>,
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "actions", header: "إجراء",
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <RowActions
+            mode="auto"
+            contact={r.customerName ? {
+              phone: r.customerPhone,
+              label: `واتساب ${r.customerName}`,
+              message: buildOperationalContactMessage({
+                entityLabel: "مرتجع بيع",
+                reference: String(r.id),
+                partyName: r.customerName,
+                title: `قيمة المرتجع: ${fmt(returned(r.amount))} د.ع`,
+                dueAt: r.entryDate,
+                nextAction: "نؤكد لكم تسجيل المرتجع وتسوية الفاتورة المرتبطة.",
+              }),
+              gate: { module: "sales", level: "READ" },
+            } : undefined}
+            actions={[
+              {
+                key: "invoice", kind: "view", label: "عرض الفاتورة الأصلية",
+                href: `/invoices/${r.invoiceId}`, hidden: !r.invoiceId,
+                gate: { module: "sales", level: "READ" },
+              },
+            ]}
+          />
+        );
+      },
+      meta: { kind: "actions" },
+    },
+  ], [branchName]);
 
   return (
     <div className="space-y-4">
@@ -176,16 +246,16 @@ export default function SalesReturns() {
                   />
                 </FilterField>
                 <FilterField label="الفرع">
-                  <select
-                    className={selectCls}
-                    value={branchId}
-                    onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+                  <AppSelect
+                    className="h-9"
+                    value={String(branchId)}
+                    onValueChange={(value) => setBranchId(value ? Number(value) : "")}
                   >
                     <option value="">— كل الفروع —</option>
                     {(branches.data ?? []).map((b) => (
                       <option key={b.id} value={b.id}>{b.name}</option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="منفّذ المرتجع">
                   <AppSelect
@@ -196,7 +266,7 @@ export default function SalesReturns() {
                   >
                     <option value="ALL">— كل المنفّذين —</option>
                     {(performers.data ?? []).map((p) => (
-                      <option key={p.id} value={String(p.id)}>{p.name}</option>
+                      <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </AppSelect>
                 </FilterField>
@@ -233,112 +303,31 @@ export default function SalesReturns() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2">رقم القيد</th>
-                <th className="p-2">التاريخ</th>
-                <th className="p-2">رقم الفاتورة</th>
-                <th className="p-2">العميل</th>
-                <th className="p-2">الفرع</th>
-                <th className="p-2">منفّذ المرتجع</th>
-                <th className="p-2 text-right">القيمة المرتجعة</th>
-                <th className="p-2">ملاحظات</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-t">
-                  <td className="p-2 tabular-nums" dir="ltr">{r.id}</td>
-                  <td className="p-2 text-xs" dir="ltr">
-                    {/* entryDate حقل تاريخ بلا وقت ⇒ نعرض التاريخ فقط (لا timeStyle مُختلَق). */}
-                    {fmtDate(r.entryDate)}
-                  </td>
-                  <td className="p-2 tabular-nums" dir="ltr">{r.invoiceNumber ?? "—"}</td>
-                  {/* customerName فارغ = بيع نقدي بلا عميل مسجَّل. */}
-                  <td className="p-2 font-medium">{r.customerName ?? "—"}</td>
-                  <td className="p-2">{branchName(r.branchId)}</td>
-                  <td className="p-2 font-medium">{r.performedByName ?? "غير موثّق"}</td>
-                  <td className="p-2 text-right font-semibold tabular-nums" dir="ltr">{fmt(returned(r.amount))}</td>
-                  <td className="p-2 text-xs text-muted-foreground">{noteText(r.notes)}</td>
-                  <td className="p-2 text-center">
-                    <RowActions
-                      mode="auto"
-                      contact={r.customerName ? {
-                        phone: r.customerPhone,
-                        label: `واتساب ${r.customerName}`,
-                        message: buildOperationalContactMessage({
-                          entityLabel: "مرتجع بيع",
-                          reference: String(r.id),
-                          partyName: r.customerName,
-                          title: `قيمة المرتجع: ${fmt(returned(r.amount))} د.ع`,
-                          dueAt: r.entryDate,
-                          nextAction: "نؤكد لكم تسجيل المرتجع وتسوية الفاتورة المرتبطة.",
-                        }),
-                        gate: { module: "sales", level: "READ" },
-                      } : undefined}
-                      actions={[
-                        {
-                          key: "invoice",
-                          kind: "view",
-                          label: "عرض الفاتورة الأصلية",
-                          href: `/invoices/${r.invoiceId}`,
-                          hidden: !r.invoiceId,
-                          gate: { module: "sales", level: "READ" },
-                        },
-                      ]}
-                    />
-                  </td>
-                </tr>
-              ))}
-              {/* 403/فشل الخادم ⇒ خطأ صريح (نمط Vouchers) لا رسالة «لا مرتجعات» مضلِّلة. */}
-              {list.isError && !list.isLoading && (
-                <tr>
-                  <td colSpan={9}>
-                    <ErrorState message={list.error?.message} onRetry={() => void list.refetch()} />
-                  </td>
-                </tr>
-              )}
-              {!list.isLoading && !list.isError && rows.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="p-6 text-center text-muted-foreground">
-                    {total === 0 && !customerId && !branchId && !createdBy && !dateFrom && !dateTo && !q.trim()
-                      ? "لا مرتجعات بيع بعد."
-                      : "لا مرتجعات مطابقة. غيّر الفلتر."}
-                  </td>
-                </tr>
-              )}
-              {list.isLoading && (
-                <tr>
-                  <td colSpan={9} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          <DataTable
+            columns={returnColumns}
+            data={rows}
+            loading={list.isLoading}
+            searchable={false}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            emptyText={total === 0 && !customerId && !branchId && !createdBy && !dateFrom && !dateTo && !q.trim()
+              ? "لا مرتجعات بيع بعد."
+              : "لا مرتجعات مطابقة. غيّر الفلتر."}
+            /*
+             * ترقيمٌ خادميّ (limit/offset) ⇒ يُعلَن لـDataTable.
+             * بدونه يظنّ الصفحةَ الحاضرة كاملَ البيانات فيُفعّل فرزاً يرتّب صفحةً واحدة
+             * فقط، فتُنتج الصفحةُ التالية شريحةً مفروزةً مستقلّة (مراجعة Codex، P2).
+             */
+            serverPagination={{
+              page,
+              onPageChange: setPage,
+              pageSize: PAGE,
+              total,
+            }}
+          />
         </CardContent>
       </Card>
 
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-muted-foreground" dir="ltr">
-          {total === 0 ? "لا صفوف" : `${from}–${to} / ${total.toLocaleString("ar-IQ-u-nu-latn")}`}
-        </span>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-            السابق
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={(page + 1) * PAGE >= total}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            التالي
-          </Button>
-        </div>
-      </div>
+      {/* الترقيم يُصيّره DataTable عبر serverPagination — شريطٌ واحد لا اثنان. */}
     </div>
   );
 }

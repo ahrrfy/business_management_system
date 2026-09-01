@@ -3,6 +3,7 @@
  * تصميم Odoo 19-style مع multi-tab، حاسبة ذكية، مسح باركود آني، وإدارة وردية كاملة.
  */
 import CustomerPicker from "@/components/CustomerPicker";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
 import { ShiftHandoverSection } from "@/components/pos/ShiftHandoverSection";
 import {
@@ -1668,14 +1669,14 @@ export default function POS() {
                 حسابك بلا فرعٍ مُسنَد — اختر الفرع الذي تعمل منه كي لا تُنسَب المبيعات لفرعٍ خاطئ.
               </div>
               <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الفرع</label>
-              <select
-                value={pickedBranch ?? ""}
-                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+              <AppSelect
+                value={String(pickedBranch ?? "")}
+                onValueChange={(value) => setPickedBranch(value ? Number(value) : null)}
                 style={{ width: "100%", height: 48, border: `1.5px solid ${pickedBranch == null ? C.danger : C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 15, fontWeight: 700, padding: "0 12px", outline: "none", boxSizing: "border-box" }}
               >
                 <option value="">— اختر الفرع —</option>
                 {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+              </AppSelect>
             </div>
           )}
           <div style={{ marginBottom: 16 }}>
@@ -2218,7 +2219,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
             <CopyButton value={lastInv.num} title="نسخ رقم آخر فاتورة" successMessage="تم نسخ رقم الفاتورة" />
-            <CopyButton value={String(lastInv.total)} title="نسخ إجمالي آخر فاتورة" successMessage="تم نسخ الإجمالي" />
+            <CopyButton value={lastInv.total} title="نسخ إجمالي آخر فاتورة" successMessage="تم نسخ الإجمالي" />
           </div>
         </div>
       )}
@@ -2437,12 +2438,12 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
                 <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <label style={{ fontSize: 12, color: C.mutedFg }}>فئة السعر:</label>
-                    <select value={effectiveTier} onChange={(e) => setTierOvr(e.target.value as Tier)}
+                    <AppSelect value={effectiveTier} onValueChange={(value) => setTierOvr(value as Tier)}
                       style={{ height: 30, border: `1px solid ${C.border}`, borderRadius: 6, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 12, padding: "0 6px", outline: "none" }}>
                       <option value="RETAIL">مفرد</option>
                       <option value="WHOLESALE">جملة</option>
                       <option value="GOVERNMENT">حكومي</option>
-                    </select>
+                    </AppSelect>
                     {tierOverride && (
                       <button onClick={() => setTierOvr(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.mutedFg }}>↩</button>
                     )}
@@ -3210,7 +3211,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             <span style={{ fontSize: 13.5, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 22, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12.5, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span>
-              <CopyButton value={String(change)} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
+              <CopyButton value={change} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
             </span>
           </>
         )}
@@ -3219,7 +3220,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>المتبقي للدفع</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 22, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12.5, fontWeight: 500 }}>د.ع</span></span>
-              <CopyButton value={String(credit)} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
+              <CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
             </span>
           </>
         )}
@@ -3363,7 +3364,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
           ].map((item) => (
             <div key={item.label} style={{ background: C.muted, borderRadius: 10, padding: "14px 10px", textAlign: "center", position: "relative" }}>
               <div style={{ position: "absolute", top: 4, left: 4 }}>
-                <CopyButton value={String(item.raw)} title={`نسخ ${item.label}`} successMessage={`تم نسخ ${item.label}`} />
+                <CopyButton value={item.raw} title={`نسخ ${item.label}`} successMessage={`تم نسخ ${item.label}`} />
               </div>
               <div style={{ fontSize: 12, color: C.mutedFg, marginBottom: 4 }}>{item.label}</div>
               <div style={{ fontSize: 26, fontWeight: 900, direction: "ltr", color: item.color }}>{item.value}</div>
@@ -3377,7 +3378,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
             <span style={{ fontSize: 14, fontWeight: 700, color: C.success }}>الباقي للعميل</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 26, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(receipt.change)} <span style={{ fontSize: 12 }}>د.ع</span></span>
-              <CopyButton value={String(receipt.change)} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
+              <CopyButton value={receipt.change} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
             </span>
           </div>
         )}
@@ -3387,7 +3388,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
             <span style={{ fontSize: 14, fontWeight: 700, color: C.amber }}>آجل على {receipt.customerName ?? "العميل"}</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 26, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(receipt.credit)} <span style={{ fontSize: 12 }}>د.ع</span></span>
-              <CopyButton value={String(receipt.credit)} title="نسخ المتبقي الآجل" successMessage="تم نسخ المتبقي" />
+              <CopyButton value={receipt.credit} title="نسخ المتبقي الآجل" successMessage="تم نسخ المتبقي" />
             </span>
           </div>
         )}

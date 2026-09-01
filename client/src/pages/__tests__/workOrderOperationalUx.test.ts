@@ -70,18 +70,24 @@ describe("عقد صلاحيات وفشل واجهات أوامر الشغل ال
     expect(dialog).toContain("refundShiftId: refundShiftId ?? undefined");
   });
 
-  it("يستمد حجب البدء والجاهزية من اعتماد نسخة التصميم الحالية لا من المهمة العامة القديمة", () => {
+  /**
+   * ⭐ **انقلب العقد** (قرار المالك ١/٩/٢٦): كان يحرس أنّ الشاشتين تشتقّان الحجب من اعتماد
+   * التصميم. حُذفت الخطوةُ من المسار كلّياً — خادماً وواجهةً — فصار الحارس يمنع **عودتها**.
+   */
+  it("⭐ لا تحجب أيُّ شاشةٍ البدءَ أو الجاهزية باعتماد تصميم", () => {
     const detail = readPage("WorkOrderDetail.tsx");
     const station = readPage("WorkOrderStation.tsx");
 
-    expect(detail).toContain("workOrderDesignApproval.getCurrent.useQuery");
-    expect(detail).toContain('designApproval.data.approval?.status === "APPROVED"');
-    expect(detail).toContain("markReady.isPending || blockedByDesign");
+    for (const page of [detail, station]) {
+      expect(page).not.toContain("workOrderDesignApproval");
+      expect(page).not.toContain("DesignApprovalCard");
+      expect(page).not.toContain("بانتظار اعتماد التصميم");
+    }
+    // ولا عودةَ للحجب العامّ القديم بالمهمّة على هاتين الشاشتين.
     expect(detail).not.toContain("const blockedByDesign = !!data.blockingTask");
     expect(detail).not.toContain("blockingTask={(data.blockingTask");
-    expect(station).toContain("workOrderDesignApproval.getCurrent.useQuery");
-    expect(station).toContain('designApproval.data.approval?.status !== "APPROVED"');
-    expect(station).toContain("disabled={busy || blockedByDesign}");
     expect(station).not.toContain("blockingTask={(d.blockingTask");
+    // الحجزُ الوحيد الباقي في محطّة الفنّي هو الصلاحية نفسها.
+    expect(station).toContain("const cannotOperate = !canOperateWorkOrders");
   });
 });

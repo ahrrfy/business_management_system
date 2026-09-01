@@ -1,6 +1,5 @@
 import { WO_PROGRESS_STAGES, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { ChannelMark } from "@/components/ChannelBadge";
-import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
 import { receptionChannelLabel } from "@shared/receptionChannel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -140,10 +139,6 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
 function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; onChanged: () => void; canOperateWorkOrders: boolean }) {
   const detail = trpc.workOrders.get.useQuery({ workOrderId: id });
   const timeline = trpc.workOrders.timeline.useQuery({ workOrderId: id });
-  const designApproval = trpc.workOrderDesignApproval.getCurrent.useQuery(
-    { workOrderId: id },
-    { enabled: canOperateWorkOrders },
-  );
   const utils = trpc.useUtils();
   const [lightbox, setLightbox] = useState<string | null>(null);
 
@@ -151,7 +146,6 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
     utils.workOrders.list.invalidate(),
     utils.workOrders.get.invalidate({ workOrderId: id }),
     utils.workOrders.timeline.invalidate({ workOrderId: id }),
-    utils.workOrderDesignApproval.getCurrent.invalidate({ workOrderId: id }),
     utils.inventory.movements.invalidate(),
     utils.delivery.readyForDispatch.invalidate(),
   ]).then(onChanged);
@@ -237,12 +231,7 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
   }
 
   const chLabel = receptionChannelLabel(d.receptionChannel);
-  const blockedByDesign =
-    !canOperateWorkOrders ||
-    designApproval.isLoading ||
-    designApproval.isError ||
-    designApproval.data?.revision == null ||
-    designApproval.data.approval?.status !== "APPROVED";
+  const cannotOperate = !canOperateWorkOrders;
   const pri = PRIORITIES[d.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   const cur = STAGE_INDEX[d.status] ?? 0;
   const remainingDue = positiveDiff(d.salePrice, d.deposit ?? 0);
@@ -257,12 +246,12 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
   });
 
   async function doStart() {
-    if (blockedByDesign) return;
+    if (cannotOperate) return;
     if (!(await confirm({ variant: "warning", title: "بدء التنفيذ", description: `بدء تنفيذ «${d!.title}» يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟`, confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
     start.mutate({ workOrderId: d!.id });
   }
   async function doReady() {
-    if (blockedByDesign) return;
+    if (cannotOperate) return;
     if (!(await confirm({ variant: "info", title: "وضع علامة: جاهز للتسليم", description: `وضع «${d!.title}» جاهزاً للتسليم. سيُسلّمه الكاشير ويُصدر الفاتورة. متابعة؟`, confirmText: "جاهز للتسليم", cancelText: "تراجع" }))) return;
     markReady.mutate({ workOrderId: d!.id });
   }
@@ -529,19 +518,11 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
             </CardContent>
           </Card>
 
-          {/* حجز التصميم يُعرض في نقطة التنفيذ نفسها؛ لا نترك الفني يكتشفه برسالة 403 بعد محاولة البدء. */}
-          <DesignApprovalCard
-            workOrderId={Number(d.id)}
-            status={String(d.status)}
-            canManage={canOperateWorkOrders}
-            onChanged={() => void invalidate()}
-          />
-
           {/* زر الإجراء المتدرّج */}
           {canOperateWorkOrders && d.status === "RECEIVED" && (
             <div className="space-y-2">
-              <Button className="w-full h-12 text-base" disabled={busy || blockedByDesign} onClick={doStart}>
-                <ChevronRight aria-hidden className="size-4 me-1" /> {blockedByDesign ? "بانتظار اعتماد التصميم الحالي" : "بدء التنفيذ (خصم المواد)"}
+              <Button className="w-full h-12 text-base" disabled={busy || cannotOperate} onClick={doStart}>
+                <ChevronRight aria-hidden className="size-4 me-1" /> "بدء التنفيذ (خصم المواد)"
               </Button>
               {/* ش٣: المخرجُ المشروع قبل البدء — بعده يرفضه الخادم ويُوجّه إلى النقل بسبب. */}
               {d.assignedTo != null && (
@@ -559,11 +540,11 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
           {canOperateWorkOrders && d.status === "IN_PROGRESS" && (
             <Button
               className="w-full h-12 text-base bg-[var(--status-done)] hover:opacity-90 text-white"
-              disabled={busy || blockedByDesign}
+              disabled={busy || cannotOperate}
               onClick={doReady}
             >
               <Check aria-hidden className="size-4 me-1" />
-              {blockedByDesign ? "بانتظار اعتماد التصميم الحالي" : "وضع علامة: جاهز"}
+              "وضع علامة: جاهز"
             </Button>
           )}
           {d.status === "READY" && (

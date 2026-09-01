@@ -175,14 +175,14 @@ export default function KioskDevices() {
         <CardContent className="flex flex-wrap items-end gap-3">
           <div className="space-y-1">
             <Label className="text-xs">الفرع</Label>
-            <select
-              value={branchId}
-              onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm min-w-[180px]"
+            <AppSelect
+              value={String(branchId)}
+              onValueChange={(next) => setBranchId(next ? Number(next) : "")}
+              className="h-9 border-input px-3 text-sm min-w-[180px]"
             >
               <option value="">— اختر الفرع —</option>
               {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <Label className="text-xs">اسم الجهاز</Label>

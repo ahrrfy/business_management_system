@@ -98,7 +98,7 @@
 | سببٌ إلزاميّ | لا مرتجعَ أوفلاينيّ بلا مستند |
 | **السقفُ الماليّ يُقيَّم خادمياً عند الترحيل** | لا يُقيَّم على الجهاز (يحتاج تاريخ القبض كاملاً). رفضُه يُعلّق العنصر في طابور الاسترداد فيصير العجزُ **موثَّقاً بمستند** لا ضياعاً صامتاً |
 
-وهجرة [`0321`](../drizzle/migrations/0321_offline_recovery_return_channel.sql) تُضيف قناة `RETURN`
+وهجرة [`0324`](../drizzle/migrations/0324_offline_recovery_return_channel.sql) تُضيف قناة `RETURN`
 لطابور الاسترداد: تصنيفُه `RETAIL` كان سيُقرأ بيعاً في طابورٍ عنوانُه «مبيعاتٌ مدفوعة»، والمرتجع
 **معاكسُ الاتجاه** — والمدير يقرّر على الاتجاه.
 
@@ -162,12 +162,12 @@
 | إرجاع الطرد يعيد حركات `PRINT_SALE` أيضاً | [`delivery/returns.ts`](../server/services/delivery/returns.ts) |
 | حارس WORKORDER + الفحص المتقابل للطابورين | [`returns/requests.ts`](../server/services/returns/requests.ts) |
 | لوحة الطلبات المعلّقة تجمع الطابورين + بطاقة خطأٍ صريحة بدل إخفاءٍ صامت | [`Returns.tsx`](../client/src/pages/Returns.tsx) · [`SalesReturns.tsx`](../client/src/pages/SalesReturns.tsx) |
-| هجرة `0319` — حالة `WITHDRAWN` + توسيع CHECKين (مُجرَّبة بـ`migration-dry-run` على مخطّطٍ إنتاجيّ فعليّ) | [`0319_…sql`](../drizzle/migrations/0319_returns_withdraw_and_owner_override.sql) |
+| هجرة `0323` — حالة `WITHDRAWN` + توسيع CHECKين (مُجرَّبة بـ`migration-dry-run` على مخطّطٍ إنتاجيّ فعليّ) | [`0323_…sql`](../drizzle/migrations/0323_returns_withdraw_and_owner_override.sql) |
 | مسارُ المالك الفوريّ (`returnSaleAsOwner`) + عائدٌ مُميَّزٌ بـ`mode` | [`returnService.ts`](../server/services/returnService.ts) · [`returnRouter.ts`](../server/routers/returnRouter.ts) |
 | `salesControl` مصدراً سادساً لصندوق الموافقات (ويب `/my-work` + أندرويد) | [`superAppRouter.ts`](../server/routers/superAppRouter.ts) |
 | عقدُ سلك أندرويد + رسائلُه + `ApprovalKind.SALES_CONTROL` | `android-native/…/SalesMappers.kt` · `SalesState.kt` · `SalesScreen.kt` · `ApprovalsRepository.kt` |
 | فعلُ تدقيقٍ واحدٌ للكاتبين والرقيب + عقدٌ نصّيّ يحرس الانحراف | [`returns/auditActions.ts`](../server/services/returns/auditActions.ts) · [`returnAuditContract.test.ts`](../server/services/__tests__/returnAuditContract.test.ts) |
-| المرتجع الأوفلاينيّ: نوعٌ + ترحيلٌ + التقاطٌ عند فشل النقل + قناة استرداد (هجرة 0321) | [`replayReturn.ts`](../server/services/offline/replayReturn.ts) · [`offlineReturnReplay.test.ts`](../server/services/__tests__/offlineReturnReplay.test.ts) |
+| المرتجع الأوفلاينيّ: نوعٌ + ترحيلٌ + التقاطٌ عند فشل النقل + قناة استرداد (هجرة 0324) | [`replayReturn.ts`](../server/services/offline/replayReturn.ts) · [`offlineReturnReplay.test.ts`](../server/services/__tests__/offlineReturnReplay.test.ts) |
 | توجيهُ مصدر النقد (درج ⇒ خزينة للإداريّ) بوسم `SALE_RETURN_COMPENSATION` | [`returnService.ts`](../server/services/returnService.ts) |
 | قرارُ الرفّ سطراً سطراً + تكلفةٌ تتبعه | [`returnService.ts`](../server/services/returnService.ts) |
 | حزمةُ إعادة إنتاج البلاغ ⇒ صارت حارساً على الإصلاح | [`returnsForensicDeadlock.test.ts`](../server/services/__tests__/returnsForensicDeadlock.test.ts) |
@@ -184,7 +184,7 @@ Maker-Checker يحرس **حركة المال**. والسحبُ لا يُحرّك
 - **إصدار أندرويد:** إصلاحُ عقد السلك والرسائل وصندوق الموافقات في الشيفرة ومُختبَر، ولا يبلغ
   المختبِرين قبل رفع `versionCode` في مواضعه المتزامنة وبناءِ AAB موقَّع ورفعٍ يدويّ إلى Play.
   قرارُ الإصدار للمالك.
-- **هجرتان للنشر:** `0319` (حالة `WITHDRAWN`) و`0321` (قناة استرداد `RETURN`) — كلتاهما مُجرَّبة
+- **هجرتان للنشر:** `0323` (حالة `WITHDRAWN`) و`0324` (قناة استرداد `RETURN`) — كلتاهما مُجرَّبة
   بـ`migration-dry-run` على مخطّطٍ أُعيد فعلاً إلى حالة الإنتاج (الـenum والقيود القديمة)، لا على
   مخطّطٍ يحمل الصيغة الجديدة سلفاً.
 - **حافّةٌ باقيةٌ مقصودة:** المرتجع الأوفلاينيّ محصورٌ بحساب المالك. لغيره يبقى المرتجعُ أونلاين

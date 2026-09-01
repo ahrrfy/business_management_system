@@ -1,5 +1,7 @@
 /** كشف تشغيلي للمنتجات غير المعدودة — شاشة توجيه العمال والطباعة والتصدير. */
 import { useDeferredValue, useEffect, useState } from "react";
+import { FilterField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link, useParams } from "wouter";
 import { Download, Printer, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -198,17 +200,17 @@ export default function StocktakeRemaining() {
               className="h-9 w-full rounded-md border bg-card pe-3 ps-9 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
             />
           </label>
-          <select
-            value={assignmentId}
-            onChange={(e) => setAssignmentId(e.target.value)}
-            className="h-9 min-w-52 rounded-md border bg-card px-3 text-sm"
-            aria-label="تصفية حسب العامل أو الفريق"
-          >
-            <option value="">كل العمال والمناطق</option>
-            {assignments.map((a) => (
-              <option key={a.id} value={a.id}>{a.name}{a.zone ? ` — ${a.zone}` : ""}</option>
-            ))}
-          </select>
+          <FilterField label="العامل / المنطقة" className="min-w-52">
+            <AppSelect
+              value={assignmentId}
+              onValueChange={setAssignmentId}
+            >
+              <option value="">كل العمال والمناطق</option>
+              {assignments.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}{a.zone ? ` — ${a.zone}` : ""}</option>
+              ))}
+            </AppSelect>
+          </FilterField>
           <span className="me-auto text-xs text-muted-foreground">
             {remaining.isFetching ? "يُحدَّث…" : `${fmtInt(total)} منتج متبقٍ`}
           </span>

@@ -1,6 +1,7 @@
 // بند 11 (٧/٧): شاشة «الإقفال الشهري» — صورة الشهر المالية الموحّدة بنقرة (تبويب في محور
 // الإقفال والرقابة): مبيعات/ربح إجمالي/مشتريات/مصاريف/خزينة/لقطة ذمم/أوامر مُسلَّمة + طباعة A4.
 import { useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { useLocation } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
@@ -465,11 +466,11 @@ export default function MonthlyClosePack() {
         {isAdmin && (
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select
-              className={selectCls}
-              value={branchId}
-              onChange={(e) =>
-                setBranchId(e.target.value ? Number(e.target.value) : "")
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(next) =>
+                setBranchId(next ? Number(next) : "")
               }
             >
               <option value="">كل الفروع</option>
@@ -478,7 +479,7 @@ export default function MonthlyClosePack() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         )}
       </div>

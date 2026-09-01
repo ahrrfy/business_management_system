@@ -52,6 +52,7 @@ import {
   type OperationAttribution,
 } from "@/components/data-table/OperationAttribution";
 import { columnPresentationClass, columnUsesLtrIsolate } from "@/components/data-table/columnContract";
+import { TABLE_TFOOT_CLS } from "@/components/data-table/tableStyles";
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
 function columnHeaderText(col: { columnDef: { header?: unknown }; id: string }): string {
@@ -485,6 +486,37 @@ export function DataTable<T, K = string>({
       </DropdownMenu>
     ) : null;
 
+  /**
+   * ذيلُ الإجماليات — يُصيَّر تلقائياً متى عرّف **أيّ** عمودٍ `footer` في `ColumnDef`
+   * (واجهة TanStack القياسية) ⇒ صفر واجهةٍ جديدة على المستهلك.
+   *
+   * السبب (تصنيف موجة الجداول ١/٩/٢٦): ١٢ ملفاً · ١٧ جدولاً تحمل `<tfoot>` إجماليات،
+   * وكان `DataTable` بلا ذيل — فتحويلها **يفقد صفّ الإجماليات**. و`statusSummary` ليس
+   * بديلاً: سطرٌ في شريط الحالة لا صفٌّ محاذٍ للأعمدة، والإجماليّ يجب أن يقع تحت عموده.
+   *
+   * النمط من `TABLE_TFOOT_CLS` نفسه الذي يستعمله `TableTotalsRow` — مصدرٌ بصريّ واحد.
+   */
+  const hasFooter = effectiveColumns.some(
+    (c) => (c as { footer?: unknown }).footer != null,
+  );
+
+  const footerRows = hasFooter
+    ? table.getFooterGroups().map((fg) => (
+        <tr key={fg.id} className={TABLE_TFOOT_CLS}>
+          {/* خليّة فارغة بإزاء عمود التحديد كي تبقى المحاذاة صحيحة. */}
+          {selectionEnabled && <td className="p-2 w-10" aria-hidden />}
+          {fg.headers.map((h) => (
+            <td
+              key={h.id}
+              className={`px-[var(--ui-table-cell-inline)] py-2.5 ${columnPresentationClass(h.column)}`}
+            >
+              {h.isPlaceholder ? null : flexRender(h.column.columnDef.footer, h.getContext())}
+            </td>
+          ))}
+        </tr>
+      ))
+    : null;
+
   return (
     <div className={compact ? "space-y-2 [&_th]:!p-1.5 [&_td]:!p-1.5 [&_tbody_tr]:text-xs" : "space-y-2"} data-table-density={compact ? "compact" : "comfortable"}>
       {(showSearch || toolbar) && (
@@ -667,6 +699,7 @@ export function DataTable<T, K = string>({
                     </tr>
                   )}
                 </tbody>
+                {footerRows && <tfoot>{footerRows}</tfoot>}
               </table>
             </TableShell>
           </div>
@@ -797,6 +830,7 @@ export function DataTable<T, K = string>({
                 </tr>
               )}
             </tbody>
+            {footerRows && <tfoot>{footerRows}</tfoot>}
           </table>
         </TableShell>
       )}

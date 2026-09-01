@@ -55,6 +55,7 @@ import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefun
 import { WorkOrderControlApprovals } from "@/components/workOrders/WorkOrderControlApprovals";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder } from "@/lib/workOrderRefundPolicy";
+import { mayRequestWorkOrderControl } from "@shared/workOrderControlAuthority";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import {
@@ -818,9 +819,11 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
 
 // ─────────────── لوحة التفاصيل (Drawer) ───────────────
 function Drawer({
-  id, onClose, isManager, canRequestControl, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, busy,
+  id, onClose, isManager, canRequestControl, canRequestCancel, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, busy,
 }: {
-  id: number; onClose: () => void; isManager: boolean; canRequestControl: boolean; canDeliver: boolean;
+  id: number; onClose: () => void; isManager: boolean; canRequestControl: boolean;
+  /** طلبُ الإلغاء أوسعُ من التعديل التجاريّ: يشمل فنّي المطبعة (قرار المالك ١/٩/٢٦). */
+  canRequestCancel: boolean; canDeliver: boolean;
   onAdvance: (id: number, to: Status) => void; onCancel: (d: Detail) => void;
   onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void;
   onEdit: (id: number) => void; busy: boolean;
@@ -1061,7 +1064,7 @@ function Drawer({
                   <Pencil aria-hidden className="size-4 inline-block align-text-bottom me-1" /> {isManager ? "تعديل" : "طلب تعديل"}
                 </button>
               )}
-              {canRequestControl && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
+              {canRequestCancel && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
                 <button className="wob-btn wob-btn-danger" disabled={busy} onClick={() => onCancel(d)}>
                   {isManager ? "إلغاء الأمر" : "طلب إلغاء الأمر"}
                 </button>
@@ -1082,11 +1085,12 @@ function Drawer({
 // طلب المالك (٩/٨): الكانبان يخدم الإنتاج/الفنّيين؛ يلزم عرضٌ يشبه شاشة «المبيعات» — جدولٌ يمكن
 // فرزه وفلترته، بأزرار تحكّمٍ وتعديل، دون حاجةٍ لفتح شاشة الاستقبال (التي تتطلّب وردية مفتوحة).
 function OrdersTable({
-  rows, isManager, canRequestControl, canDeliver, onOpen, onEdit, onAdvance, onCancel,
+  rows, isManager, canRequestControl, canRequestCancel, canDeliver, onOpen, onEdit, onAdvance, onCancel,
 }: {
   rows: WO[];
   isManager: boolean;
   canRequestControl: boolean;
+  canRequestCancel: boolean;
   canDeliver: boolean;
   onOpen: (id: number) => void;
   onEdit: (id: number) => void;
@@ -1229,7 +1233,7 @@ function OrdersTable({
         } else if (next && (next !== "DELIVERED" || canDeliver)) {
           actions.push({ key: "advance", kind: next === "DELIVERED" ? "pay" : "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
         }
-        if (canRequestControl && !isFinal) {
+        if (canRequestCancel && !isFinal) {
           actions.push({ key: "cancel", kind: "cancel", label: isManager ? "إلغاء الأمر" : "طلب إلغاء الأمر", variant: "destructive", onSelect: () => onCancel(o) });
         }
         return (
@@ -1248,7 +1252,7 @@ function OrdersTable({
         );
       },
     },
-  ], [isManager, canRequestControl, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
+  ], [isManager, canRequestControl, canRequestCancel, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
 
   const operation = useMemo(() => ({
     getOperation: (order: WO) => ({
@@ -1347,6 +1351,11 @@ export default function WorkOrders() {
   const canDeliver = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager"]);
   const canRequestControl = canDeliver;
+  /**
+   * **طلبُ الإلغاء لفنّي المطبعة** (قرار المالك ١/٩/٢٦): مصدرُه القاموس المشترك نفسه الذي
+   * يُنفّذه الخادم، لا قائمةُ أدوارٍ ثانية. التعديلُ التجاريّ يبقى على `canRequestControl`.
+   */
+  const canRequestCancel = mayRequestWorkOrderControl("CANCEL", me.data?.role, (me.data?.permissionsOverride ?? null) as PermissionMap | null);
   // مرآة workordersExecProcedure الخادميّة: workorders/FULL + roles=[cashier|manager|print_operator].
   // إشارة الكانبان (setKanbanState) تحته ⇒ لا نُظهر زرّاً سيفشل بـFORBIDDEN لمستخدم READ (Codex #6).
   const canSetKanban = !!me.data?.role &&
@@ -1962,6 +1971,7 @@ export default function WorkOrders() {
           rows={filtered}
           isManager={isManager}
           canRequestControl={canRequestControl}
+          canRequestCancel={canRequestCancel}
           canDeliver={canDeliver}
           onOpen={setSel}
           onEdit={setEditTarget}
@@ -2076,6 +2086,7 @@ export default function WorkOrders() {
           onClose={() => setSel(null)}
           isManager={isManager}
           canRequestControl={canRequestControl}
+          canRequestCancel={canRequestCancel}
           canDeliver={canDeliver}
           busy={busy}
           onAdvance={async (id, to) => {

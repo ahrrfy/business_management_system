@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -494,16 +495,16 @@ export default function TreasuryTransfers() {
               </button>
             ))}
           </div>
-          <select
-            className={selectCls}
+          <AppSelect
+            className="h-9"
             value={status}
-            onChange={(e) => setStatus(e.target.value as Status)}
+            onValueChange={(value) => setStatus(value as Status)}
           >
             <option value="">كل الحالات</option>
             <option value="IN_TRANSIT">في الطريق</option>
             <option value="RECEIVED">مُستلَم</option>
             <option value="CANCELLED">ملغى</option>
-          </select>
+          </AppSelect>
         </div>
       </Card>
 
@@ -713,10 +714,10 @@ function SendDialog({
             <label className="text-xs text-muted-foreground mb-1 block">
               من فرع
             </label>
-            <select
+            <AppSelect
               className={`${selectCls} w-full`}
-              value={fromBranchId}
-              onChange={(e) => setFromBranchId(Number(e.target.value))}
+              value={String(fromBranchId)}
+              onValueChange={(value) => setFromBranchId(Number(value))}
               disabled={!isAdmin}
             >
               {branches.map((b) => (
@@ -724,7 +725,7 @@ function SendDialog({
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
             {!isAdmin && (
               <div className="text-[11px] text-muted-foreground mt-1">
                 يُسمح للمدير بالإرسال من فرعه فقط
@@ -736,10 +737,10 @@ function SendDialog({
             <label className="text-xs text-muted-foreground mb-1 block">
               إلى فرع
             </label>
-            <select
+            <AppSelect
               className={`${selectCls} w-full`}
-              value={toBranchId}
-              onChange={(e) => setToBranchId(Number(e.target.value))}
+              value={String(toBranchId)}
+              onValueChange={(value) => setToBranchId(Number(value))}
             >
               <option value={0}>—</option>
               {branches
@@ -749,7 +750,7 @@ function SendDialog({
                     {b.name}
                   </option>
                 ))}
-            </select>
+            </AppSelect>
           </div>
 
           <div>

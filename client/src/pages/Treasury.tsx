@@ -726,11 +726,11 @@ export default function Treasury() {
 
         <div className="mr-auto flex flex-wrap items-center gap-2">
           {canChooseBranch && (branches.data?.length ?? 0) > 1 && (
-            <select
-              className={selectCls}
-              value={branchId}
-              onChange={(e) =>
-                setBranchId(e.target.value ? Number(e.target.value) : "")
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(value) =>
+                setBranchId(value ? Number(value) : "")
               }
             >
               <option value="">كل الفروع</option>
@@ -739,19 +739,19 @@ export default function Treasury() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           )}
-          <select
-            className={selectCls}
+          <AppSelect
+            className="h-9"
             value={period}
-            onChange={(e) => setPeriod(e.target.value as Period)}
+            onValueChange={(value) => setPeriod(value as Period)}
           >
             {(["today", "yesterday", "week", "month"] as const).map((p) => (
               <option key={p} value={p}>
                 {PERIOD_AR[p]}
               </option>
             ))}
-          </select>
+          </AppSelect>
           <Button
             size="sm"
             variant="outline"
@@ -1305,12 +1305,12 @@ export default function Treasury() {
                   الفرع
                 </label>
                 {isAdmin ? (
-                  <select
+                  <AppSelect
                     className={selectCls + " w-full"}
-                    value={fundBranch}
-                    onChange={(e) =>
+                    value={String(fundBranch)}
+                    onValueChange={(value) =>
                       setFundBranch(
-                        e.target.value ? Number(e.target.value) : "",
+                        value ? Number(value) : "",
                       )
                     }
                   >
@@ -1320,7 +1320,7 @@ export default function Treasury() {
                         {b.name}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 ) : (
                   <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
                     {(branches.data ?? []).find(

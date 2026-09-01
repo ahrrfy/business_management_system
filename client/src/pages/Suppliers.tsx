@@ -6,6 +6,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { ErrorState, TableEmptyRow } from "@/components/PageState";
 import { OperationsSummary } from "@/components/operations/OperationsSummary";
 import { confirm } from "@/lib/confirm";
@@ -402,7 +403,7 @@ export default function Suppliers() {
                       <div className="space-y-2">
                         <div>لا موردين مطابقين للفلاتر الحالية.</div>
                         <Button variant="outline" size="sm" onClick={resetFilters}>
-                          مسح الفلاتر
+                          {FILTER_LABELS.reset}
                         </Button>
                       </div>
                     ) : (

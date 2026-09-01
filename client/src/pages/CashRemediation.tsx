@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { AlertTriangle, FileDown, FlaskConical, Printer, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -396,13 +397,13 @@ export default function CashRemediation() {
                           <td className="p-2"><div className="font-medium">{CLASSIFICATION_LABEL[row.suggestedClassification]}</div><div className="text-xs text-muted-foreground">الثقة: {CONFIDENCE_LABEL[row.confidence]}</div><div className="mt-1 max-w-80 text-xs">{row.rationale}</div></td>
                           <td className="p-2 text-xs">{row.evidenceMissing.length ? row.evidenceMissing.map((item) => EVIDENCE_LABEL[item]).join("، ") : "مكتملة بنيوياً"}</td>
                           <td className="p-2">
-                            <select
+                            <AppSelect
                               className={selectClass}
                               aria-label={`تصنيف محاكاة الإيصال ${row.receiptId}`}
                               disabled={!row.affectsDrawer || row.pairedTreasuryReceiptId != null || row.status === "REVERSED" || row.source.expenseIds.length > 1}
                               value={selectionScope === currentScope ? (selections[row.receiptId] ?? "") : ""}
-                              onChange={(event) => {
-                                const value = event.target.value as RemediationClassification | "";
+                              onValueChange={(next) => {
+                                const value = next as RemediationClassification | "";
                                 setSelections((current) =>
                                   selectionScope === currentScope
                                     ? { ...current, [row.receiptId]: value }
@@ -413,7 +414,7 @@ export default function CashRemediation() {
                             >
                               <option value="">بلا محاكاة</option>
                               {SIMULATION_OPTIONS.map((option) => <option key={option} value={option}>{CLASSIFICATION_LABEL[option]}</option>)}
-                            </select>
+                            </AppSelect>
                             {row.simulation.selectedClassification && <div className="mt-1 text-xs text-muted-foreground">أثر الدرج: {fmtAr(row.simulation.drawerDelta)}</div>}
                           </td>
                         </tr>

@@ -16557,7 +16557,7 @@ export const offlineRecoveryItems = mysqlTable(
      * قناة الالتقاط. الترحيل الآليّ يدعم RETAIL وحدها (حمولتها هي عقد `replayOfflineSale`)،
      * أمّا PRINT/RECEPTION فتُلتقَط **للرصد ومنع الضياع** وتُسوَّى يدوياً — إخفاؤها أسوأ من
      * عرضها بلا زرّ ترحيل.
-     * و`RETURN` (هجرة 0321) **معاكسُ الاتجاه**: نقدٌ خرج للزبون لا دخل منه. تصنيفُه RETAIL
+     * و`RETURN` (هجرة 0324) **معاكسُ الاتجاه**: نقدٌ خرج للزبون لا دخل منه. تصنيفُه RETAIL
      * كان سيُقرأ بيعاً في طابورٍ عنوانُه «مبيعاتٌ مدفوعة» — والمدير يقرّر على الاتجاه.
      */
     channel: mysqlEnum("recoveryChannel", ["RETAIL", "PRINT", "RECEPTION", "RETURN"])
@@ -16825,7 +16825,7 @@ export const salesControlRequests = mysqlTable(
       "SALES_EXCHANGE",
       "SALES_DUE_DATE_CHANGE",
     ]).notNull(),
-    // WITHDRAWN (هجرة 0319): سحبُ الطالب لطلبه — صفريّ الأثر، ويُحرّر `activeInvoiceId`
+    // WITHDRAWN (هجرة 0323): سحبُ الطالب لطلبه — صفريّ الأثر، ويُحرّر `activeInvoiceId`
     // فتعود الفاتورة قابلةً لطلبٍ جديد. الاعتماد يبقى محكوماً بفصل المهام كما هو.
     status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE", "WITHDRAWN"]).default("PENDING").notNull(),
     payload: json("payload").notNull(),
@@ -16856,7 +16856,7 @@ export const salesControlRequests = mysqlTable(
       OR (${t.status} IN ('REJECTED','STALE','WITHDRAWN') AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NULL)
     )`),
     // السحبُ وحده يُستثنى: الساحبُ هو الطالبُ بالتعريف. ويبقى القيد مُلزِماً على
-    // APPROVED/REJECTED حيث يعني رقابةً فعليّة (هجرة 0319).
+    // APPROVED/REJECTED حيث يعني رقابةً فعليّة (هجرة 0323).
     makerChecker: check("chk_sales_control_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.status} = 'WITHDRAWN' OR ${t.reviewedBy} <> ${t.requestedBy}`),
   }),
 );

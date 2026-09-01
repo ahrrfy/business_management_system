@@ -1,5 +1,6 @@
 // دفتر أستاذ حساب واحد من القيود المزدوجة — رصيد افتتاحي وجارٍ مع أثر مستندي وتصدير شامل.
 import { useEffect, useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Link } from "wouter";
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
@@ -429,12 +430,12 @@ export default function GeneralLedger() {
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex min-w-64 flex-col gap-1 text-[11px] text-muted-foreground">
             الحساب
-            <select
-              className={selectCls}
-              value={accountId ?? ""}
-              onChange={(event) => {
+            <AppSelect
+              className="h-9"
+              value={String(accountId ?? "")}
+              onValueChange={(next) => {
                 setAccountId(
-                  event.target.value ? Number(event.target.value) : null,
+                  next ? Number(next) : null,
                 );
                 setPage(0);
               }}
@@ -447,18 +448,18 @@ export default function GeneralLedger() {
                   {account.code} — {account.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </label>
           <PeriodFilter value={period} onChange={changePeriod} />
           {canChooseBranch && (
             <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
               الفرع
-              <select
-                className={selectCls}
-                value={branchId}
-                onChange={(event) => {
+              <AppSelect
+                className="h-9"
+                value={String(branchId)}
+                onValueChange={(next) => {
                   setBranchId(
-                    event.target.value ? Number(event.target.value) : "",
+                    next ? Number(next) : "",
                   );
                   setPage(0);
                 }}
@@ -469,7 +470,7 @@ export default function GeneralLedger() {
                     {branch.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </label>
           )}
         </div>

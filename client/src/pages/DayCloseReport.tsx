@@ -2,6 +2,7 @@
 //   المتوقَّع (من الدفتر) مقابل المعدود (نقد الإغلاق) مقابل الفرق (drift = variance الوردية).
 // عهد الإغلاق الخارجة من الدرج تُعرَض منفصلةً؛ قبولها الفعلي يظهر في قسم جرد الخزينة.
 import { shiftTypeLabel } from "@/lib/labels";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { useEffect, useState } from "react";
 import { CheckCircle2, AlertTriangle, Wallet, Building2, Clock, ArrowLeftRight, ChevronLeft, ChevronRight, Vault, LockKeyhole, RotateCcw } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -370,10 +371,10 @@ export default function DayCloseReport() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select
-              className={selectCls}
-              value={branchId}
-              onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(next) => setBranchId(next ? Number(next) : "")}
             >
               <option value="">كل الفروع</option>
               {branches.data?.map((b) => (
@@ -381,7 +382,7 @@ export default function DayCloseReport() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }

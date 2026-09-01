@@ -2,6 +2,7 @@
 // منتقي المتغيّر يعيد استعمال trpc.catalog.posList (نفس بحث الكاشير/حركات المخزون) + فلتر فرع + فترة اختيارية.
 // عرض: ترويسة المتغيّر + مؤشّرات (رصيد افتتاحي/ختامي) + جدول (تاريخ/نوع/كمية بإشارة/رصيد/مرجع) + تصدير/طباعة.
 import { useEffect, useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -274,10 +275,10 @@ export default function ItemLedger() {
           {canPickBranch && (
             <div className="flex flex-col gap-1">
               <label className="text-[11px] text-muted-foreground">الفرع</label>
-              <select
-                className={selectCls}
+              <AppSelect
+                className="h-9"
                 value={pickedBranch === "" ? "" : String(pickedBranch)}
-                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : "")}
+                onValueChange={(next) => setPickedBranch(next ? Number(next) : "")}
               >
                 <option value="">كل الفروع</option>
                 {(branches.data ?? []).map((b) => (
@@ -285,7 +286,7 @@ export default function ItemLedger() {
                     {b.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
           )}
 

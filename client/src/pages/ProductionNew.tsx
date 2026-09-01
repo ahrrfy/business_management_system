@@ -1,4 +1,5 @@
 import { ProductSearchPicker, type PurchaseRow } from "@/components/production/ProductSearchPicker";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,14 +39,14 @@ function BranchPicker({
   return (
     <div className="space-y-1">
       <Label>الفرع {needsChoice && <span className="text-destructive">*</span>}</Label>
-      <select
-        className={selectCls}
-        value={needsChoice ? "" : value}
-        onChange={(e) => onChange(e.target.value ? Number(e.target.value) : "")}
+      <AppSelect
+        className="h-9"
+        value={String(needsChoice ? "" : value)}
+        onValueChange={(next) => onChange(next ? Number(next) : "")}
       >
         {needsChoice && <option value="">— اختر الفرع —</option>}
         {branches.map((b) => <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>)}
-      </select>
+      </AppSelect>
       {needsChoice && <p className="text-xs text-destructive">يلزم اختيار الفرع قبل الترحيل.</p>}
     </div>
   );
@@ -290,9 +291,9 @@ export default function ProductionNew() {
         <div key={l.key} className="grid grid-cols-12 gap-2 items-center border rounded-md p-2">
           <div className="col-span-4"><div className="font-medium text-sm">{l.productName}</div><div className="text-xs text-muted-foreground font-mono" dir="ltr">{l.sku}</div></div>
           <div className="col-span-3">
-            <select className={selectCls} value={l.productUnitId ?? ""} onChange={(e) => { const u = l.units.find((x) => x.productUnitId === Number(e.target.value)); setLine(list, setList, l.key, { productUnitId: Number(e.target.value), conversionFactor: String(u?.conversionFactor ?? "1") }); }}>
+            <AppSelect className="h-9" value={String(l.productUnitId ?? "")} onValueChange={(value) => { const u = l.units.find((x) => x.productUnitId === Number(value)); setLine(list, setList, l.key, { productUnitId: Number(value), conversionFactor: String(u?.conversionFactor ?? "1") }); }}>
               {l.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{u.isBaseUnit ? " (أساس)" : ` × ${u.conversionFactor}`}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="col-span-2"><Input dir="ltr" value={l.qty} onChange={(e) => setLine(list, setList, l.key, { qty: e.target.value })} /></div>
           <div className="col-span-2 text-left text-sm tabular-nums" dir="ltr">{kind === "in" ? fmt(round2(D(l.costPriceBase).times(base)).toString()) : <span className="text-[var(--sem-info)]">{fmt(unitOutCost.toString())}/و</span>}</div>
@@ -340,10 +341,10 @@ export default function ProductionNew() {
               <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label>الوصفة *</Label>
-                  <select className={selectCls} value={recipeId === "" ? "" : String(recipeId)} onChange={(e) => setRecipeId(e.target.value ? Number(e.target.value) : "")}>
+                  <AppSelect className="h-9" value={recipeId === "" ? "" : String(recipeId)} onValueChange={(next) => setRecipeId(next ? Number(next) : "")}>
                     <option value="">— اختر وصفة —</option>
                     {(recipes.data ?? []).map((r: any) => <option key={r.id} value={Number(r.id)}>{r.name}</option>)}
-                  </select>
+                  </AppSelect>
                   {(recipes.data ?? []).length === 0 && <p className="text-xs text-[var(--stock-low)]">لا وصفات مفعّلة. <Link href="/production-recipes" className="underline">أنشئ وصفة</Link> أولاً.</p>}
                 </div>
                 <BranchPicker needsChoice={needsBranchChoice} value={effectiveBranch} branches={branches.data ?? []} onChange={setBranchId} />

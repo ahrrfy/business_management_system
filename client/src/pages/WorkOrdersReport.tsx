@@ -1,6 +1,7 @@
 // تقرير طلبات خدمة العملاء — توزيع الحالات (كلها بما فيها الملغاة) + قنوات الاستلام + ربحية المُسلَّم.
 // المصدر: reports.workOrdersReport. عرض + تصدير Excel (توزيع الحالات) + طباعة A4.
 import { useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
@@ -100,10 +101,10 @@ export default function WorkOrdersReport() {
           <PeriodFilter value={period} onChange={setPeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }

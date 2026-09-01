@@ -170,7 +170,7 @@ describe("تدقيق جنائيّ: «المرتجع وهميّ ويبتلع ال
       payload,
     }, SOLE_MANAGER)).rejects.toThrow();
 
-    // ⭐ **المخرج** (هجرة 0319): الطالبُ يسحب طلبه — صفريُّ الأثر، ويُحرّر الفاتورة.
+    // ⭐ **المخرج** (هجرة 0323): الطالبُ يسحب طلبه — صفريُّ الأثر، ويُحرّر الفاتورة.
     const withdrawn = await withdrawSalesControlRequest(Number(requested.id), "تعذّر إيجاد مراجعٍ مستقل", SOLE_MANAGER);
     expect(withdrawn.request.status).toBe("WITHDRAWN");
     // صفريّة الأثر محفوظة: لا مخزون ولا حالة فاتورة تتغيّر بالسحب.

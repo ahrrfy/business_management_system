@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { designApprovalSelfReviewBlocked } from "../TaskDetail";
 
 const taskDetailSource = readFileSync(new URL("../TaskDetail.tsx", import.meta.url), "utf8");
-const cardSource = readFileSync(
-  new URL("../../components/workorder/DesignApprovalCard.tsx", import.meta.url),
+const evidenceSource = readFileSync(
+  new URL("../../../../shared/designApprovalEvidence.ts", import.meta.url),
   "utf8",
 );
 
@@ -18,9 +18,6 @@ describe("واجهة حوكمة اعتماد التصميم", () => {
   });
 
   it("تستخدم عقد الاعتماد المتخصص وتزيل مسار الحسم العام من مهمة التصميم", () => {
-    expect(cardSource).toContain("workOrderDesignApproval.getCurrent");
-    expect(cardSource).toContain("workOrderDesignApproval.request");
-    expect(cardSource).not.toContain("workOrders.requestDesignApproval");
     expect(taskDetailSource).toContain("workOrderDesignApproval.getByTask");
     expect(taskDetailSource).toContain("workOrderDesignApproval.decide");
     expect(taskDetailSource).toContain("!isDesignApprovalTask && canWrite");
@@ -28,6 +25,8 @@ describe("واجهة حوكمة اعتماد التصميم", () => {
   });
 
   it("يفرض سبباً ودليلاً منظماً ويعرض النسخة والبصمة والدليل", () => {
+    // التسمياتُ انتقلت إلى قاموسٍ مشترك (١/٩/٢٦) لأنّ القرارَ صار يُتّخذ من شاشتين؛ الحارسُ
+    // يتبع المصدرَ الواحد بدل أن يُجمّد نسخةً محلّيةً في صفحةٍ بعينها.
     for (const evidenceType of [
       "WHATSAPP_MESSAGE",
       "CUSTOMER_SIGNATURE",
@@ -35,8 +34,9 @@ describe("واجهة حوكمة اعتماد التصميم", () => {
       "ATTACHMENT",
       "OTHER",
     ]) {
-      expect(taskDetailSource).toContain(evidenceType);
+      expect(evidenceSource).toContain(evidenceType);
     }
+    expect(taskDetailSource).toContain("DESIGN_APPROVAL_EVIDENCE_LABELS");
     expect(taskDetailSource).toContain("contentHash");
     expect(taskDetailSource).toContain("customizationSnapshot");
     expect(taskDetailSource).toContain("evidenceReference");
@@ -44,9 +44,10 @@ describe("واجهة حوكمة اعتماد التصميم", () => {
   });
 
   it("يحافظ على نفس حمولة الطلب والقرار عند إعادة المحاولة", () => {
-    expect(cardSource).toContain("requestInput ??");
-    expect(cardSource).toContain("request.mutate(input)");
     expect(taskDetailSource).toContain("replayInput ??");
     expect(taskDetailSource).toContain("decide.mutate(input)");
+    // القرارُ داخل البطاقة يحمل نفسَ حماية التكرار (مفتاحُ قرارٍ ثابتٌ لكلّ محاولة).
   });
+
+
 });

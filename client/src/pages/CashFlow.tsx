@@ -1,6 +1,7 @@
 // قائمة التدفّقات النقدية المبسّطة (أساس نقدي مباشر) — مقبوضات/مدفوعات حسب طريقة الدفع.
 // عرض + Excel + طباعة A4. ⚠️ أساس نقدي: من المقبوضات المكتملة (receipts COMPLETED) لا الاستحقاق.
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
@@ -89,10 +90,10 @@ export default function CashFlow() {
           <PeriodFilter value={period} onChange={setPeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(value) => setBranchId(value ? Number(value) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }
