@@ -224,7 +224,7 @@ export default function InventoryMovements() {
           map: (r) =>
             r.referenceType ? `${r.referenceType}${r.referenceId ? ` #${r.referenceId}` : ""}` : "",
         },
-        { key: "createdByName", header: "المستخدم", map: (r) => r.createdByName ?? "" },
+        { key: "createdByName", header: ATTRIBUTION_LABELS.performedBy, map: (r) => r.createdByName ?? "" },
         { key: "notes", header: "الملاحظة", map: (r) => r.notes ?? "" },
       ],
       });
@@ -426,7 +426,7 @@ export default function InventoryMovements() {
                 <th className="p-2 text-center">الكمية</th>
                 <th className="p-2 text-start">الفرع</th>
                 <th className="p-2 text-start">المرجع</th>
-                <th className="p-2 text-start">المستخدم</th>
+                <th className="p-2 text-start">{ATTRIBUTION_LABELS.performedBy}</th>
                 <th className="p-2 text-start">الملاحظة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>

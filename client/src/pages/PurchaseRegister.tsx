@@ -1,6 +1,8 @@
 // سجلّ المشتريات — تفصيل بنود أوامر الشراء (مرآة السجلّ التفصيلي للمبيعات). عرض + تصدير + طباعة.
 // المصدر: reports.purchaseRegister (كل البنود عدا الملغاة ضمن الفترة) — ترقيم صفحات بالخادم (limit/offset).
 import { useState } from "react";
+import { ActorCell } from "@/components/data-table/ActorCell";
+import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { Link } from "wouter";
 import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -91,6 +93,7 @@ export default function PurchaseRegister() {
           { key: "orderDate", header: "التاريخ" },
           { key: "poNumber", header: "أمر الشراء", map: (r) => r.poNumber ?? `#${r.poId}` },
           { key: "supplierName", header: "المورّد", map: (r) => r.supplierName ?? "" },
+          { key: "orderedByName", header: ATTRIBUTION_LABELS.performedBy, map: (r) => r.orderedByName ?? "" },
           { key: "productName", header: "المنتج", map: (r) => r.productName ?? "" },
           { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity) },
           { key: "unitPrice", header: "سعر الوحدة", map: (r) => Number(r.unitPrice) },
@@ -123,6 +126,7 @@ export default function PurchaseRegister() {
           { key: "date", label: "التاريخ" },
           { key: "po", label: "أمر الشراء" },
           { key: "supplier", label: "المورّد" },
+          { key: "orderedBy", label: ATTRIBUTION_LABELS.performedBy },
           { key: "product", label: "المنتج" },
           { key: "qty", label: "الكمية", align: "left" },
           { key: "unitPrice", label: "سعر الوحدة", align: "left" },
@@ -132,6 +136,7 @@ export default function PurchaseRegister() {
           date: r.orderDate,
           po: r.poNumber ?? `#${r.poId}`,
           supplier: r.supplierName ?? "—",
+          orderedBy: r.orderedByName ?? "—",
           product: r.productName ?? "—",
           qty: r.quantity,
           unitPrice: fmtAr(r.unitPrice),
@@ -208,6 +213,7 @@ export default function PurchaseRegister() {
                     <th className="p-2.5 text-end font-medium">التاريخ</th>
                     <th className="p-2.5 text-end font-medium">أمر الشراء</th>
                     <th className="p-2.5 text-end font-medium">المورّد</th>
+                    <th className="p-2.5 text-end font-medium">{ATTRIBUTION_LABELS.performedBy}</th>
                     <th className="p-2.5 text-end font-medium">المنتج</th>
                     <th className="p-2.5 text-start font-medium">الكمية</th>
                     <th className="p-2.5 text-start font-medium">سعر الوحدة</th>
@@ -224,6 +230,7 @@ export default function PurchaseRegister() {
                         </Link>
                       </td>
                       <td className="p-2.5 text-end">{r.supplierName ?? "—"}</td>
+                      <td className="p-2.5 text-end"><ActorCell actor={{ name: r.orderedByName }} /></td>
                       <td className="p-2.5 text-end">{r.productName ?? "—"}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
                       <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>

@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { ActorCell } from "@/components/data-table/ActorCell";
+import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -940,6 +942,7 @@ export default function Vouchers() {
                   {canFilterBranch && <th className="p-2">الفرع</th>}
                   <th className="p-2 text-center">النوع</th>
                   <th className="p-2">الطرف</th>
+                  <th className="p-2">{ATTRIBUTION_LABELS.performedBy}</th>
                   <th className="p-2">الفئة</th>
                   <th className="p-2">الوصف</th>
                   <th className="p-2 text-right">المبلغ</th>
@@ -952,14 +955,14 @@ export default function Vouchers() {
               <tbody>
                 {list.isLoading && (
                   <tr>
-                    <td colSpan={canFilterBranch ? 12 : 11}>
+                    <td colSpan={canFilterBranch ? 13 : 12}>
                       <LoadingState />
                     </td>
                   </tr>
                 )}
                 {list.isError && !list.isLoading && (
                   <tr>
-                    <td colSpan={canFilterBranch ? 12 : 11}>
+                    <td colSpan={canFilterBranch ? 13 : 12}>
                       <ErrorState
                         message={list.error?.message}
                         onRetry={() => void list.refetch()}
@@ -1056,13 +1059,12 @@ export default function Vouchers() {
                               {r.counterpartyName}
                             </div>
                           )}
-                        <div className="text-[11px] text-muted-foreground">
-                          نفّذ:{" "}
-                          {r.createdByName ??
-                            (r.createdBy
-                              ? `مستخدم #${r.createdBy}`
-                              : "غير موثق")}
-                        </div>
+                        {/*
+                          أُزيل سطرُ «نفّذ: …» المدفون داخل خليّة الطرف: صار للفاعل عمودٌ
+                          مستقلّ باسم العقد ({ATTRIBUTION_LABELS.performedBy}). إبقاؤه هنا
+                          يُكرّر المعلومة في خليّتين ويُبقي الخلطَ الذي نُعالجه: الطرفُ الآخر
+                          والفاعلُ دوران مختلفان لا يسكنان خليّةً واحدة.
+                        */}
                         {r.invoiceNumber && (
                           // ٢٤/٨ (تدقيق + Codex P2 على PR #746): رابطٌ مباشرٌ بـ`invoiceId` لا فلترٍ
                           // بالرقم — «INV-1» و«INV-10» و«INV-11» يتشابهان في `q=INV-1` فتُرجع
@@ -1082,6 +1084,9 @@ export default function Vouchers() {
                             </div>
                           )
                         )}
+                      </td>
+                      <td className="p-2 text-xs">
+                        <ActorCell actor={{ name: r.createdByName, userId: r.createdBy }} />
                       </td>
                       <td className="p-2 text-xs">
                         {r.voucherCategoryId
@@ -1293,7 +1298,7 @@ export default function Vouchers() {
                 })}
                 {!list.isLoading && !list.isError && rows.length === 0 && (
                   <TableEmptyRow
-                    colSpan={canFilterBranch ? 12 : 11}
+                    colSpan={canFilterBranch ? 13 : 12}
                     message="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً."
                   />
                 )}

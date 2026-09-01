@@ -1,6 +1,8 @@
 // سجلّ المبيعات المفصّل — كل بنود الفواتير (سطر-سطر) بفلاتر (تاريخ/فرع) + إجماليات + ترقيم صفحات.
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). ترقيم صفحات بالخادم (limit/offset).
 import { useState } from "react";
+import { ActorCell } from "@/components/data-table/ActorCell";
+import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { Search } from "lucide-react";
@@ -90,6 +92,7 @@ export default function SalesRegister() {
           { key: "invoiceDate", header: "التاريخ" },
           { key: "invoiceNumber", header: "الفاتورة" },
           { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "" },
+          { key: "soldByName", header: ATTRIBUTION_LABELS.performedBy, map: (r) => r.soldByName ?? "" },
           { key: "productName", header: "المنتج" },
           { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity) },
           { key: "unitPrice", header: "سعر الوحدة", map: (r) => Number(r.unitPrice) },
@@ -125,6 +128,7 @@ export default function SalesRegister() {
           { key: "date", label: "التاريخ" },
           { key: "invoice", label: "الفاتورة" },
           { key: "customer", label: "العميل" },
+          { key: "soldBy", label: ATTRIBUTION_LABELS.performedBy },
           { key: "product", label: "المنتج" },
           { key: "qty", label: "الكمية", align: "left" },
           { key: "price", label: "السعر", align: "left" },
@@ -136,6 +140,7 @@ export default function SalesRegister() {
           date: r.invoiceDate,
           invoice: r.invoiceNumber,
           customer: r.customerName ?? "—",
+          soldBy: r.soldByName ?? "—",
           product: r.productName,
           qty: fmtAr(r.quantity),
           price: fmtAr(r.unitPrice),
@@ -206,6 +211,7 @@ export default function SalesRegister() {
                     <th className="p-2.5 text-end font-medium">التاريخ</th>
                     <th className="p-2.5 text-end font-medium">الفاتورة</th>
                     <th className="p-2.5 text-end font-medium">العميل</th>
+                    <th className="p-2.5 text-end font-medium">{ATTRIBUTION_LABELS.performedBy}</th>
                     <th className="p-2.5 text-end font-medium">المنتج</th>
                     <th className="p-2.5 text-right font-medium">الكمية</th>
                     <th className="p-2.5 text-right font-medium">السعر</th>
@@ -224,6 +230,7 @@ export default function SalesRegister() {
                         </Link>
                       </td>
                       <td className="p-2.5 text-end">{r.customerName ?? "—"}</td>
+                      <td className="p-2.5 text-end"><ActorCell actor={{ name: r.soldByName }} /></td>
                       <td className="p-2.5 text-end">{r.productName}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.quantity)}</td>
                       <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>
