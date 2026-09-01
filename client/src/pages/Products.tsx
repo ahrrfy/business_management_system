@@ -37,7 +37,7 @@ import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlternativeStockCard } from "@/components/stocktake/AlternativeStockBreakdown";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { useEffect, useMemo, useState } from "react";
 
 type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
@@ -370,7 +370,7 @@ export default function Products() {
                   >
                     <option value="">كل الفئات</option>
                     <option value="0">— بلا فئة —</option>
-                    <CategoryOptionList categories={categoriesQ.data ?? []} />
+                    {categoryOptionElements(categoriesQ.data ?? [])}
                   </AppSelect>
                 </FilterField>
                 {/* ٢٤/٨ — فلتر رؤية شبكة كاشير الطباعة (شريحة PR #755/#757/#767). */}
@@ -719,7 +719,7 @@ export default function Products() {
               onValueChange={(v) => setMoveTo(v === "" ? null : Number(v))}
             >
               <option value="">— بلا فئة —</option>
-              <CategoryOptionList categories={categoriesQ.data ?? []} />
+              {categoryOptionElements(categoriesQ.data ?? [])}
             </AppSelect>
           </div>
           <DialogFooter>

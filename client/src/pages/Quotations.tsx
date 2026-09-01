@@ -126,9 +126,16 @@ export default function Quotations() {
    * الصلاحيات في RowActions. الفائدة من DataTable هنا: حالات التحميل/الخطأ/الفراغ
    * (تمييز «لا سجلات بعد» عن «لا مطابق للفلتر») وبطاقات الجوّال — وكلّها كانت غائبة.
    */
+  /*
+   * ⛔ كل عمود بـ`enableSorting: false` عمداً: القائمة تُحمَّل تدريجياً (infinite) فما بين يدي
+   * DataTable هو الصفحات المُحمَّلة لا كامل البيانات — فرزُ الرؤوس كان سيرتّب المُحمَّل وحده
+   * ويبدو فرزاً شاملاً (نظير ما أمسكته مراجعة Codex على القوائم المُرقَّمة خادمياً).
+   * ولا يصحّ `serverPagination` هنا: لا مفهومَ «صفحة» في التحميل التراكميّ.
+   */
   const quotationColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
     {
       id: "quoteNumber",
+      enableSorting: false,
       header: "رقم العرض",
       accessorFn: (r) => r.quoteNumber,
       cell: ({ row }) => <CopyInline value={row.original.quoteNumber} />,
@@ -136,12 +143,14 @@ export default function Quotations() {
     },
     {
       id: "customerName",
+      enableSorting: false,
       header: "العميل",
       accessorFn: (r) => r.customerName ?? "—",
       meta: { kind: "text", wrap: true },
     },
     {
       id: "quoteDate",
+      enableSorting: false,
       header: "التاريخ",
       accessorFn: (r) => (r.quoteDate ? String(r.quoteDate) : ""),
       cell: ({ row }) => fmtDate(row.original.quoteDate),
@@ -149,6 +158,7 @@ export default function Quotations() {
     },
     {
       id: "validUntil",
+      enableSorting: false,
       header: "الصلاحية",
       accessorFn: (r) => (r.validUntil ? String(r.validUntil).slice(0, 10) : ""),
       cell: ({ row }) => row.original.validUntil ? String(row.original.validUntil).slice(0, 10) : "—",
@@ -156,6 +166,7 @@ export default function Quotations() {
     },
     {
       id: "total",
+      enableSorting: false,
       header: "الإجمالي",
       accessorFn: (r) => Number(r.total ?? 0),
       cell: ({ row }) => fmt(row.original.total),
@@ -163,6 +174,7 @@ export default function Quotations() {
     },
     {
       id: "status",
+      enableSorting: false,
       header: "الحالة",
       accessorFn: (r) => STATUS[r.status] ?? r.status,
       cell: ({ row }) => (
@@ -174,6 +186,7 @@ export default function Quotations() {
     },
     {
       id: "actions",
+      enableSorting: false,
       header: "إجراء",
       cell: ({ row }) => {
         const qr = row.original;

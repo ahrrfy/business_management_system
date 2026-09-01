@@ -24,7 +24,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { notify } from "@/lib/notify";
 import { matchQuery } from "@/components/search/filter";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { CornerDownLeft, Plus, Search } from "lucide-react";
@@ -436,7 +436,7 @@ export default function Categories() {
                 className="h-9 -input px-3 text-sm"
               >
                 <option value="">— بلا فئة —</option>
-                <CategoryOptionList categories={rows.filter((r) => r.id !== delTarget.id)} />
+                {categoryOptionElements(rows.filter((r) => r.id !== delTarget.id))}
               </AppSelect>
             </div>
           )}

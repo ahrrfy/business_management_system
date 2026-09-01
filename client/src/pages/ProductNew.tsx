@@ -20,7 +20,7 @@ import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { checkVariantSanity } from "@shared/priceSanity";
 import {
   clampInt,
@@ -604,7 +604,7 @@ export default function ProductNew() {
                 className="h-9 -input px-3 text-sm"
               >
                 <option value="">— بلا فئة —</option>
-                <CategoryOptionList categories={categoriesQ.data ?? []} />
+                {categoryOptionElements(categoriesQ.data ?? [])}
               </AppSelect>
             </Field>
             <Field label="رمز المنتج (SKU الأساس)" hint="تُشتقّ منه أكواد المتغيّرات تلقائياً." className="md:col-span-2">

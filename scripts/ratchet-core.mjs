@@ -58,18 +58,30 @@ export function assertMonotonicDescent({ baselinePath, baseline, label }) {
   const after = baselineTotal(baseline);
   const delta = after - before;
 
-  if (delta > 0) {
-    const risen = Object.keys(baseline)
-      .filter((f) => (Number(baseline[f]) || 0) > (Number(mainBaseline[f]) || 0))
-      .slice(0, 10);
+  /*
+   * المقارنة **لكل ملفّ** لا للمجموع وحده (مراجعة Codex على PR #931، P2):
+   * المجموع يسمح بنقل السماح بين الملفّات — تنظيفُ ملفٍّ بواحد ورفعُ آخر بواحد يُبقي
+   * `delta === 0`، فيقبل الحارسُ الفرديّ الانتهاكَ الجديد لأنّه يطابق السماح المرفوع،
+   * وتُلتَفّ المِسنَنة بينما هذه الدالّة تُبلّغ بالنجاح. المِسنَنة **لكل مفتاح**.
+   */
+  const risen = Object.keys(baseline).filter(
+    (f) => (Number(baseline[f]) || 0) > (Number(mainBaseline[f]) || 0),
+  );
+
+  if (risen.length > 0) {
+    const detail = risen
+      .slice(0, 10)
+      .map((f) => `   - ${f}: ${Number(mainBaseline[f]) || 0} ← ${Number(baseline[f]) || 0}`);
     return {
       ok: false,
       skipped: false,
       delta,
       message:
-        `✗ ${label}: **ارتفع** خطّ الأساس ${delta} عن origin/main (${before} ← ${after}).\n` +
-        `  المِسنَنة تنازلية: الأساس يُخفَّض أو يبقى، ولا يُرفَع لتمرير انتهاك.\n` +
-        (risen.length ? `  ارتفعت في:\n${risen.map((f) => `   - ${f}`).join("\n")}\n` : "") +
+        `✗ ${label}: **ارتفع** خطّ الأساس في ${risen.length} ملفّ عن origin/main ` +
+        `(المجموع ${before} ← ${after}).\n` +
+        `  المِسنَنة تنازلية **لكل ملفّ**: لا يُرفَع سماحُ ملفٍّ ولو قابله تنظيفُ آخر.\n` +
+        `${detail.join("\n")}\n` +
+        (risen.length > 10 ? `   … و${risen.length - 10} غيرها\n` : "") +
         `  إن كان الانتهاك مقصوداً وضرورياً: رحّل الملفّ إلى المكوّن الموحّد بدل رفع الأساس.`,
     };
   }

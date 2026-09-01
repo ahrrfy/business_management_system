@@ -56,7 +56,7 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
@@ -657,7 +657,7 @@ export default function ProductEdit() {
                 className="h-9 -input px-3 text-sm"
               >
                 <option value="">— بلا فئة —</option>
-                <CategoryOptionList categories={categoriesQ.data ?? []} />
+                {categoryOptionElements(categoriesQ.data ?? [])}
               </AppSelect>
             </Field>
             <Field label="بادئة SKU (للمتغيّرات الجديدة)" className="md:col-span-2"><Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" /></Field>

@@ -335,21 +335,20 @@ export default function Leaves() {
                 searchable={false}
                 errorState={{ isError: list.isError, message: "تعذّر تحميل الطلبات.", onRetry: () => void list.refetch() }}
                 emptyText="لا طلبات مطابقة. غيّر الفلاتر أو أضف طلباً جديداً."
+                /*
+                 * الترقيم خادميّ (offset/limit) ⇒ يجب إعلامُ DataTable.
+                 * بدونه يظنّ الصفحةَ الحاضرة كاملَ البيانات فيُفعّل فرزاً يرتّب ٢٥ صفّاً فقط،
+                 * فتُنتج الصفحةُ التالية شريحةً مفروزةً مستقلّة لا فرزاً شاملاً (Codex P2).
+                 * ومع serverPagination بلا serverSorting يُعطّل DataTable الفرزَ من نفسه.
+                 */
+                serverPagination={{
+                  page: Math.floor(offset / PAGE_SIZE),
+                  onPageChange: (p) => setOffset(p * PAGE_SIZE),
+                  pageSize: PAGE_SIZE,
+                  total: list.data?.total,
+                }}
               />
-              {/* ترقيم حقيقي — خادميّ (offset/limit)، لا تحميل كامل الجدول دفعةً واحدة. */}
-              <div className="flex items-center justify-between gap-2 p-2 border-t text-xs text-muted-foreground">
-                <span>
-                  {list.data ? `${Math.min(offset + 1, list.data.total)}–${Math.min(offset + PAGE_SIZE, list.data.total)} من ${list.data.total.toLocaleString("ar-IQ-u-nu-latn")}` : ""}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}>
-                    <ChevronRight className="size-4" aria-hidden /> السابق
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={!list.data?.hasMore} onClick={() => setOffset((o) => o + PAGE_SIZE)}>
-                    التالي <ChevronLeft className="size-4" aria-hidden />
-                  </Button>
-                </div>
-              </div>
+              {/* الترقيم يُصيّره DataTable نفسه عبر serverPagination — شريطٌ واحد لا اثنان. */}
             </CardContent>
           </Card>
         </TabsContent>

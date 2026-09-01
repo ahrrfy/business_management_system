@@ -295,28 +295,22 @@ export default function PurchaseReturns() {
             emptyText={total === 0 && !f.supplierId && !f.branchId && !f.from && !f.to && !dq.trim()
               ? "لا مرتجعات مشتريات بعد."
               : "لا مرتجعات مطابقة. غيّر البحث أو الفلتر."}
+            /*
+             * ترقيمٌ خادميّ (limit/offset) ⇒ يُعلَن لـDataTable.
+             * بدونه يظنّ الصفحةَ الحاضرة كاملَ البيانات فيُفعّل فرزاً يرتّب صفحةً واحدة
+             * فقط، فتُنتج الصفحةُ التالية شريحةً مفروزةً مستقلّة (مراجعة Codex، P2).
+             */
+            serverPagination={{
+              page,
+              onPageChange: setPage,
+              pageSize: PAGE,
+              total,
+            }}
           />
         </CardContent>
       </Card>
 
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-muted-foreground" dir="ltr">
-          {total === 0 ? "لا صفوف" : `${from}–${to} / ${total.toLocaleString("ar-IQ-u-nu-latn")}`}
-        </span>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-            السابق
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={(page + 1) * PAGE >= total}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            التالي
-          </Button>
-        </div>
-      </div>
+      {/* الترقيم يُصيّره DataTable عبر serverPagination — شريطٌ واحد لا اثنان. */}
     </div>
   );
 }

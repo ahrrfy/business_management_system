@@ -9,9 +9,12 @@
  * التصميم:
  *  - يقبل `<option value>Label</option>` و`<optgroup label>` أطفالاً — نفس نمط `<select>` الأصليّ
  *    لتقليل تكلفة الهجرة إلى أدنى حدّ (استبدال الاسم + `onChange` → `onValueChange`).
- *  - `<option value="">Label</option>` يُعامَل تلقائياً كـplaceholder على الـtrigger — Radix يرفض
- *    القيمة الفارغة على `<SelectItem>` (documented) فلا يجوز تمريرها. نستخرج نصّه كـplaceholder
- *    ولا نُدرجه بنداً.
+ *  - `<option value="">Label</option>` يُستعمل نصُّه placeholder على الـtrigger **ويُدرَج أيضاً
+ *    بنداً قابلاً للاختيار** (بقيمةٍ بديلة داخلية، لأنّ Radix يرفض `value=""` على `SelectItem`).
+ *    كان يُسقَط فيتعذّر الرجوع إلى «الكل» بعد أوّل اختيار — أصلحته مراجعة Codex على PR #931.
+ *  - ⛔ الأطفال يجب أن يكونوا `<option>`/`<optgroup>` **حرفياً**: المحوِّل لا يُصيّر المكوّنات
+ *    المخصّصة، فمكوّنٌ يُرجع options يصل خامّاً إلى `SelectContent` ويصير غير قابل للاختيار.
+ *    مرّر العناصر من دالّة بدلاً منه (مثال: `categoryOptionElements(list)`).
  *  - `disabled` على `<option>` مدعوم عبر `data-[disabled]` (Radix).
  *
  * لماذا `onValueChange` بدل `onChange` النمطيّ؟ Radix API يعطي القيمة مباشرةً بلا SyntheticEvent —
@@ -94,6 +97,14 @@ function elementName(el: React.ReactElement): string | undefined {
  * يحوّل شجرة `<option>` / `<optgroup>` إلى شجرة `<SelectItem>` / `<SelectGroup>+<SelectLabel>`.
  * يستخرج `<option value="">` كـplaceholder ويُبلّغ عنه للـcaller (كي يظهر على الـtrigger فارغاً).
  */
+/**
+ * قيمةٌ بديلة للخيار الفارغ. Radix يرفض `value=""` على `SelectItem`، وكان الحلّ السابق
+ * **إسقاط** الخيار الفارغ والاكتفاء به placeholder — فيتعذّر الرجوع إلى «الكل» بعد أوّل
+ * اختيار (مراجعة Codex على PR #931، P1). الآن يُصيَّر عنصراً حقيقياً بهذه القيمة،
+ * وتُترجَم عند الحدّين فيبقى العقد الخارجيّ `""` كما هو لكل المستدعين.
+ */
+const EMPTY_VALUE = "__appselect_empty__";
+
 function convertChildren(
   children: React.ReactNode,
   extractedPlaceholder: { text: string | null },
@@ -123,13 +134,16 @@ function convertChildren(
       const raw = props.value;
       const value = raw == null ? "" : String(raw);
 
-      // Placeholder: <option value="">النصّ</option> — Radix يرفض value="" على SelectItem فنستخرجه.
+      // <option value=""> يخدم غرضين: نصُّ الـplaceholder، **وخيارُ إعادةٍ إلى «الكل»**.
+      // إسقاطه (السلوك السابق) كان يحبس المستخدم على أوّل اختيار.
       if (value === "") {
-        if (extractedPlaceholder.text == null) {
-          const t = typeof props.children === "string" ? props.children : String(props.children ?? "");
-          extractedPlaceholder.text = t.trim() || null;
-        }
-        return null;
+        const t = typeof props.children === "string" ? props.children : String(props.children ?? "");
+        if (extractedPlaceholder.text == null) extractedPlaceholder.text = t.trim() || null;
+        return (
+          <SelectItem value={EMPTY_VALUE} disabled={props.disabled}>
+            {props.children}
+          </SelectItem>
+        );
       }
 
       return (
@@ -143,6 +157,18 @@ function convertChildren(
     const props = child.props as { children?: React.ReactNode };
     if (props && "children" in props) {
       return React.cloneElement(child, {}, convertChildren(props.children, extractedPlaceholder));
+    }
+    /*
+     * وصلنا مكوّناً مخصّصاً بلا أطفال — لا يمكن تصييره هنا، وتمريره كما هو يضع `<option>`
+     * خامّة داخل `SelectContent` فتبدو القائمة سليمة **وهي غير قابلة للاختيار**. العطبُ
+     * صامتٌ تماماً في الإنتاج (لا خطأ، لا تحذير) ولذلك نصرخ في التطوير.
+     */
+    if (import.meta.env?.DEV && typeof child.type !== "string") {
+      const label = typeof child.type === "function" ? (child.type.name || "مكوّن") : String(child.type);
+      console.error(
+        `[AppSelect] الطفل «${label}» مكوّنٌ مخصّص لا option/optgroup — خياراته لن تكون قابلة للاختيار. ` +
+        `مرّر العناصر من دالّة بدلاً منه (مثال: categoryOptionElements(list)).`,
+      );
     }
     return child;
   });
@@ -196,8 +222,8 @@ export function AppSelect({
        * **عنصرٌ** قيمةً فارغة — وهذا مضمون: `convertChildren` يحوّل `<option value="">`
        * إلى placeholder ولا يُنشئ له SelectItem.
        */
-      value={value}
-      onValueChange={onValueChange}
+      value={value === "" ? EMPTY_VALUE : value}
+      onValueChange={(next) => onValueChange(next === EMPTY_VALUE ? "" : next)}
       disabled={disabled}
       open={open}
       onOpenChange={onOpenChange}
