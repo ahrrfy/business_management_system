@@ -8,6 +8,7 @@ import type { Tx } from "../../db";
 import { withTx } from "../tx";
 import { nextTaskNumber } from "./helpers";
 import { canCrossBranches } from "../../lib/branchAuthority";
+import { enqueueTaskNotifications, reconcileTaskNotifications } from "./notifications";
 
 export type TaskKind = "SERVICE_REQUEST" | "SUPPORT" | "INQUIRY" | "FOLLOW_UP" | "INTERNAL";
 export type TaskPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
@@ -125,16 +126,39 @@ export async function createTask(input: CreateTaskInput, actor: CreateTaskActor,
       userId: actor.userId ?? null,
     });
 
+    let notificationOccurrenceId: string | null = null;
     if (input.assignedTo != null) {
-      await t.insert(taskEvents).values({
+      const assignmentEvent = await t.insert(taskEvents).values({
         taskId,
         eventType: "ASSIGN",
         note: null,
         userId: actor.userId ?? null,
       });
+      const assignmentEventId = extractInsertId(assignmentEvent);
+      notificationOccurrenceId = await enqueueTaskNotifications(t, {
+        task: {
+          id: taskId,
+          taskNumber,
+          title: input.title.trim(),
+          branchId: input.branchId,
+          assignedTo: input.assignedTo,
+          createdBy: actor.userId,
+        },
+        eventId: assignmentEventId,
+        action: {
+          type: "ASSIGNED",
+          assignedTo: input.assignedTo,
+          previousAssignedTo: null,
+        },
+        actorUserId: actor.userId ?? 0,
+      });
     }
 
-    return { taskId, taskNumber };
+    return { taskId, taskNumber, notificationOccurrenceId };
   };
-  return tx ? run(tx) : withTx(run);
+  const outcome = tx ? await run(tx) : await withTx(run);
+  if (!tx) await reconcileTaskNotifications(outcome.notificationOccurrenceId);
+  const { notificationOccurrenceId: _notificationOccurrenceId, ...publicResult } = outcome;
+  void _notificationOccurrenceId;
+  return publicResult;
 }
