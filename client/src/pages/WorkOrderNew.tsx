@@ -648,16 +648,16 @@ export default function WorkOrderNew() {
             </div>
             <div className="space-y-1">
               <Label>الفرع {needsBranchChoice && <span className="text-destructive">*</span>}</Label>
-              <select
-                className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring"
-                value={needsBranchChoice ? "" : effectiveBranch}
-                onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+              <AppSelect
+                className="h-9 px-3 text-sm"
+                value={needsBranchChoice ? "" : String(effectiveBranch)}
+                onValueChange={(value) => setBranchId(value ? Number(value) : "")}
               >
                 {needsBranchChoice && <option value="">— اختر الفرع —</option>}
                 {(branches.data ?? []).map((b: any) => (
                   <option key={b.id} value={b.id}>{b.name}</option>
                 ))}
-              </select>
+              </AppSelect>
               {needsBranchChoice && <p className="text-[11px] text-destructive">يلزم اختيار الفرع قبل الحفظ.</p>}
             </div>
           </div>
@@ -808,28 +808,28 @@ export default function WorkOrderNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="assignee">المنفّذ المسؤول</Label>
-            <select
+            <AppSelect
               id="assignee"
-              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring"
-              value={assignedTo}
-              onChange={(e) => setAssignedTo(e.target.value ? Number(e.target.value) : "")}
+              className="h-9 -input px-3 text-sm focus-visible:ring-1 focus-visible:ring-ring"
+              value={String(assignedTo)}
+              onValueChange={(next) => setAssignedTo(next ? Number(next) : "")}
             >
               <option value="">— غير مُسنَد —</option>
               {(staff.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>{s.name ?? `#${s.id}`}{s.role ? ` — ${s.role}` : ""}</option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <Label htmlFor="dm">طريقة التسليم</Label>
-            <select
+            <AppSelect
               id="dm"
-              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring"
+              className="h-9 -input px-3 text-sm focus-visible:ring-1 focus-visible:ring-ring"
               value={deliveryMethod}
-              onChange={(e) => setDeliveryMethod(e.target.value)}
+              onValueChange={(next) => setDeliveryMethod(next)}
             >
               {DELIVERY_METHODS.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
+            </AppSelect>
           </div>
         </CardContent>
       </Card>

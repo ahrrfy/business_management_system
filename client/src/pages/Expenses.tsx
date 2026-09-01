@@ -2624,13 +2624,12 @@ export default function Expenses() {
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
                           <Label>الطريقة</Label>
-                          <select
-                            className={selectClsFull}
+                          <AppSelect
+                            className="h-9"
                             value={correctionRefundMethod}
-                            onChange={(event) =>
+                            onValueChange={(value) =>
                               setCorrectionRefundMethod(
-                                event.target
-                                  .value as typeof correctionRefundMethod,
+                                value as typeof correctionRefundMethod,
                               )
                             }
                           >
@@ -2639,24 +2638,23 @@ export default function Expenses() {
                             {INBOUND_METHOD_OPTIONS.map((m) => (
                               <option key={m.v} value={m.v}>{m.label}</option>
                             ))}
-                          </select>
+                          </AppSelect>
                         </div>
                         {correctionRefundMethod === "CASH" ? (
                           <div className="space-y-1">
                             <Label>وجهة النقد</Label>
-                            <select
-                              className={selectClsFull}
+                            <AppSelect
+                              className="h-9"
                               value={correctionRefundBucket}
-                              onChange={(event) =>
-                                setCorrectionRefundBucket(
-                                  event.target
-                                    .value as typeof correctionRefundBucket,
-                                )
-                              }
+                              onValueChange={(value) =>
+                              setCorrectionRefundBucket(
+                                value as typeof correctionRefundBucket,
+                              )
+                            }
                             >
                               <option value="TREASURY">الخزينة الإدارية</option>
                               <option value="DRAWER">درج الوردية</option>
-                            </select>
+                            </AppSelect>
                           </div>
                         ) : (
                           <div className="space-y-1">
