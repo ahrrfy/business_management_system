@@ -1038,6 +1038,10 @@ export default function WorkOrderDetail() {
               reason: d.reason,
               payload: {
                 refundShiftId: d.refundShiftId,
+                // الرافدُ يعبر مسارَ الاعتماد كذلك — وإلّا كانت الميزةُ غائبةً عن كلّ إلغاءٍ
+                // يحتاج ردّاً (controlRequired.cancel صحيحٌ لأيّ أمرٍ بعربون).
+                refundRail: d.refundRail,
+                refundReference: d.refundReference,
                 materials: d.materials,
               },
             };

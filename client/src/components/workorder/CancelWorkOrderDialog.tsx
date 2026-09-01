@@ -207,8 +207,12 @@ export default function CancelWorkOrderDialog({
    * سببُ الحجب **بحسب الرافد**: الدرجُ وحده يلزمه اختيارُ وردية، والبطاقةُ وحدها مرجعٌ خارجيّ.
    * (بلا هذا كان حجبُ الدرج يسري على الخزينة فيمنع مساراً لا يحتاج درجاً إطلاقاً.)
    */
-  // على مسار الاعتماد الرافدُ درجٌ حتماً (الحمولة لا تحمل غيره) — فلا يُحجَب بمرجعٍ لا يُطلب.
-  const effectiveRail: RefundRail = requiresApproval ? "DRAWER" : rail;
+  /**
+   * صارت الحمولةُ تحمل الرافد، فلا فرقَ بين المسارين (مراجعة Codex P1 على #928): حصرُ الروافد
+   * في المسار المباشر كان يُغيّبها عن **كلّ إلغاءٍ يحتاج ردّاً** — `controlRequired.cancel`
+   * صحيحٌ لأيّ أمرٍ بعربونٍ أو حصصٍ أو أمانةٍ أو خامة.
+   */
+  const effectiveRail: RefundRail = rail;
   /**
    * الدرجُ المُرسَل — **لرافد الدرج وحده**. الخزينةُ والبطاقةُ لا وردية لهما، وإرسالُ درجٍ معهما
    * يخلط مصدرَ المال في البصمة والتدقيق.
@@ -229,6 +233,10 @@ export default function CancelWorkOrderDialog({
     setReason("");
     setWaste({});
     drawer.reset();
+    // الرافدُ والمرجعُ يُصفَّران كذلك: مرجعُ بطاقةٍ بقي من محاولةٍ أُغلقت بلا تأكيد كان
+    // يُرسَل مع محاولةٍ جديدة ⇒ **إثباتٌ ماليٌّ كاذب** على استردادٍ لم يقع (مراجعة Codex).
+    setRail("DRAWER");
+    setRefundReference("");
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasMaterials = materials.length > 0;
@@ -386,20 +394,7 @@ export default function CancelWorkOrderDialog({
             نقديّ غيرَ قابلٍ للإلغاء كلّما فُتحت ورديتان. ويظهر خصوصاً في الإلغاء **بعد أيّام**:
             وردية القبض مُغلقةٌ يقيناً، فالنقد يخرج من درج اليوم.
           */}
-          {/*
-            (!) لا نعرض روافدَ على مسار الاعتماد: حمولةُ طلب التحكّم (`CancelControlInput`)
-            تحمل `refundShiftId` و`materials` وحدهما، فاختيارُ «الخزينة» أو «البطاقة» كان
-            سيُسقَط صامتاً ويُنفَّذ الإلغاءُ من الدرج — أي اختيارٌ ماليٌّ يُهمَل بلا علم صاحبه.
-            وعرضُ خيارٍ لا أثرَ له أسوأ من عدم عرضه. (توسيعُ الحمولة في عقد جلسةٍ أخرى — مرفوع.)
-          */}
-          {needsCashDrawer && requiresApproval && (
-            <p className="rounded-md bg-[var(--sem-warn-bg)] px-2.5 py-2 text-2xs font-bold text-[var(--sem-warn)]">
-              على مسار الاعتماد يُردّ المبلغ من درج الاستقبال. للردّ من الخزينة أو على البطاقة،
-              يلزم أن ينفّذ الإلغاءَ مديرٌ يملك صلاحيته مباشرةً.
-            </p>
-          )}
-
-          {needsCashDrawer && !requiresApproval && (
+          {needsCashDrawer && (
             <div className="space-y-2">
               <Label className="text-xs font-bold">من أين يُردّ المبلغ؟</Label>
               {/*

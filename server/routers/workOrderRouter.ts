@@ -6,7 +6,6 @@ import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { REFUND_RAILS } from "@shared/refundRail";
-import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   auditLogs,
   customers,
@@ -49,7 +48,7 @@ import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
 import { setWorkOrderDesign } from "../services/workOrder/design";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
-import { hasModuleAccess } from "@shared/permissions";
+import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
@@ -99,6 +98,12 @@ const workOrderMaterialPayload = z.object({
 });
 const workOrderCancelPayload = z.object({
   refundShiftId: z.number().int().positive().nullish(),
+  /**
+   * رافدُ ردّ العربون عبر مسار الاعتماد — بدونه تُصبح الروافدُ غائبةً عن كلّ إلغاءٍ يحتاج ردّاً
+   * (`controlRequired.cancel` صحيحٌ لأيّ أمرٍ بعربونٍ أو حصصٍ أو أمانةٍ أو خامة).
+   */
+  refundRail: z.enum(REFUND_RAILS).nullish(),
+  refundReference: z.string().trim().min(3).max(100).nullish(),
   materials: z.array(z.object({
     workOrderMaterialId: z.number().int().positive(),
     returnBase: z.number().int().min(0),
@@ -433,12 +438,15 @@ function workOrdersFullAccess(user: { role: string; permissionsOverride?: unknow
  * بلا صندوق — يتلقّى أرصدةَ كلّ درجٍ مفتوحٍ بالفرع، وهو نقضٌ لعزل الأدراج المقرَّر في تدقيق ٢/٧.)
  */
 function maySeeDrawerCash(user: { role?: string | null; permissionsOverride?: unknown }): boolean {
-  return moduleAccessAllowed(
+  // ⚠️ **لا تُمرّر قائمةَ أدوارٍ فارغة** (مراجعة Codex P2): `moduleAccessAllowed` عندئذٍ يتخطّى
+  // `hasModuleAccess` كلّياً ويسقط إلى الفحص الصريح وحده — فمديرٌ قالبُه `treasury: FULL` بلا
+  // تجاوزٍ يُحجَب رقمُه رغم امتلاكه الخزينة. `hasModuleAccess` يحترم القالبَ والتجاوزَ معاً.
+  if (String(user.role ?? "") === "admin") return true;
+  return hasModuleAccess(
     String(user.role ?? ""),
     (user.permissionsOverride ?? null) as PermissionMap | null,
     "treasury",
     "READ",
-    [],
   );
 }
 
@@ -1745,6 +1753,11 @@ export const workOrderRouter = router({
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
         {
           refundShiftId: input.refundShiftId ?? null,
+          // ⚠️ كان هذان مفقودَين فتسقط الميزةُ كلُّها صامتةً إلى `DRAWER` (مراجعة Codex P1):
+          // الراوترُ يقبلهما والشاشةُ ترسلهما، ثمّ يُهملان هنا — فاختيارُ الخزينة يُصرَف من درج،
+          // أو يفشل لأنّ مسارَها لا يُرسل `refundShiftId` أصلاً. ولا يبلغ مرجعُ البطاقة تحقّقَه.
+          refundRail: input.refundRail ?? null,
+          refundReference: input.refundReference ?? null,
           clientRequestId: input.clientRequestId ?? null,
           expectedVersion: input.expectedVersion,
           reason: input.reason,

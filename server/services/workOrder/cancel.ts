@@ -304,6 +304,21 @@ export async function cancelWorkOrderInTx(
     // يعكس قيد PAYMENT_IN المُسجَّل عند الإنشاء (صافي الدفتر = صفر)، ويظهر خروجاً في Z-report يوم الإلغاء.
     // نعكس فقط ما قُبِض فعلاً (إيصال موجود) — لا نختلق استرداداً لأوامر قديمة لم تُسجِّل العربون كقيد.
     const refundD = round2(money(wo.deposit ?? "0"));
+    /**
+     * **الرافدُ قرارٌ واحدٌ للعملية كلّها لا للعربون وحده** (مراجعة Codex P1 على #928):
+     * الأمرُ قد يجمع عربوناً مباشراً + حصصَ مسوّدةٍ مطبَّقة + أمانةَ أجرة توصيل. وتطبيقُ الرافد
+     * على الأوّل وحده يشقّ الردَّ بين الخزينة ودرجٍ صامتاً، أو يُسقطه حين لا يُرسَل
+     * `refundShiftId` أصلاً (وهو ما تفعله مسارات الخزينة/البطاقة عمداً).
+     */
+    const opRail: RefundRail = opts.refundRail ?? "DRAWER";
+    const opRailShape = refundRailReceiptShape(opRail);
+    /** دلوُ النقد الفوريّ لهذه العملية — درجٌ أو خزينة. */
+    const cashSinkBucket: "DRAWER" | "TREASURY" = opRail === "TREASURY" ? "TREASURY" : "DRAWER";
+    /** الوردية: للدرج وحده — الخزينةُ بلا وردية. */
+    const resolveCashSinkShift = async (): Promise<number | null> =>
+      cashSinkBucket === "DRAWER"
+        ? await resolveLockedReceptionCashShift(tx, Number(wo.branchId), opts.refundShiftId ?? null)
+        : null;
     if (refundD.gt(0)) {
       // ش٠ (V3): الردّ من إيصال العربون **بهويّته** (depositReceiptId) لا بالتقاطٍ ظنّي — كان
       // `.limit(1)` قد يلتقط إيصال أجرة COUNTER (نفس البصمة) فيُردّ للزبون مبلغ الأجرة بدل
@@ -480,10 +495,19 @@ export async function cancelWorkOrderInTx(
         const refundMethod = part.method === "TELECOM" ? "CASH" : part.method;
         let shiftId: number | null = null;
         if (refundMethod === "CASH") {
-          appliedCashShiftId ??= await resolveLockedReceptionCashShift(tx, Number(wo.branchId), opts.refundShiftId ?? null);
+          if (opRail === "CARD") {
+            // ⛔ لا نشقّ ردّاً واحداً بين بطاقةٍ ونقد: البطاقةُ مسارٌ معلّقٌ باعتماد، والحصصُ
+            // تُصرَف فوراً — فخلطُهما يُخرج بعضَ المال ويُعلّق بعضَه على مستندٍ واحد. رفضٌ صريح
+            // أصدقُ من شقٍّ صامت (§٥).
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: "هذا الأمر يحمل حصص عربون مقبوضة سلفاً — لا يُردّ على البطاقة. اختر الدرج أو الخزينة الإدارية.",
+            });
+          }
+          appliedCashShiftId ??= await resolveCashSinkShift();
           shiftId = appliedCashShiftId;
           await assertCashOutAvailable(tx, {
-            branchId: Number(wo.branchId), cashBucket: "DRAWER", shiftId,
+            branchId: Number(wo.branchId), cashBucket: cashSinkBucket, shiftId,
             amount: amountD, operation: "رد حصة عربون أمر شغل",
           });
         } else {
@@ -526,7 +550,9 @@ export async function cancelWorkOrderInTx(
         const refundReceiptId = extractInsertId(inserted);
         if (refundMethod !== "CASH") pendingRefundReceiptIds.push(refundReceiptId);
         if (refundMethod === "CASH") {
-          const refundAssetRole = paymentAssetRole(refundMethod, "DRAWER", "OUT");
+          // الحسابُ يتبع الدلو الفعليّ: CASH للدرج وTREASURY_CASH للخزينة — وإلّا خرج المال
+          // من الخزينة وسُجّل على حساب الدرج (قيدٌ يخالف الحركة).
+          const refundAssetRole = paymentAssetRole(refundMethod, cashSinkBucket, "OUT");
           const postingSource = {
             roleDebits: { OTHER_LIABILITY: amountD },
             roleCredits: { [refundAssetRole]: amountD },
@@ -577,33 +603,42 @@ export async function cancelWorkOrderInTx(
     )[0];
     const feeHeldNet = round2(money(feeHeldRow?.v ?? "0"));
     if (feeHeldNet.gt(0)) {
-      const feeShiftId = await resolveLockedReceptionCashShift(tx, Number(wo.branchId), opts.refundShiftId ?? null);
+      if (opRail === "CARD") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "على هذا الأمر أمانة أجرة توصيل تُردّ نقداً — لا تُردّ على البطاقة. اختر الدرج أو الخزينة الإدارية.",
+        });
+      }
+      const feeShiftId = await resolveCashSinkShift();
       await assertCashOutAvailable(tx, {
-        branchId: Number(wo.branchId), cashBucket: "DRAWER", shiftId: feeShiftId,
+        branchId: Number(wo.branchId), cashBucket: cashSinkBucket, shiftId: feeShiftId,
         amount: feeHeldNet, operation: "رد أمانة أجرة توصيل أمر الشغل",
       });
       const feeOut = await tx.insert(receipts).values({
         branchId: Number(wo.branchId), shiftId: feeShiftId, workOrderId,
-        direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",
+        direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: cashSinkBucket,
         status: "COMPLETED", approvalStatus: "APPROVED", partyType: "OTHER",
         referenceNumber: `DLV-FEE-WO-${workOrderId}`,
         description: `ردّ أمانة أجرة توصيل — إلغاء طلب #${workOrderId}`,
         createdBy: actor.userId,
       });
+      // الحسابُ يتبع الدلو: خروجٌ من الخزينة يُقيَّد على TREASURY_CASH لا على CASH.
+      const feeAssetRole = paymentAssetRole("CASH", cashSinkBucket, "OUT");
       await postEntry(tx, {
         entryType: "DELIVERY_FEE_HELD",
         dedupeKey: `DELIVERY_FEE_HELD_REFUND:WO:${workOrderId}`,
         branchId: Number(wo.branchId),
         receiptId: extractInsertId(feeOut),
         amount: feeHeldNet.neg(),
-        notes: `ردّ أمانة أجرة توصيل — إلغاء طلب #${workOrderId}`,
+        notes: `ردّ أمانة أجرة توصيل — إلغاء طلب #${workOrderId}`
+          + (cashSinkBucket === "TREASURY" ? " (من الخزينة الإدارية)" : ""),
         postingSourceComponents: {
           roleDebits: { COURIER_PAYABLE: feeHeldNet },
-          roleCredits: { CASH: feeHeldNet },
+          roleCredits: { [feeAssetRole]: feeHeldNet },
         },
-        postingIntent: createPostingIntent("DELIVERY_FEE_HELD_PAYOUT", "DELIVERY_FEE_HELD", [debitLine("COURIER_PAYABLE", feeHeldNet), creditLine("CASH", feeHeldNet)], {
+        postingIntent: createPostingIntent("DELIVERY_FEE_HELD_PAYOUT", "DELIVERY_FEE_HELD", [debitLine("COURIER_PAYABLE", feeHeldNet), creditLine(feeAssetRole, feeHeldNet)], {
           roleDebits: { COURIER_PAYABLE: feeHeldNet },
-          roleCredits: { CASH: feeHeldNet },
+          roleCredits: { [feeAssetRole]: feeHeldNet },
         }),
       });
     }

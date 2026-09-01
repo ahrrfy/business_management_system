@@ -9,10 +9,10 @@
  * تلقائياً. تكرارُ المنطق نسخاً كان سيُنتج تمهيداً يشيخ بصمتٍ ويكذب على الشاشة.
  */
 import { and, eq, inArray, isNull, notLike, or, sql } from "drizzle-orm";
-import { deliveryConsignments, invoiceItems, invoices, receipts, shifts, users, workOrders } from "../../../drizzle/schema";
+import { deliveryConsignments, invoices, receipts, shifts, users, workOrders } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
-import { computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
+import { MATERIALIZED_RECEIPT_STATUSES, computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { appliedCollectionsForWorkOrder } from "../reception/deposits";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import type { RefundDrawerCandidate, RefundPreflight, WorkOrderRefundOperation } from "@shared/refundPreflight";
@@ -117,27 +117,20 @@ async function cancelCashOut(tx: Tx, workOrderId: number, deposit: string | null
 /**
  * النقدُ الخارج عند **استرجاع تسليم** أمر الشغل.
  *
- * ⚠️ **الفاتورةُ ذاتُ البنود لا تمرّ بهذا المسار إطلاقاً** (مراجعة Codex، الجولة الثانية):
- * [`reverseDelivery.ts`](./reverseDelivery.ts) يُفوّضها كاملةً إلى `returnSaleInTx` **بلا
- * `refund` ولا `refundShiftId`** ويعود مبكّراً — فلا يُفتح درجٌ قطّ. وحسبُ الإيصالات هنا كان
- * يُطالب بدرجٍ فيُعطَّل استرجاعٌ **كانت الخدمةُ ستُتمّه بلا وردية** — حائطٌ جديد.
- * ⇒ صفرٌ للفاتورة ذات البنود، وحسبةُ الإيصالات للخدمة الخالصة وحدها.
+ * ⚠️ **درسٌ بالثمن (مراجعة Codex على #928):** أدخلتُ هنا استثناءً «الفاتورةُ ذاتُ البنود
+ * تُفوَّض إلى `returnSaleInTx` بلا درج ⇒ صفر» — بناءً على قراءةٍ لِـ`reverseDelivery.ts`
+ * **لم تعد قائمة**: الملفُّ أُعيدت كتابته، ولا أثرَ فيه لـ`returnSaleInTx`؛ التنفيذُ يمرّ على
+ * مصادر الردّ ويطلب درجَ استقبالٍ مقفلاً لكلّ مصدرٍ نقديّ. فكان استثنائي يُبلّغ «لا درج» بينما
+ * التنفيذُ يطلبه ⇒ حمولةٌ بلا `refundShiftId` ⇒ فشلُ اشتقاق الوردية عند تعدّد الأدراج.
+ * ⇒ أُزيل الاستثناء. **والقاعدة: تحقّق من الشيفرة الحاليّة لا من ذاكرةِ قراءةٍ سابقة.**
  *
- * وللأخيرة: مجموعُ إيصالات IN المكتملة **النقديّة وحدها** — لا `paidAmount` الإجماليّ.
+ * والحسبة: مجموعُ إيصالات IN المكتملة **النقديّة وحدها** — لا `paidAmount` الإجماليّ.
  */
 async function reverseCashOut(
   tx: Tx,
   workOrderId: number,
   invoiceId: number | null,
 ): Promise<ReturnType<typeof money>> {
-  if (invoiceId != null) {
-    const anyItem = (
-      await tx.select({ id: invoiceItems.id }).from(invoiceItems)
-        .where(eq(invoiceItems.invoiceId, invoiceId)).limit(1)
-    )[0];
-    // مسارُ التفويض (`returnSaleInTx`) لا يمسّ درجاً — فلا نُطالب بواحد.
-    if (anyItem) return money(0);
-  }
   const rows = await tx
     .select({ amount: receipts.amount, paymentMethod: receipts.paymentMethod })
     .from(receipts)
@@ -260,7 +253,9 @@ export async function consignmentReturnPreflight(
           .from(receipts)
           .where(and(
             inArray(receipts.referenceNumber, feeRefs),
-            eq(receipts.status, "COMPLETED"),
+            // نفسُ مجموعة الحالات التي يستعملها التنفيذ (`returns.ts`): REVERSED حدثٌ نقديّ
+            // تاريخيّ يرافقه تعويضيٌّ معاكس، فإسقاطُه يترك OUT بلا IN ⇒ صافٍ سالبٌ يُخفي المنتقي.
+            inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
             eq(receipts.approvalStatus, "APPROVED"),
           ))
       )[0];

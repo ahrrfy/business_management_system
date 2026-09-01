@@ -3,7 +3,7 @@ import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
 import { consignmentReturnPreflight } from "../services/workOrder/refundPreflight";
 import { canCrossBranches } from "../lib/branchAuthority";
-import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
+import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
 import { withTx } from "../services/tx";
 import { deliveryOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -120,12 +120,15 @@ async function assertPartyInScope(partyId: number, scopedBranchId: number | null
  * بلا صندوق — يتلقّى أرصدةَ كلّ درجٍ مفتوحٍ بالفرع، وهو نقضٌ لعزل الأدراج المقرَّر في تدقيق ٢/٧.)
  */
 function maySeeDrawerCash(user: { role?: string | null; permissionsOverride?: unknown }): boolean {
-  return moduleAccessAllowed(
+  // ⚠️ **لا تُمرّر قائمةَ أدوارٍ فارغة** (مراجعة Codex P2): `moduleAccessAllowed` عندئذٍ يتخطّى
+  // `hasModuleAccess` كلّياً ويسقط إلى الفحص الصريح وحده — فمديرٌ قالبُه `treasury: FULL` بلا
+  // تجاوزٍ يُحجَب رقمُه رغم امتلاكه الخزينة. `hasModuleAccess` يحترم القالبَ والتجاوزَ معاً.
+  if (String(user.role ?? "") === "admin") return true;
+  return hasModuleAccess(
     String(user.role ?? ""),
     (user.permissionsOverride ?? null) as PermissionMap | null,
     "treasury",
     "READ",
-    [],
   );
 }
 
