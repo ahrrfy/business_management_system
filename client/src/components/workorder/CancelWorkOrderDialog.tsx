@@ -201,23 +201,12 @@ export default function CancelWorkOrderDialog({
     if (rail === "CARD" && effectivePreflight.cardRefundAllowed !== true) setRail("DRAWER");
   }, [open, needsCashDrawer, effectivePreflight, rail]);
 
-  /**
-   * **الافتراضُ إلى الخزينة مرّةً واحدةً عند فتح الحوار/وصول التمهيد** (بلاغ المالك ١/٩): عربونٌ
-   * ٧٠٬٠٠٠ وأوسعُ درجٍ ٥٦٬٠٠٠ ⇒ بدءُ الحوار على «الدرج» بابٌ مسدود، فنبدأ على الخزينة إن كفت.
-   * ⚠️ **بلا `rail` في التبعيّات** (مراجعة Codex P2 على #930): كفايةُ الدرج إرشاديّةٌ لا حاجزة
-   * (الرصيدُ الحيّ قد تغيّر منذ التمهيد)، فلو تفاعل هذا مع الرافد لَأعاد نقرةَ الموظّف على «الدرج»
-   * إلى «الخزينة» فوراً فتعذّر اختيارُه اليدويّ. القفلُ بمرجعٍ يجعله لمسةَ الفتح وحدها.
-   */
+  // مرجعُ «حُسم الافتراضُ» يُصفَّر مع كلّ فتح؛ والافتراضُ نفسُه (إلى الخزينة) يقع في مؤثّرٍ **بعد**
+  // إعادة ضبط الفتح أدناه ليكون آخرَ تحديثٍ للرافد (مراجعة Codex P2 على #930).
   const railAutoDefaultedRef = useRef(false);
   useEffect(() => {
     railAutoDefaultedRef.current = false;
   }, [open]);
-  useEffect(() => {
-    if (!open || !needsCashDrawer || !effectivePreflight || railAutoDefaultedRef.current) return;
-    railAutoDefaultedRef.current = true;
-    const anyDrawerFits = effectivePreflight.drawers.some((d) => d.sufficient);
-    if (!anyDrawerFits && effectivePreflight.treasurySufficient) setRail("TREASURY");
-  }, [open, needsCashDrawer, effectivePreflight]);
 
   /**
    * سببُ الحجب **بحسب الرافد**: الدرجُ وحده يلزمه اختيارُ وردية، والبطاقةُ وحدها مرجعٌ خارجيّ.
@@ -254,6 +243,21 @@ export default function CancelWorkOrderDialog({
     setRail("DRAWER");
     setRefundReference("");
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * **الافتراضُ إلى الخزينة مرّةً واحدةً** (بلاغ المالك ١/٩): بدءُ الحوار على «الدرج» بابٌ مسدودٌ
+   * حين لا يكفي أيُّ درجٍ وتكفي الخزينة. ⚠️ **يقع بعد إعادة ضبط الفتح أعلاه** (مراجعة Codex P2 على
+   * #930): لو سبقها لَطمَسَ `setRail("DRAWER")` اللاحقُ الخزينةَ، والمرجعُ يمنع إعادةَ المحاولة،
+   * فيُفتَح على درجٍ لا يكفي — خاصّةً في مسار الاعتماد حيث يصل التمهيدُ محمَّلاً مع الفتح. وبلا
+   * `rail` في التبعيّات: كفايةُ الدرج إرشاديّةٌ لا حاجزة (الرصيدُ الحيّ قد تغيّر)، فلا تُطمَس نقرةُ
+   * الموظّف اليدويّة على «الدرج».
+   */
+  useEffect(() => {
+    if (!open || !needsCashDrawer || !effectivePreflight || railAutoDefaultedRef.current) return;
+    railAutoDefaultedRef.current = true;
+    const anyDrawerFits = effectivePreflight.drawers.some((d) => d.sufficient);
+    if (!anyDrawerFits && effectivePreflight.treasurySufficient) setRail("TREASURY");
+  }, [open, needsCashDrawer, effectivePreflight]);
 
   const hasMaterials = materials.length > 0;
   const anyWaste = materials.some((m) => (waste[m.id] ?? 0) > 0);
