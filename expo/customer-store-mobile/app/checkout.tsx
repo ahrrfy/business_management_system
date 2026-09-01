@@ -37,6 +37,7 @@ import { governorates } from "@/shared/governorates";
 import { canonicalIraqiLocalPhone, normalizeIraqiPhone } from "@/lib/iraqi-phone";
 import { saveRecentOrder } from "@/lib/recent-orders";
 import { loadVerifiedCustomerSession, type VerifiedCustomerSession } from "@/lib/customer-session";
+import { enableTransactionalPush } from "@/lib/customer-notifications";
 
 export default function CheckoutScreen() {
   const { clearCart, isRestoring, itemCount, lines } = useCart();
@@ -201,6 +202,7 @@ export default function CheckoutScreen() {
         }),
         clearPendingCheckoutAttempt(),
       ]);
+      void enableTransactionalPush(customerSessionToken ?? undefined);
       clearCart();
       router.replace({
         pathname: "/order-confirmation",

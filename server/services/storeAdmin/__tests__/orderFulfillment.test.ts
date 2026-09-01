@@ -40,7 +40,7 @@ async function getOrder(id: number) {
 }
 
 beforeEach(async () => {
-  await truncateTables(["onlineOrderItems", "onlineOrders", "customers", "branches"]);
+  await truncateTables(["storefrontPushDeliveries", "storefrontPushCampaigns", "storefrontPushDevices", "onlineOrderItems", "onlineOrders", "customers", "branches"]);
   await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.customers).values({ id: 1, name: "زبون تجريبيّ" });
 });
@@ -103,5 +103,34 @@ describe("setOnlineOrderStatus — سبب الإلغاء + مرحلة التجه
     const res = await setOnlineOrderStatus({ id, status: "PROCESSING", scopedBranchId: null }, 1);
     expect(res.from).toBe("CONFIRMED");
     expect(res.to).toBe("PROCESSING");
+  });
+
+  it("يُنشئ إشعار حالة موجهاً لأجهزة العميل داخل نفس المعاملة ومن دون تكرار", async () => {
+    await db().insert(s.storefrontPushDevices).values({
+      customerId: 1,
+      tokenHash: "a".repeat(64),
+      tokenCiphertext: "encrypted-test-token",
+      platform: "ANDROID",
+      appVersion: "1.0.0",
+      marketingOptIn: false,
+      transactionalOptIn: true,
+    });
+    const id = await seedOrder("PENDING");
+
+    await setOnlineOrderStatus({ id, status: "CONFIRMED", scopedBranchId: null }, 1);
+    await setOnlineOrderStatus({ id, status: "CONFIRMED", scopedBranchId: null }, 1);
+
+    const campaigns = await db().select().from(s.storefrontPushCampaigns);
+    const deliveries = await db().select().from(s.storefrontPushDeliveries);
+    expect(campaigns).toHaveLength(1);
+    expect(campaigns[0]).toMatchObject({
+      eventKey: `storefront-order:${id}:status:CONFIRMED`,
+      kind: "TRANSACTIONAL",
+      status: "RUNNING",
+      destination: "/orders",
+      recipientCount: 1,
+    });
+    expect(campaigns[0].body).toContain("ORD-TEST-1");
+    expect(deliveries).toHaveLength(1);
   });
 });

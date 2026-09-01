@@ -2089,6 +2089,13 @@
 			"breakpoints": true
 		},
 		{
+			"idx": 325,
+			"version": "5",
+			"when": 1788052398000,
+			"tag": "0325_notification_platform_completion_v2",
+			"breakpoints": true
+		},
+		{
 			"idx": 322,
 			"version": "5",
 			"when": 1788052395000,
@@ -2096,17 +2103,17 @@
 			"breakpoints": true
 		},
 		{
-			"idx": 323,
+			"idx": 326,
 			"version": "5",
-			"when": 1788052396000,
-			"tag": "0323_returns_withdraw_and_owner_override",
+			"when": 1788052399000,
+			"tag": "0326_returns_withdraw_and_owner_override",
 			"breakpoints": true
 		},
 		{
-			"idx": 324,
+			"idx": 327,
 			"version": "5",
-			"when": 1788052397000,
-			"tag": "0324_offline_recovery_return_channel",
+			"when": 1788052400000,
+			"tag": "0327_offline_recovery_return_channel",
 			"breakpoints": true
 		}
 	]

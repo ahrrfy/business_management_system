@@ -55,6 +55,7 @@ import {
   deliveryFeeAccrualIntent,
 } from "./posting";
 import { isShortfallReason } from "@shared/shortfallReason";
+import { enqueueStorefrontOrderStatusPush } from "../storeAdmin/storefrontPushCampaignService";
 
 /** يحلّ جهة التوصيل المرتبطة بحساب المستخدم (المندوب). null إن لم يُربط الحساب بجهة نشطة. */
 export async function resolveCourierPartyId(
@@ -507,6 +508,13 @@ export async function confirmCourierDelivery(
       });
       custodyAfter = custodyAfter.plus(collected);
     }
+
+    await enqueueStorefrontOrderStatusPush(tx, {
+      orderId: Number(order.id),
+      orderNumber: order.orderNumber,
+      customerId: order.customerId == null ? null : Number(order.customerId),
+      status: "DELIVERED",
+    });
 
     return {
       orderId: order.id,
@@ -1169,6 +1177,12 @@ export async function failCourierDelivery(
     if (order.status === "CANCELLED") {
       // استرداد idempotent: مُطالَبٌ سابقاً — أكمِل العكس إن لم تُرجَع الفاتورة بعد (فشلٌ بين المطالبة والعكس).
       const done = inv.status === "CANCELLED" || inv.status === "RETURNED";
+      await enqueueStorefrontOrderStatusPush(tx, {
+        orderId: Number(order.id),
+        orderNumber: order.orderNumber,
+        customerId: order.customerId == null ? null : Number(order.customerId),
+        status: "CANCELLED",
+      });
       return {
         orderNumber: order.orderNumber,
         invoiceId: Number(order.invoiceId),
@@ -1192,6 +1206,12 @@ export async function failCourierDelivery(
       .update(onlineOrders)
       .set({ status: "CANCELLED", cancelReason: reason })
       .where(eq(onlineOrders.id, order.id));
+    await enqueueStorefrontOrderStatusPush(tx, {
+      orderId: Number(order.id),
+      orderNumber: order.orderNumber,
+      customerId: order.customerId == null ? null : Number(order.customerId),
+      status: "CANCELLED",
+    });
     return {
       orderNumber: order.orderNumber,
       invoiceId: Number(order.invoiceId),

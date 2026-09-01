@@ -13394,6 +13394,8 @@ export const storefrontPushCampaigns = mysqlTable(
   "storefrontPushCampaigns",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** مفتاح ثابت للأحداث التشغيلية الموجّهة (حالة طلب مثلاً). حملات الإدارة تتركه NULL. */
+    eventKey: varchar("eventKey", { length: 190 }).unique(),
     name: varchar("name", { length: 160 }).notNull(),
     kind: mysqlEnum("kind", ["MARKETING", "TRANSACTIONAL"])
       .notNull()
@@ -13568,6 +13570,49 @@ export const nativePushOutbox = mysqlTable(
 export type NativePushOutboxRow = typeof nativePushOutbox.$inferSelect;
 export type InsertNativePushOutbox = typeof nativePushOutbox.$inferInsert;
 
+/** Web Push durable outbox. Unlike the legacy fire-and-forget path, a transient push provider
+ * failure keeps the row retryable while the in-app notification remains the source of truth. */
+export const webPushOutbox = mysqlTable(
+  "webPushOutbox",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    eventKey: varchar("eventKey", { length: 190 }).notNull().unique(),
+    payload: json("payload").notNull(),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "PROCESSING",
+      "RETRY",
+      "SENT",
+      "DEAD",
+    ])
+      .default("PENDING")
+      .notNull(),
+    attemptCount: int("attemptCount").default(0).notNull(),
+    availableAt: timestamp("availableAt").defaultNow().notNull(),
+    lockedAt: timestamp("lockedAt"),
+    completedAt: timestamp("completedAt"),
+    lastError: varchar("lastError", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    dueIdx: index("idx_web_push_outbox_due").on(
+      table.status,
+      table.availableAt,
+      table.id,
+    ),
+    userCreatedIdx: index("idx_web_push_outbox_user_created").on(
+      table.userId,
+      table.createdAt,
+    ),
+  }),
+);
+export type WebPushOutboxRow = typeof webPushOutbox.$inferSelect;
+export type InsertWebPushOutbox = typeof webPushOutbox.$inferInsert;
+
 /**
  * Transactional outbox for creating the durable in-app notification itself.
  *
@@ -13636,6 +13681,15 @@ export const appNotifications = mysqlTable(
       .notNull()
       .references(() => users.id),
     kind: varchar("kind", { length: 40 }).notNull(),
+    family: mysqlEnum("family", [
+      "OPERATIONS",
+      "ADMIN",
+      "EMPLOYEE",
+      "SYSTEM",
+      "APPROVAL",
+    ])
+      .default("SYSTEM")
+      .notNull(),
     title: varchar("title", { length: 180 }).notNull(),
     body: varchar("body", { length: 600 }).notNull(),
     route: varchar("route", { length: 255 }).notNull(),
@@ -13654,6 +13708,11 @@ export const appNotifications = mysqlTable(
     userReadIdx: index("idx_app_notice_user_read").on(
       table.userId,
       table.readAt,
+    ),
+    userFamilyCreatedIdx: index("idx_app_notice_user_family_created").on(
+      table.userId,
+      table.family,
+      table.createdAt,
     ),
   }),
 );
@@ -16557,7 +16616,7 @@ export const offlineRecoveryItems = mysqlTable(
      * قناة الالتقاط. الترحيل الآليّ يدعم RETAIL وحدها (حمولتها هي عقد `replayOfflineSale`)،
      * أمّا PRINT/RECEPTION فتُلتقَط **للرصد ومنع الضياع** وتُسوَّى يدوياً — إخفاؤها أسوأ من
      * عرضها بلا زرّ ترحيل.
-     * و`RETURN` (هجرة 0324) **معاكسُ الاتجاه**: نقدٌ خرج للزبون لا دخل منه. تصنيفُه RETAIL
+     * و`RETURN` (هجرة 0327) **معاكسُ الاتجاه**: نقدٌ خرج للزبون لا دخل منه. تصنيفُه RETAIL
      * كان سيُقرأ بيعاً في طابورٍ عنوانُه «مبيعاتٌ مدفوعة» — والمدير يقرّر على الاتجاه.
      */
     channel: mysqlEnum("recoveryChannel", ["RETAIL", "PRINT", "RECEPTION", "RETURN"])
@@ -16825,7 +16884,7 @@ export const salesControlRequests = mysqlTable(
       "SALES_EXCHANGE",
       "SALES_DUE_DATE_CHANGE",
     ]).notNull(),
-    // WITHDRAWN (هجرة 0323): سحبُ الطالب لطلبه — صفريّ الأثر، ويُحرّر `activeInvoiceId`
+    // WITHDRAWN (هجرة 0326): سحبُ الطالب لطلبه — صفريّ الأثر، ويُحرّر `activeInvoiceId`
     // فتعود الفاتورة قابلةً لطلبٍ جديد. الاعتماد يبقى محكوماً بفصل المهام كما هو.
     status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE", "WITHDRAWN"]).default("PENDING").notNull(),
     payload: json("payload").notNull(),
@@ -16856,7 +16915,7 @@ export const salesControlRequests = mysqlTable(
       OR (${t.status} IN ('REJECTED','STALE','WITHDRAWN') AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NULL)
     )`),
     // السحبُ وحده يُستثنى: الساحبُ هو الطالبُ بالتعريف. ويبقى القيد مُلزِماً على
-    // APPROVED/REJECTED حيث يعني رقابةً فعليّة (هجرة 0323).
+    // APPROVED/REJECTED حيث يعني رقابةً فعليّة (هجرة 0326).
     makerChecker: check("chk_sales_control_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.status} = 'WITHDRAWN' OR ${t.reviewedBy} <> ${t.requestedBy}`),
   }),
 );

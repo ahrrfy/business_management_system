@@ -59,6 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.data.NotificationFilter
 import online.alarabiya.superapp.model.selfservice.PersonalNotification
+import online.alarabiya.superapp.model.selfservice.NotificationFamily
 import online.alarabiya.superapp.ui.theme.Canvas
 import online.alarabiya.superapp.ui.theme.Emerald
 import online.alarabiya.superapp.ui.theme.EmeraldDark
@@ -317,8 +318,11 @@ private fun NotificationRow(
                 if (item.requiresAction) ActionRequiredChip()
             }
             Text(item.body, style = MaterialTheme.typography.bodyMedium, color = MutedInk)
-            item.createdAt?.let {
-                Text(it, style = MaterialTheme.typography.labelMedium, color = MutedInk)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                NotificationFamilyChip(item.family)
+                item.createdAt?.let {
+                    Text(it, style = MaterialTheme.typography.labelMedium, color = MutedInk)
+                }
             }
             if (item.isUnread) {
                 TextButton(
@@ -332,6 +336,25 @@ private fun NotificationRow(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NotificationFamilyChip(family: NotificationFamily) {
+    val background = when (family) {
+        NotificationFamily.ADMIN -> Color(0xFFFFE9D2)
+        NotificationFamily.APPROVAL -> Color(0xFFFFE2DF)
+        NotificationFamily.EMPLOYEE -> Color(0xFFE4EEF8)
+        NotificationFamily.SYSTEM -> Color(0xFFE9ECEB)
+        NotificationFamily.OPERATIONS -> Mint
+    }
+    Surface(color = background, shape = RoundedCornerShape(8.dp)) {
+        Text(
+            family.arabicLabel,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = Ink,
+        )
     }
 }
 

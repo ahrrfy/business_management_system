@@ -113,7 +113,7 @@ export default function SalesControlApprovals() {
   });
 
   /**
-   * سحبُ الطالب لطلبه — المخرج الوحيد حين لا يوجد مراجعٌ مستقلّ في الفرع (هجرة 0323).
+   * سحبُ الطالب لطلبه — المخرج الوحيد حين لا يوجد مراجعٌ مستقلّ في الفرع (هجرة 0326).
    * صفريُّ الأثر: يُحرّر `activeInvoiceId` فتعود الفاتورة قابلةً لطلبٍ جديد.
    */
   const withdraw = trpc.salesControl.withdraw.useMutation({

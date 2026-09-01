@@ -29,6 +29,7 @@ import {
   confirmCouponReservationForOnlineOrder,
   releaseCouponReservationForOnlineOrder,
 } from "../couponService";
+import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignService";
 
 export type OnlineOrderStatus = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -341,6 +342,14 @@ export async function setOnlineOrderStatus(
         onlineOrderId: input.id,
         customerId: Number(order.customerId),
         total: String(order.total),
+      });
+    }
+    if (input.status !== "PENDING") {
+      await enqueueStorefrontOrderStatusPush(tx, {
+        orderId: input.id,
+        orderNumber: order.orderNumber,
+        customerId: order.customerId == null ? null : Number(order.customerId),
+        status: input.status,
       });
     }
     return { id: input.id, from, to: input.status };
