@@ -61,4 +61,3 @@ CREATE TABLE IF NOT EXISTS `workOrderDesignApprovals` (
   ),
   CONSTRAINT `chk_wo_design_approval_maker_checker` CHECK (`reviewedBy` IS NULL OR `reviewedBy` <> `requestedBy`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
---> statement-breakpoint
