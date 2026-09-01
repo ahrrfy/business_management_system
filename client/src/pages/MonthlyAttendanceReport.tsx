@@ -5,13 +5,15 @@
  * نفسها فلا ينحرف عن الكشف الفرديّ ولا عن ما يُدفع فعلاً.
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+
+
 import { exportRows } from "@/lib/export";
 import { iqd } from "@/lib/hr/ui";
 import { printMonthlyAttendance } from "@/lib/printing/printMonthlyAttendance";
@@ -52,6 +54,91 @@ export default function MonthlyAttendanceReport() {
       norm(r.employeeName).includes(nt) || norm(r.department ?? "").includes(nt) || norm(r.position ?? "").includes(nt),
     );
   }, [d?.rows, search]);
+  /**
+   * أعمدة الحضور الشهريّ + ذيل المجاميع.
+   * ⚠️ «المجموع (N موظفاً)» كان خليّةً مدموجة بـ`colSpan={3}`؛ الذيل هنا لكل عمود،
+   * فالتسمية على العمود الأوّل والعمودان بعدها بلا ذيل — نفس المحاذاة بلا دمج.
+   */
+  const attendanceColumns = useMemo<ColumnDef<(typeof filteredRows)[number], unknown>[]>(() => [
+    {
+      id: "employee", header: "الموظف",
+      accessorFn: (r) => r.employeeName,
+      cell: ({ row }) => (
+        <div>
+          <Link href={`/hr/employees/${row.original.employeeId}`} className="font-medium hover:underline">{row.original.employeeName}</Link>
+          {row.original.position && <div className="text-[11px] text-muted-foreground">{row.original.position}</div>}
+        </div>
+      ),
+      footer: () => (d ? `المجموع (${d.totals.employees} موظفاً)` : null),
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "department", header: "القسم",
+      accessorFn: (r) => r.department ?? "—",
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.department ?? "—"}</span>,
+      meta: { kind: "text" },
+    },
+    { id: "scheduledHours", header: "مقرَّر", accessorFn: (r) => Number(r.scheduledHours), cell: ({ row }) => h2(row.original.scheduledHours), meta: { kind: "number" } },
+    {
+      id: "payableHours", header: "مستحقّ",
+      accessorFn: (r) => Number(r.payableHours),
+      cell: ({ row }) => <span className="font-medium">{h2(row.original.payableHours)}</span>,
+      footer: () => (d ? h2(d.totals.payableHours) : null),
+      meta: { kind: "number" },
+    },
+    {
+      id: "absentDays", header: "غياب",
+      accessorFn: (r) => Number(r.absentDays),
+      cell: ({ row }) => row.original.absentDays || "—",
+      footer: () => (d ? (d.totals.absentDays || "—") : null),
+      meta: { kind: "number" },
+    },
+    {
+      id: "overtimeHours", header: "إضافيّ",
+      accessorFn: (r) => Number(r.overtimeHours),
+      cell: ({ row }) => Number(row.original.overtimeHours) > 0 ? h2(row.original.overtimeHours) : "—",
+      footer: () => (d ? h2(d.totals.overtimeHours) : null),
+      meta: { kind: "number" },
+    },
+    {
+      id: "restWorkedHours", header: "يوم راحة",
+      accessorFn: (r) => Number(r.restWorkedHours),
+      cell: ({ row }) => Number(row.original.restWorkedHours) > 0 ? h2(row.original.restWorkedHours) : "—",
+      footer: () => (d ? h2(d.totals.restWorkedHours) : null),
+      meta: { kind: "number" },
+    },
+    { id: "hourlyRate", header: "سعر الساعة", accessorFn: (r) => Number(r.hourlyRate), cell: ({ row }) => iqd(row.original.hourlyRate), meta: { kind: "money" } },
+    {
+      id: "totalDue", header: "المستحقّ",
+      accessorFn: (r) => Number(r.totalDue),
+      cell: ({ row }) => (
+        <div className="font-bold">
+          {iqd(row.original.totalDue)}
+          {/* الشهر المصروف (ق٣): الرقم من لقطة المسيّر — لا يتغيّر بترقيةٍ أو تصحيحٍ لاحق. */}
+          {row.original.frozen ? (
+            <div className="text-[10px] font-normal text-primary">من المسيّر (مجمَّد)</div>
+          ) : (
+            row.original.dueBasis !== "attendance" && (
+              <div className="text-[10px] font-normal text-muted-foreground">
+                {row.original.dueBasis === "exempt" ? "راتب ثابت (معفى)" : row.original.dueBasis === "hourly" ? "بالساعة" : "راتب ثابت"}
+              </div>
+            )
+          )}
+        </div>
+      ),
+      footer: () => (d ? <span className="font-bold">{iqd(d.totals.totalDue)}</span> : null),
+      meta: { kind: "money" },
+    },
+    {
+      id: "reviewDays", header: "تصحيح",
+      accessorFn: (r) => Number(r.reviewDays),
+      cell: ({ row }) => row.original.reviewDays > 0
+        ? <span className="font-medium text-[var(--sem-warn)]">{row.original.reviewDays}</span>
+        : "—",
+      footer: () => (d ? (d.totals.reviewDays || "—") : null),
+      meta: { kind: "number" },
+    },
+  ], [d]);
 
   return (
     <div className="space-y-4">
@@ -182,79 +269,14 @@ export default function MonthlyAttendanceReport() {
 
       <Card>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-xs">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">الموظف</th>
-                  <th className="p-2 text-start">القسم</th>
-                  <th className="p-2 text-center">مقرَّر</th>
-                  <th className="p-2 text-center">مستحقّ</th>
-                  <th className="p-2 text-center">غياب</th>
-                  <th className="p-2 text-center">إضافيّ</th>
-                  <th className="p-2 text-center">يوم راحة</th>
-                  <th className="p-2 text-end">سعر الساعة</th>
-                  <th className="p-2 text-end">المستحقّ</th>
-                  <th className="p-2 text-center">تصحيح</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRows.map((r) => (
-                  <tr key={r.employeeId} className="border-t hover:bg-accent/40">
-                    <td className="p-2">
-                      <Link href={`/hr/employees/${r.employeeId}`} className="font-medium hover:underline">{r.employeeName}</Link>
-                      {r.position && <div className="text-[11px] text-muted-foreground">{r.position}</div>}
-                    </td>
-                    <td className="p-2 text-muted-foreground">{r.department ?? "—"}</td>
-                    <td className="p-2 text-center tabular-nums" dir="ltr">{h2(r.scheduledHours)}</td>
-                    <td className="p-2 text-center tabular-nums font-medium" dir="ltr">{h2(r.payableHours)}</td>
-                    <td className="p-2 text-center tabular-nums" dir="ltr">{r.absentDays || "—"}</td>
-                    <td className="p-2 text-center tabular-nums" dir="ltr">{Number(r.overtimeHours) > 0 ? h2(r.overtimeHours) : "—"}</td>
-                    <td className="p-2 text-center tabular-nums" dir="ltr">{Number(r.restWorkedHours) > 0 ? h2(r.restWorkedHours) : "—"}</td>
-                    <td className="p-2 text-end tabular-nums" dir="ltr">{iqd(r.hourlyRate)}</td>
-                    <td className="p-2 text-end tabular-nums font-bold" dir="ltr">
-                      {iqd(r.totalDue)}
-                      {/* الشهر المصروف (ق٣): الرقم من لقطة المسيّر — لا يتغيّر بترقيةٍ أو تصحيحٍ لاحق. */}
-                      {r.frozen ? (
-                        <div className="text-[10px] font-normal text-primary">من المسيّر (مجمَّد)</div>
-                      ) : (
-                        r.dueBasis !== "attendance" && (
-                          <div className="text-[10px] font-normal text-muted-foreground">
-                            {r.dueBasis === "exempt" ? "راتب ثابت (معفى)" : r.dueBasis === "hourly" ? "بالساعة" : "راتب ثابت"}
-                          </div>
-                        )
-                      )}
-                    </td>
-                    <td className="p-2 text-center tabular-nums">
-                      {r.reviewDays > 0 ? <span className="text-[var(--sem-warn)] font-medium">{r.reviewDays}</span> : "—"}
-                    </td>
-                  </tr>
-                ))}
-                {q.isLoading && <tr><td colSpan={10} className="p-0"><LoadingState /></td></tr>}
-                {q.isError && <tr><td colSpan={10} className="p-0"><ErrorState message="تعذّر تحميل التقرير." onRetry={() => q.refetch()} /></td></tr>}
-                {!q.isLoading && !q.isError && filteredRows.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={10}
-                    message={search.trim() && (d?.rows.length ?? 0) > 0 ? "لا نتائج مطابقة للبحث." : "لا موظفين في هذا الشهر."}
-                  />
-                )}
-              </tbody>
-              {d && d.rows.length > 0 && (
-                <tfoot>
-                  <tr className="border-t-2 font-medium bg-muted/30">
-                    <td className="p-2" colSpan={3}>المجموع ({d.totals.employees} موظفاً)</td>
-                    <td className="p-2 text-center tabular-nums" dir="ltr">{h2(d.totals.payableHours)}</td>
-                    <td className="p-2 text-center tabular-nums" dir="ltr">{d.totals.absentDays || "—"}</td>
-                    <td className="p-2 text-center tabular-nums" dir="ltr">{h2(d.totals.overtimeHours)}</td>
-                    <td className="p-2 text-center tabular-nums" dir="ltr">{h2(d.totals.restWorkedHours)}</td>
-                    <td />
-                    <td className="p-2 text-end tabular-nums font-bold" dir="ltr">{iqd(d.totals.totalDue)}</td>
-                    <td className="p-2 text-center tabular-nums">{d.totals.reviewDays || "—"}</td>
-                  </tr>
-                </tfoot>
-              )}
-            </table>
-          </ScrollTableShell>
+          <DataTable
+            columns={attendanceColumns}
+            data={filteredRows}
+            loading={q.isLoading}
+            searchable={false}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
+            emptyText={search.trim() && (d?.rows.length ?? 0) > 0 ? "لا نتائج مطابقة للبحث." : "لا موظفين في هذا الشهر."}
+          />
         </CardContent>
       </Card>
     </div>

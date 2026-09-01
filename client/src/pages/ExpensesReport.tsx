@@ -2,6 +2,8 @@
 // عرض (تبويبان) + تصدير Excel + طباعة A4 (ReportShell + PeriodFilter + printReportDoc).
 // ⚠️ يشمل المصروفات الفعّالة فقط (expenseStatus='ACTIVE') ضمن تاريخ المصروف.
 import { useMemo, useState } from "react";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { ExternalLink } from "lucide-react";
@@ -10,7 +12,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+
 import { fmtAr, formatIqd } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -88,6 +90,31 @@ export default function ExpensesReport() {
       summary: [{ label: "إجمالي المصروفات", value: formatIqd(er.total), large: true, bold: true }],
     });
   }
+  /**
+   * أعمدة تقرير المصروفات + ذيل الإجماليات.
+   * الرأس الأوّل يتبدّل مع التبويب (فئة / جهة صرف) — لذلك الأعمدة تعتمد على `tab`.
+   */
+  const expenseColumns = useMemo<ColumnDef<(typeof activeRows)[number], unknown>[]>(() => [
+    {
+      id: "label", header: tab === "category" ? "الفئة" : "جهة الصرف",
+      accessorFn: (r) => r.label,
+      footer: () => (er ? "الإجمالي" : null),
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "amount", header: "المبلغ",
+      accessorFn: (r) => Number(r.amount),
+      cell: ({ row }) => <span className="text-money-negative">{fmtAr(row.original.amount)}</span>,
+      footer: () => (er ? fmtAr(er.total) : null),
+      meta: { kind: "money" },
+    },
+    {
+      id: "count", header: "العدد",
+      accessorFn: (r) => Number(r.count),
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.count}</span>,
+      meta: { kind: "number" },
+    },
+  ], [tab, er]);
 
   return (
     <ReportShell
@@ -145,43 +172,14 @@ export default function ExpensesReport() {
 
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message={q.error?.message} onRetry={() => q.refetch()} />
-          ) : !er ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-3 text-right font-medium">{tab === "category" ? "الفئة" : "جهة الصرف"}</th>
-                  <th className="p-3 text-right font-medium">المبلغ</th>
-                  <th className="p-3 text-right font-medium">العدد</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activeRows.length === 0 ? (
-                  <TableEmptyRow colSpan={3} message="لا مصروفات في الفترة." />
-                ) : (
-                  activeRows.map((r, i) => (
-                    <tr key={i} className="border-b last:border-0">
-                      <td className="p-3 text-right">{r.label}</td>
-                      <td className="p-3 text-right tabular-nums text-money-negative" dir="ltr">{fmtAr(r.amount)}</td>
-                      <td className="p-3 text-right tabular-nums text-muted-foreground" dir="ltr">{r.count}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-              <tfoot>
-                <tr className="border-t font-bold bg-muted/30">
-                  <td className="p-3 text-right">الإجمالي</td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(er.total)}</td>
-                  <td className="p-3 text-right" dir="ltr"></td>
-                </tr>
-              </tfoot>
-            </table>
-          )}
+          <DataTable
+            columns={expenseColumns}
+            data={activeRows}
+            loading={q.isLoading}
+            searchable={false}
+            errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
+            emptyText="لا مصروفات في الفترة."
+          />
         </CardContent>
       </Card>
     </ReportShell>
