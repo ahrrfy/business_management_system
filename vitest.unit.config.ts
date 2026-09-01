@@ -226,6 +226,7 @@ export default defineConfig({
       "server/services/__tests__/purchaseChargePayableFailClosedP0.test.ts",
       "server/services/__tests__/supplierInvoiceHeaderAllocationP0.test.ts",
       "server/services/__tests__/deliveryCodWriteoffRequests.test.ts",
+      "server/services/__tests__/externalPaymentMigrationOrder.test.ts",
       "server/services/purchase/supplierInvoiceDraftPolicy.test.ts",
       "server/routers/__tests__/purchaseGovernanceCutover.test.ts",
       "server/services/__tests__/workOrderOperationalGovernanceContracts.test.ts",
