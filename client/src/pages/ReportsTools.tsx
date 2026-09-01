@@ -1,6 +1,7 @@
 // أدوات المحاسب — حزمة شهرية بزرّ واحد (Excel متعدّد الأوراق) + فحص جودة البيانات (reconcile).
 // تستدعي endpoints موجودة عبر utils.fetch ثم تبني مصنّفاً واحداً عبر exportSheets. يحفظ شهر/سنة/فرع (reportPrefs).
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { FileSpreadsheet, ShieldCheck, CheckCircle2, AlertTriangle, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
@@ -200,22 +201,22 @@ export default function ReportsTools() {
           <div className="flex flex-wrap items-end gap-4">
             <div className="flex flex-col gap-1">
               <label className="text-[11px] text-muted-foreground">الشهر</label>
-              <select className={selectCls} value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+              <AppSelect className="h-9" value={String(month)} onValueChange={(next) => setMonth(Number(next))}>
                 {MONTHS_AR.map((m, i) => (<option key={i} value={i + 1}>{m}</option>))}
-              </select>
+              </AppSelect>
             </div>
             <div className="flex flex-col gap-1">
               <label className="text-[11px] text-muted-foreground">السنة</label>
-              <select className={selectCls} value={year} onChange={(e) => setYear(Number(e.target.value))}>
+              <AppSelect className="h-9" value={String(year)} onValueChange={(next) => setYear(Number(next))}>
                 {years.map((y) => (<option key={y} value={y}>{y}</option>))}
-              </select>
+              </AppSelect>
             </div>
             <div className="flex flex-col gap-1">
               <label className="text-[11px] text-muted-foreground">الفرع</label>
-              <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+              <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
                 <option value="">كل الفروع</option>
                 {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-              </select>
+              </AppSelect>
             </div>
           </div>
 

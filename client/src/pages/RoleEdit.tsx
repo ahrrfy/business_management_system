@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -150,9 +151,9 @@ export default function RoleEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="base">الفئة الأساسية (المستوى)</Label>
-            <select id="base" className={selectCls} value={baseRole} onChange={(e) => handleBaseRoleChange(e.target.value as RoleKey)}>
+            <AppSelect id="base" className="h-9" value={baseRole} onValueChange={(next) => handleBaseRoleChange(next as RoleKey)}>
               {BASE_ROLE_OPTIONS.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
-            </select>
+            </AppSelect>
             <p className="text-[11px] text-muted-foreground">
               تحدّد البوّابات الخشنة ورؤية التكلفة{baseInfo?.canSeeCost ? " (يرى التكلفة)" : " (لا يرى التكلفة)"}. ابدأ من قالبها ثم خصّص.
             </p>
@@ -164,7 +165,7 @@ export default function RoleEdit() {
           {/* ش٤ «انسخ ثم عدّل»: بداية من دورٍ جاهز (قياسيّ/مبنيّ) بدل الصفر — يُلغي فخّ «نسيتُ وحدة». */}
           <div className="space-y-1">
             <Label htmlFor="clone">ابدأ من دورٍ جاهز (اختياري)</Label>
-            <select id="clone" className={selectCls} value="" onChange={(e) => cloneFrom(e.target.value)}>
+            <AppSelect id="clone" className="h-9" value="" onValueChange={(next) => cloneFrom(next)}>
               <option value="">— انسخ صلاحيات دورٍ ثم عدّل —</option>
               {standardRoles.length > 0 && (
                 <optgroup label="أدوار قياسية">
@@ -176,7 +177,7 @@ export default function RoleEdit() {
               <optgroup label="قوالب النظام">
                 {BASE_ROLE_OPTIONS.map((r) => <option key={`b${r.key}`} value={`builtin:${r.key}`}>{r.label}</option>)}
               </optgroup>
-            </select>
+            </AppSelect>
           </div>
           {isEdit && assignedCount > 0 && (
             <p className="text-[11px] text-[var(--sem-warn)] md:col-span-3">مُسنَد حالياً لـ{assignedCount} حساباً — أي تعديل يسري عليهم فوراً.</p>

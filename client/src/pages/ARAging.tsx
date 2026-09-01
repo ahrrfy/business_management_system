@@ -1,4 +1,5 @@
 import { CopyButton, CopyInline } from "@/components/CopyButton";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -291,7 +292,7 @@ export default function ARAging() {
           {activeCount > 0 && (
             <Button variant="ghost" size="sm" onClick={resetF} className="text-muted-foreground">
               <X aria-hidden className="size-4" />
-              مسح الفلاتر
+              {FILTER_LABELS.reset}
             </Button>
           )}
         </CardContent>

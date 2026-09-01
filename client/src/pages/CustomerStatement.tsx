@@ -1,4 +1,5 @@
 import { CopyInline } from "@/components/CopyButton";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -383,12 +384,12 @@ export default function CustomerStatement() {
             <CardContent className="p-0">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 p-3">
                 <span className="text-sm font-medium">الفواتير</span>
-                <select className="h-8 rounded-md border bg-background px-2 text-xs" value={invoiceFilter} onChange={(e) => setInvoiceFilter(e.target.value as typeof invoiceFilter)}>
+                <AppSelect className="h-8 px-2 text-xs" value={invoiceFilter} onValueChange={(value) => setInvoiceFilter(value as typeof invoiceFilter)}>
                   <option value="ALL">كل الفواتير</option>
                   <option value="DEPOSIT_DUE">عربون — متبقّي للتحصيل</option>
                   <option value="OUTSTANDING">عليها مبلغ متبقٍ</option>
                   <option value="SETTLED">مسوّاة بالكامل</option>
-                </select>
+                </AppSelect>
               </div>
               <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">

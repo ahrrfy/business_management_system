@@ -241,12 +241,12 @@ export default function CardAccount() {
         icon={accountKind === "TELECOM" ? <Smartphone aria-hidden className="size-5" /> : <CreditCard aria-hidden className="size-5" />}
         actions={
           canPickBranch ? (
-            <select
+            <AppSelect
               aria-label="الفرع"
-              className={selectCls}
-              value={branchId}
-              onChange={(e) => {
-                setBranchId(e.target.value ? Number(e.target.value) : "");
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(value) => {
+                setBranchId(value ? Number(value) : "");
                 setPage(0);
               }}
             >
@@ -256,7 +256,7 @@ export default function CardAccount() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           ) : undefined
         }
       />
@@ -380,19 +380,19 @@ export default function CardAccount() {
                   setPage(0);
                 }}
               />
-              <select
+              <AppSelect
                 aria-label="الاتجاه"
-                className={selectCls}
+                className="h-9"
                 value={direction}
-                onChange={(e) => {
-                  setDirection(e.target.value as "" | "IN" | "OUT");
+                onValueChange={(value) => {
+                  setDirection(value as "" | "IN" | "OUT");
                   setPage(0);
                 }}
               >
                 <option value="">الكل</option>
                 <option value="IN">دخل</option>
                 <option value="OUT">صرف</option>
-              </select>
+              </AppSelect>
               <AppSelect
                 aria-label="نوع الحركة"
                 className="h-9 w-40"

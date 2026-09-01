@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -386,11 +387,11 @@ export default function ExpenseNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
           <div className="space-y-1 md:col-span-2 lg:col-span-1">
             <Label>الفرع *</Label>
-            <select
-              className={selectCls}
-              value={effectiveBranch}
-              onChange={(e) =>
-                setBranchId(e.target.value ? Number(e.target.value) : "")
+            <AppSelect
+              className="h-9"
+              value={String(effectiveBranch)}
+              onValueChange={(value) =>
+                setBranchId(value ? Number(value) : "")
               }
             >
               {(branches.data ?? []).map((b) => (
@@ -398,7 +399,7 @@ export default function ExpenseNew() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
             {(() => {
               if (openShift.data) {
                 return (
@@ -442,13 +443,13 @@ export default function ExpenseNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="expense-category">الفئة *</Label>
-            <select
+            <AppSelect
               id="expense-category"
-              className={selectCls}
+              className="h-9"
               value={expenseCategoryId === "" ? "" : String(expenseCategoryId)}
-              onChange={(e) =>
+              onValueChange={(value) =>
                 setExpenseCategoryId(
-                  e.target.value === "" ? "" : Number(e.target.value),
+                  value === "" ? "" : Number(value),
                 )
               }
             >
@@ -462,7 +463,7 @@ export default function ExpenseNew() {
                   ))}
                 </optgroup>
               ))}
-            </select>
+            </AppSelect>
             <p className="text-[11px] text-muted-foreground">
               {selectedCategory
                 ? `الحساب المحاسبي: ${EXPENSE_BUCKET_LABEL[selectedCategory.bucket]}`
@@ -476,17 +477,17 @@ export default function ExpenseNew() {
             <>
               <div className="space-y-1">
                 <Label>طريقة الدفع *</Label>
-                <select
-                  className={selectCls}
+                <AppSelect
+                  className="h-9"
                   value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value)}
+                  onValueChange={(value) => setPaymentMethod(value)}
                 >
                   {METHODS.map((m) => (
                     <option key={m.value} value={m.value}>
                       {m.label}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
               {paymentMethod === "CASH" && (
                 <div className="space-y-2 md:col-span-2 lg:col-span-3">
@@ -619,19 +620,19 @@ export default function ExpenseNew() {
                     </div>
                   </div>
                   <div className="col-span-3">
-                    <select
-                      className={selectCls}
-                      value={l.productUnitId}
-                      onChange={(e) => {
+                    <AppSelect
+                      className="h-9"
+                      value={String(l.productUnitId)}
+                      onValueChange={(value) => {
                         const u = l.units.find(
-                          (x) => x.productUnitId === Number(e.target.value),
+                          (x) => x.productUnitId === Number(value),
                         );
                         setItems((p) =>
                           p.map((x) =>
                             x.key === l.key
                               ? {
                                   ...x,
-                                  productUnitId: Number(e.target.value),
+                                  productUnitId: Number(value),
                                   conversionFactor: String(
                                     u?.conversionFactor ?? "1",
                                   ),
@@ -649,7 +650,7 @@ export default function ExpenseNew() {
                             : ` × ${u.conversionFactor}`}
                         </option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </div>
                   <div className="col-span-2">
                     <Input
@@ -735,18 +736,18 @@ export default function ExpenseNew() {
               </div>
               <div className="space-y-1">
                 <Label htmlFor="cc">مركز التكلفة</Label>
-                <select
+                <AppSelect
                   id="cc"
-                  className={selectCls}
+                  className="h-9"
                   value={costCenter}
-                  onChange={(e) => setCostCenter(e.target.value)}
+                  onValueChange={(value) => setCostCenter(value)}
                 >
                   {COST_CENTERS.map((c) => (
                     <option key={c} value={c}>
                       {c}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             </CardContent>
           </Card>
@@ -776,18 +777,18 @@ export default function ExpenseNew() {
               >
                 <div className="space-y-1">
                   <Label htmlFor="freq">الدورية</Label>
-                  <select
+                  <AppSelect
                     id="freq"
-                    className={selectCls}
+                    className="h-9"
                     value={recurringFrequency}
-                    onChange={(e) => setRecurringFrequency(e.target.value)}
+                    onValueChange={(value) => setRecurringFrequency(value)}
                   >
                     {FREQS.map((f) => (
                       <option key={f.value} value={f.value}>
                         {f.label}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                   <p className="text-[11px] text-muted-foreground">
                     للتوثيق الآن — الإصدارات المستقبلية ستولّد قيوداً تلقائياً.
                   </p>

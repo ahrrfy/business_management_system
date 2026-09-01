@@ -741,10 +741,10 @@ export default function GiftsHub() {
             {elevated ? (
               <div className="space-y-1">
                 <Label>الفرع *</Label>
-                <select
-                  className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-                  value={formBranchId ?? ""}
-                  onChange={(e) => setFormBranchId(e.target.value ? Number(e.target.value) : null)}
+                <AppSelect
+                  className="h-9 px-2 text-sm"
+                  value={String(formBranchId ?? "")}
+                  onValueChange={(value) => setFormBranchId(value ? Number(value) : null)}
                 >
                   <option value="">— اختر الفرع —</option>
                   {(branches.data ?? []).map((b) => (
@@ -752,7 +752,7 @@ export default function GiftsHub() {
                       {b.name}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             ) : null}
 
@@ -794,10 +794,10 @@ export default function GiftsHub() {
             {mode === "out" ? (
               <div className="space-y-1">
                 <Label>الحملة (اختياري)</Label>
-                <select
-                  className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-                  value={campaignId ?? ""}
-                  onChange={(e) => setCampaignId(e.target.value ? Number(e.target.value) : null)}
+                <AppSelect
+                  className="h-9 px-2 text-sm"
+                  value={String(campaignId ?? "")}
+                  onValueChange={(value) => setCampaignId(value ? Number(value) : null)}
                 >
                   <option value="">— بلا حملة —</option>
                   {(activeCampaigns.data ?? []).map((c) => (
@@ -806,7 +806,7 @@ export default function GiftsHub() {
                       {c.budgetCost ? ` (${c.spent}/${c.budgetCost} د.ع)` : ""}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             ) : null}
           </div>

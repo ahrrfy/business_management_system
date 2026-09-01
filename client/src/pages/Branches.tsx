@@ -2,6 +2,7 @@
 // الجداول (فواتير/حركات مخزون/ورديات...)، فقط تعطيل منطقي يُخفيه من منتقيات العمليات الجديدة.
 // التعطيل محروس خادمياً: يُرفض إن كان آخر فرع نشط أو لا يزال يحمل مخزوناً فعلياً.
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
@@ -300,14 +301,14 @@ export default function Branches() {
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium">النوع</label>
-              <select
+              <AppSelect
                 value={fType}
-                onChange={(e) => setFType(e.target.value as BranchType)}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+                onValueChange={(next) => setFType(next as BranchType)}
+                className="h-9 border-input px-3 text-sm"
               >
                 <option value="SALES">مبيعات</option>
                 <option value="MAIN">رئيسي (كل الخدمات)</option>
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium">العنوان (اختياري)</label>

@@ -5,6 +5,7 @@
  * (الكلفة شأن إداري لا يراه الكاشير). إيصال حراري ٨٠mm + وردية + تقريب نقدي IQD — كنظامك تماماً.
  */
 import { confirm } from "@/lib/confirm";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { D, formatIqd, roundCashIQD } from "@/lib/money";
 import {
@@ -741,14 +742,14 @@ export default function PrintPOS() {
                 حسابك بلا فرعٍ مُسنَد — اختر الفرع الذي تعمل منه كي لا تُنسَب المبيعات لفرعٍ خاطئ.
               </div>
               <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الفرع</label>
-              <select
-                value={pickedBranch ?? ""}
-                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+              <AppSelect
+                value={String(pickedBranch ?? "")}
+                onValueChange={(value) => setPickedBranch(value ? Number(value) : null)}
                 style={{ width: "100%", height: 48, border: `1.5px solid ${pickedBranch == null ? C.danger : C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 15, fontWeight: 700, padding: "0 12px", outline: "none", boxSizing: "border-box", marginBottom: 16 }}
               >
                 <option value="">— اختر الفرع —</option>
                 {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+              </AppSelect>
             </div>
           )}
           <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الرصيد الافتتاحي للصندوق (د.ع)</label>
@@ -968,7 +969,7 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, lastInv }: 
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
             <CopyButton value={lastInv.num} title="نسخ رقم آخر فاتورة" successMessage="تم نسخ رقم الفاتورة" />
-            <CopyButton value={String(lastInv.total)} title="نسخ إجمالي آخر فاتورة" successMessage="تم نسخ الإجمالي" />
+            <CopyButton value={lastInv.total} title="نسخ إجمالي آخر فاتورة" successMessage="تم نسخ الإجمالي" />
           </div>
         </div>
       )}
@@ -1300,7 +1301,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
                       <input
                         type="text"
                         inputMode="numeric"
-                        value={String(c.qty)}
+                        value={c.qty}
                         onClick={(e) => e.stopPropagation()}
                         onFocus={(e) => { e.stopPropagation(); e.currentTarget.select(); }}
                         onChange={(e) => {
@@ -1453,8 +1454,8 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
           {!cartLen && <span style={{ fontSize: 12.5, color: C.mutedFg }}>اختر خدمة للبدء</span>}
           {cartLen > 0 && hasZeroLine && <span style={{ fontSize: 12, color: C.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>أدخل سعراً للخدمات ذات السعر اليدوي (<Pencil aria-hidden size={11} />)</span>}
           {cartLen > 0 && !hasZeroLine && !payInput && <span style={{ fontSize: 12, color: C.mutedFg }}>{method === "CASH" && cashTotal !== total ? `نقداً يُقرَّب إلى ${fmt(cashTotal)} د.ع` : "أدخل المبلغ أو «إتمام» للدفع الكامل"}</span>}
-          {cartLen > 0 && !!payInput && isChange && (<><span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span><span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 21, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span><CopyButton value={String(change)} title="نسخ الباقي" successMessage="تم نسخ الباقي" /></span></>)}
-          {cartLen > 0 && !!payInput && isOwing && (<><span style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>المتبقي (آجل)</span><span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 21, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12, fontWeight: 500 }}>د.ع</span></span><CopyButton value={String(credit)} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" /></span></>)}
+          {cartLen > 0 && !!payInput && isChange && (<><span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span><span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 21, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span><CopyButton value={change} title="نسخ الباقي" successMessage="تم نسخ الباقي" /></span></>)}
+          {cartLen > 0 && !!payInput && isOwing && (<><span style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>المتبقي (آجل)</span><span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 21, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12, fontWeight: 500 }}>د.ع</span></span><CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" /></span></>)}
         </div>
         <div style={{ display: "flex", gap: 7 }}>
           <button disabled={!canQuickPay || isPending} onClick={onQuickPay}
@@ -1510,7 +1511,7 @@ function ReceiptOverlay({ C, r, onDismiss, onPrint }: { C: C; r: Receipt; onDism
           {[{ l: "المبلغ المدفوع", v: r.received, c: C.primary }, { l: "إجمالي الفاتورة", v: r.total, c: C.fg }].map((it) => (
             <div key={it.l} style={{ background: C.muted, borderRadius: 10, padding: "13px 10px", position: "relative" }}>
               <div style={{ position: "absolute", top: 4, left: 4 }}>
-                <CopyButton value={String(it.v)} title={`نسخ ${it.l}`} successMessage={`تم نسخ ${it.l}`} />
+                <CopyButton value={it.v} title={`نسخ ${it.l}`} successMessage={`تم نسخ ${it.l}`} />
               </div>
               <div style={{ fontSize: 12, color: C.mutedFg, marginBottom: 3 }}>{it.l}</div>
               <div style={{ fontSize: 25, fontWeight: 900, direction: "ltr", color: it.c }}>{fmt(it.v)}</div>
@@ -1538,7 +1539,7 @@ function Bar({ C, c, k, v, copyTitle }: { C: C; c: string; k: string; v: number;
       <span style={{ fontSize: 14, fontWeight: 700, color: c }}>{k}</span>
       <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
         <span style={{ fontSize: 25, fontWeight: 900, color: c, direction: "ltr" }}>{fmt(v)} <span style={{ fontSize: 12 }}>د.ع</span></span>
-        <CopyButton value={String(v)} title={copyTitle ?? `نسخ ${k}`} successMessage={`تم نسخ ${k}`} />
+        <CopyButton value={v} title={copyTitle ?? `نسخ ${k}`} successMessage={`تم نسخ ${k}`} />
       </span>
     </div>
   );

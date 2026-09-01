@@ -300,10 +300,10 @@ export default function Offers() {
               <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
             </Field>
             <Field label="نوع الخصم" required hint={editingId != null ? "ثابت منذ الإنشاء — أنشئ عرضاً جديداً لتغييره" : undefined}>
-              <select value={type} onChange={(e) => setType(e.target.value as PromoType)} disabled={editingId != null} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm disabled:opacity-60">
+              <AppSelect value={type} onValueChange={(next) => setType(next as PromoType)} disabled={editingId != null} className="h-9 border-input px-3 py-1 text-sm disabled:opacity-60">
                 <option value="PERCENT">نسبة (%)</option>
                 <option value="AMOUNT">مبلغ ثابت (لكل وحدة)</option>
-              </select>
+              </AppSelect>
             </Field>
             {type === "PERCENT" ? (
               <Field label="نسبة الخصم" required hint="من ١ إلى ١٠٠">
@@ -318,22 +318,22 @@ export default function Offers() {
               <Input type="number" min={0} max={999} value={priority} onChange={(e) => setPriority(e.target.value)} />
             </Field>
             <Field label="الحملة (اختياري)" hint={editingId != null ? "ثابتة منذ الإنشاء" : undefined}>
-              <select value={campaignId} onChange={(e) => setCampaignId(e.target.value)} disabled={editingId != null} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm disabled:opacity-60">
+              <AppSelect value={campaignId} onValueChange={(next) => setCampaignId(next)} disabled={editingId != null} className="h-9 border-input px-3 py-1 text-sm disabled:opacity-60">
                 <option value="">عرض مستقل</option>
                 {(campaignsQ.data ?? []).map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
-              </select>
+              </AppSelect>
             </Field>
             <Field label="طريقة التطبيق" hint="الكوبون لا يعمل تلقائياً">
-              <select value={applicationMode} onChange={(e) => setApplicationMode(e.target.value as ApplicationMode)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+              <AppSelect value={applicationMode} onValueChange={(next) => setApplicationMode(next as ApplicationMode)} className="h-9 border-input px-3 py-1 text-sm">
                 <option value="AUTO">تلقائي</option>
                 <option value="COUPON">بكوبون صالح فقط</option>
-              </select>
+              </AppSelect>
             </Field>
             <Field label="قناة العرض">
-              <select value={channel} onChange={(e) => setChannel(e.target.value as "POS" | "STORE")} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+              <AppSelect value={channel} onValueChange={(next) => setChannel(next as "POS" | "STORE")} className="h-9 border-input px-3 py-1 text-sm">
                 <option value="POS">نقطة البيع</option>
                 <option value="STORE">المتجر الإلكتروني</option>
-              </select>
+              </AppSelect>
             </Field>
             <Field label="من تاريخ" required>
               <Input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} />
@@ -342,12 +342,12 @@ export default function Offers() {
               <Input type="date" value={effectiveTo} onChange={(e) => setEffectiveTo(e.target.value)} />
             </Field>
             <Field label="فئة العميل (اختياري)">
-              <select value={customerTier} onChange={(e) => setCustomerTier(e.target.value as Tier)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+              <AppSelect value={customerTier} onValueChange={(next) => setCustomerTier(next as Tier)} className="h-9 border-input px-3 py-1 text-sm">
                 <option value="">جميع الفئات</option>
                 <option value="RETAIL">مفرد</option>
                 <option value="WHOLESALE">جملة</option>
                 <option value="GOVERNMENT">حكومي</option>
-              </select>
+              </AppSelect>
             </Field>
             <Field label="الحدّ الأدنى لسعر الوحدة (اختياري)" className="md:col-span-2">
               <MoneyInput value={minLineAmount} onChange={setMinLineAmount} placeholder="0" />

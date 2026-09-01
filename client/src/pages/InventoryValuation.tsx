@@ -2,6 +2,8 @@
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). فلتر فرع.
 // ⚠️ القيمة بالتكلفة (آخر تكلفة، قرار المالك)؛ الكمية بالوحدة الأساس.
 import { useState } from "react";
+import { FilterField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -15,8 +17,6 @@ type Row = RouterOutputs["reports"]["inventoryValuation"]["rows"][number];
 
 const NOTE =
   "القيمة بالتكلفة (آخر تكلفة) لكل وحدة أساس × الكمية الحالية في المخزون؛ الكمية بالوحدة الأساس. لقطة لحظية للرصيد الحالي.";
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function InventoryValuation() {
   const [branchId, setBranchId] = useState<number | "">("");
@@ -89,13 +89,12 @@ export default function InventoryValuation() {
       exportDisabled={!rows.length}
       printDisabled={!rows.length}
       filters={
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-muted-foreground">الفرع</label>
-          <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+        <FilterField label="الفرع">
+          <AppSelect value={branchId === "" ? "" : String(branchId)} onValueChange={(v) => setBranchId(v ? Number(v) : "")}>
             <option value="">الكل</option>
             {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-          </select>
-        </div>
+          </AppSelect>
+        </FilterField>
       }
     >
       <Card>

@@ -49,7 +49,15 @@ export interface SalesRegisterRow {
   invoiceId: number;
   invoiceNumber: string;
   invoiceDate: string; // YYYY-MM-DD
+  /**
+   * إسناد الصفّ — دوران **متمايزان** لا يُخلطان (shared/uiContracts):
+   *   • `customerName` = «المستفيد» — لمن وقع البيع.
+   *   • `soldByName`   = «نفّذها»   — مَن أنشأ الفاتورة (`invoices.createdBy`).
+   * كان السجلّ يعرض الأوّل وحده، فيُقرأ الصفّ بلا فاعل: تعرف لمن بِيع ولا تعرف مَن باع
+   * (بلاغ المالك ١/٩/٢٦). و`createdBy` هو نفسه أساسُ نسب العمولة، فالعمودان متّسقان.
+   */
   customerName: string | null;
+  soldByName: string | null;
   productName: string;
   quantity: string;
   unitPrice: string;
@@ -114,6 +122,7 @@ export async function getSalesRegister(opts: {
         i.invoiceNumber AS invoiceNumber,
         DATE_FORMAT(i.invoiceDate, '%Y-%m-%d') AS invoiceDate,
         c.name AS customerName,
+        su.name AS soldByName,
         p.name AS productName,
         CAST(CASE WHEN ii.baseQuantity > 0
           THEN ii.quantity * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
@@ -131,6 +140,7 @@ export async function getSalesRegister(opts: {
       JOIN productVariants pv ON pv.id = ii.variantId
       JOIN products p ON p.id = pv.productId
       LEFT JOIN customers c ON c.id = i.customerId
+      LEFT JOIN users su ON su.id = i.createdBy
       LEFT JOIN branches b ON b.id = i.branchId
       WHERE ${where}
       ORDER BY i.invoiceDate DESC, ii.id DESC

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Banknote, PackageOpen, ShieldCheck, Truck, Users, XCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
@@ -281,10 +282,10 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
   return (
     <Modal title="جهة توصيل جديدة" onClose={onClose}>
       <label className="mb-1.5 block text-sm font-bold">النوع</label>
-      <select className="mb-3 h-11 w-full rounded-md border bg-transparent px-3 text-sm" value={partyType} onChange={(e) => setPartyType(e.target.value as typeof partyType)}>
+      <AppSelect className="mb-3 h-11 px-3 text-sm" value={partyType} onValueChange={(next) => setPartyType(next as typeof partyType)}>
         <option value="INDIVIDUAL">مندوب فرد</option>
         <option value="COMPANY">شركة توصيل</option>
-      </select>
+      </AppSelect>
       <label className="mb-1.5 block text-sm font-bold">الاسم</label>
       <Input value={name} onChange={(e) => setName(e.target.value)} className="mb-3 h-11" />
       <label className="mb-1.5 block text-sm font-bold">الهاتف</label>
@@ -292,12 +293,12 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
       <label className="mb-1.5 block text-sm font-bold">أجرة توصيل افتراضية (د.ع)</label>
       <MoneyInput value={defaultFee} onChange={setDefaultFee} className="mb-3 h-11 text-end tabular-nums" ariaLabel="الأجرة الافتراضية" />
       <label className="mb-1.5 block text-sm font-bold">حساب بوابة الجهة (اختياري)</label>
-      <select className="mb-1 h-11 w-full rounded-md border bg-transparent px-3 text-sm" value={userId ?? ""} onChange={(e) => setUserId(e.target.value ? Number(e.target.value) : null)}>
+      <AppSelect className="mb-1 h-11 px-3 text-sm" value={String(userId ?? "")} onValueChange={(next) => setUserId(next ? Number(next) : null)}>
         <option value="">بلا حساب دخول</option>
         {available.map((a) => (
           <option key={a.id} value={a.id}>{a.name}{a.username ? ` (${a.username})` : ""}</option>
         ))}
-      </select>
+      </AppSelect>
       <p className="mb-4 text-xs text-muted-foreground">
         {partyType === "COMPANY"
           ? "الحساب الأول يصبح مديراً للشركة؛ وبعد الإنشاء يمكن إضافة عدة سائقين ومديرين ومحاسبين من صفحة الجهة."
@@ -389,10 +390,10 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
     <Modal title={`طلب شطب عجز «${party.name}»`} onClose={onClose}>
       <p className="mb-3 text-sm text-destructive">هذا مستند طلب فقط؛ لا يتغير الرصيد ولا الإرسالية قبل اعتماد مراجع توصيل مستقل ومخوّل.</p>
       <label className="mb-1.5 block text-sm font-bold">ما الذي يُشطب؟</label>
-      <select
-        className="mb-3 h-11 w-full rounded-md border bg-transparent px-3 text-sm"
+      <AppSelect
+        className="mb-3 h-11 px-3 text-sm"
         value={consignmentId}
-        onChange={(e) => setConsignmentId(e.target.value)}
+        onValueChange={(next) => setConsignmentId(next)}
       >
         <option value="">عهدة سائبة (غير مرتبطة بإرسالية مفتوحة)</option>
         {openRows.map((c) => (
@@ -400,7 +401,7 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
             إرسالية {c.consignmentNumber} — {c.invoiceNumber ?? ""} — متبقٍّ {fmt(String(Math.max(0, Number(c.codAmount) - Number(c.collectedAmount))))} د.ع
           </option>
         ))}
-      </select>
+      </AppSelect>
       <label className="mb-1.5 block text-sm font-bold">المبلغ المشطوب (د.ع)</label>
       <MoneyInput
         value={effAmount}

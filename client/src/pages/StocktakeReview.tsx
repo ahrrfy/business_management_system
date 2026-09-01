@@ -10,6 +10,7 @@
  * إعادة العدّ (requestRecount)، والتوقيع المزدوج (firstSign ثم approve بمستخدم مختلف).
  */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Switch } from "@/components/ui/switch";
@@ -1875,18 +1876,17 @@ export default function StocktakeReview() {
                             </span>
                           )}
                           {/* سبب الفرق — يغذي تقرير الانكماش والقيد المحاسبي */}
-                          <select
+                          <AppSelect
                             value={reason}
                             disabled={
                               !isOperational ||
                               !!r.reviewApproved ||
                               decide.isPending
                             }
-                            onChange={(e) =>
-                              onReasonChange(r, e.target.value as Reason)
-                            }
+                            onValueChange={(v) => onReasonChange(r, v as Reason)}
                             title="سبب الفرق — يُسجَّل في تقرير الانكماش"
-                            className={`mt-1 h-7 w-full max-w-[150px] cursor-pointer rounded-md border bg-card px-1.5 text-[11px] ${
+                            aria-label="سبب الفرق"
+                            className={`mt-1 h-7 w-full max-w-[150px] px-1.5 text-[11px] ${
                               reason !== "UNSPECIFIED"
                                 ? "border-input text-foreground"
                                 : "border-[var(--sem-warn)]/50 text-[var(--sem-warn)]"
@@ -1897,7 +1897,7 @@ export default function StocktakeReview() {
                                 {x.v === "UNSPECIFIED" ? "السبب؟" : x.label}
                               </option>
                             ))}
-                          </select>
+                          </AppSelect>
                         </div>
                       )}
                     </td>

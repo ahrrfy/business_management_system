@@ -5,6 +5,7 @@
  * ⚠️ النِّسب/الشرائح يضبطها المالك مع محاسبه القانونيّ (لافتة تحذير ظاهرة). مُركَّب على trpc.payroll.
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -148,10 +149,10 @@ export default function PayrollLegalSettings() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="ss-base" className="text-sm">وعاء الاحتساب</Label>
-                <select id="ss-base" className={selectCls} value={ssBase} disabled={!canEdit} onChange={(e) => setSsBase(e.target.value as "basic" | "gross")}>
+                <AppSelect id="ss-base" className="h-9" value={ssBase} disabled={!canEdit} onValueChange={(next) => setSsBase(next as "basic" | "gross")}>
                   <option value="basic">الأساسيّ (الراتب الأساس)</option>
                   <option value="gross">الإجماليّ (أساسيّ + مخصّصات)</option>
-                </select>
+                </AppSelect>
               </div>
             </div>
           )}
