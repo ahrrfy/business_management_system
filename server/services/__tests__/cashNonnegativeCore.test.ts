@@ -777,6 +777,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       ["sale/cancel.ts", "SALE_CANCELLATION_COMPENSATION"],
       ["digitalCards/reversalService.ts", "DIGITAL_CARD_REVERSAL_COMPENSATION"],
       ["exchange/reverse.ts", "EXCHANGE_REVERSAL_COMPENSATION"],
+      ["workOrder/cancel.ts", "WORK_ORDER_CANCELLATION_COMPENSATION"],
     ]);
     for (const [relative, key] of exceptionFiles) {
       const source = readFileSync(path.join(root, relative), "utf8");

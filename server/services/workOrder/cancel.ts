@@ -10,7 +10,7 @@ import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { appliedCollectionsForWorkOrder } from "../reception/deposits";
-import { assertCashOutAvailable, assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
 import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import { paymentAssetRole } from "../sale/paymentPosting";
@@ -397,6 +397,10 @@ export async function cancelWorkOrderInTx(
           shiftId = refundBucket === "DRAWER"
             ? await resolveLockedReceptionCashShift(tx, Number(wo.branchId), opts.refundShiftId ?? null)
             : null;
+          // خروجُ الخزينة عكسٌ مقيَّدٌ بمصدره لا صرفٌ جديد ⇒ يُعلَن استثناءً مغلقاً (نظيرَ إلغاء
+          // البيع) بدل طابور اعتماد المالك؛ وبلا هذا الإعلان يمرّ عبر assertCashOutAvailable الحيادي
+          // فيتسرّب صرفُ خزينةٍ بلا حارسٍ (مراجعة Codex P1 على #930).
+          if (refundBucket === "TREASURY") assertTreasuryOutException("WORK_ORDER_CANCELLATION_COMPENSATION");
           await assertCashOutAvailable(tx, {
             branchId: Number(wo.branchId), cashBucket: refundBucket === "DRAWER" ? "DRAWER" : "TREASURY", shiftId,
             amount: refundAmt, operation: `رد عربون إلغاء أمر الشغل (${rail === "TREASURY" ? "خزينة" : "درج"})`,
@@ -519,18 +523,18 @@ export async function cancelWorkOrderInTx(
         }
         appliedCashShiftId ??= await resolveCashSinkShift();
         shiftId = appliedCashShiftId;
+        // نظيرُ المسار المباشر: خروجُ الخزينة يُعلَن استثناءً مغلقاً لا يمرّ حيادياً (Codex P1 #930).
+        if (cashSinkBucket === "TREASURY") assertTreasuryOutException("WORK_ORDER_CANCELLATION_COMPENSATION");
         await assertCashOutAvailable(tx, {
           branchId: Number(wo.branchId), cashBucket: cashSinkBucket, shiftId,
           amount: amountD, operation: "رد حصة عربون أمر شغل",
         });
       } else {
-        const customerId = part.customerId ?? wo.customerId ?? null;
-        if (customerId == null) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: "رد حصة العربون غير النقدية يحتاج عميلاً مرتبطاً كي يمرّ بسند واعتماد مالك",
-          });
-        }
+        // **الحصّةُ غير النقديّة العابرة (بلا عميلٍ مسجَّل) تُردّ كذلك** (مراجعة Codex P2 على #930):
+        // كان الحارسُ يرفضها فيَعلَق الأمرُ الملغى بمالٍ نقديٍّ محتجَزٍ بلا مخرج (خرقُ §٥ — «لكلّ مالٍ
+        // محتجَز مسارُ خروجٍ ممكنٌ دائماً»). إيصالُ الردّ يقع طرفاً OTHER (كنظيره النقديّ أدناه)،
+        // ومسارُ الاعتماد `approveWorkOrderCancellationRefund` يقبل الطرفَ الفارغ (0 === 0) فيُبرَّأ
+        // المالُ بسندٍ واعتماد مالكٍ ومرجعِ تنفيذٍ خارجيّ.
         assertNonPhysicalOutReceipt({
           classification: "DEFERRED_APPROVAL",
           paymentMethod: refundMethod,
@@ -622,6 +626,8 @@ export async function cancelWorkOrderInTx(
         });
       }
       const feeShiftId = await resolveCashSinkShift();
+      // نظيرُ المسارين أعلاه: خروجُ الخزينة يُعلَن استثناءً مغلقاً لا يمرّ حيادياً (Codex P1 #930).
+      if (cashSinkBucket === "TREASURY") assertTreasuryOutException("WORK_ORDER_CANCELLATION_COMPENSATION");
       await assertCashOutAvailable(tx, {
         branchId: Number(wo.branchId), cashBucket: cashSinkBucket, shiftId: feeShiftId,
         amount: feeHeldNet, operation: "رد أمانة أجرة توصيل أمر الشغل",

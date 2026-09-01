@@ -8,7 +8,7 @@
  * استقبال خاصّة، أو (لو كانت له) ينسب الاسترداد إليها فيختفي عن Z-report صاحب الدرج الحقيقيّ.
  */
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, like, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -44,7 +44,7 @@ const TABLES = [
   "auditLogs",
   "workOrderControlRequests", "workOrderEvents",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
-  "orderPayments", "workOrderMaterials", "workOrderImages", "workOrders",
+  "orderPayments", "receptionDrafts", "workOrderMaterials", "workOrderImages", "workOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "customers", "branches", "users",
 ];
@@ -116,6 +116,69 @@ async function createLegacyCardWorkOrder(suffix: string) {
     createdBy: 2,
   }));
   return { workOrderId, depositReceiptId };
+}
+
+/**
+ * أمرٌ **عابرٌ بلا عميلٍ مسجَّل** (`deposit = 0`) يحمل حصّةَ قبضٍ **غير نقديّة** (تحويل) مطبَّقةً
+ * من مسوّدة استقبال. يُثبت أنّ إلغاءه لم يعد يَعلَق: كان الحارسُ يرفض ردّ الحصّة غير النقديّة
+ * بلا عميلٍ فيُرجِع المعاملةَ كلَّها ⇒ مالٌ محتجَزٌ بلا مخرج (مراجعة Codex P2 على #930).
+ */
+async function createAnonymousTransferAppliedWorkOrder(suffix: string) {
+  const workOrderId = extractInsertId(await db().insert(s.workOrders).values({
+    orderNumber: `WO-ANON-TRANSFER-${suffix}`,
+    branchId: 1,
+    customerId: null,
+    title: `أمر عابر بتحويل ${suffix}`,
+    quantity: 1,
+    materialsCost: "0.00",
+    laborCost: "0.00",
+    salePrice: "5000.00",
+    status: "RECEIVED",
+    deposit: "0.00",
+    paymentMethod: "TRANSFER",
+    depositReceiptId: null,
+    createdBy: 2,
+  }));
+  const draftId = extractInsertId(await db().insert(s.receptionDrafts).values({
+    draftNumber: `D-ANON-${suffix}`,
+    branchId: 1,
+    commitRequestId: randomUUID(),
+    createdBy: 2,
+  }));
+  const collectionReceiptId = extractInsertId(await db().insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "3000.00",
+    paymentMethod: "TRANSFER",
+    cashBucket: null,
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    partyType: "OTHER",
+    createdBy: 2,
+  }));
+  const collectionId = extractInsertId(await db().insert(s.orderPayments).values({
+    draftId,
+    branchId: 1,
+    kind: "COLLECTION",
+    amount: "3000.00",
+    method: "TRANSFER",
+    receiptId: collectionReceiptId,
+    customerId: null,
+    status: "APPLIED",
+    createdBy: 2,
+  }));
+  await db().insert(s.orderPayments).values({
+    draftId,
+    branchId: 1,
+    kind: "APPLICATION",
+    amount: "3000.00",
+    method: "TRANSFER",
+    parentPaymentId: collectionId,
+    appliedKind: "WORKORDER",
+    appliedId: workOrderId,
+    createdBy: 2,
+  });
+  return workOrderId;
 }
 
 async function cancelGoverned(
@@ -329,5 +392,40 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
       .where(and(eq(s.receipts.direction, "OUT"), eq(s.receipts.workOrderId, second.workOrderId)));
     expect([...materialized, ...materializedSecond].filter((row) => row.status === "COMPLETED")).toHaveLength(1);
     expect([...materialized, ...materializedSecond].filter((row) => row.status === "PENDING")).toHaveLength(1);
+  });
+
+  it("⭐ أمرٌ عابرٌ بلا عميلٍ بحصّةٍ مطبَّقةٍ بالتحويل يُلغى ويُنشئ ردّاً معلّقاً طرفاً OTHER — لا يَعلَق (Codex P2)", async () => {
+    const workOrderId = await createAnonymousTransferAppliedWorkOrder("A1");
+
+    // قبل الإصلاح كان يُرمى «رد حصة العربون غير النقدية يحتاج عميلاً» فتُرجَع المعاملةُ ⇒ الأمرُ
+    // عالقٌ نشطاً بمالٍ محتجَز. الآن يُلغى، وتُنشأ حصّةُ الردّ معلّقةً طرفاً OTHER (مسارُ خروجٍ ممكن).
+    await cancelGoverned(workOrderId, { requestKey: `anon-transfer:${randomUUID()}` });
+
+    const [wo] = await db().select({ status: s.workOrders.status })
+      .from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
+    expect(wo.status).toBe("CANCELLED");
+
+    const refunds = await db().select({
+      partyType: s.receipts.partyType,
+      partyId: s.receipts.partyId,
+      status: s.receipts.status,
+      approvalStatus: s.receipts.approvalStatus,
+      method: s.receipts.paymentMethod,
+      cashBucket: s.receipts.cashBucket,
+    }).from(s.receipts).where(and(
+      eq(s.receipts.workOrderId, workOrderId),
+      eq(s.receipts.direction, "OUT"),
+      like(s.receipts.internalNote, "WORK_ORDER_CUSTOMER_REFUND:APPLIED:%"),
+    ));
+    expect(refunds).toHaveLength(1);
+    const refund = refunds[0]!;
+    // طرفٌ OTHER بلا عميل — والمالُ لم يعد بلا مالكٍ ولا مخرج (§٥).
+    expect(refund.partyType).toBe("OTHER");
+    expect(refund.partyId).toBeNull();
+    // غيرُ نقديّ ⇒ معلّقٌ باعتماد مالك، بلا دلوِ نقدٍ (لا يمسّ درجاً ولا خزينة حتى يُعتمد).
+    expect(refund.status).toBe("PENDING");
+    expect(refund.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(refund.method).toBe("TRANSFER");
+    expect(refund.cashBucket).toBeNull();
   });
 });

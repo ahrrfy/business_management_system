@@ -8,7 +8,7 @@
  * فهنا سطرٌ لكلّ خامة: **راجع** و**تالف**، مجموعُهما = المستهلَك (يفرضه الخادم أيضاً)، وقيمةُ
  * الهدر تظهر **قبل** التأكيد — لا امتصاصَ خفيّ (§٥).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Loader2, PackageX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -193,21 +193,31 @@ export default function CancelWorkOrderDialog({
   const [refundReference, setRefundReference] = useState("");
 
   /**
-   * **الرافدُ الافتراضيّ يتبع ما يكفي فعلاً** (بلاغ المالك ١/٩): عربونٌ ٧٠٬٠٠٠ وأوسعُ درجٍ
-   * مفتوح ٥٦٬٠٠٠ ⇒ بدءُ الحوار على «الدرج» يعني باباً مسدوداً بنقرةٍ واحدة. فإن لم يكفِ أيُّ
-   * درجٍ وكفت الخزينةُ نبدأ عليها — والموظّفُ يبقى حرّاً في التغيير.
+   * **بطاقةٌ مختارةٌ ثمّ تبيّن أنّها ممنوعة (حصصٌ/أمانة) ⇒ اردُد للدرج** — تفاعليٌّ مع الرافد
+   * لتصحيح أيّ اختيارٍ لاحقٍ يصير غيرَ صالح، لا مرّةً واحدة.
    */
   useEffect(() => {
     if (!open || !needsCashDrawer || !effectivePreflight) return;
-    // بطاقةٌ مختارةٌ ثمّ تبيّن أنّها ممنوعة (حصصٌ/أمانة) ⇒ اردُد للدرج قبل أيّ إرسال.
-    if (rail === "CARD" && effectivePreflight.cardRefundAllowed !== true) {
-      setRail("DRAWER");
-      return;
-    }
-    const anyDrawerFits = effectivePreflight.drawers.some((d) => d.sufficient);
-    if (rail === "DRAWER" && !anyDrawerFits && effectivePreflight.treasurySufficient)
-      setRail("TREASURY");
+    if (rail === "CARD" && effectivePreflight.cardRefundAllowed !== true) setRail("DRAWER");
   }, [open, needsCashDrawer, effectivePreflight, rail]);
+
+  /**
+   * **الافتراضُ إلى الخزينة مرّةً واحدةً عند فتح الحوار/وصول التمهيد** (بلاغ المالك ١/٩): عربونٌ
+   * ٧٠٬٠٠٠ وأوسعُ درجٍ ٥٦٬٠٠٠ ⇒ بدءُ الحوار على «الدرج» بابٌ مسدود، فنبدأ على الخزينة إن كفت.
+   * ⚠️ **بلا `rail` في التبعيّات** (مراجعة Codex P2 على #930): كفايةُ الدرج إرشاديّةٌ لا حاجزة
+   * (الرصيدُ الحيّ قد تغيّر منذ التمهيد)، فلو تفاعل هذا مع الرافد لَأعاد نقرةَ الموظّف على «الدرج»
+   * إلى «الخزينة» فوراً فتعذّر اختيارُه اليدويّ. القفلُ بمرجعٍ يجعله لمسةَ الفتح وحدها.
+   */
+  const railAutoDefaultedRef = useRef(false);
+  useEffect(() => {
+    railAutoDefaultedRef.current = false;
+  }, [open]);
+  useEffect(() => {
+    if (!open || !needsCashDrawer || !effectivePreflight || railAutoDefaultedRef.current) return;
+    railAutoDefaultedRef.current = true;
+    const anyDrawerFits = effectivePreflight.drawers.some((d) => d.sufficient);
+    if (!anyDrawerFits && effectivePreflight.treasurySufficient) setRail("TREASURY");
+  }, [open, needsCashDrawer, effectivePreflight]);
 
   /**
    * سببُ الحجب **بحسب الرافد**: الدرجُ وحده يلزمه اختيارُ وردية، والبطاقةُ وحدها مرجعٌ خارجيّ.
