@@ -181,6 +181,42 @@ async function createAnonymousTransferAppliedWorkOrder(suffix: string) {
   return workOrderId;
 }
 
+/**
+ * أمرٌ **عابرٌ بلا عميلٍ مسجَّل** بعربونٍ نقديٍّ **مباشر** (لا حصص) — الحالةُ التي كان
+ * `cardRefundAllowed` يُتيح فيها البطاقةَ ثمّ يَعلَق الاعتماد على حارس العميل (مراجعة Codex P2).
+ */
+async function createAnonymousCashDepositWorkOrder(suffix: string) {
+  const workOrderId = extractInsertId(await db().insert(s.workOrders).values({
+    orderNumber: `WO-ANON-CASH-${suffix}`,
+    branchId: 1,
+    customerId: null,
+    title: `أمر عابر نقديّ ${suffix}`,
+    quantity: 1,
+    materialsCost: "0.00",
+    laborCost: "0.00",
+    salePrice: "5000.00",
+    status: "RECEIVED",
+    deposit: "2000.00",
+    paymentMethod: "CASH",
+    depositReceiptId: null,
+    createdBy: 2,
+  }));
+  const depositReceiptId = extractInsertId(await db().insert(s.receipts).values({
+    branchId: 1,
+    workOrderId,
+    direction: "IN",
+    amount: "2000.00",
+    paymentMethod: "CASH",
+    cashBucket: "DRAWER",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    partyType: "OTHER",
+    createdBy: 2,
+  }));
+  await db().update(s.workOrders).set({ depositReceiptId }).where(eq(s.workOrders.id, workOrderId));
+  return workOrderId;
+}
+
 async function cancelGoverned(
   workOrderId: number,
   opts: { refundShiftId?: number | null; requestKey?: string; baseVersion?: number } = {},
@@ -426,6 +462,52 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
     expect(refund.status).toBe("PENDING");
     expect(refund.approvalStatus).toBe("PENDING_APPROVAL");
     expect(refund.method).toBe("TRANSFER");
+    expect(refund.cashBucket).toBeNull();
+  });
+
+  it("⭐ أمرٌ عابرٌ بلا عميلٍ بعربونٍ نقديٍّ مباشر يُردُّ على البطاقة يُلغى بطرفٍ OTHER — لا يَعلَق (Codex P2)", async () => {
+    const workOrderId = await createAnonymousCashDepositWorkOrder("C1");
+
+    // البطاقةُ مُتاحةٌ لعربونٍ نقديٍّ مباشر (لا جزءَ نقديٍّ يمنعها)، وقبل الإصلاح كان الاعتماد
+    // يَعلَق على حارس العميل (`wo.customerId == null`). الآن يُنشأ ردٌّ معلّقٌ طرفاً OTHER فيمرّ.
+    const [wo] = await db().select({ version: s.workOrders.version })
+      .from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
+    const request = await requestWorkOrderControl({
+      requestKey: `anon-cash-card:${randomUUID()}`,
+      workOrderId,
+      requestType: "CANCEL",
+      baseVersion: Number(wo.version),
+      reason: "العميل العابر ألغى الطلب واستلم عربونه على البطاقة",
+      payload: { refundShiftId: null, refundRail: "CARD", refundReference: "POS-REF-9001", materials: null },
+    }, manager);
+    await approveWorkOrderControlRequest(
+      Number(request.id),
+      { userId: 3, branchId: 1, role: "admin", isOwner: true },
+      "راجعت مسار ردّ العربون على البطاقة",
+    );
+
+    const [woAfter] = await db().select({ status: s.workOrders.status })
+      .from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
+    expect(woAfter.status).toBe("CANCELLED");
+
+    const refunds = await db().select({
+      partyType: s.receipts.partyType,
+      partyId: s.receipts.partyId,
+      status: s.receipts.status,
+      approvalStatus: s.receipts.approvalStatus,
+      cashBucket: s.receipts.cashBucket,
+    }).from(s.receipts).where(and(
+      eq(s.receipts.workOrderId, workOrderId),
+      eq(s.receipts.direction, "OUT"),
+      like(s.receipts.internalNote, "WORK_ORDER_CUSTOMER_REFUND:DIRECT:%"),
+    ));
+    expect(refunds).toHaveLength(1);
+    const refund = refunds[0]!;
+    // طرفٌ OTHER بلا عميل، معلّقٌ باعتماد مالك، بلا دلوِ نقدٍ (بطاقةٌ لا تمسّ درجاً حتى التنفيذ).
+    expect(refund.partyType).toBe("OTHER");
+    expect(refund.partyId).toBeNull();
+    expect(refund.status).toBe("PENDING");
+    expect(refund.approvalStatus).toBe("PENDING_APPROVAL");
     expect(refund.cashBucket).toBeNull();
   });
 });

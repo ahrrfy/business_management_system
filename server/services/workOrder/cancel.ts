@@ -451,12 +451,12 @@ export async function cancelWorkOrderInTx(
             amount: refundAmt, operation: `رد عربون إلغاء أمر الشغل (${rail === "TREASURY" ? "خزينة" : "درج"})`,
           });
         } else {
-          if (wo.customerId == null) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: "رد العربون غير النقدي يحتاج عميلاً مرتبطاً بأمر الشغل كي يمرّ بسند واعتماد مالك",
-            });
-          }
+          // **العربونُ العابر (بلا عميلٍ مسجَّل) يُردّ كذلك** (مراجعة Codex P2 على #930): كان الحارسُ
+          // يرفضه فيَعلَق الأمرُ الملغى بمالٍ محتجَزٍ بلا مخرج (خرقُ §٥). والأسوأ أنّ `cardRefundAllowed`
+          // يُتيح البطاقةَ لعربونٍ نقديٍّ مباشر بلا عميل، فيُنشأ طلبُ تحكّمٍ يتعذّر اعتمادُه. إيصالُ
+          // الردّ يقع طرفاً OTHER (أدناه، نظيرَ الحصص المطبَّقة)، ومسارُ الاعتماد
+          // `approveWorkOrderCancellationRefund` يقبل الطرفَ الفارغ (0 === 0) فيُبرَّأ المالُ بسندٍ
+          // واعتماد مالكٍ ومرجعِ تنفيذٍ خارجيّ.
           shiftId = null;
           assertNonPhysicalOutReceipt({
             classification: "DEFERRED_APPROVAL",
