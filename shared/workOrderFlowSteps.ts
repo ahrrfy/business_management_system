@@ -1,10 +1,10 @@
 /**
  * **اشتقاقُ مسار الطلب — دالّةٌ نقيّة واحدة** (قرار المالك ١/٩/٢٦).
  *
- * الطلبُ يمرّ بخمس محطّاتٍ لا خمسِ حالاتٍ في عمود: استلام ← اعتماد التصميم ← تنفيذ ← جاهز
- * ← تسليم (مباشر أو عبر مندوب). العمودُ `workOrders.status` يعرف ثلاثاً منها فقط، وحارسُ
- * اعتماد التصميم يعيش خارجه كلّياً — فكانت الشاشةُ تعطّل زرَّ «بدء التنفيذ» بعبارةٍ لا تقول
- * أين المحطّة المتعثّرة ولا مَن يفكّها.
+ * الطلبُ يمرّ بأربع محطّات: استلام ← تنفيذ ← جاهز ← تسليم (مباشر أو عبر مندوب).
+ *
+ * ⛔ **حُذفت محطّةُ «اعتماد التصميم»** (قرار المالك ١/٩/٢٦) مع حارسها في الخادم: كانت خطوةً
+ * مفروضةً على كلّ طلبٍ تتطلّب شخصَين، فتقف بين الفنّي وشغله بلا مقابلٍ تشغيليّ.
  *
  * الاشتقاقُ هنا نقيٌّ بلا React ولا استعلام كي يُختبَر وحدَه، ولئلّا تُعيد شاشةٌ ثانية بناءه
  * بيدها — وهو نمطُ `shared/workOrderStatus.ts` نفسه (§٥: قاموسٌ واحدٌ حاكم).
@@ -14,7 +14,7 @@ import { isWorkOrderStatus, type WorkOrderStatus } from "./workOrderStatus";
 export type WorkOrderFlowStepState = "DONE" | "CURRENT" | "BLOCKED" | "PENDING";
 
 export interface WorkOrderFlowStepView {
-  key: "RECEIVED" | "DESIGN" | "PRODUCTION" | "READY" | "HANDOVER" | "CANCELLED";
+  key: "RECEIVED" | "PRODUCTION" | "READY" | "HANDOVER" | "CANCELLED";
   label: string;
   state: WorkOrderFlowStepState;
   hint: string | null;
@@ -22,8 +22,6 @@ export interface WorkOrderFlowStepView {
 
 export interface WorkOrderFlowInput {
   status: string;
-  /** حالةُ اعتماد النسخة الحالية؛ `null` = لم يُطلب بعد. `undefined` = لم تُقرأ (لا نكذب). */
-  designApprovalStatus: "PENDING" | "APPROVED" | "REJECTED" | "SUPERSEDED" | null | undefined;
   hasDelivery: boolean;
   consignmentId: number | null;
   courierDeliveredAt: unknown;
@@ -32,24 +30,6 @@ export interface WorkOrderFlowInput {
   blockedReason?: string | null;
 }
 
-function designHint(
-  approval: WorkOrderFlowInput["designApprovalStatus"],
-): string {
-  switch (approval) {
-    case "APPROVED":
-      return "";
-    case "PENDING":
-      return "طُلب الاعتماد — بانتظار قرار مديرٍ مخوَّل (غيرِ طالبِه والفنّيِّ المسنَد).";
-    case "REJECTED":
-      return "رفض العميل النسخة الحالية — عدّل التخصيص ثم اطلب اعتماد النسخة الجديدة.";
-    case "SUPERSEDED":
-      return "تغيّر التصميم بعد الطلب — اطلب اعتماد النسخة الأحدث.";
-    case null:
-      return "اطلب اعتماد التصميم من البطاقة أدناه — لا يلزم رفعُ أيّ ملفّ.";
-    default:
-      return "تعذّر قراءة حالة اعتماد التصميم — لا تبدأ التنفيذ قبل ظهورها.";
-  }
-}
 
 /**
  * ترتيبُ المحطّات ثابتٌ دائماً — الطريقُ يُقرأ كاملاً حتى لو لم نبلغه بعد. المحطّةُ الأخيرة
@@ -70,7 +50,6 @@ export function deriveWorkOrderFlowSteps(input: WorkOrderFlowInput): WorkOrderFl
     ];
   }
 
-  const designApproved = input.designApprovalStatus === "APPROVED";
   const delivered = status === "DELIVERED";
   const inProduction = status === "IN_PROGRESS";
   const ready = status === "READY";
@@ -105,31 +84,20 @@ export function deriveWorkOrderFlowSteps(input: WorkOrderFlowInput): WorkOrderFl
   return [
     { key: "RECEIVED", label: "استلام", state: "DONE", hint: null },
     {
-      key: "DESIGN",
-      label: "اعتماد التصميم",
-      state: designApproved ? "DONE" : status === "RECEIVED" ? "BLOCKED" : "DONE",
-      // بعد بدء التنفيذ يكون الاعتماد قد وقع يقيناً (حارسُ `assertCurrentDesignApproved`)؛
-      // وإن أُبطل لاحقاً بتغيير تصميم فالمحطّةُ التالية هي التي تحمل التعثّر.
-      hint: designApproved ? null : status === "RECEIVED" ? designHint(input.designApprovalStatus) : null,
-    },
-    {
       key: "PRODUCTION",
       label: "التنفيذ",
-      // أمرٌ مُستلَمٌ اعتُمد تصميمُه ⇒ **الخطوة الحالية هي البدء**، لا محطّةٌ «لاحقة» بلا فاعل.
-      // بغيرها كان الطريقُ يخلو من أيّ محطّةٍ حاليّة فور فكّ حاجز التصميم.
+      // أمرٌ مُستلَم ⇒ **الخطوة الحالية هي البدء** مباشرةً؛ لا محطّةَ اعتمادٍ بينهما بعد اليوم.
       state: delivered || ready
         ? "DONE"
         : productionBlocked
           ? "BLOCKED"
-          : inProduction || (status === "RECEIVED" && designApproved)
-            ? "CURRENT"
-            : "PENDING",
+          : "CURRENT",
       hint: productionBlocked
-        ? (input.blockedReason?.trim() || "التنفيذ متوقّف — يلزم اعتماد النسخة الجديدة وإقرار الفنّي.")
+        ? (input.blockedReason?.trim() || "التنفيذ متوقّف — راجع سبب التعطيل على الأمر.")
         : inProduction
           ? "عند انتهاء الشغل اضغط «وضع علامة جاهز»."
-          : status === "RECEIVED" && designApproved
-            ? "اعتُمد التصميم — اضغط «بدء التنفيذ (خصم المواد)» للبدء."
+          : status === "RECEIVED"
+            ? "اضغط «بدء التنفيذ (خصم المواد)» للبدء."
             : null,
     },
     {
