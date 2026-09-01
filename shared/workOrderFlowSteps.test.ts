@@ -4,7 +4,6 @@ import { deriveWorkOrderFlowSteps, type WorkOrderFlowInput } from "./workOrderFl
 
 const base: WorkOrderFlowInput = {
   status: "RECEIVED",
-  designApprovalStatus: null,
   hasDelivery: false,
   consignmentId: null,
   courierDeliveredAt: null,
@@ -15,36 +14,20 @@ function stateOf(steps: ReturnType<typeof deriveWorkOrderFlowSteps>, key: string
 }
 
 describe("اشتقاق مسار أمر الشغل", () => {
-  it("يوقف الطريق عند اعتماد التصميم ويقول إنّ الرفع غير لازم", () => {
+  it("⭐ لا محطّةَ اعتمادِ تصميمٍ في الطريق — أمرٌ مُستلَمٌ خطوتُه التالية البدء مباشرةً", () => {
     const steps = deriveWorkOrderFlowSteps(base);
-    expect(stateOf(steps, "DESIGN")).toBe("BLOCKED");
-    expect(stateOf(steps, "PRODUCTION")).toBe("PENDING");
-    const design = steps.find((step) => step.key === "DESIGN");
-    expect(design?.hint).toContain("لا يلزم رفعُ أيّ ملفّ");
-  });
-
-  it("⭐ فور اعتماد التصميم تصير محطّةُ التنفيذ هي الحاليّة — لا طريقَ بلا فاعل", () => {
-    const steps = deriveWorkOrderFlowSteps({ ...base, designApprovalStatus: "APPROVED" });
-    expect(stateOf(steps, "DESIGN")).toBe("DONE");
+    expect(steps.map((step) => step.key)).not.toContain("DESIGN");
     expect(stateOf(steps, "PRODUCTION")).toBe("CURRENT");
     expect(steps.filter((step) => step.state === "CURRENT")).toHaveLength(1);
-  });
-
-  it("يميّز انتظارَ القرار عن رفضِه عن استبدالِه", () => {
-    const hint = (s: WorkOrderFlowInput["designApprovalStatus"]) =>
-      deriveWorkOrderFlowSteps({ ...base, designApprovalStatus: s }).find((x) => x.key === "DESIGN")?.hint ?? "";
-    expect(hint("PENDING")).toContain("بانتظار قرار");
-    expect(hint("REJECTED")).toContain("رفض العميل");
-    expect(hint("SUPERSEDED")).toContain("النسخة الأحدث");
-    // تعذُّرُ القراءة لا يُقدَّم على أنه «لم يُطلب بعد» — لا نكذب بغياب المعطى.
-    expect(hint(undefined)).toContain("تعذّر");
+    expect(steps.find((s) => s.key === "PRODUCTION")?.hint).toContain("بدء التنفيذ");
+    // ولا أثرَ لأيّ نصٍّ يَعِد بخطوةِ موافقةٍ محذوفة.
+    expect(JSON.stringify(steps)).not.toContain("اعتماد");
   });
 
   it("يعرض حجز التنفيذ بسببه المكتوب على الأمر", () => {
     const steps = deriveWorkOrderFlowSteps({
       ...base,
       status: "IN_PROGRESS",
-      designApprovalStatus: "APPROVED",
       kanbanState: "BLOCKED",
       blockedReason: "تغيير التصميم إلى النسخة 2",
     });
@@ -53,12 +36,12 @@ describe("اشتقاق مسار أمر الشغل", () => {
   });
 
   it("يبدّل المحطّة الأخيرة بحسب طريقة التسليم", () => {
-    const direct = deriveWorkOrderFlowSteps({ ...base, status: "READY", designApprovalStatus: "APPROVED" });
+    const direct = deriveWorkOrderFlowSteps({ ...base, status: "READY" });
     expect(direct.at(-1)?.label).toBe("تسليم وفوترة");
     expect(direct.at(-1)?.hint).toContain("تسليم وإصدار فاتورة");
 
     const courier = deriveWorkOrderFlowSteps({
-      ...base, status: "READY", designApprovalStatus: "APPROVED", hasDelivery: true,
+      ...base, status: "READY", hasDelivery: true,
     });
     expect(courier.at(-1)?.label).toBe("إسناد للتوصيل");
     expect(courier.at(-1)?.hint).toContain("إسناد لمندوب التوصيل");
@@ -68,7 +51,6 @@ describe("اشتقاق مسار أمر الشغل", () => {
     const dispatched = deriveWorkOrderFlowSteps({
       ...base,
       status: "DELIVERED",
-      designApprovalStatus: "APPROVED",
       hasDelivery: true,
       consignmentId: 7,
       courierDeliveredAt: null,
@@ -79,7 +61,6 @@ describe("اشتقاق مسار أمر الشغل", () => {
     const arrived = deriveWorkOrderFlowSteps({
       ...base,
       status: "DELIVERED",
-      designApprovalStatus: "APPROVED",
       hasDelivery: true,
       consignmentId: 7,
       courierDeliveredAt: new Date("2026-09-01T09:00:00Z"),

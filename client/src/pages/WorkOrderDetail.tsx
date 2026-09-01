@@ -1,4 +1,3 @@
-import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
 import { WorkOrderFlowStepper } from "@/components/workorder/WorkOrderFlowStepper";
 import { deriveWorkOrderFlowSteps } from "@shared/workOrderFlowSteps";
 import { PageHeader } from "@/components/PageHeader";
@@ -130,17 +129,6 @@ export default function WorkOrderDetail() {
   const canDispatchDelivery = !!role && moduleAccessAllowed(role, permissions, "store", "FULL", ["cashier", "manager"]);
   const canRequestCommercialControl = mayRequestWorkOrderControl("COMMERCIAL_EDIT", role, permissions);
   const canEditWorkOrder = canDeliverWorkOrder;
-  const canRequestDesignApproval = canExecuteWorkOrder;
-  /**
-   * ⚠️ **يُفعَّل لكلّ من يفتح الصفحة** (مراجعة Codex P2): البوّابةُ `workordersReadProcedure`،
-   * وتقييدُه بسلطة التنفيذ كان يُنتج تناقضاً على الشاشة نفسها — شريطُ المسار يقول «بانتظار
-   * اعتماد التصميم» وبطاقةُ الاعتماد تحته تقول «معتمد» (لأنّها تستعلم بنفسها)، وبطاقةُ الملفّ
-   * تقول «لم تُثبَّت نسخة». القارئُ يرى الحقيقة أو لا يرى شيئاً — لا ثلاثَ روايات.
-   */
-  const designApproval = trpc.workOrderDesignApproval.getCurrent.useQuery(
-    { workOrderId },
-    { enabled: Number.isFinite(workOrderId) },
-  );
   const controlPreflight = trpc.workOrders.controlPreflight.useQuery(
     { workOrderId },
     { enabled: Number.isFinite(workOrderId) && canRequestCancel },
@@ -231,7 +219,6 @@ export default function WorkOrderDetail() {
   const refresh = async () => {
     await Promise.all([
       utils.workOrders.get.invalidate({ workOrderId }),
-      utils.workOrderDesignApproval.getCurrent.invalidate({ workOrderId }),
       utils.workOrders.controlPreflight.invalidate({ workOrderId }),
       utils.workOrders.list.invalidate(),
       utils.workOrders.pendingCancellationRefunds.invalidate(),
@@ -458,29 +445,12 @@ export default function WorkOrderDetail() {
           treasurySufficient: false,
         }
     : undefined;
-  const designApprovalReady =
-    designApproval.data?.revision != null &&
-    designApproval.data.approval?.status === "APPROVED";
-  const blockedByDesign =
-    !canRequestDesignApproval ||
-    designApproval.isLoading ||
-    designApproval.isError ||
-    !designApprovalReady;
-  const designBlockLabel = designApproval.isLoading
-    ? "جارٍ التحقق من اعتماد التصميم…"
-    : designApproval.isError
-      ? "تعذّر التحقق من اعتماد التصميم"
-      : "بانتظار اعتماد التصميم الحالي";
   /**
    * **المسارُ يُشتقّ مرّةً واحدة** من نفس المعطيات التي تحكم الأزرار — فما يقوله الشريطُ هو
    * ما سيفعله الزرّ. اشتقاقان منفصلان كانا سيتباعدان في أوّل تعديل.
    */
   const flowSteps = deriveWorkOrderFlowSteps({
     status: String(data.status),
-    designApprovalStatus: designApproval.isError
-      ? undefined
-      : ((designApproval.data?.approval?.status ?? null) as
-          | "PENDING" | "APPROVED" | "REJECTED" | "SUPERSEDED" | null),
     hasDelivery: data.hasDelivery === true,
     consignmentId: data.consignmentId == null ? null : Number(data.consignmentId),
     courierDeliveredAt: (data as { courierDeliveredAt?: unknown }).courierDeliveredAt ?? null,
@@ -736,18 +706,10 @@ export default function WorkOrderDetail() {
             </div>
           )}
 
-          {/* ش٢ (١٩/٨): بطاقةُ الموافقة — الحالة مشتقّةٌ من مهمّةٍ حاجزة مفتوحة لا من عَلَم. */}
-          <DesignApprovalCard
-            workOrderId={Number(data.id)}
-            status={String(data.status)}
-            canManage={canRequestDesignApproval}
-            onChanged={() => void refresh()}
-          />
-
           {/* **ملفّ التصميم** — كان الخادم يُرسل `images` والشاشة تُهملها كلّياً (صفر استعمال
               في ٦٨٣ سطراً)، فيقف الفنّيّ أمام أمرٍ لا يرى تصميمه. النسخةُ العليا أوّلاً،
               والسابقةُ تُعرَض مطويّةً — سجلٌّ بلا حذف. */}
-          <DesignFileCard images={(data.images ?? []) as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} pinnedRevision={designApproval.data?.revision == null ? null : Number(designApproval.data.revision.revision)} />
+          <DesignFileCard images={(data.images ?? []) as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
         </CardContent>
       </Card>
 
@@ -972,7 +934,6 @@ export default function WorkOrderDetail() {
         {canExecuteWorkOrder && data.status === "RECEIVED" && (
           <Button
             onClick={async () => {
-              if (blockedByDesign) return;
               if (!(await confirm({
                 variant: "warning",
                 title: "بدء تنفيذ طلب الخدمة",
@@ -981,15 +942,14 @@ export default function WorkOrderDetail() {
               }))) return;
               start.mutate({ workOrderId });
             }}
-            disabled={start.isPending || blockedByDesign}
+            disabled={start.isPending}
           >
-            {start.isPending ? "جارٍ…" : blockedByDesign ? designBlockLabel : "بدء التنفيذ (خصم المواد)"}
+            {start.isPending ? "جارٍ…" : "بدء التنفيذ (خصم المواد)"}
           </Button>
         )}
         {canExecuteWorkOrder && data.status === "IN_PROGRESS" && (
           <Button
             onClick={async () => {
-              if (blockedByDesign) return;
               if (!(await confirm({
                 variant: "info",
                 title: "وضع علامة جاهز للتسليم",
@@ -998,9 +958,9 @@ export default function WorkOrderDetail() {
               }))) return;
               markReady.mutate({ workOrderId });
             }}
-            disabled={markReady.isPending || blockedByDesign}
+            disabled={markReady.isPending}
           >
-            {markReady.isPending ? "جارٍ…" : blockedByDesign ? designBlockLabel : "وضع علامة جاهز"}
+            {markReady.isPending ? "جارٍ…" : "وضع علامة جاهز"}
           </Button>
         )}
         {/*

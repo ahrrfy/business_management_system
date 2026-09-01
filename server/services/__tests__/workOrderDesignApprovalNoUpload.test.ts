@@ -118,7 +118,7 @@ describe("اعتماد التصميم بلا رفع ملفّ", () => {
     expect(afterView.approval?.status).toBe("APPROVED");
     expect(afterView.images).toHaveLength(0);
 
-    // والحارسُ الحاكم يفتح التنفيذ فعلاً — لا «معتمد» على الورق وبابٌ مغلق.
+    // والتنفيذ مفتوحٌ (لم يعد الاعتمادُ شرطاً له أصلاً بعد ١/٩/٢٦).
     await startWorkOrder(woId, TECH);
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)).limit(1))[0];
     expect(wo.status).toBe("IN_PROGRESS");
@@ -150,9 +150,17 @@ describe("اعتماد التصميم بلا رفع ملفّ", () => {
     expect(Number(approval.reviewedBy)).toBe(MANAGER.userId);
   });
 
-  it("⛔ الحرّاسُ لم تُخفَّف: بلا اعتمادٍ لا يبدأ التنفيذ، وفصلُ الواجبات قائم", async () => {
+  /**
+   * ⭐ **انقلب العقد** (قرار المالك ١/٩/٢٦): كان هنا حارسٌ يؤكّد أنّ التنفيذ لا يبدأ بلا
+   * اعتماد. حُذفت الخطوةُ من المسار كلّياً، فصار الاختبار يحرس **عدم** عودة الحجز — ويبقى
+   * فصلُ الواجبات محروساً على مسار القرار نفسه لمن اختار توثيقه.
+   */
+  it("⭐ التنفيذ يبدأ بلا أيّ اعتماد، وفصلُ الواجبات باقٍ على القرار نفسه", async () => {
     const woId = await orderWithoutAnyDesignFile("no-upload-3");
-    await expect(startWorkOrder(woId, TECH)).rejects.toThrow(/لم تُعتمد النسخة الحالية/);
+    await startWorkOrder(woId, TECH);
+    expect(
+      (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)).limit(1))[0].status,
+    ).toBe("IN_PROGRESS");
 
     const requested = await requestWorkOrderDesignApproval(
       { workOrderId: woId, requestKey: "no-upload-req-3", note: null },
@@ -167,9 +175,6 @@ describe("اعتماد التصميم بلا رفع ملفّ", () => {
       evidence: { type: "OTHER", reference: "موافقة حضورية" },
     }, { ...TECH, permissionsOverride: { workorders: "FULL" } } as never))
       .rejects.toThrow(/فصل الواجبات/);
-
-    // والطلبُ المعلَّق لا يفتح التنفيذ — مهمّةُ الاعتماد حاجزةٌ حتى تُحسَم.
-    await expect(startWorkOrder(woId, TECH)).rejects.toThrow(/لا يبدأ التنفيذ قبل إغلاق/);
   });
 
   /**

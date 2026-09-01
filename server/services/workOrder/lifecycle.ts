@@ -34,7 +34,6 @@ import {
   assertWorkOrderBranch,
   loadWorkOrder,
 } from "./helpers";
-import { assertCurrentDesignApproved } from "./designApproval";
 
 /**
  * السحب الذاتي (Pull/Claim): يضبط assignedTo = المستخدم الحالي على أمرٍ **في الطابور الوارد**
@@ -115,9 +114,18 @@ export async function startWorkOrder(
         message: "لا يمكن بدء أمر ليس في حالة الاستلام",
       });
     await assertNoBlockingTask(tx, workOrderId, "start");
-    // النسخة الأعلى نفسها يجب أن تكون مبصومةً ومعتمدةً بدليل، ومهمتها محسومة من المسار
-    // المتخصص. الحارس قبل أقفال المخزون والحركات ⇒ الرفض يترك صفراً من الأثر المخزني/المالي.
-    await assertCurrentDesignApproved(tx, workOrderId, "start");
+    /**
+     * ⛔ **حُذف حارسُ اعتماد التصميم من مسار التنفيذ** (قرار المالك ١/٩/٢٦).
+     *
+     * كان `assertCurrentDesignApproved` يشترط — على **كلّ** أمر شغلٍ بلا استثناء — نسخةً
+     * مبصومةً معتمدةً بقرارٍ موثّقٍ من مديرٍ **غير** طالبه وغير الفنّي المسنَد، ومهمّةً محسومة.
+     * أي: شخصان قبل أن يلمس الفنّيُّ الشغل. في مطبعةٍ فنّيُّها على الكاونتر هذا شللٌ لا حوكمة:
+     * بلاغُ المالك بالصور — «بدء التنفيذ» و«وسم الجاهزية» مرفوضان على أوامرَ حقيقيّة قائمة.
+     *
+     * الجداولُ والسجلّ التاريخيّ باقيةٌ بلا مساس (`workOrderDesignRevisions`/`Approvals`)،
+     * فإعادةُ الحارس سطرٌ واحدٌ هنا إن عاد القرار. وما بقي حاجزاً هو `assertNoBlockingTask`
+     * وحده — آليةٌ عامّة لأنواع خدمةٍ يُعلَن حجزُها صراحةً، لا خطوةٌ مفروضة على كلّ طلب.
+     */
 
     const mats = await tx
       .select()
@@ -546,8 +554,7 @@ export async function markWorkOrderReady(
       });
     }
     await assertNoBlockingTask(tx, workOrderId, "ready");
-    // إن حُفظت نسخة أثناء التنفيذ، فاعتماد النسخة السابقة لا ينتقل إليها أبداً.
-    await assertCurrentDesignApproved(tx, workOrderId, "ready");
+    // (حُذف حارسُ اعتماد التصميم — قرار المالك ١/٩/٢٦؛ التعليل في `startWorkOrder` أعلاه.)
     await tx
       .update(workOrders)
       .set({
