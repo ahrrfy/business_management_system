@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -118,9 +119,9 @@ export default function AssetEdit() {
           <div className="space-y-1"><Label htmlFor="name">اسم الأصل *</Label><Input id="name" value={form.name} onChange={(e) => set({ name: e.target.value })} /></div>
           <div className="space-y-1">
             <Label htmlFor="cat">الفئة *</Label>
-            <select id="cat" className={selectClsFull} value={form.category} onChange={(e) => set({ category: e.target.value })}>
+            <AppSelect id="cat" className="h-9" value={form.category} onValueChange={(next) => set({ category: next })}>
               {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="brand">الماركة</Label><Input id="brand" value={form.brand} onChange={(e) => set({ brand: e.target.value })} dir="auto" /></div>
           <div className="space-y-1"><Label htmlFor="serial">الرقم التسلسلي</Label><Input id="serial" value={form.serial} onChange={(e) => set({ serial: e.target.value })} dir="ltr" /></div>

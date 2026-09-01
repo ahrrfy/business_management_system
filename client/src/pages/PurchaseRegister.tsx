@@ -160,10 +160,10 @@ export default function PurchaseRegister() {
           <PeriodFilter value={period} onChange={changePeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => { setBranchId(e.target.value ? Number(e.target.value) : ""); setPage(0); }}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(value) => { setBranchId(value ? Number(value) : ""); setPage(0); }}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">المورّد</label>

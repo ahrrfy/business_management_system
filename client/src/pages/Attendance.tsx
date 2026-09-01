@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -326,22 +327,22 @@ export default function Attendance() {
               <>
                 {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
                 <FilterField label="الموظف">
-                  <select className={selectClsSm} value={f.employeeId} onChange={(e) => setF({ employeeId: e.target.value })} aria-label="الموظف">
+                  <AppSelect className="h-9" value={f.employeeId} onValueChange={(next) => setF({ employeeId: next })} aria-label="الموظف">
                     <option value="">كل الموظفين</option>
                     {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 {/* النطاق — يفتح على «اليوم» بقرار المالك، وبقيةُ التواريخ باستعلامٍ صريح. */}
                 <FilterField label="النطاق">
-                  <select className={selectClsSm} value={range} onChange={(e) => setF({ range: e.target.value })} aria-label="النطاق">
+                  <AppSelect className="h-9" value={range} onValueChange={(next) => setF({ range: next })} aria-label="النطاق">
                     {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 {range === "month" && (
                   <FilterField label="الشهر">
-                    <select className={selectClsSm} value={f.period} onChange={(e) => setF({ period: e.target.value })} aria-label="الشهر">
+                    <AppSelect className="h-9" value={f.period} onValueChange={(next) => setF({ period: next })} aria-label="الشهر">
                       {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                 )}
                 {range === "custom" && (
@@ -362,11 +363,11 @@ export default function Attendance() {
                   </span>
                 )}
                 <FilterField label="المصدر">
-                  <select className={selectClsSm} value={f.source} onChange={(e) => setF({ source: e.target.value })} aria-label="المصدر">
+                  <AppSelect className="h-9" value={f.source} onValueChange={(next) => setF({ source: next })} aria-label="المصدر">
                     <option value="">كل المصادر</option>
                     <option value="fingerprint">بصمة</option>
                     <option value="manual">يدوي</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input type="checkbox" className="size-4" checked={f.reviewOnly === "1"} onChange={(e) => setF({ reviewOnly: e.target.checked ? "1" : "" })} />
@@ -511,10 +512,10 @@ export default function Attendance() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="att-emp">الموظف</Label>
-              <select id="att-emp" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm" value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })}>
+              <AppSelect id="att-emp" className="h-9 -input px-2 text-sm" value={form.employeeId} onValueChange={(next) => setForm({ ...form, employeeId: next })}>
                 <option value="">— اختر موظفاً بالساعة —</option>
                 {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">

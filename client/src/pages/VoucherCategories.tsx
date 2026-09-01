@@ -481,11 +481,11 @@ export default function VoucherCategories() {
             </div>
             <div className="space-y-1">
               <Label>الاتجاه *</Label>
-              <select
-                className={selectClsFull}
+              <AppSelect
+                className="h-9"
                 value={direction}
-                onChange={(e) => {
-                  const next = e.target.value as "IN" | "OUT" | "BOTH";
+                onValueChange={(value) => {
+                  const next = value as "IN" | "OUT" | "BOTH";
                   setDirection(next);
                   if (
                     postingRole &&
@@ -498,7 +498,7 @@ export default function VoucherCategories() {
                 <option value="BOTH">قبض وصرف</option>
                 <option value="IN">قبض فقط</option>
                 <option value="OUT">صرف فقط</option>
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1 md:col-span-2">
               <Label>الحساب المحاسبي المقابل *</Label>

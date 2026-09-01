@@ -310,16 +310,16 @@ export default function ARReminders() {
       {isAdmin && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-muted-foreground">النطاق:</span>
-          <select
+          <AppSelect
             value={effectiveScope === "opening" ? "opening" : String(effectiveScope ?? "")}
-            onChange={(e) => setScope(e.target.value === "opening" ? "opening" : Number(e.target.value))}
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onValueChange={(value) => setScope(value === "opening" ? "opening" : Number(value))}
+            className="h-9 -input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {(branches.data ?? []).map((b) => (
               <option key={b.id} value={b.id}>{b.name}</option>
             ))}
             <option value="opening">مدينو الرصيد الافتتاحي (كل الفروع)</option>
-          </select>
+          </AppSelect>
           {effectiveScope === "opening" && (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Landmark className="size-3.5" aria-hidden />

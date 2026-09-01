@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -109,22 +110,22 @@ export default function Employees() {
               <>
                 {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
                 <FilterField label="القسم">
-                  <select className={selectClsSm} value={f.department} onChange={(e) => { setF({ department: e.target.value }); }} aria-label="القسم">
+                  <AppSelect className="h-9" value={f.department} onValueChange={(next) => { setF({ department: next }); }} aria-label="القسم">
                     <option value="">كل الأقسام</option>
                     {HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="الفرع">
-                  <select className={selectClsSm} value={f.branchId} onChange={(e) => { setF({ branchId: e.target.value }); }} aria-label="الفرع">
+                  <AppSelect className="h-9" value={f.branchId} onValueChange={(next) => { setF({ branchId: next }); }} aria-label="الفرع">
                     <option value="">كل الفروع</option>
                     {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="الحالة">
-                  <select className={selectClsSm} value={f.status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
+                  <AppSelect className="h-9" value={f.status} onValueChange={(next) => setStatus(next)} aria-label="الحالة">
                     <option value="">كل الحالات</option>
                     {EMPLOYMENT_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input type="checkbox" className="size-4" checked={includeInactive} onChange={(e) => setF({ includeInactive: e.target.checked ? "1" : "" })} />

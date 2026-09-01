@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
@@ -81,22 +82,22 @@ export default function AssetRegister() {
                 {/* FilterField يُظهر التسمية دائماً بصرياً — aria-label وحده لا يُرى إلا في قارئ الشاشة
                     فيضيع معنى الحقل للمستخدم البصريّ عند الاختيار (نمط PR #559/#566). */}
                 <FilterField label="الفئة">
-                  <select className={selectClsSm} value={f.category} onChange={(e) => setF({ category: e.target.value })} aria-label="الفئة">
+                  <AppSelect className="h-9" value={f.category} onValueChange={(next) => setF({ category: next })} aria-label="الفئة">
                     <option value="">كل الفئات</option>
                     {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="الفرع">
-                  <select className={selectClsSm} value={f.branchId} onChange={(e) => setF({ branchId: e.target.value })} aria-label="الفرع">
+                  <AppSelect className="h-9" value={f.branchId} onValueChange={(next) => setF({ branchId: next })} aria-label="الفرع">
                     <option value="">كل الفروع</option>
                     {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="الحالة">
-                  <select className={selectClsSm} value={f.status} onChange={(e) => setF({ status: e.target.value })} aria-label="الحالة">
+                  <AppSelect className="h-9" value={f.status} onValueChange={(next) => setF({ status: next })} aria-label="الحالة">
                     <option value="">كل الحالات</option>
                     {ASSET_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input type="checkbox" className="size-4" checked={f.includeDisposed === "1"} onChange={(e) => setF({ includeDisposed: e.target.checked ? "1" : "" })} />

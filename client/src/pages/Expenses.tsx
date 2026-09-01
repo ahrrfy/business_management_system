@@ -1596,13 +1596,13 @@ export default function Expenses() {
               <Label htmlFor="expense-branch" className="text-xs">
                 الفرع
               </Label>
-              <select
+              <AppSelect
                 id="expense-branch"
-                className={selectClsFull}
-                value={branchId}
-                onChange={(event) =>
+                className="h-9"
+                value={String(branchId)}
+                onValueChange={(value) =>
                   setBranchId(
-                    event.target.value ? Number(event.target.value) : "",
+                    value ? Number(value) : "",
                   )
                 }
               >
@@ -1612,24 +1612,24 @@ export default function Expenses() {
                     {branch.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label htmlFor="expense-status" className="text-xs">
                 الحالة
               </Label>
-              <select
+              <AppSelect
                 id="expense-status"
-                className={selectClsFull}
+                className="h-9"
                 value={status}
-                onChange={(event) => setStatus(event.target.value)}
+                onValueChange={(value) => setStatus(value)}
               >
                 <option value="">كل الحالات</option>
                 <option value="PENDING_APPROVAL">بانتظار اعتماد المالك</option>
                 <option value="ACTIVE">نافذ</option>
                 <option value="REJECTED">مرفوض بلا صرف</option>
                 <option value="CANCELLED">ملغى</option>
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label htmlFor="expense-from" className="text-xs">
@@ -1663,12 +1663,12 @@ export default function Expenses() {
                 <Label htmlFor="expense-category" className="text-xs">
                   الدلو المحاسبي
                 </Label>
-                <select
+                <AppSelect
                   id="expense-category"
-                  className={selectClsFull}
+                  className="h-9"
                   value={category}
-                  onChange={(event) => {
-                    setCategory(event.target.value);
+                  onValueChange={(value) => {
+                    setCategory(value);
                     // الفلتران متداخلان: تغيير الدلو يُبطل فئةً دقيقةً قد لا تنتمي إليه،
                     // وإلّا خرجت النتيجة فارغةً بلا سببٍ ظاهر للمستخدم.
                     setExpenseCategoryId("");
@@ -1680,17 +1680,17 @@ export default function Expenses() {
                       {label}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="expense-managed-category" className="text-xs">
                   الفئة التفصيلية
                 </Label>
-                <select
+                <AppSelect
                   id="expense-managed-category"
-                  className={selectClsFull}
+                  className="h-9"
                   value={expenseCategoryId}
-                  onChange={(event) => setExpenseCategoryId(event.target.value)}
+                  onValueChange={(value) => setExpenseCategoryId(value)}
                 >
                   <option value="">كل الفئات</option>
                   {(expenseCategoryOptions.data ?? [])
@@ -1700,7 +1700,7 @@ export default function Expenses() {
                         {c.name}
                       </option>
                     ))}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="exp-f-method" className="text-xs">

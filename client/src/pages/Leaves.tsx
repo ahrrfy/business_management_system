@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -209,22 +210,22 @@ export default function Leaves() {
                 }}
                 filters={<div className="flex items-end gap-2 flex-wrap">
                   <FilterField label="النوع">
-                    <select className={selectClsSm} value={type} onChange={(e) => setType(e.target.value)} aria-label="النوع">
+                    <AppSelect className="h-9" value={type} onValueChange={(next) => setType(next)} aria-label="النوع">
                       <option value="">كل الأنواع</option>
                       {LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.key}</option>)}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                   <FilterField label="الحالة">
-                    <select className={selectClsSm} value={status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
+                    <AppSelect className="h-9" value={status} onValueChange={(next) => setStatus(next)} aria-label="الحالة">
                       <option value="">كل الحالات</option>
                       {LEAVE_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                   <FilterField label="الموظف">
-                    <select className={selectClsSm} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
+                    <AppSelect className="h-9" value={empFilter} onValueChange={(next) => setEmpFilter(next)} aria-label="الموظف">
                       <option value="">كل الموظفين</option>
                       {(empOpts.data?.managers ?? []).map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                   <FilterField label="من تاريخ">
                     <Input type="date" dir="ltr" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} className="h-8 w-36" aria-label="من تاريخ" />
@@ -392,18 +393,18 @@ export default function Leaves() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="lv-emp">الموظف</Label>
-              <select id="lv-emp" className={selectClsSm + " w-full h-9"} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+              <AppSelect id="lv-emp" className={selectClsSm + " w-full h-9"} value={employeeId} onValueChange={(next) => setEmployeeId(next)}>
                 <option value="">— اختر الموظف —</option>
                 {(empOpts.data?.managers ?? []).map((m) => (
                   <option key={m.id} value={String(m.id)}>{m.name}{m.position ? ` — ${m.position}` : ""}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label htmlFor="lv-type">نوع الإجازة</Label>
-              <select id="lv-type" className={selectClsSm + " w-full h-9"} value={leaveType} onChange={(e) => setLeaveType(e.target.value)}>
+              <AppSelect id="lv-type" className={selectClsSm + " w-full h-9"} value={leaveType} onValueChange={(next) => setLeaveType(next)}>
                 {LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.key}{t.paid ? "" : " (غير مدفوعة)"}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">

@@ -287,10 +287,10 @@ export default function Payroll() {
         description="مسيّر استحقاقي شهري: الاعتماد يثبت تكلفة العمل والتزاماتها، ثم تُسوّى الرواتب والضريبة والضمان بمسارات دفع مستقلة."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
-            <select
-              className={selectClsSm}
+            <AppSelect
+              className="h-9"
               value={effectiveId != null ? String(effectiveId) : ""}
-              onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
+              onValueChange={(next) => setSelectedId(next ? Number(next) : null)}
               aria-label="المسيّر"
             >
               {runs.length === 0 && <option value="">لا مسيّرات</option>}
@@ -299,7 +299,7 @@ export default function Payroll() {
                   مسيّر {r.period} — {accrualStatusLabel(r.status)}
                 </option>
               ))}
-            </select>
+            </AppSelect>
             <Button onClick={() => setGenOpen(true)} disabled={busy}>
               <Plus className="size-4" /> توليد مسيّر
             </Button>

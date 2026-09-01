@@ -2,6 +2,7 @@
 // managerProcedure). خمسة أقسام: الإعدادات العامّة (وضع/هامش/تجهيز) + أسعار الوجه (مقاس×نمط) +
 // الورق المميّز + الوسائط العريضة + خيارات التشطيب. كل حقل ماليّ عبر MoneyInput (قيمة خام للإرسال).
 import { useEffect, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { Plus, Trash2, Edit3, X, Check, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -99,15 +100,15 @@ function GeneralSettings({
       <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="space-y-1">
           <Label>وضع التسعير</Label>
-          <select
-            className={selectClsFull}
+          <AppSelect
+            className="h-9"
             value={form.pricingMode}
-            onChange={(e) => setForm({ ...form, pricingMode: e.target.value as PricingMode })}
+            onValueChange={(next) => setForm({ ...form, pricingMode: next as PricingMode })}
           >
             {PRICING_MODES.map((m) => (
               <option key={m} value={m}>{PRICING_MODE_AR[m]}</option>
             ))}
-          </select>
+          </AppSelect>
         </div>
         <div className="space-y-1">
           <Label>نسبة الهامش الافتراضية ٪</Label>
@@ -188,12 +189,12 @@ function FacePricesSection({
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
-          <select className={selectClsFull} value={mode} onChange={(e) => setMode(e.target.value as ColorMode)} aria-label="النمط">
+          <AppSelect className="h-9" value={mode} onValueChange={(next) => setMode(next as ColorMode)} aria-label="النمط">
             {COLOR_MODES.map((m) => <option key={m} value={m}>{COLOR_MODE_AR[m]}</option>)}
-          </select>
-          <select className={selectClsFull} value={size} onChange={(e) => setSize(e.target.value as PaperSizeCode)} aria-label="المقاس">
+          </AppSelect>
+          <AppSelect className="h-9" value={size} onValueChange={(next) => setSize(next as PaperSizeCode)} aria-label="المقاس">
             {PAPER_SIZES.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
-          </select>
+          </AppSelect>
           <MoneyInput value={price} onChange={setPrice} ariaLabel="سعر الوجه" placeholder="سعر الوجه" />
           <Button onClick={submit} disabled={upsert.isPending} className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90">
             <Plus aria-hidden className="size-4 ms-1" /> حفظ السعر
@@ -318,9 +319,9 @@ function ManagedListSection({
         <div className={`grid grid-cols-1 gap-2 ${unitOptions ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم" />
           {unitOptions && (
-            <select className={selectClsFull} value={unit} onChange={(e) => setUnit(e.target.value)} aria-label={unitLabel}>
+            <AppSelect className="h-9" value={unit} onValueChange={(next) => setUnit(next)} aria-label={unitLabel}>
               {unitOptions.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
-            </select>
+            </AppSelect>
           )}
           <MoneyInput value={money} onChange={setMoney} ariaLabel={moneyLabel} placeholder={moneyLabel} />
           <div className="flex gap-1">

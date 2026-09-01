@@ -665,17 +665,17 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>الفرع *</Label>
-              <select
-                className={selectCls}
-                value={branchId}
-                onChange={(e) => setBranchId(Number(e.target.value))}
+              <AppSelect
+                className="h-9"
+                value={String(branchId)}
+                onValueChange={(value) => setBranchId(Number(value))}
               >
                 {(branches.data ?? []).map((b) => (
                   <option key={Number(b.id)} value={Number(b.id)}>
                     {b.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label>المبلغ * (IQD)</Label>
@@ -711,11 +711,11 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             </div>
             <div className="space-y-1">
               <Label>طريقة الدفع *</Label>
-              <select className={selectCls} value={method} onChange={(e) => setMethod(e.target.value as MethodValue)}>
+              <AppSelect className="h-9" value={method} onValueChange={(value) => setMethod(value as MethodValue)}>
                 {METHODS.map((m) => (
                   <option key={m.value} value={m.value} disabled={!isInboundPaymentMethodEnabled(m.value)}>{m.label}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
 
             {(method === "TRANSFER" ||
@@ -768,14 +768,14 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   </Button>
                 )}
               </div>
-              <select
-                className={selectCls}
+              <AppSelect
+                className="h-9"
                 value={
                   voucherCategoryId === "" ? "" : String(voucherCategoryId)
                 }
-                onChange={(e) =>
+                onValueChange={(value) =>
                   setVoucherCategoryId(
-                    e.target.value === "" ? "" : Number(e.target.value),
+                    value === "" ? "" : Number(value),
                   )
                 }
               >
@@ -804,7 +804,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                       : ` — ${voucherCategoryRoleLabel(c.postingRole)}`}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
               {/* حقلٌ إلزاميّ بقائمةٍ فارغة = طريقٌ مسدود. حين لا توجد ولا فئةٌ جاهزة لهذا الاتجاه
                   نقول ذلك صراحةً ونعرض المخرجين: إنشاء فئة الآن، أو استعادة الكتالوج الافتراضي. */}
               {partyType === "OTHER" && readyCategoryCount === 0 && !categories.isLoading && (
@@ -868,11 +868,11 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           <CardContent className="grid grid-cols-1 gap-3">
             <div className="space-y-1">
               <Label>نوع الطرف *</Label>
-              <select
-                className={selectCls}
+              <AppSelect
+                className="h-9"
                 value={partyType}
-                onChange={(e) => {
-                  const v = e.target.value as typeof partyType;
+                onValueChange={(value) => {
+                  const v = value as typeof partyType;
                   setPartyType(v);
                   setCustomerId(null);
                   setSupplierId(null);
@@ -884,7 +884,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 </option>
                 <option value="CUSTOMER">عميل</option>
                 <option value="SUPPLIER">مورّد</option>
-              </select>
+              </AppSelect>
               <p className="text-xs text-muted-foreground">
                 {partyType === "OTHER" &&
                   "لا تأثير على الذمم — تأثير على الصندوق/الدفتر فقط."}

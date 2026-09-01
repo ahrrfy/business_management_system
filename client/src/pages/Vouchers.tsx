@@ -701,33 +701,33 @@ export default function Vouchers() {
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
           <FilterField label="النوع">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.type}
-              onChange={(e) => applyFilter({ type: e.target.value })}
+              onValueChange={(value) => applyFilter({ type: value })}
             >
               <option value="">الكل</option>
               <option value="RECEIPT">قبض</option>
               <option value="PAYMENT">صرف</option>
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="الطرف">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.party}
-              onChange={(e) => applyFilter({ party: e.target.value })}
+              onValueChange={(value) => applyFilter({ party: value })}
             >
               <option value="">الكل</option>
               <option value="CUSTOMER">عميل</option>
               <option value="SUPPLIER">مورّد</option>
               <option value="OTHER">أخرى</option>
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="طريقة الدفع">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.method}
-              onChange={(e) => applyFilter({ method: e.target.value })}
+              onValueChange={(value) => applyFilter({ method: value })}
             >
               <option value="">الكل</option>
               <option value="CASH">نقدي</option>
@@ -737,13 +737,13 @@ export default function Vouchers() {
               <option value="TRANSFER">تحويل</option>
               <option value="WALLET">محفظة</option>
               <option value="EXCHANGE">صيرفة</option>
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="الاعتماد">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.approval}
-              onChange={(e) => applyFilter({ approval: e.target.value })}
+              onValueChange={(value) => applyFilter({ approval: value })}
             >
               <option value="">الكل</option>
               <option value="APPROVED">
@@ -761,7 +761,7 @@ export default function Vouchers() {
                     : "بانتظار الاعتماد / الصرف"}
               </option>
               <option value="REJECTED">مَرفوض</option>
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="حالة السند">
             <AppSelect
@@ -795,10 +795,10 @@ export default function Vouchers() {
             </FilterField>
           )}
           <FilterField label="الفئة">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.cat}
-              onChange={(e) => applyFilter({ cat: e.target.value })}
+              onValueChange={(value) => applyFilter({ cat: value })}
             >
               <option value="">الكل</option>
               {(categories.data ?? []).map((c) => (
@@ -806,7 +806,7 @@ export default function Vouchers() {
                   {c.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="من تاريخ">
             <Input

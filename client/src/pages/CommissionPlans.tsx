@@ -7,6 +7,7 @@
 // لغة الواجهة مبسَّطة عمداً (٣١/٧): «شريحة»→«مستوى»، «عتبة»→«حدّ»، «نمط»→«طريقة الاحتساب»،
 // «إسناد»→«ربط». المصطلحات التقنية تبقى في الكود والخادم — الشاشة تخاطب مستخدم المتجر.
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -369,14 +370,14 @@ export default function CommissionPlans() {
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium">طريقة الاحتساب</label>
-                <select
+                <AppSelect
                   value={fMode}
-                  onChange={(e) => setFMode(e.target.value as TierMode)}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+                  onValueChange={(next) => setFMode(next as TierMode)}
+                  className="h-9 -input px-3 text-sm"
                 >
                   <option value="TARGET_PCT">حسب نسبة تحقيق الهدف — يلزم تحديد هدف شهري لكل موظف</option>
                   <option value="AMOUNT_SLAB">حسب مبلغ المبيعات — بلا حاجة إلى هدف</option>
-                </select>
+                </AppSelect>
               </div>
             </div>
 
@@ -522,17 +523,17 @@ export default function CommissionPlans() {
                     </td>
                     <td className="p-2">
                       {canManageAssignments ? (
-                        <select
+                        <AppSelect
                           value={draftPlan[r.employeeId] ?? ""}
-                          onChange={(e) => setDraftPlan((prev) => ({ ...prev, [r.employeeId]: e.target.value }))}
-                          className="h-8 w-44 rounded-md border border-input bg-transparent px-2 text-xs shadow-sm"
+                          onValueChange={(next) => setDraftPlan((prev) => ({ ...prev, [r.employeeId]: next }))}
+                          className="h-8 w-44 -input px-2 text-xs"
                           aria-label={`خطة ${r.employeeName}`}
                         >
                           <option value="">اختر خطة…</option>
                           {activePlans.map((p) => (
                             <option key={p.id} value={p.id}>{p.name}</option>
                           ))}
-                        </select>
+                        </AppSelect>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}
