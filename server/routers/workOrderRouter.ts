@@ -451,15 +451,28 @@ function maySeeDrawerCash(user: { role?: string | null; permissionsOverride?: un
 }
 
 export const workOrderRouter = router({
-  controlPreflight: workordersCashierProcedure
+  /**
+   * ⚠️ **بوّابةُ التمهيد = بوّابةُ أوسعِ فعلٍ يقودُ إليه** (`workordersExecProcedure`، ١/٩/٢٦):
+   * فنّي المطبعة صار يملك **طلبَ الإلغاء** (قرار المالك)، وتمهيدُه هو ما يُخبره أيحتاج اعتماد
+   * مديرٍ أم لا. إبقاؤه على بوّابة الكاشير كان يُنتج FORBIDDEN ⇒ زرٌّ ظاهرٌ لا يفعل شيئاً —
+   * نفسُ عطب «الشاشة تحجب ما يملكه الخادم» (#911). وحجبُ أرصدة الأدراج ليس شأنَ هذه النقطة:
+   * منتقي الدرج يقرأ `refundPreflight` الذي يُخفي الرقمَ عمّن لا يملك `treasury:READ`.
+   */
+  controlPreflight: workordersExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .query(({ input, ctx }) => getWorkOrderControlPreflight(input.workOrderId, {
       userId: ctx.user.id,
       branchId: ctx.user.branchId ?? 0,
       role: ctx.user.role,
+      permissionsOverride: ctx.user.permissionsOverride,
     })),
 
-  requestControl: workordersCashierProcedure
+  /**
+   * `workordersExecProcedure` ثمّ **تضييقٌ داخل الخدمة بحسب نوع الطلب**: الإلغاءُ وحده مفتوحٌ
+   * لفنّي المطبعة، والتعديلُ التجاريّ/المادّيّ وعكسُ التسليم يبقى على كاشير/مدير
+   * (`mayRequestWorkOrderControl`). التضييقُ في الخدمة لا في الراوتر كي لا تُعمى قناةٌ أخرى.
+   */
+  requestControl: workordersExecProcedure
     .input(z.discriminatedUnion("requestType", [
       z.object({
         requestType: z.literal("COMMERCIAL_EDIT"),
@@ -498,6 +511,7 @@ export const workOrderRouter = router({
       userId: ctx.user.id,
       branchId: ctx.user.branchId ?? 0,
       role: ctx.user.role,
+      permissionsOverride: ctx.user.permissionsOverride,
     })),
 
   pendingControlRequests: workordersManagerProcedure.query(({ ctx }) =>
@@ -1723,7 +1737,14 @@ export const workOrderRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
     }),
 
-  cancel: workordersManagerProcedure
+  /**
+   * **الإلغاءُ المباشر** — `workordersExecProcedure` بقرار المالك (١/٩/٢٦): فنّي المطبعة أوّلُ
+   * من يتحدّث مع العميل عن الطلب، وإليه يتّصل ليُلغي. والحدُّ الفاصلُ ليس الدورَ بل **المال**:
+   * `cancelWorkOrderInTx` يرفض أيَّ إلغاءٍ مباشر فيه عربونٌ أو مقبوضٌ أو أمانةُ أجرة، أو بدأ
+   * إنتاجُه — فيُحال إلى `requestControl` ليعتمده مديرٌ يردّ المبلغ من درجه. بوّابةُ المدير
+   * القائمة (`riskyCancellation`) لم تُمَسّ حرفاً.
+   */
+  cancel: workordersExecProcedure
     .input(z.object({
       workOrderId: z.number().int().positive(),
       expectedVersion: z.number().int().positive(),
@@ -1750,7 +1771,12 @@ export const workOrderRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await cancelWorkOrder(
         input.workOrderId,
-        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId ?? 1,
+          role: ctx.user.role,
+          permissionsOverride: ctx.user.permissionsOverride,
+        },
         {
           refundShiftId: input.refundShiftId ?? null,
           // ⚠️ كان هذان مفقودَين فتسقط الميزةُ كلُّها صامتةً إلى `DRAWER` (مراجعة Codex P1):
@@ -1800,12 +1826,15 @@ export const workOrderRouter = router({
    * **تمهيدُ الاسترداد** — تسأله الشاشةُ قبل فتح حوار الإلغاء/الاسترجاع فتعرف يقيناً: هل يخرج
    * نقد؟ كم؟ وما الأدراج المؤهَّلة في **فرع الأمر**؟
    *
-   * ⚠️ **بوّابتُه بوّابةُ الفعل نفسها** (`workordersManagerProcedure`) لا `treasury:READ`:
-   * كان المنتقي يقرأ `treasury.getOpenShifts`، فدورٌ مخوَّلٌ للإلغاء وممنوعٌ من الخزينة يتلقّى
-   * FORBIDDEN ⇒ قائمةٌ فارغة ⇒ **فعلُه المصرَّح به معطَّلٌ نهائياً** (مراجعة Codex P1 #920).
-   * ولا يُسرّب سطحَ الخزينة: يُعيد أدراجَ هذا الفرع وحدها بما يلزم للاختيار.
+   * ⚠️ **بوّابتُه بوّابةُ الفعل نفسها** لا `treasury:READ`: كان المنتقي يقرأ
+   * `treasury.getOpenShifts`، فدورٌ مخوَّلٌ للإلغاء وممنوعٌ من الخزينة يتلقّى FORBIDDEN ⇒
+   * قائمةٌ فارغة ⇒ **فعلُه المصرَّح به معطَّلٌ نهائياً** (مراجعة Codex P1 #920).
+   *
+   * ولمّا صار الإلغاءُ نفسه `workordersExecProcedure` (فنّي المطبعة، قرار المالك ١/٩/٢٦)
+   * تبعته البوّابةُ هنا حرفياً — وإلّا عاد العطبُ نفسه لفاعلٍ جديد. ولا يُسرّب سطحَ الخزينة:
+   * `exposeCash` يحجب **الرقم** عمّن لا يملك `treasury:READ` ويُبقي له علَمَ الكفاية وحده.
    */
-  refundPreflight: workordersManagerProcedure
+  refundPreflight: workordersExecProcedure
     .input(z.object({
       workOrderId: z.number().int().positive(),
       operation: z.enum(["CANCEL", "REVERSE_DELIVERY"]),

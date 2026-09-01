@@ -14,6 +14,11 @@ import { extractInsertId } from "../../lib/insertId";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { idempotencyHash } from "../idempotency";
+import {
+  mayRequestWorkOrderControl,
+  workOrderControlDeniedMessage,
+  type WorkOrderControlTypeKey,
+} from "@shared/workOrderControlAuthority";
 import { money, round2 } from "../money";
 import type { RefundRail } from "@shared/refundRail";
 import { type Actor, requireDb, withTx } from "../tx";
@@ -84,6 +89,25 @@ function normalizedReason(reason: string, label = "الطلب"): string {
   return normalized;
 }
 
+/** فاعلُ التحكّم — يحمل قالبَ دوره وتجاوزَه معاً كي تُقرأ سلطتُه من القاموس المشترك. */
+export type WorkOrderControlActor = Actor & {
+  role?: string;
+  permissionsOverride?: unknown;
+};
+
+/**
+ * بوّابةُ نوع الطلب (١/٩/٢٦): الإلغاءُ وحده مفتوحٌ لفنّي المطبعة، وما سواه على كاشير/مدير.
+ * تُفرَض هنا لا في الراوتر وحده — الخدمةُ قد تُستدعى من قناةٍ أخرى (أوفلاين/أندرويد).
+ */
+function assertControlRequestAuthority(
+  requestType: WorkOrderControlTypeKey,
+  actor: WorkOrderControlActor,
+): void {
+  if (!mayRequestWorkOrderControl(requestType, actor.role ?? "", (actor.permissionsOverride ?? null) as never)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: workOrderControlDeniedMessage(requestType) });
+  }
+}
+
 function assertManager(actor: Actor): void {
   if (actor.role !== "manager" && actor.role !== "admin") {
     throw new TRPCError({ code: "FORBIDDEN", message: "مراجعة طلبات التحكم محصورة بمدير أو أدمن" });
@@ -122,8 +146,9 @@ async function loadExistingByKey(tx: Tx, requestKey: string) {
 
 export async function requestWorkOrderControl(
   input: RequestWorkOrderControlInput,
-  actor: Actor & { role?: string },
+  actor: WorkOrderControlActor,
 ) {
+  assertControlRequestAuthority(input.requestType, actor);
   const requestKey = input.requestKey.trim();
   if (!requestKey || requestKey.length > 120) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح طلب التحكم مطلوب وبحد أقصى 120 محرفاً" });
@@ -457,7 +482,7 @@ export async function rejectWorkOrderControlRequest(
 
 export async function getWorkOrderControlPreflight(
   workOrderId: number,
-  actor: Actor & { role?: string },
+  actor: WorkOrderControlActor,
 ) {
   return withTx(async (tx) => {
     const wo = (
@@ -507,6 +532,18 @@ export async function getWorkOrderControlPreflight(
       feeHeld: feeHeld.toFixed(2),
       cashRefundRequired: cashRefund.gt(0) || appliedCashRefund.gt(0) || feeHeld.gt(0),
       expectedCashRefund: round2(cashRefund.plus(appliedCashRefund).plus(feeHeld)).toFixed(2),
+      /**
+       * **هل في الإلغاء مالٌ فعلاً؟** (قرار المالك ١/٩/٢٦) — هذا وحده ما يستدعي مديراً حين
+       * يطلب فنّي المطبعة الإلغاء. متعمَّدٌ **ألّا** يكون مرادفاً لـ`controlRequired.cancel`:
+       * تلك تشترط زيادةً خلوَّ الأمر من أسطر خامةٍ ولو لم تُستهلَك بعد، وهو تشدّدٌ بلا أثرٍ
+       * في `RECEIVED` (الإلغاء لا يمسّ المخزون إلّا من `IN_PROGRESS`/`READY`). فصلُهما يُبقي
+       * بوّابةَ المدير كما هي حرفياً بينما يصير شرطُ الفنّي هو شرطَ المالك نصّاً.
+       */
+      cancelMoneyAtStake:
+        money(wo.deposit ?? "0").gt(0) ||
+        appliedDeposits.length > 0 ||
+        cashRefund.gt(0) ||
+        feeHeld.gt(0),
       controlRequired: {
         commercial:
           wo.status !== "RECEIVED" ||

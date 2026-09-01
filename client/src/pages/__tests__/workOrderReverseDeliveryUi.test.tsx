@@ -7,7 +7,11 @@ describe("واجهة عكس التسليم من تفاصيل أمر الشغل",
   it("تستعمل طلب التحكم الموحد ولا تستدعي الكاتب الفوري", () => {
     expect(page).toContain("<ReverseDeliveryRequestDialog");
     expect(page).toContain('data.status === "DELIVERED"');
-    expect(page).toContain("canRequestControl");
+    // ١/٩/٢٦: انقسمت سلطةُ التحكّم — الإلغاءُ صار لأدوار التنفيذ (فنّي المطبعة) بينما
+    // **عكسُ التسليم يبقى تجارياً** (كاشير/مدير). الحارسُ يتبع الاسم الجديد كي لا يُثبّت
+    // البوّابةَ القديمة على الزرّ الخطأ.
+    expect(page).toContain("canRequestCommercialControl && data.status === \"DELIVERED\"");
+    expect(page).toContain("mayRequestWorkOrderControl(\"COMMERCIAL_EDIT\"");
     expect(page).not.toContain("trpc.workOrders.reverseDelivery.useMutation");
     expect(page).not.toContain("trpc.workOrders.reverseServiceInvoice.useMutation");
   });
