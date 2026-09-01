@@ -29,7 +29,7 @@ export async function captureRejectedReplay(
   rejectCode: string,
   rejectReason: string,
   submittedByUserId: number,
-  channel: "RETAIL" | "PRINT" | "RECEPTION" = "RETAIL",
+  channel: "RETAIL" | "PRINT" | "RECEPTION" | "RETURN" = "RETAIL",
 ): Promise<void> {
   try {
     const db = requireDb();
@@ -74,7 +74,7 @@ export interface RecoveryQueueRow {
   rejectCode: string;
   rejectReason: string | null;
   ageDays: number;
-  channel: "RETAIL" | "PRINT" | "RECEPTION";
+  channel: "RETAIL" | "PRINT" | "RECEPTION" | "RETURN";
   /** الترحيل الآليّ لبيع التجزئة وحده؛ البقيّة تُعرَض للرصد وتُسوَّى يدوياً. */
   postable: boolean;
 }

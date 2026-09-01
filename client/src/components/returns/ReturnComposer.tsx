@@ -31,6 +31,8 @@ import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { computeReturnTotal } from "@/lib/returnTotal";
 import { trpc } from "@/lib/trpc";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineReturn, isOfflineSaleEnabled } from "@/lib/offline/outbox";
+import { notify } from "@/lib/notify";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
 type RefundRail = "CASH" | "CARD";
@@ -222,6 +224,66 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     onError: (e) => setError(e.message),
   });
 
+  /**
+   * ⭐ **التقاطُ مرتجعٍ نقديّ عند فشل النقل فعلاً** (تدقيق ١/٩/٢٦ — البند الرابع).
+   *
+   * كان الأوفلاين بلا مرتجعٍ ولا طابور، فالزبونُ يعود ببضاعته أثناء الانقطاع ولا مسارَ أمام
+   * الموظّف إلّا الدفعُ من خارج النظام والتسجيلُ لاحقاً — مصدرُ النقد اليتيم والعجز غير
+   * المفسَّر في Z-report. الالتقاطُ يجعل الدينارَ موثَّقاً من لحظته.
+   *
+   * ⛔ **حدودٌ صريحة، ولا واحدٌ منها تجميليّ:**
+   *  · **عند فشل النقل حصراً** (`Failed to fetch`) لا بالاختيار — نفس عقد الكاشير.
+   *  · **نقدٌ فقط** (`rail === "CASH"`) — البطاقة تحتاج جهازاً والآجل يحتاج سقفاً حيّاً.
+   *  · **المالك وحده**: التنفيذ الفوريّ سلطتُه، والتقاطُ «طلبٍ» يترك النقدَ بلا مستند.
+   *  · صمّاما الكاشير نفساهما: عمرُ اللقطة ≤٤٨س وسقفُ الطابور (`assertCanCapture`).
+   *  · **السقفُ الماليّ يُقيَّم خادمياً عند الترحيل** — رفضُه يُعلّق العنصر في طابور
+   *    الاسترداد بقناة RETURN لمراجعة المدير، فيصير العجزُ موثَّقاً بمستندٍ لا ضياعاً صامتاً.
+   */
+  async function captureOfflineReturn(): Promise<boolean> {
+    if (!inv || !executesImmediately || rail !== "CASH" || !refundD.gt(0)) return false;
+    if (!(await isOfflineSaleEnabled())) {
+      notify.errBig(
+        "العمل دون اتصال مُعطَّل على هذا الجهاز",
+        "عُطِّل يدوياً من «إعدادات الجهاز» في شارة المزامنة — أعِد تفعيله ليقبل المرتجع أثناء الانقطاع.",
+      );
+      return false;
+    }
+    const gate = await assertCanCapture(refundD.toNumber());
+    if (!gate.ok) {
+      notify.errBig(gate.reason);
+      return false;
+    }
+    const receiptNumber = await allocateOfflineReceiptNumber(inv.branchId);
+    const ok = await enqueueOfflineReturn({
+      payload: {
+        branchId: inv.branchId,
+        shiftId: shiftId ?? null,
+        invoiceId: inv.id,
+        lines: selectedLines,
+        refund: {
+          amount: round2(refundD).toFixed(2),
+          method: "CASH",
+          ...(shiftId != null ? { shiftId } : {}),
+        },
+        restock,
+        reason: reason.trim(),
+        clientRequestId,
+      },
+      offlineReceiptNumber: receiptNumber,
+      total: round2(refundD).toFixed(2),
+    });
+    if (!ok) {
+      notify.errBig("تعذّر حفظ المرتجع في طابور المزامنة — لا تُسلّم النقد قبل نجاح الحفظ.");
+      return false;
+    }
+    setDone(`التُقط المرتجع دون اتصال برقم ${receiptNumber} — يُرحَّل تلقائياً عند عودة الشبكة.`);
+    setQty({});
+    setManualAmount(null);
+    setReason("");
+    setClientRequestId(crypto.randomUUID());
+    return true;
+  }
+
   const create = trpc.returns.create.useMutation({
     onSuccess: async (res) => {
       /**
@@ -246,7 +308,18 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         onDone?.({ fullyReturned: !!res.fullyReturned, returnedTotal: String(res.returnedTotal ?? "0") });
       }
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      // انقطاعُ الشبكة ≠ رفضُ أعمال: الأوّل يُلتقَط، والثاني يُعرَض. الخلطُ بينهما يبتلع
+      // رفضاً مشروعاً في طابورٍ أو يُفقد نقداً خرج فعلاً.
+      const isTransport = /Failed to fetch|NetworkError|Load failed|ERR_INTERNET_DISCONNECTED/i.test(e.message);
+      if (isTransport) {
+        void captureOfflineReturn().then((captured) => {
+          if (!captured) setError(e.message);
+        });
+        return;
+      }
+      setError(e.message);
+    },
   });
 
   function setQtyClamped(itemId: number, next: number, remaining: number) {
@@ -272,6 +345,14 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
   /** الطلب المعلّق على هذه الفاتورة (الحوكميّ أو القديم) — الخادم مصدرُه، لا اشتقاقٌ في الشاشة. */
   const pending = inv?.pendingRequest ?? null;
   const needsShift = rail === "CASH" && refundD.gt(0);
+  /**
+   * بلا ورديةٍ مفتوحة يخرج النقدُ من **الخزينة** للإداريّ (استثناءٌ مصنَّف خادمياً
+   * `SALE_RETURN_COMPENSATION`، تدقيق ١/٩/٢٦). قبله كان الحفظُ محجوباً كلّياً خارج ساعات
+   * الوردية، فيدفع الموظّف من جيبه ويسجّل غداً — وهو مصدرُ النقد اليتيم والعجز في Z-report.
+   * ⚠️ الحكمُ النهائيّ خادميّ (`shiftIdForCashTx` يرفض الكاشير بلا وردية)؛ هذا مرآتُه.
+   */
+  const canDrawFromTreasury = me.data?.role === "admin" || me.data?.role === "manager";
+  const usesTreasury = needsShift && shifts.length === 0 && canDrawFromTreasury;
   const needsReference = rail === "CARD" && refundD.gt(0);
   const selectedShift = shifts.find((s) => Number(s.shiftId) === Number(shiftId));
   /**
@@ -297,17 +378,18 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     // حجبُ الرافد يسري على ردٍّ **موجب** فقط — لا معنى لسقفٍ حين لا يخرج مال.
     if (!noRefundNeeded && activeOption?.blockedReason) return activeOption.blockedReason;
     if (overCap) return `المبلغ يتجاوز المسموح (${fmt(railCap.toFixed(2))} د.ع).`;
-    if (needsShift && !shifts.length) return isWalkIn
+    if (needsShift && !shifts.length && !canDrawFromTreasury) return isWalkIn
       ? "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية لردّ المبلغ كاملاً قبل تسجيل مرتجع الزبون العابر."
       : "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية أو استردّ على البطاقة.";
-    if (needsShift && shiftId == null) return "حدّد الدرج الذي سيخرج منه النقد فعلياً.";
+    // الدرجُ إلزاميّ حين يوجد درجٌ مفتوح فعلاً؛ وبلا درجٍ يتولّى الخادمُ التوجيه إلى الخزينة.
+    if (needsShift && shifts.length > 0 && shiftId == null) return "حدّد الدرج الذي سيخرج منه النقد فعلياً.";
     if (needsShift && selectedShift && D(selectedShift.expectedCash).lt(refundD)) {
       return `الدرج المحدّد لا يحمل المبلغ كاملاً (المتاح ${fmt(selectedShift.expectedCash)} د.ع). اختر درجاً صالحاً أو موّله أولاً.`;
     }
     if (needsReference && !cardReference.trim()) return "أدخِل مرجع عملية الاسترداد من جهاز الدفع.";
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, pending, approvingRequestId, lockedLines, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, needsShift, shifts.length, shiftId, selectedShift, refundD, needsReference, cardReference, reason]);
+  }, [isLocked, pending, approvingRequestId, lockedLines, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, needsShift, canDrawFromTreasury, shifts.length, shiftId, selectedShift, refundD, needsReference, cardReference, reason]);
 
   async function submit() {
     setError("");
@@ -318,7 +400,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
       ? {
           amount: round2(refundD).toFixed(2),
           method: rail,
-          ...(rail === "CASH" ? { shiftId: shiftId! } : {}),
+          ...(rail === "CASH" && shiftId != null ? { shiftId } : {}),
           ...(rail === "CARD" ? { reference: cardReference.trim() } : {}),
         }
       : undefined;
@@ -327,17 +409,18 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
           kind: "IMMEDIATE_REFUND" as const,
           method: "CASH" as const,
           amount: round2(returnValue).toFixed(2),
-          shiftId: shiftId!,
+          ...(shiftId != null ? { shiftId } : {}),
           reason: reason.trim(),
           disposition: restock ? "RESTOCK" as const : "DAMAGED" as const,
         }
       : undefined;
 
     const pieces = selectedLines.reduce((s, l) => s + l.baseQuantity, 0);
+    const cashSource = usesTreasury ? "من خزينة الفرع" : "من الدرج المحدّد";
     const moneySentence = resolution
-      ? `يستلم الزبون العابر ${fmt(resolution.amount)} د.ع نقداً كاملاً من الدرج المحدّد`
+      ? `يستلم الزبون العابر ${fmt(resolution.amount)} د.ع نقداً كاملاً ${cashSource}`
       : refund
-        ? `يستلم الزبون ${fmt(refund.amount)} د.ع ${RAIL_LABEL[rail]}`
+        ? `يستلم الزبون ${fmt(refund.amount)} د.ع ${rail === "CASH" && usesTreasury ? "نقداً من خزينة الفرع" : RAIL_LABEL[rail]}`
       : "بلا إرجاع نقود (تُخصَم من ذمّة العميل فقط)";
     const stockSentence = restock ? "والبضاعة تعود للرفّ" : "والبضاعة تالفة لا تعود للمخزون";
     const scope = `${selectedLines.length === 1 ? "صنفٌ واحد" : `${selectedLines.length} أصناف`} (${pieces} قطعة)`;
@@ -665,12 +748,24 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
             <div className="space-y-1 rounded-lg border bg-muted/30 p-3 text-xs">
               <div className="mb-1.5 font-bold text-foreground">من أيّ درج يخرج النقد؟</div>
               {shifts.length === 0 ? (
-                <div className="badge-stock-low flex items-start gap-2 rounded-md border px-2.5 py-2">
-                  <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
-                  <span>{isWalkIn
-                    ? "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية وردّ المبلغ كاملاً قبل تسجيل المرتجع."
-                    : "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية، أو استردّ على البطاقة."}</span>
-                </div>
+                usesTreasury ? (
+                  /* المخرجُ المصنَّف: خزينةُ الفرع. يُصرَّح به هنا لا يقع صامتاً — الصرفُ يظهر
+                     في تقرير الخزينة الإداريّة ولا يمسّ تسوية درج أيّ كاشير. */
+                  <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)]/30 px-2.5 py-2">
+                    <AlertTriangle aria-hidden className="size-3.5 shrink-0 text-[var(--sem-warn)]" />
+                    <span>
+                      لا توجد وردية مفتوحة — سيخرج المبلغ من <strong>خزينة الفرع</strong> بصفتك الإداريّة،
+                      بإيصالٍ وقيدٍ على حساب الخزينة. لا يمسّ درج أيّ كاشير ولا تسويته.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="badge-stock-low flex items-start gap-2 rounded-md border px-2.5 py-2">
+                    <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
+                    <span>{isWalkIn
+                      ? "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية وردّ المبلغ كاملاً قبل تسجيل المرتجع."
+                      : "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية، أو استردّ على البطاقة."}</span>
+                  </div>
+                )
               ) : (
                 <AppSelect size="sm" className="text-xs" aria-label="درج الاسترداد"
                   value={shiftId != null ? String(shiftId) : ""}

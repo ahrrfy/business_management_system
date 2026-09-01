@@ -6,6 +6,7 @@ import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { returnSaleAsOwner, returnSaleInTx } from "../services/returnService";
+import { RETURN_EXECUTED_AUDIT_ACTION, type ReturnExecutionMode } from "../services/returns/auditActions";
 import { requestSalesControl } from "../services/sale/controlRequests";
 import { withTx } from "../services/tx";
 import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
@@ -30,7 +31,12 @@ const walkInResolution = z.object({
   // تُبقي الخدمةُ التوجيهَ التجاريّ لطريقةٍ غير CASH؛ enum هنا يمنع القيم المجهولة فقط.
   method,
   amount: nonNegMoneyString,
-  shiftId: z.number().int().positive(),
+  /**
+   * اختياريّ (١/٩/٢٦): بلا وردية مفتوحة يقرّر `shiftIdForCashTx` بالدور — خزينةٌ للإداريّ
+   * (استثناءٌ مصنَّف `SALE_RETURN_COMPENSATION`) ورفضٌ للكاشير. كان إلزامياً فيحجب مرتجع
+   * الزبون العابر النقديّ خارج ساعات الوردية حجباً كاملاً.
+   */
+  shiftId: z.number().int().positive().optional(),
   reason: z.string().trim().min(3, "سبب المرتجع إلزامي (٣ أحرف على الأقل)").max(500),
   disposition: z.enum(["RESTOCK", "DAMAGED"]),
 });
@@ -96,10 +102,11 @@ export const returnRouter = router({
           clientRequestId: clientRequestId ?? randomUUID(),
         }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
         await logAudit(ctx, {
-          action: "return.ownerImmediate",
+          action: RETURN_EXECUTED_AUDIT_ACTION,
           entityType: "invoice",
           entityId: invoiceId,
           newValue: {
+            mode: "OWNER_IMMEDIATE" satisfies ReturnExecutionMode,
             reason,
             lines: input.lines.length,
             returnedTotal: String(executed.returnedTotal ?? "0"),
@@ -270,8 +277,9 @@ export const returnRouter = router({
       }));
       const invoiceId = res.invoiceId;
       await logAudit(ctx, {
-        action: "return.approveRequest", entityType: "invoice", entityId: invoiceId,
+        action: RETURN_EXECUTED_AUDIT_ACTION, entityType: "invoice", entityId: invoiceId,
         newValue: {
+          mode: "STATION_REQUEST_APPROVAL" satisfies ReturnExecutionMode,
           requestId: input.requestId,
           refund: input.refund?.amount ?? input.resolution?.amount ?? null,
           resolution: input.resolution?.kind ?? null,

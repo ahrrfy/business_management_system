@@ -16557,8 +16557,10 @@ export const offlineRecoveryItems = mysqlTable(
      * قناة الالتقاط. الترحيل الآليّ يدعم RETAIL وحدها (حمولتها هي عقد `replayOfflineSale`)،
      * أمّا PRINT/RECEPTION فتُلتقَط **للرصد ومنع الضياع** وتُسوَّى يدوياً — إخفاؤها أسوأ من
      * عرضها بلا زرّ ترحيل.
+     * و`RETURN` (هجرة 0321) **معاكسُ الاتجاه**: نقدٌ خرج للزبون لا دخل منه. تصنيفُه RETAIL
+     * كان سيُقرأ بيعاً في طابورٍ عنوانُه «مبيعاتٌ مدفوعة» — والمدير يقرّر على الاتجاه.
      */
-    channel: mysqlEnum("recoveryChannel", ["RETAIL", "PRINT", "RECEPTION"])
+    channel: mysqlEnum("recoveryChannel", ["RETAIL", "PRINT", "RECEPTION", "RETURN"])
       .default("RETAIL")
       .notNull(),
     /** مفتاح idempotency الأصليّ — فريدٌ كي لا يتضاعف العنصر بإعادة محاولة الجهاز. */

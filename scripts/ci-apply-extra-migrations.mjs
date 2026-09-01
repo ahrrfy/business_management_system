@@ -206,6 +206,9 @@ const EXTRA_MIGRATIONS = [
   // لتمثيل حالة WITHDRAWN. `db:push` يبني الصيغة القديمة من المخطّط فتسقط اختبارات السحب
   // على قاعدة CI بينما الإنتاج (migrator) سليم — نفس فخّ #675.
   "drizzle/migrations/0319_returns_withdraw_and_owner_override.sql",
+  // ١/٩/٢٦: يوسّع enum قناة طابور الاسترداد بـRETURN. `db:push` يبنيه من المخطّط فتنشأ
+  // الصيغة الجديدة على قاعدة الاختبار، لكن المرآة تُبقي المسارين متطابقين.
+  "drizzle/migrations/0321_offline_recovery_return_channel.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

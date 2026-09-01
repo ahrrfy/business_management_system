@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts, users } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, shifts, users } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
@@ -10,10 +10,11 @@ import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "./accounting/postingEngine";
 import { money, round2, toDbMoney } from "./money";
-import { resolveBranchCashShiftTx } from "./shiftService";
+import { resolveBranchCashShiftTx, shiftIdForCashTx } from "./shiftService";
 import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
+  assertTreasuryOutException,
   lockCashSourceForUpdate,
 } from "./cash/cashAvailability";
 import { effectiveRefundCap, isSurfacedRefundMethod, loadRefundCaps } from "./returns/refundCaps";
@@ -201,17 +202,59 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
         .limit(1)
     )[0] ?? null;
-    let prelockedRefundShift: { shiftId: number; openingBalance: string } | null = null;
+    /**
+     * ⭐ **مصدرُ النقد الخارج: درجٌ مفتوح، وإلّا الخزينةُ للإداريّ** (تدقيق ١/٩/٢٦).
+     *
+     * كان المسار يقفل `DRAWER` **ثابتاً** ويشترط ورديةً مفتوحة، فخارج ساعات الوردية يُحجَب
+     * المرتجعُ كلّياً — وهو أكثر أنواعه شيوعاً في مكتبة تجزئة (زبونٌ عابر نقديّ يعود مساءً).
+     * فيدفع الموظّف من جيبه ويسجّل غداً، وهو المسار الذي يُنتج النقد اليتيم والعجز في Z-report.
+     *
+     * نظيرُه `cancelSaleInTx` كان محقّاً: `shiftIdForCashTx` يعطي الدرجَ إن وُجد، وإلّا
+     * `TREASURY` للمدير/الأدمن، محروساً بـ`assertTreasuryOutException`. ومفتاحُ المرتجع
+     * `SALE_RETURN_COMPENSATION` كان **معرَّفاً في السياسة وبلا مستدعٍ واحد** — مخرجٌ مبنيٌّ
+     * وغير موصول. هذا يوصله.
+     *
+     * **حدودُ التوسيع مقصودة وضيّقة:**
+     *  · اختيارٌ صريح للدرج (`refund.shiftId`) ⇒ السلوك القديم حرفياً (يفشل إن أُقفل) — الموظّف
+     *    قصد درجاً بعينه فلا نُبدّله من تحته.
+     *  · وردياتٌ مفتوحة موجودة ⇒ السلوك القديم حرفياً (واحدة تُختار، وتعدّدُها يطلب تحديداً).
+     *  · **صفرُ ورديات + فاعلٌ إداريّ** ⇒ الخزينة. وحدها الحالةُ التي كانت تفشل تغيّرت.
+     *  · كاشيرٌ بلا وردية ⇒ يبقى مرفوضاً (حمايةُ النقد اليتيم الحقيقيّ).
+     *
+     * و`cashBucket = TREASURY` **لا يدخل `computeExpectedCash`** لأيّ وردية ⇒ تسويةُ الدرج تبقى
+     * دقيقة، والصرفُ يظهر في تقرير الخزينة الإداريّة بقيدِ `TREASURY_CASH` لا `CASH`.
+     */
+    let prelockedRefundSource: {
+      shiftId: number | null;
+      cashBucket: "DRAWER" | "TREASURY";
+    } | null = null;
     if (refund?.method === "CASH" && money(refund.amount).gt(0)) {
-      prelockedRefundShift = await resolveBranchCashShiftTx(
-        tx,
-        Number(invPreview.branchId),
-        refund.shiftId ?? null,
-      );
+      const branchForRefund = Number(invPreview.branchId);
+      const explicitShiftId = refund.shiftId ?? null;
+      const openShiftCount = explicitShiftId != null
+        ? 1
+        : (await tx
+            .select({ id: shifts.id })
+            .from(shifts)
+            .where(and(eq(shifts.branchId, branchForRefund), eq(shifts.status, "OPEN")))
+          ).length;
+      if (explicitShiftId != null || openShiftCount > 0) {
+        const resolved = await resolveBranchCashShiftTx(tx, branchForRefund, explicitShiftId);
+        prelockedRefundSource = { shiftId: resolved.shiftId, cashBucket: "DRAWER" };
+      } else {
+        // بلا ورديةٍ مفتوحة: `shiftIdForCashTx` يقرّر بالدور — خزينةٌ للإداريّ، ورفضٌ للكاشير.
+        const routed = await shiftIdForCashTx(
+          tx,
+          { userId: actor.userId, branchId: branchForRefund, role: actor.role },
+          branchForRefund,
+          "استرداد مرتجع البيع نقداً",
+        );
+        prelockedRefundSource = routed;
+      }
       await lockCashSourceForUpdate(tx, {
-        branchId: Number(invPreview.branchId),
-        cashBucket: "DRAWER",
-        shiftId: prelockedRefundShift.shiftId,
+        branchId: branchForRefund,
+        cashBucket: prelockedRefundSource.cashBucket,
+        shiftId: prelockedRefundSource.shiftId,
       });
     }
     // مسارات التوصيل تتشارك ترتيباً واحداً بعد المصدر: party→consignment→invoice.
@@ -300,10 +343,18 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
             "في النطاق الحالي تسوية الزبون العابر هي ردّ CASH فوري كامل فقط. لا بطاقة ولا تحويل ولا رصيد معلّق؛ سجّل العميل أولاً إن احتجت مساراً آخر.",
         });
       }
-      if (!Number.isInteger(resolution.shiftId) || Number(resolution.shiftId) <= 0) {
+      /**
+       * الدرجُ صار **اختيارياً** للزبون العابر (تدقيق ١/٩/٢٦): اشتراطُه حرفياً كان يحجب
+       * مرتجعَ العابر النقديّ خارج ساعات الوردية حجباً كاملاً — وهو أكثر أنواع المرتجعات
+       * شيوعاً في مكتبة تجزئة. حين لا يُحدَّد، يقرّر `shiftIdForCashTx` بالدور: درجٌ مفتوح
+       * إن وُجد، وإلّا الخزينةُ للإداريّ، ورفضٌ للكاشير (النقد اليتيم يبقى ممنوعاً).
+       * وحين يُحدَّد يبقى الشرطُ الصارم: رقمٌ صحيحٌ موجبٌ لوردية مفتوحة فعلاً.
+       */
+      if (resolution.shiftId != null
+        && (!Number.isInteger(resolution.shiftId) || Number(resolution.shiftId) <= 0)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "حدّد وردية مفتوحة صراحةً داخل resolution ليخرج منها ردّ الزبون العابر.",
+          message: "رقم الوردية المحدَّدة لردّ الزبون العابر غير صالح.",
         });
       }
       if ((resolutionReason?.length ?? 0) < 3) {
@@ -321,12 +372,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           message: "تعارض مصير البضاعة بين restock وresolution.disposition؛ اعتمد disposition للزبون العابر.",
         });
       }
-      if (inv.sourceType === "WORKORDER" && resolution.disposition === "RESTOCK") {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "مرتجع أمر الشغل لا يعود إلى مخزون الرف؛ اختر «تالف/لا يعود للمخزون».",
-        });
-      }
+      /**
+       * ١/٩/٢٦: الرفضُ لم يعد شاملاً لفاتورة أمر الشغل. صار القرارُ سطرياً (انظر
+       * `perLineRestockScope`): ناتجُ الأمر لا يعود للرفّ لأنّه لم يُخصَم قطّ، أمّا بندٌ
+       * مخزنيّ خُصم فعلاً على نفس الفاتورة فيعود. فإن لم يَعُد شيءٌ لم تقع حركةٌ ببساطة.
+       */
     } else if (input.resolution && !input.internalCorrectionReversal) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -334,12 +384,27 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       });
     }
 
-    // فاتورة أمر الشغل تبيع متغيّراً أساس لم يُضَف للمخزون فعلاً (المواد استُهلكت عند البدء)،
-    // فإعادة التخزين تخلق مخزوناً وهمياً لمنتج مُخصَّص. افرض restock=false لها.
+    /**
+     * ⭐ **قرارُ الرفّ صار سطراً سطراً لفاتورة أمر الشغل** (تدقيق ١/٩/٢٦).
+     *
+     * كان الإجبار على مستوى **الفاتورة**: `restock = sourceType === "WORKORDER" ? false : …`.
+     * وهو صحيحٌ لبند ناتج أمر الشغل (متغيّرٌ أساسٌ لم يُخصَم من المخزون قطّ — المواد استُهلكت
+     * عند البدء على `workOrderMaterials`، فإعادةُ تخزينه تخلق رصيداً من العدم)، لكنّه **يبتلع
+     * أوّلَ بندٍ مخزنيّ يُضاف إلى تلك الفاتورة**: يُسجَّل مُرجَعاً مالياً ولا يعود للرفّ ولا
+     * تُعكَس تكلفتُه، ويُسكَت اختيارُ الموظّف «سليمة — تعود للرفّ» بلا رسالة.
+     *
+     * المعيارُ الصحيح ليس منشأ الفاتورة بل **هل خُصم هذا الصنفُ فعلاً عند البيع؟** — نفس
+     * المنطق الذي يعتمده `delivery/returns.ts` (يُعيد حركات OUT الأصليّة لا يخمّن من السطر).
+     *
+     * ⚠️ **النطاق ضيّقٌ بقصد:** التقييمُ السطريّ يسري على فواتير WORKORDER **وحدها**. الفواتير
+     * الأخرى تبقى على السلوك القائم حرفياً (صفر خطر انحدار على مسارٍ ماليٍّ مُختبَرٍ بكثافة)،
+     * ولا نُحوّل «غيابَ حركةٍ تاريخيّة» في فاتورةٍ قديمة إلى منعِ إرجاعٍ صامت.
+     */
     const requestedRestock = input.resolution
       ? input.resolution.disposition === "RESTOCK"
       : input.restock !== false;
-    const restock = inv.sourceType === "WORKORDER" ? false : requestedRestock;
+    const restock = requestedRestock;
+    const perLineRestockScope = inv.sourceType === "WORKORDER";
     if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا أصناف للإرجاع" });
 
     // RETURN-DEDUP (تدقيق ٢/٧): منع تكرار invoiceItemId في أسطر المرتجع. كان الفحص يقارن كل سطر
@@ -446,6 +511,41 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     interface StockOp { variantId: number; baseQuantity: number; }
     const stockOps: StockOp[] = [];
 
+    /**
+     * الأصنافُ التي خُصمت فعلاً عند البيع على هذه الفاتورة — رافدا الخصم معاً
+     * (`sale/create.ts` يَسِم `INVOICE` و`printSaleService` يَسِم `PRINT_SALE`).
+     * تُقرأ لفواتير WORKORDER وحدها؛ وللبكج تحمل **المكوّنات** لأنّها المخصومة لا البكج نفسه.
+     */
+    const deductedVariants = new Set<number>();
+    if (perLineRestockScope && restock) {
+      const outRows = await tx
+        .select({ variantId: inventoryMovements.variantId })
+        .from(inventoryMovements)
+        .where(and(
+          eq(inventoryMovements.branchId, Number(inv.branchId)),
+          eq(inventoryMovements.movementType, "OUT"),
+          inArray(inventoryMovements.referenceType, ["INVOICE", "PRINT_SALE"]),
+          eq(inventoryMovements.referenceId, input.invoiceId),
+        ));
+      for (const row of outRows) deductedVariants.add(Number(row.variantId));
+    }
+
+    /** هل يعود هذا السطرُ إلى الرفّ فعلاً؟ خارج نطاق التقييم السطريّ = السلوك القائم حرفياً. */
+    const lineRestocks = (variantId: number, kind: string, itemId: number): boolean => {
+      if (!restock || kind === "SERVICE") return false;
+      if (!perLineRestockScope) return true;
+      if (kind === "BUNDLE") {
+        const def = snapshotByItem.get(itemId) ?? [];
+        return def.some((c) => deductedVariants.has(c.componentVariantId));
+      }
+      return deductedVariants.has(variantId);
+    };
+    /** تكلفةُ الأسطر التي عادت للرفّ فعلاً — أساسُ عكس COGS (الخدمة مُستثناةٌ بنيوياً). */
+    let restockedPaidCost = new Decimal(0);
+    let restockedGiftCost = new Decimal(0);
+    /** الأسطرُ التي عادت — يحتاجها احتسابُ حصّة الأمانة على المُعاد فقط. */
+    const restockedItemIds = new Set<number>();
+
     for (const { line, item } of work) {
       const portion = new Decimal(line.baseQuantity).dividedBy(item.baseQuantity);
       returnedGrossNet = returnedGrossNet.plus(money(item.total).times(portion));
@@ -457,8 +557,14 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
 
       const itemVariantId = Number(item.variantId);
       const kind = kindByVariant.get(itemVariantId) ?? "STOCKED";
+      const thisLineRestocks = lineRestocks(itemVariantId, kind, Number(item.id));
+      if (thisLineRestocks) {
+        restockedItemIds.add(Number(item.id));
+        if (item.isGift) restockedGiftCost = restockedGiftCost.plus(lineCost);
+        else restockedPaidCost = restockedPaidCost.plus(lineCost);
+      }
 
-      if (restock) {
+      if (thisLineRestocks) {
         if (kind === "BUNDLE") {
           // gstack B6: نقرأ اللقطة المحفوظة على invoiceItem بدل الوصفة الحيّة.
           const def = snapshotByItem.get(Number(item.id)) ?? [];
@@ -469,6 +575,8 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
             });
           }
           for (const c of def) {
+            // في النطاق السطريّ نُعيد المكوّنات المخصومة فعلاً وحدها — لا نخلق رصيداً من العدم.
+            if (perLineRestockScope && !deductedVariants.has(c.componentVariantId)) continue;
             stockOps.push({
               variantId: c.componentVariantId,
               baseQuantity: c.componentBaseQuantity * line.baseQuantity,
@@ -489,7 +597,7 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           returnedBaseQuantity: (item.returnedBaseQuantity ?? 0) + line.baseQuantity,
           // returnedRestockedBaseQuantity يزيد فقط حين عادت البضاعة للرفّ (restock) — يُميّز المُعاد
           // للمخزون عن التالف كي تطرح تقارير COGS التحليلية تكلفة المُعاد فقط (مطابِقةً للدفتر).
-          ...(restock
+          ...(thisLineRestocks
             ? { returnedRestockedBaseQuantity: (item.returnedRestockedBaseQuantity ?? 0) + line.baseQuantity }
             : {}),
         })
@@ -497,7 +605,8 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     }
 
     // تجميع + تطبيق بترتيب variantId التصاعدي — نفس نمط sale/create.ts (خطوة 10).
-    if (restock) {
+    // الشرطُ على `stockOps` لا على العلَم الفاتوريّ: القرارُ صار سطرياً.
+    if (stockOps.length) {
       const aggregated = new Map<number, number>();
       for (const op of stockOps) {
         aggregated.set(op.variantId, (aggregated.get(op.variantId) ?? 0) + op.baseQuantity);
@@ -562,11 +671,15 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     // مقابل، مناقضةً لسياسة «التلف مصروفٌ بالكلفة»). نعكس التكلفة فقط حين تعود البضاعة للرفّ
     // (restock=true) فيتعادل ازديادُ المخزون مع نقصان COGS. أمّا الإيراد/الضريبة/الذمة فتُعكَس
     // في الحالتين (العميل أُسترِدّ/أُسقطت ذمّته بصرف النظر عن مصير البضاعة المُعادة).
-    const reversedCost = restock ? returnedCost : new Decimal(0);
+    // ⭐ الأساسُ صار **تكلفةَ الأسطر التي عادت للرفّ فعلاً** لا كامل تكلفة المرتجع.
+    // مكافئٌ حرفياً للسلوك القديم خارج نطاق التقييم السطريّ: هناك كلُّ سطرٍ غير خدميّ يعود،
+    // فـ`restockedPaidCost` = `returnedCost − تكلفة الخدمة` — وهي بالضبط ما كانت الصيغةُ
+    // القديمة تصل إليه بطرح `returnedServicePaidCost` أدناه.
+    const reversedCost = round2(restockedPaidCost);
     // هدايا الفاتورة (0149): مرآةُ القاعدة نفسها على وعاء الهدايا — الهديةُ العائدة إلى الرفّ
     // (restock=true) يُعكَس مصروفها، والتالفةُ/غير العائدة تبقى مصروفاً (البضاعة ذهبت فعلاً).
     returnedGiftCost = round2(returnedGiftCost);
-    const reversedGiftCost = restock ? returnedGiftCost : new Decimal(0);
+    const reversedGiftCost = round2(restockedGiftCost);
 
     // RETURN ledger entry: negative values + منفّذ مستقلّ عن بائع الفاتورة.
     const consignByVariant = new Map<number, number>();
@@ -587,6 +700,15 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
   const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();
   let returnedServicePaidCost = new Decimal(0);
   let returnedServiceGiftCost = new Decimal(0);
+  /**
+   * ⚠️ **استعمالان لحصّة الأمانة، ونطاقاهما مختلفان — لا تُوحّدهما:**
+   *  ① `byConsignor` يقود **عكس التزام المودِع** (AP) وهو يقع **دائماً**: restock أو تالف
+   *    (قرار المالك ش٣). حصرُه بالمُعاد للرفّ يترك المودِع دائناً ببضاعةٍ استُرجعت.
+   *  ② `consignmentRestockedPaid/Gift` يُطرح من **عكس COGS**، فيُحسب على ما عاد للرفّ وحده:
+   *    طرحُ حصّةِ سطرٍ لم يَعُد يخصم مقابل بضاعةٍ لم تدخل المخزون أصلاً.
+   */
+  let consignmentRestockedPaid = new Decimal(0);
+  let consignmentRestockedGift = new Decimal(0);
         for (const { line, item } of work) {
           const share = round2(money(item.unitCost).times(line.baseQuantity));
     const cId = consignByVariant.get(Number(item.variantId));
@@ -598,17 +720,23 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       if (item.isGift) current.gift = current.gift.plus(share);
       else current.paid = current.paid.plus(share);
       byConsignor.set(cId, current);
+      if (restockedItemIds.has(Number(item.id))) {
+        if (item.isGift) consignmentRestockedGift = consignmentRestockedGift.plus(share);
+        else consignmentRestockedPaid = consignmentRestockedPaid.plus(share);
+      }
     } else if (kindByVariant.get(Number(item.variantId)) === "SERVICE") {
       if (item.isGift) returnedServiceGiftCost = returnedServiceGiftCost.plus(share);
       else returnedServicePaidCost = returnedServicePaidCost.plus(share);
     }
   }
-  const consignmentPaidShare = round2(Array.from(byConsignor.values()).reduce((sum, split) => sum.plus(split.paid), new Decimal(0)));
-  const consignmentGiftShare = round2(Array.from(byConsignor.values()).reduce((sum, split) => sum.plus(split.gift), new Decimal(0)));
-  const ownedReversedCost = restock ? round2(Decimal.max(new Decimal(0), reversedCost.minus(consignmentPaidShare).minus(returnedServicePaidCost))) : new Decimal(0);
-  const ownedReversedGiftCost = restock ? round2(Decimal.max(new Decimal(0), reversedGiftCost.minus(consignmentGiftShare).minus(returnedServiceGiftCost))) : new Decimal(0);
-  // الخدمة لا تعود مخزوناً عند restock؛ لا نعكس هديتها لأن موادها المستهلكة لم تعد للرف.
-  const financiallyReversedGiftCost = restock ? round2(Decimal.max(new Decimal(0), reversedGiftCost.minus(returnedServiceGiftCost))) : new Decimal(0);
+  const consignmentPaidShare = round2(consignmentRestockedPaid);
+  const consignmentGiftShare = round2(consignmentRestockedGift);
+  // ⛔ لا طرحَ لتكلفة الخدمة هنا بعد اليوم: `lineRestocks` يستثني SERVICE **بنيوياً** فلا
+  // تدخل `reversedCost` أصلاً — وطرحُها ثانيةً كان سيخصمها مرّتين. تبقى `returnedServicePaidCost`
+  // محسوبةً للإفصاح في نصّ القيد (تُظهر للمالك ما لم يُعَد ولماذا).
+  const ownedReversedCost = round2(Decimal.max(new Decimal(0), reversedCost.minus(consignmentPaidShare)));
+  const ownedReversedGiftCost = round2(Decimal.max(new Decimal(0), reversedGiftCost.minus(consignmentGiftShare)));
+  const financiallyReversedGiftCost = reversedGiftCost;
 
   // RETURN ledger entry: negative values + منفّذ مستقلّ عن بائع الفاتورة.
   const returnOperatorName = await userNameSnapshot(tx, actor.userId);
@@ -843,19 +971,24 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       // في ورديات الفرع المفتوحة كلّها (لا الفاعل فقط)، ويتطلّب اختياراً صريحاً (refund.shiftId)
       // حين يتعدّد الدرج المفتوح. غير النقد لا يمسّ صندوقاً فيبقى على النمط القديم (معلوماتيّ بحت).
       let shiftId: number | null = null;
+      /** دلو النقد الخارج — DRAWER أو TREASURY، ويبقى NULL لغير النقد (لا يمسّ صندوقاً). */
+      let refundCashBucket: "DRAWER" | "TREASURY" | null = null;
       if (refund!.method === "CASH") {
-        const resolved = prelockedRefundShift;
+        const resolved = prelockedRefundSource;
         if (!resolved) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل درج الاسترداد النقدي" });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل مصدر الاسترداد النقدي" });
         }
         shiftId = resolved.shiftId;
+        refundCashBucket = resolved.cashBucket;
+        // وسمٌ تدقيقيّ fail-closed: الصرفُ من الخزينة استثناءٌ مصنَّفٌ في سياسةٍ مغلقة، لا مساراً عاماً.
+        if (refundCashBucket === "TREASURY") assertTreasuryOutException("SALE_RETURN_COMPENSATION");
         // حدّ الدرج (نمط cashDropService — لا يُسحَب أكثر من النقد الحاليّ فيه): سقف الفاتورة
         // (refundCap أعلاه) وحده لا يكفي — يضمن فقط أن المسترَد ≤ ما دُفع بهذه الطريقة على هذه
         // الفاتورة، لا أنّ الدرج المستهدَف يحمل هذا المبلغ *الآن* (سحبٌ نقديّ أو مصروفٌ سابقٌ في
         // نفس الوردية قد يكون أنقص الدرج فعلياً). بلا هذا الحدّ يُطلَب من الكاشير تسليم نقدٍ لا يملكه
         // فعلياً في درجه أثناء العمل، لا أن يُكتشَف الخلل لاحقاً عند الإغلاق فقط.
         await assertCashOutAvailable(tx, {
-          branchId: Number(inv.branchId), cashBucket: "DRAWER", shiftId,
+          branchId: Number(inv.branchId), cashBucket: refundCashBucket, shiftId,
           amount: materializedRefund, operation: "استرداد مرتجع البيع نقداً",
         });
       } else if (isImmediateRefundRail) {
@@ -899,7 +1032,7 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         shiftId,
         // cashBucket=DRAWER للنقد (يَخرج من الدُرج بمرتجع نقدي ويظهر في Z-report).
         // البطاقة وغيرها ⇒ NULL (لا يَمسّ صندوقاً). مرآة لنمط saleService/voucherService.
-        cashBucket: refund!.method === "CASH" ? "DRAWER" : null,
+        cashBucket: refundCashBucket,
         direction: "OUT",
         amount: toDbMoney(refundRequest),
         paymentMethod: refund!.method,
@@ -927,11 +1060,8 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       if (materializedRefund.gt(0)) {
         // الدلو يُمرَّر بحسب الرافد فعلاً: النقد من الدرج (CASH)، والبطاقة من الحساب البنكيّ
         // (CARD_BANK) — تمرير "DRAWER" ثابتاً كان يُرحّل ردّ البطاقة على حساب النقد.
-        const refundAssetRole = paymentAssetRole(
-          refund!.method,
-          refund!.method === "CASH" ? "DRAWER" : null,
-          "OUT",
-        );
+        // الدلوُ الفعليّ يقرّر الحساب: درجٌ ⇒ CASH · خزينةٌ ⇒ TREASURY_CASH · بطاقةٌ ⇒ CARD_BANK.
+        const refundAssetRole = paymentAssetRole(refund!.method, refundCashBucket, "OUT");
         const refundPostingSource = {
           roleDebits: { AR: materializedRefund },
           roleCredits: { [refundAssetRole]: materializedRefund },
