@@ -182,7 +182,21 @@ export function AppSelect({
 
   return (
     <Select
-      value={value === "" ? undefined : value}
+      /*
+       * ⚠️ يُمرَّر `value` كما هو — بما فيه `""`.
+       *
+       * كان هنا `value === "" ? undefined : value`، و`undefined` يجعل Radix Select
+       * **غير مُتحكَّم به** فيحتفظ بآخر اختيارٍ داخليّ. الأثر: تصفيرُ الفلتر يمسح الحالة
+       * (يختفي العدّاد وزرّ «مسح الفلاتر») بينما الزرّ **يظلّ يعرض القيمة القديمة** —
+       * أي أنّ الشاشة تكذب على الموظّف: الجدول يعرض الكلّ والمنتقي يقول «تسوية».
+       * أمسكه تحقّقٌ حيّ على شاشة حركات المخزون (١/٩/٢٦).
+       *
+       * و`""` آمنٌ هنا: `SelectValue` في Radix يُظهر الـplaceholder حين تكون القيمة
+       * `""` أو `undefined` (shouldShowPlaceholder)، والقيدُ الحقيقيّ أن لا يحمل
+       * **عنصرٌ** قيمةً فارغة — وهذا مضمون: `convertChildren` يحوّل `<option value="">`
+       * إلى placeholder ولا يُنشئ له SelectItem.
+       */
+      value={value}
       onValueChange={onValueChange}
       disabled={disabled}
       open={open}
