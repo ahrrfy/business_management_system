@@ -2,14 +2,16 @@
 // رصيد/متأخّر/آخر دفعة/أيام تأخّر/أعلى فاتورة/حدّ ائتمان + تصنيف خطر (عالٍ/متوسّط/منخفض).
 // أزرار الصفّ: كشف الحساب · تذكير واتساب (صفري التكلفة). عرض + تصدير Excel + طباعة A4 (ReportShell).
 import { useMemo, useState } from "react";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { MessageCircle, FileText } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+
+
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { openWhatsApp } from "@/lib/whatsapp";
@@ -134,6 +136,81 @@ export default function CreditExposureReport() {
         : undefined,
     });
   }
+  /** أعمدة تعرّض الائتمان — «الخطر» شارةٌ لا لونٌ وحده (§color-not-only). */
+  const exposureColumns = useMemo<ColumnDef<(typeof rows)[number], unknown>[]>(() => [
+    {
+      id: "customerName", header: "العميل",
+      accessorFn: (r) => r.customerName,
+      cell: ({ row }) => <span className="font-medium">{row.original.customerName}</span>,
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "risk", header: "الخطر",
+      accessorFn: (r) => RISK_LABEL[r.risk] ?? r.risk,
+      cell: ({ row }) => (
+        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${RISK_CLS[row.original.risk] ?? "bg-muted"}`}>
+          {RISK_LABEL[row.original.risk] ?? row.original.risk}
+        </span>
+      ),
+      meta: { kind: "status" },
+    },
+    { id: "currentBalance", header: "الرصيد", accessorFn: (r) => Number(r.currentBalance), cell: ({ row }) => fmtAr(row.original.currentBalance), meta: { kind: "money" } },
+    {
+      id: "overdueAmount", header: "المتأخّر",
+      accessorFn: (r) => Number(r.overdueAmount),
+      cell: ({ row }) => <span className="text-money-negative">{Number(row.original.overdueAmount) > 0 ? fmtAr(row.original.overdueAmount) : "—"}</span>,
+      meta: { kind: "money" },
+    },
+    {
+      id: "daysOverdue", header: "أيام التأخّر",
+      accessorFn: (r) => Number(r.daysOverdue),
+      cell: ({ row }) => row.original.daysOverdue > 0 ? fmtAr(row.original.daysOverdue) : "—",
+      meta: { kind: "number" },
+    },
+    {
+      id: "highestUnpaid", header: "أعلى فاتورة",
+      accessorFn: (r) => Number(r.highestUnpaid),
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.highestUnpaid)}</span>,
+      meta: { kind: "money" },
+    },
+    {
+      id: "creditLimit", header: "حدّ الائتمان",
+      accessorFn: (r) => (r.creditLimit == null ? -1 : Number(r.creditLimit)),
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.creditLimit == null ? "—" : fmtAr(row.original.creditLimit)}</span>,
+      meta: { kind: "money" },
+    },
+    {
+      id: "lastPaymentDate", header: "آخر دفعة",
+      accessorFn: (r) => String(r.lastPaymentDate ?? ""),
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtDay(row.original.lastPaymentDate)}</span>,
+      meta: { kind: "date" },
+    },
+    {
+      id: "actions", header: "إجراء",
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <RowActions
+            mode="inline"
+            actions={[
+              {
+                key: "statement", kind: "view", label: "كشف الحساب", icon: FileText,
+                href: `/customers?tab=statement&id=${r.customerId}`,
+                gate: { module: "crm", level: "READ" },
+              },
+              {
+                key: "whatsapp", kind: "other", label: "تذكير واتساب", icon: MessageCircle,
+                hidden: !r.phone,
+                onSelect: () => r.phone && openWhatsApp(r.phone, reminderMessage(r)),
+                gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" },
+              },
+            ]}
+          />
+        );
+      },
+      meta: { kind: "actions" },
+    },
+  ], []);
 
   return (
     <ReportShell
@@ -168,73 +245,14 @@ export default function CreditExposureReport() {
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">العميل</th>
-                    <th className="p-2.5 text-right font-medium">الخطر</th>
-                    <th className="p-2.5 text-right font-medium">الرصيد</th>
-                    <th className="p-2.5 text-right font-medium">المتأخّر</th>
-                    <th className="p-2.5 text-right font-medium">أيام التأخّر</th>
-                    <th className="p-2.5 text-right font-medium">أعلى فاتورة</th>
-                    <th className="p-2.5 text-right font-medium">حدّ الائتمان</th>
-                    <th className="p-2.5 text-right font-medium">آخر دفعة</th>
-                    <th className="p-2.5 text-right font-medium">إجراء</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!rows.length ? (
-                    <TableEmptyRow colSpan={9} message="لا عملاء مدينون في هذا النطاق." />
-                  ) : rows.map((r) => (
-                    <tr key={r.customerId} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right font-medium">{r.customerName}</td>
-                      <td className="p-2.5 text-right">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${RISK_CLS[r.risk] ?? "bg-muted"}`}>
-                          {RISK_LABEL[r.risk] ?? r.risk}
-                        </span>
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.currentBalance)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{Number(r.overdueAmount) > 0 ? fmtAr(r.overdueAmount) : "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.daysOverdue > 0 ? fmtAr(r.daysOverdue) : "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.highestUnpaid)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{r.creditLimit == null ? "—" : fmtAr(r.creditLimit)}</td>
-                      <td className="p-2.5 text-right text-muted-foreground">{fmtDay(r.lastPaymentDate)}</td>
-                      <td className="p-2.5 text-right">
-                        <RowActions
-                          mode="inline"
-                          actions={[
-                            {
-                              key: "statement",
-                              kind: "view",
-                              label: "كشف الحساب",
-                              icon: FileText,
-                              href: `/customers?tab=statement&id=${r.customerId}`,
-                              gate: { module: "crm", level: "READ" },
-                            },
-                            {
-                              key: "whatsapp",
-                              kind: "other",
-                              label: "تذكير واتساب",
-                              icon: MessageCircle,
-                              hidden: !r.phone,
-                              onSelect: () => r.phone && openWhatsApp(r.phone, reminderMessage(r)),
-                              gate: { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" },
-                            },
-                          ]}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          <DataTable
+            columns={exposureColumns}
+            data={rows}
+            loading={q.isLoading}
+            searchable={false}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
+            emptyText="لا عملاء مدينون في هذا النطاق."
+          />
         </CardContent>
       </Card>
     </ReportShell>
