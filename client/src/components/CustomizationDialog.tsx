@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, FileText, Image as ImageIcon, Package, Palette, Ruler, Truck, Layers, UserRound } from "lucide-react";
+import { Check, ChevronDown, FileText, Image as ImageIcon, Package, Palette, Ruler, Truck, Layers, UserRound } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,9 +46,48 @@ export type CustomizationData = {
   deposit: string;
 };
 
+/**
+ * **الاسمُ العامّ للخدمة الحرّة** — سطرُ السلّة يحتاج اسماً يُعرَض، لكنّه **ليس عنوانَ أمر شغل**.
+ * بذرُه في حقل العنوان كان يُنتج بطاقاتٍ عمياء في لوحة أوامر الشغل: «خدمة / أمر شغل» بلا
+ * دلالةٍ على العمل ولا صاحبه (بلاغ المالك بالصور ١/٩/٢٦). يُعرَف هنا كي يُستثنى من البذر.
+ */
+export const GENERIC_SERVICE_NAME = "خدمة / أمر شغل";
+
+/**
+ * **عنوانُ أمر الشغل يُشتقّ ولا يُفرَض.** الحقلُ يبقى غيرَ إلزاميّ (لا نقرةَ إضافية على
+ * الموظّف)، لكنّ ما يُحفَظ يجب أن يدلّ على العمل:
+ *   ١) ما كتبه الموظّف صراحةً — يسبق كلَّ شيء.
+ *   ٢) اسمُ المنتج الحقيقيّ (ختم Oval 55…) — دالٌّ بذاته.
+ *   ٣) أوّلُ سطرٍ من نصّ التخصيص — وهو وصفُ الشغل فعلاً.
+ *   ٤) المقاس/الخامة مركَّبَين.
+ *   ٥) وأخيراً الاسم العامّ — لا يبقى إلّا حين لا يوجد شيءٌ آخر إطلاقاً.
+ */
+export function deriveWorkOrderTitle(
+  data: Pick<CustomizationData, "title" | "customizationText" | "size" | "material">,
+  productName: string,
+): string {
+  const typed = data.title.trim();
+  if (typed && typed !== GENERIC_SERVICE_NAME) return typed;
+
+  const product = productName.trim();
+  if (product && product !== GENERIC_SERVICE_NAME) return product;
+
+  const firstLine = data.customizationText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find(Boolean);
+  if (firstLine) return firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine;
+
+  const spec = [data.size.trim(), data.material.trim()].filter(Boolean).join(" — ");
+  if (spec) return spec;
+
+  return GENERIC_SERVICE_NAME;
+}
+
 export function emptyCustomization(productName: string): CustomizationData {
   return {
-    title: productName,
+    // ⛔ لا نبذر الاسمَ العامّ عنواناً — يُشتقّ عند الحفظ (`deriveWorkOrderTitle`).
+    title: productName.trim() === GENERIC_SERVICE_NAME ? "" : productName,
     unitPrice: "0",
     laborCost: "0",
     assignedTo: null,
@@ -146,12 +185,41 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
 
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  /**
+   * **الافتراضُ إخفاءُ ما لا يلزم** (بلاغ المالك ١/٩/٢٦: «النافذة طويلة ومزدحمة»). أربعةَ عشرَ
+   * حقلاً دفعةً واحدة تجعل الاختياريَّ يبدو مطلوباً، والموظّفُ يتردّد أمام نموذجٍ لا يعرف أين
+   * ينتهي. الإلزاميُّ حقلان، فليكن الظاهرُ افتراضاً هو الإلزاميّ وما يصف الشغل.
+   *
+   * ⚠️ **ويُفتَح تلقائياً متى حمل المطويُّ قيمةً** — إخفاءُ بياناتٍ مكتوبةٍ خلف طيٍّ مغلق
+   * أسوأ من الازدحام: يعدّل الموظّف بنداً فلا يرى مقاسَه ولا موعدَه فيظنّهما فارغَين.
+   */
+  const extrasFilled =
+    data.size.trim() !== "" ||
+    data.material.trim() !== "" ||
+    data.dueDate !== "" ||
+    data.priority !== "NORMAL" ||
+    data.assignedTo != null ||
+    data.hasDelivery ||
+    D(data.laborCost || 0).gt(0) ||
+    data.designImages.length > 0;
+  const [showExtras, setShowExtras] = useState(false);
+  useEffect(() => { if (open) setShowExtras(extrasFilled); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  const extrasCount =
+    (data.size.trim() ? 1 : 0) +
+    (data.material.trim() ? 1 : 0) +
+    (data.dueDate ? 1 : 0) +
+    (data.priority !== "NORMAL" ? 1 : 0) +
+    (data.assignedTo != null ? 1 : 0) +
+    (data.hasDelivery ? 1 : 0) +
+    (D(data.laborCost || 0).gt(0) ? 1 : 0) +
+    data.designImages.length;
+
+  /** ما سيُحفَظ فعلاً — يُعرَض حيّاً في الحقل كي لا يُفاجَأ الموظّف بعنوانٍ لم يكتبه. */
+  const derivedTitle = deriveWorkOrderTitle(data, productName);
+
   function handleSave() {
     setSaveError(null);
-    if (!data.title.trim()) {
-      setSaveError("عنوان أمر الشغل مطلوب");
-      return;
-    }
+    // ⛔ العنوانُ لم يعد حاجزاً (بلاغ المالك ١/٩/٢٦): يُشتقّ من سياق الطلب بدل أن يُطلَب.
     if (unitTotal.lte(0)) {
       setSaveError("السعر الإجمالي للوحدة (سعر المنتج + سعر التخصيص) يجب أن يكون أكبر من صفر");
       return;
@@ -164,7 +232,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
       setSaveError("تكلفة التوصيل لا يمكن أن تكون سالبة");
       return;
     }
-    onSave(data);
+    onSave({ ...data, title: derivedTitle });
   }
 
   return (
@@ -181,18 +249,23 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
         <div className="space-y-4 py-2">
           {/* العنوان */}
           <div className="space-y-1.5">
-            <Label htmlFor="cz-title" className="text-xs">عنوان أمر الشغل *</Label>
+            <Label htmlFor="cz-title" className="text-xs">عنوان أمر الشغل</Label>
             <Input
               id="cz-title"
               value={data.title}
               onChange={(e) => upd("title", e.target.value)}
-              placeholder="مثال: بنر افتتاح 3 متر"
+              placeholder={derivedTitle}
               className="text-sm"
             />
+            {!data.title.trim() && (
+              <p className="text-[11px] text-muted-foreground">
+                سيُحفَظ باسم «{derivedTitle}» — اكتب عنواناً إن أردت غيره.
+              </p>
+            )}
           </div>
 
-          {/* التسعير والمسؤول — جزء إداري من أمر الشغل، لا يظهر كتفاصيل فنية للعميل. */}
-          <div className={cn("grid grid-cols-1 gap-3", canEditInternalCost ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
+          {/* السعر — الحقل الإلزاميّ الوحيد بعد العنوان. */}
+          <div className="grid grid-cols-1 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="cz-price" className="text-xs">سعر التخصيص الإضافي *</Label>
               <MoneyInput
@@ -206,6 +279,47 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
                 فوق سعر المنتج ({fmt(price || "0")} د.ع) = <span className="font-bold tabular-nums" dir="ltr">{fmt(unitTotal.toString())}</span> د.ع / وحدة
               </p>
             </div>
+          </div>
+
+          {/* نصّ التخصيص */}
+          <div className="space-y-1.5">
+            <Label htmlFor="cz-text" className="text-xs inline-flex items-center gap-1">
+              <FileText aria-hidden className="size-3.5" /> نصّ التخصيص / تفاصيل العمل المطلوب
+            </Label>
+            <Textarea
+              id="cz-text"
+              value={data.customizationText}
+              onChange={(e) => upd("customizationText", e.target.value)}
+              placeholder="مثال: تصميم الافتتاح الكبير + خصومات 30% + شعار المطعم + موقع وهاتف."
+              rows={4}
+              className="text-sm resize-y"
+            />
+          </div>
+
+          {/* ── تفاصيل إضافية — مطويّةٌ افتراضاً ─────────────────────────────── */}
+          <div className="rounded-lg border">
+            <button
+              type="button"
+              onClick={() => setShowExtras((v) => !v)}
+              aria-expanded={showExtras}
+              className="flex w-full items-center justify-between px-3 py-2 text-xs font-bold hover:bg-muted/50"
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <ChevronDown aria-hidden className={cn("size-4 transition-transform", showExtras && "rotate-180")} />
+                تفاصيل إضافية (اختيارية)
+              </span>
+              {!showExtras && extrasCount > 0 && (
+                <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-extrabold text-primary">
+                  {extrasCount} مُعبَّأة
+                </span>
+              )}
+              {!showExtras && extrasCount === 0 && (
+                <span className="text-[11px] font-normal text-muted-foreground">مقاس · خامة · موعد · أولوية · منفّذ · توصيل · صور</span>
+              )}
+            </button>
+            {showExtras && (
+              <div className="space-y-4 border-t p-3">
+                <div className={cn("grid grid-cols-1 gap-3", canEditInternalCost ? "sm:grid-cols-2" : "")}>
             {canEditInternalCost && (
               <div className="space-y-1.5">
                 <Label htmlFor="cz-labor" className="text-xs">تكلفة العمل الداخلية</Label>
@@ -236,8 +350,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
                 ))}
               </select>
             </div>
-          </div>
-
+                </div>
           {/* المقاس + الخامة */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
@@ -398,21 +511,6 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
             )}
           </div>
 
-          {/* نصّ التخصيص */}
-          <div className="space-y-1.5">
-            <Label htmlFor="cz-text" className="text-xs inline-flex items-center gap-1">
-              <FileText aria-hidden className="size-3.5" /> نصّ التخصيص / تفاصيل العمل المطلوب
-            </Label>
-            <Textarea
-              id="cz-text"
-              value={data.customizationText}
-              onChange={(e) => upd("customizationText", e.target.value)}
-              placeholder="مثال: تصميم الافتتاح الكبير + خصومات 30% + شعار المطعم + موقع وهاتف."
-              rows={4}
-              className="text-sm resize-y"
-            />
-          </div>
-
           {/* صور النموذج */}
           <div className="space-y-1.5">
             <Label className="text-xs flex items-center justify-between">
@@ -422,6 +520,10 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               <span className="text-[10px] text-muted-foreground font-normal">حد أقصى ١٠ صور</span>
             </Label>
             <ImageUploader value={data.designImages} onChange={(v) => upd("designImages", v)} maxItems={10} />
+          </div>
+
+              </div>
+            )}
           </div>
 
           {/* الدفع يُحصّل مرة واحدة من لوحة الطلب، لا داخل كل بند. */}
@@ -468,7 +570,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               <Package aria-hidden className="size-4" /> إضافة بلا تخصيص ({fmt(price || "0")})
             </Button>
           )}
-          <Button onClick={handleSave} size="sm" disabled={!data.title.trim()} className="inline-flex items-center gap-1">
+          <Button onClick={handleSave} size="sm" className="inline-flex items-center gap-1">
             <Check aria-hidden className="size-4" /> حفظ التخصيص
           </Button>
         </DialogFooter>
