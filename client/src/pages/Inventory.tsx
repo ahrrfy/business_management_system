@@ -1,7 +1,5 @@
-import { FilterField } from "@/components/filters/FilterField";
-import { FilterShell } from "@/components/filters/FilterShell";
-import { SearchField } from "@/components/filters/SearchField";
 import { RowActions } from "@/components/list";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
@@ -442,7 +440,7 @@ export default function Inventory() {
         }
       >
         {canPickBranch && (
-          <FilterField label="الفرع" htmlFor="inv-branch">
+          <FilterField label="الفرع">
             <AppSelect
               id="inv-branch"
               value={String(branchId)}
@@ -466,7 +464,7 @@ export default function Inventory() {
             onScan={handleInventoryBarcode}
           />
         </FilterField>
-        <FilterField label="الفئة" htmlFor="inv-category">
+        <FilterField label="الفئة">
           <AppSelect id="inv-category" value={f.cat} onValueChange={(v) => patchF({ cat: v })}>
             <option value="all">كل الفئات</option>
             <option value="0">— بلا فئة —</option>

@@ -1,6 +1,8 @@
 // تقرير الإنتاج — مستندات الإنتاج المؤكَّدة ضمن الفترة: كلفة المواد/العمالة/الهدر/إجمالي الكلفة.
 // المصدر: reports.productionReport. عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc).
 import { useState } from "react";
+import { FilterField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
@@ -13,8 +15,6 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type Row = RouterOutputs["reports"]["productionReport"]["rows"][number];
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function ProductionReport() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
@@ -107,13 +107,12 @@ export default function ProductionReport() {
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <PeriodFilter value={period} onChange={setPeriod} />
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+          <FilterField label="الفرع">
+            <AppSelect value={branchId === "" ? "" : String(branchId)} onValueChange={(v) => setBranchId(v ? Number(v) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
-          </div>
+            </AppSelect>
+          </FilterField>
         </div>
       }
     >

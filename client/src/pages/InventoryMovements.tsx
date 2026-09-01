@@ -1,9 +1,11 @@
 import { CopyInline } from "@/components/CopyButton";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -15,7 +17,6 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useState } from "react";
-import { selectClsFull } from "@/lib/ui/formStyles";
 
 /* ============================ Constants & helpers ============================ */
 
@@ -133,6 +134,31 @@ export default function InventoryMovements() {
   const debouncedCreatedByName = useDebouncedValue(createdByName, 250);
   const [page, setPage] = useState(0);
 
+  /**
+   * عدّاد الفلاتر المفعّلة + تصفيرها — لم تكن الشاشة تملك زرّ تصفيرٍ أصلاً، فالموظّف
+   * يُضيّق سبعة فلاتر ثمّ لا يجد سبيلاً للعودة إلى الكلّ إلّا بإعادة تحميل الصفحة.
+   * البحث محسوبٌ هنا لأنّه أحد الفلاتر السبعة المرئية (لا حقلَ بحثٍ عامّاً منفصلاً).
+   */
+  const activeFilterCount =
+    (pickedBranch !== "" ? 1 : 0) +
+    (movementType ? 1 : 0) +
+    (q ? 1 : 0) +
+    (fromDate ? 1 : 0) +
+    (toDate ? 1 : 0) +
+    (referenceType ? 1 : 0) +
+    (createdByName ? 1 : 0);
+
+  const resetFilters = () => {
+    setPickedBranch("");
+    setMovementType("");
+    setQ("");
+    setFromDate("");
+    setToDate("");
+    setReferenceType("");
+    setCreatedByName("");
+    setPage(0);
+  };
+
   const offset = page * PAGE_SIZE;
 
   const queryInput = useMemo(
@@ -216,20 +242,22 @@ export default function InventoryMovements() {
       />
 
 
-      {/* Filters */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">الفلاتر</CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-3 items-end">
+      {/*
+        الموجة ١ (docs/ui-unification-campaign.md): كان الغلاف بطاقةً يدوية بشبكة
+        `lg:grid-cols-7` — سبعةُ حقولٍ في صفٍّ واحد لا يُقرأ على أيّ شاشة، وبلا زرّ
+        تصفيرٍ أصلاً (الموظّف يُفلتر ثم لا يجد سبيلاً للعودة إلى الكلّ).
+      */}
+      <FilterShell
+        columns={4}
+        activeCount={activeFilterCount}
+        onReset={resetFilters}
+      >
           {canPickBranch && (
-            <div className="space-y-1">
-              <Label>الفرع</Label>
-              <select
-                className={selectClsFull}
+            <FilterField label="الفرع">
+              <AppSelect
                 value={pickedBranch === "" ? "" : String(pickedBranch)}
-                onChange={(e) => {
-                  setPickedBranch(e.target.value ? Number(e.target.value) : "");
+                onValueChange={(v) => {
+                  setPickedBranch(v ? Number(v) : "");
                   setPage(0);
                 }}
               >
@@ -239,16 +267,14 @@ export default function InventoryMovements() {
                     {b.name}
                   </option>
                 ))}
-              </select>
-            </div>
+              </AppSelect>
+            </FilterField>
           )}
-          <div className="space-y-1">
-            <Label>نوع الحركة</Label>
-            <select
-              className={selectClsFull}
+          <FilterField label="نوع الحركة">
+            <AppSelect
               value={movementType}
-              onChange={(e) => {
-                setMovementType(e.target.value as MovementType | "");
+              onValueChange={(v) => {
+                setMovementType(v as MovementType | "");
                 setPage(0);
               }}
             >
@@ -259,21 +285,19 @@ export default function InventoryMovements() {
               <option value="ADJUST">تسوية</option>
               <option value="TRANSFER_IN">تحويل وارد</option>
               <option value="TRANSFER_OUT">تحويل صادر</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label>بحث (اسم/SKU)</Label>
-            <Input
+            </AppSelect>
+          </FilterField>
+          <FilterField label="بحث (اسم/SKU)">
+            <SearchField
               value={q}
-              onChange={(e) => {
-                setQ(e.target.value);
+              onChange={(value) => {
+                setQ(value);
                 setPage(0);
               }}
               placeholder="مثال: ورق A4"
             />
-          </div>
-          <div className="space-y-1">
-            <Label>من تاريخ</Label>
+          </FilterField>
+          <FilterField label="من تاريخ">
             <Input
               type="date"
               dir="ltr"
@@ -283,9 +307,8 @@ export default function InventoryMovements() {
                 setPage(0);
               }}
             />
-          </div>
-          <div className="space-y-1">
-            <Label>إلى تاريخ</Label>
+          </FilterField>
+          <FilterField label="إلى تاريخ">
             <Input
               type="date"
               dir="ltr"
@@ -295,14 +318,12 @@ export default function InventoryMovements() {
                 setPage(0);
               }}
             />
-          </div>
-          <div className="space-y-1">
-            <Label>نوع المرجع</Label>
-            <select
-              className={selectClsFull}
+          </FilterField>
+          <FilterField label="نوع المرجع">
+            <AppSelect
               value={referenceType}
-              onChange={(e) => {
-                setReferenceType(e.target.value as typeof referenceType);
+              onValueChange={(v) => {
+                setReferenceType(v as typeof referenceType);
                 setPage(0);
               }}
             >
@@ -310,21 +331,20 @@ export default function InventoryMovements() {
               {REFERENCE_TYPE_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label>منشئ الحركة</Label>
-            <Input
+            </AppSelect>
+          </FilterField>
+          {/* «منشئ الحركة» = دور `performedBy` في عقد الإسناد الموحّد (shared/uiContracts). */}
+          <FilterField label={ATTRIBUTION_LABELS.performedBy}>
+            <SearchField
               value={createdByName}
-              onChange={(e) => {
-                setCreatedByName(e.target.value);
+              onChange={(value) => {
+                setCreatedByName(value);
                 setPage(0);
               }}
               placeholder="اسم المستخدم…"
             />
-          </div>
-        </CardContent>
-      </Card>
+          </FilterField>
+      </FilterShell>
 
       {/* Table */}
       <Card>

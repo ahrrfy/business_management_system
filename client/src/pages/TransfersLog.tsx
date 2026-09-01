@@ -2,11 +2,13 @@
 // الوارد «بالطريق» يستلمه الفرع الوجهة سطراً بسطر: كمية مستلَمة (0..المرسَل) وملاحظة
 // إلزامية عند أي فرق — العجز يبقى موثَّقاً على السند ويظهر هنا دائماً.
 import { Badge } from "@/components/ui/badge";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { LoadingState } from "@/components/PageState";
@@ -23,8 +25,6 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 type TransferRow = RouterOutputs["inventory"]["transfersList"]["rows"][number];
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const REASON_LABELS: Record<string, string> = {
   REBALANCE: "إعادة توزيع المخزون",
@@ -56,6 +56,15 @@ export default function TransfersLog() {
   const [toDate, setToDate] = useState("");
   // فلتر فرع صريح — للمرتفعين فقط (المدير/الأدمن)؛ غيرهم مقيَّد بفرعه خادمياً أصلاً (نفس عزل القائمة).
   const [pickedBranch, setPickedBranch] = useState<number | "">("");
+
+  const activeFilterCount =
+    (q ? 1 : 0) + (fromDate ? 1 : 0) + (toDate ? 1 : 0) +
+    (status !== "all" ? 1 : 0) + (direction !== "all" ? 1 : 0) + (pickedBranch !== "" ? 1 : 0);
+
+  const resetFilters = () => {
+    setQ(""); setFromDate(""); setToDate("");
+    setStatus("all"); setDirection("all"); setPickedBranch("");
+  };
   const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: elevated });
   const dq = useDebouncedValue(q, 250);
   const [openId, setOpenId] = useState<number | null>(null);
@@ -240,51 +249,52 @@ export default function TransfersLog() {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">رقم السند</Label>
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="TRF-…" className="h-9 w-40" dir="ltr" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">من تاريخ</Label>
-          <Input type="date" dir="ltr" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="h-9" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">إلى تاريخ</Label>
-          <Input type="date" dir="ltr" value={toDate} onChange={(e) => setToDate(e.target.value)} className="h-9" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">الحالة</Label>
-          <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
+      {/* الموجة ١: كان شريطاً يدوياً بـ`flex-wrap items-end` وخمسة حقولٍ بتسمياتٍ مكرّرة الأصناف. */}
+      <FilterShell
+        columns={3}
+        activeCount={activeFilterCount}
+        onReset={resetFilters}
+        headerActions={
+          <Button variant="outline" size="sm" disabled={rows.length === 0 || exporting} onClick={() => void exportAll()}>
+            {exporting ? ACTION_LABELS.printing : "تصدير Excel (الكل)"}
+          </Button>
+        }
+      >
+        <FilterField label="رقم السند">
+          <SearchField value={q} onChange={setQ} placeholder="TRF-…" />
+        </FilterField>
+        <FilterField label="من تاريخ">
+          <Input type="date" dir="ltr" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+        </FilterField>
+        <FilterField label="إلى تاريخ">
+          <Input type="date" dir="ltr" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+        </FilterField>
+        <FilterField label="الحالة">
+          <AppSelect value={status} onValueChange={(v) => setStatus(v as typeof status)}>
             <option value="all">الكل</option>
             <option value="IN_TRANSIT">بالطريق</option>
             <option value="RECEIVED">مستلَم</option>
             <option value="CANCELLED">ملغى</option>
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">الاتجاه</Label>
-          <select className={selectCls} value={direction} onChange={(e) => setDirection(e.target.value as typeof direction)}>
+          </AppSelect>
+        </FilterField>
+        <FilterField label="الاتجاه">
+          <AppSelect value={direction} onValueChange={(v) => setDirection(v as typeof direction)}>
             <option value="all">الكل</option>
             <option value="in">وارد لفرعي</option>
             <option value="out">صادر من فرعي</option>
-          </select>
-        </div>
+          </AppSelect>
+        </FilterField>
         {elevated && (
-          <div className="flex flex-col gap-1">
-            <Label className="text-muted-foreground text-xs">الفرع</Label>
-            <select className={selectCls} value={pickedBranch} onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}>
+          <FilterField label="الفرع">
+            <AppSelect value={pickedBranch === "" ? "" : String(pickedBranch)} onValueChange={(v) => setPickedBranch(v === "" ? "" : Number(v))}>
               <option value="">كل الفروع</option>
               {(branchesQ.data ?? []).map((b) => (
                 <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
               ))}
-            </select>
-          </div>
+            </AppSelect>
+          </FilterField>
         )}
-        <Button variant="outline" size="sm" className="h-9 ms-auto" disabled={rows.length === 0 || exporting} onClick={() => void exportAll()}>
-          {exporting ? "جارٍ التحضير…" : "تصدير Excel (الكل)"}
-        </Button>
-      </div>
+      </FilterShell>
 
       <Card>
         <CardContent className="p-0">

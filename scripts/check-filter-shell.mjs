@@ -75,13 +75,15 @@ for (const file of walkTsx(SCAN_ROOT)) {
   const code = stripComments(readFileSync(file, "utf8"));
   /*
    * إعفاءان — والعقد الحقيقيّ هو **ألّا تُكتب المفردة يدوياً**، لا «تبنَّ مكوّناً بعينه»:
-   *   ١) تبنّي `FilterShell` (يأخذ نصّه من القاموس داخلياً).
+   *   ١) **استعمال** `<FilterShell>` فعلياً (يأخذ نصّه من القاموس داخلياً). القياس على
+   *      الاستعمال لا الاستيراد: برميل `@/components/list` يُصدّر أيضاً `ListToolbar`
+   *      و`RowActions`، فإعفاءٌ بالاستيراد كان يُعفي `WorkOrders.tsx` بلا وجه حقّ.
    *   ٢) قراءة `FILTER_LABELS` مباشرةً — وهي الحالة المشروعة لزرّ تصفيرٍ خارج بطاقة
    *      الفلاتر، مثل زرّ «مسح الفلاتر» داخل **حالة الفراغ** (`Suppliers.tsx`).
    *      إلزامُ تلك الحالة بـFilterShell كان سيكون خطأً: لا بطاقةَ فلاتر هناك أصلاً.
    */
   if (
-    /from\s+["']@\/components\/filters\/FilterShell["']/.test(code) ||
+    /<FilterShell[\s/>]/.test(code) ||
     /FILTER_LABELS/.test(code)
   ) continue;
   let hits = 0;
@@ -138,9 +140,7 @@ for (const f of findings) console.error(`  ${f}`);
 console.error(`
 القاعدة: مساحة الفلاتر سطحٌ واحد — \`FilterShell\` + \`FilterField\`:
 
-  import { FilterShell } from "@/components/filters/FilterShell";
-  import { FilterField } from "@/components/filters/FilterField";
-  import { SearchField } from "@/components/filters/SearchField";
+  import { FilterField, FilterShell, SearchField } from "@/components/list";
 
   <FilterShell columns={3} activeCount={activeCount} onReset={resetAll}>
     <FilterField label="بحث (اسم / SKU / باركود)" wide>
