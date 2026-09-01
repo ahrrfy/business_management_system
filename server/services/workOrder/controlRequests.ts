@@ -14,7 +14,8 @@ import { extractInsertId } from "../../lib/insertId";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { idempotencyHash } from "../idempotency";
-import { money, round2 } from "../money";
+import { money, round2, toDbMoney } from "../money";
+import { computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
 import type { RefundRail } from "@shared/refundRail";
 import { type Actor, requireDb, withTx } from "../tx";
 import { recordWorkOrderEvent } from "../workOrderEvents";
@@ -147,6 +148,24 @@ export async function requestWorkOrderControl(
     assertWorkOrderBranch(wo, actor);
     if (Number(wo.version) !== input.baseVersion) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر أمر الشغل منذ فتحه — حدّث الصفحة قبل إرسال الطلب" });
+    }
+    if (input.requestType === "CANCEL") {
+      // **رفضُ البطاقة عند وجود جزءٍ نقديٍّ لا يقبلها** (مراجعة Codex P2 على #930): حصصٌ
+      // مطبَّقة أو أمانةُ أجرة تُردّان نقداً حتماً، فطلبُ البطاقة يُنشئ تحكّماً يستحيل اعتمادُه
+      // (التنفيذُ يرفضه فيبقى معلّقاً للأبد). نرفضه هنا فلا يُخزَّن أصلاً.
+      const cancelPayload = input.payload as unknown as CancelControlPayload;
+      if ((cancelPayload.refundRail ?? "DRAWER") === "CARD") {
+        const appliedCash = (await appliedCollectionsForWorkOrder(tx, input.workOrderId)).some(
+          (part) => (part.method === "CASH" || part.method === "TELECOM") && money(part.amount).gt(0),
+        );
+        const feeHeld = await workOrderFeeHeldNet(tx, input.workOrderId);
+        if (appliedCash || feeHeld.gt(0)) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "هذا الأمر يحمل مالاً نقدياً محتجزاً (حصص عربون أو أمانة أجرة) لا يُردّ على البطاقة — اختر الدرج أو الخزينة الإدارية.",
+          });
+        }
+      }
     }
     if (input.requestType === "REVERSE_DELIVERY") {
       if (wo.status !== "DELIVERED" || wo.invoiceId == null) {
@@ -458,6 +477,7 @@ export async function rejectWorkOrderControlRequest(
 export async function getWorkOrderControlPreflight(
   workOrderId: number,
   actor: Actor & { role?: string },
+  opts: { exposeCash: boolean } = { exposeCash: true },
 ) {
   return withTx(async (tx) => {
     const wo = (
@@ -486,14 +506,37 @@ export async function getWorkOrderControlPreflight(
         ))
     )[0];
     const cashRefund = round2(money(cashReceipt?.value ?? "0"));
-    const openReceptionShifts = await tx.select({
+    const openReceptionShiftRows = await tx.select({
       id: shifts.id,
       userId: shifts.userId,
       userName: users.name,
-      expectedCash: shifts.expectedCash,
+      openingBalance: shifts.openingBalance,
     }).from(shifts)
       .innerJoin(users, eq(users.id, shifts.userId))
       .where(and(eq(shifts.branchId, Number(wo.branchId)), eq(shifts.status, "OPEN"), eq(shifts.shiftType, "RECEPTION")));
+    /**
+     * ⚠️ **النقدُ المتاح يُحسَب حيّاً لا من عمود `shifts.expectedCash`** (بلاغ المالك بالصورة ١/٩،
+     * ومراجعة Codex): ذلك العمودُ لقطةٌ تُكتب **عند إغلاق الوردية** فيكون `NULL` لكلّ وردية مفتوحة،
+     * فتعرض الشاشةُ «0 د.ع» على درجٍ يحمل ٥٦٬٠٠٠. `computeDrawerCashBalance` يقيسه بنفس صيغة
+     * `assertCashOutAvailable` — فما تعرضه الشاشة هو ما يقبله الحارسُ عند التنفيذ.
+     */
+    const expectedCashRefundAmt = round2(cashRefund.plus(appliedCashRefund).plus(feeHeld));
+    const openReceptionShifts = await Promise.all(
+      openReceptionShiftRows.map(async (shift) => {
+        const available = round2(await computeDrawerCashBalance(tx, Number(shift.id), shift.openingBalance ?? "0"));
+        return {
+          id: Number(shift.id),
+          userId: Number(shift.userId),
+          userName: shift.userName,
+          // ⚠️ الرقمُ الحسّاس يُحجَب عمّن لا يملك `treasury:READ` (مراجعة Codex P2 على #930):
+          // هذا الإجراءُ يمرّ بـ`workordersCashierProcedure`، فدورٌ بلا خزينةٍ كان يرى الرصيدَ
+          // الحيَّ لكلّ درجٍ مفتوح. المحجوبُ عنه يكفيه علَمُ `sufficient` للقرار.
+          expectedCash: opts.exposeCash ? toDbMoney(available) : null,
+          sufficient: available.gte(expectedCashRefundAmt),
+        };
+      }),
+    );
+    const treasuryAvailable = round2(await computeTreasuryCashBalance(tx, Number(wo.branchId)));
     const reverseDelivery = wo.status === "DELIVERED" && wo.invoiceId != null
       ? await getWorkOrderReverseDeliveryPreflightInTx(tx, workOrderId, actor)
       : null;
@@ -506,7 +549,10 @@ export async function getWorkOrderControlPreflight(
       materialLineCount: materialRows.length,
       feeHeld: feeHeld.toFixed(2),
       cashRefundRequired: cashRefund.gt(0) || appliedCashRefund.gt(0) || feeHeld.gt(0),
-      expectedCashRefund: round2(cashRefund.plus(appliedCashRefund).plus(feeHeld)).toFixed(2),
+      expectedCashRefund: expectedCashRefundAmt.toFixed(2),
+      // البطاقةُ ممنوعةٌ حين يوجد جزءٌ نقديٌّ لا يقبلها (حصصٌ مطبَّقة أو أمانةُ أجرة تُردّان
+      // نقداً حتماً) — فاختيارُها يُنشئ طلبَ تحكّمٍ يستحيل اعتمادُه (مراجعة Codex P2 على #930).
+      cardRefundAllowed: !(appliedCashRefund.gt(0) || feeHeld.gt(0)),
       controlRequired: {
         commercial:
           wo.status !== "RECEIVED" ||
@@ -516,12 +562,10 @@ export async function getWorkOrderControlPreflight(
         cancel: wo.status !== "RECEIVED" || money(wo.deposit ?? "0").gt(0) || appliedDeposits.length > 0 || materialRows.length > 0 || feeHeld.gt(0),
       },
       reverseDelivery,
-      openReceptionShifts: openReceptionShifts.map((shift) => ({
-        id: Number(shift.id),
-        userId: Number(shift.userId),
-        userName: shift.userName,
-        expectedCash: shift.expectedCash == null ? null : round2(money(shift.expectedCash)).toFixed(2),
-      })),
+      openReceptionShifts,
+      // نقدُ الخزينة الإدارية — محجوبُ الرقم عمّن لا يملك treasury:READ، مع علَمِ كفايةٍ باقٍ.
+      treasuryCash: opts.exposeCash ? toDbMoney(treasuryAvailable) : null,
+      treasurySufficient: treasuryAvailable.gte(expectedCashRefundAmt),
     };
   }, { gate: "NONE" });
 }

@@ -64,6 +64,11 @@ export interface RefundPreflight {
   treasuryCash?: string | null;
   /** أتكفي الخزينةُ المبلغَ المتوقَّع؟ — بديلٌ غيرُ حسّاس. */
   treasurySufficient: boolean;
+  /**
+   * أيُباح رافدُ **البطاقة**؟ `false` حين يوجد جزءٌ نقديٌّ لا يقبلها (حصصٌ مطبَّقة أو أمانةُ
+   * أجرة تُردّ نقداً حتماً) — فاختيارُها يُنشئ طلبَ تحكّمٍ يستحيل اعتمادُه. الشاشةُ تُخفيها.
+   */
+  cardRefundAllowed: boolean;
 }
 
 /** عمليّاتُ أمر الشغل التي قد تُخرج نقداً. */
@@ -77,4 +82,5 @@ export const EMPTY_REFUND_PREFLIGHT: RefundPreflight = {
   drawers: [],
   treasuryCash: null,
   treasurySufficient: false,
+  cardRefundAllowed: false,
 };

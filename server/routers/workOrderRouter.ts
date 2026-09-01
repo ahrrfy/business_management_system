@@ -457,7 +457,7 @@ export const workOrderRouter = router({
       userId: ctx.user.id,
       branchId: ctx.user.branchId ?? 0,
       role: ctx.user.role,
-    })),
+    }, { exposeCash: maySeeDrawerCash(ctx.user) })),
 
   requestControl: workordersCashierProcedure
     .input(z.discriminatedUnion("requestType", [

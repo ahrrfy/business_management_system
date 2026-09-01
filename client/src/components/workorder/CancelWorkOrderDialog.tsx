@@ -199,9 +199,15 @@ export default function CancelWorkOrderDialog({
    */
   useEffect(() => {
     if (!open || !needsCashDrawer || !effectivePreflight) return;
+    // بطاقةٌ مختارةٌ ثمّ تبيّن أنّها ممنوعة (حصصٌ/أمانة) ⇒ اردُد للدرج قبل أيّ إرسال.
+    if (rail === "CARD" && effectivePreflight.cardRefundAllowed !== true) {
+      setRail("DRAWER");
+      return;
+    }
     const anyDrawerFits = effectivePreflight.drawers.some((d) => d.sufficient);
-    if (!anyDrawerFits && effectivePreflight.treasurySufficient) setRail("TREASURY");
-  }, [open, needsCashDrawer, effectivePreflight]);
+    if (rail === "DRAWER" && !anyDrawerFits && effectivePreflight.treasurySufficient)
+      setRail("TREASURY");
+  }, [open, needsCashDrawer, effectivePreflight, rail]);
 
   /**
    * سببُ الحجب **بحسب الرافد**: الدرجُ وحده يلزمه اختيارُ وردية، والبطاقةُ وحدها مرجعٌ خارجيّ.
@@ -402,7 +408,11 @@ export default function CancelWorkOrderDialog({
                 عربوناً ٧٠٬٠٠٠ وأوسعُ درجٍ مفتوح ٥٦٬٠٠٠ — لا اختيارَ يُصلح نقصَ المصدر.
               */}
               <div className="flex flex-wrap gap-1.5">
-                {REFUND_RAILS.map((r) => {
+                {REFUND_RAILS
+                  // البطاقةُ تُخفى حين يوجد جزءٌ نقديٌّ لا يقبلها (حصصٌ/أمانة) — وإلّا أنشأ
+                  // اختيارُها طلبَ تحكّمٍ يستحيل اعتمادُه (مراجعة Codex P2 على #930).
+                  .filter((r) => r !== "CARD" || effectivePreflight?.cardRefundAllowed === true)
+                  .map((r) => {
                   const fits = r === "TREASURY"
                     ? effectivePreflight?.treasurySufficient
                     : r === "DRAWER"

@@ -359,15 +359,13 @@ export default function WorkOrderDetail() {
       ? null
       : {
           needsCashDrawer: controlPreflight.data.cashRefundRequired,
+          cardRefundAllowed: controlPreflight.data.cardRefundAllowed,
           estimatedCashOut: controlPreflight.data.expectedCashRefund,
           branchId: controlPreflight.data.branchId,
           /**
-           * ⛔ **لا تختلق صفراً**: `controlPreflight` يقرأ عمودَ `shifts.expectedCash`، وهو
-           * لقطةٌ تُكتب **عند إغلاق الوردية** ⇒ `NULL` لكلّ وردية مفتوحة. وكان `?? "0.00"`
-           * يحوّل «لا أعرف» إلى «صفر»، فتُعرض «نقدٌ متاح 0 د.ع» على درجٍ يحمل ٥٦٬٠٠٠ فعلاً
-           * (بلاغُ المالك بالصورة، ١/٩). الرقمُ الحيّ يُحسب بـ`computeDrawerCashBalance` —
-           * وهو ما تفعله نقطةُ `refundPreflight`؛ أمّا هنا فنحذف الحقل حين يغيب:
-           * `drawerShortfallWarning` لا يُنذر بما لا يعرف، بدل إنذارٍ كاذبٍ على كلّ درج.
+           * `controlPreflight` صار يحسب النقدَ حيّاً (`computeDrawerCashBalance`) لا من عمود
+           * `shifts.expectedCash` اللقطيّ، ويُبلّغ الكفايةَ لكلّ درجٍ والخزينة — فنُمرّرها كما
+           * هي (الرقمُ الحسّاس محجوبٌ خادمياً عمّن لا يملك الخزينة، فيصل `null`).
            */
           drawers: controlPreflight.data.openReceptionShifts.map((shift) => ({
             shiftId: shift.id,
@@ -375,12 +373,10 @@ export default function WorkOrderDetail() {
             userName: shift.userName ?? `#${shift.userId}`,
             shiftType: "RECEPTION",
             ...(shift.expectedCash == null ? {} : { expectedCash: shift.expectedCash }),
-            // مجهولٌ ⇒ لا نَحكم بعدمِ الكفاية؛ الخادمُ هو الحَكَم عند التنفيذ.
-            sufficient: true,
+            sufficient: shift.sufficient,
           })),
-          // مسارُ الاعتماد لا يُبلّغ عن الخزينة — لا نَدّعي كفايةً لا نعرفها.
-          treasuryCash: null,
-          treasurySufficient: false,
+          treasuryCash: controlPreflight.data.treasuryCash,
+          treasurySufficient: controlPreflight.data.treasurySufficient,
         }
     : undefined;
   const designApprovalReady =
