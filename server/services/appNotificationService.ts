@@ -56,8 +56,9 @@ export interface CreateAppNotificationInput {
   entityId?: number | null;
   requiresAction?: boolean;
   /**
-   * true فقط عندما يكون العنوان والنص مُنشأين من باني حمولة آمنة لشاشة القفل ولا
-   * يحتويان بيانات مالية أو شخصية. الافتراضي false ويؤدي إلى الحجب.
+   * true فقط عندما يكون العنوان والنص مُنشأين من باني حمولة مُعتمَد لشاشة القفل.
+   * قد يتضمّن هويةً تشغيليةً وافق عليها المالك صراحةً (مثل اسم الموظف في حضور المدير)،
+   * لكنه لا يتضمّن مالاً أو أسراراً أو حمولة خاماً. الافتراضي false ويؤدي إلى الحجب.
    */
   lockScreenSafe?: boolean;
   /** false للأحداث التأكيدية التي يكفي ظهورها داخل التطبيق. */
@@ -114,10 +115,10 @@ function pushKindFor(
   return null;
 }
 
-function webPushPayloadFor(
+export function buildAppWebPushPayload(
   input: CreateAppNotificationInput,
-  route: string,
 ): AppPushPayload | null {
+  const route = safeInternalRoute(input.route);
   if (input.kind === "ATTENDANCE") {
     const kind = input.eventKey.endsWith("ATTENDANCE_CHECK_OUT")
       ? "ATTENDANCE_CHECK_OUT"
@@ -127,8 +128,14 @@ function webPushPayloadFor(
     return kind
       ? {
           kind,
-          title: input.title.trim().slice(0, 90),
-          body: "تم تحديث سجل دوامك.",
+          title:
+            input.lockScreenSafe === true
+              ? input.title.trim().slice(0, 90)
+              : "تحديث الحضور",
+          body:
+            input.lockScreenSafe === true
+              ? input.body.trim().slice(0, 180)
+              : "تم تحديث سجل الدوام.",
           url: "/hr?tab=attendance",
         }
       : null;
@@ -320,7 +327,7 @@ export async function createAppNotification(
   const route = safeInternalRoute(input.route);
   const eventKey = input.eventKey.trim().slice(0, APP_NOTIFICATION_EVENT_KEY_MAX_LENGTH);
   const normalizedInput = { ...input, eventKey };
-  const webPayload = webPushPayloadFor(normalizedInput, route);
+  const webPayload = buildAppWebPushPayload(normalizedInput);
   const nativePayload = nativePayloadFor(normalizedInput);
   let webPushAllowed = false;
   try {

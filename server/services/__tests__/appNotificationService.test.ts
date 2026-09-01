@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { nativePushOutbox, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
+  buildAppWebPushPayload,
   createAppNotification,
   getNotificationPreferences,
   listUserNotifications,
@@ -32,6 +33,36 @@ beforeEach(async () => {
 });
 
 describe("appNotificationService", () => {
+  it("يعرض نص الحضور الموجّه كاملاً في Web Push فقط عند اعتماده لشاشة القفل", () => {
+    const safe = buildAppWebPushPayload({
+      userId: 41,
+      kind: "ATTENDANCE",
+      title: "أحمد علي سجّل الحضور",
+      body: "08:05 • فرع الكرادة",
+      route: "/hr?tab=attendance",
+      eventKey: "attendance:supervisor:41:91:2026-08-08:ATTENDANCE_CHECK_IN",
+      lockScreenSafe: true,
+    });
+    expect(safe).toMatchObject({
+      title: "أحمد علي سجّل الحضور",
+      body: "08:05 • فرع الكرادة",
+      url: "/hr?tab=attendance",
+    });
+
+    const privatePayload = buildAppWebPushPayload({
+      userId: 41,
+      kind: "ATTENDANCE",
+      title: "نص غير معتمد",
+      body: "تفاصيل خاصة",
+      route: "/hr?tab=attendance",
+      eventKey: "attendance:41:2026-08-08:ATTENDANCE_CHECK_OUT",
+    });
+    expect(privatePayload).toMatchObject({
+      title: "تحديث الحضور",
+      body: "تم تحديث سجل الدوام.",
+    });
+  });
+
   it("يحفظ الحدث مرة واحدة ويحسب غير المقروء ثم يعلّمه مقروءاً", async () => {
     const input = {
       userId: 41,
