@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import { Check, FileWarning, RefreshCcw, X } from "lucide-react";
+import { Check, FileWarning, RefreshCcw, Undo2, X } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,7 @@ const STATUS_BADGE_VARIANTS: Record<
   APPROVED: "success",
   REJECTED: "danger",
   STALE: "neutral",
+  WITHDRAWN: "neutral",
 };
 
 function payloadFacts(type: SalesControlType, value: unknown): Array<{ label: string; value: string }> {
@@ -56,9 +57,27 @@ function payloadFacts(type: SalesControlType, value: unknown): Array<{ label: st
       : payload.resolution && typeof payload.resolution === "object"
         ? payload.resolution as Record<string, unknown>
         : null;
+    /**
+     * ⭐ مصير البضاعة له **مصدران** (تدقيق ١/٩/٢٦): `restock` للعميل المسجَّل،
+     * و`resolution.disposition` للزبون العابر — والشاشة لا ترسل `restock` إطلاقاً للعابر
+     * (`ReturnComposer`: `...(!isWalkIn ? { restock } : {})`). فكان `payload.restock === false`
+     * يُقيَّم `undefined !== false` ⇒ **«سليمة — تعاد للمخزون» دائماً** لكلّ مرتجعات الزبون
+     * العابر، حتى حين اختار الطالبُ «تالفة» صراحةً. المراجعُ يقرّر بمعلومةٍ معكوسة في الحالة
+     * الوحيدة التي تُنتج خسارةً حقيقية (التالف: التكلفة تبقى مصروفاً و`branchStock` لا يزيد).
+     */
+    const resolution = payload.resolution && typeof payload.resolution === "object"
+      ? payload.resolution as Record<string, unknown>
+      : null;
+    const damaged = payload.restock === false || resolution?.disposition === "DAMAGED";
+    const dispositionKnown = payload.restock != null || resolution?.disposition != null;
     return [
       { label: "بنود الإرجاع", value: String(lines.length) },
-      { label: "مصير البضاعة", value: payload.restock === false ? "تالفة — لا تعاد للمخزون" : "سليمة — تعاد للمخزون" },
+      {
+        label: "مصير البضاعة",
+        value: !dispositionKnown
+          ? "غير محدَّد"
+          : damaged ? "تالفة — لا تعاد للمخزون" : "سليمة — تعاد للمخزون",
+      },
       { label: "مبلغ الرد", value: refund?.amount == null ? "لا يوجد رد فوري" : `${fmt(String(refund.amount))} د.ع` },
       { label: "طريقة الرد", value: String(refund?.method ?? "—") },
     ];
@@ -97,6 +116,15 @@ export default function SalesControlApprovals() {
   const pending = trpc.salesControl.list.useQuery(
     canReview ? { status: "PENDING" } : { mine: true },
   );
+  /**
+   * ⭐ درجُ الاسترداد لحظة الاعتماد (تدقيق ١/٩/٢٦ — «حارسٌ بلا حقلٍ في الواجهة = ميزةٌ مقفلة»).
+   *
+   * الدرج المختار وقت **الطلب** يُجمَّد في الحمولة المُبصَمة؛ فإن أُقفلت الوردية قبل الاعتماد
+   * سقط التنفيذ حتماً بـ«الوردية المحدَّدة غير مفتوحة» ولا حقلَ هنا لتبديلها — فكلّ مرتجعٍ
+   * نقديّ يُطلَب آخر الدوام كان يولد ميتاً. الخادم يقبل `cashRouting` الآن؛ هذا هو الحقل.
+   */
+  const [routingFor, setRoutingFor] = useState<number | null>(null);
+  const [routingShiftId, setRoutingShiftId] = useState<string>("");
   const [rejecting, setRejecting] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [message, setMessage] = useState("");
@@ -129,15 +157,41 @@ export default function SalesControlApprovals() {
     onError: (cause) => { setError(cause.message); setMessage(""); },
   });
 
+  /**
+   * سحبُ الطالب لطلبه — المخرج الوحيد حين لا يوجد مراجعٌ مستقلّ في الفرع (هجرة 0319).
+   * صفريُّ الأثر: يُحرّر `activeInvoiceId` فتعود الفاتورة قابلةً لطلبٍ جديد.
+   */
+  const withdraw = trpc.salesControl.withdraw.useMutation({
+    onSuccess: async () => {
+      setMessage("سُحب الطلب — تحرّرت الفاتورة ويمكن إرسال طلبٍ جديد. لم يتغيّر المال ولا المخزون.");
+      setError("");
+      await utils.salesControl.list.invalidate();
+    },
+    onError: (cause) => { setError(cause.message); setMessage(""); },
+  });
+
+  async function withdrawOne(requestId: number, invoiceNumber: string) {
+    if (!(await confirm({
+      variant: "warning",
+      title: `سحب الطلب #${requestId}`,
+      description: `تسحب طلبك على الفاتورة ${invoiceNumber}. لا يتغيّر المال ولا المخزون — يُغلَق الطلب فقط وتعود الفاتورة قابلةً لطلبٍ جديد.`,
+      confirmText: "سحب الطلب",
+    }))) return;
+    withdraw.mutate({ requestId, reason: "سحبه الطالب" });
+  }
+
   async function approveOne(requestId: number, invoiceNumber: string, type: SalesControlType) {
+    const shiftId = routingFor === requestId && routingShiftId ? Number(routingShiftId) : null;
     if (!(await confirm({
       variant: "danger",
       title: `اعتماد ${SALES_CONTROL_TYPE_LABELS[type]}`,
-      description: `سيُنفَّذ الأثر الآن على الفاتورة ${invoiceNumber} داخل معاملة واحدة. لا يمكن للطالب أو منشئ الفاتورة اعتمادها.`,
+      description: `سيُنفَّذ الأثر الآن على الفاتورة ${invoiceNumber} داخل معاملة واحدة.${
+        shiftId ? ` النقد يخرج من الدرج #${shiftId}.` : ""
+      } لا يمكن للطالب أو منشئ الفاتورة اعتمادها.`,
       confirmText: "اعتماد وتنفيذ",
       requireText: invoiceNumber,
     }))) return;
-    approve.mutate({ requestId });
+    approve.mutate(shiftId ? { requestId, cashRouting: { shiftId } } : { requestId });
   }
 
   return (
@@ -208,6 +262,45 @@ export default function SalesControlApprovals() {
               {canReview && isReviewerConflict(me.data?.id, request) && (
                 <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
                   لا يمكنك مراجعة هذا الطلب لأنك الطالب أو منشئ الفاتورة. يجب أن يحسمه مدير مستقل.
+                </div>
+              )}
+              {canReview && request.requestType === "SALES_RETURN" && !isReviewerConflict(me.data?.id, request) && (
+                <div className="space-y-1 rounded-md border border-dashed p-3">
+                  <Label htmlFor={`routing-${request.id}`} className="text-xs">
+                    درج خروج النقد (اختياريّ — اتركه فارغاً لاستعمال الدرج المسجَّل في الطلب)
+                  </Label>
+                  <Input
+                    id={`routing-${request.id}`}
+                    dir="ltr"
+                    inputMode="numeric"
+                    className="h-8 w-32 tabular-nums"
+                    placeholder="رقم الوردية"
+                    value={routingFor === Number(request.id) ? routingShiftId : ""}
+                    onChange={(event) => {
+                      setRoutingFor(Number(request.id));
+                      setRoutingShiftId(event.target.value.replace(/[^\d]/g, ""));
+                    }}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    إن أُقفلت وردية الطلب فسيسقط التنفيذ — حدّد هنا وردية مفتوحة الآن. المبلغ والطريقة لا يتغيّران.
+                  </p>
+                </div>
+              )}
+              {request.status === "PENDING" && me.data?.id != null
+                && Number(request.requestedBy) === Number(me.data.id) && (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed p-2">
+                  <span className="text-xs text-muted-foreground">
+                    هذا طلبك — لا تراجعه بنفسك. إن تعذّر إيجاد مراجعٍ مستقل، اسحبه لتتحرّر الفاتورة.
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={withdraw.isPending}
+                    onClick={() => withdrawOne(Number(request.id), request.invoiceNumber)}
+                  >
+                    <Undo2 aria-hidden className="me-1 size-4" />
+                    سحب الطلب
+                  </Button>
                 </div>
               )}
               {canReview && <div className="flex flex-wrap gap-2">

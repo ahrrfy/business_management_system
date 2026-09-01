@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, users } from "../../drizzle/schema";
+import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, returnRequests, salesControlRequests, users } from "../../drizzle/schema";
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
@@ -132,6 +132,53 @@ export const returnRouter = router({
         status: input?.status,
         createdBy: !canApprove || input?.mine ? ctx.user.id : null,
       });
+    }),
+
+  /**
+   * ⭐ بنود الطلب المعلَّق — **الكمّيات التي سيُنفّذها الخادم فعلاً** (تدقيق ١/٩/٢٦).
+   *
+   * كانت شاشة الاعتماد تفتح جدولَ كمّياتٍ **فارغاً** ثمّ تُلزم المدير بإدخال كمّيات،
+   * وتحسب له قيمة المرتجع وتُقسم في حوار التأكيد بما أدخل — بينما `approveRequest` يقرأ
+   * `linesJson` المخزَّنة ويتجاهل إدخاله تماماً. فيعتمد المدير «قلمان / ١٠٠٠ د.ع»
+   * ويُرجع الخادم عشرة: المخزون والإيراد وCOGS تتحرّك بقيمةٍ لم يرها أحد، والنقد المُسلَّم
+   * يقابل كمّيةً أخرى. الشاشة الآن تُحمّل هذه البنود وتقفلها للقراءة.
+   */
+  getRequest: salesManagerProcedure
+    .input(z.object({ requestId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return null;
+      const [req] = await db
+        .select({
+          id: returnRequests.id,
+          invoiceId: returnRequests.invoiceId,
+          branchId: returnRequests.branchId,
+          linesJson: returnRequests.linesJson,
+          reason: returnRequests.reason,
+          status: returnRequests.status,
+          createdBy: returnRequests.createdBy,
+          createdByName: users.name,
+        })
+        .from(returnRequests)
+        .leftJoin(users, eq(returnRequests.createdBy, users.id))
+        .where(eq(returnRequests.id, input.requestId))
+        .limit(1);
+      if (!req) return null;
+      // عزل الفرع — مرآةٌ لحارس `getInvoice`: لا يقرأ مديرُ فرعٍ بنودَ طلبِ فرعٍ آخر.
+      if (ctx.user.role !== "admin" && Number(req.branchId) !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "الطلب لا يخصّ فرعك" });
+      }
+      const lines = ((req.linesJson as Array<{ invoiceItemId: number; baseQuantity: number }>) ?? [])
+        .map((l) => ({ invoiceItemId: Number(l.invoiceItemId), baseQuantity: Number(l.baseQuantity) }));
+      return {
+        id: Number(req.id),
+        invoiceId: Number(req.invoiceId),
+        status: req.status,
+        reason: req.reason,
+        createdBy: Number(req.createdBy),
+        createdByName: req.createdByName ?? null,
+        lines,
+      };
     }),
 
   /**
@@ -352,6 +399,8 @@ export const returnRouter = router({
           invoiceNumber: invoices.invoiceNumber,
           status: invoices.status,
           branchId: invoices.branchId,
+          /** منشئ الفاتورة — تحتاجه الشاشة لتعرف مسبقاً أنّ هذا المستخدم محجوبٌ عن اعتماد إرجاعها. */
+          createdBy: invoices.createdBy,
           customerId: invoices.customerId,
           customerName: customers.name,
           subtotal: invoices.subtotal,
@@ -461,11 +510,85 @@ export const returnRouter = router({
       isMine: Number(s.userId) === Number(ctx.user.id),
     }));
 
+    /**
+     * ⭐ الطلب المعلّق يُكشَف للشاشة (تدقيق ١/٩/٢٦ — بلاغ «المرتجع وهميّ ولا أثر له»).
+     * كانت الشاشة تعرض الفاتورة كأنّها بكرٌ: كامل المتبقّي قابلٌ للإرجاع وبلا أيّ إشارةٍ إلى
+     * طلبٍ سابقٍ ينتظر مراجعاً. فيُعيد الموظّف الإرسال فيصطدم بخطأ الفهرس الفريد الخامّ
+     * (`activeInvoiceUq`) بلا تفسير، أو — أسوأ — يظنّ أنّ المرتجع الأوّل لم يُسجَّل أصلاً
+     * فيسلّم البضاعة والنقود مرّةً ثانية. النظامان معاً يُكشَفان: الحوكميّ الجديد والقديم.
+     */
+    const invoiceCreatedBy = inv.createdBy == null ? null : Number(inv.createdBy);
+    const [governedPending] = await db
+      .select({
+        id: salesControlRequests.id,
+        requestType: salesControlRequests.requestType,
+        requestedBy: salesControlRequests.requestedBy,
+        requestedByName: users.name,
+        reason: salesControlRequests.reason,
+        createdAt: salesControlRequests.createdAt,
+      })
+      .from(salesControlRequests)
+      .leftJoin(users, eq(salesControlRequests.requestedBy, users.id))
+      .where(and(
+        eq(salesControlRequests.invoiceId, input.invoiceId),
+        eq(salesControlRequests.status, "PENDING"),
+      ))
+      .limit(1);
+    const [legacyPending] = await db
+      .select({
+        id: returnRequests.id,
+        createdBy: returnRequests.createdBy,
+        createdByName: users.name,
+        reason: returnRequests.reason,
+        createdAt: returnRequests.createdAt,
+      })
+      .from(returnRequests)
+      .leftJoin(users, eq(returnRequests.createdBy, users.id))
+      .where(and(
+        eq(returnRequests.invoiceId, input.invoiceId),
+        eq(returnRequests.status, "PENDING_APPROVAL"),
+      ))
+      .limit(1);
+
     return {
       /** الوعاء المتبقّي من المقبوض على الفاتورة بكل الطرق — سقف الردّ الأقصى بأيّ رافد. */
       refundPool: caps.pool.toFixed(2),
       refundOptions,
       refundShifts,
+      /**
+       * طلبٌ معلّقٌ على هذه الفاتورة — الشاشة تُظهره وتمنع إرسالاً ثانياً. `canReviewIt`
+       * تُشتقّ خادمياً بنفس حارس `assertReviewerSeparation` كي لا تدعو الشاشةُ مستخدماً إلى
+       * زرِّ اعتمادٍ سيرفضه الخادم (نمط «ما تعرضه الشاشة = ما يقبله الخادم»).
+       */
+      pendingRequest: governedPending
+        ? {
+            source: "CONTROL" as const,
+            id: Number(governedPending.id),
+            requestType: governedPending.requestType,
+            requestedBy: Number(governedPending.requestedBy),
+            requestedByName: governedPending.requestedByName ?? null,
+            reason: governedPending.reason,
+            createdAt: governedPending.createdAt,
+            isMine: Number(governedPending.requestedBy) === Number(ctx.user.id),
+            canReviewIt:
+              Number(governedPending.requestedBy) !== Number(ctx.user.id)
+              && Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
+          }
+        : legacyPending
+          ? {
+              source: "LEGACY" as const,
+              id: Number(legacyPending.id),
+              requestType: "SALES_RETURN" as const,
+              requestedBy: Number(legacyPending.createdBy),
+              requestedByName: legacyPending.createdByName ?? null,
+              reason: legacyPending.reason,
+              createdAt: legacyPending.createdAt,
+              isMine: Number(legacyPending.createdBy) === Number(ctx.user.id),
+              canReviewIt:
+                Number(legacyPending.createdBy) !== Number(ctx.user.id)
+                && Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
+            }
+          : null,
       walkInResolutionPolicy: isWalkIn
         ? {
             required: true as const,

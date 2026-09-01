@@ -312,10 +312,51 @@ async function recordExchangeTx(
 }
 
 /** الاعتماد هو نقطة الأثر الوحيدة، وكل الأثر وختم الطلب في معاملة واحدة. */
+/**
+ * ⭐ توجيهُ النقد قرارُ **لحظة الاعتماد** لا لحظة الطلب (تدقيق ١/٩/٢٦).
+ *
+ * كان `refund.shiftId` يُجمَّد داخل حمولة الطلب ويُمرَّر حرفياً إلى `returnSaleInTx` عند
+ * الاعتماد، بينما `resolveBranchCashShiftTx` يشترط أن تكون الوردية **مفتوحةً الآن**. فكلّ
+ * مرتجعٍ يُطلَب في نهاية الدوام ويُعتمَد في اليوم التالي كان يفشل حتماً بـ«الوردية المحدَّدة
+ * غير مفتوحة»، **ولا حقلَ في شاشة الاعتماد لتبديل الدرج** — ومع حجب الرفض (فصل المهام) تصير
+ * الفاتورة مقفلةً بلا مخرج. المسار القديم `returns.approveRequest` كان محقّاً: يستقبل الرافد
+ * والدرج والمرجع من المُعتمِد لحظة الاعتماد.
+ *
+ * ⛔ **المبلغ والطريقة لا يُمَسّان**: هما جوهر ما أقرّه المراجع، وتغييرُهما هنا يجعل الاعتماد
+ * موافقةً على غير ما عُرِض. المسموح توجيهُ **مسار** الخروج فقط: أيّ درجٍ مفتوح، وأيّ مرجع جهاز.
+ */
+export interface SalesControlCashRouting {
+  /** الدرج الذي سيخرج منه النقد فعلاً وقت التنفيذ — يُصحّح درجاً أُقفل بعد الطلب. */
+  shiftId?: number | null;
+  /** مرجع عملية الاسترداد على جهاز الدفع — يُنفَّذ لحظة الاعتماد لا لحظة الطلب. */
+  reference?: string | null;
+}
+
+/** يدمج توجيه النقد فوق حمولة المرتجع المخزَّنة بلا مساسٍ بالمبلغ أو الطريقة أو الأسطر. */
+function applyCashRouting(
+  payload: SalesReturnControlPayload,
+  routing: SalesControlCashRouting | null | undefined,
+): SalesReturnControlPayload {
+  if (!routing || (routing.shiftId == null && routing.reference == null)) return payload;
+  const next: SalesReturnControlPayload = { ...payload };
+  if (next.refund) {
+    next.refund = {
+      ...next.refund,
+      ...(routing.shiftId != null ? { shiftId: routing.shiftId } : {}),
+      ...(routing.reference != null ? { reference: routing.reference } : {}),
+    };
+  }
+  if (next.resolution && routing.shiftId != null) {
+    next.resolution = { ...next.resolution, shiftId: routing.shiftId };
+  }
+  return next;
+}
+
 export async function approveSalesControlRequest(
   requestId: number,
   actor: Actor & { role?: string },
   reviewNote?: string | null,
+  cashRouting?: SalesControlCashRouting | null,
 ) {
   assertManager(actor);
   const note = reviewNote?.trim() || null;
@@ -399,7 +440,9 @@ export async function approveSalesControlRequest(
       resultInvoiceId = Number(request.invoiceId);
     } else if (request.requestType === "SALES_RETURN") {
       effect = await returnSaleInTx(tx, {
-        ...(request.payload as unknown as SalesReturnControlPayload),
+        // توجيه النقد يُدمَج هنا — بعد التحقّق من `payloadHash` أعلاه (فهو يُطابق الحمولة
+        // **المخزَّنة** لا المُنفَّذة) وقبل أوّل أثر. المبلغ والطريقة والأسطر كما أُقرّت.
+        ...applyCashRouting(request.payload as unknown as SalesReturnControlPayload, cashRouting),
         invoiceId: Number(request.invoiceId),
         clientRequestId: `sales-control-${requestId}`,
         controlExpectedSnapshot: storedSnapshot,
@@ -514,9 +557,69 @@ export async function rejectSalesControlRequest(
   }, { gate: "NONE" });
 }
 
+/**
+ * ⭐ **سحبُ الطالب لطلبه** — مخرجُ الطريق المسدود (تدقيق ١/٩/٢٦، هجرة 0319).
+ *
+ * `assertReviewerSeparation` يحجب الطالبَ ومنشئَ الفاتورة عن **الاعتماد والرفض معاً**.
+ * فحين يكون الطالبُ هو المديرَ الوحيد (و`returns.create` محصورٌ بمديرٍ فأعلى ⇒ الطالبُ مديرٌ
+ * دائماً)، أو حين يبيع المالكُ بحسابه فيصير منشئَ الفاتورة، **لا يبقى في النظام أحدٌ يستطيع
+ * حسم الطلب**. ومع الفهرس الفريد على `activeInvoiceId` تُقفَل الفاتورة ضدّ كلّ عمليات التحكّم
+ * (مرتجع · إلغاء · تصحيح · استبدال · استحقاق) إلى الأبد — يلزمها تدخّلٌ مباشرٌ في القاعدة.
+ *
+ * **ولماذا لا يخرق هذا فصل المهام:** Maker-Checker يحرس **حركة المال**. والسحبُ لا يُحرّك
+ * ديناراً ولا قطعةً — أثرُه الوحيد إخراجُ `status` من PENDING فيصير `activeInvoiceId` بـNULL
+ * وتتحرّر الفاتورة. وهو **تراجعُ صاحب الاقتراح عن اقتراحه**، لا مراجعةٌ له. الاعتماد يبقى
+ * محكوماً بمراجعٍ مستقلٍّ كما هو — لم يُمَسّ حرفٌ منه.
+ *
+ * ⛔ الطالبُ وحده يسحب. مديرٌ آخر يريد الإغلاق مسارُه `reject` بسببٍ موثَّق.
+ */
+export async function withdrawSalesControlRequest(
+  requestId: number,
+  reason: string,
+  actor: Actor & { role?: string },
+) {
+  const note = normalizeReason(reason, "السحب");
+  return withTx(async (tx) => {
+    const request = (
+      await tx.select().from(salesControlRequests)
+        .where(eq(salesControlRequests.id, requestId)).for("update").limit(1)
+    )[0];
+    if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحكم غير موجود" });
+    if (Number(request.requestedBy) !== Number(actor.userId)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "السحب لصاحب الطلب وحده — إغلاقُ طلب غيرك يكون بالرفض من مراجعٍ مؤهَّل",
+      });
+    }
+    // تكرارُ السحب بنفس السبب يُعاد تشغيله بلا خطأ (نمط `reject`).
+    if (request.status === "WITHDRAWN" && request.reviewNote === note) {
+      return { request, replayed: true as const };
+    }
+    if (request.status !== "PENDING") {
+      throw new TRPCError({ code: "CONFLICT", message: `الطلب محسوم بالحالة ${request.status}` });
+    }
+    const reviewedAt = new Date();
+    await tx.update(salesControlRequests).set({
+      status: "WITHDRAWN",
+      // `reviewedBy` = الساحب = الطالب. يستثنيه `chk_sales_control_maker_checker` للحالة
+      // WITHDRAWN وحدها (هجرة 0319)، ويبقى مُلزِماً على APPROVED/REJECTED.
+      reviewedBy: actor.userId,
+      reviewedAt,
+      reviewNote: note,
+    }).where(and(
+      eq(salesControlRequests.id, requestId),
+      eq(salesControlRequests.status, "PENDING"),
+    ));
+    return {
+      request: { ...request, status: "WITHDRAWN" as const, reviewedBy: actor.userId, reviewedAt, reviewNote: note },
+      replayed: false as const,
+    };
+  }, { gate: "NONE" });
+}
+
 export async function listSalesControlRequests(
   actor: Actor & { role?: string },
-  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; mine?: boolean },
+  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE" | "WITHDRAWN"; mine?: boolean },
 ) {
   const db = requireDb();
   const mineOnly = options?.mine === true || (actor.role !== "admin" && actor.role !== "manager");

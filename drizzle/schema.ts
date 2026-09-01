@@ -16823,7 +16823,9 @@ export const salesControlRequests = mysqlTable(
       "SALES_EXCHANGE",
       "SALES_DUE_DATE_CHANGE",
     ]).notNull(),
-    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"]).default("PENDING").notNull(),
+    // WITHDRAWN (هجرة 0319): سحبُ الطالب لطلبه — صفريّ الأثر، ويُحرّر `activeInvoiceId`
+    // فتعود الفاتورة قابلةً لطلبٍ جديد. الاعتماد يبقى محكوماً بفصل المهام كما هو.
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE", "WITHDRAWN"]).default("PENDING").notNull(),
     payload: json("payload").notNull(),
     payloadHash: char("payloadHash", { length: 64 }).notNull(),
     invoiceSnapshot: json("invoiceSnapshot").notNull(),
@@ -16849,9 +16851,11 @@ export const salesControlRequests = mysqlTable(
     decisionShape: check("chk_sales_control_decision_shape", sql`(
       (${t.status} = 'PENDING' AND ${t.reviewedBy} IS NULL AND ${t.reviewedAt} IS NULL AND ${t.appliedAt} IS NULL)
       OR (${t.status} = 'APPROVED' AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
-      OR (${t.status} IN ('REJECTED','STALE') AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NULL)
+      OR (${t.status} IN ('REJECTED','STALE','WITHDRAWN') AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NULL)
     )`),
-    makerChecker: check("chk_sales_control_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`),
+    // السحبُ وحده يُستثنى: الساحبُ هو الطالبُ بالتعريف. ويبقى القيد مُلزِماً على
+    // APPROVED/REJECTED حيث يعني رقابةً فعليّة (هجرة 0319).
+    makerChecker: check("chk_sales_control_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.status} = 'WITHDRAWN' OR ${t.reviewedBy} <> ${t.requestedBy}`),
   }),
 );
 export type SalesControlRequest = typeof salesControlRequests.$inferSelect;

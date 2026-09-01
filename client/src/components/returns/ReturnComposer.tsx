@@ -18,7 +18,7 @@
  *  · الردّ بالبطاقة يُنفَّذ على الجهاز ثمّ يُوثَّق بمرجعه (إثباتٌ لا إقفال).
  */
 import { shiftTypeLabel } from "@/lib/labels";
-import { AlertTriangle, CreditCard, Info, Wallet } from "lucide-react";
+import { AlertTriangle, Clock, CreditCard, Info, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
@@ -67,6 +67,15 @@ export interface ReturnComposerProps {
 export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
+  /**
+   * ⭐ في وضع الاعتماد نُحمّل **بنود الطلب** — هي التي سينفّذها الخادم، لا ما يُدخله المدير.
+   * كان الجدول يُفتَح فارغاً فيُدخل المدير كمّياتٍ يُقسم بها حوارُ التأكيد ثمّ يتجاهلها
+   * `approveRequest` (يقرأ `linesJson`). مراجعٌ لا يرى ما يراجعه ليس مراجعاً.
+   */
+  const requestDetail = trpc.returns.getRequest.useQuery(
+    { requestId: approvingRequestId ?? 0 },
+    { enabled: !!approvingRequestId && approvingRequestId > 0 },
+  );
 
   const [qty, setQty] = useState<Record<number, number>>({});
   const [restock, setRestock] = useState(true);
@@ -94,6 +103,16 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     setDone("");
     setClientRequestId(crypto.randomUUID());
   }, [invoiceId]);
+
+  /** بنود الطلب المعلَّق (وضع الاعتماد) — مصدر الحقيقة للكمّيات، تُقفَل ضدّ التعديل. */
+  const lockedLines = approvingRequestId ? requestDetail.data?.lines ?? null : null;
+  // تُملأ الكمّيات من الطلب مرّةً عند وصولها، فتحسب الشاشة (القيمة/السقف/الحوار) على ما سيُنفَّذ.
+  useEffect(() => {
+    if (!lockedLines) return;
+    const next: Record<number, number> = {};
+    for (const l of lockedLines) next[l.invoiceItemId] = l.baseQuantity;
+    setQty(next);
+  }, [lockedLines]);
 
   const inv = detail.data;
   const isWalkIn = !!inv?.walkInResolutionPolicy;
@@ -233,7 +252,11 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     setDone("");
   }
 
+  /** الكمّيات غير قابلة للتعديل في وضع الاعتماد: الخادم ينفّذ بنود الطلب لا إدخال المدير. */
+  const qtyLocked = !!approvingRequestId;
   const isLocked = inv?.status === "RETURNED" || inv?.status === "CANCELLED";
+  /** الطلب المعلّق على هذه الفاتورة (الحوكميّ أو القديم) — الخادم مصدرُه، لا اشتقاقٌ في الشاشة. */
+  const pending = inv?.pendingRequest ?? null;
   const needsShift = rail === "CASH" && refundD.gt(0);
   const needsReference = rail === "CARD" && refundD.gt(0);
   const selectedShift = shifts.find((s) => Number(s.shiftId) === Number(shiftId));
@@ -249,6 +272,12 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
   /** سببُ تعطيل الحفظ — نصٌّ واحدٌ يُعرَض دائماً بدل رفضٍ متأخّر من الخادم. */
   const blockReason = useMemo(() => {
     if (isLocked) return "هذه الفاتورة مرتجعة/ملغاة — لا يمكن تسجيل مرتجع جديد.";
+    // لا اعتماد قبل أن تصل بنود الطلب — وإلّا اعتمد المدير على جدولٍ فارغ لا يمثّل ما سيُنفَّذ.
+    if (approvingRequestId && !lockedLines) return "جارٍ تحميل بنود الطلب المطلوب اعتماده…";
+    // طلبٌ معلّقٌ قائم ⇒ الخادم يرفض الثاني بالفهرس الفريد. نقولها هنا بدل خطأٍ خامّ بعد الملء.
+    if (pending && !approvingRequestId) {
+      return `على هذه الفاتورة طلبٌ معلّق #${pending.id} — احسمه أولاً (اعتماداً أو رفضاً) قبل إرسال طلبٍ جديد.`;
+    }
     if (!selectedLines.length) return "حدّد كمية إرجاع واحدة على الأقل.";
     if (isWalkIn && !returnValue.gt(0)) return "قيمة المرتجع صفر؛ لا يمكن إنشاء تسوية نقدية لزبون عابر.";
     // حجبُ الرافد يسري على ردٍّ **موجب** فقط — لا معنى لسقفٍ حين لا يخرج مال.
@@ -264,7 +293,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     if (needsReference && !cardReference.trim()) return "أدخِل مرجع عملية الاسترداد من جهاز الدفع.";
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, needsShift, shifts.length, shiftId, selectedShift, refundD, needsReference, cardReference, reason]);
+  }, [isLocked, pending, approvingRequestId, lockedLines, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, needsShift, shifts.length, shiftId, selectedShift, refundD, needsReference, cardReference, reason]);
 
   async function submit() {
     setError("");
@@ -297,13 +326,25 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         ? `يستلم الزبون ${fmt(refund.amount)} د.ع ${RAIL_LABEL[rail]}`
       : "بلا إرجاع نقود (تُخصَم من ذمّة العميل فقط)";
     const stockSentence = restock ? "والبضاعة تعود للرفّ" : "والبضاعة تالفة لا تعود للمخزون";
+    const scope = `${selectedLines.length === 1 ? "صنفٌ واحد" : `${selectedLines.length} أصناف`} (${pieces} قطعة)`;
 
+    /**
+     * ⭐ حوارُ التأكيد يقول الحقيقة (تدقيق ١/٩/٢٦ — بلاغ «المرتجع وهميّ»).
+     * كان يُعنوَن «مرتجع الفاتورة» وزرُّه «تسجيل المرتجع» ويصف تسليم النقود وعودة البضاعة
+     * للرفّ **بصيغة الحاضر** — بينما `returns.create` طلبٌ صفريّ الأثر لا يُنفَّذ حتى يعتمده
+     * مراجعٌ مستقل. فيسلّم الموظّف البضاعة والنقود على وعدٍ لم يقع. المسار الوحيد الذي
+     * ينفّذ فوراً هو اعتماد طلبٍ قائم (`approvingRequestId`).
+     */
     if (
       !(await confirm({
-        variant: "danger",
-        title: `مرتجع الفاتورة ${inv.invoiceNumber}`,
-        description: `ترجع ${selectedLines.length === 1 ? "صنفٌ واحد" : `${selectedLines.length} أصناف`} (${pieces} قطعة) — ${moneySentence}، ${stockSentence}. متابعة؟`,
-        confirmText: "تسجيل المرتجع",
+        variant: approvingRequestId ? "danger" : "warning",
+        title: approvingRequestId
+          ? `اعتماد وتنفيذ مرتجع الفاتورة ${inv.invoiceNumber}`
+          : `إرسال طلب مرتجع للفاتورة ${inv.invoiceNumber}`,
+        description: approvingRequestId
+          ? `يُنفَّذ الأثر الآن: ترجع ${scope} — ${moneySentence}، ${stockSentence}. متابعة؟`
+          : `ترسل طلباً بإرجاع ${scope} — وعند الاعتماد ${moneySentence}، ${stockSentence}.\n\nتنبيه: لا تسلّم الزبون نقوداً ولا تستلم البضاعة على هذا الطلب: لا يتغيّر المخزون ولا المال حتى يعتمده مراجعٌ مستقل (غيرك وغير منشئ الفاتورة).`,
+        confirmText: approvingRequestId ? "اعتماد وتنفيذ" : "إرسال الطلب للاعتماد",
       }))
     ) return;
 
@@ -339,6 +380,35 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
 
   return (
     <div className="space-y-4">
+      {/*
+        الطلب المعلّق يُعلَن قبل أيّ شيء (تدقيق ١/٩/٢٦). كانت الشاشة صامتةً عنه فتبدو
+        الفاتورة بكراً؛ فيعيد الموظّف الإرسال فيصطدم بخطأ فهرسٍ خامّ، أو يظنّ أنّ الطلب الأوّل
+        ضاع فيسلّم البضاعة والنقود مرّتين. ونقول له **من** يستطيع اعتماده، لا «انتظر» فقط.
+      */}
+      {pending && !approvingRequestId && (
+        <Card className="border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]/30">
+          <CardContent className="flex items-start gap-2 p-4 text-sm">
+            <Clock aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-warn)]" />
+            <div className="space-y-1">
+              <p className="font-bold text-[var(--sem-warn)]">
+                على هذه الفاتورة طلبٌ معلّق #{pending.id} بانتظار مراجعٍ مستقل — لم يتغيّر المخزون ولا المال بعد.
+              </p>
+              <p className="text-muted-foreground">
+                طلبه {pending.requestedByName ?? `المستخدم ${pending.requestedBy}`}
+                {pending.isMine ? " (أنت)" : ""}؛ السبب: {pending.reason}.
+              </p>
+              <p className="text-muted-foreground">
+                {pending.canReviewIt
+                  ? "تستطيع اعتماده من تبويب «طلبات العمليات» في المبيعات."
+                  : pending.isMine
+                    ? "لا تعتمد طلبك بنفسك (فصل المهام) — يعتمده مديرٌ آخر لم يُنشئ الفاتورة."
+                    : "أنت منشئ هذه الفاتورة فلا تراجع إرجاعها — يعتمده مديرٌ آخر."}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* ① رأس الفاتورة — نفس لغة شاشة الفاتورة المتقدّمة: الحقائق أولاً، بلا قرار. */}
       <Card>
         <CardContent className="grid grid-cols-2 gap-3 p-4 text-sm md:grid-cols-3 xl:grid-cols-5">
@@ -404,18 +474,18 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
                         ) : (
                           <div className="flex items-center justify-center gap-1" dir="ltr">
                             <Button size="sm" variant="outline" className="h-8 w-8 p-0 font-black" aria-label="أنقص كمية الإرجاع"
-                              disabled={isLocked || v <= 0} onClick={() => setQtyClamped(it.invoiceItemId, v - step, it.remaining)}>−</Button>
+                              disabled={isLocked || qtyLocked || v <= 0} onClick={() => setQtyClamped(it.invoiceItemId, v - step, it.remaining)}>−</Button>
                             <Input dir="ltr" inputMode="numeric" className="h-8 w-16 text-center font-bold tabular-nums"
-                              value={v > 0 ? String(v) : ""} placeholder="0" disabled={isLocked}
+                              value={v > 0 ? String(v) : ""} placeholder="0" disabled={isLocked || qtyLocked}
                               aria-label={`كمية إرجاع ${it.productName} بالقطعة`}
                               onChange={(e) => {
                                 const raw = e.target.value.replace(/[^\d]/g, "");
                                 setQtyClamped(it.invoiceItemId, raw ? parseInt(raw, 10) : 0, it.remaining);
                               }} />
                             <Button size="sm" variant="outline" className="h-8 w-8 p-0 font-black" aria-label="زد كمية الإرجاع"
-                              disabled={isLocked || v >= it.remaining} onClick={() => setQtyClamped(it.invoiceItemId, v + step, it.remaining)}>+</Button>
+                              disabled={isLocked || qtyLocked || v >= it.remaining} onClick={() => setQtyClamped(it.invoiceItemId, v + step, it.remaining)}>+</Button>
                             <Button size="sm" variant="ghost" className="h-8 px-2 text-[11px] font-bold"
-                              disabled={isLocked || v >= it.remaining} onClick={() => setQtyClamped(it.invoiceItemId, it.remaining, it.remaining)}>الكل</Button>
+                              disabled={isLocked || qtyLocked || v >= it.remaining} onClick={() => setQtyClamped(it.invoiceItemId, it.remaining, it.remaining)}>الكل</Button>
                           </div>
                         )}
                       </td>
@@ -436,12 +506,12 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
             <button type="button" role="radio" aria-checked={restock} disabled={isLocked} onClick={() => setRestock(true)}
               className={`rounded-lg border-2 p-3 text-start text-sm font-bold ${restock ? "border-primary bg-primary/5" : "bg-card hover:bg-muted"}`}>
               سليمة — تعود للرفّ
-              <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">تُضاف الكمية للمخزون وتُباع مجدداً</div>
+              <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">تُضاف الكمية للمخزون وتُباع مجدداً — عند الاعتماد</div>
             </button>
             <button type="button" role="radio" aria-checked={!restock} disabled={isLocked} onClick={() => setRestock(false)}
               className={`rounded-lg border-2 p-3 text-start text-sm font-bold ${!restock ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]" : "bg-card hover:bg-muted"}`}>
               تالفة — لا تعود للمخزون
-              <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">خسارةٌ على المكتبة، لا تُضاف للرفّ</div>
+              <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">خسارةٌ على المكتبة، لا تُضاف للرفّ — عند الاعتماد</div>
             </button>
           </div>
         </CardContent>
