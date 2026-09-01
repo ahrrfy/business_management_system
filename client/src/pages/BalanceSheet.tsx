@@ -1,6 +1,7 @@
 // الميزانية العمومية المبسّطة (لقطة) — أصول / خصوم / حقوق ملكية (مشتقّة).
 // عرض + Excel + طباعة A4. ⚠️ مبسّطة: المقبوضات مصنفة حسب وسيلة الدفع، الأصول بالتكلفة، حقوق الملكية مشتقّة.
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -168,10 +169,10 @@ export default function BalanceSheet() {
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
               <option value="">الكل (الشركة)</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">كما في تاريخ</label>

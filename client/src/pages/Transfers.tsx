@@ -8,6 +8,7 @@
 // التجميع قبل الإرسال: الخادم يقبل سطراً واحداً لكل متغيّر بالوحدة الأساس ⇒ نجمع أسطر الوحدات
 // المختلفة لنفس المتغيّر (درزن ١٢ + قطعة ٣ = ١٥ أساس) في بندٍ واحد.
 import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -208,10 +209,10 @@ export default function Transfers() {
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-end">
             <div className="space-y-1">
               <Label>من فرع *</Label>
-              <select className={selectClsFull} value={effectiveFrom || ""} onChange={(e) => changeFrom(e.target.value ? Number(e.target.value) : "")}>
+              <AppSelect className="h-9" value={String(effectiveFrom || "")} onValueChange={(next) => changeFrom(next ? Number(next) : "")}>
                 <option value="">— اختر —</option>
                 {(branches.data ?? []).map(branchOption)}
-              </select>
+              </AppSelect>
             </div>
             <div className="flex justify-center pb-1">
               <Button type="button" variant="outline" size="icon" title="عكس الاتجاه" onClick={swap} className="rounded-full">
@@ -220,10 +221,10 @@ export default function Transfers() {
             </div>
             <div className="space-y-1">
               <Label>إلى فرع *</Label>
-              <select className={selectClsFull} value={effectiveTo || ""} onChange={(e) => setToBranchId(e.target.value ? Number(e.target.value) : "")}>
+              <AppSelect className="h-9" value={String(effectiveTo || "")} onValueChange={(next) => setToBranchId(next ? Number(next) : "")}>
                 <option value="">— اختر —</option>
                 {(branches.data ?? []).filter((b) => Number(b.id) !== Number(effectiveFrom)).map(branchOption)}
-              </select>
+              </AppSelect>
             </div>
           </div>
         </CardContent>
@@ -240,9 +241,9 @@ export default function Transfers() {
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1">
             <Label htmlFor="trf-reason">سبب التحويل</Label>
-            <select id="trf-reason" className={selectClsFull} value={reason} onChange={(e) => setReason(e.target.value)}>
+            <AppSelect id="trf-reason" className="h-9" value={reason} onValueChange={(next) => setReason(next)}>
               {REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <Label htmlFor="trf-owner">المسؤول عن التحويل</Label>

@@ -6,6 +6,7 @@
  * الخصم التلقائي يظهر في مسيّر الرواتب (عمود الاستقطاع: «منه سلفة») عند التوليد.
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -161,24 +162,24 @@ export default function EmployeeAdvances() {
             }}
             filters={<div className="flex items-end gap-2 flex-wrap">
               <FilterField label="الحالة">
-                <select className={selectClsSm} value={status} onChange={(e) => setStatus(e.target.value as typeof status)} aria-label="حالة السلفة">
+                <AppSelect className="h-9" value={status} onValueChange={(next) => setStatus(next as typeof status)} aria-label="حالة السلفة">
                   <option value="">كل الحالات</option>
                   <option value="ACTIVE">نشطة</option>
                   <option value="SETTLED">مسوّاة</option>
                   <option value="CANCELLED">ملغاة</option>
-                </select>
+                </AppSelect>
               </FilterField>
               <FilterField label="الموظف">
-                <select className={selectClsSm} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
+                <AppSelect className="h-9" value={empFilter} onValueChange={(next) => setEmpFilter(next)} aria-label="الموظف">
                   <option value="">كل الموظفين</option>
                   {(empOpts.data?.managers ?? []).map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
-                </select>
+                </AppSelect>
               </FilterField>
               <FilterField label="الفرع">
-                <select className={selectClsSm} value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} aria-label="الفرع">
+                <AppSelect className="h-9" value={branchFilter} onValueChange={(next) => setBranchFilter(next)} aria-label="الفرع">
                   <option value="">كل الفروع</option>
                   {(branchesQ.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-                </select>
+                </AppSelect>
               </FilterField>
             </div>}
           />
@@ -330,14 +331,14 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
         <div className="space-y-3 py-1">
           <div>
             <Label htmlFor="adv-emp">الموظف</Label>
-            <select id="adv-emp" className={`${selectClsSm} w-full h-9`} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <AppSelect id="adv-emp" className={`${selectClsSm} w-full h-9`} value={employeeId} onValueChange={(next) => setEmployeeId(next)}>
               <option value="">اختر موظفاً…</option>
               {emps.map((e) => (
                 <option key={e.id} value={String(e.id)}>
                   {e.fullName}{e.branchName ? ` — ${e.branchName}` : ""}
                 </option>
               ))}
-            </select>
+            </AppSelect>
             {!!employeeId && balQ.data && D(balQ.data.balance).gt(0) && (
               <p className="text-xs text-money-negative mt-1">
                 عليه سلف نشطة متبقّيها {iqd(balQ.data.balance)} د.ع ({balQ.data.activeCount} سلفة) — الخصم بالأقدم أولاً.

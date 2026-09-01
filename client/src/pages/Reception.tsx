@@ -2251,15 +2251,15 @@ export default function Reception() {
           {needsBranchChoice && (
             <div className="mb-3">
               <label htmlFor="rec-branch" className="mb-1.5 block text-sm font-bold">الفرع <span className="text-destructive">*</span></label>
-              <select
+              <AppSelect
                 id="rec-branch"
-                className="h-12 w-full rounded-md border border-input bg-transparent px-3 text-base shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="h-12 border-input px-3 text-base focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 value={pickedBranch ?? ""}
-                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+                onValueChange={(value) => setPickedBranch(value ? Number(value) : null)}
               >
                 <option value="">— اختر الفرع —</option>
                 {(branchesQ.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+              </AppSelect>
             </div>
           )}
           <label className="mb-1.5 block text-sm font-bold">المبلغ الموجود في الدرج الآن (د.ع)</label>

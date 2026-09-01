@@ -190,30 +190,30 @@ export default function InstallmentPlans() {
         {isAdmin && (
           <div className="space-y-1">
             <Label className="text-xs">الفرع</Label>
-            <select
+            <AppSelect
               value={String(branchFilter ?? "")}
-              onChange={(e) => { setBranchFilter(e.target.value ? Number(e.target.value) : undefined); setOffset(0); }}
-              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              onValueChange={(value) => { setBranchFilter(value ? Number(value) : undefined); setOffset(0); }}
+              className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="">كل الفروع</option>
               {(branches.data ?? []).map((b) => (
                 <option key={b.id} value={b.id}>{b.name}</option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         )}
         <div className="space-y-1">
           <Label className="text-xs">الحالة</Label>
-          <select
+          <AppSelect
             value={statusFilter}
-            onChange={(e) => { setStatusFilter(e.target.value as typeof statusFilter); setOffset(0); }}
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onValueChange={(value) => { setStatusFilter(value as typeof statusFilter); setOffset(0); }}
+            className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <option value="">كل الحالات</option>
             <option value="ACTIVE">نشطة</option>
             <option value="COMPLETED">مكتملة</option>
             <option value="CANCELLED">ملغاة</option>
-          </select>
+          </AppSelect>
         </div>
         <div className="min-w-64 flex-1 max-w-sm space-y-1">
           <Label className="text-xs">العميل</Label>
@@ -804,20 +804,20 @@ function CreatePlanDialog({
             {isAdmin && (
               <div className="space-y-1">
                 <Label>الفرع *</Label>
-                <select
+                <AppSelect
                   value={String(effectiveBranch ?? "")}
-                  onChange={(e) => {
-                    setBranchId(e.target.value ? Number(e.target.value) : null);
+                  onValueChange={(value) => {
+                    setBranchId(value ? Number(value) : null);
                     setInvoiceId(null);
                     setTotal("");
                     setLines([]);
                   }}
-                  className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   {branches.map((b) => (
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             )}
             <div className="space-y-1 sm:col-span-2">

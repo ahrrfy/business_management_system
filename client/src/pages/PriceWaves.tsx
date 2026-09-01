@@ -58,7 +58,7 @@ import {
 import { WaveHistory } from "@/components/priceWave/WaveHistory";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { priceTierLabel } from "@/lib/labels";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -461,9 +461,7 @@ export default function PriceWaves() {
                         }
                       >
                         <option value="">جميع الفئات</option>
-                        <CategoryOptionList
-                          categories={categoriesQ.data ?? []}
-                        />
+                        {categoryOptionElements(categoriesQ.data ?? [])}
                       </AppSelect>
                     </Field>
                     <Field

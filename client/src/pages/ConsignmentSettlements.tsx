@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -146,15 +147,15 @@ export default function ConsignmentSettlements() {
           {needsBranchChoice ? (
             <div className="space-y-1">
               <Label htmlFor="cs-branch">الفرع <span className="text-destructive">*</span></Label>
-              <select
+              <AppSelect
                 id="cs-branch"
-                className="h-9 w-56 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="h-9 w-56 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 value={pickedBranch ?? ""}
-                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+                onValueChange={(next) => setPickedBranch(next ? Number(next) : null)}
               >
                 <option value="">— اختر الفرع —</option>
                 {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+              </AppSelect>
               <p className="text-[11px] text-destructive">يلزم اختيار الفرع قبل تفعيل التسوية — سند الصرف يُنسَب لصندوقه.</p>
             </div>
           ) : (
@@ -162,14 +163,14 @@ export default function ConsignmentSettlements() {
           )}
           <div className="space-y-1">
             <Label htmlFor="cs-method">طريقة دفع التسوية</Label>
-            <select
+            <AppSelect
               id="cs-method"
-              className="h-9 w-40 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="h-9 w-40 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               value={settlementMethod}
-              onChange={(e) => setSettlementMethod(e.target.value as typeof settlementMethod)}
+              onValueChange={(next) => setSettlementMethod(next as typeof settlementMethod)}
             >
               {SETTLEMENT_METHODS.map((m) => <option key={m} value={m}>{paymentMethodLabel(m)}</option>)}
-            </select>
+            </AppSelect>
           </div>
         </CardContent>
       </Card>

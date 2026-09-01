@@ -2,6 +2,7 @@
  * إقفال سنوي + رولوفر Retained Earnings — adminProcedure.
  */
 import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -301,13 +302,13 @@ export default function YearEndPage() {
             <label className="text-sm font-medium" htmlFor="year-end-request">
               طلب إقفال ديسمبر ({closingMonth})
             </label>
-            <select
+            <AppSelect
               id="year-end-request"
-              value={requestId ?? ""}
-              onChange={(e) =>
-                setRequestId(e.target.value ? Number(e.target.value) : null)
+              value={String(requestId ?? "")}
+              onValueChange={(next) =>
+                setRequestId(next ? Number(next) : null)
               }
-              className="h-9 rounded-md border bg-transparent px-3 text-sm"
+              className="h-9 px-3 text-sm"
               disabled={busy || eligibleRequests.length === 0}
             >
               <option value="">اختر طلباً معلّقاً مطابقاً</option>
@@ -317,7 +318,7 @@ export default function YearEndPage() {
                   {fmtDate(row.requestedAt)}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
 
           {requests.error && (

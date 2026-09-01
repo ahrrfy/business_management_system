@@ -1,4 +1,5 @@
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
@@ -627,29 +628,29 @@ export default function Shifts() {
             filters={
               <>
                 <FilterField label="الحالة">
-                  <select
-                    className={selectCls}
+                  <AppSelect
+                    className="h-9"
                     value={status}
-                    onChange={(e) =>
+                    onValueChange={(value) =>
                       setFilter(
                         setStatus,
-                        e.target.value as "" | "OPEN" | "CLOSED",
+                        value as "" | "OPEN" | "CLOSED",
                       )
                     }
                   >
                     <option value="">الكل</option>
                     <option value="OPEN">مفتوحة</option>
                     <option value="CLOSED">مغلقة</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="نوع الوردية">
-                  <select
-                    className={selectCls}
+                  <AppSelect
+                    className="h-9"
                     value={shiftType}
-                    onChange={(e) =>
+                    onValueChange={(value) =>
                       setFilter(
                         setShiftType,
-                        e.target.value as
+                        value as
                           | ""
                           | "RETAIL"
                           | "RECEPTION"
@@ -661,16 +662,16 @@ export default function Shifts() {
                     <option value="RETAIL">تجزئة</option>
                     <option value="RECEPTION">خدمة العملاء</option>
                     <option value="PRINT_SERVICES">خدمات طباعة</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="المطابقة النقدية">
-                  <select
-                    className={selectCls}
+                  <AppSelect
+                    className="h-9"
                     value={varianceState}
-                    onChange={(e) =>
+                    onValueChange={(value) =>
                       setFilter(
                         setVarianceState,
-                        e.target.value as
+                        value as
                           | ""
                           | "WITH_VARIANCE"
                           | "MATCHED"
@@ -682,16 +683,16 @@ export default function Shifts() {
                     <option value="WITH_VARIANCE">بفرق نقدي</option>
                     <option value="MATCHED">مطابقة</option>
                     <option value="UNRECONCILED">غير محسوبة</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="الفرع">
-                  <select
-                    className={selectCls}
-                    value={branchId}
-                    onChange={(e) =>
+                  <AppSelect
+                    className="h-9"
+                    value={String(branchId)}
+                    onValueChange={(value) =>
                       setFilter(
                         setBranchId,
-                        e.target.value ? Number(e.target.value) : "",
+                        value ? Number(value) : "",
                       )
                     }
                   >
@@ -701,7 +702,7 @@ export default function Shifts() {
                         {b.name}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="من تاريخ">
                   <Input
@@ -1027,13 +1028,13 @@ export default function Shifts() {
               <label htmlFor="shift-funding-source" className="text-sm font-bold">
                 سحب الوردية المصدر
               </label>
-              <select
+              <AppSelect
                 id="shift-funding-source"
                 className={`${selectCls} h-10 w-full`}
                 value={fundingSourceReceiptId}
                 disabled={fundingSourcesQ.isLoading}
-                onChange={(event) => {
-                  const nextId = event.target.value;
+                onValueChange={(value) => {
+                  const nextId = value;
                   setFundingSourceReceiptId(nextId);
                   const selected = fundingSources.find(
                     (source) => Number(source.receiptId) === Number(nextId),
@@ -1047,7 +1048,7 @@ export default function Shifts() {
                     {source.referenceNumber} — وردية #{source.sourceShiftId} {source.sourceUserName ?? ""} — {fmt(source.amount)} د.ع
                   </option>
                 ))}
-              </select>
+              </AppSelect>
               <p className="text-xs text-muted-foreground">
                 إلزامي: يجب أن يكون سحباً مقبولاً من وردية أخرى وبنفس المبلغ، ولا يمكن استعماله مرتين. من دون سحبٍ فعلي أغلق الوردية وافتح وردية جديدة بعهدة من الخزينة.
               </p>

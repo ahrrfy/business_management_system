@@ -51,6 +51,8 @@ import {
   TASK_WRITE_ROLES,
   type TaskStatus,
 } from "@/pages/TasksHub";
+import { DESIGN_APPROVAL_EVIDENCE_LABELS } from "@shared/designApprovalEvidence";
+import { designApprovalSelfReviewBlocked } from "@/lib/designApprovalPolicy";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
@@ -62,21 +64,14 @@ type DesignDecisionInput = RouterInputs["workOrderDesignApproval"]["decide"];
 type DesignDecision = DesignDecisionInput["decision"];
 type EvidenceType = DesignDecisionInput["evidence"]["type"];
 
-const EVIDENCE_LABELS: Record<EvidenceType, string> = {
-  WHATSAPP_MESSAGE: "رسالة واتساب",
-  CUSTOMER_SIGNATURE: "توقيع العميل",
-  EMAIL: "بريد إلكتروني",
-  ATTACHMENT: "مرفق محفوظ",
-  OTHER: "دليل آخر",
-};
+/**
+ * تسمياتُ الدليل صارت في قاموسٍ مشترك (`@shared/designApprovalEvidence`) بعد أن صار القرارُ
+ * يُتّخذ من بطاقة أمر الشغل أيضاً (١/٩/٢٦) — نسختان للتسمية = انجرافٌ مؤجَّل (§٥).
+ */
+const EVIDENCE_LABELS: Record<EvidenceType, string> = DESIGN_APPROVAL_EVIDENCE_LABELS;
 
-export function designApprovalSelfReviewBlocked(
-  currentUserId: number | undefined,
-  participants: Array<number | string | null | undefined>,
-): boolean {
-  if (currentUserId == null) return false;
-  return participants.some((participant) => participant != null && Number(participant) === currentUserId);
-}
+/** أُعيد تصديرُها من `@/lib/designApprovalPolicy` — مكوّنٌ لا يستورد صفحة. */
+export { designApprovalSelfReviewBlocked };
 
 const OPEN_STATUSES: TaskStatus[] = ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"];
 

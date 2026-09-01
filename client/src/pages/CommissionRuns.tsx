@@ -6,6 +6,7 @@
  * ممنوع بعد الالتقاط أو وجود شهر أحدث (سلسلة الترحيل). كل الأرقام من الخادم (لقطات).
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
@@ -217,10 +218,10 @@ export default function CommissionRuns() {
         description="في نهاية كل شهر يجمع النظام مبيعات كل بائع من الفواتير، يطرح مرتجعاته، ثم يطبّق خطته ويخرج عمولته. يبدأ الكشف «مسوّدة» قابلة للتعديل، ويعتمده شخص غير الذي احتسبه، ثم يُصرَف بنداً في مسيّر رواتب الشهر نفسه."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
-            <select
-              className={selectClsSm}
+            <AppSelect
+              className="h-9"
               value={effectiveId != null ? String(effectiveId) : ""}
-              onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
+              onValueChange={(next) => setSelectedId(next ? Number(next) : null)}
               aria-label="كشف الشهر"
             >
               {runs.length === 0 && <option value="">لا كشوف بعد</option>}
@@ -229,7 +230,7 @@ export default function CommissionRuns() {
                   عمولات {r.period} — {STATUS_LABEL[r.status]}
                 </option>
               ))}
-            </select>
+            </AppSelect>
             {canCompute && (
               <Button onClick={() => setComputeOpen(true)} disabled={busy}>
                 <Calculator className="size-4" /> احتساب شهر

@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { Button } from "@/components/ui/button";
@@ -649,12 +650,12 @@ export default function Reconcile() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select
-              className={selectCls}
-              value={branchId}
-              onChange={(event) =>
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(next) =>
                 setBranchId(
-                  event.target.value ? Number(event.target.value) : "",
+                  next ? Number(next) : "",
                 )
               }
             >
@@ -664,7 +665,7 @@ export default function Reconcile() {
                   {branch.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <p className="max-w-xl text-xs text-muted-foreground">
             نطاق التقرير يتبع تاريخ القيد داخل الشهر والفرع المختارين. بوابة

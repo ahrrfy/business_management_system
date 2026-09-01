@@ -586,35 +586,35 @@ function NewTaskDialog({
           {isElevated && (
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">الفرع<span className="text-destructive"> *</span></label>
-              <select className={`${selectCls} w-full`} value={branchId} onChange={(e) => setBranchId(e.target.value)}>
+              <AppSelect className={`${selectCls} w-full`} value={branchId} onValueChange={(next) => setBranchId(next)}>
                 <option value="">اختر الفرع</option>
                 {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+              </AppSelect>
             </div>
           )}
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">نوع الخدمة (اختياري)</label>
-            <select className={`${selectCls} w-full`} value={serviceTypeId} onChange={(e) => selectServiceType(e.target.value)}>
+            <AppSelect className={`${selectCls} w-full`} value={serviceTypeId} onValueChange={(next) => selectServiceType(next)}>
               <option value="">بلا نوع خدمة محدَّد</option>
               {(serviceTypesQ.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}{s.slaHours != null ? ` — SLA ${s.slaHours}س` : ""}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">النوع</label>
-              <select className={`${selectCls} w-full`} value={kind} onChange={(e) => setKind(e.target.value as TaskKind)}>
+              <AppSelect className={`${selectCls} w-full`} value={kind} onValueChange={(next) => setKind(next as TaskKind)}>
                 {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">الأولوية</label>
-              <select className={`${selectCls} w-full`} value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)}>
+              <AppSelect className={`${selectCls} w-full`} value={priority} onValueChange={(next) => setPriority(next as TaskPriority)}>
                 {Object.entries(PRIORITY_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
-              </select>
+              </AppSelect>
             </div>
           </div>
           <div className="space-y-1">

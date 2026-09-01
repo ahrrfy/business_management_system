@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -118,9 +119,9 @@ export default function AssetEdit() {
           <div className="space-y-1"><Label htmlFor="name">اسم الأصل *</Label><Input id="name" value={form.name} onChange={(e) => set({ name: e.target.value })} /></div>
           <div className="space-y-1">
             <Label htmlFor="cat">الفئة *</Label>
-            <select id="cat" className={selectClsFull} value={form.category} onChange={(e) => set({ category: e.target.value })}>
+            <AppSelect id="cat" className="h-9" value={form.category} onValueChange={(next) => set({ category: next })}>
               {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="brand">الماركة</Label><Input id="brand" value={form.brand} onChange={(e) => set({ brand: e.target.value })} dir="auto" /></div>
           <div className="space-y-1"><Label htmlFor="serial">الرقم التسلسلي</Label><Input id="serial" value={form.serial} onChange={(e) => set({ serial: e.target.value })} dir="ltr" /></div>
@@ -132,10 +133,10 @@ export default function AssetEdit() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="br">الفرع</Label>
-            <select id="br" className={selectClsFull} value={form.branchId} disabled aria-describedby="asset-financial-lock">
+            <AppSelect id="br" className="h-9" value={String(form.branchId)} onValueChange={() => undefined} disabled aria-describedby="asset-financial-lock">
               <option value="">— اختر الفرع —</option>
               {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="loc">الموقع</Label><Input id="loc" value={form.location} onChange={(e) => set({ location: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="cond">الحالة الفنية</Label><Input id="cond" value={form.condition} onChange={(e) => set({ condition: e.target.value })} placeholder="ممتاز / جيد / متوسط" /></div>
@@ -151,10 +152,10 @@ export default function AssetEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="sup">المورّد</Label>
-            <select id="sup" className={selectClsFull} value={form.supplierId} disabled aria-describedby="asset-financial-lock">
+            <AppSelect id="sup" className="h-9" value={String(form.supplierId)} onValueChange={() => undefined} disabled aria-describedby="asset-financial-lock">
               <option value="">— بلا مورّد —</option>
               {(opts.data?.suppliers ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="pdate">تاريخ الشراء *</Label><Input id="pdate" type="date" dir="ltr" value={form.purchaseDate} readOnly aria-describedby="asset-financial-lock" /></div>
           <div className="space-y-1"><Label htmlFor="pval">قيمة الشراء (د.ع) *</Label><MoneyInput id="pval" value={form.purchaseValue} onChange={() => undefined} decimals={0} disabled aria-describedby="asset-financial-lock" /></div>
@@ -167,9 +168,9 @@ export default function AssetEdit() {
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1">
             <Label htmlFor="meth">الطريقة</Label>
-            <select id="meth" className={selectClsFull} value={form.method} onChange={(e) => set({ method: e.target.value as "sl" | "db" })}>
+            <AppSelect id="meth" className="h-9" value={form.method} onValueChange={(next) => set({ method: next as "sl" | "db" })}>
               {DEPRECIATION_METHODS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="life">العمر الإنتاجي (سنوات) *</Label><Input id="life" dir="ltr" inputMode="numeric" value={form.usefulLifeYears} onChange={(e) => set({ usefulLifeYears: e.target.value.replace(/\D/g, "") })} /></div>
           <div className="space-y-1"><Label htmlFor="salv">القيمة التخريدية (د.ع)</Label><MoneyInput id="salv" value={form.salvageValue} onChange={(salvageValue) => set({ salvageValue })} decimals={0} placeholder="0" /></div>

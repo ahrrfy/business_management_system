@@ -41,10 +41,20 @@ export default function DesignFileCard({
   workOrderId,
   /** يُخفي محرّر النسخة على أمرٍ مُسلَّم/ملغى أو لمن لا يملك التعديل. */
   canEdit = false,
+  /**
+   * **رقمُ النسخة المثبَّتة فعلاً** من سجلّ النسخ (`workOrderDesignRevisions`)، أو `null` إن
+   * لم تُثبَّت بعد.
+   *
+   * ⚠️ كانت البطاقة تشتقّ الرقم من الصور وحدها وتسقط على `1` عند غيابها، فتُعلن «نسخة ١ من ١»
+   * على أمرٍ **بلا رأس نسخةٍ إطلاقاً** — بينما بطاقةُ الاعتماد فوقها تقول «لا توجد نسخة مثبتة
+   * بعد». بطاقتان على شاشةٍ واحدة تتناقضان في الحقيقة نفسها (بلاغ المالك ١/٩/٢٦).
+   */
+  pinnedRevision = null,
 }: {
   images: DesignImage[];
   workOrderId: number;
   canEdit?: boolean;
+  pinnedRevision?: number | null;
 }) {
   const [zoom, setZoom] = useState<DesignImage | null>(null);
   const [showOld, setShowOld] = useState(false);
@@ -68,9 +78,12 @@ export default function DesignFileCard({
   });
 
   const revs = images.map((i) => Number(i.revision ?? 1));
-  const current = revs.length ? Math.max(...revs) : 1;
-  const currentImages = images.filter((i) => Number(i.revision ?? 1) === current);
-  const olderImages = images.filter((i) => Number(i.revision ?? 1) < current);
+  // سجلُّ النسخ هو المرجع؛ الصورُ تُكمله (نسخةٌ أحدث بصورٍ ولمّا يصل رأسُها بعد).
+  const highest = Math.max(...revs, pinnedRevision ?? 0, 0);
+  /** `null` = لا نسخةَ مثبَّتة ولا صورة — فلا نَدّعي «نسخة ١». */
+  const current: number | null = highest > 0 ? highest : null;
+  const currentImages = images.filter((i) => Number(i.revision ?? 1) === highest);
+  const olderImages = images.filter((i) => Number(i.revision ?? 1) < highest);
   const validReason = note.trim().length >= 3;
 
   return (
@@ -79,7 +92,7 @@ export default function DesignFileCard({
         <ImageIcon aria-hidden className="size-4" />
         <span className="text-sm font-bold">ملفّ التصميم</span>
         <span className="rounded-full bg-muted px-2 py-0.5 text-2xs font-bold text-muted-foreground">
-          نسخة {current} من {current}
+          {current == null ? "لم تُثبَّت نسخة بعد" : `نسخة ${current} من ${current}`}
         </span>
         {canEdit && !editing && (
           <Button
@@ -106,7 +119,7 @@ export default function DesignFileCard({
             aria-expanded={showOld}
             className="ms-auto inline-flex items-center gap-1 text-2xs font-bold text-muted-foreground hover:text-foreground"
           >
-            النسخ السابقة ({current - 1})
+            النسخ السابقة ({highest - 1})
             <ChevronDown aria-hidden className={`size-3.5 transition-transform ${showOld ? "rotate-180" : ""}`} />
           </button>
         )}
@@ -152,7 +165,8 @@ export default function DesignFileCard({
           <Grid images={currentImages} onZoom={setZoom} />
         ) : (
           <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-            النسخة الحالية بلا صور. يمكن أن يكون نص التخصيص وحده مستند التصميم، أو أنشئ نسخة وأضف صوراً.
+            رفعُ ملفّ التصميم اختياريّ — نصّ التخصيص وحده يكفي مستنداً قابلاً للاعتماد. أضِف صوراً
+            فقط حين يحتاجها التنفيذ فعلاً.
           </div>
         )
       )}
