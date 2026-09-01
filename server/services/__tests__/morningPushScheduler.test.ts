@@ -18,7 +18,7 @@ vi.mock("web-push", () => ({
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { subscribeUserToPush } from "../pushService";
-import { runMorningBriefPush } from "../morningPushScheduler";
+import { notifyUpcomingPayrollDue, runMorningBriefPush } from "../morningPushScheduler";
 
 function db() {
   const d = getDb();
@@ -32,6 +32,7 @@ beforeAll(() => {
 });
 
 const TABLES = [
+  "payrollObligations",
   "nativePushOutbox",
   "webPushOutbox",
   "appNotifications",
@@ -101,6 +102,31 @@ const SUB = {
 };
 
 describe("runMorningBriefPush", () => {
+  it("ينبّه الإدارة مرة واحدة عندما تستحق التزامات الرواتب غداً", async () => {
+    await db().insert(s.payrollObligations).values({
+      kind: "SALARY_NET",
+      originalAmount: "1250000",
+      remainingAmount: "1250000",
+      dueDate: "2026-09-02",
+      status: "OPEN",
+      sourceType: "OPENING_CERTIFICATE",
+      sourceKey: "payroll-due-alert-test",
+    });
+    const now = new Date("2026-09-01T05:00:00.000Z");
+
+    expect(await notifyUpcomingPayrollDue(now)).toEqual({ created: 1, skippedAlreadySent: 0 });
+    expect(await notifyUpcomingPayrollDue(now)).toEqual({ created: 0, skippedAlreadySent: 1 });
+    const [notice] = await db().select().from(s.appNotifications);
+    expect(notice).toMatchObject({
+      userId: 1,
+      kind: "SYSTEM",
+      family: "ADMIN",
+      title: "رواتب مستحقة غداً",
+      route: "/payroll",
+    });
+    expect(notice.body).not.toContain("1250000");
+  });
+
   it("يُرسل لمدير الأدمن حين المحتوى غير فارغ", async () => {
     await subscribeUserToPush(SUB, 1);
     await seedOverdueWo(1, "WO-A");

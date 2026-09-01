@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { familyLabel, notificationBadgeLabel, safeNotificationRoute } from "./NotificationBell";
+import {
+  familyLabel,
+  newestInlineNotification,
+  notificationBadgeLabel,
+  safeNotificationRoute,
+} from "./NotificationBell";
 
 describe("جرس الإشعارات العام", () => {
   it("يعرض العائلات الخمس بتسميات عربية واضحة", () => {
@@ -21,5 +26,14 @@ describe("جرس الإشعارات العام", () => {
     expect(safeNotificationRoute("https://evil.example")).toBe("/my-work");
     expect(safeNotificationRoute("//evil.example")).toBe("/my-work");
     expect(safeNotificationRoute(undefined)).toBe("/my-work");
+  });
+
+  it("يعرض أحدث إشعار جديد مرة واحدة ويتقدم حتى لو كانت بعض الصفوف مقروءة", () => {
+    const rows = [
+      { id: 14, readAt: null, title: "مهمة", body: "أُسندت إليك" },
+      { id: 13, readAt: new Date(), title: "قديم", body: "مقروء" },
+    ];
+    expect(newestInlineNotification(rows, 13)).toEqual({ nextSeenId: 14, row: rows[0] });
+    expect(newestInlineNotification(rows, 14)).toEqual({ nextSeenId: 14, row: null });
   });
 });

@@ -8,13 +8,62 @@
 //   • الحدّ الأدنى: إن كان total=0 لهذا المستخدم ⇒ نتخطّى (لا نُشتّت بلا سبب — يطابق سلوك MorningBrief).
 //   • القنوات: صندوق التطبيق + Web Push المتين + FCM الأصلي؛ عدم وجود VAPID لا يلغي الصندوق الداخلي.
 import cron, { type ScheduledTask } from "node-cron";
-import { and, asc, eq, inArray, or } from "drizzle-orm";
-import { branches, users } from "../../drizzle/schema";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
+import { branches, payrollObligations, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { getDashboardMetrics, getMyTaskBriefCounts } from "./reports/dashboard";
 import { createAppNotification } from "./appNotificationService";
 import { baghdadToday } from "./businessDay";
+
+export async function notifyUpcomingPayrollDue(
+  now = new Date(),
+): Promise<{ created: number; skippedAlreadySent: number }> {
+  const db = getDb();
+  if (!db) return { created: 0, skippedAlreadySent: 0 };
+  const tomorrow = baghdadToday(new Date(now.getTime() + 24 * 60 * 60 * 1_000));
+  const due = (await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(payrollObligations)
+    .where(and(
+      eq(payrollObligations.kind, "SALARY_NET"),
+      inArray(payrollObligations.status, ["OPEN", "PARTIAL"]),
+      eq(payrollObligations.dueDate, tomorrow),
+      sql`${payrollObligations.remainingAmount} > 0`,
+    )))[0];
+  const dueCount = Number(due?.count ?? 0);
+  if (dueCount === 0) return { created: 0, skippedAlreadySent: 0 };
+
+  const recipients = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(
+      eq(users.isActive, true),
+      or(inArray(users.role, ["admin", "manager"]), eq(users.isOwner, true)),
+    ));
+  const outcomes = await Promise.all(recipients.map((recipient) =>
+    createAppNotification({
+      userId: recipient.id,
+      kind: "SYSTEM",
+      family: "ADMIN",
+      title: "رواتب مستحقة غداً",
+      body: `${dueCount} التزام رواتب مفتوح يستحق غداً ويحتاج التجهيز.`,
+      route: "/payroll",
+      eventKey: `payroll-due-tomorrow:${tomorrow}:${recipient.id}`,
+      entityType: "payrollObligation",
+      requiresAction: true,
+      // عدد الالتزامات فقط؛ لا مبالغ ولا أسماء موظفين خارج التطبيق.
+      lockScreenSafe: true,
+    }),
+  ));
+  return outcomes.reduce(
+    (sum, outcome) => ({
+      created: sum.created + (outcome.created ? 1 : 0),
+      skippedAlreadySent: sum.skippedAlreadySent + (outcome.created ? 0 : 1),
+    }),
+    { created: 0, skippedAlreadySent: 0 },
+  );
+}
 
 /** عدّادا المهام (نظام المهام الموحّد S2) — myOpenTasks شخصيّ بحت (لا يمرّ بـ`metricsFor`
  *  المُخزَّنة مؤقّتاً)، overdueTasks يأتي من نفس نتيجة `getDashboardMetrics` المُخزَّنة (تشغيليّ،
@@ -177,6 +226,13 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
       // فشل مستخدم واحد لا يوقف البقيّة (idempotency log يمنع الازدواج الغد).
       result.failed++;
     }
+  }
+  try {
+    const payroll = await notifyUpcomingPayrollDue();
+    result.sent += payroll.created;
+    result.skippedAlreadySent += payroll.skippedAlreadySent;
+  } catch {
+    result.failed++;
   }
   return result;
 }

@@ -1,14 +1,25 @@
 import { readFileSync } from "node:fs";
+import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
+
+import * as s from "../../../drizzle/schema";
+import { getDb } from "../../db";
 
 import {
   STOREFRONT_PUSH_WORKER_LIMITS,
   createStorefrontPushWorkerRuntime,
+  registerStorefrontPushDevice,
   runStorefrontPushSettled,
   validateExpoPushToken,
   validateStorefrontPushDestination,
   StorefrontPushValidationError,
 } from "../storeAdmin/storefrontPushCampaignService";
+
+function db() {
+  const database = getDb();
+  if (!database) throw new Error("DATABASE_URL not set for tests");
+  return database;
+}
 
 describe("storefront push campaign validation", () => {
   it("accepts Expo tokens and internal storefront paths only", () => {
@@ -21,6 +32,42 @@ describe("storefront push campaign validation", () => {
     expect(() => validateStorefrontPushDestination("https://attacker.example")).toThrow(StorefrontPushValidationError);
     expect(() => validateStorefrontPushDestination("//attacker.example")).toThrow(StorefrontPushValidationError);
     expect(() => validateExpoPushToken("not-a-device-token")).toThrow(StorefrontPushValidationError);
+  });
+
+  it("يربط الجهاز بهوية عميل موثوقة ويحافظ على الربط عند تحديث تفضيل مجهول", async () => {
+    await db().insert(s.customers).values({ id: 721, name: "عميل موثّق" });
+    const expoPushToken = "ExponentPushToken[CustomerOrderDevice_123456]";
+
+    await registerStorefrontPushDevice({
+      expoPushToken,
+      marketingOptIn: true,
+      transactionalOptIn: true,
+      platform: "ANDROID",
+      appVersion: "1.0.0",
+      customerId: 721,
+    });
+    await registerStorefrontPushDevice({
+      expoPushToken,
+      marketingOptIn: false,
+      transactionalOptIn: true,
+      platform: "ANDROID",
+      appVersion: "1.0.1",
+    });
+
+    const device = (await db()
+      .select()
+      .from(s.storefrontPushDevices)
+      .where(eq(s.storefrontPushDevices.customerId, 721))
+      .limit(1))[0];
+    expect(device).toMatchObject({ customerId: 721, marketingOptIn: false, transactionalOptIn: true });
+  });
+
+  it("لا يسمح الراوتر بهوية عميل خام ويحل جلسة الهاتف على الخادم", () => {
+    const source = readFileSync(new URL("../../routers/storefrontRouter.ts", import.meta.url), "utf8");
+    const route = source.slice(source.indexOf("registerPushDevice:"), source.indexOf("trackPushInteraction:"));
+    expect(route).toContain("customerSessionToken");
+    expect(route).toContain("requireActiveStorefrontCustomer");
+    expect(route).not.toContain("customerId: z.");
   });
 });
 

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { users, webPushOutbox } from "../../../drizzle/schema";
@@ -37,6 +38,13 @@ beforeEach(async () => {
 });
 
 describe("webPushOutboxWorker", () => {
+  it("لا يستهلك محاولة أثناء claim قبل بدء إرسال المزوّد", () => {
+    const source = readFileSync(new URL("../webPushOutboxWorker.ts", import.meta.url), "utf8");
+    const claim = source.slice(source.indexOf("async function claimDueRows"), source.indexOf("async function markSent"));
+    expect(claim).not.toContain("attemptCount = attemptCount + 1");
+    expect(source.slice(source.indexOf("async function markSent"))).toContain("attemptCount = attemptCount + 1");
+  });
+
   it("يسلّم الصف مرة واحدة ويختمه SENT", async () => {
     await db().insert(webPushOutbox).values({
       userId: 53,

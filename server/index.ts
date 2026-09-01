@@ -725,6 +725,7 @@ async function startServer() {
   // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
   // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
   let stopNativePushOutboxWorker: (() => void) | null = null;
+  let stopAppNotificationOutboxWorker: (() => Promise<void>) | null = null;
   let stopWebPushOutboxWorker: (() => void) | null = null;
   let stopStorefrontPushCampaignWorker: (() => Promise<void>) | null = null;
   let stopDeliveryOutboxWorker: (() => void) | null = null;
@@ -739,6 +740,11 @@ async function startServer() {
     const { startMorningPushCron } =
       await import("./services/morningPushScheduler");
     startMorningPushCron();
+
+    // نوايا إشعارات المجال (المهام وغيرها): عامل عام مستقل؛ لا يعتمد تعافيها على عامل الاستوديو.
+    const appNotifications = await import("./services/appNotificationOutboxWorker");
+    appNotifications.startAppNotificationOutboxWorker();
+    stopAppNotificationOutboxWorker = appNotifications.stopAppNotificationOutboxWorker;
 
     // كنّاس صندوق واتساب الصادر (waOutbox) — إرسال فعلي + إعادة محاولة بتراجع أسّي + إعادة محاولة
     // أحداث webhook الفاشلة (سباق ترتيب). لا cron في بيئة الاختبار (NODE_ENV=test).
@@ -852,6 +858,7 @@ async function startServer() {
     }, 10_000);
     try {
       stopNativePushOutboxWorker?.();
+      await stopAppNotificationOutboxWorker?.();
       stopWebPushOutboxWorker?.();
       await stopStorefrontPushCampaignWorker?.();
       stopDeliveryOutboxWorker?.();

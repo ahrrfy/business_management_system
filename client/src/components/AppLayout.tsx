@@ -489,7 +489,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="sb-header px-4 py-4 flex items-center justify-between gap-1">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-0.5">
-            <NotificationBell enabled={!coldStudio && Boolean(me.data)} />
+            <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <DisplayScaleControl />
             <ThemeToggle />
@@ -514,7 +514,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </SheetTrigger>
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-0.5">
-            <NotificationBell enabled={!coldStudio && Boolean(me.data)} />
+            <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <DisplayScaleControl />
             <ThemeToggle />

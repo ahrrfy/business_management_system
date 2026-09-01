@@ -168,6 +168,7 @@ describe("appNotificationService", () => {
     });
     expect(rows[0].payload).toMatchObject({
       kind: "TASK_ASSIGNED",
+      family: "OPERATIONS",
       destination: "alrueya://app/module/tasks/view/902",
       urgency: "action",
       sensitive: "false",
@@ -210,6 +211,9 @@ describe("appNotificationService", () => {
     expect(notices.map((row) => row.family)).toEqual(["ADMIN", "ADMIN", "SYSTEM"]);
     const nativeRows = await db().select().from(nativePushOutbox);
     expect(nativeRows).toHaveLength(3);
+    expect(nativeRows[0].payload).toMatchObject({ family: "ADMIN" });
+    expect(nativeRows[1].payload).toMatchObject({ family: "ADMIN" });
+    expect(nativeRows[2].payload).toMatchObject({ family: "SYSTEM" });
     expect(nativeRows[1].payload).toMatchObject({ destination: "alrueya://app/alerts" });
     expect(nativeRows[2].payload).toMatchObject({ kind: "SYSTEM", destination: "alrueya://app/alerts" });
     expect(await db().select().from(webPushOutbox)).toHaveLength(3);

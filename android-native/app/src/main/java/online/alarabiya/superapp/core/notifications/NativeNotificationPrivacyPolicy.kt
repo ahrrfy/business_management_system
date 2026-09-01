@@ -5,7 +5,7 @@ internal enum class LockScreenExposure {
     PRIVATE,
 }
 
-internal enum class NotificationDeliveryLane {
+enum class NotificationDeliveryLane {
     OPERATIONS,
     ADMIN,
     EMPLOYEE,

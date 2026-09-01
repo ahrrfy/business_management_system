@@ -263,8 +263,15 @@ export const storefrontRouter = router({
       transactionalOptIn: z.boolean(),
       platform: z.enum(["IOS", "ANDROID"]),
       appVersion: z.string().trim().min(1).max(64),
+      customerSessionToken: z.string().trim().min(40).max(4_000).optional(),
     }))
-    .mutation(({ input }) => registerStorefrontPushDevice(input)),
+    .mutation(async ({ input }) => {
+      const { customerSessionToken, ...device } = input;
+      const customerId = customerSessionToken
+        ? (await requireActiveStorefrontCustomer(customerSessionToken)).customerId
+        : undefined;
+      return registerStorefrontPushDevice({ ...device, customerId });
+    }),
 
   /** حدث فتح بلا هوية؛ يُقبل فقط لتسليم موجود من الحملة، ويحافظ على قياس الأداء من الداشبورد. */
   trackPushInteraction: storefrontPublicWriteProcedure

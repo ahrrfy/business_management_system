@@ -43,7 +43,7 @@ object NativeNotificationRenderer {
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val channel = when (NativeNotificationPrivacyPolicy.deliveryLane(payload.kind, payload.urgency)) {
+        val channel = when (payload.family) {
             NotificationDeliveryLane.OPERATIONS -> AppNotificationChannels.OPERATIONS
             NotificationDeliveryLane.ADMIN -> AppNotificationChannels.ADMIN
             NotificationDeliveryLane.EMPLOYEE -> AppNotificationChannels.EMPLOYEE

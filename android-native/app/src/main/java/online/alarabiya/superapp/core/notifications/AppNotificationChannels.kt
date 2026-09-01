@@ -9,8 +9,9 @@ import android.content.Context
 object AppNotificationChannels {
     const val OPERATIONS = "operations_v1"
     const val ADMIN = "administration_v1"
-    const val EMPLOYEE = "employee_updates_v1"
-    const val SYSTEM = "system_updates_v1"
+    // v2 مطلوب لأن Android لا يرفع أهمية قناة سبق إنشاؤها؛ المعرّف الجديد يفعّل heads-up فعلياً.
+    const val EMPLOYEE = "employee_updates_v2"
+    const val SYSTEM = "system_updates_v2"
     const val APPROVALS = "approvals_v1"
 
     fun create(context: Context) {
@@ -38,17 +39,19 @@ object AppNotificationChannels {
                 NotificationChannel(
                     EMPLOYEE,
                     "إشعارات الموظف",
-                    NotificationManager.IMPORTANCE_DEFAULT,
+                    NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
                     description = "الدوام والإجازات والرواتب والتحديثات الشخصية"
+                    enableVibration(true)
                     lockscreenVisibility = Notification.VISIBILITY_PRIVATE
                 },
                 NotificationChannel(
                     SYSTEM,
                     "إشعارات النظام",
-                    NotificationManager.IMPORTANCE_DEFAULT,
+                    NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
                     description = "الإعلانات والتنبيهات الآلية من النظام"
+                    enableVibration(true)
                     lockscreenVisibility = Notification.VISIBILITY_PRIVATE
                 },
                 NotificationChannel(

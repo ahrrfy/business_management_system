@@ -329,6 +329,7 @@ function nativePayloadFor(
     destination,
     urgency: input.requiresAction ? "action" : "information",
     sensitive,
+    family: input.family ?? defaultNotificationFamily(input.kind),
   });
 }
 
@@ -372,8 +373,8 @@ export async function createAppNotification(
   const db = requireDb();
   const route = safeInternalRoute(input.route);
   const eventKey = input.eventKey.trim().slice(0, APP_NOTIFICATION_EVENT_KEY_MAX_LENGTH);
-  const normalizedInput = { ...input, eventKey };
   const family = input.family ?? defaultNotificationFamily(input.kind);
+  const normalizedInput = { ...input, eventKey, family };
   const webPayload = buildAppWebPushPayload(normalizedInput);
   const nativePayload = nativePayloadFor(normalizedInput);
   try {

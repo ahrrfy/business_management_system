@@ -75,7 +75,7 @@
     },
     "expressRoutes": 21,
     "expressMounts": 12,
-    "jobs": 24,
+    "jobs": 25,
     "routerFiles": 107,
     "proposedPermissions": 1027,
     "proposedDomains": {
@@ -17853,7 +17853,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:280"
+      "loc": "server/routers/storefrontRouter.ts:287"
     },
     {
       "surface": "trpc",
@@ -17955,7 +17955,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/storefrontRouter.ts:351"
+      "loc": "server/routers/storefrontRouter.ts:358"
     },
     {
       "surface": "trpc",
@@ -18159,7 +18159,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/storefrontRouter.ts:346"
+      "loc": "server/routers/storefrontRouter.ts:353"
     },
     {
       "surface": "trpc",
@@ -18176,7 +18176,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/storefrontRouter.ts:335"
+      "loc": "server/routers/storefrontRouter.ts:342"
     },
     {
       "surface": "trpc",
@@ -18193,7 +18193,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/storefrontRouter.ts:270"
+      "loc": "server/routers/storefrontRouter.ts:277"
     },
     {
       "surface": "trpc",
@@ -21329,7 +21329,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 796
+      "line": 802
     },
     {
       "kind": "interval",
@@ -21345,6 +21345,11 @@
       "kind": "interval",
       "file": "server/routers/saleRouter.ts",
       "line": 84
+    },
+    {
+      "kind": "interval",
+      "file": "server/services/appNotificationOutboxWorker.ts",
+      "line": 72
     },
     {
       "kind": "cron",
@@ -21374,12 +21379,12 @@
     {
       "kind": "cron",
       "file": "server/services/morningPushScheduler.ts",
-      "line": 196
+      "line": 252
     },
     {
       "kind": "interval",
       "file": "server/services/nativePushOutboxWorker.ts",
-      "line": 292
+      "line": 295
     },
     {
       "kind": "cron",
@@ -21419,17 +21424,17 @@
     {
       "kind": "interval",
       "file": "server/services/storeAdmin/storefrontPushCampaignService.ts",
-      "line": 443
+      "line": 524
     },
     {
       "kind": "interval",
       "file": "server/services/storeAdmin/storefrontPushCampaignService.ts",
-      "line": 447
+      "line": 528
     },
     {
       "kind": "interval",
       "file": "server/services/webPushOutboxWorker.ts",
-      "line": 239
+      "line": 241
     },
     {
       "kind": "cron",

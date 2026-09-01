@@ -1,10 +1,11 @@
 import { Bell, CheckCheck, ExternalLink } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { fmtDateTime } from "@/lib/date";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 
@@ -32,11 +33,32 @@ export function safeNotificationRoute(route: string | null | undefined): string 
     : "/my-work";
 }
 
+type InlineNotification = {
+  id: number;
+  readAt: unknown;
+  title: string;
+  body: string;
+};
+
+export function newestInlineNotification<T extends InlineNotification>(
+  rows: readonly T[],
+  lastSeenId: number,
+): { nextSeenId: number; row: T | null } {
+  const nextSeenId = rows.reduce((max, row) => Math.max(max, row.id), lastSeenId);
+  const row = rows
+    .filter((item) => item.readAt == null && item.id > lastSeenId)
+    .sort((a, b) => b.id - a.id)[0] ?? null;
+  return { nextSeenId, row };
+}
+
+// نسختا الجرس (سطح المكتب والهاتف) مركّبتان معاً؛ الخريطة تمنع toast مزدوجاً للحساب نفسه.
+const lastInlineSeenByIdentity = new Map<string, number>();
+
 /**
  * مركز إشعاراتٍ عالمي خفيف: استعلام واحد صغير يتجدد دورياً، ويظهر في سطح المكتب والهاتف.
  * الإشعار يبقى سجلاً؛ طابور القرارات الحي موجود في `/my-work`.
  */
-export function NotificationBell({ enabled }: { enabled: boolean }) {
+export function NotificationBell({ enabled, identity }: { enabled: boolean; identity: string }) {
   const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
   const utils = trpc.useUtils();
@@ -54,6 +76,21 @@ export function NotificationBell({ enabled }: { enabled: boolean }) {
   const markAllRead = trpc.superApp.markAllNotificationsRead.useMutation({ onSuccess: refresh });
   const rows = notifications.data?.rows ?? [];
   const unreadCount = notifications.data?.unreadCount ?? 0;
+
+  useEffect(() => {
+    const fetchedRows = notifications.data?.rows;
+    if (!enabled || !identity || !fetchedRows) return;
+    const previous = lastInlineSeenByIdentity.get(identity);
+    const latestId = fetchedRows.reduce((max, row) => Math.max(max, row.id), 0);
+    if (previous == null) {
+      // لا نزعج المستخدم بتاريخٍ سابق عند أول تحميل؛ نبرز ما يصل بعد فتح الجلسة فقط.
+      lastInlineSeenByIdentity.set(identity, latestId);
+      return;
+    }
+    const next = newestInlineNotification(fetchedRows, previous);
+    lastInlineSeenByIdentity.set(identity, next.nextSeenId);
+    if (next.row) notify.info(next.row.title, next.row.body);
+  }, [enabled, identity, notifications.data]);
 
   async function openNotification(id: number, route: string | null) {
     const row = rows.find((item) => item.id === id);

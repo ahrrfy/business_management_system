@@ -15,6 +15,7 @@ class NativeNotificationPayloadParserTest {
         assertTrue(result is NativeNotificationParseResult.Accepted)
         val payload = (result as NativeNotificationParseResult.Accepted).payload
         assertEquals(NotificationUrgency.ACTION, payload.urgency)
+        assertEquals(NotificationDeliveryLane.APPROVAL, payload.family)
         assertEquals("موافقة جديدة", payload.title)
     }
 
@@ -46,6 +47,19 @@ class NativeNotificationPayloadParserTest {
 
         assertEquals("تحديث آمن", result.payload.title)
         assertEquals("افتح سوبر العربية لعرض التفاصيل.", result.payload.body)
+    }
+
+    @Test
+    fun serverFamilyOverridesKindForTheDeliveryLane() {
+        val result = NativeNotificationPayloadParser.parse(
+            validPayload().toMutableMap().apply {
+                put("kind", "TASK_ASSIGNED")
+                put("family", "ADMIN")
+                put("destination", "alrueya://app/tasks")
+            },
+        ) as NativeNotificationParseResult.Accepted
+
+        assertEquals(NotificationDeliveryLane.ADMIN, result.payload.family)
     }
 
     @Test
@@ -168,6 +182,7 @@ class NativeNotificationPayloadParserTest {
         "version" to "1",
         "notificationId" to "notif_2026_08_06_1",
         "kind" to "APPROVAL_REQUIRED",
+        "family" to "APPROVAL",
         "title" to "موافقة جديدة",
         "body" to "يوجد طلب بانتظار الإجراء",
         "urgency" to "action",

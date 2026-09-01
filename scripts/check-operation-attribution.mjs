@@ -65,6 +65,7 @@ if (!platformRouter.includes("listPlatformAudit")) fail("سجلّ إدارة ا�
 
 // كل عامل جديد يجب أن يُصنّف هنا صراحةً: سجل نظام مركزي، سجل حدث/صندوق دائم، أو قراءة فقط.
 const BACKGROUND_POLICIES = {
+  startAppNotificationOutboxWorker: "durable appNotificationOutbox + system summary",
   startDeliveryOutboxWorker: "durable deliveryOutbox + system summary",
   startLagMonitor: "read-only runtime telemetry",
   startMorningPushCron: "durable pushDailyClaim/pushNotificationLog + system summary",
@@ -94,6 +95,7 @@ for (const contract of ["backgroundOperationEffectCount", "auditBackgroundFailur
 }
 
 const CENTRALIZED_JOB_FILES = {
+  app_notification_outbox: "server/services/appNotificationOutboxWorker.ts",
   delivery_outbox: "server/services/delivery/outboxWorker.ts",
   delivery_stale_sweep: "server/services/delivery/staleSweep.ts",
   morning_push: "server/services/morningPushScheduler.ts",

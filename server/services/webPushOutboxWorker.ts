@@ -110,8 +110,7 @@ async function claimDueRows(batchSize: number): Promise<WebPushOutboxRow[]> {
     for (const row of rows) {
       await connection.execute(
         `UPDATE webPushOutbox
-            SET status = 'PROCESSING', attemptCount = attemptCount + 1,
-                lockedAt = CURRENT_TIMESTAMP, lastError = NULL
+            SET status = 'PROCESSING', lockedAt = CURRENT_TIMESTAMP, lastError = NULL
           WHERE id = ?`,
         [row.id],
       );
@@ -129,7 +128,8 @@ async function claimDueRows(batchSize: number): Promise<WebPushOutboxRow[]> {
 async function markSent(id: number): Promise<void> {
   await getPool().execute(
     `UPDATE webPushOutbox
-        SET status = 'SENT', completedAt = CURRENT_TIMESTAMP, lockedAt = NULL, lastError = NULL
+        SET status = 'SENT', attemptCount = attemptCount + 1,
+            completedAt = CURRENT_TIMESTAMP, lockedAt = NULL, lastError = NULL
       WHERE id = ? AND status = 'PROCESSING'`,
     [id],
   );
@@ -144,7 +144,8 @@ async function markFailed(
   if (terminal || attempt >= MAX_ATTEMPTS) {
     await getPool().execute(
       `UPDATE webPushOutbox
-          SET status = 'DEAD', completedAt = CURRENT_TIMESTAMP, lockedAt = NULL, lastError = ?
+          SET status = 'DEAD', attemptCount = attemptCount + 1,
+              completedAt = CURRENT_TIMESTAMP, lockedAt = NULL, lastError = ?
         WHERE id = ? AND status = 'PROCESSING'`,
       [code.slice(0, 64), id],
     );
@@ -152,7 +153,8 @@ async function markFailed(
   }
   await getPool().execute(
     `UPDATE webPushOutbox
-        SET status = 'RETRY', availableAt = ?, lockedAt = NULL, lastError = ?
+        SET status = 'RETRY', attemptCount = attemptCount + 1,
+            availableAt = ?, lockedAt = NULL, lastError = ?
       WHERE id = ? AND status = 'PROCESSING'`,
     [new Date(Date.now() + computeWebPushBackoffMs(attempt)), code.slice(0, 64), id],
   );
