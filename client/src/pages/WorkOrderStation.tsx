@@ -5,7 +5,7 @@ import { receptionChannelLabel } from "@shared/receptionChannel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { LoadingState } from "@/components/PageState";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { Banknote, CalendarDays, Check, Undo2, CheckCircle2, ChevronRight, ClipboardList, CornerDownLeft, Layers, MapPin, Phone, Ruler, Truck, Timer as TimerIcon, UserRound } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
@@ -137,9 +137,13 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
   );
 }
 
-function StationDetail({ id, onChanged, canRequestDesignApproval }: { id: number; onChanged: () => void; canRequestDesignApproval: boolean }) {
+function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; onChanged: () => void; canOperateWorkOrders: boolean }) {
   const detail = trpc.workOrders.get.useQuery({ workOrderId: id });
   const timeline = trpc.workOrders.timeline.useQuery({ workOrderId: id });
+  const designApproval = trpc.workOrderDesignApproval.getCurrent.useQuery(
+    { workOrderId: id },
+    { enabled: canOperateWorkOrders },
+  );
   const utils = trpc.useUtils();
   const [lightbox, setLightbox] = useState<string | null>(null);
 
@@ -147,6 +151,7 @@ function StationDetail({ id, onChanged, canRequestDesignApproval }: { id: number
     utils.workOrders.list.invalidate(),
     utils.workOrders.get.invalidate({ workOrderId: id }),
     utils.workOrders.timeline.invalidate({ workOrderId: id }),
+    utils.workOrderDesignApproval.getCurrent.invalidate({ workOrderId: id }),
     utils.inventory.movements.invalidate(),
     utils.delivery.readyForDispatch.invalidate(),
   ]).then(onChanged);
@@ -162,6 +167,18 @@ function StationDetail({ id, onChanged, canRequestDesignApproval }: { id: number
         detail.data?.hasDelivery ? "أصبح جاهزاً لإسناده من إدارة التوصيل." : "سلّمه للكاشير للتسليم وإصدار الفاتورة.",
       );
       invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  /**
+   * طريق خروج الفني قبل البدء. يجب أن يبقى هذا الـHook قبل كل حالات return الخاصة بالتحميل/الفشل؛
+   * وإلا يتغير عدد الـHooks بين أول render وrender نجاح الاستعلام فتنهار الصفحة.
+   */
+  const release = trpc.workOrders.release.useMutation({
+    onSuccess: () => {
+      notify.ok("أُعيد الأمر إلى الطابور العام");
+      void utils.workOrders.list.invalidate();
+      void utils.workOrders.get.invalidate();
     },
     onError: (e) => notify.err(e),
   });
@@ -195,14 +212,37 @@ function StationDetail({ id, onChanged, canRequestDesignApproval }: { id: number
     return { startAt, endAt };
   }, [d?.workStartedAt, d?.workSeconds, d?.status, timeline.data]);
 
+  if (detail.isLoading) return <LoadingState message="جارٍ تحميل تفاصيل أمر الشغل…" />;
+  if (detail.isError) {
+    return (
+      <ErrorState
+        message="تعذّر تحميل تفاصيل أمر الشغل. لم نفترض أن الأمر غير موجود."
+        onRetry={() => { void detail.refetch(); }}
+      />
+    );
+  }
   if (!d) {
-    return detail.isLoading
-      ? <LoadingState />
-      : <div className="grid place-items-center h-full text-muted-foreground">اختر أمراً من القائمة.</div>;
+    return <div className="grid place-items-center h-full text-muted-foreground">أمر الشغل غير موجود.</div>;
+  }
+  if (!d.workStartedAt && timeline.isLoading) {
+    return <LoadingState message="جارٍ تحميل سجل الأمر القديم…" />;
+  }
+  if (!d.workStartedAt && timeline.isError) {
+    return (
+      <ErrorState
+        message="تعذّر تحميل سجل الأمر اللازم لحساب زمن التنفيذ."
+        onRetry={() => { void timeline.refetch(); }}
+      />
+    );
   }
 
   const chLabel = receptionChannelLabel(d.receptionChannel);
-  const blockedByDesign = !!d.blockingTask;
+  const blockedByDesign =
+    !canOperateWorkOrders ||
+    designApproval.isLoading ||
+    designApproval.isError ||
+    designApproval.data?.revision == null ||
+    designApproval.data.approval?.status !== "APPROVED";
   const pri = PRIORITIES[d.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   const cur = STAGE_INDEX[d.status] ?? 0;
   const remainingDue = positiveDiff(d.salePrice, d.deposit ?? 0);
@@ -216,24 +256,13 @@ function StationDetail({ id, onChanged, canRequestDesignApproval }: { id: number
     amountDue: d.status === "READY" ? remainingDue.toString() : null,
   });
 
-  /**
-   * ش٣ — **طريقُ خروجِ الفنّي**: أمرٌ سحبه ولم يبدأه يعود للطابور بنفسه بلا انتظار مدير.
-   * والخادمُ يرفضه بعد البدء (المواد مستهلَكة) ⇒ لا انسحابَ صامتٌ يخلق يتيماً.
-   */
-  const release = trpc.workOrders.release.useMutation({
-    onSuccess: () => {
-      notify.ok("أُعيد الأمر إلى الطابور العام");
-      void utils.workOrders.list.invalidate();
-      void utils.workOrders.get.invalidate();
-    },
-    onError: (e) => notify.err(e),
-  });
-
   async function doStart() {
+    if (blockedByDesign) return;
     if (!(await confirm({ variant: "warning", title: "بدء التنفيذ", description: `بدء تنفيذ «${d!.title}» يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟`, confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
     start.mutate({ workOrderId: d!.id });
   }
   async function doReady() {
+    if (blockedByDesign) return;
     if (!(await confirm({ variant: "info", title: "وضع علامة: جاهز للتسليم", description: `وضع «${d!.title}» جاهزاً للتسليم. سيُسلّمه الكاشير ويُصدر الفاتورة. متابعة؟`, confirmText: "جاهز للتسليم", cancelText: "تراجع" }))) return;
     markReady.mutate({ workOrderId: d!.id });
   }
@@ -504,15 +533,15 @@ function StationDetail({ id, onChanged, canRequestDesignApproval }: { id: number
           <DesignApprovalCard
             workOrderId={Number(d.id)}
             status={String(d.status)}
-            blockingTask={(d.blockingTask as never) ?? null}
-            canManage={canRequestDesignApproval}
+            canManage={canOperateWorkOrders}
+            onChanged={() => void invalidate()}
           />
 
           {/* زر الإجراء المتدرّج */}
-          {d.status === "RECEIVED" && (
+          {canOperateWorkOrders && d.status === "RECEIVED" && (
             <div className="space-y-2">
               <Button className="w-full h-12 text-base" disabled={busy || blockedByDesign} onClick={doStart}>
-                <ChevronRight aria-hidden className="size-4 me-1" /> {blockedByDesign ? "بانتظار موافقة العميل" : "بدء التنفيذ (خصم المواد)"}
+                <ChevronRight aria-hidden className="size-4 me-1" /> {blockedByDesign ? "بانتظار اعتماد التصميم الحالي" : "بدء التنفيذ (خصم المواد)"}
               </Button>
               {/* ش٣: المخرجُ المشروع قبل البدء — بعده يرفضه الخادم ويُوجّه إلى النقل بسبب. */}
               {d.assignedTo != null && (
@@ -527,8 +556,15 @@ function StationDetail({ id, onChanged, canRequestDesignApproval }: { id: number
               )}
             </div>
           )}
-          {d.status === "IN_PROGRESS" && (
-            <Button className="w-full h-12 text-base bg-[var(--status-done)] hover:opacity-90 text-white" disabled={busy} onClick={doReady}><Check aria-hidden className="size-4 me-1" /> وضع علامة: جاهز</Button>
+          {canOperateWorkOrders && d.status === "IN_PROGRESS" && (
+            <Button
+              className="w-full h-12 text-base bg-[var(--status-done)] hover:opacity-90 text-white"
+              disabled={busy || blockedByDesign}
+              onClick={doReady}
+            >
+              <Check aria-hidden className="size-4 me-1" />
+              {blockedByDesign ? "بانتظار اعتماد التصميم الحالي" : "وضع علامة: جاهز"}
+            </Button>
           )}
           {d.status === "READY" && (
             <div className="rounded-lg border border-[var(--status-active)]/40 badge-status-active p-3 text-center text-sm inline-flex items-center justify-center gap-1.5 w-full">
@@ -557,7 +593,7 @@ const ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
 export default function WorkOrderStation() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
-  const canRequestDesignApproval = !!me.data?.role && moduleAccessAllowed(
+  const canOperateWorkOrders = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? null) as PermissionMap | null,
     "workorders",
@@ -571,8 +607,14 @@ export default function WorkOrderStation() {
   // بلا سقف، فتمتلئ نافذة الـ٢٠٠ بالتاريخ ويسقط **عملٌ نشط** من الشاشة بصمت (أمرٌ في الطابور
   // لا يراه الفنّي = ضرر تشغيليّ). الآن كل قائمة استعلامها الخاصّ المُرشَّح ⇒ كاملة دائماً
   // وصغيرة بطبيعتها (العمل النشط محدود، بخلاف التاريخ).
-  const mineQ = trpc.workOrders.list.useQuery({ statuses: [...ACTIVE_STATUSES], assignedToMe: true, limit: 200 });
-  const queueQ = trpc.workOrders.list.useQuery({ statuses: ["RECEIVED"], unassignedOnly: true, limit: 200 });
+  const mineQ = trpc.workOrders.list.useQuery(
+    { statuses: [...ACTIVE_STATUSES], assignedToMe: true, limit: 200 },
+    { enabled: canOperateWorkOrders },
+  );
+  const queueQ = trpc.workOrders.list.useQuery(
+    { statuses: ["RECEIVED"], unassignedOnly: true, limit: 200 },
+    { enabled: canOperateWorkOrders },
+  );
 
   const mineAll = mineQ.data ?? [];
   const queueAll = queueQ.data ?? [];
@@ -593,6 +635,30 @@ export default function WorkOrderStation() {
     onSuccess: (r) => { notify.ok("سُحب الأمر إلى قائمتك"); setSelId(r.workOrderId); utils.workOrders.list.invalidate(); },
     onError: (e) => notify.err(e),
   });
+
+  if (me.isLoading) return <LoadingState message="جارٍ التحقق من صلاحية محطة التنفيذ…" />;
+  if (me.isError) {
+    return (
+      <ErrorState
+        message="تعذّر التحقق من صلاحيات محطة التنفيذ."
+        onRetry={() => { void me.refetch(); }}
+      />
+    );
+  }
+  if (!canOperateWorkOrders) {
+    return <ErrorState message="لا تملك صلاحية تشغيل أوامر الشغل في هذه المحطة." />;
+  }
+  if (mineQ.isLoading || queueQ.isLoading) {
+    return <LoadingState message="جارٍ تحميل أوامر محطة التنفيذ…" />;
+  }
+  if (mineQ.isError || queueQ.isError) {
+    return (
+      <ErrorState
+        message="تعذّر تحميل أوامر المحطة. لا يمكن افتراض أن قوائم العمل فارغة."
+        onRetry={() => { void Promise.all([mineQ.refetch(), queueQ.refetch()]); }}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-7rem)]">
@@ -650,7 +716,7 @@ export default function WorkOrderStation() {
       {/* لوحة التفاصيل */}
       <div className="flex-1 min-w-0 border rounded-xl bg-card overflow-hidden">
         {selId != null ? (
-          <StationDetail id={selId} canRequestDesignApproval={canRequestDesignApproval} onChanged={() => { /* القوائم تُبطَّل داخلياً */ }} />
+          <StationDetail id={selId} canOperateWorkOrders={canOperateWorkOrders} onChanged={() => { /* القوائم تُبطَّل داخلياً */ }} />
         ) : (
           <div className="grid place-items-center h-full text-muted-foreground">اختر أمراً من القائمة لبدء التنفيذ.</div>
         )}

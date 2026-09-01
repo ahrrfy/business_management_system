@@ -1,13 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState } from "@/components/PageState";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt, pct } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Printer } from "lucide-react";
 import { Link, useRoute } from "wouter";
 
@@ -15,7 +16,14 @@ export default function ProductionDetail() {
   const [, params] = useRoute("/production/:id");
   const id = Number(params?.id);
   const me = trpc.auth.me.useQuery();
-  const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  const isManager = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "inventory",
+      "FULL",
+      ["manager"],
+    );
   const utils = trpc.useUtils();
 
   const q = trpc.production.get.useQuery({ productionOrderId: id }, { enabled: Number.isFinite(id) && id > 0 });
@@ -44,6 +52,7 @@ export default function ProductionDetail() {
   }
 
   if (q.isLoading) return <LoadingState />;
+  if (q.isError) return <ErrorState message={`تعذّر تحميل مستند الإنتاج: ${q.error.message}`} onRetry={() => void q.refetch()} />;
   if (!doc) return <div className="p-6 text-muted-foreground" dir="rtl">المستند غير موجود.</div>;
 
   const inputs = doc.inputs ?? [];

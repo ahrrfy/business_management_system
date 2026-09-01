@@ -9,9 +9,14 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createWorkOrder } from "../workOrder/create";
 import { updateWorkOrder } from "../workOrder/update";
+import {
+  approveWorkOrderControlRequest,
+  requestWorkOrderControl,
+} from "../workOrder/controlRequests";
 import { openShift } from "../shiftService";
 
 const TABLES = [
+  "workOrderControlRequests", "workOrderEvents", "auditLogs",
   "idempotencyKeys",
   "accountingEntries", "receipts",
   "workOrderMaterials", "workOrderImages", "workOrders",
@@ -38,6 +43,7 @@ const MANAGER_B1 = { userId: 1, branchId: 1, role: "manager" };
 // المُطبَّقة على كل مسارات workOrder الأخرى (cancel/setDeliveryMethod)، مرآة scopedBranchId=null
 // للمدير في الراوتر. الفحص الحقيقي يسري على غير المرتفعين فقط ⇒ الاختبار يستعمل كاشير فرع٢.
 const CASHIER_B2 = { userId: 3, branchId: 2, role: "cashier" };
+const REVIEWER_B1 = { userId: 4, branchId: 1, role: "manager" };
 
 async function seed() {
   const d = db();
@@ -49,6 +55,7 @@ async function seed() {
     { id: 1, openId: "mgr1", name: "مدير ١", email: "m1@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_c1", name: "كاشير ١", email: "c1@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_c2", name: "كاشير ٢", email: "c2@t.test", role: "cashier", loginMethod: "local", branchId: 2 },
+    { id: 4, openId: "reviewer", name: "مراجع مستقل", email: "reviewer@t.test", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.customers).values([
     { id: 1, name: "عميل أ", defaultPriceTier: "RETAIL", currentBalance: "0" },
@@ -76,6 +83,34 @@ async function loadWo(id: number) {
   return (await db().select().from(s.workOrders).where(eq(s.workOrders.id, id)).limit(1))[0];
 }
 
+type WorkOrderPatch = Omit<Parameters<typeof updateWorkOrder>[0], "workOrderId" | "expectedVersion" | "reason">;
+
+async function directUpdate(
+  workOrderId: number,
+  patch: WorkOrderPatch,
+  actor: { userId: number; branchId: number; role: string } = MANAGER_B1,
+) {
+  const current = await loadWo(workOrderId);
+  return updateWorkOrder({
+    workOrderId,
+    expectedVersion: Number(current.version),
+    reason: "تصحيح بيانات أمر الشغل",
+    ...patch,
+  }, actor);
+}
+
+async function requestCommercialEdit(workOrderId: number, payload: WorkOrderPatch, key: string) {
+  const current = await loadWo(workOrderId);
+  return requestWorkOrderControl({
+    requestKey: key,
+    workOrderId,
+    requestType: "COMMERCIAL_EDIT",
+    baseVersion: Number(current.version),
+    reason: "تصحيح تجاري موثّق بعد القبض",
+    payload,
+  }, MANAGER_B1);
+}
+
 describe("updateWorkOrder — تصحيح تفاصيل طلب", () => {
   beforeEach(async () => {
     await reset();
@@ -84,9 +119,9 @@ describe("updateWorkOrder — تصحيح تفاصيل طلب", () => {
 
   it("يعدّل الحقول الوصفية على طلبٍ RECEIVED", async () => {
     const woId = await newWorkOrder();
-    await updateWorkOrder(
+    await directUpdate(
+      woId,
       {
-        workOrderId: woId,
         title: "عنوان مُعدَّل",
         customizationText: "ملاحظات جديدة",
         dueDate: "2026-09-01",
@@ -113,16 +148,17 @@ describe("updateWorkOrder — تصحيح تفاصيل طلب", () => {
 
   it("يعدّل السعر على طلبٍ بلا عربون", async () => {
     const woId = await newWorkOrder();
-    await updateWorkOrder({ workOrderId: woId, salePrice: "12500" }, MANAGER_B1);
+    await directUpdate(woId, { salePrice: "12500" });
     expect((await loadWo(woId)).salePrice).toBe("12500.00");
   });
 
-  it("يسمح بالتعديل في أي حالة نشطة (RECEIVED/IN_PROGRESS/READY)", async () => {
+  it("يرفض التعديل المباشر بعد بدء التنفيذ أو الجاهزية", async () => {
     const woId = await newWorkOrder();
-    for (const status of ["RECEIVED", "IN_PROGRESS", "READY"] as const) {
+    for (const status of ["IN_PROGRESS", "READY"] as const) {
       await db().update(s.workOrders).set({ status }).where(eq(s.workOrders.id, woId));
-      await updateWorkOrder({ workOrderId: woId, title: `عنوان ${status}` }, MANAGER_B1);
-      expect((await loadWo(woId)).title).toBe(`عنوان ${status}`);
+      await expect(directUpdate(woId, { title: `عنوان ${status}` }))
+        .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect((await loadWo(woId)).title).toBe("أمر اختبار");
     }
   });
 
@@ -130,7 +166,7 @@ describe("updateWorkOrder — تصحيح تفاصيل طلب", () => {
     const woId = await newWorkOrder();
     await db().update(s.workOrders).set({ status: "DELIVERED" }).where(eq(s.workOrders.id, woId));
     await expect(
-      updateWorkOrder({ workOrderId: woId, title: "محاولة" }, MANAGER_B1),
+      directUpdate(woId, { title: "محاولة" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
@@ -138,14 +174,14 @@ describe("updateWorkOrder — تصحيح تفاصيل طلب", () => {
     const woId = await newWorkOrder();
     await db().update(s.workOrders).set({ status: "CANCELLED" }).where(eq(s.workOrders.id, woId));
     await expect(
-      updateWorkOrder({ workOrderId: woId, title: "محاولة" }, MANAGER_B1),
+      directUpdate(woId, { title: "محاولة" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("يرفض تعديل أمر فرعٍ آخر لغير المرتفعين (عزل الفرع)", async () => {
     const woId = await newWorkOrder(); // فرع ١
     await expect(
-      updateWorkOrder({ workOrderId: woId, title: "محاولة" }, CASHIER_B2),
+      directUpdate(woId, { title: "محاولة" }, CASHIER_B2),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
@@ -153,9 +189,9 @@ describe("updateWorkOrder — تصحيح تفاصيل طلب", () => {
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, CASHIER_B1);
     const woId = await newWorkOrder({ deposit: "8000", paymentMethod: "CASH" });
     expect((await loadWo(woId)).deposit).toBe("8000.00");
-    await expect(
-      updateWorkOrder({ workOrderId: woId, salePrice: "7000" }, MANAGER_B1),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const request = await requestCommercialEdit(woId, { salePrice: "7000" }, "wo-price-below-deposit");
+    await expect(approveWorkOrderControlRequest(Number(request.id), REVIEWER_B1))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
     // السعر لم يتغيّر بعد الرفض.
     expect((await loadWo(woId)).salePrice).toBe("10000.00");
   });
@@ -163,34 +199,35 @@ describe("updateWorkOrder — تصحيح تفاصيل طلب", () => {
   it("يسمح بسعرٍ يساوي العربون بالضبط (الحد الأدنى المقبول)", async () => {
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, CASHIER_B1);
     const woId = await newWorkOrder({ deposit: "8000", paymentMethod: "CASH" });
-    await updateWorkOrder({ workOrderId: woId, salePrice: "8000" }, MANAGER_B1);
+    const request = await requestCommercialEdit(woId, { salePrice: "8000" }, "wo-price-equals-deposit");
+    await approveWorkOrderControlRequest(Number(request.id), REVIEWER_B1);
     expect((await loadWo(woId)).salePrice).toBe("8000.00");
   });
 
   it("يرفض سعراً صفرياً أو سالباً", async () => {
     const woId = await newWorkOrder();
     await expect(
-      updateWorkOrder({ workOrderId: woId, salePrice: "0" }, MANAGER_B1),
+      directUpdate(woId, { salePrice: "0" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("يرفض عنواناً فارغاً (مسافات فقط)", async () => {
     const woId = await newWorkOrder();
     await expect(
-      updateWorkOrder({ workOrderId: woId, title: "   " }, MANAGER_B1),
+      directUpdate(woId, { title: "   " }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("يرفض تعديلاً بلا أي حقل", async () => {
     const woId = await newWorkOrder();
     await expect(
-      updateWorkOrder({ workOrderId: woId }, MANAGER_B1),
+      directUpdate(woId, {}),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("يُرجع before/patch لِما تغيَّر فقط", async () => {
     const woId = await newWorkOrder();
-    const res = await updateWorkOrder({ workOrderId: woId, title: "جديد", priority: "LOW" }, MANAGER_B1);
+    const res = await directUpdate(woId, { title: "جديد", priority: "LOW" });
     expect(res.patch).toMatchObject({ title: "جديد", priority: "LOW" });
     expect(res.before).toMatchObject({ title: "أمر اختبار", priority: "NORMAL" });
     expect(res.patch).not.toHaveProperty("salePrice");

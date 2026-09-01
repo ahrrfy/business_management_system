@@ -33,6 +33,7 @@ import type { PayrollPaymentMethod } from "./payroll/types";
 import { assertPeriodOpen } from "./periodLockService";
 import { withTx, type Actor } from "./tx";
 import { createSystemPaymentRequestTx } from "./voucher/create";
+import { lockMaterializedCashReceiptSourceForWrite } from "./cash/cashAvailability";
 
 type TerminationActor = Omit<Actor, "branchId"> & { branchId: number | null };
 
@@ -1051,6 +1052,45 @@ export async function reverseTerminationPayment(
     throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ عكس الصرف غير صالح أو مستقبلي." });
   }
   return withTx(async (tx) => {
+    // اعتماد الصرف يقفل treasury قبل termination/payroll rows. عكس الاتجاه هنا كان
+    // سيصنع دورة أقفال؛ لذلك نعاين آخر حدث أولاً ونقفل المصدر قبل أي صف عمل.
+    const [latestPaymentPreview] = await tx
+      .select({
+        eventKind: payrollAccountingEvents.eventKind,
+        branchId: payrollObligations.branchIdSnapshot,
+      })
+      .from(payrollAccountingEvents)
+      .leftJoin(
+        payrollObligations,
+        eq(payrollObligations.id, payrollAccountingEvents.obligationId),
+      )
+      .where(
+        and(
+          eq(payrollAccountingEvents.terminationId, terminationId),
+          inArray(payrollAccountingEvents.eventKind, [
+            "SALARY_PAYMENT",
+            "SALARY_PAYMENT_RETURN",
+          ]),
+        ),
+      )
+      .orderBy(desc(payrollAccountingEvents.id))
+      .limit(1);
+    let prelockedCashBranchId: number | null = null;
+    if (
+      evidence.method === "CASH" &&
+      latestPaymentPreview?.eventKind === "SALARY_PAYMENT" &&
+      latestPaymentPreview.branchId != null
+    ) {
+      prelockedCashBranchId = Number(latestPaymentPreview.branchId);
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: prelockedCashBranchId,
+        shiftId: null,
+        cashBucket: "TREASURY",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
+    }
     const [termination] = await tx
       .select()
       .from(employeeTerminations)
@@ -1203,6 +1243,15 @@ export async function reverseTerminationPayment(
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: "تاريخ إعادة المبلغ لا يجوز أن يسبق تاريخ الصرف الأصلي.",
+      });
+    }
+    if (
+      evidence.method === "CASH" &&
+      prelockedCashBranchId !== Number(obligation.branchIdSnapshot)
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تغيّر مصدر صرف تسوية نهاية الخدمة أثناء القفل؛ أعد المحاولة",
       });
     }
     const receiptResult = await tx.insert(receipts).values({

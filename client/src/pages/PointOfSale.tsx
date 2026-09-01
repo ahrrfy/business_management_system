@@ -211,24 +211,18 @@ export default function PointOfSale() {
               صلاحيات مخصّصة
             </span>
           ) : null}
-          {/* شريحة (٧/٨): محطة الاستقبال تملأ هذه المساحة بأزرارها الخاصّة (فواتير/طلبات/حجوزات/
-              وردية…) عبر portal من Reception.tsx — أغنى وأدقّ من رابط عامّ لقائمة فواتير الشركة
-              كاملةً (تلك تبقى الوجهة الصحيحة لتجزئة/طباعة). ملاحظة: اختصار Ctrl+1/2/3 يبقى نافذاً
-              في useEffect أدناه — التلميح المرئيّ حُذف بطلب المالك (شغلٌ بصريّ)؛ العناوين على الأزرار
-              تحمله عبر `title` كي يبقى قابلاً للاكتشاف عند التحويم. */}
-          {activeMode === "RECEPTION" ? (
-            <div id="pos-header-actions" className="flex shrink-0 items-center gap-1.5 overflow-x-auto" />
-          ) : (
-            visibleModes.some((mode) => mode.v === "RETAIL") && (
-              <Link
-                href="/invoices"
-                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
-                title="عرض الفواتير المباعة وإعادة طباعتها"
-              >
-                <ReceiptText aria-hidden className="size-4" />
-                <span>الفواتير</span>
-              </Link>
-            )
+          {/* كل محطة تملأ هذا المقبس بإجراءات ورديتها. إبقاؤه في الرأس الموحد يمنع تكرار
+              الحساب/الوردية داخل رأس المحطة ويحرّر صف البحث للباركود والاسم. */}
+          <div id="pos-header-actions" className="flex shrink-0 items-center gap-1.5 overflow-x-auto" />
+          {activeMode !== "RECEPTION" && visibleModes.some((mode) => mode.v === "RETAIL") && (
+            <Link
+              href="/invoices"
+              className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
+              title="عرض الفواتير المباعة وإعادة طباعتها"
+            >
+              <ReceiptText aria-hidden className="size-4" />
+              <span>الفواتير</span>
+            </Link>
           )}
           <Link
             href="/"

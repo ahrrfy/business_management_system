@@ -57,11 +57,14 @@ export interface LeaderboardResult {
 }
 
 /** لوحة الإنجاز الحيّة لشهر P — ترتيب بالقاعدة الفعلية تنازلياً. */
-export async function getLeaderboard(period: string): Promise<LeaderboardResult> {
+export async function getLeaderboard(
+  period: string,
+  scopedBranchId: number | null = null,
+): Promise<LeaderboardResult> {
   const p = assertPeriod(period);
   const db = requireDb();
 
-  const eligible = await loadEligible(db, p);
+  const eligible = await loadEligible(db, p, scopedBranchId);
   if (eligible.length === 0) {
     return {
       period: p,

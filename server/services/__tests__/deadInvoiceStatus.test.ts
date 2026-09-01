@@ -140,7 +140,7 @@ describe("sales.correct — «تعديل البيانات»", () => {
     // مدير الفرع ٢ — يرى رقماً متسلسلاً ويستدعي الإجراء مباشرةً.
     const caller = appRouter.createCaller(makeCtx({ id: 2, role: "manager", branchId: 2 }));
     await expect(
-      caller.sales.correct({ invoiceId: sale.invoiceId, dueDate: "2030-01-01", reason: "تغيير استحقاق" }),
+      caller.sales.correct({ invoiceId: sale.invoiceId, notes: "محاولة عبر الفروع", reason: "تصحيح ملاحظة" }),
     ).rejects.toThrow(/لا تخصّ فرعك/);
   });
 
@@ -150,7 +150,7 @@ describe("sales.correct — «تعديل البيانات»", () => {
 
     const caller = appRouter.createCaller(makeCtx({ id: 1, role: "admin", branchId: 1 }));
     await expect(
-      caller.sales.correct({ invoiceId: sale.invoiceId, dueDate: "2030-01-01", reason: "تغيير استحقاق" }),
+      caller.sales.correct({ invoiceId: sale.invoiceId, notes: "محاولة على مستند ميت", reason: "تصحيح ملاحظة" }),
     ).rejects.toThrow(/ملغاة أو مرتجعة أو مستبدَلة/);
   });
 });

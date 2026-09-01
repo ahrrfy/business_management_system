@@ -38,12 +38,12 @@ async function userById(id: number) { return (await db().select().from(s.users).
 beforeEach(async () => { await reset(); await seed(); });
 
 describe("عزل المدير في المخزون — «قراءة/كتابة فرعه فقط» (قرار المالك ١٢/٨ يعكس ٢٣/٧)", () => {
-  // عزل القراءة (المدير يقرأ فرعه فقط، لا يعبُر) مُغطّى في managerBranchIsolation.test.ts (stockByBranch).
-  // هنا ثابت الكتابة: لا يُحوّل المدير من فرعٍ ليس فرعه (transferService)، والأدمن يعبُر.
+  // عزل القراءة (المدير يقرأ فرعه فقط، لا يعبُر) مُغطّى في managerBranchIsolation.test.ts (onHand).
+  // هنا ثابت الكتابة عبر transferBatch الحاكم: لا يُحوّل المدير من فرعٍ ليس فرعه، والأدمن يعبُر.
   it("كتابة فرعه: مدير ف١ لا يُحوّل **من** ف٢ (فرعٌ ليس له) — FORBIDDEN", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(4)));
     await expect(
-      caller.inventory.transfer({ variantId: 1, fromBranchId: 2, toBranchId: 1, baseQuantity: 5 }),
+      caller.inventory.transferBatch({ fromBranchId: 2, toBranchId: 1, items: [{ variantId: 1, baseQuantity: 5 }] }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     // لم تُنشأ أيّ حركة (ارتدّ قبل التنفيذ).
     expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
@@ -55,7 +55,7 @@ describe("عزل المدير في المخزون — «قراءة/كتابة ف
     expect(rows.length).toBeGreaterThanOrEqual(1);
     // تحويل الأدمن من ف٢ لا يُرفَض بحظرٍ فرعيّ (قد ينجح فعلياً — ف٢ فيه رصيد ١٠).
     let err: any = null;
-    try { await caller.inventory.transfer({ variantId: 1, fromBranchId: 2, toBranchId: 1, baseQuantity: 5 }); } catch (e) { err = e; }
+    try { await caller.inventory.transferBatch({ fromBranchId: 2, toBranchId: 1, items: [{ variantId: 1, baseQuantity: 5 }] }); } catch (e) { err = e; }
     expect(err?.code).not.toBe("FORBIDDEN");
   });
 });

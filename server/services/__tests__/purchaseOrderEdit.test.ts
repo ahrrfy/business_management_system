@@ -11,13 +11,19 @@
 //     اسمَ ناقلٍ ومرجعَ مستند، بينما لا حقلَ لهما في شاشة الاستلام أصلاً ⇒ ميزةٌ مقفلة كلّياً.
 //     صارا اختياريَّين، والخادم يُكمل الناقص ببديلٍ **صريح الجهالة** فيبقى المصروف مثبتاً
 //     ومنسوباً وقابلاً للتصحيح — لا مبلغاً يضيع بصمت.
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createPurchaseOrder, receivePurchase, updatePurchaseOrder } from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
+const reviewer = { userId: 4, branchId: 1, role: "manager" as const };
 /** مدير فرعٍ آخر — يحرس عزل الفرع على التعديل (لا عبور بين الفروع). */
 const otherBranchManager = { userId: 3, branchId: 2, role: "manager" as const };
 
@@ -32,6 +38,10 @@ async function reset() {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const t of [
     "idempotencyKeys",
+    "purchaseOrderControlRequests",
+    "purchaseOrderRequisitionAllocations",
+    "purchaseOrderRevisionItems",
+    "purchaseOrderRevisions",
     "accrualCorrectionRequests",
     "accrualObligationEvents",
     "accrualObligations",
@@ -65,6 +75,7 @@ async function seed() {
     { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" },
     { id: 2, openId: "recv-2", name: "أمين المخزن", role: "warehouse", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "mgr-3", name: "مدير فرع المبيعات", role: "manager", loginMethod: "local", branchId: 2 },
+    { id: 4, openId: "po-reviewer", name: "مراجع مشتريات", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.suppliers).values([
     { id: 1, name: "مورد أوّل", currentBalance: "0" },
@@ -118,17 +129,32 @@ async function itemsOf(poId: number) {
 }
 
 /** أمرٌ ديناريّ بسيط: ١٠×١٠٠ = ١٬٠٠٠ بلا ضريبة ولا شحن. */
-async function simpleOrder(status: "DRAFT" | "CONFIRMED" = "CONFIRMED") {
+async function simpleOrder() {
   return createPurchaseOrder(
     {
       supplierId: 1,
       branchId: 1,
       taxRatePercent: "0",
-      status,
+      status: "DRAFT",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
     },
     actor,
   );
+}
+
+async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchaseOrder>>) {
+  const submitted = await submitPurchaseOrderForApproval({
+    purchaseOrderId: po.purchaseOrderId,
+    expectedVersion: po.version,
+    reason: "إرسال أمر اختبار التعديل للمراجعة",
+    requestKey: `po-edit-submit:${randomUUID()}`,
+  }, actor);
+  await decidePurchaseOrderControl({
+    requestId: submitted.requestId,
+    decisionKey: `po-edit-approve:${randomUUID()}`,
+    approve: true,
+    reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+  }, reviewer);
 }
 
 describe("تعديل أمر الشراء قبل الاستلام", () => {
@@ -140,6 +166,8 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
     const res = await updatePurchaseOrder(
       {
         purchaseOrderId: po.purchaseOrderId,
+        expectedVersion: po.version,
+        revisionReason: "تعديل المورد والبنود قبل الإرسال للاعتماد",
         supplierId: 2, // تبديل المورّد جزءٌ من التعديل
         taxRatePercent: "0",
         notes: "عُدّل قبل الاستلام",
@@ -186,6 +214,8 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
     await updatePurchaseOrder(
       {
         purchaseOrderId: po.purchaseOrderId,
+        expectedVersion: po.version,
+        revisionReason: "تعديل سعر شراء الدولار قبل الاعتماد",
         supplierId: 1,
         taxRatePercent: "0",
         agreedCurrency: "USD",
@@ -218,6 +248,8 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
     await updatePurchaseOrder(
       {
         purchaseOrderId: po.purchaseOrderId,
+        expectedVersion: po.version,
+        revisionReason: "حذف تكاليف الشحن والكمرك قبل الاعتماد",
         supplierId: 1,
         taxRatePercent: "0",
         items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
@@ -234,6 +266,7 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
 
   it("يرفض التعديل بعد استلام أيّ كمية (ولو جزئية)", async () => {
     const po = await simpleOrder();
+    await approvePurchaseOrder(po);
     const items = await itemsOf(po.purchaseOrderId);
     // مُستلِمٌ غير المُنشئ (فصل المهام) — الأدمن مُستثنى لكنّنا نتبع المسار الواقعيّ.
     await receivePurchase(
@@ -243,11 +276,20 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
       },
       { userId: 2, branchId: 1, role: "warehouse" },
     );
+    // أعد حالة الـfixture وحدها إلى مسوّدة كي نبلغ حارس الكمية الدفاعي؛
+    // تبقى الكمية المستلمة مثبتة في السطر، ويزيد trigger النسخة تلقائياً.
+    await db()
+      .update(s.purchaseOrders)
+      .set({ status: "DRAFT" })
+      .where(eq(s.purchaseOrders.id, po.purchaseOrderId));
+    const receivedOrder = await orderRow(po.purchaseOrderId);
 
     await expect(
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: Number(receivedOrder.version),
+          revisionReason: "محاولة تعديل أمر بعد استلام جزئي",
           supplierId: 1,
           taxRatePercent: "0",
           items: [{ variantId: 1, productUnitId: 1, quantity: "99", unitPrice: "100.00" }],
@@ -267,18 +309,21 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
       .update(s.purchaseOrders)
       .set({ status: "CANCELLED" })
       .where(eq(s.purchaseOrders.id, po.purchaseOrderId));
+    const cancelledOrder = await orderRow(po.purchaseOrderId);
 
     await expect(
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: Number(cancelledOrder.version),
+          revisionReason: "محاولة تعديل أمر ملغى",
           supplierId: 1,
           taxRatePercent: "0",
           items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
         },
         actor,
       ),
-    ).rejects.toThrow(/مستلَم أو ملغى/);
+    ).rejects.toThrow(/لا يُعدَّل إلا أمر شراء مسوّدة/);
   });
 
   it("يرفض التعديل حين يحمل الأمر دفعةً مسجَّلة", async () => {
@@ -287,11 +332,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
       .update(s.purchaseOrders)
       .set({ paidAmount: "250.00" })
       .where(eq(s.purchaseOrders.id, po.purchaseOrderId));
+    const paidOrder = await orderRow(po.purchaseOrderId);
 
     await expect(
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: Number(paidOrder.version),
+          revisionReason: "محاولة تعديل أمر يحمل دفعة",
           supplierId: 1,
           taxRatePercent: "0",
           items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
@@ -307,6 +355,8 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة تعديل أمر من فرع آخر",
           supplierId: 1,
           taxRatePercent: "0",
           items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
@@ -322,6 +372,8 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة إدخال بكج في أمر شراء",
           supplierId: 1,
           taxRatePercent: "0",
           items: [{ variantId: 3, productUnitId: 4, quantity: "1", unitPrice: "5000.00" }],
@@ -334,6 +386,8 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة تحويل المورد إلى مودع أمانة",
           supplierId: 3, // مودِع أمانة
           taxRatePercent: "0",
           items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
@@ -347,7 +401,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
     const po = await simpleOrder();
     await expect(
       updatePurchaseOrder(
-        { purchaseOrderId: po.purchaseOrderId, supplierId: 1, taxRatePercent: "0", items: [] },
+        {
+          purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة حفظ أمر بلا أصناف",
+          supplierId: 1,
+          taxRatePercent: "0",
+          items: [],
+        },
         actor,
       ),
     ).rejects.toThrow(/بلا أصناف/);
@@ -356,6 +417,8 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة حفظ نسبة ضريبة غير صالحة",
           supplierId: 1,
           taxRatePercent: "150",
           items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
@@ -368,7 +431,7 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
 
 describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب الاستلام", () => {
   async function orderWithShipping() {
-    return createPurchaseOrder(
+    const po = await createPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -379,6 +442,8 @@ describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب 
       },
       actor,
     );
+    await approvePurchaseOrder(po);
+    return po;
   }
 
   it("يُستلَم بلا اسم ناقلٍ ولا مستند، ويُسجَّل المصروف ببديلٍ صريح الجهالة", async () => {

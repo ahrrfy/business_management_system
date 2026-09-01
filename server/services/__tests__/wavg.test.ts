@@ -1,16 +1,19 @@
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createPurchaseOrder, receivePurchase } from "../purchaseService";
+import { confirmPurchaseOrder, createPurchaseOrder, receivePurchase } from "../purchaseService";
+import { decidePurchaseOrderControl } from "../purchase/controls";
 
-const actor = { userId: 1, branchId: 1 };
+const actor = { userId: 1, branchId: 1, role: "admin" as const };
+const approver = { userId: 2, branchId: 1, role: "manager" as const };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of ["accountingEntries", "receipts", "inventoryMovements", "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products", "suppliers", "branches", "users"]) {
+  for (const t of ["idempotencyKeys", "auditLogs", "accountingEntries", "receipts", "inventoryMovements", "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products", "suppliers", "branches", "users"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -19,7 +22,10 @@ async function reset() {
 async function seed() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }, { id: 2, name: "SALES", code: "SALES", type: "SALES" }]);
-  await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "wavg-approver", name: "مدير مستقل", role: "manager", loginMethod: "local", branchId: 1 },
+  ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
   await d.insert(s.products).values({ id: 1, name: "ورق" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "P-1", costPrice: "0.00" });
@@ -33,9 +39,27 @@ async function cost(): Promise<string> {
 }
 async function receiveAt(qty: number, unitPrice: string) {
   const po = await createPurchaseOrder(
-    { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
+    {
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
+      clientRequestId: `wavg-create:${randomUUID()}`,
+      items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }],
+    },
     actor,
   );
+  const request = await confirmPurchaseOrder({
+    purchaseOrderId: po.purchaseOrderId,
+    expectedVersion: po.version,
+    clientRequestId: `wavg-submit:${randomUUID()}`,
+    reason: "مراجعة أمر اختبار متوسط التكلفة قبل الاستلام",
+  }, actor);
+  await decidePurchaseOrderControl({
+    requestId: request.requestId,
+    decisionKey: `wavg-approve:${randomUUID()}`,
+    approve: true,
+    reason: "راجعت المورد والكميات والأسعار واعتمدت الاستلام",
+  }, approver);
   const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
   await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: qty }] }, actor);
 }

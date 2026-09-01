@@ -334,26 +334,10 @@ describe("commissionEngine — دورة الحياة (I5+I6)", () => {
     expect(ok.requiresPayrollRegeneration).toBe(true);
   });
 
-  it("إلغاء الاعتماد: ممنوع بعد الالتقاط أو بوجود شهر أحدث، ويعود مسودةً في الحالة السليمة", async () => {
+  it("اعتماد التشغيل نهائي ولا يعود مسودة حتى قبل الالتقاط", async () => {
     const run = await draftJune();
     await approveRun(run.runId, APPROVER);
-
-    // شهر أحدث ⇒ ممنوع.
-    await seedSale({ sellerId: 3, revenue: "50000", date: "2026-07-01" });
-    const july = await computeCommissionRun("2026-07", COMPUTER);
     await expect(unapproveRun(run.runId, APPROVER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
-    await deleteDraft(july.runId);
-
-    // مُلتقَط ⇒ ممنوع.
-    const d = db();
-    await d.insert(s.payrollRuns).values({ id: 701, period: "2026-06", status: "draft", createdBy: 1 });
-    await d.update(s.commissionRuns).set({ payrollRunId: 701 }).where(eq(s.commissionRuns.id, run.runId));
-    await expect(unapproveRun(run.runId, APPROVER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
-
-    // فكّ الربط ⇒ يمرّ.
-    await d.update(s.commissionRuns).set({ payrollRunId: null }).where(eq(s.commissionRuns.id, run.runId));
-    const res = await unapproveRun(run.runId, APPROVER);
-    expect(res.status).toBe("draft");
   });
 
   it("لا موظفين مؤهَّلين ⇒ رفض واضح بلا تشغيلة يتيمة", async () => {

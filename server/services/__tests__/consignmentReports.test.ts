@@ -113,7 +113,14 @@ describe("بضاعة الأمانة ش٤ — تقرير الهوامش", () => {
     const sale = await createSale({ branchId: 1, shiftId, priceTier: "RETAIL", sourceType: "POS",
       lines: [{ variantId, productUnitId, quantity: "3" }], payment: { amount: "15000", method: "CASH" } }, actor);
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
-    await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "5000", method: "CASH" }, restock: true }, actor);
+    await returnSale({
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "5000", shiftId,
+        reason: "مرتجع أمانة جزئي لحساب صافي هامش التقرير", disposition: "RESTOCK",
+      },
+    }, actor);
 
     const rep = await consignmentMarginsReport(WIDE);
     expect(rep.rows).toHaveLength(1);
@@ -207,7 +214,14 @@ describe("بضاعة الأمانة ش٥ — كشف تسوية المودِع (�
     const sale = await createSale({ branchId: 1, shiftId, priceTier: "RETAIL", sourceType: "POS",
       lines: [{ variantId, productUnitId, quantity: "3" }], payment: { amount: "15000", method: "CASH" } }, actor);
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
-    await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "5000", method: "CASH" }, restock: true }, actor);
+    await returnSale({
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "5000", shiftId,
+        reason: "مرتجع أمانة جزئي لحساب صافي كشف المودع", disposition: "RESTOCK",
+      },
+    }, actor);
 
     const st = (await consignmentSettlementStatement({ consignorId: cid, ...WIDE }))!;
     expect(st.period.soldQty).toBe(2);

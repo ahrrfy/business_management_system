@@ -20,9 +20,12 @@ const TABLES = [
   "digitalProviders",
   "idempotencyKeys",
   "accountingEntries",
+  "externalPaymentAttempts",
   "receipts",
   "installmentLines",
   "installmentPlans",
+  "invoiceItems",
+  "invoices",
   "voucherCategories",
   "shifts",
   "auditLogs",
@@ -123,8 +126,13 @@ describe.sequential("سياسة القبض خارج نقاط البيع على �
 
   it.each(API_ROLES)("تحصيل القسط يرفض الطرق غير المدعومة قبل مسّ السطر — %s", async (role) => {
     await seedCashFixtures();
+    await db().insert(s.invoices).values({
+      id: 101, invoiceNumber: `INST-REJECT-${role}`, sourceType: "POS", branchId: 1,
+      customerId: 1, subtotal: "40.00", total: "40.00", paidAmount: "0.00", status: "PENDING",
+    });
     const planRes = await db().insert(s.installmentPlans).values({
       customerId: 1,
+      invoiceId: 101,
       branchId: 1,
       totalAmount: "40.00",
       createdBy: 1,
@@ -140,7 +148,11 @@ describe.sequential("سياسة القبض خارج نقاط البيع على �
     const lineId = Number((lineRes as unknown as [{ insertId: number }])[0].insertId);
     const caller = appRouter.createCaller(context(role, role === "admin" ? 1 : role === "manager" ? 2 : 3));
     for (const paymentMethod of API_REJECTED) {
-      await expect(caller.installments.pay({ lineId, paymentMethod: paymentMethod as never })).rejects.toThrow();
+      await expect(caller.installments.pay({
+        lineId,
+        paymentMethod: paymentMethod as never,
+        clientRequestId: crypto.randomUUID(),
+      })).rejects.toThrow();
     }
     expect(await db().select().from(s.receipts)).toHaveLength(0);
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
@@ -190,6 +202,121 @@ describe.sequential("سياسة القبض خارج نقاط البيع على �
     expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance).toBe("400.00");
   });
 
+  it("تحصيل قسط غير نقدي يستهلك محاولة SALES_COLLECTION المؤكدة عبر حدود API", async () => {
+    await seedCashFixtures();
+    await db().insert(s.invoices).values({
+      id: 103,
+      invoiceNumber: "INST-TRANSFER-103",
+      sourceType: "POS",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "40.00",
+      total: "40.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      status: "PENDING",
+    });
+    const planRes = await db().insert(s.installmentPlans).values({
+      customerId: 1,
+      invoiceId: 103,
+      branchId: 1,
+      totalAmount: "40.00",
+      createdBy: 1,
+    });
+    const planId = Number((planRes as unknown as [{ insertId: number }])[0].insertId);
+    const lineRes = await db().insert(s.installmentLines).values({
+      planId,
+      seq: 1,
+      dueDate: "2026-08-15",
+      amount: "40.00",
+      kind: "CASH",
+    });
+    const lineId = Number((lineRes as unknown as [{ insertId: number }])[0].insertId);
+    const maker = appRouter.createCaller(context("manager", 2));
+    const checker = appRouter.createCaller(context("admin", 1));
+    const deviceId = "INSTALLMENT-API-DEVICE";
+    const attempt = await maker.installments.initiateExternalPayment({
+      branchId: 1,
+      lineId,
+      method: "TRANSFER",
+      amount: "40.00",
+      reference: "INST-TR-103",
+      requestId: crypto.randomUUID(),
+      deviceId,
+    });
+    const makerQueue = await maker.installments.pendingExternalPayments({
+      branchId: 1,
+      limit: 20,
+    });
+    expect(makerQueue).toEqual([
+      expect.objectContaining({
+        attemptId: attempt.attemptId,
+        lineId,
+        state: "INITIATED",
+        canConfirm: false,
+        canSettle: false,
+      }),
+    ]);
+    await expect(
+      maker.installments.pendingExternalPayments({ branchId: 2, limit: 20 }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const checkerQueue = await checker.installments.pendingExternalPayments({
+      branchId: 1,
+      limit: 20,
+    });
+    expect(checkerQueue[0]).toMatchObject({
+      attemptId: attempt.attemptId,
+      canConfirm: true,
+      canSettle: false,
+    });
+    await expect(maker.installments.confirmExternalPayment({
+      branchId: 1,
+      lineId,
+      attemptId: attempt.attemptId,
+      deviceId,
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await checker.installments.confirmExternalPayment({
+      branchId: 1,
+      lineId,
+      attemptId: attempt.attemptId,
+      deviceId,
+    });
+    await expect(maker.installments.pay({
+      lineId,
+      clientRequestId: crypto.randomUUID(),
+      paymentMethod: "TRANSFER",
+      referenceNumber: "INST-TR-103",
+      externalPaymentAttemptId: attempt.attemptId,
+      deviceId,
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const confirmedQueue = await checker.installments.pendingExternalPayments({
+      branchId: 1,
+      limit: 20,
+    });
+    expect(confirmedQueue[0]).toMatchObject({
+      attemptId: attempt.attemptId,
+      state: "CONFIRMED",
+      canConfirm: false,
+      canSettle: true,
+    });
+    const paid = await checker.installments.pay({
+      lineId,
+      clientRequestId: crypto.randomUUID(),
+      paymentMethod: "TRANSFER",
+      referenceNumber: "INST-TR-103",
+      externalPaymentAttemptId: attempt.attemptId,
+      deviceId,
+    });
+    expect(paid.status).toBe("PAID");
+    const [consumed] = await db()
+      .select()
+      .from(s.externalPaymentAttempts)
+      .where(eq(s.externalPaymentAttempts.id, attempt.attemptId));
+    expect(Number(consumed.invoiceId)).toBe(103);
+    expect(Number(consumed.receiptId)).toBe(paid.receiptId);
+    expect(consumed.consumedAt).toBeTruthy();
+  });
+
   it("النقد يبقى عاملاً كما هو: سند قبض + تحصيل قسط + سحب محفظة", async () => {
     await seedCashFixtures();
     const caller = appRouter.createCaller(context("admin", 1));
@@ -206,8 +333,14 @@ describe.sequential("سياسة القبض خارج نقاط البيع على �
     });
     expect(voucher.approvalStatus).toBe("APPROVED");
 
+    await db().insert(s.invoices).values({
+      id: 102, invoiceNumber: "INST-CASH-102", sourceType: "POS", branchId: 1,
+      customerId: 1, subtotal: "40.00", total: "40.00", paidAmount: "0.00", status: "PENDING",
+    });
+
     const planRes = await db().insert(s.installmentPlans).values({
       customerId: 1,
+      invoiceId: 102,
       branchId: 1,
       totalAmount: "40.00",
       createdBy: 1,
@@ -221,7 +354,7 @@ describe.sequential("سياسة القبض خارج نقاط البيع على �
       kind: "CASH",
     });
     const lineId = Number((lineRes as unknown as [{ insertId: number }])[0].insertId);
-    const paid = await caller.installments.pay({ lineId });
+    const paid = await caller.installments.pay({ lineId, clientRequestId: crypto.randomUUID() });
     expect(paid.status).toBe("PAID");
     const [installmentAudit] = await db()
       .select()

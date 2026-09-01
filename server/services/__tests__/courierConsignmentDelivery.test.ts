@@ -5,6 +5,7 @@
  * إلى عهدة الجهة، ثم recordDeliveryRemittance ينقل العهدة إلى الدرج بلا تحصيل ثانٍ.
  * تشمل التغطية الفصل التشغيلي/المالي، العزل الذاتي (IDOR)، والشركات وidempotency.
  */
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -24,6 +25,10 @@ import {
 } from "../deliveryService";
 import { markWorkOrderReady, startWorkOrder } from "../workOrderService";
 import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
+import {
   reconcileCustomerBalances,
   reconcileDeliveryFloat,
   reconcileLedgerProfit,
@@ -38,7 +43,8 @@ const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
-  "workOrderMaterials", "workOrderImages", "workOrders",
+  "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks",
+  "workOrderMaterials", "workOrderImages", "workOrders", "serviceTypes",
   "productPrices", "productUnits", "productVariants", "products",
   "shifts", "customers", "branches", "users",
 ];
@@ -69,6 +75,14 @@ async function seedBase(): Promise<{ partyA: number; partyB: number }> {
     { id: 7, openId: "company_driver_2", name: "سائق الشركة ب", email: "d2@t.test", role: "courier", loginMethod: "local", branchId: 1 },
     { id: 8, openId: "company_manager", name: "مدير شركة التوصيل", email: "dm@t.test", role: "courier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.customers).values({ id: 1, name: "عميل التوصيل", phone: "+9647700000000" });
   await d.insert(s.products).values({ id: 1, name: "كتاب مطبوع" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "BK-1", costPrice: "0.00" });
@@ -98,6 +112,21 @@ async function readyReception(): Promise<number> {
     { userId: 2, branchId: 1 },
   );
   const woId = (wo as { workOrderId: number }).workOrderId;
+  const approval = await requestWorkOrderDesignApproval({
+    workOrderId: woId,
+    requestKey: `courier-design-request:${randomUUID()}`,
+    note: "اعتماد التصميم قبل بدء التنفيذ",
+  }, CASHIER);
+  await decideWorkOrderDesignApproval({
+    approvalId: Number(approval.approval.id),
+    decisionKey: `courier-design-approve:${randomUUID()}`,
+    decision: "APPROVED",
+    reason: "وافق العميل على التصميم النهائي",
+    evidence: {
+      type: "WHATSAPP_MESSAGE",
+      reference: `wamid.courier.${randomUUID()}`,
+    },
+  }, MANAGER);
   await startWorkOrder(woId, OPERATOR);
   await markWorkOrderReady(woId, OPERATOR);
   return woId;

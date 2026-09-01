@@ -9,6 +9,7 @@
 //       (مرّةً مصروفَ نقلٍ عند الاستلام ومرّةً خسارةً عند الإرجاع).
 //   (٣) مصروف النقل المُسجَّل عند الاستلام **لا يُعكَس** بالإرجاع: البضاعة شُحنت إلينا فعلاً والمال دُفع.
 //   (٤) reconcileSupplierBalances يبقى خالياً (الدفتر والرصيد متطابقان).
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -17,6 +18,10 @@ import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createPurchaseReturn } from "../purchaseReturnsService";
 import { reconcileSupplierBalances } from "../reconcileService";
 import { approveVoucher } from "../voucher/approval";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
@@ -29,6 +34,8 @@ function db() {
 const TABLES = [
   "documentPrintEvents", "purchaseReturnItems", "purchaseReturns", "idempotencyKeys",
   "accountingEntries", "expenses", "receipts", "inventoryMovements",
+  "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems", "purchaseOrderRevisions",
   "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices",
   "productUnits", "productVariants", "products", "auditLogs", "suppliers", "branches", "users",
 ];
@@ -102,6 +109,18 @@ async function orderedAndReceived(payNow?: string): Promise<{ poId: number; item
   );
   const items = await db().select().from(s.purchaseOrderItems)
     .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)).orderBy(s.purchaseOrderItems.id);
+  const submitted = await submitPurchaseOrderForApproval({
+    purchaseOrderId: po.purchaseOrderId,
+    expectedVersion: po.version,
+    reason: "إرسال أمر اختبار مرتجع تكاليف النقل للمراجعة المستقلة",
+    requestKey: `prl-submit:${randomUUID()}`,
+  }, actor);
+  await decidePurchaseOrderControl({
+    requestId: submitted.requestId,
+    decisionKey: `prl-approve:${randomUUID()}`,
+    approve: true,
+    reason: "راجعت المورد والبضاعة وتكاليف النقل واعتمدت الأمر",
+  }, { userId: 2, branchId: 1, role: "manager" });
   const received = await receivePurchase(
     {
       purchaseOrderId: po.purchaseOrderId,

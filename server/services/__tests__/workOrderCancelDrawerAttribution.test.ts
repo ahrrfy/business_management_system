@@ -7,13 +7,17 @@
  * الكود القديم يستخدم openShiftIdTx(actor.userId) فقط: يرفض الإلغاء كاملاً إن لم يكن للمدير وردية
  * استقبال خاصّة، أو (لو كانت له) ينسب الاسترداد إليها فيختفي عن Z-report صاحب الدرج الحقيقيّ.
  */
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { cancelWorkOrder } from "../workOrder/cancel";
 import { createWorkOrder } from "../workOrder/create";
+import {
+  approveWorkOrderControlRequest,
+  requestWorkOrderControl,
+} from "../workOrder/controlRequests";
 import { closeShift, openShift } from "../shiftService";
 import { workOrderRouter } from "../../routers/workOrderRouter";
 
@@ -38,6 +42,7 @@ function workOrderCaller(user: { id: number; role: string; isOwner: boolean }, b
 const TABLES = [
   "idempotencyKeys",
   "auditLogs",
+  "workOrderControlRequests", "workOrderEvents",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
   "orderPayments", "workOrderMaterials", "workOrderImages", "workOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
@@ -64,6 +69,7 @@ async function seedBase() {
     { id: 1, openId: "mgr", name: "مديرة الفرع", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "reception1", name: "موظف استقبال", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "owner", name: "مالك معتمد", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
+    { id: 4, openId: "refund_owner", name: "مالك اعتماد الرد", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 }
@@ -112,6 +118,28 @@ async function createLegacyCardWorkOrder(suffix: string) {
   return { workOrderId, depositReceiptId };
 }
 
+async function cancelGoverned(
+  workOrderId: number,
+  opts: { refundShiftId?: number | null; requestKey?: string; baseVersion?: number } = {},
+) {
+  const [workOrder] = await db().select({ version: s.workOrders.version })
+    .from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
+  const baseVersion = opts.baseVersion ?? Number(workOrder.version);
+  const request = await requestWorkOrderControl({
+    requestKey: opts.requestKey ?? `cancel-drawer:${randomUUID()}`,
+    workOrderId,
+    requestType: "CANCEL",
+    baseVersion,
+    reason: "إلغاء أمر الاختبار ورد العربون للعميل",
+    payload: { refundShiftId: opts.refundShiftId ?? null, materials: null },
+  }, manager);
+  return approveWorkOrderControlRequest(
+    Number(request.id),
+    { userId: 3, branchId: 1, role: "admin", isOwner: true },
+    "راجعت سبب الإلغاء ومسار رد العربون",
+  );
+}
+
 beforeEach(async () => {
   await reset();
   await seedBase();
@@ -123,7 +151,7 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
     const workOrderId = await createWorkOrderWithDeposit();
 
     // قبل الإصلاح: openShiftIdTx(actor=المديرة بلا وردية استقبال) ⇒ null ⇒ CONFLICT.
-    await cancelWorkOrder(workOrderId, manager);
+    await cancelGoverned(workOrderId);
 
     const refund = (
       await db()
@@ -141,12 +169,21 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
     const retailShift = await openShiftFor(1, "RETAIL");
     const workOrderId = await createWorkOrderWithDeposit();
 
-    const first = await cancelWorkOrder(workOrderId, manager, { clientRequestId: "wo-cancel-cash-1" });
+    const [before] = await db().select({ version: s.workOrders.version })
+      .from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
+    const baseVersion = Number(before.version);
+    const first = await cancelGoverned(workOrderId, {
+      requestKey: "wo-cancel-cash-1",
+      baseVersion,
+    });
     expect(first.replayed).toBe(false);
-    await expect(cancelWorkOrder(workOrderId, manager, { clientRequestId: "wo-cancel-cash-1" }))
-      .resolves.toMatchObject({ replayed: true, pendingRefundReceiptIds: [] });
-    await expect(cancelWorkOrder(workOrderId, manager, {
-      clientRequestId: "wo-cancel-cash-1",
+    await expect(cancelGoverned(workOrderId, {
+      requestKey: "wo-cancel-cash-1",
+      baseVersion,
+    })).resolves.toMatchObject({ replayed: true });
+    await expect(cancelGoverned(workOrderId, {
+      requestKey: "wo-cancel-cash-1",
+      baseVersion,
       refundShiftId: 999,
     })).rejects.toMatchObject({ code: "CONFLICT" });
     const refund = (await db().select({ shiftId: s.receipts.shiftId }).from(s.receipts)
@@ -160,7 +197,7 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
     const mgrShift = await openShiftFor(1, "RETAIL");
     const workOrderId = await createWorkOrderWithDeposit();
 
-    await cancelWorkOrder(workOrderId, manager, { refundShiftId: receptionShift.shiftId });
+    await cancelGoverned(workOrderId, { refundShiftId: receptionShift.shiftId });
 
     const refund = (
       await db()
@@ -181,7 +218,7 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
       paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", createdBy: 2,
     });
 
-    await expect(cancelWorkOrder(workOrderId, manager)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(cancelGoverned(workOrderId)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
   it("لا وردية مفتوحة بالفرع إطلاقاً (أُغلقت بعد قبض العربون) ⇒ الاسترداد النقدي يُرفَض", async () => {
@@ -189,7 +226,7 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
     const workOrderId = await createWorkOrderWithDeposit();
     await closeShift({ shiftId: shift.shiftId, countedCash: "2000.00" }, { userId: 2, branchId: 1, role: "cashier" });
 
-    await expect(cancelWorkOrder(workOrderId, manager)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(cancelGoverned(workOrderId)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
   it("قبض عربون CASH مع وردية RETAIL فقط يُرفَض ذرياً بلا DRAWER مجهول", async () => {
@@ -203,7 +240,7 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
   it("استرداد CARD القديم يبقى صفري الأثر ثم materializes عبر اعتماد مالك مخصص", async () => {
     const { workOrderId, depositReceiptId } = await createLegacyCardWorkOrder("1");
 
-    await cancelWorkOrder(workOrderId, manager);
+    await cancelGoverned(workOrderId);
 
     const pending = (await db().select().from(s.receipts)
       .where(and(eq(s.receipts.workOrderId, workOrderId), eq(s.receipts.direction, "OUT"))))[0]!;
@@ -231,10 +268,13 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
     await expect(workOrderCaller({ id: 1, role: "manager", isOwner: false })
       .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" }))
       .rejects.toMatchObject({ code: "FORBIDDEN" });
-    const approved = await workOrderCaller({ id: 3, role: "admin", isOwner: true })
+    await expect(workOrderCaller({ id: 3, role: "admin", isOwner: true })
+      .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    const approved = await workOrderCaller({ id: 4, role: "admin", isOwner: true })
       .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" });
     expect(approved.replayed).toBe(false);
-    await expect(workOrderCaller({ id: 3, role: "admin", isOwner: true })
+    await expect(workOrderCaller({ id: 4, role: "admin", isOwner: true })
       .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" }))
       .resolves.toMatchObject({ replayed: true });
     const materialized = (await db().select().from(s.receipts)
@@ -267,13 +307,13 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
   it("يحجز confirmationReference ذرياً: اعتمادان متزامنان بالطريقة نفسها ينجح أحدهما فقط", async () => {
     const first = await createLegacyCardWorkOrder("RACE-A");
     const second = await createLegacyCardWorkOrder("RACE-B");
-    await cancelWorkOrder(first.workOrderId, manager);
-    await cancelWorkOrder(second.workOrderId, manager);
+    await cancelGoverned(first.workOrderId);
+    await cancelGoverned(second.workOrderId);
     const pending = await db().select({ id: s.receipts.id }).from(s.receipts)
       .where(and(eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "PENDING")));
     expect(pending).toHaveLength(2);
 
-    const owner = workOrderCaller({ id: 3, role: "admin", isOwner: true });
+    const owner = workOrderCaller({ id: 4, role: "admin", isOwner: true });
     const results = await Promise.allSettled(pending.map((row) =>
       owner.approveCancellationRefund({
         receiptId: Number(row.id),

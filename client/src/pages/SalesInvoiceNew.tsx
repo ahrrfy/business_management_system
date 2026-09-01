@@ -29,9 +29,11 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
+import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems,
+} from "@/lib/invoiceTransfer";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
+} from "@shared/posPaymentPolicy";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { getDeviceCode } from "@/lib/offline/outbox";
 
@@ -39,7 +41,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { releaseReservedPrintWindow, reservePrintWindow,
+} from "@/lib/printing/brand";
 import { AlertTriangle, Lock, FileWarning } from "lucide-react";
 import {
   Dialog,
@@ -95,7 +98,7 @@ export default function SalesInvoiceNew() {
   const [state, dispatch] = useReducer(
     invoiceReducer,
     undefined,
-    () => createInitialState(INVOICE_TYPE, defaultBranchId)
+    () => createInitialState(INVOICE_TYPE, defaultBranchId),
   );
 
   // ── تصحيح الفاتورة (0168) — نفس شاشة البيع في وضع التصحيح (نمط المعيار: مسار + query + هيدرة مرّة) ──
@@ -103,17 +106,24 @@ export default function SalesInvoiceNew() {
   const [corrMatch, corrParams] = useRoute("/invoices/:id/correct");
   const correctInvoiceId = corrMatch && corrParams?.id ? Number(corrParams.id) : null;
   const isCorrection = correctInvoiceId != null && correctInvoiceId > 0;
-  const original = trpc.sales.get.useQuery({ invoiceId: correctInvoiceId ?? 0 }, { enabled: isCorrection });
+  const original = trpc.sales.get.useQuery({ invoiceId: correctInvoiceId ?? 0 }, { enabled: isCorrection },
+  );
   const correctionUnitIds = useMemo(
-    () => Array.from(new Set((original.data?.items ?? []).map((item) => item.productUnitId ?? 0).filter((id) => id > 0))),
+    () => Array.from(new Set((original.data?.items ?? []).map((item) => item.productUnitId ?? 0).filter((id) => id > 0),
+        ),
+      ),
     [original.data?.items],
   );
   const correctionCatalog = trpc.catalog.byUnitIds.useQuery(
-    { branchId: original.data?.branchId ?? defaultBranchId, tier: (original.data?.priceTier ?? "RETAIL") as PriceTier, productUnitIds: correctionUnitIds },
-    { enabled: isCorrection && !!original.data && correctionUnitIds.length > 0, staleTime: 15_000 },
+    { branchId: original.data?.branchId ?? defaultBranchId, tier: (original.data?.priceTier ?? "RETAIL") as PriceTier, productUnitIds: correctionUnitIds,
+    },
+    { enabled: isCorrection && !!original.data && correctionUnitIds.length > 0, staleTime: 15_000,
+    },
   );
-  const originalPaid = useMemo(() => D(original.data?.paidAmount ?? "0"), [original.data?.paidAmount]);
+  const originalPaid = useMemo(() => D(original.data?.paidAmount ?? "0"), [original.data?.paidAmount],
+  );
   const [reason, setReason] = useState("");
+  const [correctionKind, setCorrectionKind] = useState<"REISSUE" | "EXCHANGE">("REISSUE");
   const [overpayHandling, setOverpayHandling] = useState<"CREDIT" | "CASH_REFUND">("CASH_REFUND");
   // درج ردّ الفائض — يُجلب مع وضع التصحيح فقط، ويُختار درج المنفّذ افتراضاً (نمط ReturnComposer).
   const [overpayShiftId, setOverpayShiftId] = useState<number | null>(null);
@@ -134,7 +144,8 @@ export default function SalesInvoiceNew() {
   useEffect(() => {
     if (overpayShiftId != null || correctionOpenShifts.length === 0) return;
     const mine = correctionOpenShifts.find((s) => s.isMine);
-    setOverpayShiftId(mine ? mine.shiftId : correctionOpenShifts.length === 1 ? correctionOpenShifts[0].shiftId : null);
+    setOverpayShiftId(mine ? mine.shiftId : correctionOpenShifts.length === 1 ? correctionOpenShifts[0].shiftId : null,
+    );
   }, [correctionOpenShifts, overpayShiftId]);
   const [collectNow, setCollectNow] = useState("");
   const correctionHydratedRef = useRef(false);
@@ -144,25 +155,32 @@ export default function SalesInvoiceNew() {
     if (!isCorrection || correctionHydratedRef.current || !original.data) return;
     if (correctionUnitIds.length > 0 && !correctionCatalog.data) return;
     const d = original.data;
-    const catalogByUnit = new Map((correctionCatalog.data ?? []).map((row) => [row.productUnitId, row]));
+    const catalogByUnit = new Map((correctionCatalog.data ?? []).map((row) => [row.productUnitId, row]),
+    );
     if (d.customerId) dispatch({ type: "SET_ENTITY", id: d.customerId });
-    if (d.priceTier) dispatch({ type: "SET_FIELD", field: "tier", value: d.priceTier as PriceTier });
+    if (d.priceTier) dispatch({ type: "SET_FIELD", field: "tier", value: d.priceTier as PriceTier,
+      });
     // شروط الدفع وطريقته من الأصل — لا تُترَك على افتراضيّ «نقدي». الشروط تُظهر حقل تاريخ
     // الاستحقاق للفاتورة الآجلة (كان يُرسَل مخفيّاً فلا يستطيع الموظّف تصحيحه)، والطريقة هي
     // التي يُقبَض بها «المُحصَّل الآن» فلا تُفترَض نقداً على فاتورةٍ قُبِضت بالبطاقة.
-    dispatch({ type: "SET_FIELD", field: "paymentTerms", value: derivePaymentTerms(d) });
+    dispatch({ type: "SET_FIELD", field: "paymentTerms", value: derivePaymentTerms(d),
+    });
     if (d.paymentMethod && isPosPaymentMethodEnabled(d.paymentMethod as PaymentMethod)) {
-      dispatch({ type: "SET_FIELD", field: "paymentMethod", value: d.paymentMethod as PaymentMethod });
+      dispatch({ type: "SET_FIELD", field: "paymentMethod", value: d.paymentMethod as PaymentMethod,
+      });
     }
     // خصمٌ إجماليّ (كمبلغ صريح — الأصل يخزّنه مبلغاً لا نسبة).
     if (D(d.discountAmount ?? "0").gt(0)) {
-      dispatch({ type: "SET_FIELD", field: "globalDiscountType", value: "amount" });
-      dispatch({ type: "SET_FIELD", field: "globalDiscount", value: String(d.discountAmount) });
+      dispatch({ type: "SET_FIELD", field: "globalDiscountType", value: "amount",
+      });
+      dispatch({ type: "SET_FIELD", field: "globalDiscount", value: String(d.discountAmount),
+      });
     }
     // ضريبةٌ على مستوى الفاتورة — نحمِلها من الأصل ونُثبّت الرايةَ كي لا تطمسها تهيئةُ الافتراضيات.
     if (D(d.taxRatePercent ?? "0").gt(0) || D(d.taxAmount ?? "0").gt(0)) {
       dispatch({ type: "SET_FIELD", field: "taxEnabled", value: true });
-      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: String(d.taxRatePercent ?? "0") });
+      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: String(d.taxRatePercent ?? "0"),
+      });
     } else {
       dispatch({ type: "SET_FIELD", field: "taxEnabled", value: false });
     }
@@ -171,9 +189,11 @@ export default function SalesInvoiceNew() {
     if (d.deliveryFree) {
       dispatch({ type: "SET_FIELD", field: "shippingFree", value: true });
       if (D(d.deliveryWaivedAmount ?? "0").gt(0))
-        dispatch({ type: "SET_FIELD", field: "shipping", value: String(d.deliveryWaivedAmount) });
+        dispatch({ type: "SET_FIELD", field: "shipping", value: String(d.deliveryWaivedAmount),
+        });
     } else if (D(d.deliveryFee ?? "0").gt(0)) {
-      dispatch({ type: "SET_FIELD", field: "shipping", value: String(d.deliveryFee) });
+      dispatch({ type: "SET_FIELD", field: "shipping", value: String(d.deliveryFee),
+      });
     }
     if (d.notes) dispatch({ type: "SET_FIELD", field: "notes", value: d.notes });
     const dueYmd = toYmdUtc(d.dueDate);
@@ -202,7 +222,8 @@ export default function SalesInvoiceNew() {
         discountType: "amount",
         note: "",
         ...(it.isGift ? { isGift: true as const } : {}),
-      })),
+      }),
+      ),
     });
     correctionHydratedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -225,12 +246,14 @@ export default function SalesInvoiceNew() {
       if (seed.tier) dispatch({ type: "SET_FIELD", field: "tier", value: seed.tier });
       // شروط الدفع من الأصل: بدونها تبقى الشاشة على «نقدي» الافتراضيّ، فيصير نسخُ فاتورةٍ
       // آجلة بيعاً «مسدَّداً بالكامل نقداً» عند الحفظ (computePaidStr) — قبضٌ لم يقع.
-      if (seed.paymentTerms) dispatch({ type: "SET_FIELD", field: "paymentTerms", value: seed.paymentTerms });
+      if (seed.paymentTerms) dispatch({ type: "SET_FIELD", field: "paymentTerms", value: seed.paymentTerms,
+        });
       if (Array.isArray(seed.items) && seed.items.length) {
         dispatch({ type: "ADD_ITEMS", items: seed.items });
         dispatch({ type: "MARK_STOCK_STALE" });
       }
-      notify.info("تم نسخ الفاتورة — راجِع الأسعار فهي منسوخة من الفاتورة الأصلية وقد تختلف عن الأسعار الحالية.");
+      notify.info("تم نسخ الفاتورة — راجِع الأسعار فهي منسوخة من الفاتورة الأصلية وقد تختلف عن الأسعار الحالية.",
+      );
     } catch {
       /* بذرة معطوبة — تجاهل */
     }
@@ -241,7 +264,8 @@ export default function SalesInvoiceNew() {
   const syncedBranch = useRef(false);
   useEffect(() => {
     if (!syncedBranch.current && me.data?.branchId && state.branchId !== me.data.branchId) {
-      dispatch({ type: "SET_FIELD", field: "branchId", value: me.data.branchId });
+      dispatch({ type: "SET_FIELD", field: "branchId", value: me.data.branchId,
+      });
       syncedBranch.current = true;
     } else if (me.data) {
       syncedBranch.current = true;
@@ -252,7 +276,8 @@ export default function SalesInvoiceNew() {
   // لقطة السطر المخزنية ليست مصدراً للحقيقة: النسخ/اللصق/تغيير الفرع ومسودة قديمة كلها قد تحمل
   // رقماً قديماً. نعيد قراءة الوحدات الموجودة فقط من الفرع الذي طبّقه الخادم، دورياً وعند التركيز.
   const stockUnitIds = useMemo(
-    () => Array.from(new Set(state.items.map((item) => item.productUnitId))).slice(0, 500),
+    () => Array.from(new Set(state.items.map((item) => item.productUnitId))).slice(0, 500,
+      ),
     [state.items],
   );
   const liveStockQ = trpc.catalog.stockByUnitIds.useQuery(
@@ -275,7 +300,8 @@ export default function SalesInvoiceNew() {
     // غير الأدمن قد يطلب فرعاً آخر من واجهة/مسودة قديمة، لكن الخادم يجبره على فرع حسابه.
     // نعكس الفرع الفعلي في الرأس بدلاً من إبقاء اسمٍ مضلّل فوق أرقام فرع آخر.
     if (snapshot.branchId !== state.branchId) {
-      dispatch({ type: "SET_FIELD", field: "branchId", value: snapshot.branchId });
+      dispatch({ type: "SET_FIELD", field: "branchId", value: snapshot.branchId,
+      });
       return;
     }
     dispatch({
@@ -301,11 +327,14 @@ export default function SalesInvoiceNew() {
   const taxSettingsQuery = trpc.system.getTaxSettings.useQuery();
   // «وضع الافتتاح» (ش٥ + توسعة ١٠/٨): هذه الشاشة تمرّ بقناة POS نفسها ⇒ يستفيد من السالب المشروط
   // بيعُها المسدَّد كاملاً نقداً/بطاقةً **وكذلك الآجل لعميلٍ محدَّد** (يُسجَّل ذمّةً) — لافتة توضيحية.
-  const openingModeQuery = trpc.system.getOpeningMode.useQuery(undefined, { staleTime: 60_000 });
+  const openingModeQuery = trpc.system.getOpeningMode.useQuery(undefined, { staleTime: 60_000,
+  });
   useEffect(() => {
     if (!taxDefaultsAppliedRef.current && taxSettingsQuery.data) {
-      dispatch({ type: "SET_FIELD", field: "taxEnabled", value: taxSettingsQuery.data.enabledByDefault });
-      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: taxSettingsQuery.data.defaultTaxRatePercent });
+      dispatch({ type: "SET_FIELD", field: "taxEnabled", value: taxSettingsQuery.data.enabledByDefault,
+      });
+      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: taxSettingsQuery.data.defaultTaxRatePercent,
+      });
       taxDefaultsAppliedRef.current = true;
     }
   }, [taxSettingsQuery.data]);
@@ -313,11 +342,12 @@ export default function SalesInvoiceNew() {
   // وردية مفتوحة للفرع (إن وُجدت) ⇒ تُسجَّل الدفعة النقدية في صندوق الوردية.
   const currentShift = trpc.shifts.current.useQuery(
     { branchId: state.branchId },
-    { enabled: !!state.branchId }
+    { enabled: !!state.branchId },
   );
 
   // idempotency: مفتاح ثابت لكل محاولة إنشاء (يُجدَّد بعد كل حفظ ناجح / RESET).
-  const [clientRequestId, setClientRequestId] = useState<string>(() => crypto.randomUUID());
+  const [clientRequestId, setClientRequestId] = useState<string>(() => crypto.randomUUID(),
+  );
   const printAfterSaveRef = useRef(false);
   const shareAfterSaveRef = useRef(false);
 
@@ -354,17 +384,24 @@ export default function SalesInvoiceNew() {
   /* ─── إثبات الدفع غير النقديّ ────────────────────────────────────
    * نفس بوّابة الكاشير حرفاً بحرف: محاولةٌ خادمية INITIATED ⇒ CONFIRMED تُستهلَك مرّةً
    * واحدة مع الفاتورة. هذه الشاشة بيعٌ على الكاونتر كالكاشير، فلا يجوز أن يكون معيار
-   * إثباتها أضعف. (مسار التصحيح يمرّ بـ`reissue` الذي يقبل مرجعاً نصّياً بعقده الخاصّ.)
+   * إثباتها أضعف. ومسار التصحيح يستهلك المحاولة نفسها بقناة SALES_COLLECTION.
    */
   const [paymentRef, setPaymentRef] = useState("");
   const [externalAttempt, setExternalAttempt] = useState<
-    { attemptId: number | null; requestId: string; deviceId: string; fingerprint: string; confirmed: boolean } | null
+    {
+      attemptId: number | null;
+      requestId: string;
+      deviceId: string;
+      fingerprint: string;
+      confirmed: boolean;
+    } | null
   >(null);
   /** مبلغ الإثبات = ما يُرسَل فعلاً: `collectNow` في التصحيح، ومدفوع الفاتورة في الإنشاء. */
   const externalAmountD = isCorrection ? D(collectNow.trim() || "0") : D(computePaidStr());
   const externalAmount = round2(externalAmountD).toFixed(2);
   const externalNeeded = state.paymentMethod !== "CASH" && externalAmountD.gt(0);
-  const externalFingerprint = `${state.branchId}|${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
+  const externalChannel = isCorrection ? "SALES_COLLECTION" as const : "POS" as const;
+  const externalFingerprint = `${externalChannel}|${state.branchId}|${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
   const externalConfirmed =
     !externalNeeded || (externalAttempt?.confirmed === true && externalAttempt.fingerprint === externalFingerprint);
 
@@ -393,17 +430,24 @@ export default function SalesInvoiceNew() {
           reference,
           requestId,
           deviceId,
+          channel: externalChannel,
         });
         attemptId = initiated.attemptId;
         // تُحفَظ **قبل** التأكيد: لو سقط التأكيد، تُعاد المحاولة نفسها بدل توليد مفتاحٍ
         // جديد لمرجعٍ عالميّ الفرادة (فيُرفض تكراراً ويُحبَس القبض).
-        setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: false });
+        setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: false,
+        });
       }
-      await confirmExternal.mutateAsync({ branchId: Number(branchId), attemptId, deviceId });
-      setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: true });
-      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرّةً واحدة.`);
+      await confirmExternal.mutateAsync({ branchId: Number(branchId), attemptId, deviceId,
+        channel: externalChannel,
+      });
+      setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: true,
+      });
+      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرّةً واحدة.`,
+      );
     } catch (error) {
-      notify.err(error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي");
+      notify.err(error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي",
+      );
     }
   }
 
@@ -422,7 +466,8 @@ export default function SalesInvoiceNew() {
       const shareAfterSave = shareAfterSaveRef.current;
       printAfterSaveRef.current = false;
       shareAfterSaveRef.current = false;
-      navigate(`/invoices/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
+      navigate(`/invoices/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`,
+      );
     },
     onError: (e) => {
       // تجاوز حدّ الائتمان أو بيع بأقل من التكلفة ⇒ افتح حوار موافقة المدير بدل إظهار خطأ فقط.
@@ -442,13 +487,16 @@ export default function SalesInvoiceNew() {
     },
   });
 
-  // تصحيح الفاتورة (0168): إعادة إصدارٍ مصحّحة عبر sales.reissue (عكس + repost خادميّ ذرّيّ).
+  // إعادة الإصدار تبدأ بطلب صفر الأثر؛ مراجعٌ مستقل ينفّذ العكس+الإصدار ذرّياً من طابور التحكم.
   const reissue = trpc.sales.reissue.useMutation({
     onSuccess: (r) => {
-      utils.sales.list.invalidate();
-      notify.ok("تم تصحيح الفاتورة", `صدرت فاتورةٌ مصحّحة ${r.correctedInvoiceNumber}${Number(r.overpay) > 0 ? ` — فرقٌ زائد ${r.overpay} (${r.overpayHandled === "CREDIT" ? "رصيد دائن" : "استرداد نقديّ"})` : ""}`);
+      utils.salesControl.list.invalidate();
+      notify.ok(
+        "أُرسل طلب إعادة الإصدار",
+        `الطلب #${r.requestId} بانتظار مراجع مستقل — لم تتغيّر الفاتورة أو المخزون أو المال بعد.`,
+      );
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
-      navigate(`/invoices/${r.correctedInvoiceId}`);
+      navigate(`/invoices/${correctInvoiceId}`);
     },
     onError: (e) => {
       if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير"))) {
@@ -457,6 +505,18 @@ export default function SalesInvoiceNew() {
       }
       notify.err(e);
     },
+  });
+  const exchange = trpc.salesControl.requestExchange.useMutation({
+    onSuccess: (result) => {
+      utils.salesControl.list.invalidate();
+      notify.ok(
+        "أُرسل طلب الاستبدال",
+        `الطلب #${result.id} بانتظار مراجع مستقل — العكس والبديل وتسوية الفرق ستنفّذ ذرّياً عند الاعتماد.`,
+      );
+      setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
+      navigate(`/invoices/${correctInvoiceId}`);
+    },
+    onError: (cause) => notify.err(cause),
   });
 
   /**
@@ -569,7 +629,13 @@ export default function SalesInvoiceNew() {
             additionalPayment: {
               amount: round2(collect).toFixed(2),
               method: state.paymentMethod,
-              ...(state.paymentMethod === "CASH" ? {} : { reference: paymentRef.trim() }),
+              ...(state.paymentMethod === "CASH"
+                ? {}
+                : {
+                    reference: paymentRef.trim(),
+                    externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined,
+                    externalPaymentDeviceId: externalAttempt?.deviceId ?? undefined,
+                  }),
             },
           }
         : {}),
@@ -621,11 +687,9 @@ export default function SalesInvoiceNew() {
     }
     // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً — يشمل «أقساط» بدون دفعة مقدّمة كاملة.
     // في وضع التصحيح: الدفع محمولٌ خادمياً وتحقّقه في validateCorrection ⇒ نتخطّى منطق الدفع هنا.
-    // لا يُفتَح الحفظ لدفعٍ غير نقديّ قبل تثبيت إثباته (محاولةٌ مؤكَّدة للإنشاء، مرجعٌ للتصحيح).
+    // لا يُفتَح الحفظ لدفعٍ غير نقديّ قبل تثبيت محاولة مؤكدة للإنشاء أو التصحيح.
     if (externalNeeded) {
-      if (isCorrection) {
-        if (!paymentRef.trim()) return "أدخِل مرجع العملية للدفع غير النقديّ.";
-      } else if (!externalConfirmed || externalAttempt?.attemptId == null) {
+      if (!externalConfirmed || externalAttempt?.attemptId == null) {
         return "ثبّت تأكيد الدفع غير النقديّ قبل حفظ الفاتورة.";
       }
     }
@@ -667,7 +731,24 @@ export default function SalesInvoiceNew() {
       if (isCorrection) {
         const cErr = validateCorrection();
         if (cErr) { notify.warn(cErr); return; }
-        reissue.mutate(buildCorrectionPayload(approval));
+        const correction = buildCorrectionPayload(approval);
+        if (correctionKind === "EXCHANGE") {
+          const {
+            originalInvoiceId,
+            reason: exchangeReason,
+            clientRequestId: requestKey,
+            managerApproval: _managerApproval,
+            ...payload
+          } = correction;
+          exchange.mutate({
+            requestKey,
+            invoiceId: originalInvoiceId,
+            reason: exchangeReason,
+            payload,
+          });
+        } else {
+          reissue.mutate(correction);
+        }
       } else {
         create.mutate(buildPayload(approval));
       }
@@ -719,7 +800,8 @@ export default function SalesInvoiceNew() {
         handleSubmit();
         return;
       case "draft":
-        notify.info("لا مسوّدة لفاتورة البيع — استخدم «عرض سعر» للمسوّدات القابلة للتحويل.");
+        notify.info("لا مسوّدة لفاتورة البيع — استخدم «عرض سعر» للمسوّدات القابلة للتحويل.",
+        );
         return;
       case "send":
         releaseReservedPrintWindow();
@@ -750,7 +832,8 @@ export default function SalesInvoiceNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.",
+        );
         return;
       case "paste": {
         const items = takeInvoiceItems();
@@ -782,10 +865,11 @@ export default function SalesInvoiceNew() {
 
   /* ─── اختصارات لوحة المفاتيح (F2/F4/F9/F12/Esc) ───────────────────── */
   const containerRef = useRef<HTMLDivElement>(null);
-  const submitPending = isCorrection ? reissue.isPending : create.isPending;
+  const submitPending = isCorrection ? reissue.isPending || exchange.isPending : create.isPending;
   useEffect(() => {
     const isTypingTarget = (el: EventTarget | null) =>
-      !!el && (el as HTMLElement).matches?.("input, textarea, select, [contenteditable='true']");
+      !!el && (el as HTMLElement).matches?.("input, textarea, select, [contenteditable='true']",
+      );
     // هل حوار تأكيدٍ (ConfirmHost) مفتوح فعلاً؟ — يمنع إعادة إطلاق تأكيد «مسح/مغادرة» جديد أثناء
     // إغلاق تأكيدٍ سابق بنفس ضغطة Esc (نمط anyOverlayOpen في useSaveShortcuts.ts).
     const confirmDialogOpen = () =>
@@ -860,7 +944,7 @@ export default function SalesInvoiceNew() {
   // مقصودة ومصنَّفة (تُرحَّل تكلفتها مصروفَ هدايا) ⇒ لا تُنذَر.
   const hasZeroPriceLine = useMemo(
     () => state.items.some((l) => !l.isGift && D(l.price).lte(0)),
-    [state.items]
+    [state.items],
   );
 
   return (
@@ -894,7 +978,8 @@ export default function SalesInvoiceNew() {
         actions={
           <span className="hidden text-xs font-semibold text-muted-foreground sm:inline">
             الإجمالي:{" "}
-            <span className="font-extrabold text-foreground" dir="ltr">{totals.grandTotal}</span> د.ع
+            <span className="font-extrabold text-foreground" dir="ltr">{totals.grandTotal}</span>{" "}
+            د.ع
           </span>
         }
       />
@@ -935,7 +1020,9 @@ export default function SalesInvoiceNew() {
             /* حصص ضريبة الفاتورة (توزيع تناسبي، عرض فقط) — تظهر كعمود حين taxEnabled=true. */
             taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
-            onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
+            onNotify={(msg, kind) =>
+              kind === "error" ? notify.err(msg) : notify.info(msg)
+            }
           />
 
           <BulkPicker
@@ -968,15 +1055,14 @@ export default function SalesInvoiceNew() {
             showTaxToggle
             showPayment={!isCorrection}
           />
-          {/* بوّابة الإثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح الحفظ — مطابقة لبوّابة الكاشير.
-              في التصحيح يكفي المرجع النصّي (عقد `sales.reissue` يحمله بنفسه). */}
+          {/* بوّابة الإثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح الحفظ — مطابقة لكل قبض مبيعات. */}
           {externalNeeded && (
             <div className="rounded-xl border bg-card p-3">
               <PaymentReferenceField
                 value={paymentRef}
                 onChange={(v) => { setPaymentRef(v); setExternalAttempt(null); }}
                 method={state.paymentMethod}
-                confirmed={isCorrection ? paymentRef.trim().length > 0 : externalConfirmed}
+                confirmed={externalConfirmed}
                 confirming={initiateExternal.isPending || confirmExternal.isPending}
                 onConfirm={confirmExternalPayment}
                 inputId="sales-invoice-payment-reference"
@@ -994,10 +1080,13 @@ export default function SalesInvoiceNew() {
               grandTotal={totals.grandTotal}
               reason={reason}
               setReason={setReason}
+              correctionKind={correctionKind}
+              setCorrectionKind={setCorrectionKind}
               collectNow={collectNow}
               setCollectNow={setCollectNow}
               paymentMethod={state.paymentMethod}
-              setPaymentMethod={(m) => dispatch({ type: "SET_FIELD", field: "paymentMethod", value: m })}
+              setPaymentMethod={(m) => dispatch({ type: "SET_FIELD", field: "paymentMethod", value: m,
+                })}
               overpayHandling={overpayHandling}
               setOverpayHandling={setOverpayHandling}
               hasCustomer={state.entityId != null}
@@ -1009,11 +1098,11 @@ export default function SalesInvoiceNew() {
           <ActionButtons
             invoiceType={INVOICE_TYPE}
             items={state.items}
-            saving={isCorrection ? reissue.isPending : create.isPending}
+            saving={isCorrection ? reissue.isPending || exchange.isPending : create.isPending}
             pasteAvailable={pasteAvailable}
             availableActions={isCorrection ? ["save", "print"] : undefined}
-            primaryLabel={isCorrection ? "عكس الأصل وإصدار المصححة" : undefined}
-            printLabel={isCorrection ? "إصدار وطباعة المصححة" : undefined}
+            primaryLabel={isCorrection ? correctionKind === "EXCHANGE" ? "إرسال طلب الاستبدال" : "إرسال طلب إعادة الإصدار" : undefined}
+            printLabel={isCorrection ? correctionKind === "EXCHANGE" ? "طلب استبدال" : "طلب إعادة إصدار" : undefined}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />
@@ -1065,10 +1154,10 @@ export default function SalesInvoiceNew() {
             <Button
               type="button"
               variant="destructive"
-              disabled={isCorrection ? reissue.isPending : create.isPending}
+              disabled={isCorrection ? reissue.isPending || exchange.isPending : create.isPending}
               onClick={handleApprove}
             >
-              {(isCorrection ? reissue.isPending : create.isPending)
+              {(isCorrection ? reissue.isPending || exchange.isPending : create.isPending)
                 ? "جارٍ الاعتماد…"
                 : isCorrection
                   ? "اعتماد وإتمام التصحيح"
@@ -1082,7 +1171,9 @@ export default function SalesInvoiceNew() {
 }
 
 /** سطر ملخّصٍ صغير (وصف ⟷ قيمة) داخل لوحة التصحيح. */
-function CorrRow({ label, value, className }: { label: string; value: string; className?: string }) {
+function CorrRow({ label, value, className,
+}: { label: string; value: string; className?: string;
+}) {
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="text-muted-foreground">{label}</span>
@@ -1097,6 +1188,8 @@ interface CorrectionPanelProps {
   grandTotal: string;
   reason: string;
   setReason: (v: string) => void;
+  correctionKind: "REISSUE" | "EXCHANGE";
+  setCorrectionKind: (v: "REISSUE" | "EXCHANGE") => void;
   collectNow: string;
   setCollectNow: (v: string) => void;
   /** طريقة قبض «المُحصَّل الآن» — هنا لا في TotalsPanel: لوحة الدفع مخفيّة في التصحيح. */
@@ -1106,7 +1199,8 @@ interface CorrectionPanelProps {
   setOverpayHandling: (v: "CREDIT" | "CASH_REFUND") => void;
   hasCustomer: boolean;
   /** أدراج الفرع المفتوحة — الخادم يفرض اختياراً صريحاً حين تتعدّد. */
-  openShifts: Array<{ shiftId: number; userName: string; expectedCash: string; isMine: boolean }>;
+  openShifts: Array<{ shiftId: number; userName: string; expectedCash: string; isMine: boolean;
+  }>;
   overpayShiftId: number | null;
   setOverpayShiftId: (v: number | null) => void;
 }
@@ -1124,6 +1218,8 @@ function CorrectionPanel({
   grandTotal,
   reason,
   setReason,
+  correctionKind,
+  setCorrectionKind,
   collectNow,
   setCollectNow,
   paymentMethod,
@@ -1148,8 +1244,27 @@ function CorrectionPanel({
         <span>تصحيح موثَّق{original?.invoiceNumber ? ` — ${original.invoiceNumber}` : ""}</span>
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        يُلغى الأصل بالكامل (عكسٌ دفتريّ) وتُصدَر فاتورةٌ جديدةٌ مربوطةٌ بالتعديلات، والأصل يُوسَم «مُصحَّحة».
+        الطلب لا يغيّر شيئاً الآن. عند الاعتماد يُعكس الأصل وتصدر الفاتورة البديلة وتسوى الفروق في معاملة واحدة.
       </p>
+
+      <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="نوع العملية">
+        <Button
+          type="button"
+          variant={correctionKind === "REISSUE" ? "default" : "outline"}
+          onClick={() => setCorrectionKind("REISSUE")}
+          aria-pressed={correctionKind === "REISSUE"}
+        >
+          تصحيح وإعادة إصدار
+        </Button>
+        <Button
+          type="button"
+          variant={correctionKind === "EXCHANGE" ? "default" : "outline"}
+          onClick={() => setCorrectionKind("EXCHANGE")}
+          aria-pressed={correctionKind === "EXCHANGE"}
+        >
+          استبدال للعميل
+        </Button>
+      </div>
 
       <div className="space-y-1">
         <Label className="text-xs font-semibold">
@@ -1187,7 +1302,8 @@ function CorrectionPanel({
             <div className="space-y-1 pt-1">
               <Label className="text-xs font-semibold">طريقة القبض</Label>
               <div className="flex flex-wrap gap-1.5">
-                {PAYMENT_METHODS.filter((m) => isPosPaymentMethodEnabled(m.value)).map((m) => {
+                {PAYMENT_METHODS.filter((m) => isPosPaymentMethodEnabled(m.value),
+                ).map((m) => {
                   const MIcon = m.icon;
                   const active = paymentMethod === m.value;
                   return (

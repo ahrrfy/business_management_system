@@ -54,4 +54,22 @@ describe("computeReturnTotal — مطابقة صيغة returnService الجزئ�
     expect(computeReturnTotal([], {}, inv)).toBe("0.00");
     expect(computeReturnTotal([item(1, 10, "1000.00")], {}, inv)).toBe("0.00");
   });
+
+  it("المرتجع المُكمِل يأخذ الإجمالي المقرّب المخزّن لا إجمالي البنود الخام", () => {
+    // بيع نقدي 1300 قُرّب إلى 1250: المطلوب من الدرج هو 1250 بالضبط.
+    const inv = {
+      subtotal: "1300.00", discountAmount: "0.00", taxAmount: "0.00",
+      total: "1250.00", returnedTotal: "0.00",
+    };
+    expect(computeReturnTotal([item(1, 1, "1300.00")], { 1: 1 }, inv)).toBe("1250.00");
+  });
+
+  it("آخر مرتجع جزئي يأخذ باقي الفاتورة الدقيق بعد المرتجعات السابقة", () => {
+    const inv = {
+      subtotal: "1300.00", discountAmount: "0.00", taxAmount: "0.00",
+      total: "1250.00", returnedTotal: "650.00",
+    };
+    const partiallyReturned = { ...item(1, 2, "1300.00"), returnedBaseQuantity: 1 };
+    expect(computeReturnTotal([partiallyReturned], { 1: 1 }, inv)).toBe("600.00");
+  });
 });

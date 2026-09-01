@@ -132,7 +132,17 @@ class ShiftViewModel(
     fun requestClose() {
         val report = (state.detail as? ShiftDetailState.Content)?.report ?: return
         if (!ShiftStatePolicy.canRequestClose(state, report.shift)) return
-        state = state.copy(closeDraft = ShiftCloseDraft(report.shift.id), error = null, notice = null)
+        val needsRecipient = report.expectedCash.isPositive()
+        state = state.copy(
+            closeDraft = ShiftCloseDraft(report.shift.id),
+            handoverRecipients = emptyList(),
+            handoverRecipientsLoading = needsRecipient,
+            handoverRecipientsLoaded = !needsRecipient,
+            handoverRecipientsError = null,
+            error = null,
+            notice = null,
+        )
+        if (needsRecipient) viewModelScope.launch { loadHandoverRecipients(report.shift.id) }
     }
 
     fun updateCloseCounted(value: String) {
@@ -152,8 +162,40 @@ class ShiftViewModel(
         state.closeDraft?.let { state = state.copy(closeDraft = it.copy(acknowledged = value), error = null) }
     }
 
+    fun selectHandoverRecipient(userId: Long?) {
+        if (state.closing) return
+        val selected = userId?.takeIf { id -> state.handoverRecipients.any { it.id == id } }
+        state.closeDraft?.let {
+            state = state.copy(
+                closeDraft = it.copy(handoverRecipientUserId = selected),
+                error = null,
+            )
+        }
+    }
+
+    fun retryHandoverRecipients() {
+        if (state.closing || state.handoverRecipientsLoading) return
+        val shiftId = state.closeDraft?.shiftId ?: return
+        state = state.copy(
+            handoverRecipients = emptyList(),
+            handoverRecipientsLoading = true,
+            handoverRecipientsLoaded = false,
+            handoverRecipientsError = null,
+        )
+        viewModelScope.launch { loadHandoverRecipients(shiftId) }
+    }
+
     fun dismissClose() {
-        if (!state.closing) state = state.copy(closeDraft = null, error = null)
+        if (!state.closing) {
+            state = state.copy(
+                closeDraft = null,
+                handoverRecipients = emptyList(),
+                handoverRecipientsLoading = false,
+                handoverRecipientsLoaded = false,
+                handoverRecipientsError = null,
+                error = null,
+            )
+        }
     }
 
     fun confirmClose() {
@@ -165,17 +207,29 @@ class ShiftViewModel(
         }
         val draft = requireNotNull(state.closeDraft)
         val counted = requireNotNull(ShiftMoney.parseUnsigned(draft.countedCash))
+        val recipientUserId = draft.handoverRecipientUserId.takeIf { counted.isPositive() }
         state = state.copy(closing = true, error = null, notice = null)
         viewModelScope.launch {
-            runCatching { source.close(ShiftCloseCommand(draft.shiftId, counted)) }
+            runCatching { source.close(ShiftCloseCommand(draft.shiftId, counted, recipientUserId)) }
                 .onSuccess { result ->
                     state = state.copy(
                         closing = false,
                         loading = true,
                         closeDraft = null,
+                        handoverRecipients = emptyList(),
+                        handoverRecipientsLoading = false,
+                        handoverRecipientsLoaded = false,
+                        handoverRecipientsError = null,
                         selectedShiftId = null,
                         detail = ShiftDetailState.None,
-                        notice = if (result.alreadyClosed) "كانت الوردية مغلقة وتم تحديث التقرير" else "تم إغلاق الوردية وتثبيت المطابقة",
+                        notice = when {
+                            result.alreadyClosed -> "كانت الوردية مغلقة وتم تحديث التقرير"
+                            counted.isPositive() -> {
+                                val recipient = result.treasuryRecipientName ?: "المستلم المحدد"
+                                "تم إغلاق الوردية وتحويل النقد إلى عهدة $recipient بانتظار عدّه وقبوله في الخزينة"
+                            }
+                            else -> "تم إغلاق الوردية وتثبيت المطابقة"
+                        },
                     )
                     load(reset = true, preserveNotice = true)
                 }
@@ -253,6 +307,37 @@ class ShiftViewModel(
             .onFailure { error ->
                 if (state.selectedShiftId == shiftId) {
                     state = state.copy(detail = ShiftDetailState.Error(shiftId, error.userMessage()))
+                }
+            }
+    }
+
+    private suspend fun loadHandoverRecipients(shiftId: Long) {
+        val report = (state.detail as? ShiftDetailState.Content)?.report
+            ?.takeIf { it.shift.id == shiftId }
+            ?: return
+        runCatching { source.handoverRecipients() }
+            .onSuccess { recipients ->
+                if (state.closeDraft?.shiftId == shiftId) {
+                    state = state.copy(
+                        handoverRecipients = ShiftStatePolicy.eligibleHandoverRecipients(
+                            report = report,
+                            actorUserId = state.policy.actorId,
+                            recipients = recipients,
+                        ),
+                        handoverRecipientsLoading = false,
+                        handoverRecipientsLoaded = true,
+                        handoverRecipientsError = null,
+                    )
+                }
+            }
+            .onFailure { error ->
+                if (state.closeDraft?.shiftId == shiftId) {
+                    state = state.copy(
+                        handoverRecipients = emptyList(),
+                        handoverRecipientsLoading = false,
+                        handoverRecipientsLoaded = false,
+                        handoverRecipientsError = error.userMessage(),
+                    )
                 }
             }
     }

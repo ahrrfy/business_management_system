@@ -19,9 +19,14 @@ import {
   listPlans,
   payLine,
 } from "../services/installmentService";
+import { listPendingInstallmentExternalPayments } from "../services/installment/payment";
 import { installmentLines } from "../../drizzle/schema";
 import { requireDb } from "../services/tx";
 import { escLike } from "../lib/sqlLike";
+import {
+  confirmExternalPaymentAttempt,
+  initiateExternalPaymentAttempt,
+} from "../services/posExternalPayment";
 import { router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 
 const moneyStr = z
@@ -42,12 +47,96 @@ function restrictionFor(user: CtxUser): number | null {
 }
 
 export const installmentRouter = router({
+  /** طابور فرعي لمحاولات التحصيل التي تحتاج موظفاً مستقلاً للتأكيد والسداد. */
+  pendingExternalPayments: treasuryManagerReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive().nullish(),
+        limit: z.number().int().min(1).max(200).default(100),
+      }).optional(),
+    )
+    .query(({ input, ctx }) =>
+      listPendingInstallmentExternalPayments(
+        input ?? {},
+        {
+          userId: ctx.user.id,
+          branchId: Number(ctx.user.branchId ?? input?.branchId ?? 0),
+          role: ctx.user.role,
+        },
+        restrictionFor(ctx.user),
+      ),
+    ),
+
+  /** إثبات مزوّد لتحصيل القسط غير النقدي — بلا إيصال أو أثر مالي حتى pay. */
+  initiateExternalPayment: treasuryManagerProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        lineId: z.number().int().positive(),
+        method: z.enum(["CARD", "TRANSFER", "WALLET"]),
+        amount: moneyStr,
+        reference: z.string().trim().min(1).max(100),
+        requestId: z.string().uuid(),
+        deviceId: z.string().trim().min(1).max(64),
+      }),
+    )
+    .mutation(({ input, ctx }) => {
+      const restrict = restrictionFor(ctx.user);
+      if (restrict != null && input.branchId !== restrict) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن تأكيد تحصيل لفرع آخر" });
+      }
+      return initiateExternalPaymentAttempt(
+        {
+          ...input,
+          channel: "SALES_COLLECTION",
+          verificationPolicy: "INDEPENDENT_APPROVAL",
+          businessBinding: { type: "INSTALLMENT_LINE", id: input.lineId },
+        },
+        {
+          userId: ctx.user.id,
+          branchId: Number(ctx.user.branchId ?? input.branchId),
+          role: ctx.user.role,
+        },
+      );
+    }),
+
+  /** انتقال محاولة تحصيل القسط INITIATED→CONFIRMED؛ الاستهلاك يبقى داخل pay الذرّي. */
+  confirmExternalPayment: treasuryManagerProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        lineId: z.number().int().positive(),
+        attemptId: z.number().int().positive(),
+        deviceId: z.string().trim().min(1).max(64),
+      }),
+    )
+    .mutation(({ input, ctx }) => {
+      const restrict = restrictionFor(ctx.user);
+      if (restrict != null && input.branchId !== restrict) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن تأكيد تحصيل لفرع آخر" });
+      }
+      return confirmExternalPaymentAttempt(
+        {
+          ...input,
+          channel: "SALES_COLLECTION",
+          verificationPolicy: "INDEPENDENT_APPROVAL",
+          businessBinding: { type: "INSTALLMENT_LINE", id: input.lineId },
+        },
+        {
+          userId: ctx.user.id,
+          branchId: Number(ctx.user.branchId ?? input.branchId),
+          role: ctx.user.role,
+        },
+      );
+    }),
+
   /** إنشاء خطة أقساط — لا قيد محاسبي (جدولة تحصيل فوق الذمّة القائمة). */
   create: treasuryManagerProcedure
     .input(
       z.object({
+        clientRequestId: z.string().uuid(),
         customerId: z.number().int().positive(),
-        invoiceId: z.number().int().positive().nullish(),
+        invoiceId: z.number().int().positive(),
         branchId: z.number().int().positive(),
         totalAmount: moneyStr,
         downPayment: moneyStr.nullish(),
@@ -73,7 +162,7 @@ export const installmentRouter = router({
       }
       // كل الأقساط الجديدة نقدية (لا صكوك — راجع تعليق payMethod أعلاه).
       const lines = input.lines.map((l) => ({ ...l, kind: "CASH" as const }));
-      const res = await createPlan({ ...input, lines, enforceFinancialIntegrity: true }, {
+      const res = await createPlan({ ...input, lines }, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? input.branchId),
         role: ctx.user.role,
@@ -84,7 +173,7 @@ export const installmentRouter = router({
         entityId: res.planId,
         newValue: {
           customerId: input.customerId,
-          invoiceId: input.invoiceId ?? null,
+          invoiceId: input.invoiceId,
           branchId: input.branchId,
           totalAmount: input.totalAmount,
           downPayment: input.downPayment ?? "0",
@@ -99,12 +188,41 @@ export const installmentRouter = router({
     .input(
       z.object({
         lineId: z.number().int().positive(),
+        clientRequestId: z.string().uuid(),
         paymentMethod: payMethod.nullish(),
         referenceNumber: z.string().trim().max(100).nullish(),
         cardLastFour: z.string().trim().regex(/^\d{4}$/, "آخر ٤ أرقام للبطاقة").nullish(),
         note: z.string().max(255).nullish(),
         // نفس سقف voucherRouter.create — رسالة الحجم الودودة تأتي من طبقة أدنى.
         attachmentUrl: z.string().max(4_000_000).nullish(),
+        externalPaymentAttemptId: z.number().int().positive().nullish(),
+        deviceId: z.string().trim().min(1).max(64).nullish(),
+      }).superRefine((input, ctx) => {
+        const method = input.paymentMethod ?? "CASH";
+        if (method !== "CASH" && input.externalPaymentAttemptId == null) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["externalPaymentAttemptId"],
+            message: "أكّد الدفع الخارجي قبل سداد القسط",
+          });
+        }
+        if (method !== "CASH" && !input.deviceId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["deviceId"],
+            message: "جهاز محاولة الدفع الخارجية إلزامي",
+          });
+        }
+        if (
+          method === "CASH" &&
+          (input.externalPaymentAttemptId != null || input.deviceId != null)
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["externalPaymentAttemptId"],
+            message: "السداد النقدي لا يحمل محاولة دفع خارجية",
+          });
+        }
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -151,7 +269,11 @@ export const installmentRouter = router({
 
   /** إلغاء خطة بلا أي قسط مسدَّد. */
   cancel: treasuryManagerProcedure
-    .input(z.object({ planId: z.number().int().positive(), reason: z.string().max(500).nullish() }))
+    .input(z.object({
+      planId: z.number().int().positive(),
+      reason: z.string().max(500).nullish(),
+      clientRequestId: z.string().uuid(),
+    }))
     .mutation(async ({ input, ctx }) => {
       const res = await cancelPlan(
         input,

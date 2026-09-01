@@ -12,11 +12,14 @@
  */
 import { workOrderEvents } from "../../drizzle/schema";
 import type { Tx } from "../db";
+import { eq } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
 import {
   buildWorkOrderEventKey,
   type WorkOrderEventType,
 } from "@shared/workOrderEventType";
 import { logger } from "../logger";
+import { idempotencyHash } from "./idempotency";
 
 export interface RecordWorkOrderEventInput {
   workOrderId: number;
@@ -60,6 +63,29 @@ export async function recordWorkOrderEvent(
     const raw = err as { code?: string; cause?: { code?: string } } | null;
     const code = raw?.code ?? raw?.cause?.code;
     if (code === "ER_DUP_ENTRY") {
+      const existing = (
+        await tx
+          .select()
+          .from(workOrderEvents)
+          .where(eq(workOrderEvents.eventKey, eventKey))
+          .for("share")
+          .limit(1)
+      )[0];
+      const exactReplay = existing != null
+        && Number(existing.workOrderId) === input.workOrderId
+        && existing.eventType === input.eventType
+        && (existing.fromStatus ?? null) === (input.fromStatus ?? null)
+        && (existing.toStatus ?? null) === (input.toStatus ?? null)
+        && Number(existing.actorUserId ?? 0) === Number(input.actorUserId ?? 0)
+        && (existing.branchId == null ? null : Number(existing.branchId))
+          === (input.branchId == null ? null : Number(input.branchId))
+        && idempotencyHash(existing.payload ?? null) === idempotencyHash(input.payload ?? null);
+      if (!exactReplay) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "مفتاح حدث أمر الشغل مستخدم لحمولة مختلفة — حدّث الطلب واستعمل مفتاحاً جديداً",
+        });
+      }
       logger.debug(
         { workOrderId: input.workOrderId, eventKey, eventType: input.eventType },
         "workOrderEvents: eventKey مكرَّرٌ (idempotent replay) — تُجوهل",

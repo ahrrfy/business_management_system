@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { newClientRequestId } from "@/lib/countQueue";
 
 export interface EditableMaterial {
   variantId: number;
@@ -33,6 +34,7 @@ export interface EditableMaterial {
 
 export interface WorkOrderMaterialsEditorProps {
   workOrderId: number;
+  version: number;
   branchId: number;
   orderNumber: string;
   /** حالة الأمر — تحدّد هل للتعديل أثرٌ مخزنيّ (بعد البدء) أم لا. */
@@ -43,11 +45,13 @@ export interface WorkOrderMaterialsEditorProps {
 }
 
 export function WorkOrderMaterialsEditor({
-  workOrderId, branchId, orderNumber, status, initial, onSaved, onCancel,
+  workOrderId, version, branchId, orderNumber, status, initial, onSaved, onCancel,
 }: WorkOrderMaterialsEditorProps) {
   const [rows, setRows] = useState<EditableMaterial[]>(initial);
   const [search, setSearch] = useState("");
+  const [reason, setReason] = useState("");
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const requestKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
 
   // المواد استُهلكت لحظة «بدء التنفيذ» ⇒ التعديل بعدها يحرّك المخزون والدفتر فعلاً.
   const consumed = status === "IN_PROGRESS" || status === "READY";
@@ -64,6 +68,18 @@ export function WorkOrderMaterialsEditor({
           ? `حُفظت البنود — عُدِّل المخزون تبعاً للفرق (كلفة المواد ${res.materialsCost}).`
           : "حُفظت البنود.",
       );
+      await onSaved();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const requestControl = trpc.workOrders.requestControl.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(
+        res.replayed
+          ? "أُعيد تحميل طلب تعديل البنود السابق — ما زال بانتظار مراجع مستقل."
+          : "أُرسل طلب تعديل البنود بلا تحريك مخزون؛ ينتظر اعتماد مدير مستقل.",
+      );
+      requestKeyRef.current = null;
       await onSaved();
     },
     onError: (e) => notify.err(e),
@@ -104,6 +120,8 @@ export function WorkOrderMaterialsEditor({
 
   async function save() {
     if (!diff.length) return notify.info("لا تغييرات لحفظها.");
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length < 3) return notify.warn("سبب التعديل مطلوب", "اكتب سبباً واضحاً من 3 محارف على الأقل.");
     const lines = diff.map((d) =>
       d.from === 0 ? `إضافة ${d.name} (${d.to})`
       : d.to === 0 ? `حذف ${d.name} (${d.from})`
@@ -120,10 +138,23 @@ export function WorkOrderMaterialsEditor({
       }))
     ) return;
 
-    setMaterials.mutate({
-      workOrderId,
-      materials: rows.map((r) => ({ variantId: r.variantId, baseQuantity: r.baseQuantity })),
-    });
+    const materials = rows.map((r) => ({ variantId: r.variantId, baseQuantity: r.baseQuantity }));
+    if (consumed) {
+      const fingerprint = JSON.stringify({ workOrderId, version, normalizedReason, materials });
+      const existing = requestKeyRef.current;
+      const requestKey = existing?.fingerprint === fingerprint ? existing.key : newClientRequestId();
+      requestKeyRef.current = { fingerprint, key: requestKey };
+      requestControl.mutate({
+        requestType: "MATERIAL_ADJUST",
+        requestKey,
+        workOrderId,
+        baseVersion: version,
+        reason: normalizedReason,
+        payload: { materials },
+      });
+      return;
+    }
+    setMaterials.mutate({ workOrderId, expectedVersion: version, reason: normalizedReason, materials });
   }
 
   return (
@@ -249,11 +280,24 @@ export function WorkOrderMaterialsEditor({
           </div>
         )}
 
+        <div className="space-y-1">
+          <Label htmlFor="work-order-material-change-reason">سبب تعديل البنود</Label>
+          <Input
+            id="work-order-material-change-reason"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            maxLength={500}
+            placeholder="مثال: العميل غيّر المقاس أو الكمية"
+          />
+        </div>
+
         <div className="flex flex-wrap gap-2">
-          <Button onClick={save} disabled={setMaterials.isPending || diff.length === 0}>
-            {setMaterials.isPending ? "جارٍ الحفظ…" : "حفظ البنود"}
+          <Button onClick={save} disabled={setMaterials.isPending || requestControl.isPending || diff.length === 0 || reason.trim().length < 3}>
+            {setMaterials.isPending || requestControl.isPending
+              ? "جارٍ الحفظ…"
+              : consumed ? "إرسال طلب تعديل البنود" : "حفظ البنود"}
           </Button>
-          <Button variant="outline" onClick={onCancel} disabled={setMaterials.isPending}>إلغاء</Button>
+          <Button variant="outline" onClick={onCancel} disabled={setMaterials.isPending || requestControl.isPending}>إلغاء</Button>
         </div>
       </CardContent>
     </Card>

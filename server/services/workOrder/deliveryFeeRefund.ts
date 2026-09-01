@@ -9,7 +9,7 @@
 // المحاولة الأولى (ردٌّ تلقائيّ صامت) سُحبت لأنها كانت تُخرج النقد بلا إبلاغ الكاشير وتتجاوز حوكمة
 // الردّ النقديّ. هذا المساعد يردّها بنفس حوكمة **ردّ العربون** (refundDeposit، قرار المالك ب/٨/٨):
 // الردّ النقديّ ذاتيٌّ فقط ضمن وردية القبض نفسها وهي مفتوحة بيد القابض؛ عبر ورديةٍ أخرى أو بعد
-// إغلاقها (المال عاد للخزينة بالعهدة الوسيطة) ⇒ اعتماد مدير. admin/manager يمرّان ذاتياً.
+// إغلاقها (المال عاد للخزينة بالعهدة الوسيطة) ⇒ اعتماد مدير ثانٍ مختلف عن المنفّذ، بلا تجاوزٍ للدور.
 //
 // النِّت = Σ(IN − OUT) لإيصالات المرجع DLV-FEE-WO-{id} — فهو نفسه حارس idempotency الأساس: بعد
 // الردّ الأوّل يصير صفراً فلا يُردّ ثانيةً؛ ومفتاح القيد الفريد (DELIVERY_FEE_HELD_REFUND) حزامٌ
@@ -32,8 +32,8 @@ export interface RefundWorkOrderFeeHeldOpts {
   actor: Actor & { role?: string };
   /** درج ردّ الأمانة — يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع. */
   refundShiftId?: number | null;
-  /** اعتماد مدير (verifyManagerApproval في الراوتر) — يُجيز الردّ عبر ورديةٍ غير وردية القبض. */
-  authorizedByManager?: boolean;
+  /** هوية مدير ثانٍ تحقق الراوتر من بياناته — تُخزّن على سند الرد ولا يجوز أن تساوي المنفذ. */
+  approvedByManagerId?: number | null;
   reason: string;
 }
 
@@ -65,10 +65,9 @@ export async function refundWorkOrderDeliveryFeeHeld(
   if (!feeHeldNet.gt(0)) return { refunded: "0.00" };
 
   // حوكمة الردّ النقديّ (نظير refundDeposit، قرار المالك ب/٨/٨): الأمانة نقديّةٌ دائماً. الردّ
-  // ذاتيٌّ فقط ضمن وردية القبض نفسها وهي مفتوحة بيد القابض؛ غير ذلك ⇒ اعتماد مدير. (elevated يمرّ.)
-  const elevated = opts.actor.role === "admin" || opts.actor.role === "manager";
-  if (!elevated && opts.authorizedByManager !== true) {
-    const collReceipt = (
+  // ذاتيٌّ فقط ضمن وردية القبض نفسها وهي مفتوحة بيد القابض؛ غير ذلك ⇒ مدير ثانٍ
+  // محدد الهوية. الصلاحية توسّع الرؤية ولا تلغي maker-checker.
+  const collReceipt = (
       await tx
         .select({ shiftId: receipts.shiftId })
         .from(receipts)
@@ -80,16 +79,18 @@ export async function refundWorkOrderDeliveryFeeHeld(
         ))
         .orderBy(asc(receipts.id))
         .limit(1)
-    )[0];
-    const collShiftId = collReceipt?.shiftId != null ? Number(collReceipt.shiftId) : null;
-    const collShift = collShiftId != null
-      ? (await tx.select({ status: shifts.status, userId: shifts.userId }).from(shifts).where(eq(shifts.id, collShiftId)).limit(1))[0]
-      : undefined;
-    const sameOpenShift = collShift != null && collShift.status === "OPEN" && Number(collShift.userId) === opts.actor.userId;
-    if (!sameOpenShift) {
+  )[0];
+  const collShiftId = collReceipt?.shiftId != null ? Number(collReceipt.shiftId) : null;
+  const collShift = collShiftId != null
+    ? (await tx.select({ status: shifts.status, userId: shifts.userId }).from(shifts).where(eq(shifts.id, collShiftId)).limit(1))[0]
+    : undefined;
+  const sameOpenShift = collShift != null && collShift.status === "OPEN" && Number(collShift.userId) === opts.actor.userId;
+  const approvedByManagerId = opts.approvedByManagerId == null ? null : Number(opts.approvedByManagerId);
+  if (!sameOpenShift) {
+    if (!Number.isInteger(approvedByManagerId) || approvedByManagerId! <= 0 || approvedByManagerId === opts.actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: `ردّ أمانة أجرة توصيلٍ نقديّة عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (#${collShiftId ?? "?"}) يتطلّب اعتماد مدير — المال عاد إلى الخزينة عند الإغلاق.`,
+        message: `ردّ أمانة أجرة توصيلٍ نقديّة عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (#${collShiftId ?? "?"}) يتطلّب اعتماد مدير ثانٍ مختلف — المال عاد إلى الخزينة عند الإغلاق.`,
       });
     }
   }
@@ -103,6 +104,9 @@ export async function refundWorkOrderDeliveryFeeHeld(
     branchId: opts.branchId, shiftId: resolved.shiftId, workOrderId: opts.workOrderId,
     direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",
     status: "COMPLETED", partyType: "OTHER",
+    approvalStatus: "APPROVED",
+    approvedBy: sameOpenShift ? null : approvedByManagerId,
+    approvedAt: sameOpenShift ? null : new Date(),
     referenceNumber: `DLV-FEE-WO-${opts.workOrderId}`,
     description: `${opts.reason} — طلب #${opts.workOrderId}`,
     createdBy: opts.actor.userId,

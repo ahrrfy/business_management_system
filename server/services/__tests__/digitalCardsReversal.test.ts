@@ -143,8 +143,15 @@ describe("ش١٢ — حظر المرتجع العام", () => {
     await expect(returnSale({
       invoiceId: sale.invoiceId,
       lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
-      refundMethod: "CASH",
-    } as never, mgr)).rejects.toThrow(/عكس بيع الكروت/);
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: sale.total,
+        shiftId: 1,
+        reason: "محاولة مرتجع كرت رقمي",
+        disposition: "DAMAGED",
+      },
+    }, mgr)).rejects.toThrow(/عكس بيع الكروت/);
 
     // ولا أثر: البند ما زال ISSUED.
     const d = await reversalService.reversibleDetails(db(), sale.invoiceId);

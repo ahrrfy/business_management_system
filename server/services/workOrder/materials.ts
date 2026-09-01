@@ -35,6 +35,7 @@ import {
   workOrderMaterials,
   workOrders,
 } from "../../../drizzle/schema";
+import type { Tx } from "../../db";
 import { createPostingIntent, signedPostingLines } from "../accounting/postingEngine";
 import { applyMovement } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
@@ -43,12 +44,16 @@ import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import type { WorkOrderMaterialInput } from "./types";
+import { recordWorkOrderEvent } from "../workOrderEvents";
+import type { ApprovedWorkOrderControl } from "./update";
 
 /** نفس شكل مواد الإنشاء عمداً (`{variantId, baseQuantity}`) — عقدٌ واحد للإنشاء والتحرير. */
 export type { WorkOrderMaterialInput } from "./types";
 
 export interface SetWorkOrderMaterialsInput {
   workOrderId: number;
+  expectedVersion?: number;
+  reason?: string;
   /** القائمة **المطلوبة كاملةً** بعد التعديل (لا الفرق) — قائمةٌ فارغة تعني «بلا مواد». */
   materials: WorkOrderMaterialInput[];
 }
@@ -73,11 +78,19 @@ function aggregate(rows: Array<{ variantId: number | string; baseQuantity: numbe
   return map;
 }
 
-export async function setWorkOrderMaterials(
+export async function setWorkOrderMaterialsInTx(
+  tx: Tx,
   input: SetWorkOrderMaterialsInput,
   actor: Actor & { role?: string },
+  control: ApprovedWorkOrderControl = {},
 ): Promise<SetWorkOrderMaterialsResult> {
-  return withTx(async (tx) => {
+    const reason = input.reason?.trim() ?? "";
+    if (reason.length < 3 || reason.length > 500) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "سبب تعديل المواد مطلوب (3-500 محرف)" });
+    }
+    if (!Number.isInteger(input.expectedVersion) || Number(input.expectedVersion) <= 0) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "نسخة أمر الشغل المتوقعة مطلوبة" });
+    }
     for (const m of input.materials) {
       if (!Number.isInteger(m.baseQuantity) || m.baseQuantity <= 0) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "كمية المادة يجب أن تكون عدداً صحيحاً موجباً" });
@@ -89,6 +102,12 @@ export async function setWorkOrderMaterials(
 
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
+    if (Number(wo.version) !== Number(input.expectedVersion)) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر أمر الشغل منذ فتحه — حدّث الصفحة ثم أعد المحاولة" });
+    }
+    if (wo.invoiceId != null) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "صدرت فاتورة لهذا الأمر — لا تعدّل المواد بعد الفوترة" });
+    }
     if (wo.status === "DELIVERED") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -100,6 +119,12 @@ export async function setWorkOrderMaterials(
     }
     // المواد لم تُستهلَك بعد إلّا بعد البدء ⇒ الأثر المخزنيّ/الدفتريّ مشروطٌ بذلك وحده.
     const consumed = wo.status === "IN_PROGRESS" || wo.status === "READY";
+    if (consumed && control.approvedControlRequestId == null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "تعديل المواد بعد بدء التنفيذ يتطلب طلباً واعتماد مديرٍ آخر",
+      });
+    }
 
     const currentRows = await tx
       .select({ id: workOrderMaterials.id, variantId: workOrderMaterials.variantId, baseQuantity: workOrderMaterials.baseQuantity, unitCost: workOrderMaterials.unitCost })
@@ -260,11 +285,36 @@ export async function setWorkOrderMaterials(
       })
       .where(eq(workOrders.id, input.workOrderId));
 
+    await recordWorkOrderEvent(tx, {
+      workOrderId: input.workOrderId,
+      eventType: "MATERIALS_UPDATED",
+      payload: {
+        added,
+        removed,
+        changed,
+        stockAdjusted: consumed,
+        materialsCost: newMaterialsCost.toFixed(2),
+        reason,
+        controlRequestId: control.approvedControlRequestId ?? null,
+      },
+      actorUserId: actor.userId,
+      branchId: Number(wo.branchId),
+      seq: control.approvedControlRequestId != null
+        ? `control-${control.approvedControlRequestId}`
+        : `v${Number(input.expectedVersion)}`,
+    });
+
     return {
       workOrderId: input.workOrderId,
       stockAdjusted: consumed,
       materialsCost: newMaterialsCost.toFixed(2),
       added, removed, changed,
     };
-  });
+}
+
+export async function setWorkOrderMaterials(
+  input: SetWorkOrderMaterialsInput,
+  actor: Actor & { role?: string },
+): Promise<SetWorkOrderMaterialsResult> {
+  return withTx((tx) => setWorkOrderMaterialsInTx(tx, input, actor));
 }

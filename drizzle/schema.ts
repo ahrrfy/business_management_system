@@ -2671,6 +2671,542 @@ export type Receipt = typeof receipts.$inferSelect;
 export type InsertReceipt = typeof receipts.$inferInsert;
 
 /**
+ * عدّ مستقل لعقد حيازة نقدية CD/CH. السجل append-only: المحاولة المختلفة لا تمحو
+ * فرقاً سابقاً، والقبول المالي يحصل فقط لسجل MATCHED.
+ */
+export const cashCustodyCounts = mysqlTable(
+  "cashCustodyCounts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    treasuryReceiptId: bigint("treasuryReceiptId", { mode: "number" })
+      .notNull()
+      .references(() => receipts.id),
+    clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
+    declaredAmount: decimal("declaredAmount", { precision: 15, scale: 2 }).notNull(),
+    countedAmount: decimal("countedAmount", { precision: 15, scale: 2 }).notNull(),
+    variance: decimal("variance", { precision: 15, scale: 2 }).notNull(),
+    countedBreakdown: json("countedBreakdown"),
+    status: mysqlEnum("cashCustodyCountStatus", ["MATCHED", "VARIANCE_OPEN"]).notNull(),
+    countedByUserId: int("countedByUserId")
+      .notNull()
+      .references(() => users.id),
+    countedAt: timestamp("countedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    requestUq: unique("uq_cash_custody_count_request").on(
+      table.treasuryReceiptId,
+      table.clientRequestId,
+    ),
+    receiptStatusIdx: index("idx_cash_custody_receipt_status").on(
+      table.treasuryReceiptId,
+      table.status,
+    ),
+  }),
+);
+
+export type CashCustodyCount = typeof cashCustodyCounts.$inferSelect;
+
+/** لقطة الجرد الفعلي للخزينة لفرع ويوم عمل UTC واحد. */
+export const cashDailyReconciliations = mysqlTable(
+  "cashDailyReconciliations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    businessDate: date("businessDate", { mode: "string" }).notNull(),
+    expectedTreasuryCash: decimal("expectedTreasuryCash", { precision: 15, scale: 2 }).notNull(),
+    countedTreasuryCash: decimal("countedTreasuryCash", { precision: 15, scale: 2 }).notNull(),
+    variance: decimal("variance", { precision: 15, scale: 2 }).notNull(),
+    countedBreakdown: json("countedBreakdown"),
+    status: mysqlEnum("cashDailyReconciliationStatus", [
+      "MATCHED",
+      "VARIANCE_OPEN",
+      "RESOLVED_WITH_ADJUSTMENT",
+      "CLOSED",
+      "REOPENED",
+    ]).notNull(),
+    notes: varchar("notes", { length: 500 }),
+    lastClientRequestId: varchar("lastClientRequestId", { length: 64 }).notNull(),
+    closeClientRequestId: varchar("closeClientRequestId", { length: 64 }),
+    evidenceHash: varchar("evidenceHash", { length: 64 }).notNull(),
+    shiftCount: int("shiftCount").default(0).notNull(),
+    custodyCount: int("custodyCount").default(0).notNull(),
+    version: int("version").default(1).notNull(),
+    countedByUserId: int("countedByUserId").notNull().references(() => users.id),
+    countedAt: timestamp("countedAt").defaultNow().notNull(),
+    closedByUserId: int("closedByUserId").references(() => users.id),
+    closedAt: timestamp("closedAt"),
+    reopenedByUserId: int("reopenedByUserId").references(() => users.id),
+    reopenedAt: timestamp("reopenedAt"),
+    reopenReason: varchar("reopenReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchDateUq: unique("uq_cash_daily_branch_date").on(table.branchId, table.businessDate),
+    requestUq: unique("uq_cash_daily_request").on(table.lastClientRequestId),
+    closeRequestUq: unique("uq_cash_daily_close_request").on(table.closeClientRequestId),
+    statusDateIdx: index("idx_cash_daily_status_date").on(table.status, table.businessDate),
+    branchFk: foreignKey({
+      name: "fk_cash_daily_branch",
+      columns: [table.branchId],
+      foreignColumns: [branches.id],
+    }),
+  }),
+);
+
+export type CashDailyReconciliation = typeof cashDailyReconciliations.$inferSelect;
+
+/**
+ * استثناء صفري الأثر ليوم تاريخي فُقد فيه الجرد المادي. لا يمثل جرداً ولا حركةً
+ * مالية؛ يحمل بصمة اليوم وربطاً بمطابقة لاحقة مغلقة، ويحتاج طالباً ومراجعاً مختلفين.
+ */
+export const cashMissedDailyCountExceptions = mysqlTable(
+  "cashMissedDailyCountExceptions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    businessDate: date("businessDate", { mode: "string" }).notNull(),
+    carryForwardReconciliationId: bigint("carryForwardReconciliationId", {
+      mode: "number",
+    }).notNull(),
+    carryForwardBusinessDate: date("carryForwardBusinessDate", {
+      mode: "string",
+    }).notNull(),
+    carryForwardVersion: int("carryForwardVersion").notNull(),
+    carryForwardEvidenceHash: char("carryForwardEvidenceHash", {
+      length: 64,
+    }).notNull(),
+    missingDayEvidenceHash: char("missingDayEvidenceHash", {
+      length: 64,
+    }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    evidenceReference: mediumtext("evidenceReference").notNull(),
+    status: mysqlEnum("missedDailyCountExceptionStatus", [
+      "PENDING",
+      "APPROVED",
+      "REJECTED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    activeBusinessDateKey: varchar("activeBusinessDateKey", { length: 80 }),
+    requestClientRequestId: varchar("requestClientRequestId", {
+      length: 64,
+    }).notNull(),
+    requestHash: char("requestHash", { length: 64 }).notNull(),
+    immutableEvidenceHash: char("immutableEvidenceHash", {
+      length: 64,
+    }).notNull(),
+    requestedByUserId: int("requestedByUserId").notNull(),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    version: int("version").default(1).notNull(),
+    decisionClientRequestId: varchar("decisionClientRequestId", { length: 64 }),
+    decisionHash: char("decisionHash", { length: 64 }),
+    reviewedByUserId: int("reviewedByUserId"),
+    reviewedAt: timestamp("reviewedAt"),
+    decisionNote: varchar("decisionNote", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    activeDateUq: unique("uq_cash_missed_daily_active_date").on(
+      table.activeBusinessDateKey,
+    ),
+    requestUq: unique("uq_cash_missed_daily_request").on(
+      table.requestClientRequestId,
+    ),
+    decisionUq: unique("uq_cash_missed_daily_decision").on(
+      table.decisionClientRequestId,
+    ),
+    branchDateIdx: index("idx_cash_missed_daily_branch_date").on(
+      table.branchId,
+      table.businessDate,
+      table.status,
+    ),
+    carryIdx: index("idx_cash_missed_daily_carry").on(
+      table.carryForwardReconciliationId,
+      table.carryForwardVersion,
+    ),
+    branchFk: foreignKey({
+      name: "fk_cash_missed_daily_branch",
+      columns: [table.branchId],
+      foreignColumns: [branches.id],
+    }),
+    carryFk: foreignKey({
+      name: "fk_cash_missed_daily_carry",
+      columns: [table.carryForwardReconciliationId],
+      foreignColumns: [cashDailyReconciliations.id],
+    }),
+    requesterFk: foreignKey({
+      name: "fk_cash_missed_daily_requester",
+      columns: [table.requestedByUserId],
+      foreignColumns: [users.id],
+    }),
+    reviewerFk: foreignKey({
+      name: "fk_cash_missed_daily_reviewer",
+      columns: [table.reviewedByUserId],
+      foreignColumns: [users.id],
+    }),
+    datesCheck: check(
+      "chk_cash_missed_daily_dates",
+      sql`${table.carryForwardBusinessDate} > ${table.businessDate}`,
+    ),
+    versionCheck: check(
+      "chk_cash_missed_daily_version",
+      sql`${table.version} IN (1, 2) AND ${table.carryForwardVersion} > 0`,
+    ),
+    decisionShapeCheck: check(
+      "chk_cash_missed_daily_decision_shape",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.version} = 1 AND ${table.decisionClientRequestId} IS NULL AND ${table.decisionHash} IS NULL AND ${table.reviewedByUserId} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionNote} IS NULL)
+        OR
+        (${table.status} IN ('APPROVED','REJECTED') AND ${table.version} = 2 AND ${table.decisionClientRequestId} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.reviewedByUserId} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionNote} IS NOT NULL AND ${table.reviewedByUserId} <> ${table.requestedByUserId})
+      )`,
+    ),
+  }),
+);
+
+export type CashMissedDailyCountException =
+  typeof cashMissedDailyCountExceptions.$inferSelect;
+
+/** سلسلة أحداث immutable تمنع اختزال الطلب والقرار في رأسٍ قابل للاستبدال. */
+export const cashMissedDailyCountExceptionEvents = mysqlTable(
+  "cashMissedDailyCountExceptionEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    exceptionId: bigint("exceptionId", { mode: "number" }).notNull(),
+    version: int("version").notNull(),
+    eventType: mysqlEnum("missedDailyCountExceptionEventType", [
+      "PROPOSED",
+      "APPROVED",
+      "REJECTED",
+    ]).notNull(),
+    clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
+    requestHash: char("requestHash", { length: 64 }).notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    requestUq: unique("uq_cash_missed_daily_event_request").on(
+      table.clientRequestId,
+    ),
+    versionUq: unique("uq_cash_missed_daily_event_version").on(
+      table.exceptionId,
+      table.version,
+    ),
+    exceptionIdx: index("idx_cash_missed_daily_events_exception").on(
+      table.exceptionId,
+      table.version,
+    ),
+    exceptionFk: foreignKey({
+      name: "fk_cash_missed_daily_event_exception",
+      columns: [table.exceptionId],
+      foreignColumns: [cashMissedDailyCountExceptions.id],
+    }),
+    actorFk: foreignKey({
+      name: "fk_cash_missed_daily_event_actor",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+    versionCheck: check(
+      "chk_cash_missed_daily_event_version",
+      sql`((${table.eventType} = 'PROPOSED' AND ${table.version} = 1) OR (${table.eventType} IN ('APPROVED','REJECTED') AND ${table.version} = 2))`,
+    ),
+  }),
+);
+
+export type CashMissedDailyCountExceptionEvent =
+  typeof cashMissedDailyCountExceptionEvents.$inferSelect;
+
+/**
+ * مستند دليل فرق نقد غير قابل للتعديل. نخزّن البايتات نفسها لا رابطاً أو وصفاً يكتبه
+ * المستخدم، وتُعاد مطابقة sha256 داخل قفل المعاملة عند الاقتراح والقرار.
+ */
+export const cashVarianceEvidenceDocuments = mysqlTable(
+  "cashVarianceEvidenceDocuments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    evidenceType: mysqlEnum("evidenceType", ["IMAGE", "PDF"]).notNull(),
+    fileName: varchar("fileName", { length: 255 }).notNull(),
+    contentType: varchar("contentType", { length: 100 }).notNull(),
+    contentHash: char("contentHash", { length: 64 }).notNull(),
+    content: mediumblob("content").notNull(),
+    createdByUserId: int("createdByUserId").notNull(),
+    registrationClientRequestId: varchar("registrationClientRequestId", { length: 64 })
+      .notNull()
+      .unique("uq_cash_variance_evidence_request"),
+    registrationRequestHash: char("registrationRequestHash", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    branchHashUq: unique("uq_cash_variance_evidence_branch_hash").on(
+      table.branchId,
+      table.contentHash,
+    ),
+    branchCreatedIdx: index("idx_cash_variance_evidence_branch_created").on(
+      table.branchId,
+      table.createdAt,
+    ),
+    branchFk: foreignKey({
+      name: "fk_cash_variance_evidence_branch",
+      columns: [table.branchId],
+      foreignColumns: [branches.id],
+    }),
+    creatorFk: foreignKey({
+      name: "fk_cash_variance_evidence_creator",
+      columns: [table.createdByUserId],
+      foreignColumns: [users.id],
+    }),
+    hashCheck: check(
+      "chk_cash_variance_evidence_hash",
+      sql`${table.contentHash} REGEXP '^[0-9a-fA-F]{64}$'`,
+    ),
+  }),
+);
+
+export type CashVarianceEvidenceDocument =
+  typeof cashVarianceEvidenceDocuments.$inferSelect;
+
+/**
+ * اقتراح تسوية فرق نقدي. الرأس دليل immutable: لا حالةً قابلة للكتابة هنا؛
+ * الحالة والإصدار مشتقان حصراً من آخر حدث append-only في cashVarianceCaseEvents.
+ */
+export const cashVarianceCases = mysqlTable(
+  "cashVarianceCases",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    sourceType: mysqlEnum("cashVarianceSourceType", [
+      "CUSTODY",
+      "DAILY_TREASURY",
+    ]).notNull(),
+    custodyReceiptId: bigint("custodyReceiptId", { mode: "number" }),
+    custodyCountId: bigint("custodyCountId", { mode: "number" }),
+    dailyReconciliationId: bigint("dailyReconciliationId", {
+      mode: "number",
+    }),
+    /** إصدار مستند المصدر وقت الاقتراح؛ يمنع اعتماد فرقٍ بعد إعادة عد/تغيير الدليل. */
+    sourceVersion: int("sourceVersion").default(1).notNull(),
+    sourceReference: varchar("sourceReference", { length: 100 }).notNull(),
+    /** بصمة دليل مستند المصدر عند الاقتراح؛ إلزامية للمطابقة اليومية وصفر أثر للعهدة. */
+    sourceEvidenceHash: char("sourceEvidenceHash", { length: 64 }),
+    expectedAmount: decimal("expectedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    actualAmount: decimal("actualAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    /** actualAmount - expectedAmount؛ السالب عجز والموجب زيادة. */
+    variance: decimal("variance", { precision: 15, scale: 2 }).notNull(),
+    reasonCode: mysqlEnum("cashVarianceReasonCode", [
+      "COUNT_ERROR",
+      "UNRECORDED_CASH_IN",
+      "UNRECORDED_CASH_OUT",
+      "CUSTODY_LOSS",
+      "DOCUMENTATION_ERROR",
+      "OTHER",
+    ]).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    /** وصف بشري فقط؛ المستند الحاكم هو evidenceDocumentId + evidenceContentHash. */
+    evidenceReference: varchar("evidenceReference", { length: 2000 }).notNull(),
+    evidenceDocumentId: bigint("evidenceDocumentId", { mode: "number" }),
+    evidenceContentHash: char("evidenceContentHash", { length: 64 }),
+    responsibleUserId: int("responsibleUserId"),
+    responsibleEmployeeId: bigint("responsibleEmployeeId", {
+      mode: "number",
+    }),
+    responsibleNameSnapshot: varchar("responsibleNameSnapshot", {
+      length: 255,
+    }),
+    countedByUserId: int("countedByUserId").notNull(),
+    proposedByUserId: int("proposedByUserId").notNull(),
+    proposalClientRequestId: varchar("proposalClientRequestId", {
+      length: 64,
+    })
+      .notNull()
+      .unique("uq_cash_variance_proposal_request"),
+    proposalRequestHash: char("proposalRequestHash", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    custodyCountUq: unique("uq_cash_variance_custody_count").on(
+      table.custodyCountId,
+    ),
+    dailyVersionUq: unique("uq_cash_variance_daily_version").on(
+      table.dailyReconciliationId,
+      table.sourceVersion,
+    ),
+    branchCreatedIdx: index("idx_cash_variance_branch_created").on(
+      table.branchId,
+      table.createdAt,
+    ),
+    branchFk: foreignKey({
+      name: "fk_cash_variance_branch",
+      columns: [table.branchId],
+      foreignColumns: [branches.id],
+    }),
+    custodyReceiptFk: foreignKey({
+      name: "fk_cash_variance_custody_receipt",
+      columns: [table.custodyReceiptId],
+      foreignColumns: [receipts.id],
+    }),
+    custodyCountFk: foreignKey({
+      name: "fk_cash_variance_custody_count",
+      columns: [table.custodyCountId],
+      foreignColumns: [cashCustodyCounts.id],
+    }),
+    dailyFk: foreignKey({
+      name: "fk_cash_variance_daily",
+      columns: [table.dailyReconciliationId],
+      foreignColumns: [cashDailyReconciliations.id],
+    }),
+    evidenceFk: foreignKey({
+      name: "fk_cash_variance_case_evidence",
+      columns: [table.evidenceDocumentId],
+      foreignColumns: [cashVarianceEvidenceDocuments.id],
+    }),
+    responsibleFk: foreignKey({
+      name: "fk_cash_variance_responsible",
+      columns: [table.responsibleUserId],
+      foreignColumns: [users.id],
+    }),
+    responsibleEmployeeFk: foreignKey({
+      name: "fk_cash_variance_employee",
+      columns: [table.responsibleEmployeeId],
+      foreignColumns: [employees.id],
+    }),
+    counterFk: foreignKey({
+      name: "fk_cash_variance_counter",
+      columns: [table.countedByUserId],
+      foreignColumns: [users.id],
+    }),
+    proposerFk: foreignKey({
+      name: "fk_cash_variance_proposer",
+      columns: [table.proposedByUserId],
+      foreignColumns: [users.id],
+    }),
+    sourceShapeCheck: check(
+      "chk_cash_variance_source_shape",
+      sql`(
+        (${table.sourceType} = 'CUSTODY' AND ${table.custodyReceiptId} IS NOT NULL AND ${table.custodyCountId} IS NOT NULL AND ${table.dailyReconciliationId} IS NULL AND ${table.sourceEvidenceHash} IS NULL AND (
+          (${table.variance} < 0 AND ${table.responsibleUserId} IS NOT NULL AND ${table.responsibleEmployeeId} IS NOT NULL AND ${table.responsibleNameSnapshot} IS NOT NULL)
+          OR (${table.variance} > 0 AND ${table.responsibleUserId} IS NULL AND ${table.responsibleEmployeeId} IS NULL AND ${table.responsibleNameSnapshot} IS NULL)
+        ))
+        OR
+        (${table.sourceType} = 'DAILY_TREASURY' AND ${table.custodyReceiptId} IS NULL AND ${table.custodyCountId} IS NULL AND ${table.dailyReconciliationId} IS NOT NULL AND ${table.sourceEvidenceHash} IS NOT NULL AND ${table.responsibleUserId} IS NULL AND ${table.responsibleEmployeeId} IS NULL AND ${table.responsibleNameSnapshot} IS NULL)
+      )`,
+    ),
+    amountCheck: check(
+      "chk_cash_variance_amounts",
+      sql`${table.expectedAmount} >= 0 AND ${table.actualAmount} >= 0 AND ${table.variance} <> 0 AND ${table.variance} = ${table.actualAmount} - ${table.expectedAmount}`,
+    ),
+    sourceVersionCheck: check(
+      "chk_cash_variance_source_version",
+      sql`${table.sourceVersion} > 0`,
+    ),
+  }),
+);
+
+export type CashVarianceCase = typeof cashVarianceCases.$inferSelect;
+
+/** سجل الحالة الوحيد لتسوية الفرق؛ لا UPDATE ولا DELETE في الخدمة. */
+export const cashVarianceCaseEvents = mysqlTable(
+  "cashVarianceCaseEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    caseId: bigint("caseId", { mode: "number" }).notNull(),
+    version: int("version").notNull(),
+    eventType: mysqlEnum("cashVarianceEventType", [
+      "PROPOSED",
+      "APPROVED",
+      "REJECTED",
+    ]).notNull(),
+    clientRequestId: varchar("clientRequestId", { length: 64 })
+      .notNull()
+      .unique("uq_cash_variance_event_request"),
+    requestHash: char("requestHash", { length: 64 }).notNull(),
+    actorUserId: int("actorUserId").notNull(),
+    note: varchar("note", { length: 500 }),
+    counterAccountRole: mysqlEnum("cashVarianceCounterAccountRole", [
+      "EMPLOYEE_ADVANCES",
+      "LOSSES",
+      "OTHER_LIABILITY",
+    ]),
+    resolvedVariance: decimal("resolvedVariance", {
+      precision: 15,
+      scale: 2,
+    }),
+    adjustmentReceiptId: bigint("adjustmentReceiptId", {
+      mode: "number",
+    }).unique("uq_cash_variance_adjustment_receipt"),
+    accountingEntryId: bigint("accountingEntryId", { mode: "number" })
+      .unique("uq_cash_variance_accounting_entry"),
+    /** ذمة الموظف الناتجة عن عجز العهدة فقط؛ لا تُنشأ لعجز DAILY أو للزيادة. */
+    advanceId: bigint("advanceId", { mode: "number" }).unique(
+      "uq_cash_variance_advance",
+    ),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    caseVersionUq: unique("uq_cash_variance_case_version").on(
+      table.caseId,
+      table.version,
+    ),
+    caseCreatedIdx: index("idx_cash_variance_case_created").on(
+      table.caseId,
+      table.createdAt,
+    ),
+    caseFk: foreignKey({
+      name: "fk_cash_variance_event_case",
+      columns: [table.caseId],
+      foreignColumns: [cashVarianceCases.id],
+    }),
+    actorFk: foreignKey({
+      name: "fk_cash_variance_event_actor",
+      columns: [table.actorUserId],
+      foreignColumns: [users.id],
+    }),
+    receiptFk: foreignKey({
+      name: "fk_cash_variance_event_receipt",
+      columns: [table.adjustmentReceiptId],
+      foreignColumns: [receipts.id],
+    }),
+    entryFk: foreignKey({
+      name: "fk_cash_variance_event_entry",
+      columns: [table.accountingEntryId],
+      foreignColumns: [accountingEntries.id],
+    }),
+    advanceFk: foreignKey({
+      name: "fk_cash_variance_advance",
+      columns: [table.advanceId],
+      foreignColumns: [employeeAdvances.id],
+    }),
+    versionCheck: check(
+      "chk_cash_variance_event_version",
+      sql`${table.version} > 0`,
+    ),
+    resolutionShapeCheck: check(
+      "chk_cash_variance_resolution_shape",
+      sql`(
+        (${table.eventType} = 'APPROVED' AND ${table.counterAccountRole} = 'EMPLOYEE_ADVANCES' AND ${table.resolvedVariance} < 0 AND ${table.adjustmentReceiptId} IS NOT NULL AND ${table.accountingEntryId} IS NOT NULL AND ${table.advanceId} IS NOT NULL)
+        OR
+        (${table.eventType} = 'APPROVED' AND ${table.counterAccountRole} = 'LOSSES' AND ${table.resolvedVariance} < 0 AND ${table.adjustmentReceiptId} IS NOT NULL AND ${table.accountingEntryId} IS NOT NULL AND ${table.advanceId} IS NULL)
+        OR
+        (${table.eventType} = 'APPROVED' AND ${table.counterAccountRole} = 'OTHER_LIABILITY' AND ${table.resolvedVariance} > 0 AND ${table.adjustmentReceiptId} IS NOT NULL AND ${table.accountingEntryId} IS NOT NULL AND ${table.advanceId} IS NULL)
+        OR
+        (${table.eventType} <> 'APPROVED' AND ${table.counterAccountRole} IS NULL AND ${table.resolvedVariance} IS NULL AND ${table.adjustmentReceiptId} IS NULL AND ${table.accountingEntryId} IS NULL AND ${table.advanceId} IS NULL)
+      )`,
+    ),
+  }),
+);
+
+export type CashVarianceCaseEvent = typeof cashVarianceCaseEvents.$inferSelect;
+
+/**
  * Indexed ownership of an accepted cash-drop source by a shift-funding request.
  * JSON on receipts remains the immutable audit snapshot; this relation is the
  * concurrency and lookup authority, so source reuse never requires a history scan.
@@ -2753,6 +3289,7 @@ export const externalPaymentAttempts = mysqlTable(
     channel: mysqlEnum("externalPaymentChannel", [
       "POS",
       "PRINT_POS",
+      "SALES_COLLECTION",
     ]).notNull(),
     paymentMethod: mysqlEnum("externalPaymentMethod", [
       "CARD",
@@ -2799,7 +3336,7 @@ export const externalPaymentAttempts = mysqlTable(
     /** مرجع المزود فريد عالمياً بعد التطبيع، مهما تغيّر الفرع أو الطريقة أو قناة البيع. */
     referenceUq: unique("uq_extpay_reference").on(table.normalizedReference),
     requestUq: unique("uq_extpay_request").on(table.createdBy, table.requestId),
-    invoiceUq: unique("uq_extpay_invoice").on(table.invoiceId),
+    invoiceIdx: index("idx_extpay_invoice").on(table.invoiceId),
     receiptUq: unique("uq_extpay_receipt").on(table.receiptId),
     branchStateIdx: index("idx_extpay_branch_state").on(
       table.branchId,
@@ -3458,6 +3995,12 @@ export const workOrders = mysqlTable(
     materialsEditedBy: int("materialsEditedBy").references(() => users.id),
     /** عدّاد تحريرات البنود — يميّز «عُدِّل مرّة» من «عُدِّل ٤ مرات» في المتابعة والتدقيق. */
     materialsEditCount: int("materialsEditCount").default(0).notNull(),
+    /**
+     * نسخة تحكّم متفائلة لكلّ كتابة على أمر الشغل. ترفعها قاعدة البيانات من trigger موحّد
+     * كي تشمل جميع الكتّاب، لا مسارات الواجهة الجديدة وحدها. طلبات التعديل/الإلغاء تحفظ
+     * baseVersion وتفشل STALE إن تغيّر الأمر قبل الاعتماد.
+     */
+    version: int("version").default(1).notNull(),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -4294,6 +4837,18 @@ export const purchaseOrders = mysqlTable(
       .default("0")
       .notNull(),
     notes: text("notes"),
+    version: int("version").default(1).notNull(),
+    currentRevisionId: bigint("currentRevisionId", { mode: "number" }).references(
+      (): AnyMySqlColumn => purchaseOrderRevisions.id,
+    ),
+    approvedRevisionId: bigint("approvedRevisionId", { mode: "number" }).references(
+      (): AnyMySqlColumn => purchaseOrderRevisions.id,
+    ),
+    lastEditedBy: int("lastEditedBy").references(() => users.id),
+    submittedBy: int("submittedBy").references(() => users.id),
+    submittedAt: timestamp("submittedAt"),
+    approvedBy: int("approvedBy").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -4308,6 +4863,8 @@ export const purchaseOrders = mysqlTable(
       table.supplierId,
       table.status,
     ),
+    currentRevisionUq: unique("uq_po_current_revision").on(table.currentRevisionId),
+    approvedRevisionUq: unique("uq_po_approved_revision").on(table.approvedRevisionId),
   }),
 );
 
@@ -4364,6 +4921,1179 @@ export const purchaseOrderItems = mysqlTable(
 export type PurchaseOrderItem = typeof purchaseOrderItems.$inferSelect;
 export type InsertPurchaseOrderItem = typeof purchaseOrderItems.$inferInsert;
 
+/** لقطة أمر شراء ثابتة؛ صفّ PO يبقى projection سريعاً ولا يُستعمل كدليل اعتماد. */
+export const purchaseOrderRevisions = mysqlTable(
+  "purchaseOrderRevisions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }).notNull().references((): AnyMySqlColumn => purchaseOrders.id),
+    revisionNo: int("revisionNo").notNull(),
+    baseRevisionId: bigint("baseRevisionId", { mode: "number" }),
+    // Expansion 0303 keeps the physical default LEGACY for rolling-deploy compatibility.
+    // Governed writers always send NATIVE explicitly; a later cutover may flip the default
+    // only after every pre-0303 worker has been drained.
+    origin: mysqlEnum("origin", ["NATIVE", "LEGACY"]).default("LEGACY").notNull(),
+    supplierId: bigint("supplierId", { mode: "number" }).notNull().references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    agreedCurrency: mysqlEnum("agreedCurrency", ["IQD", "USD"]).notNull(),
+    agreedRate: decimal("agreedRate", { precision: 15, scale: 4 }),
+    settlementType: mysqlEnum("settlementType", ["CASH", "CREDIT"]).notNull(),
+    expectedDeliveryDate: date("expectedDeliveryDate"),
+    subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).notNull(),
+    shippingCost: decimal("shippingCost", { precision: 15, scale: 2 }).notNull(),
+    customsCost: decimal("customsCost", { precision: 15, scale: 2 }).notNull(),
+    invoiceDiscount: decimal("invoiceDiscount", { precision: 15, scale: 2 }).notNull(),
+    total: decimal("total", { precision: 15, scale: 2 }).notNull(),
+    usdTotal: decimal("usdTotal", { precision: 15, scale: 2 }),
+    notesSnapshot: text("notesSnapshot"),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    revisionReason: varchar("revisionReason", { length: 500 }).notNull(),
+    // LEGACY backfill must not fabricate an operator; native revisions require an actor in the service.
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    orderRevisionUq: unique("uq_po_revision_no").on(table.purchaseOrderId, table.revisionNo),
+    orderHashUq: unique("uq_po_revision_hash").on(table.purchaseOrderId, table.payloadHash),
+    branchTimeIdx: index("idx_po_revision_branch_time").on(table.branchId, table.createdAt),
+    baseRevisionFk: foreignKey({
+      name: "fk_po_revision_base",
+      columns: [table.baseRevisionId],
+      foreignColumns: [table.id],
+    }),
+    positiveRevision: check("chk_po_revision_number", sql`${table.revisionNo} > 0`),
+    nonNegativeAmounts: check("chk_po_revision_amounts", sql`${table.subtotal} >= 0 AND ${table.taxAmount} >= 0 AND ${table.shippingCost} >= 0 AND ${table.customsCost} >= 0 AND ${table.invoiceDiscount} >= 0 AND ${table.total} >= 0`),
+    nativeActor: check("chk_po_revision_native_actor", sql`${table.origin} = 'LEGACY' OR ${table.createdBy} IS NOT NULL`),
+  }),
+);
+
+export const purchaseOrderRevisionItems = mysqlTable(
+  "purchaseOrderRevisionItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    revisionId: bigint("revisionId", { mode: "number" }).notNull(),
+    lineNo: int("lineNo").notNull(),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    listUnitPrice: decimal("listUnitPrice", { precision: 15, scale: 2 }).notNull(),
+    unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
+    lineTotal: decimal("lineTotal", { precision: 15, scale: 2 }).notNull(),
+    usdListUnitPrice: decimal("usdListUnitPrice", { precision: 15, scale: 4 }),
+    usdUnitPrice: decimal("usdUnitPrice", { precision: 15, scale: 4 }),
+    usdLineTotal: decimal("usdLineTotal", { precision: 15, scale: 2 }),
+    productNameSnapshot: varchar("productNameSnapshot", { length: 255 }).notNull(),
+    variantNameSnapshot: varchar("variantNameSnapshot", { length: 120 }),
+    skuSnapshot: varchar("skuSnapshot", { length: 120 }),
+    unitNameSnapshot: varchar("unitNameSnapshot", { length: 80 }),
+  },
+  (table) => ({
+    revisionLineUq: unique("uq_po_revision_line").on(table.revisionId, table.lineNo),
+    variantIdx: index("idx_po_revision_item_variant").on(table.variantId),
+    revisionFk: foreignKey({
+      name: "fk_po_revision_item_revision",
+      columns: [table.revisionId],
+      foreignColumns: [purchaseOrderRevisions.id],
+    }).onDelete("cascade"),
+    positiveValues: check("chk_po_revision_item_values", sql`${table.lineNo} > 0 AND ${table.quantity} > 0 AND ${table.baseQuantity} > 0 AND ${table.listUnitPrice} >= 0 AND ${table.unitPrice} >= 0 AND ${table.lineTotal} >= 0`),
+  }),
+);
+
+export const purchaseOrderControlRequests = mysqlTable(
+  "purchaseOrderControlRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 }).notNull().unique("uq_po_control_request_key"),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }).notNull(),
+    revisionId: bigint("revisionId", { mode: "number" }),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    kind: mysqlEnum("kind", ["APPROVE_REVISION", "CANCEL_ORDER", "EMERGENCY_ORDER"]).notNull(),
+    baseOrderVersion: int("baseOrderVersion").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"]).default("PENDING").notNull(),
+    pendingGuard: varchar("pendingGuard", { length: 160 }).unique("uq_po_control_pending"),
+    requestedBy: int("requestedBy").notNull().references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    appliedAt: timestamp("appliedAt"),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_po_control_branch_status").on(table.branchId, table.status),
+    orderStatusIdx: index("idx_po_control_order_status").on(table.purchaseOrderId, table.status),
+    orderFk: foreignKey({
+      name: "fk_po_control_order",
+      columns: [table.purchaseOrderId],
+      foreignColumns: [purchaseOrders.id],
+    }),
+    revisionFk: foreignKey({
+      name: "fk_po_control_revision",
+      columns: [table.revisionId],
+      foreignColumns: [purchaseOrderRevisions.id],
+    }),
+    decisionShape: check("chk_po_control_decision", sql`(
+      (${table.status} = 'PENDING' AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.appliedAt} IS NULL AND ${table.pendingGuard} IS NOT NULL)
+      OR (${table.status} = 'APPROVED' AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NOT NULL AND ${table.pendingGuard} IS NULL)
+      OR (${table.status} IN ('REJECTED','STALE') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NULL AND ${table.pendingGuard} IS NULL)
+    )`),
+    makerChecker: check("chk_po_control_maker_checker", sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`),
+  }),
+);
+
+export const purchaseOrderEvents = mysqlTable(
+  "purchaseOrderEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    eventKey: varchar("eventKey", { length: 160 }).notNull().unique("uq_po_event_key"),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }).notNull().references(() => purchaseOrders.id),
+    revisionId: bigint("revisionId", { mode: "number" }).references(() => purchaseOrderRevisions.id),
+    requestId: bigint("requestId", { mode: "number" }).references(() => purchaseOrderControlRequests.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    eventType: varchar("eventType", { length: 60 }).notNull(),
+    reason: varchar("reason", { length: 500 }),
+    actorUserId: int("actorUserId").references(() => users.id),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    previousEventHash: char("previousEventHash", { length: 64 }),
+    eventHash: char("eventHash", { length: 64 }).notNull().unique("uq_po_event_hash"),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    orderTimeIdx: index("idx_po_event_order_time").on(table.purchaseOrderId, table.occurredAt),
+    branchTimeIdx: index("idx_po_event_branch_time").on(table.branchId, table.occurredAt),
+  }),
+);
+
+export const purchaseControlSettings = mysqlTable(
+  "purchaseControlSettings",
+  {
+    branchId: bigint("branchId", { mode: "number" }).primaryKey().references(() => branches.id),
+    requireRequisition: boolean("requireRequisition").default(false).notNull(),
+    allowEmergencyOrder: boolean("allowEmergencyOrder").default(true).notNull(),
+    requireEmergencyApproval: boolean("requireEmergencyApproval").default(true).notNull(),
+    priceTolerancePercent: decimal("priceTolerancePercent", { precision: 7, scale: 4 }).default("0").notNull(),
+    totalToleranceAmount: decimal("totalToleranceAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    blockUninvoicedReceiptsAtClose: boolean("blockUninvoicedReceiptsAtClose").default(true).notNull(),
+    version: int("version").default(1).notNull(),
+    updatedBy: int("updatedBy").references(() => users.id),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    tolerances: check("chk_purchase_control_tolerances", sql`${table.priceTolerancePercent} >= 0 AND ${table.totalToleranceAmount} >= 0`),
+  }),
+);
+
+export const purchaseRequisitions = mysqlTable(
+  "purchaseRequisitions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requisitionNumber: varchar("requisitionNumber", { length: 50 }).notNull().unique("uq_purchase_req_number"),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    neededBy: date("neededBy"),
+    purpose: varchar("purpose", { length: 500 }).notNull(),
+    costCenter: varchar("costCenter", { length: 120 }),
+    priority: mysqlEnum("priority", ["LOW", "NORMAL", "URGENT"]).default("NORMAL").notNull(),
+    version: int("version").default(1).notNull(),
+    status: mysqlEnum("status", ["DRAFT", "SUBMITTED", "APPROVED", "PARTIALLY_ORDERED", "FULLY_ORDERED", "FULFILLED", "REJECTED", "CANCELLED"]).default("DRAFT").notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    submittedBy: int("submittedBy").references(() => users.id),
+    submittedAt: timestamp("submittedAt"),
+    approvedBy: int("approvedBy").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_purchase_req_branch_status").on(table.branchId, table.status),
+    neededIdx: index("idx_purchase_req_needed").on(table.neededBy),
+  }),
+);
+
+export const purchaseRequisitionItems = mysqlTable(
+  "purchaseRequisitionItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requisitionId: bigint("requisitionId", { mode: "number" }).notNull(),
+    lineNo: int("lineNo").notNull(),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    requestedBaseQuantity: int("requestedBaseQuantity").notNull(),
+    approvedBaseQuantity: int("approvedBaseQuantity").default(0).notNull(),
+    orderedBaseQuantity: int("orderedBaseQuantity").default(0).notNull(),
+    receivedBaseQuantity: int("receivedBaseQuantity").default(0).notNull(),
+    estimatedUnitPrice: decimal("estimatedUnitPrice", { precision: 15, scale: 2 }),
+    preferredSupplierId: bigint("preferredSupplierId", { mode: "number" }).references(() => suppliers.id),
+    justification: varchar("justification", { length: 500 }).notNull(),
+  },
+  (table) => ({
+    reqLineUq: unique("uq_purchase_req_line").on(table.requisitionId, table.lineNo),
+    variantIdx: index("idx_purchase_req_item_variant").on(table.variantId),
+    requisitionFk: foreignKey({
+      name: "fk_purchase_req_item_req",
+      columns: [table.requisitionId],
+      foreignColumns: [purchaseRequisitions.id],
+    }).onDelete("cascade"),
+    quantityShape: check("chk_purchase_req_item_quantities", sql`${table.requestedBaseQuantity} > 0 AND ${table.approvedBaseQuantity} >= 0 AND ${table.approvedBaseQuantity} <= ${table.requestedBaseQuantity} AND ${table.orderedBaseQuantity} >= 0 AND ${table.orderedBaseQuantity} <= ${table.approvedBaseQuantity} AND ${table.receivedBaseQuantity} >= 0 AND ${table.receivedBaseQuantity} <= ${table.orderedBaseQuantity}`),
+  }),
+);
+
+export const purchaseRequisitionControlRequests = mysqlTable(
+  "purchaseRequisitionControlRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 }).notNull().unique("uq_purchase_req_control_request_key"),
+    requisitionId: bigint("requisitionId", { mode: "number" }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    kind: mysqlEnum("kind", ["APPROVE", "CANCEL"]).notNull(),
+    baseVersion: int("baseVersion").notNull(),
+    payload: json("payload").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"]).default("PENDING").notNull(),
+    pendingGuard: varchar("pendingGuard", { length: 160 }).unique("uq_purchase_req_control_pending"),
+    requestedBy: int("requestedBy").notNull().references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    appliedAt: timestamp("appliedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_purchase_req_control_branch_status").on(table.branchId, table.status),
+    requisitionFk: foreignKey({
+      name: "fk_purchase_req_control_req",
+      columns: [table.requisitionId],
+      foreignColumns: [purchaseRequisitions.id],
+    }),
+    decisionShape: check("chk_purchase_req_control_decision", sql`(
+      (${table.status} = 'PENDING' AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.appliedAt} IS NULL AND ${table.pendingGuard} IS NOT NULL)
+      OR (${table.status} = 'APPROVED' AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NOT NULL AND ${table.pendingGuard} IS NULL)
+      OR (${table.status} IN ('REJECTED','STALE') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NULL AND ${table.pendingGuard} IS NULL)
+    )`),
+    makerChecker: check("chk_purchase_req_control_maker_checker", sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`),
+  }),
+);
+
+export const purchaseOrderRequisitionAllocations = mysqlTable(
+  "purchaseOrderRequisitionAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    purchaseOrderRevisionItemId: bigint("purchaseOrderRevisionItemId", { mode: "number" }).notNull(),
+    requisitionItemId: bigint("requisitionItemId", { mode: "number" }).notNull(),
+    allocatedBaseQuantity: int("allocatedBaseQuantity").notNull(),
+  },
+  (table) => ({
+    pairUq: unique("uq_po_req_allocation_pair").on(table.purchaseOrderRevisionItemId, table.requisitionItemId),
+    requisitionIdx: index("idx_po_req_allocation_req").on(table.requisitionItemId),
+    revisionItemFk: foreignKey({
+      name: "fk_po_req_alloc_revision_item",
+      columns: [table.purchaseOrderRevisionItemId],
+      foreignColumns: [purchaseOrderRevisionItems.id],
+    }),
+    requisitionItemFk: foreignKey({
+      name: "fk_po_req_alloc_req_item",
+      columns: [table.requisitionItemId],
+      foreignColumns: [purchaseRequisitionItems.id],
+    }),
+    positiveQty: check("chk_po_req_allocation_positive", sql`${table.allocatedBaseQuantity} > 0`),
+  }),
+);
+
+/** إذن استلام مخزني مستقل عن فاتورة المورد؛ POSTED يثبت المخزون مقابل GRNI لا AP. */
+export const goodsReceipts = mysqlTable(
+  "goodsReceipts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    receiptNumber: varchar("receiptNumber", { length: 50 })
+      .notNull()
+      .unique("uq_goods_receipt_number"),
+    clientRequestId: varchar("clientRequestId", { length: 120 })
+      .notNull()
+      .unique("uq_goods_receipt_request"),
+    origin: mysqlEnum("origin", ["NATIVE", "LEGACY_AGGREGATE"])
+      .default("NATIVE")
+      .notNull(),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseOrders.id),
+    purchaseOrderRevisionId: bigint("purchaseOrderRevisionId", {
+      mode: "number",
+    }),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    status: mysqlEnum("status", ["POSTED", "PARTIALLY_REVERSED", "REVERSED"])
+      .default("POSTED")
+      .notNull(),
+    version: int("version").default(1).notNull(),
+    receivedAt: timestamp("receivedAt").defaultNow().notNull(),
+    supplierDeliveryNote: varchar("supplierDeliveryNote", { length: 160 }),
+    currency: mysqlEnum("currency", ["IQD", "USD"]).notNull(),
+    agreedRate: decimal("agreedRate", { precision: 15, scale: 4 }),
+    netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    usdTotal: decimal("usdTotal", { precision: 15, scale: 2 }),
+    notes: varchar("notes", { length: 500 }),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    createdBy: int("createdBy").references(() => users.id),
+    postedBy: int("postedBy").references(() => users.id),
+    postedAt: timestamp("postedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    requestHashUq: unique("uq_goods_receipt_request_hash").on(
+      table.clientRequestId,
+      table.payloadHash,
+    ),
+    orderDateIdx: index("idx_goods_receipt_order_date").on(
+      table.purchaseOrderId,
+      table.receivedAt,
+    ),
+    branchStatusIdx: index("idx_goods_receipt_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    supplierDateIdx: index("idx_goods_receipt_supplier_date").on(
+      table.supplierId,
+      table.receivedAt,
+    ),
+    revisionFk: foreignKey({
+      name: "fk_grn_revision",
+      columns: [table.purchaseOrderRevisionId],
+      foreignColumns: [purchaseOrderRevisions.id],
+    }),
+    amountShape: check(
+      "chk_goods_receipt_amounts",
+      sql`${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
+    ),
+    originRevision: check(
+      "chk_goods_receipt_origin_revision",
+      sql`${table.origin} = 'LEGACY_AGGREGATE' OR (${table.purchaseOrderRevisionId} IS NOT NULL AND ${table.createdBy} IS NOT NULL)`,
+    ),
+    postingShape: check(
+      "chk_goods_receipt_posting",
+      sql`${table.origin} = 'LEGACY_AGGREGATE' OR (${table.postedBy} IS NOT NULL AND ${table.postedAt} IS NOT NULL)`,
+    ),
+  }),
+);
+
+export const goodsReceiptItems = mysqlTable(
+  "goodsReceiptItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    goodsReceiptId: bigint("goodsReceiptId", { mode: "number" })
+      .notNull()
+      .references(() => goodsReceipts.id, { onDelete: "cascade" }),
+    lineNo: int("lineNo").notNull(),
+    purchaseOrderItemId: bigint("purchaseOrderItemId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseOrderItems.id),
+    purchaseOrderRevisionItemId: bigint("purchaseOrderRevisionItemId", {
+      mode: "number",
+    }),
+    variantId: bigint("variantId", { mode: "number" })
+      .notNull()
+      .references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(
+      () => productUnits.id,
+    ),
+    receivedBaseQuantity: int("receivedBaseQuantity").notNull(),
+    acceptedBaseQuantity: int("acceptedBaseQuantity").notNull(),
+    rejectedBaseQuantity: int("rejectedBaseQuantity").default(0).notNull(),
+    reversedBaseQuantity: int("reversedBaseQuantity").default(0).notNull(),
+    returnedBaseQuantity: int("returnedBaseQuantity").default(0).notNull(),
+    rejectionReason: varchar("rejectionReason", { length: 500 }),
+    unitCostIqd: decimal("unitCostIqd", { precision: 15, scale: 2 }).notNull(),
+    netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    usdAmount: decimal("usdAmount", { precision: 15, scale: 2 }),
+    inventoryMovementId: bigint("inventoryMovementId", { mode: "number" })
+      .unique("uq_goods_receipt_inventory_movement")
+      .references(() => inventoryMovements.id),
+  },
+  (table) => ({
+    receiptLineUq: unique("uq_goods_receipt_line").on(
+      table.goodsReceiptId,
+      table.lineNo,
+    ),
+    receiptOrderItemUq: unique("uq_goods_receipt_order_item").on(
+      table.goodsReceiptId,
+      table.purchaseOrderItemId,
+    ),
+    orderItemIdx: index("idx_goods_receipt_item_order").on(
+      table.purchaseOrderItemId,
+    ),
+    revisionItemIdx: index("idx_goods_receipt_item_revision").on(
+      table.purchaseOrderRevisionItemId,
+    ),
+    revisionItemFk: foreignKey({
+      name: "fk_grn_item_revision_item",
+      columns: [table.purchaseOrderRevisionItemId],
+      foreignColumns: [purchaseOrderRevisionItems.id],
+    }),
+    quantityShape: check(
+      "chk_goods_receipt_item_quantities",
+      sql`${table.receivedBaseQuantity} > 0 AND ${table.acceptedBaseQuantity} >= 0 AND ${table.rejectedBaseQuantity} >= 0 AND ${table.receivedBaseQuantity} = ${table.acceptedBaseQuantity} + ${table.rejectedBaseQuantity} AND ${table.reversedBaseQuantity} >= 0 AND ${table.returnedBaseQuantity} >= 0 AND ${table.reversedBaseQuantity} + ${table.returnedBaseQuantity} <= ${table.acceptedBaseQuantity}`,
+    ),
+    amountShape: check(
+      "chk_goods_receipt_item_amounts",
+      sql`${table.unitCostIqd} >= 0 AND ${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
+    ),
+  }),
+);
+
+/** طلب عكس إذن استلام: صفر أثر حتى اعتماد شخص ثانٍ. */
+export const goodsReceiptReversalRequests = mysqlTable(
+  "goodsReceiptReversalRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 })
+      .notNull()
+      .unique("uq_grn_reversal_request_key"),
+    goodsReceiptId: bigint("goodsReceiptId", { mode: "number" })
+      .notNull()
+      .references(() => goodsReceipts.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    baseReceiptVersion: int("baseReceiptVersion").notNull(),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"])
+      .default("PENDING")
+      .notNull(),
+    pendingGuard: varchar("pendingGuard", { length: 180 }).unique(
+      "uq_grn_reversal_pending",
+    ),
+    requestedBy: int("requestedBy")
+      .notNull()
+      .references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }).unique(
+      "uq_grn_reversal_decision_key",
+    ),
+    decisionHash: char("decisionHash", { length: 64 }),
+    appliedAt: timestamp("appliedAt"),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_grn_reversal_request_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    receiptStatusIdx: index("idx_grn_reversal_request_receipt_status").on(
+      table.goodsReceiptId,
+      table.status,
+    ),
+    decisionShape: check(
+      "chk_grn_reversal_request_decision",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.pendingGuard} IS NOT NULL AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionKey} IS NULL AND ${table.decisionHash} IS NULL AND ${table.appliedAt} IS NULL)
+        OR (${table.status} = 'APPROVED' AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NOT NULL)
+        OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_grn_reversal_request_maker_checker",
+      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
+    ),
+  }),
+);
+
+export const goodsReceiptReversalRequestItems = mysqlTable(
+  "goodsReceiptReversalRequestItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestId: bigint("requestId", { mode: "number" })
+      .notNull(),
+    goodsReceiptItemId: bigint("goodsReceiptItemId", { mode: "number" })
+      .notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    reason: varchar("reason", { length: 500 }),
+  },
+  (table) => ({
+    requestItemUq: unique("uq_grn_reversal_request_item").on(
+      table.requestId,
+      table.goodsReceiptItemId,
+    ),
+    requestFk: foreignKey({
+      name: "fk_grn_rev_req_item_request",
+      columns: [table.requestId],
+      foreignColumns: [goodsReceiptReversalRequests.id],
+    }).onDelete("cascade"),
+    receiptItemFk: foreignKey({
+      name: "fk_grn_rev_req_item_receipt_item",
+      columns: [table.goodsReceiptItemId],
+      foreignColumns: [goodsReceiptItems.id],
+    }),
+    positiveQuantity: check(
+      "chk_grn_reversal_request_item_qty",
+      sql`${table.baseQuantity} > 0`,
+    ),
+  }),
+);
+
+/** مستند عكس نهائي؛ التصحيح اللاحق بمستند تعويضي جديد لا بتعديل هذا الصف. */
+export const goodsReceiptReversals = mysqlTable(
+  "goodsReceiptReversals",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    reversalNumber: varchar("reversalNumber", { length: 50 })
+      .notNull()
+      .unique("uq_grn_reversal_number"),
+    requestId: bigint("requestId", { mode: "number" })
+      .notNull()
+      .unique("uq_grn_reversal_request"),
+    goodsReceiptId: bigint("goodsReceiptId", { mode: "number" })
+      .notNull()
+      .references(() => goodsReceipts.id),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseOrders.id),
+    purchaseOrderRevisionId: bigint("purchaseOrderRevisionId", {
+      mode: "number",
+    })
+      .notNull(),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 })
+      .notNull()
+      .unique("uq_grn_reversal_hash"),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    postedBy: int("postedBy")
+      .notNull()
+      .references(() => users.id),
+    postedAt: timestamp("postedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    receiptDateIdx: index("idx_grn_reversal_receipt_date").on(
+      table.goodsReceiptId,
+      table.postedAt,
+    ),
+    requestFk: foreignKey({
+      name: "fk_grn_reversal_request",
+      columns: [table.requestId],
+      foreignColumns: [goodsReceiptReversalRequests.id],
+    }),
+    revisionFk: foreignKey({
+      name: "fk_grn_reversal_revision",
+      columns: [table.purchaseOrderRevisionId],
+      foreignColumns: [purchaseOrderRevisions.id],
+    }),
+    amountShape: check(
+      "chk_grn_reversal_amounts",
+      sql`${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
+    ),
+  }),
+);
+
+export const goodsReceiptReversalItems = mysqlTable(
+  "goodsReceiptReversalItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    reversalId: bigint("reversalId", { mode: "number" })
+      .notNull()
+      .references(() => goodsReceiptReversals.id, { onDelete: "cascade" }),
+    goodsReceiptItemId: bigint("goodsReceiptItemId", { mode: "number" })
+      .notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    inventoryMovementId: bigint("inventoryMovementId", { mode: "number" })
+      .notNull()
+      .unique("uq_grn_reversal_inventory_movement"),
+  },
+  (table) => ({
+    reversalItemUq: unique("uq_grn_reversal_item").on(
+      table.reversalId,
+      table.goodsReceiptItemId,
+    ),
+    receiptItemFk: foreignKey({
+      name: "fk_grn_reversal_item_receipt_item",
+      columns: [table.goodsReceiptItemId],
+      foreignColumns: [goodsReceiptItems.id],
+    }),
+    movementFk: foreignKey({
+      name: "fk_grn_reversal_item_movement",
+      columns: [table.inventoryMovementId],
+      foreignColumns: [inventoryMovements.id],
+    }),
+    shape: check(
+      "chk_grn_reversal_item_shape",
+      sql`${table.baseQuantity} > 0 AND ${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
+    ),
+  }),
+);
+
+/** روابط القيود تسمح بعدة استلامات/عكوس وتربط الترحيل القديم بقيوده الحقيقية. */
+export const goodsReceiptAccountingLinks = mysqlTable(
+  "goodsReceiptAccountingLinks",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    linkKey: varchar("linkKey", { length: 160 })
+      .notNull()
+      .unique("uq_grn_accounting_link_key"),
+    goodsReceiptId: bigint("goodsReceiptId", { mode: "number" })
+      .notNull()
+      .references(() => goodsReceipts.id),
+    reversalId: bigint("reversalId", { mode: "number" }),
+    accountingEntryId: bigint("accountingEntryId", { mode: "number" })
+      .notNull()
+      .unique("uq_grn_accounting_entry"),
+    linkType: mysqlEnum("linkType", [
+      "GRNI_RECOGNITION",
+      "GRNI_REVERSAL",
+      "LEGACY_PURCHASE",
+    ]).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    receiptIdx: index("idx_grn_accounting_receipt").on(table.goodsReceiptId),
+    reversalFk: foreignKey({
+      name: "fk_grn_accounting_reversal",
+      columns: [table.reversalId],
+      foreignColumns: [goodsReceiptReversals.id],
+    }),
+    entryFk: foreignKey({
+      name: "fk_grn_accounting_entry",
+      columns: [table.accountingEntryId],
+      foreignColumns: [accountingEntries.id],
+    }),
+    shape: check(
+      "chk_grn_accounting_link_shape",
+      sql`${table.amount} >= 0 AND ((${table.linkType} = 'GRNI_REVERSAL' AND ${table.reversalId} IS NOT NULL) OR (${table.linkType} <> 'GRNI_REVERSAL' AND ${table.reversalId} IS NULL))`,
+    ),
+  }),
+);
+
+/** فاتورة المورد المستقلة: AP لا ينشأ إلا عند POSTED؛ قبلها المطابقة بلا أثر مالي. */
+export const supplierInvoices = mysqlTable(
+  "supplierInvoices",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    invoiceNumber: varchar("invoiceNumber", { length: 60 })
+      .notNull()
+      .unique("uq_supplier_invoice_number"),
+    clientRequestId: varchar("clientRequestId", { length: 120 })
+      .notNull()
+      .unique("uq_supplier_invoice_request"),
+    origin: mysqlEnum("origin", ["NATIVE", "LEGACY"])
+      .default("NATIVE")
+      .notNull(),
+    /**
+     * تصنيف مصدر الالتزام، مستقل عن POSTED: قيد CASH_CLEARING ليس AP صالحاً
+     * لسداد جديد، وNULL التاريخي يبقى UNKNOWN حتى معالجة قضية النزاهة.
+     */
+    liabilityClass: mysqlEnum("liabilityClass", [
+      "NATIVE_AP",
+      "LEGACY_AP",
+      "LEGACY_CASH_CLEARING",
+      "LEGACY_UNKNOWN",
+    ])
+      .default("NATIVE_AP")
+      .notNull(),
+    /** بوابة إنشاء سداد جديد؛ OPEN فقط هو المؤهل لمسار supplierPayments. */
+    paymentGate: mysqlEnum("paymentGate", [
+      "OPEN",
+      "SETTLED",
+      "BLOCKED_CASH_CLEARING",
+      "BLOCKED_REVIEW",
+    ])
+      .default("OPEN")
+      .notNull(),
+    legacyPurchaseOrderId: bigint("legacyPurchaseOrderId", {
+      mode: "number",
+    }).references(() => purchaseOrders.id),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    externalInvoiceNumber: varchar("externalInvoiceNumber", { length: 160 }),
+    externalNumberNorm: varchar("externalNumberNorm", { length: 160 }),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    status: mysqlEnum("status", [
+      "DRAFT",
+      "ON_HOLD",
+      "MATCHED",
+      "POSTED",
+      "REVERSED",
+    ])
+      .default("DRAFT")
+      .notNull(),
+    version: int("version").default(1).notNull(),
+    draftState: mysqlEnum("draftState", ["ACTIVE", "VOIDED"])
+      .default("ACTIVE")
+      .notNull(),
+    invoiceDate: date("invoiceDate", { mode: "string" }).notNull(),
+    dueDate: date("dueDate", { mode: "string" }),
+    currency: mysqlEnum("currency", ["IQD", "USD"]).notNull(),
+    agreedRate: decimal("agreedRate", { precision: 15, scale: 4 }),
+    subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    /** تسوية إرثية مثبتة حصراً من قيود/إيصالات حتمية؛ ليست دفعة مختلقة. */
+    legacySettledAmount: decimal("legacySettledAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    legacySettlementEvidenceHash: char("legacySettlementEvidenceHash", {
+      length: 64,
+    }),
+    paymentGateReason: varchar("paymentGateReason", { length: 500 }),
+    usdTotal: decimal("usdTotal", { precision: 15, scale: 2 }),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    evidenceType: mysqlEnum("evidenceType", [
+      "DOCUMENT_IMAGE",
+      "PDF",
+      "EMAIL",
+      "EDI",
+      "LEGACY_LEDGER",
+      "OTHER",
+    ]).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }),
+    holdReason: varchar("holdReason", { length: 500 }),
+    postingEntryId: bigint("postingEntryId", { mode: "number" })
+      .unique("uq_supplier_invoice_posting_entry")
+      .references(() => accountingEntries.id),
+    reversalEntryId: bigint("reversalEntryId", { mode: "number" })
+      .unique("uq_supplier_invoice_reversal_entry")
+      .references(() => accountingEntries.id),
+    createdBy: int("createdBy").references(() => users.id),
+    postedBy: int("postedBy").references(() => users.id),
+    postedAt: timestamp("postedAt"),
+    reversedBy: int("reversedBy").references(() => users.id),
+    reversedAt: timestamp("reversedAt"),
+    reversalReason: varchar("reversalReason", { length: 500 }),
+    voidedBy: int("voidedBy").references(() => users.id),
+    voidedAt: timestamp("voidedAt"),
+    voidReason: varchar("voidReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    supplierExternalUq: unique("uq_supplier_invoice_external").on(
+      table.supplierId,
+      table.externalNumberNorm,
+    ),
+    requestHashUq: unique("uq_supplier_invoice_request_hash").on(
+      table.clientRequestId,
+      table.payloadHash,
+    ),
+    branchStatusIdx: index("idx_supplier_invoice_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    supplierDateIdx: index("idx_supplier_invoice_supplier_date").on(
+      table.supplierId,
+      table.invoiceDate,
+    ),
+    paymentGateIdx: index("idx_supplier_invoice_payment_gate").on(
+      table.branchId,
+      table.paymentGate,
+      table.status,
+    ),
+    amountShape: check(
+      "chk_supplier_invoice_amounts",
+      sql`${table.subtotal} >= 0 AND ${table.taxAmount} >= 0 AND ${table.discountAmount} >= 0 AND ${table.discountAmount} <= ${table.subtotal} + ${table.taxAmount} AND ${table.totalAmount} = ${table.subtotal} + ${table.taxAmount} - ${table.discountAmount}`,
+    ),
+    nativeDocument: check(
+      "chk_supplier_invoice_native_document",
+      sql`${table.origin} = 'LEGACY' OR (${table.externalInvoiceNumber} IS NOT NULL AND CHAR_LENGTH(TRIM(${table.externalInvoiceNumber})) > 0 AND ${table.externalNumberNorm} IS NOT NULL AND CHAR_LENGTH(TRIM(${table.externalNumberNorm})) > 0 AND ${table.createdBy} IS NOT NULL AND ${table.evidenceReference} IS NOT NULL AND CHAR_LENGTH(TRIM(${table.evidenceReference})) > 0)`,
+    ),
+    lifecycleShape: check(
+      "chk_supplier_invoice_lifecycle",
+      sql`(
+        (${table.status} IN ('DRAFT','ON_HOLD','MATCHED') AND ${table.postingEntryId} IS NULL AND ${table.postedAt} IS NULL AND ${table.reversalEntryId} IS NULL AND ${table.reversedAt} IS NULL)
+        OR (${table.status} = 'POSTED' AND (${table.origin} = 'LEGACY' OR (${table.postingEntryId} IS NOT NULL AND ${table.postedBy} IS NOT NULL AND ${table.postedAt} IS NOT NULL)) AND ${table.reversalEntryId} IS NULL AND ${table.reversedAt} IS NULL)
+        OR (${table.status} = 'REVERSED' AND ${table.postingEntryId} IS NOT NULL AND ${table.postedAt} IS NOT NULL AND ${table.reversalEntryId} IS NOT NULL AND ${table.reversedBy} IS NOT NULL AND ${table.reversedAt} IS NOT NULL AND ${table.reversalReason} IS NOT NULL)
+      )`,
+    ),
+    legacyLiabilityShape: check(
+      "chk_supplier_invoice_legacy_liability",
+      sql`(
+        (${table.origin} = 'NATIVE' AND ${table.liabilityClass} = 'NATIVE_AP' AND ${table.paymentGate} IN ('OPEN','SETTLED') AND ${table.legacyPurchaseOrderId} IS NULL AND ${table.legacySettledAmount} = 0 AND ${table.legacySettlementEvidenceHash} IS NULL)
+        OR (${table.origin} = 'LEGACY' AND ${table.liabilityClass} <> 'NATIVE_AP' AND ${table.legacyPurchaseOrderId} IS NOT NULL AND ${table.legacySettlementEvidenceHash} IS NOT NULL
+          AND ((${table.liabilityClass} = 'LEGACY_CASH_CLEARING' AND ${table.paymentGate} = 'BLOCKED_CASH_CLEARING' AND ${table.legacySettledAmount} = 0)
+            OR (${table.liabilityClass} = 'LEGACY_UNKNOWN' AND ${table.paymentGate} = 'BLOCKED_REVIEW' AND ${table.legacySettledAmount} = 0)
+            OR (${table.liabilityClass} = 'LEGACY_AP' AND ${table.paymentGate} IN ('OPEN','SETTLED','BLOCKED_REVIEW'))))
+      ) AND ${table.legacySettledAmount} >= 0 AND ${table.legacySettledAmount} <= ${table.totalAmount}`,
+    ),
+    draftStateShape: check(
+      "chk_supplier_invoice_draft_state",
+      sql`(
+        (${table.draftState} = 'ACTIVE' AND ${table.voidedBy} IS NULL AND ${table.voidedAt} IS NULL AND ${table.voidReason} IS NULL)
+        OR (${table.draftState} = 'VOIDED' AND ${table.status} = 'DRAFT' AND ${table.voidedBy} IS NOT NULL AND ${table.voidedAt} IS NOT NULL AND ${table.voidReason} IS NOT NULL AND CHAR_LENGTH(TRIM(${table.voidReason})) >= 3)
+      )`,
+    ),
+  }),
+);
+
+/** سجل append-only لكل تعديل أو إلغاء لمسودة فاتورة مورد. */
+export const supplierInvoiceDraftRevisions = mysqlTable(
+  "supplierInvoiceDraftRevisions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+      .notNull(),
+    revisionNo: int("revisionNo").notNull(),
+    action: mysqlEnum("action", ["UPDATE_DRAFT", "VOID_DRAFT"]).notNull(),
+    requestKey: varchar("requestKey", { length: 120 }).notNull(),
+    requestPayloadHash: char("requestPayloadHash", { length: 64 }).notNull(),
+    baseVersion: int("baseVersion").notNull(),
+    resultVersion: int("resultVersion").notNull(),
+    beforeCanonical: mediumtext("beforeCanonical").notNull(),
+    beforeHash: char("beforeHash", { length: 64 }).notNull(),
+    afterCanonical: mediumtext("afterCanonical").notNull(),
+    afterHash: char("afterHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    actedBy: int("actedBy").notNull().references(() => users.id),
+    actedAt: timestamp("actedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    revisionNoUq: unique("uq_supplier_invoice_draft_revision_no").on(
+      table.supplierInvoiceId,
+      table.revisionNo,
+    ),
+    versionUq: unique("uq_supplier_invoice_draft_revision_version").on(
+      table.supplierInvoiceId,
+      table.resultVersion,
+    ),
+    requestKeyUq: unique("uq_supplier_invoice_draft_request_key").on(
+      table.requestKey,
+    ),
+    actorIdx: index("idx_supplier_invoice_draft_revision_actor").on(
+      table.actedBy,
+      table.actedAt,
+    ),
+    invoiceFk: foreignKey({
+      name: "fk_supplier_invoice_draft_revision_invoice",
+      columns: [table.supplierInvoiceId],
+      foreignColumns: [supplierInvoices.id],
+    }),
+    shape: check(
+      "chk_supplier_invoice_draft_revision_shape",
+      sql`${table.revisionNo} > 0 AND ${table.baseVersion} > 0 AND ${table.resultVersion} = ${table.baseVersion} + 1 AND CHAR_LENGTH(TRIM(${table.reason})) >= 3`,
+    ),
+  }),
+);
+
+export const supplierInvoiceLines = mysqlTable(
+  "supplierInvoiceLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+      .notNull()
+      .references(() => supplierInvoices.id, { onDelete: "cascade" }),
+    lineNo: int("lineNo").notNull(),
+    purchaseOrderRevisionItemId: bigint("purchaseOrderRevisionItemId", {
+      mode: "number",
+    }),
+    variantId: bigint("variantId", { mode: "number" }).references(
+      () => productVariants.id,
+    ),
+    description: varchar("description", { length: 500 }).notNull(),
+    invoicedBaseQuantity: int("invoicedBaseQuantity").notNull(),
+    unitPriceIqd: decimal("unitPriceIqd", { precision: 15, scale: 2 }).notNull(),
+    netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    usdUnitPrice: decimal("usdUnitPrice", { precision: 15, scale: 4 }),
+    usdTotal: decimal("usdTotal", { precision: 15, scale: 2 }),
+  },
+  (table) => ({
+    invoiceLineUq: unique("uq_supplier_invoice_line").on(
+      table.supplierInvoiceId,
+      table.lineNo,
+    ),
+    revisionItemIdx: index("idx_supplier_invoice_line_revision").on(
+      table.purchaseOrderRevisionItemId,
+    ),
+    revisionItemFk: foreignKey({
+      name: "fk_supplier_invoice_line_revision",
+      columns: [table.purchaseOrderRevisionItemId],
+      foreignColumns: [purchaseOrderRevisionItems.id],
+    }),
+    shape: check(
+      "chk_supplier_invoice_line_shape",
+      sql`${table.lineNo} > 0 AND ${table.invoicedBaseQuantity} > 0 AND ${table.unitPriceIqd} >= 0 AND ${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
+    ),
+  }),
+);
+
+/** نتيجة مطابقة محفوظة بلقطة حدودها؛ تغيير الإعدادات لا يغيّر حكم تشغيل قديم. */
+export const supplierInvoiceMatchRuns = mysqlTable(
+  "supplierInvoiceMatchRuns",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    matchKey: varchar("matchKey", { length: 160 })
+      .notNull()
+      .unique("uq_supplier_invoice_match_key"),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+      .notNull(),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    runNo: int("runNo").notNull(),
+    outcome: mysqlEnum("outcome", ["EXACT", "WITHIN_TOLERANCE", "HOLD"]).notNull(),
+    policyVersion: int("policyVersion").notNull(),
+    policySnapshot: mediumtext("policySnapshot").notNull(),
+    policyHash: char("policyHash", { length: 64 }).notNull(),
+    poRevisionSetHash: char("poRevisionSetHash", { length: 64 }).notNull(),
+    goodsReceiptSetHash: char("goodsReceiptSetHash", { length: 64 }).notNull(),
+    invoiceHash: char("invoiceHash", { length: 64 }).notNull(),
+    priceTolerancePercent: decimal("priceTolerancePercent", {
+      precision: 7,
+      scale: 4,
+    }).notNull(),
+    quantityToleranceBase: int("quantityToleranceBase").default(0).notNull(),
+    totalToleranceAmount: decimal("totalToleranceAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    orderedBaseQuantity: int("orderedBaseQuantity").notNull(),
+    receivedBaseQuantity: int("receivedBaseQuantity").notNull(),
+    invoicedBaseQuantity: int("invoicedBaseQuantity").notNull(),
+    poTotal: decimal("poTotal", { precision: 15, scale: 2 }).notNull(),
+    grnTotal: decimal("grnTotal", { precision: 15, scale: 2 }).notNull(),
+    invoiceTotal: decimal("invoiceTotal", { precision: 15, scale: 2 }).notNull(),
+    quantityVarianceBase: int("quantityVarianceBase").notNull(),
+    priceVarianceAmount: decimal("priceVarianceAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    totalVarianceAmount: decimal("totalVarianceAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    outcomeReason: varchar("outcomeReason", { length: 500 }),
+    holdCodes: json("holdCodes").notNull(),
+    evidenceSnapshot: mediumtext("evidenceSnapshot").notNull(),
+    evidenceHash: char("evidenceHash", { length: 64 }).notNull(),
+    performedBy: int("performedBy")
+      .notNull()
+      .references(() => users.id),
+    performedAt: timestamp("performedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    invoiceRunUq: unique("uq_supplier_invoice_match_run").on(
+      table.supplierInvoiceId,
+      table.runNo,
+    ),
+    invoiceEvidenceUq: unique("uq_supplier_invoice_match_evidence").on(
+      table.supplierInvoiceId,
+      table.evidenceHash,
+    ),
+    invoiceDateIdx: index("idx_supplier_invoice_match_date").on(
+      table.supplierInvoiceId,
+      table.performedAt,
+    ),
+    branchOutcomeIdx: index("idx_supplier_invoice_match_branch_outcome").on(
+      table.branchId,
+      table.outcome,
+    ),
+    invoiceFk: foreignKey({
+      name: "fk_supplier_match_invoice",
+      columns: [table.supplierInvoiceId],
+      foreignColumns: [supplierInvoices.id],
+    }),
+    toleranceShape: check(
+      "chk_supplier_invoice_match_tolerances",
+      sql`${table.runNo} > 0 AND ${table.policyVersion} > 0 AND ${table.priceTolerancePercent} >= 0 AND ${table.quantityToleranceBase} >= 0 AND ${table.totalToleranceAmount} >= 0 AND ${table.orderedBaseQuantity} >= 0 AND ${table.receivedBaseQuantity} >= 0 AND ${table.invoicedBaseQuantity} >= 0`,
+    ),
+  }),
+);
+
+export const supplierInvoiceMatchAllocations = mysqlTable(
+  "supplierInvoiceMatchAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    matchRunId: bigint("matchRunId", { mode: "number" })
+      .notNull(),
+    supplierInvoiceLineId: bigint("supplierInvoiceLineId", { mode: "number" })
+      .notNull(),
+    purchaseOrderRevisionItemId: bigint("purchaseOrderRevisionItemId", {
+      mode: "number",
+    })
+      .notNull(),
+    goodsReceiptItemId: bigint("goodsReceiptItemId", { mode: "number" })
+      .notNull(),
+    matchedBaseQuantity: int("matchedBaseQuantity").notNull(),
+    poUnitPriceIqd: decimal("poUnitPriceIqd", { precision: 15, scale: 2 }).notNull(),
+    grnUnitCostIqd: decimal("grnUnitCostIqd", { precision: 15, scale: 2 }).notNull(),
+    invoiceUnitPriceIqd: decimal("invoiceUnitPriceIqd", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    quantityVarianceBase: int("quantityVarianceBase").notNull(),
+    priceVarianceAmount: decimal("priceVarianceAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    matchedAmount: decimal("matchedAmount", { precision: 15, scale: 2 }).notNull(),
+  },
+  (table) => ({
+    allocationUq: unique("uq_supplier_invoice_match_allocation").on(
+      table.matchRunId,
+      table.supplierInvoiceLineId,
+      table.goodsReceiptItemId,
+    ),
+    receiptItemIdx: index("idx_supplier_invoice_match_grn_item").on(
+      table.goodsReceiptItemId,
+    ),
+    runFk: foreignKey({
+      name: "fk_supplier_match_alloc_run",
+      columns: [table.matchRunId],
+      foreignColumns: [supplierInvoiceMatchRuns.id],
+    }).onDelete("cascade"),
+    invoiceLineFk: foreignKey({
+      name: "fk_supplier_match_alloc_invoice_line",
+      columns: [table.supplierInvoiceLineId],
+      foreignColumns: [supplierInvoiceLines.id],
+    }),
+    revisionItemFk: foreignKey({
+      name: "fk_supplier_match_alloc_revision_item",
+      columns: [table.purchaseOrderRevisionItemId],
+      foreignColumns: [purchaseOrderRevisionItems.id],
+    }),
+    receiptItemFk: foreignKey({
+      name: "fk_supplier_match_alloc_grn_item",
+      columns: [table.goodsReceiptItemId],
+      foreignColumns: [goodsReceiptItems.id],
+    }),
+    shape: check(
+      "chk_supplier_invoice_match_allocation_shape",
+      sql`${table.matchedBaseQuantity} > 0 AND ${table.poUnitPriceIqd} >= 0 AND ${table.grnUnitCostIqd} >= 0 AND ${table.invoiceUnitPriceIqd} >= 0 AND ${table.matchedAmount} >= 0`,
+    ),
+  }),
+);
+
+/** اعتماد الترحيل أو العكس مع SOD وبصمة قرار؛ HOLD صلب ولا يملك نوع تجاوز. */
+export const supplierInvoiceApprovalRequests = mysqlTable(
+  "supplierInvoiceApprovalRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 })
+      .notNull()
+      .unique("uq_supplier_invoice_approval_request"),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+      .notNull(),
+    matchRunId: bigint("matchRunId", { mode: "number" }),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    kind: mysqlEnum("kind", ["POST_INVOICE", "REVERSE_INVOICE"]).notNull(),
+    baseInvoiceVersion: int("baseInvoiceVersion").notNull(),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    evidenceType: mysqlEnum("evidenceType", [
+      "DOCUMENT_IMAGE",
+      "PDF",
+      "EMAIL",
+      "SIGNED_APPROVAL",
+      "OTHER",
+    ]),
+    evidenceReference: varchar("evidenceReference", { length: 500 }),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"])
+      .default("PENDING")
+      .notNull(),
+    pendingGuard: varchar("pendingGuard", { length: 180 }).unique(
+      "uq_supplier_invoice_approval_pending",
+    ),
+    requestedBy: int("requestedBy")
+      .notNull()
+      .references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }).unique(
+      "uq_supplier_invoice_approval_decision",
+    ),
+    decisionHash: char("decisionHash", { length: 64 }),
+    appliedAt: timestamp("appliedAt"),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_supplier_invoice_approval_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    invoiceStatusIdx: index("idx_supplier_invoice_approval_invoice_status").on(
+      table.supplierInvoiceId,
+      table.status,
+    ),
+    invoiceFk: foreignKey({
+      name: "fk_supplier_invoice_approval_invoice",
+      columns: [table.supplierInvoiceId],
+      foreignColumns: [supplierInvoices.id],
+    }),
+    matchRunFk: foreignKey({
+      name: "fk_supplier_invoice_approval_match",
+      columns: [table.matchRunId],
+      foreignColumns: [supplierInvoiceMatchRuns.id],
+    }),
+    decisionShape: check(
+      "chk_supplier_invoice_approval_decision",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.pendingGuard} IS NOT NULL AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionKey} IS NULL AND ${table.decisionHash} IS NULL AND ${table.appliedAt} IS NULL)
+        OR (${table.status} = 'APPROVED' AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NOT NULL)
+        OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_supplier_invoice_approval_maker_checker",
+      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
+    ),
+  }),
+);
+
 /** مستند مرتجع شراء مستقلّ؛ لا نستخدم قيد الدفتر أو أمر الشراء كهوية للمرتجع. */
 export const purchaseReturns = mysqlTable(
   "purchaseReturns",
@@ -4373,6 +6103,24 @@ export const purchaseReturns = mysqlTable(
     clientRequestId: varchar("clientRequestId", { length: 80 })
       .notNull()
       .unique(),
+    origin: mysqlEnum("origin", ["NATIVE", "LEGACY"])
+      .default("NATIVE")
+      .notNull(),
+    status: mysqlEnum("status", [
+      "POSTED",
+      "PARTIALLY_REVERSED",
+      "REVERSED",
+    ])
+      .default("POSTED")
+      .notNull(),
+    version: int("version").default(1).notNull(),
+    requestId: bigint("requestId", { mode: "number" })
+      .unique("uq_purchase_return_request")
+      .references((): AnyMySqlColumn => purchaseReturnRequests.id),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" }),
+    matchRunId: bigint("matchRunId", { mode: "number" }).references(
+      () => supplierInvoiceMatchRuns.id,
+    ),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" })
       .notNull()
       .references(() => purchaseOrders.id),
@@ -4385,6 +6133,9 @@ export const purchaseReturns = mysqlTable(
     accountingEntryId: bigint("accountingEntryId", { mode: "number" })
       .unique()
       .references(() => accountingEntries.id, { onDelete: "set null" }),
+    cashRefundReceiptId: bigint("cashRefundReceiptId", { mode: "number" })
+      .unique("uq_purchase_return_cash_receipt")
+      .references(() => receipts.id),
     settlement: mysqlEnum("settlement", ["CREDIT", "CASH"])
       .default("CREDIT")
       .notNull(),
@@ -4412,6 +6163,20 @@ export const purchaseReturns = mysqlTable(
       .default("0")
       .notNull(),
     reason: varchar("reason", { length: 500 }),
+    payloadCanonical: mediumtext("payloadCanonical"),
+    payloadHash: char("payloadHash", { length: 64 }),
+    evidenceType: mysqlEnum("evidenceType", [
+      "RETURN_NOTE",
+      "SUPPLIER_ACKNOWLEDGEMENT",
+      "DOCUMENT_IMAGE",
+      "PDF",
+      "EMAIL",
+      "OTHER",
+      "LEGACY_LEDGER",
+    ]),
+    evidenceReference: varchar("evidenceReference", { length: 500 }),
+    postedBy: int("postedBy").references(() => users.id),
+    postedAt: timestamp("postedAt"),
     createdBy: int("createdBy").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -4430,6 +6195,22 @@ export const purchaseReturns = mysqlTable(
       table.branchId,
       table.createdAt,
     ),
+    invoiceStatusIdx: index("idx_purchase_return_invoice_status").on(
+      table.supplierInvoiceId,
+      table.status,
+    ),
+    nativeSourceShape: check(
+      "chk_purchase_return_native_source",
+      sql`${table.origin} = 'LEGACY' OR (${table.requestId} IS NOT NULL AND ${table.supplierInvoiceId} IS NOT NULL AND ${table.matchRunId} IS NOT NULL AND ${table.payloadCanonical} IS NOT NULL AND ${table.payloadHash} IS NOT NULL AND ${table.evidenceType} IS NOT NULL AND ${table.evidenceReference} IS NOT NULL AND ${table.postedBy} IS NOT NULL AND ${table.postedAt} IS NOT NULL)`,
+    ),
+    amountShape: check(
+      "chk_purchase_return_amounts",
+      sql`${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount} AND ${table.cashRefundAmount} >= 0 AND ${table.creditOffsetAmount} >= 0 AND ${table.cashRefundAmount} + ${table.creditOffsetAmount} = ${table.totalAmount}`,
+    ),
+    cashReceiptShape: check(
+      "chk_purchase_return_cash_receipt",
+      sql`${table.origin} = 'LEGACY' OR ((${table.cashRefundAmount} = 0 AND ${table.cashRefundReceiptId} IS NULL) OR (${table.cashRefundAmount} > 0 AND ${table.cashRefundReceiptId} IS NOT NULL))`,
+    ),
   }),
 );
 
@@ -4443,6 +6224,13 @@ export const purchaseReturnItems = mysqlTable(
     purchaseOrderItemId: bigint("purchaseOrderItemId", { mode: "number" })
       .notNull()
       .references(() => purchaseOrderItems.id),
+    supplierInvoiceLineId: bigint("supplierInvoiceLineId", {
+      mode: "number",
+    }),
+    goodsReceiptItemId: bigint("goodsReceiptItemId", { mode: "number" }).references(
+      () => goodsReceiptItems.id,
+    ),
+    matchAllocationId: bigint("matchAllocationId", { mode: "number" }),
     variantId: bigint("variantId", { mode: "number" })
       .notNull()
       .references(() => productVariants.id),
@@ -4453,6 +6241,9 @@ export const purchaseReturnItems = mysqlTable(
     baseQuantity: int("baseQuantity").notNull(),
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
     lineTotal: decimal("lineTotal", { precision: 15, scale: 2 }).notNull(),
+    inventoryMovementId: bigint("inventoryMovementId", { mode: "number" })
+      .unique("uq_purchase_return_inventory_movement")
+      .references(() => inventoryMovements.id),
     productNameSnapshot: varchar("productNameSnapshot", {
       length: 255,
     }).notNull(),
@@ -4466,11 +6257,1465 @@ export const purchaseReturnItems = mysqlTable(
     poItemIdx: index("idx_purchase_return_items_po_item").on(
       table.purchaseOrderItemId,
     ),
+    sourceIdx: index("idx_purchase_return_item_source").on(
+      table.supplierInvoiceLineId,
+      table.goodsReceiptItemId,
+    ),
+    invoiceLineFk: foreignKey({
+      name: "fk_pri_invoice_line",
+      columns: [table.supplierInvoiceLineId],
+      foreignColumns: [supplierInvoiceLines.id],
+    }),
+    matchAllocationFk: foreignKey({
+      name: "fk_pri_match_alloc",
+      columns: [table.matchAllocationId],
+      foreignColumns: [supplierInvoiceMatchAllocations.id],
+    }),
+    sourceShape: check(
+      "chk_purchase_return_item_source",
+      sql`(${table.supplierInvoiceLineId} IS NULL AND ${table.goodsReceiptItemId} IS NULL AND ${table.matchAllocationId} IS NULL) OR (${table.supplierInvoiceLineId} IS NOT NULL AND ${table.goodsReceiptItemId} IS NOT NULL AND ${table.matchAllocationId} IS NOT NULL)`,
+    ),
+    amountShape: check(
+      "chk_purchase_return_item_amounts",
+      sql`${table.quantity} > 0 AND ${table.baseQuantity} > 0 AND ${table.unitPrice} >= 0 AND ${table.lineTotal} >= 0`,
+    ),
+  }),
+);
+
+/**
+ * طلب مرتجع شراء محكوم. إنشاء الطلب صفر أثر: لا مخزون ولا AP ولا نقد حتى قرار
+ * مراجع ثانٍ على نفس نسخة فاتورة المورد وبصمة المصادر الثلاثية.
+ */
+export const purchaseReturnRequests = mysqlTable(
+  "purchaseReturnRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 })
+      .notNull()
+      .unique("uq_purchase_return_request_key"),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+      .notNull(),
+    matchRunId: bigint("matchRunId", { mode: "number" })
+      .notNull()
+      .references(() => supplierInvoiceMatchRuns.id),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseOrders.id),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    baseInvoiceVersion: int("baseInvoiceVersion").notNull(),
+    settlement: mysqlEnum("settlement", ["CREDIT", "CASH"])
+      .default("CREDIT")
+      .notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", [
+      "CASH",
+      "CARD",
+      "TRANSFER",
+      "WALLET",
+    ])
+      .default("CASH")
+      .notNull(),
+    requestedNetAmount: decimal("requestedNetAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    requestedTaxAmount: decimal("requestedTaxAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    requestedTotalAmount: decimal("requestedTotalAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    evidenceType: mysqlEnum("evidenceType", [
+      "RETURN_NOTE",
+      "SUPPLIER_ACKNOWLEDGEMENT",
+      "DOCUMENT_IMAGE",
+      "PDF",
+      "EMAIL",
+      "OTHER",
+    ]).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }).notNull(),
+    evidenceHash: char("evidenceHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"])
+      .default("PENDING")
+      .notNull(),
+    pendingGuard: varchar("pendingGuard", { length: 180 }).unique(
+      "uq_purchase_return_pending",
+    ),
+    requestedBy: int("requestedBy")
+      .notNull()
+      .references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }).unique(
+      "uq_purchase_return_decision",
+    ),
+    decisionHash: char("decisionHash", { length: 64 }),
+    appliedAt: timestamp("appliedAt"),
+  },
+  (table) => ({
+    invoiceStatusIdx: index("idx_purchase_return_req_invoice_status").on(
+      table.supplierInvoiceId,
+      table.status,
+    ),
+    branchStatusIdx: index("idx_purchase_return_req_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    evidenceUq: unique("uq_purchase_return_request_evidence").on(
+      table.supplierInvoiceId,
+      table.evidenceHash,
+    ),
+    amountShape: check(
+      "chk_purchase_return_request_amounts",
+      sql`${table.requestedNetAmount} >= 0 AND ${table.requestedTaxAmount} >= 0 AND ${table.requestedTotalAmount} = ${table.requestedNetAmount} + ${table.requestedTaxAmount}`,
+    ),
+    decisionShape: check(
+      "chk_purchase_return_request_decision",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.pendingGuard} IS NOT NULL AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionKey} IS NULL AND ${table.decisionHash} IS NULL AND ${table.appliedAt} IS NULL)
+        OR (${table.status} = 'APPROVED' AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NOT NULL)
+        OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_purchase_return_request_maker_checker",
+      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
+    ),
+  }),
+);
+
+export const purchaseReturnRequestItems = mysqlTable(
+  "purchaseReturnRequestItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestId: bigint("requestId", { mode: "number" })
+      .notNull(),
+    lineNo: int("lineNo").notNull(),
+    supplierInvoiceLineId: bigint("supplierInvoiceLineId", { mode: "number" })
+      .notNull(),
+    goodsReceiptItemId: bigint("goodsReceiptItemId", { mode: "number" })
+      .notNull(),
+    matchAllocationId: bigint("matchAllocationId", { mode: "number" })
+      .notNull(),
+    purchaseOrderItemId: bigint("purchaseOrderItemId", { mode: "number" })
+      .notNull(),
+    variantId: bigint("variantId", { mode: "number" })
+      .notNull()
+      .references(() => productVariants.id),
+    requestedBaseQuantity: int("requestedBaseQuantity").notNull(),
+    unitPriceIqd: decimal("unitPriceIqd", { precision: 15, scale: 2 }).notNull(),
+    netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    sourceSnapshot: mediumtext("sourceSnapshot").notNull(),
+    sourceHash: char("sourceHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }),
+  },
+  (table) => ({
+    requestLineUq: unique("uq_purchase_return_request_line").on(
+      table.requestId,
+      table.lineNo,
+    ),
+    requestAllocationUq: unique("uq_purchase_return_request_allocation").on(
+      table.requestId,
+      table.matchAllocationId,
+    ),
+    sourceHashUq: unique("uq_purchase_return_request_source").on(
+      table.requestId,
+      table.sourceHash,
+    ),
+    sourceIdx: index("idx_purchase_return_req_item_source").on(
+      table.goodsReceiptItemId,
+      table.supplierInvoiceLineId,
+    ),
+    requestFk: foreignKey({
+      name: "fk_prri_request",
+      columns: [table.requestId],
+      foreignColumns: [purchaseReturnRequests.id],
+    }).onDelete("cascade"),
+    invoiceLineFk: foreignKey({
+      name: "fk_prri_invoice_line",
+      columns: [table.supplierInvoiceLineId],
+      foreignColumns: [supplierInvoiceLines.id],
+    }),
+    receiptItemFk: foreignKey({
+      name: "fk_prri_grn_item",
+      columns: [table.goodsReceiptItemId],
+      foreignColumns: [goodsReceiptItems.id],
+    }),
+    matchAllocationFk: foreignKey({
+      name: "fk_prri_match_alloc",
+      columns: [table.matchAllocationId],
+      foreignColumns: [supplierInvoiceMatchAllocations.id],
+    }),
+    orderItemFk: foreignKey({
+      name: "fk_prri_po_item",
+      columns: [table.purchaseOrderItemId],
+      foreignColumns: [purchaseOrderItems.id],
+    }),
+    shape: check(
+      "chk_purchase_return_request_item_shape",
+      sql`${table.lineNo} > 0 AND ${table.requestedBaseQuantity} > 0 AND ${table.unitPriceIqd} >= 0 AND ${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
+    ),
+  }),
+);
+
+/** طلب عكس مرتجعٍ مرحّل؛ يظل صفر أثر حتى اعتماد مراجع ثانٍ. */
+export const purchaseReturnReversalRequests = mysqlTable(
+  "purchaseReturnReversalRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 })
+      .notNull()
+      .unique("uq_purchase_return_reversal_request_key"),
+    purchaseReturnId: bigint("purchaseReturnId", { mode: "number" })
+      .notNull(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    baseReturnVersion: int("baseReturnVersion").notNull(),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    evidenceType: mysqlEnum("evidenceType", [
+      "SUPPLIER_ACKNOWLEDGEMENT",
+      "DOCUMENT_IMAGE",
+      "PDF",
+      "EMAIL",
+      "SIGNED_APPROVAL",
+      "OTHER",
+    ]).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"])
+      .default("PENDING")
+      .notNull(),
+    pendingGuard: varchar("pendingGuard", { length: 180 }).unique(
+      "uq_purchase_return_reversal_pending",
+    ),
+    requestedBy: int("requestedBy")
+      .notNull()
+      .references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }).unique(
+      "uq_purchase_return_reversal_decision",
+    ),
+    decisionHash: char("decisionHash", { length: 64 }),
+    appliedAt: timestamp("appliedAt"),
+  },
+  (table) => ({
+    returnStatusIdx: index("idx_purchase_return_rev_req_status").on(
+      table.purchaseReturnId,
+      table.status,
+    ),
+    branchStatusIdx: index("idx_purchase_return_rev_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    purchaseReturnFk: foreignKey({
+      name: "fk_prrev_req_return",
+      columns: [table.purchaseReturnId],
+      foreignColumns: [purchaseReturns.id],
+    }),
+    decisionShape: check(
+      "chk_purchase_return_reversal_decision",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.pendingGuard} IS NOT NULL AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionKey} IS NULL AND ${table.decisionHash} IS NULL AND ${table.appliedAt} IS NULL)
+        OR (${table.status} = 'APPROVED' AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NOT NULL)
+        OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_purchase_return_reversal_maker_checker",
+      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
+    ),
+  }),
+);
+
+export const purchaseReturnReversalRequestItems = mysqlTable(
+  "purchaseReturnReversalRequestItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestId: bigint("requestId", { mode: "number" })
+      .notNull(),
+    purchaseReturnItemId: bigint("purchaseReturnItemId", { mode: "number" })
+      .notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    reason: varchar("reason", { length: 500 }),
+  },
+  (table) => ({
+    requestItemUq: unique("uq_purchase_return_reversal_req_item").on(
+      table.requestId,
+      table.purchaseReturnItemId,
+    ),
+    requestFk: foreignKey({
+      name: "fk_prrev_req_item_req",
+      columns: [table.requestId],
+      foreignColumns: [purchaseReturnReversalRequests.id],
+    }).onDelete("cascade"),
+    purchaseReturnItemFk: foreignKey({
+      name: "fk_prrev_req_item_return",
+      columns: [table.purchaseReturnItemId],
+      foreignColumns: [purchaseReturnItems.id],
+    }),
+    positiveQuantity: check(
+      "chk_purchase_return_reversal_req_qty",
+      sql`${table.baseQuantity} > 0`,
+    ),
+  }),
+);
+
+/** مستند عكس نهائي؛ لا يعدّل أو يحذف، وأي تصحيح لاحق بمستند جديد. */
+export const purchaseReturnReversals = mysqlTable(
+  "purchaseReturnReversals",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    reversalNumber: varchar("reversalNumber", { length: 50 })
+      .notNull()
+      .unique("uq_purchase_return_reversal_number"),
+    requestId: bigint("requestId", { mode: "number" })
+      .notNull()
+      .unique("uq_purchase_return_reversal_request"),
+    purchaseReturnId: bigint("purchaseReturnId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseReturns.id),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+      .notNull()
+      .references(() => supplierInvoices.id),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    accountingEntryId: bigint("accountingEntryId", { mode: "number" })
+      .notNull()
+      .unique("uq_purchase_return_reversal_entry"),
+    cashRepaymentReceiptId: bigint("cashRepaymentReceiptId", { mode: "number" })
+      .unique("uq_purchase_return_reversal_receipt")
+      .references(() => receipts.id),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 })
+      .notNull()
+      .unique("uq_purchase_return_reversal_hash"),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    postedBy: int("postedBy")
+      .notNull()
+      .references(() => users.id),
+    postedAt: timestamp("postedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    returnDateIdx: index("idx_purchase_return_reversal_date").on(
+      table.purchaseReturnId,
+      table.postedAt,
+    ),
+    requestFk: foreignKey({
+      name: "fk_prrev_request",
+      columns: [table.requestId],
+      foreignColumns: [purchaseReturnReversalRequests.id],
+    }),
+    accountingEntryFk: foreignKey({
+      name: "fk_prrev_entry",
+      columns: [table.accountingEntryId],
+      foreignColumns: [accountingEntries.id],
+    }),
+    amountShape: check(
+      "chk_purchase_return_reversal_amounts",
+      sql`${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
+    ),
+  }),
+);
+
+export const purchaseReturnReversalItems = mysqlTable(
+  "purchaseReturnReversalItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    reversalId: bigint("reversalId", { mode: "number" })
+      .notNull(),
+    purchaseReturnItemId: bigint("purchaseReturnItemId", { mode: "number" })
+      .notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    inventoryMovementId: bigint("inventoryMovementId", { mode: "number" })
+      .notNull()
+      .unique("uq_purchase_return_reversal_movement"),
+  },
+  (table) => ({
+    reversalItemUq: unique("uq_purchase_return_reversal_item").on(
+      table.reversalId,
+      table.purchaseReturnItemId,
+    ),
+    reversalFk: foreignKey({
+      name: "fk_prrev_item_doc",
+      columns: [table.reversalId],
+      foreignColumns: [purchaseReturnReversals.id],
+    }).onDelete("cascade"),
+    purchaseReturnItemFk: foreignKey({
+      name: "fk_prrev_item_return_item",
+      columns: [table.purchaseReturnItemId],
+      foreignColumns: [purchaseReturnItems.id],
+    }),
+    movementFk: foreignKey({
+      name: "fk_prrev_item_movement",
+      columns: [table.inventoryMovementId],
+      foreignColumns: [inventoryMovements.id],
+    }),
+    shape: check(
+      "chk_purchase_return_reversal_item_shape",
+      sql`${table.baseQuantity} > 0 AND ${table.netAmount} >= 0 AND ${table.taxAmount} >= 0 AND ${table.totalAmount} = ${table.netAmount} + ${table.taxAmount}`,
+    ),
   }),
 );
 
 export type PurchaseReturn = typeof purchaseReturns.$inferSelect;
 export type PurchaseReturnItem = typeof purchaseReturnItems.$inferSelect;
+export type PurchaseReturnRequest = typeof purchaseReturnRequests.$inferSelect;
+export type PurchaseReturnReversal = typeof purchaseReturnReversals.$inferSelect;
+
+/**
+ * دليل تسوية إرثي مادي، لا Payment مختلق: كل صف يشير إلى القيد والإيصال الحقيقيين،
+ * ويُستعمل فقط حين تكون فاتورة AP الوحيدة للأمر ويمكن إسناد الدليل إليها حتمياً.
+ */
+export const legacySupplierInvoiceSettlements = mysqlTable(
+  "legacySupplierInvoiceSettlements",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+      .notNull(),
+    sourceAccountingEntryId: bigint("sourceAccountingEntryId", {
+      mode: "number",
+    })
+      .notNull()
+      .unique("uq_legacy_supplier_settlement_entry"),
+    sourceReceiptId: bigint("sourceReceiptId", { mode: "number" })
+      .notNull()
+      .references(() => receipts.id),
+    direction: mysqlEnum("direction", ["PAYMENT_OUT", "PAYMENT_IN"]).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    evidenceSnapshot: mediumtext("evidenceSnapshot").notNull(),
+    evidenceHash: char("evidenceHash", { length: 64 })
+      .notNull()
+      .unique("uq_legacy_supplier_settlement_evidence"),
+    materializedAt: timestamp("materializedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    invoiceDateIdx: index("idx_legacy_supplier_settlement_invoice").on(
+      table.supplierInvoiceId,
+      table.materializedAt,
+    ),
+    receiptIdx: index("idx_legacy_supplier_settlement_receipt").on(
+      table.sourceReceiptId,
+    ),
+    invoiceFk: foreignKey({
+      name: "fk_lsis_invoice",
+      columns: [table.supplierInvoiceId],
+      foreignColumns: [supplierInvoices.id],
+    }),
+    entryFk: foreignKey({
+      name: "fk_lsis_entry",
+      columns: [table.sourceAccountingEntryId],
+      foreignColumns: [accountingEntries.id],
+    }),
+    amountShape: check(
+      "chk_legacy_supplier_settlement_amount",
+      sql`${table.amount} > 0`,
+    ),
+  }),
+);
+
+/** طلب صرف مورّد؛ تخصيصاته المطلوبة لا تحرّك AP حتى الاعتماد والتطبيق الذري. */
+export const supplierPaymentRequests = mysqlTable(
+  "supplierPaymentRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 })
+      .notNull()
+      .unique("uq_supplier_payment_request_key"),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    currency: mysqlEnum("currency", ["IQD", "USD"]).notNull(),
+    exchangeRate: decimal("exchangeRate", { precision: 15, scale: 4 }),
+    requestedAmount: decimal("requestedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    requestedCurrencyAmount: decimal("requestedCurrencyAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", [
+      "CASH",
+      "CARD",
+      "TRANSFER",
+      "WALLET",
+    ]).notNull(),
+    externalReference: varchar("externalReference", { length: 160 }),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    evidenceType: mysqlEnum("evidenceType", [
+      "PAYMENT_ORDER",
+      "BANK_ADVICE",
+      "TRANSFER_RECEIPT",
+      "CASH_ACKNOWLEDGEMENT",
+      "DOCUMENT_IMAGE",
+      "PDF",
+      "OTHER",
+    ]).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }).notNull(),
+    evidenceHash: char("evidenceHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"])
+      .default("PENDING")
+      .notNull(),
+    pendingGuard: varchar("pendingGuard", { length: 180 }).unique(
+      "uq_supplier_payment_pending",
+    ),
+    requestedBy: int("requestedBy")
+      .notNull()
+      .references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }).unique(
+      "uq_supplier_payment_decision",
+    ),
+    decisionHash: char("decisionHash", { length: 64 }),
+    appliedAt: timestamp("appliedAt"),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_supplier_payment_req_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    supplierStatusIdx: index("idx_supplier_payment_req_supplier_status").on(
+      table.supplierId,
+      table.status,
+    ),
+    evidenceUq: unique("uq_supplier_payment_request_evidence").on(
+      table.supplierId,
+      table.evidenceHash,
+    ),
+    amountShape: check(
+      "chk_supplier_payment_request_amounts",
+      sql`${table.requestedAmount} > 0 AND ${table.requestedCurrencyAmount} > 0 AND ((${table.currency} = 'IQD' AND ${table.exchangeRate} IS NULL AND ${table.requestedAmount} = ${table.requestedCurrencyAmount}) OR (${table.currency} = 'USD' AND ${table.exchangeRate} IS NOT NULL AND ${table.exchangeRate} > 0))`,
+    ),
+    evidenceShape: check(
+      "chk_supplier_payment_request_evidence",
+      sql`CHAR_LENGTH(TRIM(${table.evidenceReference})) > 0 AND (${table.paymentMethod} = 'CASH' OR (${table.externalReference} IS NOT NULL AND CHAR_LENGTH(TRIM(${table.externalReference})) > 0))`,
+    ),
+    decisionShape: check(
+      "chk_supplier_payment_request_decision",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.pendingGuard} IS NOT NULL AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionKey} IS NULL AND ${table.decisionHash} IS NULL AND ${table.appliedAt} IS NULL)
+        OR (${table.status} = 'APPROVED' AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NOT NULL)
+        OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_supplier_payment_request_maker_checker",
+      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
+    ),
+  }),
+);
+
+export const supplierPaymentRequestAllocations = mysqlTable(
+  "supplierPaymentRequestAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestId: bigint("requestId", { mode: "number" })
+      .notNull(),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+      .notNull(),
+    /** حجز فاتورة واحد لطلب سداد حي؛ تُصفّره الخدمة عند كل قرار نهائي. */
+    activeInvoiceGuard: bigint("activeInvoiceGuard", { mode: "number" }),
+    invoiceVersion: int("invoiceVersion").notNull(),
+    requestedAmount: decimal("requestedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    requestedCurrencyAmount: decimal("requestedCurrencyAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    invoiceSnapshot: mediumtext("invoiceSnapshot").notNull(),
+    invoiceHash: char("invoiceHash", { length: 64 }).notNull(),
+  },
+  (table) => ({
+    requestInvoiceUq: unique("uq_supplier_payment_req_invoice").on(
+      table.requestId,
+      table.supplierInvoiceId,
+    ),
+    activeInvoiceUq: unique("uq_supplier_payment_active_invoice").on(
+      table.activeInvoiceGuard,
+    ),
+    invoiceIdx: index("idx_supplier_payment_req_alloc_invoice").on(
+      table.supplierInvoiceId,
+    ),
+    requestFk: foreignKey({
+      name: "fk_spreq_alloc_req",
+      columns: [table.requestId],
+      foreignColumns: [supplierPaymentRequests.id],
+    }).onDelete("cascade"),
+    invoiceFk: foreignKey({
+      name: "fk_spreq_alloc_invoice",
+      columns: [table.supplierInvoiceId],
+      foreignColumns: [supplierInvoices.id],
+    }),
+    amountShape: check(
+      "chk_supplier_payment_req_alloc_amount",
+      sql`${table.requestedAmount} > 0 AND ${table.requestedCurrencyAmount} > 0 AND ${table.invoiceVersion} > 0`,
+    ),
+    activeInvoiceShape: check(
+      "chk_supplier_payment_active_invoice",
+      sql`${table.activeInvoiceGuard} IS NULL OR ${table.activeInvoiceGuard} = ${table.supplierInvoiceId}`,
+    ),
+  }),
+);
+
+/** رأس دفعة مرحّلة؛ AP المطفأ يُشتق حصراً من supplierPaymentAllocations. */
+export const supplierPayments = mysqlTable(
+  "supplierPayments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    paymentNumber: varchar("paymentNumber", { length: 60 })
+      .notNull()
+      .unique("uq_supplier_payment_number"),
+    requestId: bigint("requestId", { mode: "number" })
+      .notNull()
+      .unique("uq_supplier_payment_request")
+      .references(() => supplierPaymentRequests.id),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    status: mysqlEnum("status", ["POSTED", "PARTIALLY_REFUNDED", "REFUNDED"])
+      .default("POSTED")
+      .notNull(),
+    version: int("version").default(1).notNull(),
+    currency: mysqlEnum("currency", ["IQD", "USD"]).notNull(),
+    exchangeRate: decimal("exchangeRate", { precision: 15, scale: 4 }),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    currencyAmount: decimal("currencyAmount", { precision: 15, scale: 2 }).notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", [
+      "CASH",
+      "CARD",
+      "TRANSFER",
+      "WALLET",
+    ]).notNull(),
+    externalReference: varchar("externalReference", { length: 160 }),
+    receiptId: bigint("receiptId", { mode: "number" })
+      .notNull()
+      .unique("uq_supplier_payment_receipt")
+      .references(() => receipts.id),
+    accountingEntryId: bigint("accountingEntryId", { mode: "number" })
+      .notNull()
+      .unique("uq_supplier_payment_entry")
+      .references(() => accountingEntries.id),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 })
+      .notNull()
+      .unique("uq_supplier_payment_hash"),
+    postedBy: int("postedBy")
+      .notNull()
+      .references(() => users.id),
+    postedAt: timestamp("postedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    supplierDateIdx: index("idx_supplier_payment_supplier_date").on(
+      table.supplierId,
+      table.postedAt,
+    ),
+    branchStatusIdx: index("idx_supplier_payment_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    amountShape: check(
+      "chk_supplier_payment_amounts",
+      sql`${table.amount} > 0 AND ${table.currencyAmount} > 0 AND ((${table.currency} = 'IQD' AND ${table.exchangeRate} IS NULL AND ${table.amount} = ${table.currencyAmount}) OR (${table.currency} = 'USD' AND ${table.exchangeRate} IS NOT NULL AND ${table.exchangeRate} > 0))`,
+    ),
+    evidenceShape: check(
+      "chk_supplier_payment_external_reference",
+      sql`${table.paymentMethod} = 'CASH' OR (${table.externalReference} IS NOT NULL AND CHAR_LENGTH(TRIM(${table.externalReference})) > 0)`,
+    ),
+  }),
+);
+
+export const supplierPaymentAllocations = mysqlTable(
+  "supplierPaymentAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    supplierPaymentId: bigint("supplierPaymentId", { mode: "number" })
+      .notNull(),
+    requestAllocationId: bigint("requestAllocationId", { mode: "number" })
+      .notNull()
+      .unique("uq_supplier_payment_request_allocation"),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" })
+      .notNull(),
+    allocatedAmount: decimal("allocatedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    allocatedCurrencyAmount: decimal("allocatedCurrencyAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    refundedAmount: decimal("refundedAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    refundedCurrencyAmount: decimal("refundedCurrencyAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    invoiceHash: char("invoiceHash", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    paymentInvoiceUq: unique("uq_supplier_payment_allocation_invoice").on(
+      table.supplierPaymentId,
+      table.supplierInvoiceId,
+    ),
+    invoiceIdx: index("idx_supplier_payment_alloc_invoice").on(
+      table.supplierInvoiceId,
+    ),
+    paymentFk: foreignKey({
+      name: "fk_spalloc_payment",
+      columns: [table.supplierPaymentId],
+      foreignColumns: [supplierPayments.id],
+    }).onDelete("cascade"),
+    requestAllocationFk: foreignKey({
+      name: "fk_spalloc_request_alloc",
+      columns: [table.requestAllocationId],
+      foreignColumns: [supplierPaymentRequestAllocations.id],
+    }),
+    invoiceFk: foreignKey({
+      name: "fk_spalloc_invoice",
+      columns: [table.supplierInvoiceId],
+      foreignColumns: [supplierInvoices.id],
+    }),
+    amountShape: check(
+      "chk_supplier_payment_allocation_amounts",
+      sql`${table.allocatedAmount} > 0 AND ${table.allocatedCurrencyAmount} > 0 AND ${table.refundedAmount} >= 0 AND ${table.refundedCurrencyAmount} >= 0 AND ${table.refundedAmount} <= ${table.allocatedAmount} AND ${table.refundedCurrencyAmount} <= ${table.allocatedCurrencyAmount}`,
+    ),
+  }),
+);
+
+/** طلب استرداد مبلغ سبق دفعه للمورّد؛ لا قبض ولا عكس AP قبل الاعتماد. */
+export const supplierPaymentRefundRequests = mysqlTable(
+  "supplierPaymentRefundRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 })
+      .notNull()
+      .unique("uq_supplier_payment_refund_request_key"),
+    supplierPaymentId: bigint("supplierPaymentId", { mode: "number" })
+      .notNull(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    basePaymentVersion: int("basePaymentVersion").notNull(),
+    requestedAmount: decimal("requestedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    requestedCurrencyAmount: decimal("requestedCurrencyAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    refundMethod: mysqlEnum("refundMethod", [
+      "CASH",
+      "CARD",
+      "TRANSFER",
+      "WALLET",
+    ]).notNull(),
+    externalReference: varchar("externalReference", { length: 160 }),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    evidenceType: mysqlEnum("evidenceType", [
+      "SUPPLIER_ACKNOWLEDGEMENT",
+      "BANK_ADVICE",
+      "TRANSFER_RECEIPT",
+      "CASH_RECEIPT",
+      "DOCUMENT_IMAGE",
+      "PDF",
+      "OTHER",
+    ]).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"])
+      .default("PENDING")
+      .notNull(),
+    pendingGuard: varchar("pendingGuard", { length: 180 }).unique(
+      "uq_supplier_payment_refund_pending",
+    ),
+    requestedBy: int("requestedBy")
+      .notNull()
+      .references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }).unique(
+      "uq_supplier_payment_refund_decision",
+    ),
+    decisionHash: char("decisionHash", { length: 64 }),
+    appliedAt: timestamp("appliedAt"),
+  },
+  (table) => ({
+    paymentStatusIdx: index("idx_supplier_payment_refund_status").on(
+      table.supplierPaymentId,
+      table.status,
+    ),
+    branchStatusRequestedIdx: index("idx_sprefund_branch_status_requested").on(
+      table.branchId,
+      table.status,
+      table.requestedAt,
+      table.id,
+    ),
+    statusRequestedIdx: index("idx_sprefund_status_requested").on(
+      table.status,
+      table.requestedAt,
+      table.id,
+    ),
+    paymentFk: foreignKey({
+      name: "fk_sprefund_req_payment",
+      columns: [table.supplierPaymentId],
+      foreignColumns: [supplierPayments.id],
+    }),
+    amountShape: check(
+      "chk_supplier_payment_refund_request_amounts",
+      sql`${table.requestedAmount} > 0 AND ${table.requestedCurrencyAmount} > 0 AND ${table.basePaymentVersion} > 0`,
+    ),
+    decisionShape: check(
+      "chk_supplier_payment_refund_decision",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.pendingGuard} IS NOT NULL AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionKey} IS NULL AND ${table.decisionHash} IS NULL AND ${table.appliedAt} IS NULL)
+        OR (${table.status} = 'APPROVED' AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NOT NULL)
+        OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_supplier_payment_refund_maker_checker",
+      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
+    ),
+  }),
+);
+
+export const supplierPaymentRefundRequestItems = mysqlTable(
+  "supplierPaymentRefundRequestItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestId: bigint("requestId", { mode: "number" })
+      .notNull(),
+    supplierPaymentAllocationId: bigint("supplierPaymentAllocationId", {
+      mode: "number",
+    })
+      .notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    currencyAmount: decimal("currencyAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+  },
+  (table) => ({
+    requestAllocationUq: unique("uq_supplier_payment_refund_req_alloc").on(
+      table.requestId,
+      table.supplierPaymentAllocationId,
+    ),
+    requestFk: foreignKey({
+      name: "fk_sprefund_req_item_req",
+      columns: [table.requestId],
+      foreignColumns: [supplierPaymentRefundRequests.id],
+    }).onDelete("cascade"),
+    paymentAllocationFk: foreignKey({
+      name: "fk_sprefund_req_item_alloc",
+      columns: [table.supplierPaymentAllocationId],
+      foreignColumns: [supplierPaymentAllocations.id],
+    }),
+    amountShape: check(
+      "chk_supplier_payment_refund_req_item_amount",
+      sql`${table.amount} > 0 AND ${table.currencyAmount} > 0`,
+    ),
+  }),
+);
+
+export const supplierPaymentRefunds = mysqlTable(
+  "supplierPaymentRefunds",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    refundNumber: varchar("refundNumber", { length: 60 })
+      .notNull()
+      .unique("uq_supplier_payment_refund_number"),
+    requestId: bigint("requestId", { mode: "number" })
+      .notNull()
+      .unique("uq_supplier_payment_refund_request"),
+    supplierPaymentId: bigint("supplierPaymentId", { mode: "number" })
+      .notNull()
+      .references(() => supplierPayments.id),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    currencyAmount: decimal("currencyAmount", { precision: 15, scale: 2 }).notNull(),
+    receiptId: bigint("receiptId", { mode: "number" })
+      .notNull()
+      .unique("uq_supplier_payment_refund_receipt")
+      .references(() => receipts.id),
+    accountingEntryId: bigint("accountingEntryId", { mode: "number" })
+      .notNull()
+      .unique("uq_supplier_payment_refund_entry")
+      .references(() => accountingEntries.id),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 })
+      .notNull()
+      .unique("uq_supplier_payment_refund_hash"),
+    postedBy: int("postedBy")
+      .notNull()
+      .references(() => users.id),
+    postedAt: timestamp("postedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    paymentDateIdx: index("idx_supplier_payment_refund_date").on(
+      table.supplierPaymentId,
+      table.postedAt,
+    ),
+    requestFk: foreignKey({
+      name: "fk_sprefund_request",
+      columns: [table.requestId],
+      foreignColumns: [supplierPaymentRefundRequests.id],
+    }),
+    amountShape: check(
+      "chk_supplier_payment_refund_amounts",
+      sql`${table.amount} > 0 AND ${table.currencyAmount} > 0`,
+    ),
+  }),
+);
+
+export const supplierPaymentRefundItems = mysqlTable(
+  "supplierPaymentRefundItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    refundId: bigint("refundId", { mode: "number" })
+      .notNull()
+      .references(() => supplierPaymentRefunds.id, { onDelete: "cascade" }),
+    supplierPaymentAllocationId: bigint("supplierPaymentAllocationId", {
+      mode: "number",
+    })
+      .notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    currencyAmount: decimal("currencyAmount", { precision: 15, scale: 2 }).notNull(),
+  },
+  (table) => ({
+    refundAllocationUq: unique("uq_supplier_payment_refund_allocation").on(
+      table.refundId,
+      table.supplierPaymentAllocationId,
+    ),
+    paymentAllocationFk: foreignKey({
+      name: "fk_sprefund_item_alloc",
+      columns: [table.supplierPaymentAllocationId],
+      foreignColumns: [supplierPaymentAllocations.id],
+    }),
+    amountShape: check(
+      "chk_supplier_payment_refund_item_amount",
+      sql`${table.amount} > 0 AND ${table.currencyAmount} > 0`,
+    ),
+  }),
+);
+
+export type SupplierPaymentRequest = typeof supplierPaymentRequests.$inferSelect;
+export type SupplierPayment = typeof supplierPayments.$inferSelect;
+export type SupplierPaymentAllocation = typeof supplierPaymentAllocations.$inferSelect;
+
+/** مصروف تابع للشراء؛ يبقى DRAFT حتى اعتماد مستقل، ولا يُرسمل في المخزون. */
+export const purchaseCharges = mysqlTable(
+  "purchaseCharges",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    chargeNumber: varchar("chargeNumber", { length: 60 })
+      .notNull()
+      .unique("uq_purchase_charge_number"),
+    clientRequestId: varchar("clientRequestId", { length: 120 })
+      .notNull()
+      .unique("uq_purchase_charge_request"),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    payeeSupplierId: bigint("payeeSupplierId", { mode: "number" }).references(
+      () => suppliers.id,
+    ),
+    expenseAccountId: bigint("expenseAccountId", { mode: "number" })
+      .notNull()
+      .references(() => accounts.id),
+    chargeType: mysqlEnum("chargeType", [
+      "SHIPPING",
+      "CUSTOMS",
+      "FREIGHT",
+      "INSURANCE",
+      "INSPECTION",
+      "OTHER",
+    ]).notNull(),
+    settlement: mysqlEnum("settlement", ["PAID", "PAYABLE"]).notNull(),
+    paymentMethod: mysqlEnum("paymentMethod", [
+      "CASH",
+      "CARD",
+      "TRANSFER",
+      "WALLET",
+    ]),
+    status: mysqlEnum("status", ["DRAFT", "POSTED", "REVERSED"])
+      .default("DRAFT")
+      .notNull(),
+    version: int("version").default(1).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    expenseDate: date("expenseDate", { mode: "string" }).notNull(),
+    externalReference: varchar("externalReference", { length: 160 }),
+    evidenceType: mysqlEnum("evidenceType", [
+      "SUPPLIER_INVOICE",
+      "CARRIER_INVOICE",
+      "CUSTOMS_RECEIPT",
+      "BANK_ADVICE",
+      "DOCUMENT_IMAGE",
+      "PDF",
+      "OTHER",
+    ]).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }).notNull(),
+    evidenceHash: char("evidenceHash", { length: 64 }).notNull(),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    postingEntryId: bigint("postingEntryId", { mode: "number" })
+      .unique("uq_purchase_charge_posting_entry")
+      .references(() => accountingEntries.id),
+    paymentReceiptId: bigint("paymentReceiptId", { mode: "number" })
+      .unique("uq_purchase_charge_payment_receipt")
+      .references(() => receipts.id),
+    reversalEntryId: bigint("reversalEntryId", { mode: "number" })
+      .unique("uq_purchase_charge_reversal_entry")
+      .references(() => accountingEntries.id),
+    reversalReceiptId: bigint("reversalReceiptId", { mode: "number" })
+      .unique("uq_purchase_charge_reversal_receipt")
+      .references(() => receipts.id),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    postedBy: int("postedBy").references(() => users.id),
+    postedAt: timestamp("postedAt"),
+    reversedBy: int("reversedBy").references(() => users.id),
+    reversedAt: timestamp("reversedAt"),
+    reversalReason: varchar("reversalReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_purchase_charge_branch_status").on(
+      table.branchId,
+      table.status,
+    ),
+    accountDateIdx: index("idx_purchase_charge_account_date").on(
+      table.expenseAccountId,
+      table.expenseDate,
+    ),
+    evidenceUq: unique("uq_purchase_charge_evidence").on(
+      table.payeeSupplierId,
+      table.evidenceHash,
+    ),
+    amountShape: check("chk_purchase_charge_amount", sql`${table.amount} > 0`),
+    settlementShape: check(
+      "chk_purchase_charge_settlement",
+      sql`(${table.settlement} = 'PAYABLE' AND ${table.payeeSupplierId} IS NOT NULL AND ${table.paymentMethod} IS NULL AND ${table.paymentReceiptId} IS NULL) OR (${table.settlement} = 'PAID' AND ${table.paymentMethod} IS NOT NULL)`,
+    ),
+    lifecycleShape: check(
+      "chk_purchase_charge_lifecycle",
+      sql`(
+        (${table.status} = 'DRAFT' AND ${table.postingEntryId} IS NULL AND ${table.postedBy} IS NULL AND ${table.postedAt} IS NULL AND ${table.reversalEntryId} IS NULL AND ${table.reversedBy} IS NULL AND ${table.reversedAt} IS NULL)
+        OR (${table.status} = 'POSTED' AND ${table.postingEntryId} IS NOT NULL AND ${table.postedBy} IS NOT NULL AND ${table.postedAt} IS NOT NULL AND (${table.settlement} = 'PAYABLE' OR ${table.paymentReceiptId} IS NOT NULL) AND ${table.reversalEntryId} IS NULL AND ${table.reversedBy} IS NULL AND ${table.reversedAt} IS NULL)
+        OR (${table.status} = 'REVERSED' AND ${table.postingEntryId} IS NOT NULL AND ${table.postedAt} IS NOT NULL AND ${table.reversalEntryId} IS NOT NULL AND ${table.reversedBy} IS NOT NULL AND ${table.reversedAt} IS NOT NULL AND ${table.reversalReason} IS NOT NULL)
+      )`,
+    ),
+  }),
+);
+
+export const purchaseChargeAllocations = mysqlTable(
+  "purchaseChargeAllocations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    purchaseChargeId: bigint("purchaseChargeId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseCharges.id, { onDelete: "cascade" }),
+    lineNo: int("lineNo").notNull(),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }).references(
+      () => purchaseOrders.id,
+    ),
+    goodsReceiptId: bigint("goodsReceiptId", { mode: "number" }).references(
+      () => goodsReceipts.id,
+    ),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" }),
+    allocatedAmount: decimal("allocatedAmount", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    sourceSnapshot: mediumtext("sourceSnapshot").notNull(),
+    sourceHash: char("sourceHash", { length: 64 }).notNull(),
+  },
+  (table) => ({
+    chargeLineUq: unique("uq_purchase_charge_allocation_line").on(
+      table.purchaseChargeId,
+      table.lineNo,
+    ),
+    chargeSourceUq: unique("uq_purchase_charge_allocation_source").on(
+      table.purchaseChargeId,
+      table.sourceHash,
+    ),
+    sourceIdx: index("idx_purchase_charge_allocation_source").on(
+      table.purchaseOrderId,
+      table.goodsReceiptId,
+      table.supplierInvoiceId,
+    ),
+    supplierInvoiceFk: foreignKey({
+      name: "fk_pcharge_alloc_invoice",
+      columns: [table.supplierInvoiceId],
+      foreignColumns: [supplierInvoices.id],
+    }),
+    sourceShape: check(
+      "chk_purchase_charge_allocation_source",
+      sql`${table.lineNo} > 0 AND ${table.allocatedAmount} > 0 AND (${table.purchaseOrderId} IS NOT NULL OR ${table.goodsReceiptId} IS NOT NULL OR ${table.supplierInvoiceId} IS NOT NULL)`,
+    ),
+  }),
+);
+
+/** طلب ترحيل/عكس مصروف شراء؛ القرار وحده يكتب قيد EXPENSE وإيصال التسوية. */
+export const purchaseChargeControlRequests = mysqlTable(
+  "purchaseChargeControlRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 })
+      .notNull()
+      .unique("uq_purchase_charge_control_request"),
+    purchaseChargeId: bigint("purchaseChargeId", { mode: "number" })
+      .notNull(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    kind: mysqlEnum("kind", ["POST", "REVERSE"]).notNull(),
+    baseChargeVersion: int("baseChargeVersion").notNull(),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"])
+      .default("PENDING")
+      .notNull(),
+    pendingGuard: varchar("pendingGuard", { length: 180 }).unique(
+      "uq_purchase_charge_control_pending",
+    ),
+    requestedBy: int("requestedBy")
+      .notNull()
+      .references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewReason: varchar("reviewReason", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }).unique(
+      "uq_purchase_charge_control_decision",
+    ),
+    decisionHash: char("decisionHash", { length: 64 }),
+    appliedAt: timestamp("appliedAt"),
+  },
+  (table) => ({
+    chargeStatusIdx: index("idx_purchase_charge_control_status").on(
+      table.purchaseChargeId,
+      table.status,
+    ),
+    branchStatusIdx: index("idx_purchase_charge_control_branch").on(
+      table.branchId,
+      table.status,
+    ),
+    chargeFk: foreignKey({
+      name: "fk_pcharge_ctl_charge",
+      columns: [table.purchaseChargeId],
+      foreignColumns: [purchaseCharges.id],
+    }),
+    decisionShape: check(
+      "chk_purchase_charge_control_decision",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.pendingGuard} IS NOT NULL AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionKey} IS NULL AND ${table.decisionHash} IS NULL AND ${table.appliedAt} IS NULL)
+        OR (${table.status} = 'APPROVED' AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NOT NULL)
+        OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_purchase_charge_control_maker_checker",
+      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
+    ),
+  }),
+);
+
+export type PurchaseCharge = typeof purchaseCharges.$inferSelect;
+export type PurchaseChargeAllocation = typeof purchaseChargeAllocations.$inferSelect;
+
+/**
+ * قضية نزاهة شراء تشغيلية. الرأس يحمل الحالة الحالية، فيما purchaseIntegrityCaseEvents
+ * هو السجل غير القابل للتعديل لكل دليل وطلب وقرار.
+ */
+export const purchaseIntegrityCases = mysqlTable(
+  "purchaseIntegrityCases",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    caseNumber: varchar("caseNumber", { length: 60 })
+      .notNull()
+      .unique("uq_purchase_integrity_case_number"),
+    caseKey: varchar("caseKey", { length: 180 })
+      .notNull()
+      .unique("uq_purchase_integrity_case_key"),
+    openGuard: varchar("openGuard", { length: 180 }).unique(
+      "uq_purchase_integrity_open_guard",
+    ),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    supplierId: bigint("supplierId", { mode: "number" }).references(
+      () => suppliers.id,
+    ),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }).references(
+      () => purchaseOrders.id,
+    ),
+    goodsReceiptId: bigint("goodsReceiptId", { mode: "number" }).references(
+      () => goodsReceipts.id,
+    ),
+    supplierInvoiceId: bigint("supplierInvoiceId", { mode: "number" }).references(
+      () => supplierInvoices.id,
+    ),
+    purchaseReturnId: bigint("purchaseReturnId", { mode: "number" }).references(
+      () => purchaseReturns.id,
+    ),
+    supplierPaymentId: bigint("supplierPaymentId", { mode: "number" }).references(
+      () => supplierPayments.id,
+    ),
+    purchaseChargeId: bigint("purchaseChargeId", { mode: "number" }).references(
+      () => purchaseCharges.id,
+    ),
+    code: mysqlEnum("code", [
+      "GRN_WITHOUT_POSTED_INVOICE",
+      "INVOICE_WITHOUT_GRN",
+      "UNMATCHED_POSTED_INVOICE",
+      "PAYMENT_EXCEEDS_INVOICE",
+      "RETURN_EXCEEDS_MATCH",
+      "RETURN_WITHOUT_SOURCE",
+      "CHARGE_WITHOUT_EVIDENCE",
+      "AP_LEDGER_MISMATCH",
+      "GRNI_AGING",
+      "DUPLICATE_SUPPLIER_DOCUMENT",
+      "LEGACY_AP_CLASSIFICATION",
+      "LEGACY_PAYMENT_ALLOCATION_AMBIGUOUS",
+      "LEGACY_PAYMENT_EVIDENCE_INVALID",
+      "LEGACY_PAYMENT_EXCEEDS_INVOICE",
+      "PERIOD_CLOSE_BLOCKER",
+      "OTHER",
+    ]).notNull(),
+    origin: mysqlEnum("origin", ["USER", "SYSTEM"])
+      .default("USER")
+      .notNull(),
+    severity: mysqlEnum("severity", ["LOW", "MEDIUM", "HIGH", "CRITICAL"])
+      .default("MEDIUM")
+      .notNull(),
+    status: mysqlEnum("status", [
+      "OPEN",
+      "IN_REVIEW",
+      "PENDING_RESOLUTION",
+      "RESOLVED",
+      "DISMISSED",
+    ])
+      .default("OPEN")
+      .notNull(),
+    title: varchar("title", { length: 255 }).notNull(),
+    description: varchar("description", { length: 1000 }).notNull(),
+    detectedAmount: decimal("detectedAmount", { precision: 15, scale: 2 }),
+    detectedAt: timestamp("detectedAt").defaultNow().notNull(),
+    evidenceSnapshot: mediumtext("evidenceSnapshot").notNull(),
+    evidenceHash: char("evidenceHash", { length: 64 }).notNull(),
+    openedBy: int("openedBy").references(() => users.id),
+    assignedTo: int("assignedTo").references(() => users.id),
+    resolutionRequestKey: varchar("resolutionRequestKey", { length: 120 }).unique(
+      "uq_purchase_integrity_resolution_request",
+    ),
+    resolutionRequestHash: char("resolutionRequestHash", { length: 64 }),
+    resolutionRequestedBy: int("resolutionRequestedBy").references(
+      () => users.id,
+    ),
+    resolutionRequestedAt: timestamp("resolutionRequestedAt"),
+    resolutionReason: varchar("resolutionReason", { length: 1000 }),
+    resolutionEvidenceReference: varchar("resolutionEvidenceReference", {
+      length: 500,
+    }),
+    pendingResolutionGuard: varchar("pendingResolutionGuard", {
+      length: 180,
+    }).unique("uq_purchase_integrity_resolution_pending"),
+    decisionKey: varchar("decisionKey", { length: 120 }).unique(
+      "uq_purchase_integrity_resolution_decision",
+    ),
+    decisionHash: char("decisionHash", { length: 64 }),
+    resolutionDecision: mysqlEnum("resolutionDecision", [
+      "APPROVE_RESOLVED",
+      "APPROVE_DISMISSED",
+      "REJECT",
+    ]),
+    resolvedBy: int("resolvedBy").references(() => users.id),
+    resolvedAt: timestamp("resolvedAt"),
+    decisionReason: varchar("decisionReason", { length: 1000 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_purchase_integrity_branch_status").on(
+      table.branchId,
+      table.status,
+      table.severity,
+    ),
+    supplierCodeIdx: index("idx_purchase_integrity_supplier_code").on(
+      table.supplierId,
+      table.code,
+    ),
+    invoiceIdx: index("idx_purchase_integrity_invoice").on(
+      table.supplierInvoiceId,
+    ),
+    evidenceUq: unique("uq_purchase_integrity_case_evidence").on(
+      table.caseKey,
+      table.evidenceHash,
+    ),
+    amountShape: check(
+      "chk_purchase_integrity_detected_amount",
+      sql`${table.detectedAmount} IS NULL OR ${table.detectedAmount} >= 0`,
+    ),
+    openerShape: check(
+      "chk_purchase_integrity_opener",
+      sql`(${table.origin} = 'USER' AND ${table.openedBy} IS NOT NULL) OR (${table.origin} = 'SYSTEM' AND ${table.openedBy} IS NULL)`,
+    ),
+    resolutionShape: check(
+      "chk_purchase_integrity_resolution",
+      sql`(
+        (${table.status} IN ('OPEN','IN_REVIEW') AND ${table.pendingResolutionGuard} IS NULL AND ${table.resolutionRequestKey} IS NULL AND ${table.resolutionRequestedBy} IS NULL AND ${table.resolutionRequestedAt} IS NULL AND ${table.decisionKey} IS NULL AND ${table.resolvedBy} IS NULL AND ${table.resolvedAt} IS NULL)
+        OR (${table.status} = 'PENDING_RESOLUTION' AND ${table.pendingResolutionGuard} IS NOT NULL AND ${table.resolutionRequestKey} IS NOT NULL AND ${table.resolutionRequestHash} IS NOT NULL AND ${table.resolutionRequestedBy} IS NOT NULL AND ${table.resolutionRequestedAt} IS NOT NULL AND ${table.resolutionReason} IS NOT NULL AND ${table.decisionKey} IS NULL AND ${table.resolvedBy} IS NULL AND ${table.resolvedAt} IS NULL)
+        OR (${table.status} IN ('RESOLVED','DISMISSED') AND ${table.pendingResolutionGuard} IS NULL AND ${table.resolutionRequestKey} IS NOT NULL AND ${table.resolutionRequestHash} IS NOT NULL AND ${table.resolutionRequestedBy} IS NOT NULL AND ${table.resolutionRequestedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.resolutionDecision} IN ('APPROVE_RESOLVED','APPROVE_DISMISSED') AND ${table.resolvedBy} IS NOT NULL AND ${table.resolvedAt} IS NOT NULL AND ${table.decisionReason} IS NOT NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_purchase_integrity_resolution_sod",
+      sql`${table.resolvedBy} IS NULL OR ${table.resolvedBy} <> ${table.resolutionRequestedBy}`,
+    ),
+  }),
+);
+
+/** سجل قضية append-only؛ trigger 0306 يمنع UPDATE وDELETE حتى من الكتّاب القدماء. */
+export const purchaseIntegrityCaseEvents = mysqlTable(
+  "purchaseIntegrityCaseEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    eventKey: varchar("eventKey", { length: 160 })
+      .notNull()
+      .unique("uq_purchase_integrity_event_key"),
+    caseId: bigint("caseId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseIntegrityCases.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    eventType: mysqlEnum("eventType", [
+      "OPENED",
+      "EVIDENCE_ADDED",
+      "REVIEW_STARTED",
+      "ASSIGNED",
+      "RESOLUTION_REQUESTED",
+      "RESOLUTION_APPROVED",
+      "RESOLUTION_REJECTED",
+      "DISMISSED",
+      "REOPENED",
+    ]).notNull(),
+    actorType: mysqlEnum("actorType", ["USER", "SYSTEM"])
+      .default("USER")
+      .notNull(),
+    previousStatus: mysqlEnum("previousStatus", [
+      "OPEN",
+      "IN_REVIEW",
+      "PENDING_RESOLUTION",
+      "RESOLVED",
+      "DISMISSED",
+    ]),
+    newStatus: mysqlEnum("newStatus", [
+      "OPEN",
+      "IN_REVIEW",
+      "PENDING_RESOLUTION",
+      "RESOLVED",
+      "DISMISSED",
+    ]).notNull(),
+    payloadCanonical: mediumtext("payloadCanonical").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    evidenceReference: varchar("evidenceReference", { length: 500 }),
+    reason: varchar("reason", { length: 1000 }).notNull(),
+    actorId: int("actorId").references(() => users.id),
+    counterpartyActorId: int("counterpartyActorId").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    eventHashUq: unique("uq_purchase_integrity_event_hash").on(
+      table.caseId,
+      table.payloadHash,
+    ),
+    caseDateIdx: index("idx_purchase_integrity_event_case_date").on(
+      table.caseId,
+      table.createdAt,
+    ),
+    branchTypeIdx: index("idx_purchase_integrity_event_branch_type").on(
+      table.branchId,
+      table.eventType,
+    ),
+    makerChecker: check(
+      "chk_purchase_integrity_event_sod",
+      sql`${table.eventType} NOT IN ('RESOLUTION_APPROVED','DISMISSED') OR (${table.counterpartyActorId} IS NOT NULL AND ${table.counterpartyActorId} <> ${table.actorId})`,
+    ),
+    actorShape: check(
+      "chk_purchase_integrity_event_actor",
+      sql`(${table.actorType} = 'USER' AND ${table.actorId} IS NOT NULL) OR (${table.actorType} = 'SYSTEM' AND ${table.actorId} IS NULL AND ${table.eventType} IN ('OPENED','EVIDENCE_ADDED'))`,
+    ),
+  }),
+);
+
+export type PurchaseIntegrityCase = typeof purchaseIntegrityCases.$inferSelect;
+export type PurchaseIntegrityCaseEvent = typeof purchaseIntegrityCaseEvents.$inferSelect;
 
 /* ============================ الطلبات الإلكترونية (الشحن/التتبع) ============================ */
 
@@ -7153,6 +10398,7 @@ export const commissionRuns = mysqlTable(
     status: mysqlEnum("commissionRunStatus", ["draft", "approved"])
       .default("draft")
       .notNull(),
+    version: int("version").default(1).notNull(),
     employeeCount: int("employeeCount").default(0).notNull(),
     totalBaseSales: decimal("totalBaseSales", { precision: 15, scale: 2 })
       .default("0")
@@ -8743,6 +11989,7 @@ export const deliveryParties = mysqlTable(
     currentBalance: decimal("currentBalance", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    version: int("version").default(1).notNull(),
     floatLimit: decimal("floatLimit", { precision: 15, scale: 2 }),
     /**
      * H2 (٢٩/٨/٢٦، هجرة 0289) — تفعيلٌ لكلّ جهة: عند التسوية يُدفَع للمندوب مبلغُ العمولة (من قاعدة
@@ -9428,6 +12675,143 @@ export const workOrderEvents = mysqlTable(
   }),
 );
 export type WorkOrderEvent = typeof workOrderEvents.$inferSelect;
+
+/**
+ * طلبات التحكم الإداري/التشغيلي بأوامر الشغل (0298).
+ *
+ * الصف المعلّق صفرُ أثر: لا يغيّر الأمر ولا المخزون ولا النقد. الاعتماد وحده، داخل معاملة
+ * واحدة وبعد مطابقة baseVersion وpayloadHash، يطبّق التغيير. لا حذف؛ القرار append-only
+ * عبر حالة نهائية وحقول المراجع.
+ */
+export const workOrderControlRequests = mysqlTable(
+  "workOrderControlRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 }).notNull().unique(),
+    workOrderId: bigint("workOrderId", { mode: "number" })
+      .notNull()
+      .references(() => workOrders.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    requestType: mysqlEnum("requestType", [
+      "COMMERCIAL_EDIT",
+      "MATERIAL_ADJUST",
+      "CANCEL",
+      "REVERSE_DELIVERY",
+    ]).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"])
+      .default("PENDING")
+      .notNull(),
+    baseVersion: int("baseVersion").notNull(),
+    payload: json("payload").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    requestedBy: int("requestedBy").notNull().references(() => users.id),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewNote: varchar("reviewNote", { length: 500 }),
+    appliedAt: timestamp("appliedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    workOrderStatusIdx: index("idx_wo_control_work_status").on(table.workOrderId, table.status),
+    branchStatusIdx: index("idx_wo_control_branch_status").on(table.branchId, table.status),
+    requesterIdx: index("idx_wo_control_requester").on(table.requestedBy),
+    reviewerIdx: index("idx_wo_control_reviewer").on(table.reviewedBy),
+    decisionShape: check(
+      "chk_wo_control_decision_shape",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.appliedAt} IS NULL)
+        OR (${table.status} = 'APPROVED' AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NOT NULL)
+        OR (${table.status} IN ('REJECTED','STALE') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_wo_control_maker_checker",
+      sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`,
+    ),
+  }),
+);
+
+export type WorkOrderControlRequest = typeof workOrderControlRequests.$inferSelect;
+
+/**
+ * نسخة تصميم مستقلة عن وجود الصور: حتى التصميم النصي أو حذف كل الصور يبقى نسخة قابلة
+ * للبصم والاعتماد. صور workOrderImages تحمل رقم revision نفسه، بينما هذا الصف هو رأس النسخة.
+ */
+export const workOrderDesignRevisions = mysqlTable(
+  "workOrderDesignRevisions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    workOrderId: bigint("workOrderId", { mode: "number" }).notNull().references(() => workOrders.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    revision: int("revision").notNull(),
+    customizationSnapshot: text("customizationSnapshot"),
+    contentHash: char("contentHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    workRevisionUq: unique("uq_wo_design_revision").on(table.workOrderId, table.revision),
+    branchTimeIdx: index("idx_wo_design_revision_branch_time").on(table.branchId, table.createdAt),
+    creatorIdx: index("idx_wo_design_revision_creator").on(table.createdBy),
+  }),
+);
+export type WorkOrderDesignRevision = typeof workOrderDesignRevisions.$inferSelect;
+
+/** طلب اعتماد نسخة تصميم محددة؛ القرار لا يُنقل إلى نسخة لاحقة وتفصل القيود الطالب عن المراجع. */
+export const workOrderDesignApprovals = mysqlTable(
+  "workOrderDesignApprovals",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 }).notNull().unique(),
+    workOrderId: bigint("workOrderId", { mode: "number" }).notNull().references(() => workOrders.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    revisionId: bigint("revisionId", { mode: "number" }).notNull(),
+    taskId: bigint("taskId", { mode: "number" }).references(() => tasks.id),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "SUPERSEDED"]).default("PENDING").notNull(),
+    requestedBy: int("requestedBy").notNull().references(() => users.id),
+    requestNote: varchar("requestNote", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }).unique(),
+    decisionHash: char("decisionHash", { length: 64 }),
+    decisionReason: varchar("decisionReason", { length: 500 }),
+    evidenceType: mysqlEnum("evidenceType", ["WHATSAPP_MESSAGE", "CUSTOMER_SIGNATURE", "EMAIL", "ATTACHMENT", "OTHER"]),
+    evidenceReference: varchar("evidenceReference", { length: 500 }),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    revisionUq: unique("uq_wo_design_approval_revision").on(table.revisionId),
+    workStatusIdx: index("idx_wo_design_approval_work_status").on(table.workOrderId, table.status),
+    branchStatusIdx: index("idx_wo_design_approval_branch_status").on(table.branchId, table.status),
+    taskIdx: index("idx_wo_design_approval_task").on(table.taskId),
+    requesterIdx: index("idx_wo_design_approval_requester").on(table.requestedBy),
+    reviewerIdx: index("idx_wo_design_approval_reviewer").on(table.reviewedBy),
+    revisionFk: foreignKey({
+      name: "fk_wo_design_approval_revision",
+      columns: [table.revisionId],
+      foreignColumns: [workOrderDesignRevisions.id],
+    }),
+    decisionShape: check(
+      "chk_wo_design_approval_decision",
+      sql`(
+        (${table.status} = 'PENDING' AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionKey} IS NULL AND ${table.decisionHash} IS NULL)
+        OR (${table.status} IN ('APPROVED','REJECTED') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.decisionReason} IS NOT NULL AND ${table.evidenceType} IS NOT NULL AND ${table.evidenceReference} IS NOT NULL)
+        OR (${table.status} = 'SUPERSEDED' AND ${table.reviewedBy} IS NULL AND ${table.reviewedAt} IS NULL)
+      )`,
+    ),
+    makerChecker: check(
+      "chk_wo_design_approval_maker_checker",
+      sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`,
+    ),
+  }),
+);
+export type WorkOrderDesignApproval = typeof workOrderDesignApprovals.$inferSelect;
 
 /**
  * سجلّ أحداث الفاتورة (Slice 9، ٢٨/٨/٢٦، هجرة 0281) — مرآةُ `workOrderEvents`.
@@ -10350,7 +13734,9 @@ export type PushDailyClaim = typeof pushDailyClaim.$inferSelect;
 /* ============================ بند 12 (٧/٧): الأقساط والشيكات الآجلة ============================ */
 
 /**
- * خطة أقساط لعميل — بيع آجل مجدول بدفعات (نقدية أو شيكات آجلة). ترتبط اختيارياً بفاتورة بيع.
+ * خطة أقساط لعميل — بيع آجل مجدول بدفعات (نقدية أو شيكات آجلة). كل خطة ACTIVE مرتبطة
+ * بفاتورة بيع حيّة؛ يبقى invoiceId قابلاً لـNULL مؤقتاً لتوافق عمال ما قبل 0308، بينما الكاتب
+ * الجديد يفرضه في عقد الخدمة. تشديد قاعدة البيانات مؤجل إلى cutover بعد تصريف العمال القديمة.
  * الدلالة المالية: الخطة **جدولة تحصيل** فوق ذمّة العميل القائمة — لا قيد محاسبي عند الإنشاء؛
  * سداد كل قسط يمرّ عبر سند قبض حقيقي (createVoucher) فيحرّك الذمّة والدفتر بالمسار القائم الموحَّد.
  */
@@ -10374,6 +13760,11 @@ export const installmentPlans = mysqlTable(
     status: mysqlEnum("planStatus", ["ACTIVE", "COMPLETED", "CANCELLED"])
       .default("ACTIVE")
       .notNull(),
+    /**
+     * حارس مادي لخطة نشطة واحدة لكل فاتورة. يضبطه trigger 0308 إلى invoiceId
+     * في ACTIVE وإلى NULL في الحالات النهائية، فتسمح فريدة MySQL بعدة صفوف منتهية.
+     */
+    activeInvoiceGuard: bigint("activeInvoiceGuard", { mode: "number" }),
     notes: text("notes"),
     createdBy: bigint("createdBy", { mode: "number" }).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -10384,6 +13775,9 @@ export const installmentPlans = mysqlTable(
     branchStatusIdx: index("idx_instplan_branch_status").on(
       t.branchId,
       t.status,
+    ),
+    activeInvoiceUq: unique("uq_instplan_active_invoice").on(
+      t.activeInvoiceGuard,
     ),
   }),
 );
@@ -13276,3 +16670,326 @@ export const returnRequests = mysqlTable(
   }),
 );
 export type ReturnRequest = typeof returnRequests.$inferSelect;
+
+/* ============================ مسار المبيعات والعمليات الحرجة (0311–0313) ============================ */
+
+export const salesLeads = mysqlTable(
+  "salesLeads",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    leadNumber: varchar("leadNumber", { length: 50 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    source: mysqlEnum("source", ["WALK_IN", "PHONE", "WHATSAPP", "INSTAGRAM", "FACEBOOK", "WEBSITE", "REFERRAL", "CAMPAIGN", "OTHER"]).notNull(),
+    contactName: varchar("contactName", { length: 255 }).notNull(),
+    companyName: varchar("companyName", { length: 255 }),
+    phone: varchar("phone", { length: 20 }),
+    email: varchar("email", { length: 320 }),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    ownerId: int("ownerId").notNull().references(() => users.id),
+    nextFollowUpAt: timestamp("nextFollowUpAt"),
+    status: mysqlEnum("status", ["NEW", "CONTACTED", "QUALIFIED", "DISQUALIFIED", "CONVERTED"]).default("NEW").notNull(),
+    lastReason: varchar("lastReason", { length: 500 }),
+    version: int("version").default(1).notNull(),
+    createKey: varchar("createKey", { length: 120 }).notNull(),
+    createHash: char("createHash", { length: 64 }).notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    numberUq: unique("uq_sales_lead_number").on(t.leadNumber),
+    createKeyUq: unique("uq_sales_lead_create_key").on(t.createKey),
+    branchStatusIdx: index("idx_sales_lead_branch_status").on(t.branchId, t.status),
+    ownerFollowupIdx: index("idx_sales_lead_owner_followup").on(t.ownerId, t.nextFollowUpAt),
+    customerIdx: index("idx_sales_lead_customer").on(t.customerId),
+    versionCheck: check("chk_sales_lead_version", sql`${t.version} > 0`),
+    contactCheck: check("chk_sales_lead_contact", sql`CHAR_LENGTH(TRIM(${t.contactName})) > 0`),
+    disqualifiedReasonCheck: check("chk_sales_lead_disqualified_reason", sql`${t.status} <> 'DISQUALIFIED' OR ${t.lastReason} IS NOT NULL`),
+  }),
+);
+export type SalesLead = typeof salesLeads.$inferSelect;
+export type InsertSalesLead = typeof salesLeads.$inferInsert;
+
+export const salesLeadEvents = mysqlTable(
+  "salesLeadEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    eventKey: varchar("eventKey", { length: 120 }).notNull(),
+    leadId: bigint("leadId", { mode: "number" }).notNull().references(() => salesLeads.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    eventType: mysqlEnum("eventType", ["CREATED", "UPDATED", "STATUS_CHANGED", "CONVERTED"]).notNull(),
+    fromStatus: mysqlEnum("fromStatus", ["NEW", "CONTACTED", "QUALIFIED", "DISQUALIFIED", "CONVERTED"]),
+    toStatus: mysqlEnum("toStatus", ["NEW", "CONTACTED", "QUALIFIED", "DISQUALIFIED", "CONVERTED"]),
+    baseVersion: int("baseVersion").notNull(),
+    resultVersion: int("resultVersion").notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    payload: json("payload").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    actorUserId: int("actorUserId").notNull().references(() => users.id),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    eventKeyUq: unique("uq_sales_lead_event_key").on(t.eventKey),
+    leadTimeIdx: index("idx_sales_lead_event_lead_time").on(t.leadId, t.occurredAt),
+    branchTimeIdx: index("idx_sales_lead_event_branch_time").on(t.branchId, t.occurredAt),
+    versionsCheck: check("chk_sales_lead_event_versions", sql`${t.baseVersion} > 0 AND ${t.resultVersion} >= ${t.baseVersion}`),
+  }),
+);
+export type SalesLeadEvent = typeof salesLeadEvents.$inferSelect;
+export type InsertSalesLeadEvent = typeof salesLeadEvents.$inferInsert;
+
+export const salesOpportunities = mysqlTable(
+  "salesOpportunities",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    opportunityNumber: varchar("opportunityNumber", { length: 50 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    leadId: bigint("leadId", { mode: "number" }).references(() => salesLeads.id),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    ownerId: int("ownerId").notNull().references(() => users.id),
+    title: varchar("title", { length: 255 }).notNull(),
+    stage: mysqlEnum("stage", ["DISCOVERY", "PROPOSAL", "NEGOTIATION", "WON", "LOST"]).default("DISCOVERY").notNull(),
+    expectedValue: decimal("expectedValue", { precision: 15, scale: 2 }).notNull(),
+    probability: decimal("probability", { precision: 5, scale: 2 }).notNull(),
+    expectedCloseDate: date("expectedCloseDate", { mode: "string" }).notNull(),
+    quotationId: bigint("quotationId", { mode: "number" }).references(() => quotations.id),
+    invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
+    lastReason: varchar("lastReason", { length: 500 }),
+    version: int("version").default(1).notNull(),
+    createKey: varchar("createKey", { length: 120 }).notNull(),
+    createHash: char("createHash", { length: 64 }).notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    numberUq: unique("uq_sales_opp_number").on(t.opportunityNumber),
+    createKeyUq: unique("uq_sales_opp_create_key").on(t.createKey),
+    leadUq: unique("uq_sales_opp_lead").on(t.leadId),
+    quotationUq: unique("uq_sales_opp_quotation").on(t.quotationId),
+    invoiceUq: unique("uq_sales_opp_invoice").on(t.invoiceId),
+    branchStageIdx: index("idx_sales_opp_branch_stage").on(t.branchId, t.stage),
+    ownerCloseIdx: index("idx_sales_opp_owner_close").on(t.ownerId, t.expectedCloseDate),
+    customerIdx: index("idx_sales_opp_customer").on(t.customerId),
+    valueProbabilityCheck: check("chk_sales_opp_value_probability", sql`${t.expectedValue} >= 0 AND ${t.probability} >= 0 AND ${t.probability} <= 100`),
+    versionCheck: check("chk_sales_opp_version", sql`${t.version} > 0`),
+    partyCheck: check("chk_sales_opp_party", sql`${t.leadId} IS NOT NULL OR ${t.customerId} IS NOT NULL`),
+    wonInvoiceCheck: check("chk_sales_opp_won_invoice", sql`(${t.stage} = 'WON' AND ${t.invoiceId} IS NOT NULL) OR (${t.stage} <> 'WON' AND ${t.invoiceId} IS NULL)`),
+    lostReasonCheck: check("chk_sales_opp_lost_reason", sql`${t.stage} <> 'LOST' OR ${t.lastReason} IS NOT NULL`),
+  }),
+);
+export type SalesOpportunity = typeof salesOpportunities.$inferSelect;
+export type InsertSalesOpportunity = typeof salesOpportunities.$inferInsert;
+
+export const salesOpportunityEvents = mysqlTable(
+  "salesOpportunityEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    eventKey: varchar("eventKey", { length: 120 }).notNull(),
+    opportunityId: bigint("opportunityId", { mode: "number" }).notNull().references(() => salesOpportunities.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    eventType: mysqlEnum("eventType", ["CREATED", "UPDATED", "STAGE_CHANGED"]).notNull(),
+    fromStage: mysqlEnum("fromStage", ["DISCOVERY", "PROPOSAL", "NEGOTIATION", "WON", "LOST"]),
+    toStage: mysqlEnum("toStage", ["DISCOVERY", "PROPOSAL", "NEGOTIATION", "WON", "LOST"]),
+    baseVersion: int("baseVersion").notNull(),
+    resultVersion: int("resultVersion").notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    payload: json("payload").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    actorUserId: int("actorUserId").notNull().references(() => users.id),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    eventKeyUq: unique("uq_sales_opp_event_key").on(t.eventKey),
+    opportunityTimeIdx: index("idx_sales_opp_event_opp_time").on(t.opportunityId, t.occurredAt),
+    branchTimeIdx: index("idx_sales_opp_event_branch_time").on(t.branchId, t.occurredAt),
+    versionsCheck: check("chk_sales_opp_event_versions", sql`${t.baseVersion} > 0 AND ${t.resultVersion} >= ${t.baseVersion}`),
+  }),
+);
+export type SalesOpportunityEvent = typeof salesOpportunityEvents.$inferSelect;
+export type InsertSalesOpportunityEvent = typeof salesOpportunityEvents.$inferInsert;
+
+export const salesControlRequests = mysqlTable(
+  "salesControlRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 }).notNull(),
+    invoiceId: bigint("invoiceId", { mode: "number" }).notNull().references(() => invoices.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    requestType: mysqlEnum("requestType", [
+      "SALES_RETURN",
+      "SALES_CANCEL",
+      "SALES_REISSUE",
+      "SALES_EXCHANGE",
+      "SALES_DUE_DATE_CHANGE",
+    ]).notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"]).default("PENDING").notNull(),
+    payload: json("payload").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    invoiceSnapshot: json("invoiceSnapshot").notNull(),
+    snapshotHash: char("snapshotHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    requestedBy: int("requestedBy").notNull().references(() => users.id),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewNote: varchar("reviewNote", { length: 500 }),
+    resultInvoiceId: bigint("resultInvoiceId", { mode: "number" }).references(() => invoices.id),
+    appliedAt: timestamp("appliedAt"),
+    activeInvoiceId: bigint("activeInvoiceId", { mode: "number" }).generatedAlwaysAs(sql`(CASE WHEN status = 'PENDING' THEN invoiceId ELSE NULL END)`, { mode: "stored" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    requestKeyUq: unique("salesControlRequests_requestKey_unique").on(t.requestKey),
+    activeInvoiceUq: unique("salesControlRequests_active_invoice_unique").on(t.activeInvoiceId),
+    branchStatusIdx: index("idx_sales_control_branch_status").on(t.branchId, t.status),
+    invoiceStatusIdx: index("idx_sales_control_invoice_status").on(t.invoiceId, t.status),
+    requesterIdx: index("idx_sales_control_requester").on(t.requestedBy),
+    reviewerIdx: index("idx_sales_control_reviewer").on(t.reviewedBy),
+    decisionShape: check("chk_sales_control_decision_shape", sql`(
+      (${t.status} = 'PENDING' AND ${t.reviewedBy} IS NULL AND ${t.reviewedAt} IS NULL AND ${t.appliedAt} IS NULL)
+      OR (${t.status} = 'APPROVED' AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
+      OR (${t.status} IN ('REJECTED','STALE') AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NULL)
+    )`),
+    makerChecker: check("chk_sales_control_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`),
+  }),
+);
+export type SalesControlRequest = typeof salesControlRequests.$inferSelect;
+export type InsertSalesControlRequest = typeof salesControlRequests.$inferInsert;
+
+export const salesExchangeCommands = mysqlTable(
+  "salesExchangeCommands",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    controlRequestId: bigint("controlRequestId", { mode: "number" }).notNull(),
+    commandKey: varchar("commandKey", { length: 120 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    originalInvoiceId: bigint("originalInvoiceId", { mode: "number" }).notNull().references(() => invoices.id),
+    replacementInvoiceId: bigint("replacementInvoiceId", { mode: "number" }).notNull().references(() => invoices.id),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    snapshotHash: char("snapshotHash", { length: 64 }).notNull(),
+    originalTotal: decimal("originalTotal", { precision: 15, scale: 2 }).notNull(),
+    replacementTotal: decimal("replacementTotal", { precision: 15, scale: 2 }).notNull(),
+    deltaAmount: decimal("deltaAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    settlementKind: mysqlEnum("settlementKind", ["NONE", "COLLECT", "CASH_REFUND", "CUSTOMER_CREDIT", "OUTSTANDING"]).notNull(),
+    settlementMethod: mysqlEnum("settlementMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]),
+    requestedBy: int("requestedBy").notNull().references(() => users.id),
+    approvedBy: int("approvedBy").notNull().references(() => users.id),
+    executedAt: timestamp("executedAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    controlRequestUq: unique("salesExchangeCommands_controlRequest_unique").on(t.controlRequestId),
+    commandKeyUq: unique("salesExchangeCommands_commandKey_unique").on(t.commandKey),
+    replacementUq: unique("salesExchangeCommands_replacement_unique").on(t.replacementInvoiceId),
+    originalIdx: index("idx_sales_exchange_original").on(t.originalInvoiceId),
+    branchDateIdx: index("idx_sales_exchange_branch_date").on(t.branchId, t.executedAt),
+    controlRequestFk: foreignKey({
+      name: "fk_sales_exchange_control_request",
+      columns: [t.controlRequestId],
+      foreignColumns: [salesControlRequests.id],
+    }),
+    makerChecker: check("chk_sales_exchange_maker_checker", sql`${t.requestedBy} <> ${t.approvedBy}`),
+    deltaNonnegative: check("chk_sales_exchange_delta_nonnegative", sql`${t.deltaAmount} >= 0`),
+    invoiceDistinct: check("chk_sales_exchange_invoice_distinct", sql`${t.originalInvoiceId} <> ${t.replacementInvoiceId}`),
+  }),
+);
+export type SalesExchangeCommand = typeof salesExchangeCommands.$inferSelect;
+export type InsertSalesExchangeCommand = typeof salesExchangeCommands.$inferInsert;
+
+/* ============================ طلبات COD والعمولات المحكومة (0309–0310) ============================ */
+
+export const deliveryCodWriteOffRequests = mysqlTable(
+  "deliveryCodWriteOffRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 }).notNull(),
+    partyId: bigint("partyId", { mode: "number" }).notNull().references(() => deliveryParties.id),
+    consignmentId: bigint("consignmentId", { mode: "number" }),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"]).default("PENDING").notNull(),
+    basePartyVersion: int("basePartyVersion").notNull(),
+    amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
+    payload: json("payload").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    evidenceNote: varchar("evidenceNote", { length: 500 }),
+    attachmentUrl: varchar("attachmentUrl", { length: 2048 }),
+    requestedBy: int("requestedBy").notNull().references(() => users.id),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewNote: varchar("reviewNote", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }),
+    decisionHash: char("decisionHash", { length: 64 }),
+    appliedAt: timestamp("appliedAt"),
+    pendingGuard: varchar("pendingGuard", { length: 160 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    consignmentFk: foreignKey({
+      name: "fk_delivery_cod_writeoff_consignment",
+      columns: [t.consignmentId],
+      foreignColumns: [deliveryConsignments.id],
+    }).onDelete("set null"),
+    requestKeyUq: unique("uq_delivery_cod_writeoff_request_key").on(t.requestKey),
+    pendingUq: unique("uq_delivery_cod_writeoff_pending").on(t.pendingGuard),
+    decisionUq: unique("uq_delivery_cod_writeoff_decision").on(t.decisionKey),
+    partyStatusIdx: index("idx_delivery_cod_writeoff_party_status").on(t.partyId, t.status),
+    branchStatusIdx: index("idx_delivery_cod_writeoff_branch_status").on(t.branchId, t.status),
+    requesterIdx: index("idx_delivery_cod_writeoff_requester").on(t.requestedBy),
+    reviewerIdx: index("idx_delivery_cod_writeoff_reviewer").on(t.reviewedBy),
+    amountCheck: check("chk_delivery_cod_writeoff_amount", sql`${t.amount} > 0`),
+    evidenceCheck: check("chk_delivery_cod_writeoff_evidence", sql`${t.evidenceNote} IS NOT NULL OR ${t.attachmentUrl} IS NOT NULL`),
+    decisionShape: check("chk_delivery_cod_writeoff_decision", sql`(
+      (${t.status} = 'PENDING' AND ${t.pendingGuard} IS NOT NULL AND ${t.reviewedBy} IS NULL AND ${t.reviewedAt} IS NULL AND ${t.decisionKey} IS NULL AND ${t.decisionHash} IS NULL AND ${t.appliedAt} IS NULL)
+      OR (${t.status} = 'APPROVED' AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
+      OR (${t.status} IN ('REJECTED','STALE') AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NULL)
+    )`),
+    makerChecker: check("chk_delivery_cod_writeoff_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`),
+  }),
+);
+export type DeliveryCodWriteOffRequest = typeof deliveryCodWriteOffRequests.$inferSelect;
+export type InsertDeliveryCodWriteOffRequest = typeof deliveryCodWriteOffRequests.$inferInsert;
+
+export const commissionRunApprovalRequests = mysqlTable(
+  "commissionRunApprovalRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestKey: varchar("requestKey", { length: 120 }).notNull(),
+    runId: bigint("runId", { mode: "number" }).notNull().references(() => commissionRuns.id, { onDelete: "restrict" }),
+    scopeBranchId: bigint("scopeBranchId", { mode: "number" }).references(() => branches.id),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED", "STALE"]).default("PENDING").notNull(),
+    baseRunVersion: int("baseRunVersion").notNull(),
+    payload: json("payload").notNull(),
+    payloadHash: char("payloadHash", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    requestedBy: int("requestedBy").notNull().references(() => users.id),
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    reviewedAt: timestamp("reviewedAt"),
+    reviewNote: varchar("reviewNote", { length: 500 }),
+    decisionKey: varchar("decisionKey", { length: 120 }),
+    decisionHash: char("decisionHash", { length: 64 }),
+    appliedAt: timestamp("appliedAt"),
+    pendingGuard: varchar("pendingGuard", { length: 160 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    requestKeyUq: unique("uq_commission_run_approval_request_key").on(t.requestKey),
+    pendingUq: unique("uq_commission_run_approval_pending").on(t.pendingGuard),
+    decisionUq: unique("uq_commission_run_approval_decision").on(t.decisionKey),
+    runStatusIdx: index("idx_commission_run_approval_run_status").on(t.runId, t.status),
+    scopeStatusIdx: index("idx_commission_run_approval_scope_status").on(t.scopeBranchId, t.status),
+    requesterIdx: index("idx_commission_run_approval_requester").on(t.requestedBy),
+    reviewerIdx: index("idx_commission_run_approval_reviewer").on(t.reviewedBy),
+    decisionShape: check("chk_commission_run_approval_decision", sql`(
+      (${t.status} = 'PENDING' AND ${t.pendingGuard} IS NOT NULL AND ${t.reviewedBy} IS NULL AND ${t.reviewedAt} IS NULL AND ${t.decisionKey} IS NULL AND ${t.decisionHash} IS NULL AND ${t.appliedAt} IS NULL)
+      OR (${t.status} = 'APPROVED' AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
+      OR (${t.status} IN ('REJECTED','STALE') AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NULL)
+    )`),
+    makerChecker: check("chk_commission_run_approval_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`),
+  }),
+);
+export type CommissionRunApprovalRequest = typeof commissionRunApprovalRequests.$inferSelect;
+export type InsertCommissionRunApprovalRequest = typeof commissionRunApprovalRequests.$inferInsert;

@@ -2,7 +2,15 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import { branchStock, customers, products, productVariants, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
+import {
+  branchStock,
+  customers,
+  products,
+  productVariants,
+  users,
+  workOrderMaterials,
+  workOrders,
+} from "../../../drizzle/schema";
 import { logger } from "../../logger";
 import { canCrossBranches } from "../../lib/branchAuthority";
 import { hasModuleAccess } from "@shared/permissions";
@@ -11,39 +19,66 @@ import { recordWorkOrderEvent } from "../workOrderEvents";
 import { applyMovement } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import { postEntry } from "../ledgerService";
-import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "../accounting/postingEngine";
 import { money, round2 } from "../money";
 import { readOpeningWindowState } from "../openingModeService";
 import { type Actor, requireDb, withTx } from "../tx";
 import { flowNotify } from "../whatsapp";
-import { assertNoBlockingTask, assertOperatorOwns, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import {
+  assertNoBlockingTask,
+  assertOperatorOwns,
+  assertWorkOrderBranch,
+  loadWorkOrder,
+} from "./helpers";
+import { assertCurrentDesignApproved } from "./designApproval";
 
 /**
  * السحب الذاتي (Pull/Claim): يضبط assignedTo = المستخدم الحالي على أمرٍ **في الطابور الوارد**
  * (RECEIVED) غير مُسنَد (أو مُسنَد له سلفاً ⇒ idempotent). لا يسحب أمر زميلٍ آخر (لا «سرقة»).
  * لا أثر مالي/مخزني — مجرّد إسناد. إعادة الإسناد القسرية تبقى للمدير عبر `assign`.
  */
-export async function claimWorkOrder(workOrderId: number, actor: Actor & { role?: string }) {
+export async function claimWorkOrder(
+  workOrderId: number,
+  actor: Actor & { role?: string },
+) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "RECEIVED")
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن سحب أمر إلا وهو في الطابور الوارد" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن سحب أمر إلا وهو في الطابور الوارد",
+      });
     if (wo.assignedTo != null && Number(wo.assignedTo) !== actor.userId)
-      throw new TRPCError({ code: "CONFLICT", message: "الأمر مسحوبٌ بالفعل لمنفّذ آخر" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "الأمر مسحوبٌ بالفعل لمنفّذ آخر",
+      });
     // Idempotency: مُسحَبٌ سلفاً لنفس الفنّيّ ⇒ لا نُدرج أثراً مكرّراً في auditLogs.
-    const alreadyClaimed = wo.assignedTo != null && Number(wo.assignedTo) === actor.userId;
-    await tx.update(workOrders).set({ assignedTo: actor.userId }).where(eq(workOrders.id, workOrderId));
+    const alreadyClaimed =
+      wo.assignedTo != null && Number(wo.assignedTo) === actor.userId;
+    await tx
+      .update(workOrders)
+      .set({ assignedTo: actor.userId })
+      .where(eq(workOrders.id, workOrderId));
     if (!alreadyClaimed) {
       // تدقيقُ SEED للـEvent Store الاحتياطيّ (auditLogs) — يجعل `workOrderRouter.timeline`
       // يُظهر السحبَ بجانب إعادة الإسناد والإفراج والإلغاء (كانت تكتب logAuditTx وحدها).
       await logAuditTx(
         tx,
-        { user: { id: actor.userId, branchId: actor.branchId ?? null } as never, req: undefined as never },
+        {
+          user: { id: actor.userId, branchId: actor.branchId ?? null } as never,
+          req: undefined as never,
+        },
         {
           action: "workOrder.claim",
           entityType: "workOrder",
           entityId: workOrderId,
+          branchId: Number(wo.branchId),
           oldValue: { assignedTo: null },
           newValue: { assignedTo: actor.userId, statusAtClaim: wo.status },
         },
@@ -57,7 +92,7 @@ export async function claimWorkOrder(workOrderId: number, actor: Actor & { role?
         fromStatus: wo.status,
         toStatus: wo.status,
         actorUserId: actor.userId,
-        branchId: actor.branchId ?? Number(wo.branchId),
+        branchId: Number(wo.branchId),
         payload: { assignedTo: actor.userId },
       });
     }
@@ -66,51 +101,87 @@ export async function claimWorkOrder(workOrderId: number, actor: Actor & { role?
 }
 
 /** Move RECEIVED → IN_PROGRESS: consume materials from stock (OUT movements) + snapshot unitCost. */
-export async function startWorkOrder(workOrderId: number, actor: Actor & { role?: string }) {
+export async function startWorkOrder(
+  workOrderId: number,
+  actor: Actor & { role?: string },
+) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
     assertOperatorOwns(wo, actor);
-    if (wo.status !== "RECEIVED") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن بدء أمر ليس في حالة الاستلام" });
-    // ش٢ (١٩/٨): لا دينارَ خامةٍ يُستهلَك على تصميمٍ لم يُقرّه العميل. **قبل قفل `branchStock`**
-    // عمداً ⇒ يفشل مغلقاً بلا حركةِ مخزونٍ ولا قيدٍ ولا صفٍّ مُدرَج.
+    if (wo.status !== "RECEIVED")
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن بدء أمر ليس في حالة الاستلام",
+      });
     await assertNoBlockingTask(tx, workOrderId, "start");
+    // النسخة الأعلى نفسها يجب أن تكون مبصومةً ومعتمدةً بدليل، ومهمتها محسومة من المسار
+    // المتخصص. الحارس قبل أقفال المخزون والحركات ⇒ الرفض يترك صفراً من الأثر المخزني/المالي.
+    await assertCurrentDesignApproved(tx, workOrderId, "start");
 
-    const mats = await tx.select().from(workOrderMaterials).where(eq(workOrderMaterials.workOrderId, workOrderId));
+    const mats = await tx
+      .select()
+      .from(workOrderMaterials)
+      .where(eq(workOrderMaterials.workOrderId, workOrderId));
     // Deterministic lock order: ascending variantId.
     mats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
 
     // ترتيب القفل الحاكم مع الشراء/WAVG: productVariants ثم branchStock، وكلاهما تصاعدي. نضمن
     // وجود صفّ الرصيد أولاً لأن FOR UPDATE لا يقفل صفاً مفقوداً، ثم نحجز لقطة التكلفة حتى الترحيل.
-    const variantIds = Array.from(new Set(mats.map((m) => Number(m.variantId)))).sort((a, b) => a - b);
+    const variantIds = Array.from(
+      new Set(mats.map((m) => Number(m.variantId))),
+    ).sort((a, b) => a - b);
     await lockInventoryVariants(tx, variantIds);
     if (variantIds.length > 0) {
       await tx
         .insert(branchStock)
-        .values(variantIds.map((variantId) => ({ variantId, branchId: Number(wo.branchId), quantity: 0 })))
-        .onDuplicateKeyUpdate({ set: { variantId: sql`${branchStock.variantId}` } });
+        .values(
+          variantIds.map((variantId) => ({
+            variantId,
+            branchId: Number(wo.branchId),
+            quantity: 0,
+          })),
+        )
+        .onDuplicateKeyUpdate({
+          set: { variantId: sql`${branchStock.variantId}` },
+        });
       await tx
         .select({ id: branchStock.id })
         .from(branchStock)
-        .where(and(eq(branchStock.branchId, Number(wo.branchId)), inArray(branchStock.variantId, variantIds)))
+        .where(
+          and(
+            eq(branchStock.branchId, Number(wo.branchId)),
+            inArray(branchStock.variantId, variantIds),
+          ),
+        )
         .orderBy(asc(branchStock.variantId))
         .for("update");
     }
-    const infoRows = variantIds.length > 0
-      ? await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice, isConsignment: products.isConsignment })
-          .from(productVariants)
-          .innerJoin(products, eq(productVariants.productId, products.id))
-          .where(inArray(productVariants.id, variantIds))
-          .orderBy(asc(productVariants.id))
-          .for("update")
-      : [];
+    const infoRows =
+      variantIds.length > 0
+        ? await tx
+            .select({
+              id: productVariants.id,
+              costPrice: productVariants.costPrice,
+              isConsignment: products.isConsignment,
+            })
+            .from(productVariants)
+            .innerJoin(products, eq(productVariants.productId, products.id))
+            .where(inArray(productVariants.id, variantIds))
+            .orderBy(asc(productVariants.id))
+            .for("update")
+        : [];
     if (infoRows.length !== variantIds.length) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "إحدى مواد أمر الشغل غير موجودة" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "إحدى مواد أمر الشغل غير موجودة",
+      });
     }
     if (infoRows.some((v) => v.isConsignment)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "بضاعة الأمانة لا تُستهلك كمادة في أمر شغل — استبدلها بمادة مملوكة للمكتبة",
+        message:
+          "بضاعة الأمانة لا تُستهلك كمادة في أمر شغل — استبدلها بمادة مملوكة للمكتبة",
       });
     }
     const costMap = new Map(infoRows.map((v) => [Number(v.id), v.costPrice]));
@@ -131,12 +202,17 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
       const unitCost = round2(money(costMap.get(vid) ?? "0"));
       const lineCost = round2(unitCost.times(m.baseQuantity));
       materialsCost = materialsCost.plus(lineCost);
-      await tx.update(workOrderMaterials).set({ unitCost: unitCost.toFixed(2) }).where(eq(workOrderMaterials.id, Number(m.id)));
+      await tx
+        .update(workOrderMaterials)
+        .set({ unitCost: unitCost.toFixed(2) })
+        .where(eq(workOrderMaterials.id, Number(m.id)));
       aggregated.set(vid, (aggregated.get(vid) ?? 0) + m.baseQuantity);
     }
     materialsCost = round2(materialsCost);
 
-    const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
+    const sortedVariantIds = Array.from(aggregated.keys()).sort(
+      (a, b) => a - b,
+    );
     for (const vid of sortedVariantIds) {
       const qty = aggregated.get(vid)!;
       if (qty <= 0) continue;
@@ -154,18 +230,28 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
           createdBy: actor.userId,
           // Codex P2: وسم الحركة عند السماح بالسالب في وضع الافتتاح (مرآة مسار البيع) — أثرٌ دائم
           // يُبيّن أن الحركة المخزنية السالبة صُرّح بها بالنافذة المؤقّتة حتى بعد إغلاقها.
-          notes: allowNegativeUnopened ? "وضع الافتتاح — استهلاك مادة أمر شغل مسموح بالسالب لصنف غير مُفتتَح" : undefined,
+          notes: allowNegativeUnopened
+            ? "وضع الافتتاح — استهلاك مادة أمر شغل مسموح بالسالب لصنف غير مُفتتَح"
+            : undefined,
           allowNegativeUnopened,
         });
       } catch (e) {
         // إثراء رسالة الرفض أثناء نافذة الافتتاح: يشرح لماذا لم يُسمح باستهلاك المادة بالسالب.
-        if (e instanceof TRPCError && e.code === "CONFLICT" && e.message.includes("المخزون غير كافٍ") && opening.active) {
+        if (
+          e instanceof TRPCError &&
+          e.code === "CONFLICT" &&
+          e.message.includes("المخزون غير كافٍ") &&
+          opening.active
+        ) {
           const hint = !unitCost.gt(0)
             ? "بدء التنفيذ بالسالب في وضع الافتتاح يتطلّب تكلفة مُدخلة للمادة — أدخِل تكلفتها أولاً"
             : qty > opening.maxQty
               ? `كمية المادة تتجاوز سقف السطر السالب في وضع الافتتاح (${opening.maxQty} وحدة أساس)`
               : "المادة مُفتتَحة (مجرودة) — رصيدها مثبّت والاستهلاك فوقه يخضع للفحص الصارم";
-          throw new TRPCError({ code: "CONFLICT", message: `${e.message} — ${hint}` });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `${e.message} — ${hint}`,
+          });
         }
         throw e;
       }
@@ -179,8 +265,22 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
         cost: materialsCost,
         amount: materialsCost,
         notes: `تحويل مواد أمر الشغل ${wo.orderNumber} إلى إنتاج تحت التشغيل`,
-        postingIntent: createPostingIntent("ADJUST_WIP_CONSUME", "ADJUST", [debitLine("WORK_IN_PROGRESS", materialsCost), creditLine("INVENTORY", materialsCost)], { roleDebits: { WORK_IN_PROGRESS: materialsCost }, roleCredits: { INVENTORY: materialsCost } }),
-        postingSourceComponents: { roleDebits: { WORK_IN_PROGRESS: materialsCost }, roleCredits: { INVENTORY: materialsCost } },
+        postingIntent: createPostingIntent(
+          "ADJUST_WIP_CONSUME",
+          "ADJUST",
+          [
+            debitLine("WORK_IN_PROGRESS", materialsCost),
+            creditLine("INVENTORY", materialsCost),
+          ],
+          {
+            roleDebits: { WORK_IN_PROGRESS: materialsCost },
+            roleCredits: { INVENTORY: materialsCost },
+          },
+        ),
+        postingSourceComponents: {
+          roleDebits: { WORK_IN_PROGRESS: materialsCost },
+          roleCredits: { INVENTORY: materialsCost },
+        },
       });
     }
 
@@ -214,13 +314,20 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
     // materialsCost في newValue لأنّه رقمُ الاستهلاك المصمَّت (يُعزّز الأثر الماليّ حين يبحث المشرف).
     await logAuditTx(
       tx,
-      { user: { id: actor.userId, branchId: actor.branchId ?? null } as never, req: undefined as never },
+      {
+        user: { id: actor.userId, branchId: actor.branchId ?? null } as never,
+        req: undefined as never,
+      },
       {
         action: "workOrder.start",
         entityType: "workOrder",
         entityId: workOrderId,
+        branchId: Number(wo.branchId),
         oldValue: { status: "RECEIVED" },
-        newValue: { status: "IN_PROGRESS", materialsCost: materialsCost.toFixed(2) },
+        newValue: {
+          status: "IN_PROGRESS",
+          materialsCost: materialsCost.toFixed(2),
+        },
       },
     );
     // Slice 6 dual-write: STARTED أحاديٌّ (RECEIVED → IN_PROGRESS مرّةً واحدةً لكلّ أمر).
@@ -230,10 +337,14 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
       fromStatus: "RECEIVED",
       toStatus: "IN_PROGRESS",
       actorUserId: actor.userId,
-      branchId: actor.branchId ?? Number(wo.branchId),
+      branchId: Number(wo.branchId),
       payload: { materialsCost: materialsCost.toFixed(2) },
     });
-    return { workOrderId, status: "IN_PROGRESS", materialsCost: materialsCost.toFixed(2) };
+    return {
+      workOrderId,
+      status: "IN_PROGRESS",
+      materialsCost: materialsCost.toFixed(2),
+    };
   });
 }
 
@@ -264,14 +375,18 @@ export async function reassignWorkOrder(
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تغيير فني أمر منتهٍ" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن تغيير فني أمر منتهٍ",
+      });
     }
 
     const reason = input.reason?.trim() || null;
     if (wo.status === "IN_PROGRESS" && (!reason || reason.length < 3)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "الأمر قيد التنفيذ والمواد مخصومة — اكتب سبب النقل (يُسجَّل باسمك)",
+        message:
+          "الأمر قيد التنفيذ والمواد مخصومة — اكتب سبب النقل (يُسجَّل باسمك)",
       });
     }
 
@@ -279,45 +394,79 @@ export async function reassignWorkOrder(
       const u = (
         await tx
           .select({
-            id: users.id, isActive: users.isActive, branchId: users.branchId,
-            role: users.role, isOwner: users.isOwner, permissionsOverride: users.permissionsOverride,
+            id: users.id,
+            isActive: users.isActive,
+            branchId: users.branchId,
+            role: users.role,
+            isOwner: users.isOwner,
+            permissionsOverride: users.permissionsOverride,
           })
           .from(users)
           .where(eq(users.id, input.assignedTo))
           .limit(1)
       )[0];
-      if (!u || !u.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
-      if (!hasModuleAccess(u.role, (u.permissionsOverride as never) ?? null, "workorders", "FULL")) {
+      if (!u || !u.isActive)
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "لا يملك هذا الموظف صلاحية أوامر الشغل — اختر منفّذاً آخر أو امنحه الصلاحية",
+          message: "الموظف غير موجود أو معطّل",
+        });
+      if (
+        !hasModuleAccess(
+          u.role,
+          (u.permissionsOverride as never) ?? null,
+          "workorders",
+          "FULL",
+        )
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "لا يملك هذا الموظف صلاحية أوامر الشغل — اختر منفّذاً آخر أو امنحه الصلاحية",
         });
       }
       // عابرُ الفروع وحده يُستثنى (`canCrossBranches` لا شرطٌ منسوخ). الموظف بلا فرع مشترك.
       if (
-        !canCrossBranches({ role: u.role, isOwner: u.isOwner })
-        && u.branchId != null
-        && Number(u.branchId) !== Number(wo.branchId)
+        !canCrossBranches({ role: u.role, isOwner: u.isOwner }) &&
+        u.branchId != null &&
+        Number(u.branchId) !== Number(wo.branchId)
       ) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد الطلب لموظفٍ من فرعٍ آخر" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "لا يمكن إسناد الطلب لموظفٍ من فرعٍ آخر",
+        });
       }
     }
 
     const previous = wo.assignedTo != null ? Number(wo.assignedTo) : null;
-    await tx.update(workOrders).set({ assignedTo: input.assignedTo }).where(eq(workOrders.id, Number(wo.id)));
+    await tx
+      .update(workOrders)
+      .set({ assignedTo: input.assignedTo })
+      .where(eq(workOrders.id, Number(wo.id)));
     await logAuditTx(
       tx,
-      { user: { id: actor.userId, branchId: actor.branchId ?? null } as never, req: undefined as never },
+      {
+        user: { id: actor.userId, branchId: actor.branchId ?? null } as never,
+        req: undefined as never,
+      },
       {
         action: "workOrder.assign",
         entityType: "workOrder",
         entityId: Number(wo.id),
         // ⭐ `oldValue` — بلا «مِمَّن» يصير سجلُّ النقل نصفَ حقيقة.
         oldValue: { assignedTo: previous },
-        newValue: { assignedTo: input.assignedTo, reason, statusAtMove: wo.status },
+        newValue: {
+          assignedTo: input.assignedTo,
+          reason,
+          statusAtMove: wo.status,
+        },
       },
     );
-    return { ok: true as const, workOrderId: Number(wo.id), assignedTo: input.assignedTo, previous };
+    return {
+      ok: true as const,
+      workOrderId: Number(wo.id),
+      assignedTo: input.assignedTo,
+      previous,
+    };
   });
 }
 
@@ -326,28 +475,43 @@ export async function reassignWorkOrder(
  * وبعد البدء **يُرفَض**: المواد مستهلَكة والمؤقّت يعمل، فالانسحابُ الصامت يخلق يتيماً جديداً؛
  * والمخرجُ المشروع نقلٌ بسببٍ مُسجَّل.
  */
-export async function releaseWorkOrder(workOrderId: number, actor: Actor & { role?: string }) {
+export async function releaseWorkOrder(
+  workOrderId: number,
+  actor: Actor & { role?: string },
+) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
-    if (wo.assignedTo == null) return { ok: true as const, workOrderId, alreadyFree: true as const };
+    if (wo.assignedTo == null)
+      return { ok: true as const, workOrderId, alreadyFree: true as const };
     if (Number(wo.assignedTo) !== Number(actor.userId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الأمر مُسنَدٌ لغيرك — النقل من صلاحية المدير" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "الأمر مُسنَدٌ لغيرك — النقل من صلاحية المدير",
+      });
     }
     if (wo.status !== "RECEIVED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "لا تُعيده إلى الطابور بعد بدء التنفيذ — انقله لفنّيّ آخر بسببٍ مُسجَّل من المدير",
+        message:
+          "لا تُعيده إلى الطابور بعد بدء التنفيذ — انقله لفنّيّ آخر بسببٍ مُسجَّل من المدير",
       });
     }
-    await tx.update(workOrders).set({ assignedTo: null }).where(eq(workOrders.id, workOrderId));
+    await tx
+      .update(workOrders)
+      .set({ assignedTo: null })
+      .where(eq(workOrders.id, workOrderId));
     await logAuditTx(
       tx,
-      { user: { id: actor.userId, branchId: actor.branchId ?? null } as never, req: undefined as never },
+      {
+        user: { id: actor.userId, branchId: actor.branchId ?? null } as never,
+        req: undefined as never,
+      },
       {
         action: "workOrder.release",
         entityType: "workOrder",
         entityId: workOrderId,
+        branchId: Number(wo.branchId),
         oldValue: { assignedTo: Number(wo.assignedTo) },
         newValue: { assignedTo: null },
       },
@@ -360,14 +524,30 @@ export async function releaseWorkOrder(workOrderId: number, actor: Actor & { rol
  *  يَحسب زَمن التَنفيذ كَـ TIMESTAMPDIFF(SECOND, workStartedAt, NOW()) على DB clock
  *  ⇒ لا انجراف ولا اعتماد على عَميل. لو workStartedAt = NULL (أَوامر قَديمة قبل الهجرة)
  *  يَبقى workSeconds = NULL ولا يَكسر شَيئاً (الواجهة تَتعامل مع NULL بِفقاطِع رَمادية). */
-export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { role?: string }) {
+export async function markWorkOrderReady(
+  workOrderId: number,
+  actor?: Actor & { role?: string },
+) {
   const result = await withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
-    if (actor) { assertWorkOrderBranch(wo, actor); assertOperatorOwns(wo, actor); }
-    if (wo.status !== "IN_PROGRESS") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس قيد التنفيذ" });
-    // ونسخةُ تصميمٍ جديدة تُفتَح **أثناء** التنفيذ تمنع الوسم جاهزاً: ما بُني على النسخة
-    // المُبطَلة ليس ما وافق عليه العميل.
+    if (actor) {
+      assertWorkOrderBranch(wo, actor);
+      assertOperatorOwns(wo, actor);
+    }
+    if (wo.status !== "IN_PROGRESS")
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الأمر ليس قيد التنفيذ",
+      });
+    if (wo.kanbanState === "BLOCKED") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `الأمر معطّل: ${wo.blockedReason ?? "يلزم إقرار الفنّي قبل إعلان الجاهزية"}`,
+      });
+    }
     await assertNoBlockingTask(tx, workOrderId, "ready");
+    // إن حُفظت نسخة أثناء التنفيذ، فاعتماد النسخة السابقة لا ينتقل إليها أبداً.
+    await assertCurrentDesignApproved(tx, workOrderId, "ready");
     await tx
       .update(workOrders)
       .set({
@@ -385,19 +565,19 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
     // بمعرّف 0، الإدراج يفشل ويُرجع الانتقال كلّه. `userId` FK nullable — نمرّر `ctx.user`
     // كـundefined فيصير null قانونياً. `branchId` من أمر الشغل مصدرُ حقيقةٍ لا اجتهاد.
     const auditCtx: Parameters<typeof logAuditTx>[1] = actor
-      ? { user: { id: actor.userId, branchId: actor.branchId ?? null } as never, req: undefined as never }
+      ? {
+          user: { id: actor.userId, branchId: actor.branchId ?? null } as never,
+          req: undefined as never,
+        }
       : { user: undefined as never, req: undefined as never };
-    await logAuditTx(
-      tx,
-      auditCtx,
-      {
-        action: "workOrder.markReady",
-        entityType: "workOrder",
-        entityId: workOrderId,
-        oldValue: { status: "IN_PROGRESS" },
-        newValue: { status: "READY", branchId: Number(wo.branchId) },
-      },
-    );
+    await logAuditTx(tx, auditCtx, {
+      action: "workOrder.markReady",
+      entityType: "workOrder",
+      entityId: workOrderId,
+      branchId: Number(wo.branchId),
+      oldValue: { status: "IN_PROGRESS" },
+      newValue: { status: "READY", branchId: Number(wo.branchId) },
+    });
     // Slice 6 dual-write: MARKED_READY أحاديٌّ. actor اختياريّ (نفس النمط أعلاه).
     await recordWorkOrderEvent(tx, {
       workOrderId,
@@ -405,7 +585,7 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
       fromStatus: "IN_PROGRESS",
       toStatus: "READY",
       actorUserId: actor?.userId ?? null,
-      branchId: actor?.branchId ?? Number(wo.branchId),
+      branchId: Number(wo.branchId),
     });
     return {
       workOrderId,
@@ -423,7 +603,10 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
     await notifyOrderReady(result);
   } catch (e) {
     logger.warn(
-      { err: e instanceof Error ? e.message : String(e), workOrderId: result.workOrderId },
+      {
+        err: e instanceof Error ? e.message : String(e),
+        workOrderId: result.workOrderId,
+      },
       "workOrder: تعذّر إرسال إشعار طلبك جاهز — تُجوهل",
     );
   }
@@ -432,7 +615,12 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
 }
 
 /** يجلب هاتف/اسم عميل الأمر (إن عُرف) ويستدعي flowNotify — لا شيء إن لا عميل/لا هاتف. */
-async function notifyOrderReady(params: { workOrderId: number; branchId: number; customerId: number | null; orderNumber: string }): Promise<void> {
+async function notifyOrderReady(params: {
+  workOrderId: number;
+  branchId: number;
+  customerId: number | null;
+  orderNumber: string;
+}): Promise<void> {
   if (params.customerId == null) return;
   const db = requireDb();
   // رقمٌ واحدٌ للزبون (١٩/٨): كان يقرأ `customers.phone` وحده ويعود مبكّراً عند خلوّه،
@@ -443,7 +631,9 @@ async function notifyOrderReady(params: { workOrderId: number; branchId: number;
     await db
       .select({
         name: customers.name,
-        phone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+        phone: sql<
+          string | null
+        >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       })
       .from(customers)
       .where(eq(customers.id, params.customerId))

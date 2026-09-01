@@ -28,6 +28,17 @@ const NEW_HOLDER = 32;  // المستلم البديل
 const MANAGER = 33;     // المدير الذي يُعيد الإسناد
 const CASHIER = 34;     // لا يملك إعادة الإسناد
 const OTHER_BRANCH = 35;
+const ACCOUNTANT = 36;
+const GRANTED_AUDITOR = 37;
+
+function acceptInput(receiptId: number, requestId: string) {
+  return {
+    receiptId,
+    countedCash: "50000.00",
+    countedBreakdown: { "50000": 1 },
+    clientRequestId: requestId,
+  };
+}
 
 async function user(id: number) {
   return (await db().select().from(s.users).where(eq(s.users.id, id)).limit(1))[0];
@@ -83,7 +94,7 @@ async function pendingContract(
 beforeEach(async () => {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const table of ["auditLogs", "accountingEntries", "receipts", "shifts", "users", "branches"]) {
+  for (const table of ["auditLogs", "accountingEntries", "cashCustodyCounts", "receipts", "shifts", "users", "branches"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -97,6 +108,16 @@ beforeEach(async () => {
     { id: MANAGER, openId: "pc-manager", name: "المدير", role: "manager", loginMethod: "local", branchId: 1 },
     { id: CASHIER, openId: "pc-cashier", name: "الكاشير", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: OTHER_BRANCH, openId: "pc-other", name: "مدير فرع آخر", role: "manager", loginMethod: "local", branchId: 2 },
+    { id: ACCOUNTANT, openId: "pc-accountant", name: "المحاسب", role: "accountant", loginMethod: "local", branchId: 1 },
+    {
+      id: GRANTED_AUDITOR,
+      openId: "pc-granted-auditor",
+      name: "مدقق ممنوح",
+      role: "auditor",
+      loginMethod: "local",
+      branchId: 1,
+      permissionsOverride: { treasury: "FULL" },
+    },
   ]);
 });
 
@@ -122,7 +143,8 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
 
     const queue = await manager.treasury.pendingHandoverQueue();
     expect(queue).toHaveLength(2);
-    expect(queue[0]).toMatchObject({ amount: "50000.00", assignedToName: "المستلم الأصلي" });
+    expect(queue[0]).toMatchObject({ assignedToName: "المستلم الأصلي" });
+    expect(queue[0]).not.toHaveProperty("amount");
     expect(queue[0].ageDays).toBeGreaterThanOrEqual(0);
   });
 
@@ -138,7 +160,7 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
     expect(queue.map((r: any) => r.id)).toContain(receiptId);
 
     // وتصبح قابلةً للقبول فعلياً — لا مجرّد ظهور.
-    await newHolder.treasury.acceptHandoverReceipt({ receiptId });
+    await newHolder.treasury.acceptHandoverReceipt(acceptInput(receiptId, "reassigned-accept"));
     const row = (await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId)))[0];
     expect(row.status).toBe("COMPLETED");
   });
@@ -161,6 +183,19 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
     await expect(
       cashier.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("المحاسب والمنح الصريح يحمّلان مستلمي إعادة الإسناد من فرعهما فقط", async () => {
+    const expectedLocalManagers = expect.arrayContaining([HOLDER, NEW_HOLDER, MANAGER]);
+    const accountant = appRouter.createCaller(makeCtx(await user(ACCOUNTANT)));
+    const grantedAuditor = appRouter.createCaller(makeCtx(await user(GRANTED_AUDITOR)));
+
+    for (const caller of [accountant, grantedAuditor]) {
+      const recipients = await caller.shifts.handoverRecipients();
+      const recipientIds = recipients.map((recipient) => recipient.id);
+      expect(recipientIds).toEqual(expectedLocalManagers);
+      expect(recipientIds).not.toContain(OTHER_BRANCH);
+    }
   });
 
   it("المستلم البديل يجب أن يكون مديراً نشطاً من فرع العهدة", async () => {
@@ -214,7 +249,7 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
   it("عهدة مقبولة لا تُعاد إسناداً", async () => {
     const receiptId = await pendingContract(HOLDER);
     const holder = appRouter.createCaller(makeCtx(await user(HOLDER)));
-    await holder.treasury.acceptHandoverReceipt({ receiptId });
+    await holder.treasury.acceptHandoverReceipt(acceptInput(receiptId, "holder-accept"));
 
     const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
     await expect(

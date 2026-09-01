@@ -108,16 +108,16 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
   onChanged: () => void;
 }) {
   const me = trpc.auth.me.useQuery();
-  const isManager = ["admin", "manager"].includes(me.data?.role ?? "");
-  // مرآة بوّابة الخادم storeManagerProcedure (store=FULL على manager) — لا قائمة أدوار خام:
+  // مرآة بوّابة الخادم deliveryManagerProcedure (store=FULL على manager) — لا قائمة أدوار خام:
   // مدير سُحبت منه store لا يرى لوحةً سيرفضها الخادم، ودورٌ مُنح store:FULL صراحةً يراها.
-  const canRecover = !!me.data?.role && moduleAccessAllowed(
+  const canManageParty = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
     "store",
     "FULL",
     ["manager"],
   );
+  const canRecover = canManageParty;
   const [tab, setTab] = useState<"consignments" | "remittances" | "statement" | "members" | "commission" | "settings">("consignments");
 
   return (
@@ -154,12 +154,12 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
           <button className={tabBtn(tab === "settings")} onClick={() => setTab("settings")}>بيانات الجهة</button>
         </div>
 
-        {tab === "consignments" && <ConsignmentsTab partyId={party.id} canEdit={isManager} />}
+        {tab === "consignments" && <ConsignmentsTab partyId={party.id} canEdit={canManageParty} />}
         {tab === "remittances" && <RemittancesTab partyId={party.id} />}
         {tab === "statement" && <StatementTab party={party} />}
-        {tab === "members" && <PartyMembersTab partyId={party.id} canEdit={isManager} />}
-        {tab === "commission" && <CommissionRuleTab partyId={party.id} canEdit={isManager} />}
-        {tab === "settings" && <SettingsTab party={party} isManager={isManager} canRecover={canRecover} onChanged={onChanged} />}
+        {tab === "members" && <PartyMembersTab partyId={party.id} canEdit={canManageParty} />}
+        {tab === "commission" && <CommissionRuleTab partyId={party.id} canEdit={canManageParty} />}
+        {tab === "settings" && <SettingsTab party={party} canManage={canManageParty} canRecover={canRecover} onChanged={onChanged} />}
       </div>
     </div>
   );
@@ -824,10 +824,10 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
 }
 
 // ───────────────────────── بيانات الجهة ─────────────────────────
-function SettingsTab({ party, isManager, canRecover, onChanged }: { party: PartyRow; isManager: boolean; canRecover: boolean; onChanged: () => void }) {
+function SettingsTab({ party, canManage, canRecover, onChanged }: { party: PartyRow; canManage: boolean; canRecover: boolean; onChanged: () => void }) {
   const utils = trpc.useUtils();
   const full = trpc.delivery.getParty.useQuery({ id: party.id });
-  const accounts = trpc.delivery.courierAccounts.useQuery(undefined, { enabled: isManager });
+  const accounts = trpc.delivery.courierAccounts.useQuery(undefined, { enabled: canManage });
   const [form, setForm] = useState<{
     name: string; phone: string; phone2: string; defaultFee: string; floatLimit: string;
     nationalId: string; vehicleInfo: string; notes: string; userId: number | null;
@@ -875,8 +875,8 @@ function SettingsTab({ party, isManager, canRecover, onChanged }: { party: Party
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <div className="rounded-xl border bg-card p-4">
-        <h3 className="mb-3 font-extrabold">تعديل البيانات {!isManager && <span className="text-xs font-normal text-muted-foreground">(للمدير فقط)</span>}</h3>
-        <fieldset disabled={!isManager} className="space-y-2.5">
+        <h3 className="mb-3 font-extrabold">تعديل البيانات {!canManage && <span className="text-xs font-normal text-muted-foreground">(بحاجة إلى صلاحية إدارة التوصيل)</span>}</h3>
+        <fieldset disabled={!canManage} className="space-y-2.5">
           <label className="block text-sm font-bold">الاسم
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1 h-10" />
           </label>

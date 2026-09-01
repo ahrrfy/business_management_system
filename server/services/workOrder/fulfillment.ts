@@ -21,8 +21,8 @@ export interface UpdateWorkOrderDeliveryMethodInput {
   refundShiftId?: number | null;
   /** تأكيد الكاشير صرفَ الأمانة نقداً للزبون — إلزاميّ حين توجد أمانةٌ تُردّ (لا حركة نقدٍ صامتة). */
   confirmFeeRefund?: boolean;
-  /** اعتماد مدير (verifyManagerApproval بالراوتر) — يُجيز ردّ الأمانة عبر ورديةٍ غير وردية القبض. */
-  authorizedByManager?: boolean;
+  /** هوية المدير الثاني الذي تحقق الراوتر من بياناته؛ لا تُختزل إلى boolean كي يبقى فصل المهام قابلاً للتدقيق. */
+  approvedByManagerId?: number | null;
 }
 
 export async function updateWorkOrderDeliveryMethod(
@@ -77,7 +77,7 @@ export async function updateWorkOrderDeliveryMethod(
           branchId: Number(wo.branchId),
           actor,
           refundShiftId: input.refundShiftId ?? null,
-          authorizedByManager: input.authorizedByManager,
+          approvedByManagerId: input.approvedByManagerId ?? null,
           reason: "ردّ أمانة أجرة توصيل (تحوّل لاستلام مباشر)",
         });
         refundedFee = r.refunded;

@@ -17,29 +17,34 @@ export interface InstallmentLineInput {
 }
 
 export interface CreatePlanInput {
+  /** UUID ثابت لإعادة إرسال إنشاء الخطة نفسها دون إنشاء خطة ثانية. */
+  clientRequestId: string;
   customerId: number;
-  /** ربط اختياري بفاتورة بيع — يجب أن تخصّ نفس العميل وغير ملغاة. */
-  invoiceId?: number | null;
+  /** مصدر الذمّة إلزامي: لا تُنشأ خطة حرة بلا فاتورة حيّة. */
+  invoiceId: number;
   branchId: number;
   totalAmount: string;
   downPayment?: string | null;
   lines: InstallmentLineInput[];
   notes?: string | null;
-  /** حارس إنتاجي: اربط الخطة بالمصدر الفعلي للذمة، وتبقيه الاختبارات/الصيانة القديمة اختيارياً. */
-  enforceFinancialIntegrity?: boolean;
 }
 
 export interface PayLineInput {
   lineId: number;
+  /** UUID ثابت لإعادة إرسال المحاولة نفسها؛ يولَّد من الواجهة مرة واحدة لكل نقرة مقصودة. */
+  clientRequestId: string;
   /** الافتراضي CASH دائماً؛ نوع الجدولة التاريخي لا يحدد وسيلة التحصيل الحالية. */
   paymentMethod?: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | null;
   note?: string | null;
-  /** مرجع العملية لغير النقد (رقم التحويل/إشعار الجهاز) — يفرضه `createVoucher`. */
+  /** مرجع العملية للعرض/المطابقة؛ المصدر الحاكم هو محاولة الدفع الخارجية المؤكدة. */
   referenceNumber?: string | null;
   /** آخر ٤ أرقام للبطاقة — إلزاميّ لـCARD في `createVoucher` (مطابقة كشف المزوّد). */
   cardLastFour?: string | null;
   /** مُرفق السند (اختياريّ دائماً — لا إلزام مُرفق في النظام). */
   attachmentUrl?: string | null;
+  /** محاولة SALES_COLLECTION مؤكدة تُستهلك مع السند والقيد داخل المعاملة نفسها. */
+  externalPaymentAttemptId?: number | null;
+  deviceId?: string | null;
 }
 
 export interface PayLineResult {

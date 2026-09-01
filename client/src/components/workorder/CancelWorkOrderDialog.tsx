@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import type { RefundPreflight } from "@shared/refundPreflight";
 import { RefundDrawerPicker, useRefundDrawer } from "./RefundDrawerPicker";
 
 export interface CancelMaterialRow {
@@ -80,11 +81,8 @@ export function CancelWorkOrderDialogById({
       open
       onOpenChange={onOpenChange}
       workOrderId={workOrderId}
-      branchId={d.branchId}
       orderNumber={d.orderNumber}
       title={d.title}
-      deposit={d.deposit}
-      paymentMethod={d.paymentMethod}
       // نفسُ شرط شاشة التفاصيل: الخامة تُعرَض بعد البدء فقط — قبله لا استهلاك.
       materials={
         d.status === "IN_PROGRESS" || d.status === "READY"
@@ -122,26 +120,33 @@ export default function CancelWorkOrderDialog({
   open,
   onOpenChange,
   workOrderId,
-  branchId,
   orderNumber,
   title,
-  deposit,
-  paymentMethod,
   /** أسطر الخامة المستهلَكة — فارغةٌ إن لم يبدأ التنفيذ (فلا جدولَ ولا هدر). */
   materials,
+  requiresApproval = false,
+  refundPreflight,
+  refundPreflightPending = false,
+  refundPreflightError = false,
+  onRetryRefundPreflight,
   pending,
   onConfirm,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   workOrderId: number;
-  /** فرعُ **الأمر** لا فرعُ المستخدم — الإلغاء صلاحيةُ مديرٍ قد يعبر الفروع. */
-  branchId: number | null | undefined;
   orderNumber: string;
   title: string;
-  deposit: string | null | undefined;
-  paymentMethod: string | null | undefined;
   materials: CancelMaterialRow[];
+  requiresApproval?: boolean;
+  /**
+   * مسارُ الموافقة يملك تمهيداً من `controlPreflight` المتاح للكاشير. غيابُ الخاصية فقط
+   * يعني أنّ الإلغاء مباشر، وعندها نجلب التمهيد الإداري الدقيق من `refundPreflight`.
+   */
+  refundPreflight?: RefundPreflight | null;
+  refundPreflightPending?: boolean;
+  refundPreflightError?: boolean;
+  onRetryRefundPreflight?: () => void;
   pending?: boolean;
   onConfirm: (d: CancelDecision) => void;
 }) {
@@ -155,13 +160,23 @@ export default function CancelWorkOrderDialog({
    */
   const preflightQ = trpc.workOrders.refundPreflight.useQuery(
     { workOrderId, operation: "CANCEL" },
-    { enabled: open, staleTime: 0 },
+    { enabled: open && refundPreflight === undefined, staleTime: 0 },
   );
+  const effectivePreflight = refundPreflight === undefined
+    ? preflightQ.data ?? null
+    : refundPreflight;
+  const preflightPending = refundPreflight === undefined
+    ? preflightQ.isLoading || preflightQ.isFetching
+    : refundPreflightPending;
+  const preflightFailed = refundPreflight === undefined
+    ? preflightQ.isError
+    : refundPreflightError;
   const drawer = useRefundDrawer({
-    preflight: open ? preflightQ.data ?? null : null,
+    preflight: open ? effectivePreflight : null,
     emptyLabel: "وردية استقبال",
   });
-  const needsCashDrawer = preflightQ.data?.needsCashDrawer === true;
+  const { refundShiftId } = drawer;
+  const needsCashDrawer = effectivePreflight?.needsCashDrawer === true;
 
   // فتحٌ جديد ⇒ حالةٌ نظيفة: سببٌ قديم أو درجٌ أُغلق بينهما يُنتجان تأكيداً يكذب.
   useEffect(() => {
@@ -295,8 +310,30 @@ export default function CancelWorkOrderDialog({
             </p>
           )}
 
+          {preflightPending ? (
+            <p className="rounded-md border p-3 text-sm text-muted-foreground">جارٍ التحقق من النقد والورديات المفتوحة…</p>
+          ) : preflightFailed ? (
+            <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+              <p>تعذّر التحقق من وردية ردّ المبلغ؛ أُوقف الإلغاء حتى نجاح التحقق.</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={() => {
+                  if (refundPreflight === undefined) void preflightQ.refetch();
+                  else onRetryRefundPreflight?.();
+                }}
+              >
+                إعادة المحاولة
+              </Button>
+            </div>
+          ) : null}
+
           <p className="text-2xs text-muted-foreground">
-            العربون المقبوض (إن وُجد) يُردّ بطريقة قبضه، وأمانة أجرة التوصيل تُردّ كذلك.
+            {requiresApproval
+              ? "الإرسال هنا ينشئ طلباً معلّقاً بلا أثر مالي أو مخزني؛ مدير مستقل يراجعه ويعتمده أو يرفضه."
+              : "العربون المقبوض (إن وُجد) يُردّ بطريقة قبضه، وأمانة أجرة التوصيل تُردّ كذلك."}
           </p>
 
           {/*
@@ -305,27 +342,36 @@ export default function CancelWorkOrderDialog({
             وردية القبض مُغلقةٌ يقيناً، فالنقد يخرج من درج اليوم.
           */}
           {needsCashDrawer && (
-            <RefundDrawerPicker
-              state={drawer}
-              needed
-              hint="وردية قبض العربون قد تكون أُغلقت — النقد يخرج من درجٍ مفتوحٍ الآن."
-            />
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold">درج ردّ النقد</Label>
+              <RefundDrawerPicker
+                state={drawer}
+                needed
+                hint="وردية قبض العربون قد تكون أُغلقت — النقد يخرج من درجٍ مفتوحٍ الآن."
+              />
+            </div>
           )}
         </div>
 
         <DialogFooter>
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             {/* سببُ التعطيل مقروءٌ دائماً — زرٌّ معطَّلٌ بلا سبب هو نصفُ البابِ المسدود. */}
-            {(drawer.blockReason || reason.trim().length < 3) && (
+            {(preflightPending || preflightFailed || drawer.blockReason || reason.trim().length < 3) && (
               <span className="text-2xs font-bold text-[var(--sem-warn)] sm:me-auto">
-                {reason.trim().length < 3 ? "اكتب سبب الإلغاء (٣ أحرف على الأقل)." : drawer.blockReason}
+                {preflightPending
+                  ? "جارٍ التحقق من النقد والورديات المفتوحة…"
+                  : preflightFailed
+                    ? "تعذّر التحقق من وردية ردّ المبلغ."
+                    : reason.trim().length < 3
+                      ? "اكتب سبب الإلغاء (٣ أحرف على الأقل)."
+                      : drawer.blockReason}
               </span>
             )}
             <div className="flex items-center justify-end gap-2">
               <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>تراجع</Button>
               <Button
                 variant="destructive"
-                disabled={pending || reason.trim().length < 3 || drawer.blockReason != null}
+                disabled={pending || preflightPending || preflightFailed || reason.trim().length < 3 || drawer.blockReason != null}
                 onClick={() =>
                   onConfirm({
                     reason: reason.trim(),
@@ -338,11 +384,13 @@ export default function CancelWorkOrderDialog({
                           returnBase: m.baseQuantity - (waste[m.id] ?? 0),
                         }))
                       : undefined,
-                    refundShiftId: drawer.refundShiftId,
+                    refundShiftId: refundShiftId ?? undefined,
                   })
                 }
               >
-                {pending ? (<><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> جارٍ…</>) : "أكّد الإلغاء"}
+                {pending
+                  ? (<><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> جارٍ…</>)
+                  : requiresApproval ? "إرسال طلب الإلغاء" : "أكّد الإلغاء"}
               </Button>
             </div>
           </div>

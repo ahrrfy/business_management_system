@@ -16,6 +16,7 @@ const CustomerStatement=lazy(()=>import("@/pages/CustomerStatement"));
 const ARAging=lazy(()=>import("@/pages/ARAging"));
 const InstallmentPlans=lazy(()=>import("@/pages/InstallmentPlans"));
 const ContractPrices=lazy(()=>import("@/pages/ContractPrices"));
+const SalesPipeline=lazy(()=>import("@/pages/SalesPipeline"));
 
 const TABS:HubTab[]=[
   {value:"overview",label:"نظرة عامة",gate:{module:"campaigns",level:"READ"},Component:CrmOverview},
@@ -24,6 +25,7 @@ const TABS:HubTab[]=[
   {value:"inbox",label:"التواصل والوارد",gate:{module:"channels",level:"READ"},Component:Inbox},
   {value:"contacts",label:"جهات الاتصال",gate:{module:"crm",level:"READ"},Component:ContactsBank},
   {value:"quotations",label:"الفرص وعروض الأسعار",gate:{module:"sales",level:"READ"},Component:Quotations},
+  {value:"pipeline",label:"العملاء المحتملون والفرص",gate:{module:"crm",level:"READ"},Component:SalesPipeline},
   {value:"campaigns",label:"الحملات",gate:{module:"campaigns",level:"READ"},Component:Campaigns},
   {value:"broadcasts",label:"بث واتساب",gate:{module:"campaigns",level:"READ"},Component:WaBroadcasts},
   {value:"offers",label:"العروض والخصومات",gate:{module:"campaigns",level:"READ"},Component:Offers},

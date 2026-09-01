@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -10,14 +11,26 @@ import { closeShift } from "../shiftService";
 import { withTx } from "../tx";
 import { createWorkOrder, deliverWorkOrder, markWorkOrderReady, startWorkOrder } from "../workOrderService";
 import { money } from "../money";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
+  "idempotencyKeys",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
+  "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems", "purchaseOrderRevisions",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
-  "shifts", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
+  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks",
+  "shifts", "workOrderMaterials", "workOrders", "serviceTypes", "customers", "suppliers", "branches", "users",
 ];
 
 function db() {
@@ -40,7 +53,18 @@ async function seedBase() {
     { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
-  await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "hardening_reviewer", name: "مراجع مستقل", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
@@ -56,6 +80,51 @@ async function openShift(branchId = 1, userId = 1): Promise<number> {
 }
 async function receiptsByDirection(dir: "IN" | "OUT") {
   return db().select().from(s.receipts).where(eq(s.receipts.direction, dir));
+}
+
+async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchaseOrder>>) {
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار التحصين المالي للمراجعة المستقلة",
+      requestKey: `fh-po-submit:${randomUUID()}`,
+    },
+    actor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `fh-po-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+    },
+    { userId: 2, branchId: 1, role: "manager" },
+  );
+}
+
+async function approveCurrentDesign(workOrderId: number) {
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId,
+      requestKey: `fh-design-request:${randomUUID()}`,
+      note: "اعتماد التصميم قبل بدء التنفيذ",
+    },
+    { ...actor, role: "admin" },
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `fh-design-approve:${randomUUID()}`,
+      decision: "APPROVED",
+      reason: "وافق العميل على التصميم النهائي",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.financial-hardening.${randomUUID()}`,
+      },
+    },
+    { userId: 2, branchId: 1, role: "manager" },
+  );
 }
 
 beforeEach(async () => {
@@ -74,7 +143,14 @@ describe("تسوية الصندوق — نسب الإيصالات للوردية
     );
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
     // إرجاع قطعة واحدة باسترداد نقدي 10.
-    await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } }, actor);
+    await returnSale({
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "10.00", shiftId,
+        reason: "مرتجع نقدي جزئي لاختبار نسبة الإيصال للوردية", disposition: "RESTOCK",
+      },
+    }, actor);
 
     const out = await receiptsByDirection("OUT");
     expect(out).toHaveLength(1);
@@ -89,6 +165,7 @@ describe("تسوية الصندوق — نسب الإيصالات للوردية
   it("دفع تسليم أمر الشغل النقدي يُنسب للوردية المفتوحة", async () => {
     const shiftId = await openShift(1);
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "درع تكريم", salePrice: "50.00" }, actor);
+    await approveCurrentDesign(wo.workOrderId);
     await startWorkOrder(wo.workOrderId, actor);
     await markWorkOrderReady(wo.workOrderId);
     await deliverWorkOrder({ workOrderId: wo.workOrderId, payment: { amount: "50.00", method: "CASH" } }, actor);
@@ -168,7 +245,14 @@ describe("المرتجعات — سقف الاسترداد بالطريقة نف
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
     // الدفع كان بطاقةً ⇒ المتاح نقداً = 0 ⇒ يُرفض الاسترداد النقدي.
     await expect(
-      returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } }, actor),
+      returnSale({
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+        resolution: {
+          kind: "IMMEDIATE_REFUND", method: "CASH", amount: "10.00", shiftId,
+          reason: "محاولة رد نقدي لعملية بطاقة يجب أن تُرفض", disposition: "RESTOCK",
+        },
+      }, actor),
     ).rejects.toThrow();
   });
 
@@ -181,7 +265,14 @@ describe("المرتجعات — سقف الاسترداد بالطريقة نف
       actor,
     );
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
-    const r = await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } }, actor);
+    const r = await returnSale({
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "10.00", shiftId,
+        reason: "مرتجع نقدي صحيح لعملية دُفعت نقدًا", disposition: "RESTOCK",
+      },
+    }, actor);
     expect(r.returnedTotal).toBe("10.00");
     const out = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
     expect(out).toHaveLength(1);
@@ -204,6 +295,7 @@ describe("WAVG — متوسّط مرجّح صحيح لسطرين لنفس الم
       },
       actor,
     );
+    await approvePurchaseOrder(po);
     const its = await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId));
     await receivePurchase(
       { purchaseOrderId: po.purchaseOrderId, lines: its.map((i) => ({ purchaseOrderItemId: Number(i.id), receivedBaseQuantity: 10 })) },
@@ -239,9 +331,17 @@ describe("ميزان المراجعة / التسوية المستقلّة — ي
     await processPayment({ invoiceId: Number(creditInv.id), amount: "5.00", method: "CASH" }, actor);
     // ٤) مرتجع على البيع النقدي: قطعة باسترداد نقدي 10 (OUT يُنسب للوردية — إصلاح الدفعة ١).
     const cashItem = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, cashSale.invoiceId)))[0];
-    await returnSale({ invoiceId: cashSale.invoiceId, lines: [{ invoiceItemId: Number(cashItem.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } }, actor);
+    await returnSale({
+      invoiceId: cashSale.invoiceId,
+      lines: [{ invoiceItemId: Number(cashItem.id), baseQuantity: 1 }],
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "10.00", shiftId,
+        reason: "مرتجع نقدي ضمن اختبار ميزان اليوم الكامل", disposition: "RESTOCK",
+      },
+    }, actor);
     // ٥) أمر شغل يُسلَّم نقداً 50 (IN يُنسب للوردية — إصلاح الدفعة ١).
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "درع", salePrice: "50.00" }, actor);
+    await approveCurrentDesign(wo.workOrderId);
     await startWorkOrder(wo.workOrderId, actor);
     await markWorkOrderReady(wo.workOrderId);
     await deliverWorkOrder({ workOrderId: wo.workOrderId, payment: { amount: "50.00", method: "CASH" } }, actor);

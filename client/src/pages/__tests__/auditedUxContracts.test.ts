@@ -26,7 +26,9 @@ describe("audited public UX contracts", () => {
     expect(hub).toContain("const search = useSearch();");
     expect(hub).toContain("setTab(readTabFromSearch(search));");
     expect(hub).toContain("}, [search]);");
-    expect(source).toContain('href={`/delivery?tab=settle&party=${r.partyId}`}');
+    expect(source).toContain(
+      "href={`/delivery?tab=settle&party=${r.partyId}`}",
+    );
   });
 
   it("distinguishes an empty catalog from an empty filtered result", () => {
@@ -39,21 +41,38 @@ describe("audited public UX contracts", () => {
   });
 
   it("does not advertise an unsupported purchase-return draft", () => {
-    const source = readPage("PurchaseReturnNew.tsx");
+    const legacyEntry = readPage("PurchaseReturnNew.tsx");
+    const governance = readPage("PurchaseReturnsGovernance.tsx");
 
-    expect(source).toContain(
-      'const PURCHASE_RETURN_ACTIONS = ["save", "print", "duplicate", "paste"]',
+    expect(legacyEntry).toContain(
+      '<Redirect to="/purchases/returns-governance" />',
     );
-    expect(source).toContain("availableActions={PURCHASE_RETURN_ACTIONS}");
-    expect(source).not.toContain('case "draft":');
-    expect(source).not.toContain("handleSaveDraft");
+    expect(legacyEntry).not.toContain("PURCHASE_RETURN_ACTIONS");
+    expect(legacyEntry).not.toContain("trpc.purchaseReturns.create");
+    expect(legacyEntry).not.toContain("handleSaveDraft");
+    expect(governance).toContain(
+      "trpc.purchaseReturnGovernance.requestReturn.useMutation",
+    );
+    expect(governance).toContain(
+      "trpc.purchaseReturnGovernance.decideReturn.useMutation",
+    );
+    expect(governance).toContain(
+      'description="طلب المرتجع وعكسه، اعتماد مستقل، وأثر مخزون وذمة موثّق بعد القرار فقط."',
+    );
   });
 
   it("keeps full favorites controls keyboard-focusable and explains their disabled state", () => {
-    const source = readFileSync(new URL("../../components/AppLayout.tsx", import.meta.url), "utf8");
+    const source = readFileSync(
+      new URL("../../components/AppLayout.tsx", import.meta.url),
+      "utf8",
+    );
 
-    expect(source).toContain("aria-disabled={!favorite && favoritesFull ? true : undefined}");
-    expect(source).toContain("? `لا يمكن إضافة ${m.label} إلى المفضلة؛ بلغت الحد الأقصى`");
+    expect(source).toContain(
+      "aria-disabled={!favorite && favoritesFull ? true : undefined}",
+    );
+    expect(source).toContain(
+      "? `لا يمكن إضافة ${m.label} إلى المفضلة؛ بلغت الحد الأقصى`",
+    );
     expect(source).not.toContain("disabled={!favorite && favoritesFull}");
   });
 
@@ -76,11 +95,19 @@ describe("audited public UX contracts", () => {
     const reminders = readPage("ARReminders.tsx");
 
     expect(dashboard).toContain('aria-label="نطاق فرع الشاشة الرئيسية"');
-    expect(morningBrief).toContain("enabled: elevated && branchScope !== undefined");
+    expect(morningBrief).toContain(
+      "enabled: elevated && branchScope !== undefined",
+    );
     expect(morningBrief).not.toContain("branches.data?.[0]?.id");
-    expect(morningBrief).toContain('href={`/reports/ar-reminders?branch=${branchScope}`}');
-    expect(morningBrief).toContain('href={`/work-orders?branch=${branchScope}`}');
-    expect(reminders).toContain("requestedBranchId ?? accountBranchId ?? branches.data?.[0]?.id");
+    expect(morningBrief).toContain(
+      "href={`/reports/ar-reminders?branch=${branchScope}`}",
+    );
+    expect(morningBrief).toContain(
+      "href={`/work-orders?branch=${branchScope}`}",
+    );
+    expect(reminders).toContain(
+      "requestedBranchId ?? accountBranchId ?? branches.data?.[0]?.id",
+    );
   });
 
   it("uses unbounded server aggregates for dashboard sales and personal tasks", () => {
@@ -108,16 +135,22 @@ describe("audited public UX contracts", () => {
     for (const source of [ar, ap]) {
       expect(source).toContain("dashboardActionBranchId(me.data?.branchId)");
       expect(source).toContain("accountBranchId ?? branches.data?.[0]?.id");
-      expect(source).not.toContain("«برنامج اليوم» ولوحة التحكم تجمعان كل الفروع");
+      expect(source).not.toContain(
+        "«برنامج اليوم» ولوحة التحكم تجمعان كل الفروع",
+      );
     }
   });
 
   it("does not offer a cross-branch work-order filter to a branch manager", () => {
     const source = readPage("WorkOrders.tsx");
 
-    expect(source).toContain('const canCrossBranches = me.data?.role === "admin"');
+    expect(source).toContain(
+      'const canCrossBranches = me.data?.role === "admin"',
+    );
     expect(source).toContain("{canCrossBranches && (");
-    expect(source).toContain('branchId: canCrossBranches && f.branch !== "all"');
+    expect(source).toContain(
+      'branchId: canCrossBranches && f.branch !== "all"',
+    );
   });
 
   it("does not offer cross-branch task reads or writes to a branch manager", () => {
@@ -132,14 +165,19 @@ describe("audited public UX contracts", () => {
     const aging = readPage("ARAging.tsx");
     const stocktakes = readPage("Stocktakes.tsx");
 
-    expect(aging).toContain('const canCrossBranches = me.data?.role === "admin"');
+    expect(aging).toContain(
+      'const canCrossBranches = me.data?.role === "admin"',
+    );
     expect(aging).toContain("{canCrossBranches && (");
     expect(stocktakes).toContain("{isAdmin && (");
     expect(stocktakes).toContain("enabled: isAdmin");
   });
 
   it("integrates MobileBottomNav and responsive card view in AppLayout and Invoices", () => {
-    const appLayoutSource = readFileSync(new URL("../../components/AppLayout.tsx", import.meta.url), "utf8");
+    const appLayoutSource = readFileSync(
+      new URL("../../components/AppLayout.tsx", import.meta.url),
+      "utf8",
+    );
     expect(appLayoutSource).toContain("<MobileBottomNav");
     expect(appLayoutSource).toContain("pb-24 lg:pb-6");
 
@@ -147,8 +185,13 @@ describe("audited public UX contracts", () => {
     expect(invoicesSource).toContain("mobileCardRenderer=");
     expect(invoicesSource).toContain("<MobileDataCard");
 
-    const dataTableSource = readFileSync(new URL("../../components/data-table/DataTable.tsx", import.meta.url), "utf8");
-    expect(dataTableSource).toContain("mobileCardRenderer?: (row: T, index: number) => React.ReactNode");
+    const dataTableSource = readFileSync(
+      new URL("../../components/data-table/DataTable.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(dataTableSource).toContain(
+      "mobileCardRenderer?: (row: T, index: number) => React.ReactNode",
+    );
     expect(dataTableSource).toContain("md:hidden space-y-2.5");
   });
 });

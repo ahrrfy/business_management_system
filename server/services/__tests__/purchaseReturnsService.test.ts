@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +9,10 @@ import {
   createPurchaseReturn,
   resolveReturnablePurchaseOrder,
 } from "../purchaseReturnsService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 const TABLES = [
@@ -17,6 +22,11 @@ const TABLES = [
   "accountingEntries",
   "receipts",
   "idempotencyKeys",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
   "inventoryMovements",
   "branchStock",
   "purchaseOrderItems",
@@ -50,14 +60,24 @@ async function seedBase() {
     .values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" });
   await db()
     .insert(s.users)
-    .values({
-      id: 1,
-      openId: "return_admin",
-      name: "مدير المشتريات",
-      role: "admin",
-      loginMethod: "local",
-      isOwner: false,
-    });
+    .values([
+      {
+        id: 1,
+        openId: "return_admin",
+        name: "مدير المشتريات",
+        role: "admin",
+        loginMethod: "local",
+        isOwner: false,
+      },
+      {
+        id: 2,
+        openId: "return_reviewer",
+        name: "مراجع المشتريات",
+        role: "manager",
+        loginMethod: "local",
+        isOwner: true,
+      },
+    ]);
   await db().insert(s.products).values({ id: 1, name: "قلم" });
   await db()
     .insert(s.productVariants)
@@ -85,7 +105,7 @@ async function receivedOrder(
     {
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
+      status: "DRAFT",
       taxRatePercent,
       items: [
         {
@@ -97,6 +117,24 @@ async function receivedOrder(
       ],
     },
     actor,
+  );
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار المرتجع للمراجعة المستقلة",
+      requestKey: `purchase-return-submit:${randomUUID()}`,
+    },
+    actor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `purchase-return-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر للاختبار",
+    },
+    { userId: 2, branchId: 1, role: "manager" },
   );
   const item = (
     await db()
@@ -137,6 +175,108 @@ beforeEach(async () => {
 });
 
 describe("مرتجع المشتريات المرجعي", () => {
+  it("يرفض CHECK عند حد الخدمة بلا حفظ مرتجع أو مفتاح تكرار", async () => {
+    const po = await receivedOrder();
+    await expect(
+      createPurchaseReturn(
+        {
+          clientRequestId: "return-check-service",
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderRefId: po.poId,
+          items: [{ purchaseOrderItemId: po.itemId, quantity: "1" }],
+          settlement: "CREDIT",
+          paymentMethod: "CHECK",
+        } as never,
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await stock()).toBe(100);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(0);
+    // إنشاء أمر الشراء المحكوم يكتب مفاتيح submit/decision مشروعة؛ المطلوب هنا
+    // إثبات أن رفض طريقة الدفع لم يكتب مفتاح مرتجع شراء.
+    expect(
+      await db().select().from(s.idempotencyKeys)
+        .where(eq(s.idempotencyKeys.operation, "purchase.return")),
+    ).toHaveLength(0);
+  });
+
+  it("يرفض استدعاء الخدمة بلا مرجع صالح قبل أي أثر", async () => {
+    await expect(
+      createPurchaseReturn(
+        {
+          clientRequestId: "return-without-reference",
+          supplierId: 1,
+          branchId: 1,
+          items: [{ purchaseOrderItemId: 1, quantity: "1" }],
+          settlement: "CREDIT",
+        } as never,
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+  });
+
+  it("يعزل الخدمة فرعياً ولو حاول مستدعٍ داخلي تمرير فرع الأمر", async () => {
+    const po = await receivedOrder();
+    await expect(
+      createPurchaseReturn(
+        {
+          clientRequestId: "return-cross-branch-service",
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderRefId: po.poId,
+          items: [{ purchaseOrderItemId: po.itemId, quantity: "1" }],
+          settlement: "CREDIT",
+        },
+        { userId: 1, branchId: 2, role: "manager" },
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await stock()).toBe(100);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(0);
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.purchaseOrderItems)
+          .where(eq(s.purchaseOrderItems.id, po.itemId))
+      )[0].returnedBaseQuantity,
+    ).toBe(0);
+  });
+
+  it("يرفض تكرار بند المصدر ذرياً بلا خصم مخزون أو كمية مرجعية", async () => {
+    const po = await receivedOrder();
+    await expect(
+      createPurchaseReturn(
+        {
+          clientRequestId: "return-duplicate-source-line",
+          supplierId: 1,
+          branchId: 1,
+          purchaseOrderRefId: po.poId,
+          items: [
+            { purchaseOrderItemId: po.itemId, quantity: "60" },
+            { purchaseOrderItemId: po.itemId, quantity: "60" },
+          ],
+          settlement: "CREDIT",
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await stock()).toBe(100);
+    expect(await db().select().from(s.purchaseReturns)).toHaveLength(0);
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.purchaseOrderItems)
+          .where(eq(s.purchaseOrderItems.id, po.itemId))
+      )[0].returnedBaseQuantity,
+    ).toBe(0);
+  });
+
   it("يحل الرقم المرئي كاملاً ولا يفسر رقم الفرع كمعرّف الأمر", async () => {
     const po = await receivedOrder();
     const resolved = await resolveReturnablePurchaseOrder({

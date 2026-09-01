@@ -1,7 +1,10 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import {
   accountingEntries,
+  cashDailyReconciliations,
+  cashMissedDailyCountExceptions,
   doubleEntrySettings,
   financialPeriods,
   journalEntries,
@@ -191,6 +194,10 @@ async function buildEvidence(
   const to = monthCutoff(input.request.month);
   const fromDate = new Date(`${from}T00:00:00.000Z`);
   const toDate = new Date(`${to}T00:00:00.000Z`);
+  const missedCountCarry = alias(
+    cashDailyReconciliations,
+    "monthCloseMissedCountCarry",
+  );
 
   const accountingRows = await tx
     .select({
@@ -216,6 +223,73 @@ async function buildEvidence(
       ),
     )
     .orderBy(asc(accountingEntries.id));
+  const missedDailyCountRows = await tx
+    .select({
+      id: cashMissedDailyCountExceptions.id,
+      branchId: cashMissedDailyCountExceptions.branchId,
+      businessDate: cashMissedDailyCountExceptions.businessDate,
+      carryForwardReconciliationId:
+        cashMissedDailyCountExceptions.carryForwardReconciliationId,
+      carryForwardBusinessDate:
+        cashMissedDailyCountExceptions.carryForwardBusinessDate,
+      carryForwardVersion:
+        cashMissedDailyCountExceptions.carryForwardVersion,
+      carryForwardEvidenceHash:
+        cashMissedDailyCountExceptions.carryForwardEvidenceHash,
+      missingDayEvidenceHash:
+        cashMissedDailyCountExceptions.missingDayEvidenceHash,
+      reason: cashMissedDailyCountExceptions.reason,
+      evidenceReference: cashMissedDailyCountExceptions.evidenceReference,
+      requestClientRequestId:
+        cashMissedDailyCountExceptions.requestClientRequestId,
+      requestHash: cashMissedDailyCountExceptions.requestHash,
+      immutableEvidenceHash:
+        cashMissedDailyCountExceptions.immutableEvidenceHash,
+      requestedByUserId:
+        cashMissedDailyCountExceptions.requestedByUserId,
+      requestedAt: cashMissedDailyCountExceptions.requestedAt,
+      decisionClientRequestId:
+        cashMissedDailyCountExceptions.decisionClientRequestId,
+      decisionHash: cashMissedDailyCountExceptions.decisionHash,
+      reviewedByUserId: cashMissedDailyCountExceptions.reviewedByUserId,
+      reviewedAt: cashMissedDailyCountExceptions.reviewedAt,
+      decisionNote: cashMissedDailyCountExceptions.decisionNote,
+    })
+    .from(cashMissedDailyCountExceptions)
+    .innerJoin(
+      missedCountCarry,
+      and(
+        eq(
+          missedCountCarry.id,
+          cashMissedDailyCountExceptions.carryForwardReconciliationId,
+        ),
+        eq(
+          missedCountCarry.branchId,
+          cashMissedDailyCountExceptions.branchId,
+        ),
+        eq(
+          missedCountCarry.businessDate,
+          cashMissedDailyCountExceptions.carryForwardBusinessDate,
+        ),
+        eq(missedCountCarry.status, "CLOSED"),
+        eq(
+          missedCountCarry.version,
+          cashMissedDailyCountExceptions.carryForwardVersion,
+        ),
+        eq(
+          missedCountCarry.evidenceHash,
+          cashMissedDailyCountExceptions.carryForwardEvidenceHash,
+        ),
+      ),
+    )
+    .where(
+      and(
+        eq(cashMissedDailyCountExceptions.status, "APPROVED"),
+        gte(cashMissedDailyCountExceptions.businessDate, from),
+        lte(cashMissedDailyCountExceptions.businessDate, to),
+      ),
+    )
+    .orderBy(asc(cashMissedDailyCountExceptions.id));
 
   const journalRows = await tx
     .select({
@@ -317,6 +391,29 @@ async function buildEvidence(
     materialsCost: toDbMoney(row.materialsCost),
     workStartedAt: row.workStartedAt?.toISOString() ?? null,
   }));
+  const normalizedMissedDailyCounts = missedDailyCountRows.map((row) => ({
+    id: Number(row.id),
+    branchId: Number(row.branchId),
+    businessDate: row.businessDate,
+    carryForwardReconciliationId: Number(row.carryForwardReconciliationId),
+    carryForwardBusinessDate: row.carryForwardBusinessDate,
+    carryForwardVersion: Number(row.carryForwardVersion),
+    carryForwardEvidenceHash: row.carryForwardEvidenceHash,
+    missingDayEvidenceHash: row.missingDayEvidenceHash,
+    reason: row.reason,
+    evidenceReference: row.evidenceReference,
+    requestClientRequestId: row.requestClientRequestId,
+    requestHash: row.requestHash,
+    immutableEvidenceHash: row.immutableEvidenceHash,
+    requestedByUserId: Number(row.requestedByUserId),
+    requestedAt: row.requestedAt.toISOString(),
+    decisionClientRequestId: row.decisionClientRequestId,
+    decisionHash: row.decisionHash,
+    reviewedByUserId:
+      row.reviewedByUserId == null ? null : Number(row.reviewedByUserId),
+    reviewedAt: row.reviewedAt?.toISOString() ?? null,
+    decisionNote: row.decisionNote,
+  }));
   const readinessCanonical = canonicalCloseJson(input.approvalReadiness);
   const requestSnapshot = parseStoredJson(
     input.request.readinessSnapshot,
@@ -336,6 +433,10 @@ async function buildEvidence(
     ...evidenceChunks("JOURNAL", normalizedJournal),
     ...evidenceChunks("ROLE_BALANCES", normalizedRoles),
     ...evidenceChunks("WIP_WORK_ORDERS", normalizedWip),
+    ...evidenceChunks(
+      "MISSED_DAILY_COUNT_EXCEPTIONS",
+      normalizedMissedDailyCounts,
+    ),
     ...evidenceChunks("APPROVAL_READINESS", [
       { id: 1, readiness: input.approvalReadiness },
     ]),

@@ -11,6 +11,7 @@
  * الإصلاح: payRow يجمع الإيصالات التي أثّرت فعلاً على الرصيد = `status IN ('COMPLETED','REVERSED')
  *          AND approvalStatus='APPROVED'` ⇒ الأصل REVERSED يوازن تعويضه (الزوج=صفر)، والمعلّق يُستبعَد.
  */
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -24,6 +25,10 @@ import { deliverWorkOrder } from "../workOrder/deliver";
 import { getCustomerStatement } from "../reports/arAging";
 import { money } from "../money";
 import { truncateTables } from "./__testUtils__";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const admin = { userId: 1, branchId: 1, role: "admin" as const };
 const owner = { userId: 2, branchId: 1, role: "manager" as const };
@@ -32,8 +37,9 @@ const FROM = "2021-01-01";
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "voucherCategories",
+  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks",
   "invoiceItems", "invoices", "workOrderImages", "workOrderMaterials", "workOrders",
-  "shifts", "customers", "branches", "users",
+  "serviceTypes", "shifts", "customers", "branches", "users",
 ];
 
 function db() {
@@ -51,6 +57,10 @@ async function seed() {
     { id: 1, openId: "local_admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم", defaultKind: "SERVICE_REQUEST", defaultPriority: "HIGH",
+    slaHours: 24, isActive: true, blocksExecution: true,
+  });
   await d.insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: "1000000" });
   await d.insert(s.shifts).values({ id: 1, userId: 1, branchId: 1, status: "OPEN", shiftType: "RECEPTION", openedAt: new Date(), openGuard: "1:1", openingBalance: "0" });
 }
@@ -59,6 +69,30 @@ async function currentBalance(): Promise<string> {
 }
 async function backdateCustomerReceipts() {
   await db().update(s.receipts).set({ createdAt: OLD }).where(eq(s.receipts.partyId, 1));
+}
+
+async function approveCurrentDesign(workOrderId: number) {
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId,
+      requestKey: `statement-edge-design-request:${randomUUID()}`,
+      note: "اعتماد التصميم قبل تسليم أمر اختبار كشف العميل",
+    },
+    admin,
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `statement-edge-design-approve:${randomUUID()}`,
+      decision: "APPROVED",
+      reason: "وافق العميل على النسخة الحالية للتنفيذ",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.statement-edge.${randomUUID()}`,
+      },
+    },
+    owner,
+  );
 }
 
 beforeEach(async () => { await reset(); await seed(); });
@@ -161,6 +195,7 @@ describe("F5 حافّة (أ) — عربون منقول عبر حدّ الفتر�
     // اضبط تاريخ إيصال العربون قبل الفترة (محاكاة: دُفع سابقاً). الثابت يعتمد على بقاء createdAt هذا.
     await db().update(s.receipts).set({ createdAt: OLD }).where(eq(s.receipts.workOrderId, wo.workOrderId));
 
+    await approveCurrentDesign(wo.workOrderId);
     await startWorkOrder(wo.workOrderId, admin);
     await markWorkOrderReady(wo.workOrderId, admin);
     await deliverWorkOrder({ workOrderId: wo.workOrderId }, admin);

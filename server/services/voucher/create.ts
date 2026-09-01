@@ -21,7 +21,10 @@ import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
-import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import {
+  assertNonPhysicalOutReceipt,
+  lockMaterializedCashReceiptSourceForWrite,
+} from "../cash/cashAvailability";
 import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
 import type { Tx } from "../../db";
 import { type Actor, enqueuePostCommit, withTx } from "../tx";
@@ -878,6 +881,14 @@ export async function createVoucherTx(
       operation: "إنشاء طلب سند صرف",
     });
   }
+  await lockMaterializedCashReceiptSourceForWrite(tx, {
+    branchId: input.branchId,
+    shiftId,
+    cashBucket,
+    paymentMethod: input.paymentMethod,
+    status: needsApproval ? "PENDING" : "COMPLETED",
+    approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
+  });
   const rRes = await tx.insert(receipts).values({
     branchId: input.branchId,
     invoiceId:
