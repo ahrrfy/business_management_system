@@ -296,6 +296,32 @@ describe("appNotificationService", () => {
     });
   });
 
+  it("يعرض تنبيه الإدارة الكامل خارج التطبيق عندما تكون حمولته العددية معتمدة", async () => {
+    await createAppNotification({
+      userId: 41,
+      kind: "SYSTEM",
+      family: "ADMIN",
+      title: "برنامج اليوم — الرؤية العربية",
+      body: "3 بنود للمتابعة: 2 مهمة مفتوحة، 1 أمر شغل متأخر",
+      route: "/dashboard",
+      eventKey: "morning-brief:2026-09-01:41",
+      lockScreenSafe: true,
+    });
+    const [native] = await db().select().from(nativePushOutbox);
+    const [web] = await db().select().from(webPushOutbox);
+    expect(native.payload).toMatchObject({
+      kind: "SYSTEM",
+      title: "برنامج اليوم — الرؤية العربية",
+      body: "3 بنود للمتابعة: 2 مهمة مفتوحة، 1 أمر شغل متأخر",
+      sensitive: "false",
+    });
+    expect(web.payload).toMatchObject({
+      kind: "SYSTEM",
+      title: "برنامج اليوم — الرؤية العربية",
+      body: "3 بنود للمتابعة: 2 مهمة مفتوحة، 1 أمر شغل متأخر",
+    });
+  });
+
   it("يؤجل ساعات الهدوء العابرة لمنتصف الليل حتى نهايتها", () => {
     const now = new Date("2026-08-05T20:00:00.000Z"); // 23:00 بغداد
     expect(quietHoursReleaseAt("22:00", "07:00", now)?.toISOString()).toBe(

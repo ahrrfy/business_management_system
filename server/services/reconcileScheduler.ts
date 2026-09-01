@@ -6,8 +6,8 @@
  * `reconcileInventory`، `reconcileLedgerProfit`) تُشغَّل يدوياً وحسب — من شاشة تقرير
  * الاتّزان أو من `getManagementAlerts`. الأثر: انحرافٌ يظهر بين تشغيلَين قد يمرّ يومٌ
  * كامل بلا اكتشاف. النمط هنا مطابقٌ لـ`purchaseIntegrityMonitor`: **قراءة فقط**، مرّةً
- * كل ليلة على عامل الخلفية الوحيد، تُصدر ملخّصاً في السجلّ (WARN إن وُجد انحراف، INFO إن لم
- * يوجد) — بلا كتابةٍ في جداول الأعمال ولا سنداتٍ ولا قيود.
+ * كل ليلة على عامل الخلفية الوحيد، تُصدر ملخّصاً في السجلّ وتكتب **إشعاراً إدارياً فقط**
+ * للأدمن/المالك إن وُجد انحراف — بلا كتابةٍ في جداول الأعمال ولا سنداتٍ ولا قيود.
  *
  * **قرارات محفوظة:**
  * - `DEFAULT_CRON = "10 2 * * *"` — ٠٢:١٠ UTC (بعد كنّاس المسوّدات ٠١:١٥ وسلامة المشتريات ٠١:٤٠).
@@ -17,6 +17,8 @@
  * - المؤقّت `unref()` — لا يمنع خروج العملية إن كان الخادم يُغلَق.
  * ========================================================================== */
 import cron, { type ScheduledTask } from "node-cron";
+import { and, eq, or } from "drizzle-orm";
+import { users } from "../../drizzle/schema";
 import { logger } from "../logger";
 import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import {
@@ -24,6 +26,9 @@ import {
   toFinancialReconciliationSummary,
   type FinancialReconciliationSummary,
 } from "./reports/reconcileSummary";
+import { createAppNotification } from "./appNotificationService";
+import { baghdadToday } from "./businessDay";
+import { requireDb } from "./tx";
 
 /** الجدول الافتراضي: ٠٢:١٠ UTC يومياً — بعد كنّاس المسوّدات (٠١:١٥) وسلامة المشتريات (٠١:٤٠). */
 const DEFAULT_CRON = "10 2 * * *";
@@ -38,6 +43,49 @@ let running = false;
 export async function runReconcileScanOnce(): Promise<FinancialReconciliationSummary> {
   const details = await getFinancialReconciliationDetails();
   return toFinancialReconciliationSummary(details);
+}
+
+/**
+ * قناة إفصاحٍ إدارية منفصلة عن الفحص نفسه: لا تنشئ شيئاً عند الاتزان، ولا تنقل أي مبلغ أو
+ * معرّف من صفوف التسوية إلى شاشة القفل. eventKey اليومي يمنع تكرار النبضة أو تعدد العمال.
+ */
+export async function notifyReconciliationDrift(
+  summary: FinancialReconciliationSummary,
+  now = new Date(),
+): Promise<{ created: number }> {
+  if (summary.balanced || summary.totalIssueCount <= 0) return { created: 0 };
+  const recipients = await requireDb()
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.isActive, true),
+        or(eq(users.role, "admin"), eq(users.isOwner, true)),
+      ),
+    );
+  const settled = await Promise.allSettled(
+    recipients.map((recipient) =>
+      createAppNotification({
+        userId: recipient.id,
+        kind: "SYSTEM",
+        family: "ADMIN",
+        title: "تسوية مالية تحتاج معالجة",
+        body: `رصد الفحص الليلي ${summary.totalIssueCount} فروق تحتاج المعالجة والتسوية.`,
+        route: "/reconcile",
+        eventKey: `reconciliation-drift:${baghdadToday(now)}:${recipient.id}`,
+        entityType: "financialReconciliation",
+        requiresAction: true,
+        // عددٌ إجمالي فقط، بلا أموال أو أسماء أو معرّفات صفوف.
+        lockScreenSafe: true,
+      }),
+    ),
+  );
+  return {
+    created: settled.reduce(
+      (count, item) => count + (item.status === "fulfilled" && item.value.created ? 1 : 0),
+      0,
+    ),
+  };
 }
 
 export function startReconcileScheduler(): void {
@@ -63,7 +111,11 @@ export function startReconcileScheduler(): void {
         // على مسارٍ واحد في الوضع الأحادي (`isMultiTenantModeActive=false`) ⇒ لا انحدار.
         const summaries = await runAcrossActiveTenants(
           "reconcile_nightly_scan",
-          () => runReconcileScanOnce(),
+          async () => {
+            const summary = await runReconcileScanOnce();
+            await notifyReconciliationDrift(summary);
+            return summary;
+          },
         );
         // WARN إن وُجد انحرافٌ ماليّ في أيّ شركة — يُلتقط في سجلّات pino/PM2 بمستوى تنبيه.
         // INFO إن كان الكلّ نظيفاً — يبقى أثرٌ يوميٌّ على العمل يُثبت أن الفحص جرى.

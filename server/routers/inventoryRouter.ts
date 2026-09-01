@@ -413,6 +413,7 @@ export const inventoryRouter = router({
         ).map((user) => createAppNotification({
           userId: user.id,
           kind: "APPROVAL_REQUIRED",
+          family: "APPROVAL",
           title: "تسوية مخزون بانتظار قرار",
           body: `طلب #${res.requestId} · الفرع ${branchId}`,
           route: "/inventory?tab=stocktakes",
@@ -439,6 +440,7 @@ export const inventoryRouter = router({
         await createAppNotification({
           userId: request.createdBy,
           kind: "APPROVAL_REQUIRED",
+          family: "EMPLOYEE",
           title: "تم اعتماد تسوية المخزون",
           body: `الطلب #${input.id}`,
           route: "/inventory",
@@ -464,6 +466,7 @@ export const inventoryRouter = router({
         await createAppNotification({
           userId: request.createdBy,
           kind: "APPROVAL_REQUIRED",
+          family: "EMPLOYEE",
           title: "تم تحديث طلب تسوية المخزون",
           body: `الطلب #${input.id}`,
           route: "/inventory",
@@ -524,6 +527,7 @@ export const inventoryRouter = router({
         ).map((user) => createAppNotification({
           userId: user.id,
           kind: "APPROVAL_REQUIRED",
+          family: "APPROVAL",
           title: "إعادة تقييم تكلفة بانتظار قرار",
           body: `طلب #${res.requestId} · ${res.oldCost} ← ${res.newCost} · أثر ${res.expectedValueDelta}`,
           route: "/inventory",

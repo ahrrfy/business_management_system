@@ -1,27 +1,20 @@
-// جدولة إشعار «برنامج اليوم» الصباحي — cron يومي على الخادم يمرّ بالمشتركين ويرسل ما لم يُرسَل اليوم.
+// جدولة إشعار «برنامج اليوم» الصباحي — cron يومي ينشئ إشعاراً دائماً لكل مدير/مالك فعّال.
 //
 // القرارات:
 //   • التوقيت: افتراضياً `0 4 * * *` UTC = 07:00 بغداد (افتتاح المتجر). قابل للتخصيص بـMORNING_PUSH_CRON.
 //   • الجمهور: admin + manager فقط (مطابق RBAC لوحة MorningBrief في Dashboard.tsx).
 //   • النطاق: فرع الحساب؛ وللأدمن بلا فرع نستخدم أول فرع فعّال، مطابقاً لشاشة التنفيذ.
-//   • idempotency: log يومي لكل مستخدم × نوع ⇒ لا نُرسل مرّتين لو أُعيد تشغيل الخادم قبل نهاية اليوم.
+//   • idempotency: appNotifications.eventKey يومي لكل مستخدم ⇒ لا تكرار عند إعادة التشغيل/تعدد العمال.
 //   • الحدّ الأدنى: إن كان total=0 لهذا المستخدم ⇒ نتخطّى (لا نُشتّت بلا سبب — يطابق سلوك MorningBrief).
-//   • إعادة تشغيل PM2 آمنة: لن يُرسل مرّتين لأن wasPushSentToday يمنع.
-//
-// ⚠️ يجب تشغيل الخادم في PM2 fork mode (نسخة واحدة). لو تحوَّل لـcluster ⇒ يُشغَّل cron N مرّات
-// ⇒ N طلبات إرسال متزامنة (idempotency يحمي المستقبِل، لكن الجهد مُهدَر). CLAUDE.md يذكر fork ⇒ آمن.
+//   • القنوات: صندوق التطبيق + Web Push المتين + FCM الأصلي؛ عدم وجود VAPID لا يلغي الصندوق الداخلي.
 import cron, { type ScheduledTask } from "node-cron";
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
-import { branches, pushSubscriptions, users } from "../../drizzle/schema";
+import { and, asc, eq, inArray, or } from "drizzle-orm";
+import { branches, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { getDashboardMetrics, getMyTaskBriefCounts } from "./reports/dashboard";
-import {
-  claimDailyPushSlot,
-  isPushEnabled,
-  sendPushToUser,
-  type MorningBriefPayload,
-} from "./pushService";
+import { createAppNotification } from "./appNotificationService";
+import { baghdadToday } from "./businessDay";
 
 /** عدّادا المهام (نظام المهام الموحّد S2) — myOpenTasks شخصيّ بحت (لا يمرّ بـ`metricsFor`
  *  المُخزَّنة مؤقّتاً)، overdueTasks يأتي من نفس نتيجة `getDashboardMetrics` المُخزَّنة (تشغيليّ،
@@ -99,30 +92,31 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
   const result: MorningPushRunResult = {
     candidates: 0, sent: 0, skippedAlreadySent: 0, skippedEmpty: 0, goneRevoked: 0, failed: 0,
   };
-  if (!isPushEnabled()) return result;
   const db = getDb();
   if (!db) return result;
 
-  // مستخدمون فعّالون بحسابات admin/manager ولديهم اشتراك دفع نشط واحد على الأقلّ.
-  // GROUP BY على userId يعطي مرشّحين فريدين (اشتراكات متعدّدة لنفس المستخدم = جهاز واحد).
+  // كل مدير/مالك فعّال مرشّح، حتى إن لم يسجّل Web Push: الإشعار الدائم يظهر داخل النظام،
+  // ويدفعه صندوق Android الأصلي إن كان الجهاز مسجّلاً. قصر الجمهور على المشتركين كان يجعل
+  // التنبيه الإداري يختفي تماماً من صندوق المدير نفسه.
   const candidates = await db
-    .selectDistinct({
-      userId: pushSubscriptions.userId,
+    .select({
+      userId: users.id,
       role: users.role,
       branchId: users.branchId,
+      isOwner: users.isOwner,
     })
-    .from(pushSubscriptions)
-    .innerJoin(users, eq(users.id, pushSubscriptions.userId))
+    .from(users)
     .where(
       and(
-        isNull(pushSubscriptions.revokedAt),
-        inArray(users.role, ["admin", "manager"]),
+        or(inArray(users.role, ["admin", "manager"]), eq(users.isOwner, true)),
         eq(users.isActive, true),
       ),
     );
   result.candidates = candidates.length;
 
-  const needsDefaultBranch = candidates.some((candidate) => candidate.role === "admin" && candidate.branchId == null);
+  const needsDefaultBranch = candidates.some((candidate) =>
+    (candidate.role === "admin" || candidate.isOwner) && candidate.branchId == null,
+  );
   const defaultBranch = needsDefaultBranch
     ? (await db
         .select({ id: branches.id })
@@ -143,16 +137,12 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
     return m;
   }
 
-  for (const { userId, role, branchId } of candidates) {
+  const claimDay = baghdadToday();
+  for (const { userId, role, branchId, isOwner } of candidates) {
     try {
-      const actionBranchId = branchId ?? (role === "admin" ? defaultBranch?.id : undefined);
+      const actionBranchId = branchId ?? (role === "admin" || isOwner ? defaultBranch?.id : undefined);
       if (actionBranchId == null) {
         result.skippedEmpty++;
-        continue;
-      }
-      // حجز ذرّي — يمنع الازدواج عند نافذة إعادة PM2 (كلا العمليتَين تحاولان، واحدة فقط تنجح).
-      if (!(await claimDailyPushSlot(userId, "MORNING_BRIEF"))) {
-        result.skippedAlreadySent++;
         continue;
       }
       const m = await metricsFor(actionBranchId);
@@ -168,17 +158,21 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
         result.skippedEmpty++;
         continue;
       }
-      const payload: MorningBriefPayload = {
-        kind: "MORNING_BRIEF",
+      const notification = await createAppNotification({
+        userId,
+        kind: "SYSTEM",
+        family: "ADMIN",
         title: "برنامج اليوم — الرؤية العربية",
         body: buildBody(counts, total, myTasks.overdueInScope),
-        url: pickMorningBriefUrl(counts, actionBranchId),
-        counts,
-      };
-      const r = await sendPushToUser(userId, payload);
-      result.sent += r.sent;
-      result.goneRevoked += r.goneRevoked;
-      result.failed += r.failed;
+        route: pickMorningBriefUrl(counts, actionBranchId),
+        eventKey: `morning-brief:${claimDay}:${userId}`,
+        entityType: "morningBrief",
+        requiresAction: true,
+        // الحمولة أعداد تشغيلية فقط، بلا أسماء أو مبالغ؛ وافقنا على إظهارها كاملة خارج التطبيق.
+        lockScreenSafe: true,
+      });
+      if (notification.created) result.sent++;
+      else result.skippedAlreadySent++;
     } catch {
       // فشل مستخدم واحد لا يوقف البقيّة (idempotency log يمنع الازدواج الغد).
       result.failed++;
@@ -193,10 +187,6 @@ let cronTask: ScheduledTask | null = null;
 export function startMorningPushCron(): void {
   // لا cron في بيئة الاختبار (يُسبّب تسريب مؤقّتات ⇒ vitest يعلق).
   if (process.env.NODE_ENV === "test") return;
-  if (!isPushEnabled()) {
-    console.info("[push] scheduler disabled (VAPID keys غير مُهيّأة).");
-    return;
-  }
   const cronExpr = process.env.MORNING_PUSH_CRON || "0 4 * * *"; // 04:00 UTC = 07:00 بغداد
   if (!cron.validate(cronExpr)) {
     console.error(`[push] MORNING_PUSH_CRON غير صالح: ${cronExpr}`);

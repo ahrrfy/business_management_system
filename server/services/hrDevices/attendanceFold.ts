@@ -312,6 +312,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
             await createAppNotification({
               userId: empRow.userId,
               kind: "ATTENDANCE",
+              family: "EMPLOYEE",
               title: notification.title,
               body: notification.body,
               route: "/hr?tab=attendance",
@@ -346,6 +347,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
             await createAppNotification({
               userId: supervisorUserId,
               kind: "ATTENDANCE",
+              family: "ADMIN",
               title: notification.title,
               body: notification.body,
               route: "/hr?tab=attendance",

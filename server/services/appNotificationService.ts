@@ -176,8 +176,14 @@ export function buildAppWebPushPayload(
   if (input.kind === "SYSTEM") {
     return {
       kind,
-      title: "تحديث من النظام",
-      body: "افتح النظام لعرض التفاصيل.",
+      title:
+        input.lockScreenSafe === true
+          ? input.title.trim().slice(0, 90)
+          : "تحديث من النظام",
+      body:
+        input.lockScreenSafe === true
+          ? input.body.trim().slice(0, 180)
+          : "افتح النظام لعرض التفاصيل.",
       url: route,
     };
   }
@@ -313,7 +319,7 @@ function nativePayloadFor(
     input.kind === "APPROVAL_REQUIRED" ||
     // إشعار الجلسة يحمل عنوان IP والموقع الجغرافي ⇒ حسّاس كذلك.
     input.kind === "SESSION_EVENT" ||
-    input.kind === "SYSTEM" ||
+    (input.kind === "SYSTEM" && input.lockScreenSafe !== true) ||
     (input.kind === "ATTENDANCE" && input.lockScreenSafe !== true);
   return normalizeNativePushPayload({
     notificationId,
