@@ -408,13 +408,8 @@ describe("تصريف مهام عامل جسر الحضور", () => {
     }
   });
 
-  it("يحفظ إشعار العامل وnative outbox ويطلق Web Push دون انتظاره", async () => {
-    const pushStarted = deferred();
-    const sendPushToUser = vi.fn(() => {
-      pushStarted.resolve();
-      // قناة PWA قد تتأخر؛ لا يجوز أن تحجز طيّ الحضور أو مهلة shutdown.
-      return new Promise<never>(() => undefined);
-    });
+  it("يحفظ إشعار العامل وصندوقي native/Web Push دون انتظار الشبكة", async () => {
+    const sendPushToUser = vi.fn(() => new Promise<never>(() => undefined));
     const inserted: unknown[] = [];
     const tx = {
       insert: vi.fn(() => ({
@@ -453,17 +448,22 @@ describe("تصريف مهام عامل جسر الحضور", () => {
       lockScreenSafe: true,
       push: true,
     });
-    await pushStarted.promise;
-
-    let settled = false;
-    void creating.then(() => {
-      settled = true;
-    });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(inserted).toHaveLength(2);
-    expect(sendPushToUser).toHaveBeenCalledOnce();
-    expect(settled).toBe(true);
     await expect(creating).resolves.toEqual({ created: true });
+    expect(inserted).toHaveLength(3);
+    expect(inserted[0]).toEqual(
+      expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
+    );
+    expect(inserted[1]).toEqual(
+      expect.objectContaining({
+        environment: expect.any(String),
+        payload: expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
+      }),
+    );
+    expect(inserted[2]).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ kind: "ATTENDANCE_CHECK_IN" }),
+      }),
+    );
+    expect(sendPushToUser).not.toHaveBeenCalled();
   });
 });
