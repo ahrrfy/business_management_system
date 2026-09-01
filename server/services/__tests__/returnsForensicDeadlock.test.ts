@@ -9,13 +9,13 @@
  * مستقلَّين** (userId 1 و3) فيجد دائماً مُعتمِداً صالحاً — وهو عالمٌ لا يشبه مكتبةً بفرعين
  * يبيع فيها المدير نفسه. هنا نُهيّئ **العالم الحقيقيّ**: مديرٌ واحد يبيع ويطلب.
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
 import { approveSalesControlRequest, rejectSalesControlRequest, requestSalesControl, withdrawSalesControlRequest } from "../sale/controlRequests";
-import { returnSaleInTx } from "../returnService";
+import { returnSaleAsOwner, returnSaleInTx } from "../returnService";
 import { withTx } from "../tx";
 import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 
@@ -30,6 +30,8 @@ const TABLES = [
 const SOLE_MANAGER = { userId: 1, branchId: 1, role: "manager" };
 /** أدمن المالك — عابرُ فروعٍ، وهو المخرج الأخير المتوقَّع حين لا يوجد مديرٌ ثانٍ. */
 const OWNER_ADMIN = { userId: 4, branchId: 0, role: "admin" };
+/** المالك الحقيقيّ (`users.isOwner`) — يُطبَّع إلى role="admin" في context.ts. */
+const OWNER = { userId: 5, branchId: 1, role: "admin" };
 
 function db() {
   const value = getDb();
@@ -53,7 +55,8 @@ beforeEach(async () => {
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values([
     { id: 1, openId: "m1", name: "مدير الفرع الوحيد", email: "m1@f.test", role: "manager", loginMethod: "local", branchId: 1 },
-    { id: 4, openId: "a1", name: "أدمن المالك", email: "a1@f.test", role: "admin", loginMethod: "local", branchId: null },
+    { id: 4, openId: "a1", name: "أدمن (غير مالك)", email: "a1@f.test", role: "admin", loginMethod: "local", branchId: null },
+    { id: 5, openId: "o1", name: "المالك", email: "o1@f.test", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "عميل", phone: "+9647701111111", currentBalance: "0.00" });
   await d.insert(s.products).values({ id: 1, name: "دفتر" });
@@ -183,6 +186,70 @@ describe("تدقيق جنائيّ: «المرتجع وهميّ ويبتلع ال
       payload,
     }, SOLE_MANAGER);
     expect(retry.status).toBe("PENDING");
+  });
+
+  /**
+   * قرار المالك (١/٩/٢٦): المالكُ ينفّذ مرتجعَه فوراً بلا دورة اعتماد — فهو مالكُ المخاطرة
+   * لا موظّفٌ يُراقَب، وفي مكتبةٍ يديرها صاحبُها لا وجود لمراجعٍ مستقلّ. والاختصارُ في
+   * **الحوكمة** لا في المحاسبة: الأثر يمرّ بـ`returnSaleInTx` نفسها بكلّ قيودها.
+   */
+  it("⭐ المالك ينفّذ المرتجع فوراً: المخزون يعود والقيد يُكتب والفاتورة تُقفَل مرتجعة", async () => {
+    const created = await createSale({
+      branchId: 1, shiftId: 1, sourceType: "POS", customerId: 1,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
+      payment: { amount: "5000.00", method: "CASH" },
+    }, OWNER);
+    const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, created.invoiceId));
+    expect(await stockOf()).toBe(95);
+
+    const out = await returnSaleAsOwner({
+      invoiceId: created.invoiceId,
+      lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 5 }],
+      restock: true,
+      refund: { amount: "5000.00", method: "CASH", shiftId: 1 },
+      ownerReason: "الزبون أعاد الدفاتر — تنفيذ المالك",
+      clientRequestId: "owner-immediate-1",
+    }, OWNER);
+
+    // ثلاثةُ آثارٍ معاً — لا واحدٌ منها معلَّق.
+    expect(await stockOf()).toBe(100);
+    expect(out.fullyReturned).toBe(true);
+    const returnEntries = await db().select().from(s.accountingEntries)
+      .where(and(eq(s.accountingEntries.invoiceId, created.invoiceId), eq(s.accountingEntries.entryType, "RETURN")));
+    expect(returnEntries.length).toBe(1);
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0];
+    expect(inv.status).toBe("RETURNED");
+    // النقد خرج بإيصالٍ يمسّ الدرج (لا عجزٌ مكتوم في Z-report).
+    const outReceipts = await db().select().from(s.receipts)
+      .where(and(eq(s.receipts.invoiceId, created.invoiceId), eq(s.receipts.direction, "OUT")));
+    expect(outReceipts.length).toBe(1);
+    expect(outReceipts[0].cashBucket).toBe("DRAWER");
+  });
+
+  it("المسار الفوريّ محصورٌ بمالكٍ نشط، ويشترط سبباً — لا اختصارَ بلا صفةٍ ولا مستند", async () => {
+    const created = await saleByManager();
+    const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, created.invoiceId));
+    const base = {
+      invoiceId: created.invoiceId,
+      lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 5 }],
+      restock: true,
+    };
+
+    // أدمن **غير مالك** ⇒ FORBIDDEN (إعادة القراءة داخل المعاملة لا رايةُ الجلسة).
+    await expect(returnSaleAsOwner({ ...base, ownerReason: "محاولة أدمن", clientRequestId: "o-a" }, OWNER_ADMIN))
+      .rejects.toThrow(/محصورٌ بحساب مالكٍ نشط/);
+    // ومديرُ الفرع كذلك.
+    await expect(returnSaleAsOwner({ ...base, ownerReason: "محاولة مدير", clientRequestId: "o-m" }, SOLE_MANAGER))
+      .rejects.toThrow(/محصورٌ بحساب مالكٍ نشط/);
+    // وسببٌ أقصر من ٣ أحرف يُرفَض قبل أيّ أثر.
+    await expect(returnSaleAsOwner({ ...base, ownerReason: "ok", clientRequestId: "o-r" }, OWNER))
+      .rejects.toThrow(/سبب المرتجع إلزاميّ للمالك/);
+    // ومالكٌ مُعطَّل لا ينفّذ.
+    await db().update(s.users).set({ isActive: false }).where(eq(s.users.id, 5));
+    await expect(returnSaleAsOwner({ ...base, ownerReason: "مالكٌ معطَّل", clientRequestId: "o-i" }, OWNER))
+      .rejects.toThrow(/محصورٌ بحساب مالكٍ نشط/);
+
+    expect(await stockOf()).toBe(95); // صفر أثرٍ من كل المحاولات المرفوضة
   });
 
   it("السحب لصاحب الطلب وحده، ولا يُسحَب طلبٌ محسوم", async () => {

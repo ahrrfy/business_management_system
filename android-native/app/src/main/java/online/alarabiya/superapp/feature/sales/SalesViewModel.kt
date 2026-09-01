@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import online.alarabiya.superapp.data.SalesDataSource
 import online.alarabiya.superapp.model.sales.PaymentMethod
 import online.alarabiya.superapp.model.sales.PriceTier
+import online.alarabiya.superapp.model.sales.ReturnCreation
 import online.alarabiya.superapp.model.sales.ReturnSubmission
 import online.alarabiya.superapp.model.sales.SaleSubmission
 import online.alarabiya.superapp.model.sales.SalesCapabilities
@@ -224,7 +225,9 @@ class SalesViewModel(
 
             // The old remaining-quantity snapshot is no longer valid after this acknowledgement.
             state = state.returnCommitted(result, UUID.randomUUID().toString())
-            if (!result.fullyReturned) {
+            // إعادةُ التحميل تخصّ **المنفَّذ الجزئيّ** وحده: الطلبُ المعلَّق لم يُغيّر كمّيةً،
+            // وإعادةُ تحميله كانت تُظهر نفس المتبقّي فيُعيد الموظّف الإدخال وترتدّ المحاولة.
+            if (result is ReturnCreation.Executed && !result.fullyReturned) {
                 runCatching { source.returnableInvoice(invoice.id) }
                     .onSuccess { state = state.returnInvoiceReloaded(it) }
                     .onFailure {

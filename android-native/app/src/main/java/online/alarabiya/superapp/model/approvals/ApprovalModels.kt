@@ -10,7 +10,13 @@ enum class ApprovalKind(
     INVENTORY("inventory", "inventory", "المخزون"),
     LEAVE("leave", "hr", "الإجازات"),
     VOUCHER("voucher", "treasury", "السندات"),
-    GIFT("gift", "gifts", "الهدايا");
+    GIFT("gift", "gifts", "الهدايا"),
+
+    /**
+     * طلبات التحكّم بالبيع (مرتجع/إلغاء/إعادة إصدار/استبدال/استحقاق) — تدقيق ١/٩/٢٦.
+     * كان صندوق الموافقات أعمى عنها فتتراكم صامتةً بينما سلّم الموظّف البضاعة والنقد.
+     */
+    SALES_CONTROL("salesControl", "sales", "عمليات البيع");
 
     companion object {
         fun fromApi(value: String): ApprovalKind? = entries.firstOrNull { it.apiValue == value }

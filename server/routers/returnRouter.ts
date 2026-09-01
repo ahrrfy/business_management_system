@@ -5,7 +5,7 @@ import { accountingEntries, customers, invoiceItems, invoices, productUnits, pro
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { returnSaleInTx } from "../services/returnService";
+import { returnSaleAsOwner, returnSaleInTx } from "../services/returnService";
 import { requestSalesControl } from "../services/sale/controlRequests";
 import { withTx } from "../services/tx";
 import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
@@ -69,6 +69,48 @@ export const returnRouter = router({
       const actorBranchId = Number(ctx.user.branchId ?? 0);
       const { invoiceId, clientRequestId, reason: explicitReason, ...payload } = input;
       const reason = explicitReason ?? input.resolution?.reason ?? "";
+
+      /**
+       * ⭐ **مسارُ المالك الفوريّ** (قرار المالك ١/٩/٢٦).
+       *
+       * الحوكمةُ تفترض مراجعاً مستقلاً؛ وفي مكتبةٍ يديرها صاحبُها لا وجود له، فكان كلّ مرتجعٍ
+       * يعلق ويُسلَّم النقدُ والبضاعةُ خارج النظام. المالكُ ينفّذ مرتجعَه مباشرةً — والخدمة
+       * تُعيد قراءة `isOwner`/`isActive` **داخل معاملتها** فلا تكفي رايةُ الجلسة، والأثرُ يمرّ
+       * بنفس `returnSaleInTx` بكلّ قيودها وحرّاسها. الاختصارُ في الحوكمة لا في المحاسبة.
+       *
+       * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كان الراوتر يُرجع شكلاً واحداً فاختلط «طلبٌ
+       * أُرسل» بـ«مرتجعٌ نُفِّذ» على المستهلكين — وهو جذرُ عرضِ تطبيق أندرويد «تم تسجيل
+       * المرتجع بقيمة 0». كلّ مستهلكٍ يتفرّع على `mode` صراحةً بعد اليوم.
+       */
+      if (ctx.user.isOwner === true) {
+        if (reason.trim().length < 3) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
+          });
+        }
+        const executed = await returnSaleAsOwner({
+          ...payload,
+          invoiceId,
+          ownerReason: reason,
+          clientRequestId: clientRequestId ?? randomUUID(),
+        }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
+        await logAudit(ctx, {
+          action: "return.ownerImmediate",
+          entityType: "invoice",
+          entityId: invoiceId,
+          newValue: {
+            reason,
+            lines: input.lines.length,
+            returnedTotal: String(executed.returnedTotal ?? "0"),
+            fullyReturned: !!executed.fullyReturned,
+            refund: input.refund?.amount ?? input.resolution?.amount ?? null,
+            restock: input.restock ?? input.resolution?.disposition ?? null,
+          },
+        });
+        return { ...executed, mode: "EXECUTED" as const, invoiceId };
+      }
+
       const res = await requestSalesControl({
         requestKey: clientRequestId ?? randomUUID(),
         invoiceId,
@@ -87,7 +129,7 @@ export const returnRouter = router({
           reason,
         },
       });
-      return { requestId: res.id, status: res.status, replayed: res.replayed };
+      return { mode: "REQUESTED" as const, requestId: res.id, status: res.status, replayed: res.replayed };
     }),
 
   // ════════ طلبات الإرجاع من المحطة (١٩/٨ — قرار المالك: طلب موظف + اعتماد مدير) ════════

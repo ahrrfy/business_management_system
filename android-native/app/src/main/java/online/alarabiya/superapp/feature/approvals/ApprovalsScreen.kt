@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.AssignmentReturn
 import androidx.compose.material.icons.rounded.CardGiftcard
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.EventAvailable
@@ -481,6 +482,7 @@ private fun kindIcon(kind: ApprovalKind): ImageVector = when (kind) {
     ApprovalKind.LEAVE -> Icons.Rounded.EventAvailable
     ApprovalKind.VOUCHER -> Icons.Rounded.Payments
     ApprovalKind.GIFT -> Icons.Rounded.CardGiftcard
+    ApprovalKind.SALES_CONTROL -> Icons.Rounded.AssignmentReturn
 }
 
 @Composable
@@ -489,6 +491,7 @@ private fun kindColors(kind: ApprovalKind): Pair<Color, Color> = when (kind) {
     ApprovalKind.LEAVE -> Color(0xFF5267B3) to Color(0xFFEBEEFF)
     ApprovalKind.VOUCHER -> Color(0xFF8B5A00) to Color(0xFFFFF0D1)
     ApprovalKind.GIFT -> ApprovalOrange to Color(0xFFFFEBDD)
+    ApprovalKind.SALES_CONTROL -> Color(0xFF9C2A2A) to Color(0xFFFFE7E7)
 }
 
 @Composable

@@ -34,7 +34,8 @@ object ApprovalMapper {
         val kind = ApprovalKind.fromApi(payload.kind) ?: return null
         if (payload.id <= 0) return null
         val rejectionPolicy = when (kind) {
-            ApprovalKind.INVENTORY, ApprovalKind.VOUCHER -> RejectionReasonPolicy.REQUIRED
+            ApprovalKind.INVENTORY, ApprovalKind.VOUCHER, ApprovalKind.SALES_CONTROL ->
+                RejectionReasonPolicy.REQUIRED
             ApprovalKind.LEAVE, ApprovalKind.GIFT -> RejectionReasonPolicy.NOT_SUPPORTED
         }
         return ApprovalRequest(
@@ -123,6 +124,11 @@ class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
                 "gifts.approveGift",
                 JSONObject().put("giftId", request.id),
             )
+            // الاعتماد ينفّذ الأثر ذرّياً خادمياً (مرتجع/إلغاء/استبدال) بنفس مسار الويب.
+            ApprovalKind.SALES_CONTROL -> api.mutate(
+                "salesControl.approve",
+                JSONObject().put("requestId", request.id),
+            )
         }
     }
 
@@ -154,6 +160,13 @@ class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
             ApprovalKind.GIFT -> throw UnsupportedApprovalDecision(
                 "واجهة الخادم لا توفر عملية رفض للهدايا",
             )
+            ApprovalKind.SALES_CONTROL -> {
+                require(reason.isNotEmpty()) { "سبب الرفض مطلوب" }
+                api.mutate(
+                    "salesControl.reject",
+                    JSONObject().put("requestId", request.id).put("reason", reason),
+                )
+            }
         }
     }
 }

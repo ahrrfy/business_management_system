@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts, users } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
@@ -1025,6 +1025,46 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
 
 export async function returnSale(input: ReturnSaleInput, actor: Actor) {
   return withTx((tx) => returnSaleInTx(tx, input, actor));
+}
+
+/**
+ * ⭐ **مسارُ المالك الفوريّ** (قرار المالك ١/٩/٢٦ — تدقيق «المرتجع وهميّ»).
+ *
+ * حوكمةُ طلب/اعتماد تفترض وجودَ مراجعٍ مستقلّ. وفي مكتبةٍ يديرها صاحبُها، المالكُ هو البائعُ
+ * والمديرُ معاً ⇒ كلّ مرتجعٍ يحتاج شخصاً ثانياً لا وجود له، فيُسلَّم النقدُ والبضاعةُ خارج
+ * النظام. المالكُ هو **مالكُ المخاطرة** لا موظّفٌ يُراقَب، ولهذا يُنفّذ مرتجعَه مباشرةً.
+ *
+ * ثلاثةُ حرّاسٍ تُبقيه محكوماً لا مفتوحاً:
+ *  ① **إعادةُ قراءة `isOwner`/`isActive` داخل المعاملة نفسها** — راية الجلسة قد تشيخ؛ نفس
+ *    اشتراط `assertTreasuryOutException` (cash/cashAvailability.ts). قفلُ `.for("share")`
+ *    يمنع سحبَ الصفة بين الفحص والتنفيذ.
+ *  ② **سببٌ إلزاميّ** (٣ أحرف فأكثر) يُخزَّن في `notes` القيد — لا تنفيذ صامت.
+ *  ③ الأثرُ يمرّ بـ`returnSaleInTx` نفسها: نفس القيود والإيصالات وحرّاس الدرج والسقوف.
+ *    **لا نسخةَ منطقٍ ماليّ ثانية** — الاختصارُ في الحوكمة لا في المحاسبة.
+ */
+export async function returnSaleAsOwner(
+  input: ReturnSaleInput & { ownerReason: string },
+  actor: Actor,
+) {
+  const reason = input.ownerReason.trim().replace(/\s+/g, " ");
+  if (reason.length < 3 || reason.length > 500) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "سبب المرتجع إلزاميّ للمالك (3-500 محرف)" });
+  }
+  return withTx(async (tx) => {
+    const [owner] = await tx
+      .select({ id: users.id, isActive: users.isActive, isOwner: users.isOwner })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      .for("share")
+      .limit(1);
+    if (!owner?.isActive || !owner.isOwner) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "المرتجع الفوريّ محصورٌ بحساب مالكٍ نشط — استعمل مسار الطلب والاعتماد",
+      });
+    }
+    return returnSaleInTx(tx, input, actor);
+  });
 }
 
 export interface ListSalesReturnsInput {

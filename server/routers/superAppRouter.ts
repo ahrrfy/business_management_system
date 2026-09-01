@@ -7,6 +7,7 @@ import {
   type RoleKey,
 } from "@shared/permissions";
 import { LEAVE_TYPES } from "@shared/hr";
+import { SALES_CONTROL_TYPE_LABELS, type SalesControlType } from "@shared/salesControl";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
@@ -41,6 +42,7 @@ import {
   giftCampaigns,
   giftVouchers,
   invoices,
+  salesControlRequests,
   leaveRequests,
   onlineOrders,
   payrollItems,
@@ -1648,7 +1650,7 @@ export const superAppRouter = router({
       const canTreasuryApprove =
         role === "admin" || role === "manager" || role === "accountant";
 
-      const [stockRows, leaveRows, voucherRows, expenseRows, giftRows] =
+      const [stockRows, leaveRows, voucherRows, expenseRows, giftRows, salesControlRows] =
         await Promise.all([
           permissions.inventory === "FULL" && canManage
             ? listStockAdjustmentRequests({
@@ -1757,6 +1759,39 @@ export const superAppRouter = router({
                   ),
                 )
                 .orderBy(desc(giftVouchers.createdAt))
+                .limit(sourceLimit)
+            : Promise.resolve([]),
+          /**
+           * طلبات التحكّم بالبيع (مرتجع/إلغاء/إعادة إصدار/استبدال/استحقاق) — تدقيق ١/٩/٢٦.
+           *
+           * كان الصندوق يجمع خمسة مصادر ليس فيها هذا الجدول ⇒ **الشاشة التي يفتحها المدير
+           * فعلاً (`/my-work` وصندوق موافقات أندرويد) عمياء عن كلّ طلبات المرتجعات**، فتتراكم
+           * صامتةً بينما الموظّف سلّم البضاعة والنقد. وهو جذرُ بلاغ «المرتجع وهميّ ولا أثر له».
+           */
+          permissions.sales === "FULL" && canManage
+            ? db
+                .select({
+                  id: salesControlRequests.id,
+                  requestType: salesControlRequests.requestType,
+                  reason: salesControlRequests.reason,
+                  createdAt: salesControlRequests.createdAt,
+                  requestedBy: salesControlRequests.requestedBy,
+                  invoiceId: salesControlRequests.invoiceId,
+                  invoiceNumber: invoices.invoiceNumber,
+                  invoiceTotal: invoices.total,
+                  invoiceCreatedBy: invoices.createdBy,
+                })
+                .from(salesControlRequests)
+                .innerJoin(invoices, eq(salesControlRequests.invoiceId, invoices.id))
+                .where(
+                  and(
+                    eq(salesControlRequests.status, "PENDING"),
+                    ...(branchId == null
+                      ? []
+                      : [eq(salesControlRequests.branchId, branchId)]),
+                  ),
+                )
+                .orderBy(desc(salesControlRequests.createdAt))
                 .limit(sourceLimit)
             : Promise.resolve([]),
         ]);
@@ -1874,6 +1909,35 @@ export const superAppRouter = router({
               duplicatePolicy: "state_transition_guard" as const,
             },
           })),
+        ...salesControlRows
+          /**
+           * الفلترةُ تُطابق `assertReviewerSeparation` حرفياً: لا نُظهر للمراجع طلباً يرفضه
+           * الخادمُ حتماً. ⛔ **ولا استثناءَ للأدمن هنا** — بخلاف بقيّة المصادر أعلاه — لأنّ
+           * الحارس الخادميّ نفسه لا يستثنيه؛ وإظهارُ صفٍّ يُرفض قرارُه أسوأ من إخفائه.
+           */
+          .filter((row) =>
+            Number(row.requestedBy) !== ctx.user.id
+            && Number(row.invoiceCreatedBy ?? -1) !== ctx.user.id,
+          )
+          .map((row) => ({
+            kind: "salesControl" as const,
+            id: Number(row.id),
+            title: SALES_CONTROL_TYPE_LABELS[row.requestType as SalesControlType]
+              ?? "طلب تحكّم بالبيع",
+            reference: row.invoiceNumber || `فاتورة #${row.invoiceId}`,
+            detail: row.reason || "طلب بانتظار مراجعٍ مستقل",
+            href: "/invoices?tab=controls",
+            createdAt: row.createdAt,
+            amount: row.invoiceTotal,
+            canReject: true,
+            capabilities: {
+              canApprove: true,
+              canReject: true,
+              rejectionReason: "required" as const,
+              supportsClientRequestId: false,
+              duplicatePolicy: "state_transition_guard" as const,
+            },
+          })),
       ]
         .sort(
           (a, b) =>
@@ -1887,7 +1951,7 @@ export const superAppRouter = router({
   approvalDetail: superAppProcedure
     .input(
       z.object({
-        kind: z.enum(["inventory", "leave", "voucher", "expense", "gift"]),
+        kind: z.enum(["inventory", "leave", "voucher", "expense", "gift", "salesControl"]),
         id: z.number().int().positive(),
       }),
     )
@@ -2088,6 +2152,63 @@ export const superAppRouter = router({
           createdAt: row.createdAt,
           amount: row.amount,
           paymentMethod: row.paymentMethod,
+          canReject: true,
+          capabilities: {
+            canApprove: true,
+            canReject: true,
+            rejectionReason: "required" as const,
+            supportsClientRequestId: false,
+            duplicatePolicy: "state_transition_guard" as const,
+          },
+        };
+      }
+
+      if (input.kind === "salesControl") {
+        if (
+          permissions.sales !== "FULL" ||
+          !canManage ||
+          (role !== "admin" && (branchId ?? -1) < 0)
+        )
+          return notFound();
+        const [row] = await db
+          .select({
+            id: salesControlRequests.id,
+            requestType: salesControlRequests.requestType,
+            reason: salesControlRequests.reason,
+            createdAt: salesControlRequests.createdAt,
+            requestedBy: salesControlRequests.requestedBy,
+            invoiceId: salesControlRequests.invoiceId,
+            invoiceNumber: invoices.invoiceNumber,
+            invoiceTotal: invoices.total,
+            invoiceCreatedBy: invoices.createdBy,
+          })
+          .from(salesControlRequests)
+          .innerJoin(invoices, eq(salesControlRequests.invoiceId, invoices.id))
+          .where(
+            and(
+              eq(salesControlRequests.id, input.id),
+              eq(salesControlRequests.status, "PENDING"),
+              ...(branchId == null
+                ? []
+                : [eq(salesControlRequests.branchId, branchId)]),
+            ),
+          )
+          .limit(1);
+        if (!row) return notFound();
+        // فصلُ المهام يُطبَّق هنا أيضاً — وإلّا صار المخرَج «عرّافَ معرّفات» لطلبٍ لا يُقرَّر.
+        if (
+          Number(row.requestedBy) === ctx.user.id
+          || Number(row.invoiceCreatedBy ?? -1) === ctx.user.id
+        ) return notFound();
+        return {
+          kind: "salesControl" as const,
+          id: Number(row.id),
+          title: SALES_CONTROL_TYPE_LABELS[row.requestType as SalesControlType]
+            ?? "طلب تحكّم بالبيع",
+          reference: row.invoiceNumber || `فاتورة #${row.invoiceId}`,
+          detail: row.reason || "طلب بانتظار مراجعٍ مستقل",
+          createdAt: row.createdAt,
+          amount: row.invoiceTotal,
           canReject: true,
           capabilities: {
             canApprove: true,
