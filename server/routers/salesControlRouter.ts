@@ -132,6 +132,8 @@ export const salesControlRouter = router({
        */
       cashRouting: z.object({
         shiftId: z.number().int().positive().optional(),
+        /** امسح الدرج المُجمَّد ليُعاد اشتقاق المصدر (درجٌ مفتوح وإلّا خزينةُ الفرع للإداريّ). */
+        clearShift: z.boolean().optional(),
         reference: z.string().trim().min(1).max(100).optional(),
       }).optional(),
     }))
@@ -148,7 +150,10 @@ export const salesControlRouter = router({
        * معاً (إلغاء/استبدال/استحقاق) فلا يُميّز المرتجع؛ وتركيزُ المرتجعات على شخصٍ بعينه
        * لا يُقاس بفعلٍ يخلط أربع عملياتٍ مختلفة.
        */
-      if ("request" in result && result.request?.requestType === "SALES_RETURN") {
+      // ⛔ `replayed` = اعتمادٌ سابقٌ يُعاد تشغيله بلا أثرٍ ثانٍ. كتابةُ فعل التنفيذ له تُضخّم
+      // عدّاد «معالجي الإرجاع» في رقيب D3 بإعادة محاولةٍ شبكية (تصويب مراجعة Codex، P2).
+      const replayedApproval = "replayed" in result && result.replayed === true;
+      if (!replayedApproval && "request" in result && result.request?.requestType === "SALES_RETURN") {
         await logAudit(ctx, {
           action: RETURN_EXECUTED_AUDIT_ACTION,
           entityType: "invoice",
@@ -158,7 +163,6 @@ export const salesControlRouter = router({
             requestId: input.requestId,
             requestedBy: Number(result.request.requestedBy),
             reason: result.request.reason,
-            replayed: "replayed" in result ? !!result.replayed : false,
             cashRouting: input.cashRouting ?? null,
           },
         });

@@ -8,6 +8,7 @@ import {
 } from "@shared/permissions";
 import { LEAVE_TYPES } from "@shared/hr";
 import { SALES_CONTROL_TYPE_LABELS, type SalesControlType } from "@shared/salesControl";
+import { salesControlFacts } from "@shared/salesControlFacts";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
@@ -2181,6 +2182,7 @@ export const superAppRouter = router({
             invoiceNumber: invoices.invoiceNumber,
             invoiceTotal: invoices.total,
             invoiceCreatedBy: invoices.createdBy,
+            payload: salesControlRequests.payload,
           })
           .from(salesControlRequests)
           .innerJoin(invoices, eq(salesControlRequests.invoiceId, invoices.id))
@@ -2209,6 +2211,14 @@ export const superAppRouter = router({
           detail: row.reason || "طلب بانتظار مراجعٍ مستقل",
           createdAt: row.createdAt,
           amount: row.invoiceTotal,
+          /**
+           * ⭐ **حقائقُ الحمولة تُرسَل للمُعتمِد** (تصويب مراجعة Codex على PR #932، P1).
+           * كان هذا المخرَج يحمل السببَ وإجماليَّ الفاتورة وحدهما، فينفّذ المُعتمِدُ على
+           * الجوّال حركةَ نقدٍ ومخزونٍ ودفترٍ بلا رؤية كمّيةٍ ولا مبلغِ ردٍّ ولا مصيرِ بضاعة —
+           * وهو عينُ عطبِ «مراجعٌ لا يرى ما يراجعه» الذي فتح هذا التدقيق. الاشتقاقُ مشتركٌ
+           * مع شاشة الويب (`@shared/salesControlFacts`) فلا يوجد تعريفان ينجرفان.
+           */
+          facts: salesControlFacts(row.requestType as SalesControlType, row.payload),
           canReject: true,
           capabilities: {
             canApprove: true,

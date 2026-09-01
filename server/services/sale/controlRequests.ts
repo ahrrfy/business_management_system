@@ -328,6 +328,13 @@ async function recordExchangeTx(
 export interface SalesControlCashRouting {
   /** الدرج الذي سيخرج منه النقد فعلاً وقت التنفيذ — يُصحّح درجاً أُقفل بعد الطلب. */
   shiftId?: number | null;
+  /**
+   * **مسحُ الدرج المُجمَّد صراحةً** ليُعاد اشتقاق المصدر لحظة التنفيذ (درجٌ مفتوح، وإلّا
+   * خزينةُ الفرع للإداريّ). كان `shiftId: null` يُقرأ «بلا توجيه» فيبقى الرقمُ القديم
+   * المُقفَل نافذاً ويفشل الاعتماد خارج ساعات الوردية بلا مخرج (Codex، P2). الحذفُ والمسح
+   * نيّتان مختلفتان، فلا تُمثَّلان بقيمةٍ واحدة.
+   */
+  clearShift?: boolean;
   /** مرجع عملية الاسترداد على جهاز الدفع — يُنفَّذ لحظة الاعتماد لا لحظة الطلب. */
   reference?: string | null;
 }
@@ -337,17 +344,21 @@ function applyCashRouting(
   payload: SalesReturnControlPayload,
   routing: SalesControlCashRouting | null | undefined,
 ): SalesReturnControlPayload {
-  if (!routing || (routing.shiftId == null && routing.reference == null)) return payload;
+  if (!routing || (routing.shiftId == null && routing.reference == null && !routing.clearShift)) {
+    return payload;
+  }
+  // المسحُ يغلب: `clearShift` يعني «أعِد اشتقاق المصدر الآن» فيُمرَّر `null` صراحةً.
+  const nextShiftId = routing.clearShift ? null : routing.shiftId ?? undefined;
   const next: SalesReturnControlPayload = { ...payload };
   if (next.refund) {
     next.refund = {
       ...next.refund,
-      ...(routing.shiftId != null ? { shiftId: routing.shiftId } : {}),
+      ...(nextShiftId !== undefined ? { shiftId: nextShiftId } : {}),
       ...(routing.reference != null ? { reference: routing.reference } : {}),
     };
   }
-  if (next.resolution && routing.shiftId != null) {
-    next.resolution = { ...next.resolution, shiftId: routing.shiftId };
+  if (next.resolution && nextShiftId !== undefined) {
+    next.resolution = { ...next.resolution, shiftId: nextShiftId };
   }
   return next;
 }

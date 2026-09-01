@@ -27,6 +27,7 @@ import {
   type SalesControlType,
 } from "@shared/salesControl";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { salesControlFacts, type SalesControlFactsType } from "@shared/salesControlFacts";
 
 const STATUS_BADGE_VARIANTS: Record<
   SalesControlStatus,
@@ -39,59 +40,13 @@ const STATUS_BADGE_VARIANTS: Record<
   WITHDRAWN: "neutral",
 };
 
-function payloadFacts(type: SalesControlType, value: unknown): Array<{ label: string; value: string }> {
-  const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const lines = Array.isArray(payload.lines) ? payload.lines : [];
-  if (type === "SALES_DUE_DATE_CHANGE") {
-    return [{
-      label: "تاريخ الاستحقاق المطلوب",
-      value: payload.dueDate == null ? "إزالة تاريخ الاستحقاق" : String(payload.dueDate),
-    }];
-  }
-  if (type === "SALES_CANCEL") {
-    return [{ label: "جهة الاسترداد", value: String(payload.refundPaymentMethod ?? "غير محددة") }];
-  }
-  if (type === "SALES_RETURN") {
-    const refund = payload.refund && typeof payload.refund === "object"
-      ? payload.refund as Record<string, unknown>
-      : payload.resolution && typeof payload.resolution === "object"
-        ? payload.resolution as Record<string, unknown>
-        : null;
-    /**
-     * ⭐ مصير البضاعة له **مصدران** (تدقيق ١/٩/٢٦): `restock` للعميل المسجَّل،
-     * و`resolution.disposition` للزبون العابر — والشاشة لا ترسل `restock` إطلاقاً للعابر
-     * (`ReturnComposer`: `...(!isWalkIn ? { restock } : {})`). فكان `payload.restock === false`
-     * يُقيَّم `undefined !== false` ⇒ **«سليمة — تعاد للمخزون» دائماً** لكلّ مرتجعات الزبون
-     * العابر، حتى حين اختار الطالبُ «تالفة» صراحةً. المراجعُ يقرّر بمعلومةٍ معكوسة في الحالة
-     * الوحيدة التي تُنتج خسارةً حقيقية (التالف: التكلفة تبقى مصروفاً و`branchStock` لا يزيد).
-     */
-    const resolution = payload.resolution && typeof payload.resolution === "object"
-      ? payload.resolution as Record<string, unknown>
-      : null;
-    const damaged = payload.restock === false || resolution?.disposition === "DAMAGED";
-    const dispositionKnown = payload.restock != null || resolution?.disposition != null;
-    return [
-      { label: "بنود الإرجاع", value: String(lines.length) },
-      {
-        label: "مصير البضاعة",
-        value: !dispositionKnown
-          ? "غير محدَّد"
-          : damaged ? "تالفة — لا تعاد للمخزون" : "سليمة — تعاد للمخزون",
-      },
-      { label: "مبلغ الرد", value: refund?.amount == null ? "لا يوجد رد فوري" : `${fmt(String(refund.amount))} د.ع` },
-      { label: "طريقة الرد", value: String(refund?.method ?? "—") },
-    ];
-  }
-  const payment = payload.additionalPayment && typeof payload.additionalPayment === "object"
-    ? payload.additionalPayment as Record<string, unknown>
-    : null;
-  return [
-    { label: "بنود الفاتورة البديلة", value: String(lines.length) },
-    { label: "العميل البديل", value: payload.customerId == null ? "كما هو/عابر" : `#${String(payload.customerId)}` },
-    { label: "تحصيل فرق الآن", value: payment?.amount == null ? "لا يوجد" : `${fmt(String(payment.amount))} د.ع — ${String(payment.method ?? "")}` },
-    { label: "معالجة الزيادة", value: payload.overpayHandling === "CASH_REFUND" ? "رد نقدي" : payload.overpayHandling === "CREDIT" ? "رصيد دائن" : "حسب النتيجة" },
-  ];
-}
+/**
+ * ⭐ الاشتقاقُ من `@shared/salesControlFacts` لا نسخةٌ محلّية (تصويب مراجعة Codex على PR #932).
+ * كانت هذه الدالّة تُعيد تعريف «مصير البضاعة» محلّياً فتعرضه معكوساً للزبون العابر، ثمّ كاد
+ * صندوقُ موافقات أندرويد يُعيد العطب من بابٍ ثانٍ. تعريفٌ واحد يعرضه الطرفان.
+ */
+const payloadFacts = (type: SalesControlType, value: unknown) =>
+  salesControlFacts(type as SalesControlFactsType, value, fmt);
 
 function isReviewerConflict(
   reviewerId: number | null | undefined,

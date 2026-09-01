@@ -22,6 +22,7 @@ import { replayOfflineSale, type ReplayOfflineSaleInput } from "../services/offl
 import { replayOfflinePrintSale } from "../services/offline/replayPrintSale";
 import { replayOfflineReception } from "../services/offline/replayReception";
 import { replayOfflineReturn } from "../services/offline/replayReturn";
+import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
 import { eq } from "drizzle-orm";
 import { invoices } from "../../drizzle/schema";
 import { requireDb } from "../services/tx";
@@ -92,6 +93,13 @@ async function runReplay<T extends { invoiceId?: number; idempotentReplay?: bool
       input: ReplayOfflineSaleInput;
       submittedByUserId: number;
       channel: "RETAIL" | "PRINT" | "RECEPTION" | "RETURN";
+      /**
+       * رموزُ الرفض التي تُلتقَط للاسترداد. الافتراض `PRECONDITION_FAILED` وحده (نافذةُ
+       * الالتقاط/الوردية…). أمّا **المرتجع** فرفضُه الماليّ الأهمّ — تجاوزُ سقف الاسترداد —
+       * يأتي `BAD_REQUEST` من `returnSaleInTx`، وكان يمرّ بلا التقاطٍ بينما النقدُ خرج فعلاً
+       * (أمسكه Codex على PR #932، P2). الدليلُ يبقى على متصفّحٍ واحد وحده لولا هذا.
+       */
+      captureOnCodes?: ReadonlyArray<TRPCError["code"]>;
     };
   },
 ): Promise<T> {
@@ -117,7 +125,8 @@ async function runReplay<T extends { invoiceId?: number; idempotentReplay?: bool
       if (e instanceof TRPCError) {
         // و-٤: رفضُ الأعمال يعني عمليةً **مدفوعة** لا مكان لها في الدفتر ⇒ تُلتقط خادمياً قبل
         // إعادة رمي الرفض. هنا في الغلاف المشترك كي تشمل الطباعة والاستقبال لا البيع وحده.
-        if (e.code === "PRECONDITION_FAILED" && meta.capture) {
+        const capturableCodes = meta.capture?.captureOnCodes ?? (["PRECONDITION_FAILED"] as const);
+        if (meta.capture && capturableCodes.includes(e.code)) {
           await captureRejectedReplay(
             meta.capture.input,
             e.code,
@@ -481,11 +490,15 @@ export const offlineRouter = router({
         },
         {
           ctx,
-          action: "returns.offlineReplay",
+          // الفعلُ المشترك لا فعلٌ خاصّ بالأوفلاين: رقيبُ D3-ب يعدّ
+          // `RETURN_EXECUTED_AUDIT_ACTION` وحده، والكتابةُ المتخصّصة تُلغي الصفَّ التلقائيّ
+          // ⇒ كان كلُّ مرتجعٍ أوفلاينيّ يغيب عن رصد تركّز المرتجعات (Codex، P2).
+          action: RETURN_EXECUTED_AUDIT_ACTION,
           capture: {
             input: { ...replayInput, branchId: effectiveBranchId } as unknown as ReplayOfflineSaleInput,
             submittedByUserId: ctx.user.id,
             channel: "RETURN" as const,
+            captureOnCodes: ["PRECONDITION_FAILED", "BAD_REQUEST"] as const,
           },
           offlineReceiptNumber: input.offlineReceiptNumber,
           capturedAt: input.capturedAt,

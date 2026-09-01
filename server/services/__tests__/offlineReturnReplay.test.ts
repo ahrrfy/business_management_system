@@ -172,6 +172,44 @@ describe("المرتجع الأوفلاينيّ — الترحيل يُنتج أ
     expect(await stockOf()).toBe(95); // صفرُ أثرٍ من كلّ المحاولات المرفوضة
   });
 
+  it("⭐ الزبون العابر: الترحيل يبني resolution فينجح — كان يفشل حتماً بـrefund وحده", async () => {
+    // فاتورةٌ بلا عميل مسجَّل = الحالةُ الأكثر شيوعاً في التجزئة.
+    const sale = await createSale({
+      branchId: 1, shiftId: 1, sourceType: "POS", customerId: null,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
+      payment: { amount: "5000.00", method: "CASH" },
+    }, OWNER);
+    const itemId = await firstItemId(sale.invoiceId);
+    expect(await stockOf()).toBe(95);
+
+    const out = await replayOfflineReturn(
+      { ...base(sale.invoiceId, itemId), clientRequestId: "off-ret-walkin" },
+      OWNER,
+    );
+    expect(out.fullyReturned).toBe(true);
+    expect(await stockOf()).toBe(100);
+    // والسببُ الملتقَط يُحفَظ في نصّ القيد لا في سجلّ التدقيق وحده.
+    const [entry] = await db().select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.invoiceId, sale.invoiceId),
+      eq(s.accountingEntries.entryType, "RETURN"),
+    ));
+    expect(entry.notes).toContain("سبب المرتجع=");
+  });
+
+  it("سببُ المالك يُحفَظ في نصّ القيد للعميل المسجَّل أيضاً — لا في التدقيق وحده", async () => {
+    const sale = await paidSale(); // customerId = 1 (مسجَّل)
+    const itemId = await firstItemId(sale.invoiceId);
+    await replayOfflineReturn(
+      { ...base(sale.invoiceId, itemId), reason: "سببٌ محفوظٌ في المستند", clientRequestId: "off-ret-reason" },
+      OWNER,
+    );
+    const [entry] = await db().select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.invoiceId, sale.invoiceId),
+      eq(s.accountingEntries.entryType, "RETURN"),
+    ));
+    expect(entry.notes).toContain("سببٌ محفوظٌ في المستند");
+  });
+
   it("سقفُ الاسترداد يُقيَّم خادمياً عند الترحيل — لا على الجهاز", async () => {
     const sale = await paidSale();
     const itemId = await firstItemId(sale.invoiceId);

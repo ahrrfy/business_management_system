@@ -139,6 +139,27 @@ export async function createReturnRequest(input: CreateReturnRequestInput, actor
     }
   }
 
+  /**
+   * ⭐ **الحارسان المتقابلان يتسلسلان على صفّ الفاتورة** (Codex، P2).
+   *
+   * فحصُ «طلبٌ معلّقٌ في الجدول الآخر» كان قراءةً حرّة خارج معاملة، فطلبٌ قديمٌ وطلبٌ محكومٌ
+   * يبدآن متزامنين يريان كلاهما لا شيء ثمّ يُدرجان معاً — فيقفل كلٌّ منهما اعتمادَ الآخر.
+   * القفلُ على `invoices` هو المِفتاح المشترك الوحيد بين الجدولين (لا قيدَ قاعدةٍ يجمعهما).
+   */
+  return withTx(async (tx) => {
+    await tx.select({ id: invoices.id }).from(invoices)
+      .where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
+    return insertReturnRequestTx(tx, input, actor, inv);
+  }, { gate: "NONE" });
+}
+
+async function insertReturnRequestTx(
+  d: Tx,
+  input: CreateReturnRequestInput,
+  actor: Actor & { role?: string },
+  inv: { branchId: number | string; returnedTotal: string | null },
+) {
+  const reason = input.reason.trim();
   // طلبٌ معلَّقٌ قائمٌ على نفس الفاتورة ⇒ لا تُكدَّس الطلبات (المدير يحسم القائم أولاً).
   const pending = (await d
     .select({ id: returnRequests.id })

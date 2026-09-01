@@ -31,7 +31,7 @@
 
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { users } from "../../../drizzle/schema";
+import { invoices, users } from "../../../drizzle/schema";
 import { returnSaleInTx, type ReturnSaleInput } from "../returnService";
 import { withTx, type Actor } from "../tx";
 import { assertCaptureWindow, assertCashOnly } from "./captureWindow";
@@ -42,7 +42,7 @@ export interface ReplayOfflineReturnInput {
   /** الردّ النقديّ الذي سُلِّم للزبون فعلاً أثناء الانقطاع (نقد فقط). */
   refund: { amount: string; method: "CASH"; shiftId?: number | null };
   restock: boolean;
-  /** سببٌ إلزاميّ — المرتجع الأوفلاينيّ لا يقع بلا مستند. */
+  /** سببٌ إلزاميّ — المرتجع الأوفلاينيّ لا يقع بلا مستند، ويُخزَّن في نصّ القيد. */
   reason: string;
   clientRequestId: string;
   /** لحظة المرتجع الحقيقية على الجهاز (ISO). */
@@ -84,15 +84,46 @@ export async function replayOfflineReturn(
           "المرتجع الأوفلاينيّ يُرحَّل بحساب مالكٍ نشط — سجّل الدخول بحساب المالك أو نفّذ المرتجع أونلاين بمسار الطلب والاعتماد",
       });
     }
+    /**
+     * ⭐ **الزبونُ العابر يلزمه `resolution` لا `refund`** (أمسكه Codex على PR #932، P1).
+     *
+     * `returnSaleInTx` يشترط للفاتورة بلا `customerId` تسويةً صريحة (`IMMEDIATE_REFUND`)
+     * **ويرفض `refund` معها**. فكان كلُّ ترحيلٍ أوفلاينيّ يُرسل `refund` وحده ⇒ **مرتجعُ
+     * الزبون العابر يفشل حتماً** — وهو أكثرُ حالات التجزئة شيوعاً، والشاشةُ تقول للموظّف
+     * «التُقط… يُرحَّل تلقائياً». نُحوّل الحمولةَ إلى الشكل الذي يقبله المسار الأونلاينيّ
+     * نفسه، محتفظين بالسبب ومصير البضاعة الملتقَطين.
+     */
+    const [invoiceRow] = await tx
+      .select({ customerId: invoices.customerId })
+      .from(invoices)
+      .where(eq(invoices.id, input.invoiceId))
+      .limit(1);
+    if (!invoiceRow) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    const isWalkIn = invoiceRow.customerId == null;
+
     return returnSaleInTx(tx, {
       invoiceId: input.invoiceId,
       lines: input.lines,
-      refund: {
-        amount: input.refund.amount,
-        method: "CASH",
-        shiftId: input.refund.shiftId ?? null,
-      },
-      restock: input.restock,
+      ...(isWalkIn
+        ? {
+            resolution: {
+              kind: "IMMEDIATE_REFUND" as const,
+              method: "CASH" as const,
+              amount: input.refund.amount,
+              shiftId: input.refund.shiftId ?? null,
+              reason,
+              disposition: input.restock ? ("RESTOCK" as const) : ("DAMAGED" as const),
+            },
+          }
+        : {
+            refund: {
+              amount: input.refund.amount,
+              method: "CASH" as const,
+              shiftId: input.refund.shiftId ?? null,
+            },
+            restock: input.restock,
+            operatorReason: reason,
+          }),
       clientRequestId: input.clientRequestId,
     }, actor);
   });

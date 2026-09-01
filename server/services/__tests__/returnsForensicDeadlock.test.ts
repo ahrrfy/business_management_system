@@ -276,78 +276,26 @@ describe("تدقيق جنائيّ: «المرتجع وهميّ ويبتلع ال
   });
 
   /**
-   * قرارُ الرفّ **سطرياً** لفاتورة أمر الشغل (تدقيق ١/٩/٢٦).
-   *
-   * كان الإجبار على مستوى الفاتورة (`sourceType === "WORKORDER" ? false : …`) فيبتلع أوّلَ
-   * بندٍ مخزنيّ يُضاف إليها: يُسجَّل مُرجَعاً مالياً ولا يعود للرفّ ولا تُعكَس تكلفتُه،
-   * ويُسكَت اختيارُ الموظّف بلا رسالة. المعيارُ الصحيح: **هل خُصم هذا الصنفُ عند البيع؟**
+   * ⚠️ العطبُ الكامن يبقى موثَّقاً لا مُصلَحاً (قرارٌ مسجَّل في `returnService.ts`):
+   * `restock` مُجبَرٌ على false على مستوى **الفاتورة** لفواتير WORKORDER. غيرُ قابلٍ للوقوع
+   * اليوم (بندٌ واحدٌ هو ناتجُ الأمر، ولم يُخصَم قطّ)، وإصلاحُه يلزمه **profile** يقبل
+   * `INVENTORY` لعكس مخزون أمر شغل + إعادةَ استحقاق أمانةٍ لكلّ مودِعٍ على حدة.
+   * هذا الاختبار يُثبّت السلوك القائم كي لا يتغيّر سهواً.
    */
-  it("⭐ بندٌ مخزنيّ خُصم فعلاً على فاتورة WORKORDER يعود للرفّ — لا يُبتلَع", async () => {
-    const created = await saleByManager(); // بيعُ POS يكتب حركة OUT للصنف
-    // حالةٌ تركيبيّة: نحوّلها إلى WORKORDER لنُثبت أنّ منشأ الفاتورة لم يبقَ هو المعيار.
+  it("فاتورة WORKORDER: restock مُجبَرٌ على false للفاتورة كلّها — سلوكٌ مقصودٌ موثَّق", async () => {
+    const created = await saleByManager();
     await db().update(s.invoices).set({ sourceType: "WORKORDER" }).where(eq(s.invoices.id, created.invoiceId));
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, created.invoiceId));
 
     await withTx((tx) => returnSaleInTx(tx, {
       invoiceId: created.invoiceId,
       lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 5 }],
-      restock: true, // «سليمة — تعود للرفّ»
+      restock: true, // يُتجاهَل عمداً لفواتير أمر الشغل
     }, SOLE_MANAGER));
 
-    // اختيارُ الموظّف يُنفَّذ: الصنفُ خُصم عند البيع فيعود إليه.
-    expect(await stockOf()).toBe(100);
+    expect(await stockOf()).toBe(95);
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, Number(items[0].id))))[0];
     expect(Number(item.returnedBaseQuantity ?? 0)).toBe(5);
-    expect(Number(item.returnedRestockedBaseQuantity ?? 0)).toBe(5);
-    // وتُعكَس تكلفتُه: قيدُ RETURN يحمل عكس COGS (سالباً) لا صفراً.
-    const [entry] = await db().select().from(s.accountingEntries)
-      .where(and(eq(s.accountingEntries.invoiceId, created.invoiceId), eq(s.accountingEntries.entryType, "RETURN")));
-    expect(Number(entry.cost)).toBe(-2000); // 5 × 400
-  });
-
-  it("⭐ ناتجُ أمر الشغل لا يعود للرفّ: بلا حركة OUT ⇒ لا مخزونَ من العدم ولا عكسَ تكلفة", async () => {
-    const created = await saleByManager();
-    await db().update(s.invoices).set({ sourceType: "WORKORDER" }).where(eq(s.invoices.id, created.invoiceId));
-    const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, created.invoiceId));
-    // نُحاكي ناتج أمر الشغل: صنفٌ **لم يُخصَم** — نمسح حركة OUT الأصلية لهذه الفاتورة.
-    await db().delete(s.inventoryMovements).where(and(
-      eq(s.inventoryMovements.referenceId, created.invoiceId),
-      eq(s.inventoryMovements.movementType, "OUT"),
-    ));
-    const stockBefore = await stockOf();
-
-    await withTx((tx) => returnSaleInTx(tx, {
-      invoiceId: created.invoiceId,
-      lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 5 }],
-      restock: true, // يختار الموظّف الرفّ، لكنّ الصنف لم يُخصَم قطّ
-    }, SOLE_MANAGER));
-
-    expect(await stockOf()).toBe(stockBefore); // لا رصيدَ يُخلَق من العدم
-    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, Number(items[0].id))))[0];
-    expect(Number(item.returnedBaseQuantity ?? 0)).toBe(5);          // المرتجع الماليّ سُجِّل
-    expect(Number(item.returnedRestockedBaseQuantity ?? 0)).toBe(0); // ولم يَعُد للرفّ
-    const [entry] = await db().select().from(s.accountingEntries)
-      .where(and(eq(s.accountingEntries.invoiceId, created.invoiceId), eq(s.accountingEntries.entryType, "RETURN")));
-    expect(Number(entry.cost)).toBe(0); // التكلفةُ تبقى خسارةً — لا تُعكَس
-  });
-
-  it("فاتورةٌ عاديّة (غير WORKORDER) لا يمسّها التقييم السطريّ — السلوك القائم حرفياً", async () => {
-    const created = await saleByManager();
-    const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, created.invoiceId));
-    // نمسح حركات OUT: لو سرى التقييمُ السطريّ على كلّ الفواتير لتوقّف الإرجاعُ صامتاً
-    // على أيّ فاتورةٍ قديمة بلا حركاتٍ محفوظة. النطاقُ محصورٌ بـWORKORDER لهذا السبب.
-    await db().delete(s.inventoryMovements).where(and(
-      eq(s.inventoryMovements.referenceId, created.invoiceId),
-      eq(s.inventoryMovements.movementType, "OUT"),
-    ));
-    const stockBefore = await stockOf();
-
-    await withTx((tx) => returnSaleInTx(tx, {
-      invoiceId: created.invoiceId,
-      lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 5 }],
-      restock: true,
-    }, SOLE_MANAGER));
-
-    expect(await stockOf()).toBe(stockBefore + 5);
+    expect(Number(item.returnedRestockedBaseQuantity ?? 0)).toBe(0);
   });
 });

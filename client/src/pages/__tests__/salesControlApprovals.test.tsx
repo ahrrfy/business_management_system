@@ -27,8 +27,19 @@ describe("واجهة حوكمة عمليات البيع الحرجة", () => {
     expect(approvals).toContain("لا يمكن للطالب أو منشئ الفاتورة اعتمادها");
     expect(approvals).toContain("canReview ? { status: \"PENDING\" } : { mine: true }");
     expect(approvals).toContain("SALES_CONTROL_STATUS_LABELS");
-    expect(approvals).toContain("SALES_DUE_DATE_CHANGE");
-    expect(approvals).toContain("تاريخ الاستحقاق المطلوب");
+    /**
+     * حقائقُ الحمولة انتقلت إلى مصدرٍ مشترك (`shared/salesControlFacts.ts`) يعرضه الويب
+     * ويُرسله الخادمُ لصندوق موافقات أندرويد — كان تعريفُها محلّياً هنا يعرض «مصير البضاعة»
+     * معكوساً للزبون العابر، وكاد أندرويد يُعيد العطب من بابٍ ثانٍ (Codex على PR #932).
+     * الحارسُ يتبع المصدر: الشاشةُ تُفوّض، والمصدرُ يعرف كلّ الأنواع.
+     */
+    expect(approvals).toContain("salesControlFacts");
+    expect(approvals).toContain("@shared/salesControlFacts");
+    const facts = readFileSync(new URL("../../../../shared/salesControlFacts.ts", import.meta.url), "utf8");
+    expect(facts).toContain("SALES_DUE_DATE_CHANGE");
+    expect(facts).toContain("تاريخ الاستحقاق المطلوب");
+    // ومصيرُ البضاعة يُشتقّ من المصدرين معاً لا من `restock` وحده.
+    expect(facts).toContain('resolution.disposition === "DAMAGED"');
     expect(approvals).toContain("اعتماد وتنفيذ");
     expect(approvals).toContain("رفض طلب البيع");
   });

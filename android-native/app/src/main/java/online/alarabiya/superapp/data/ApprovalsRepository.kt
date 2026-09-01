@@ -4,6 +4,7 @@ import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.model.approvals.ApprovalCapabilities
 import online.alarabiya.superapp.model.approvals.ApprovalDecision
 import online.alarabiya.superapp.model.approvals.ApprovalDecisionReceipt
+import online.alarabiya.superapp.model.approvals.ApprovalFact
 import online.alarabiya.superapp.model.approvals.ApprovalKind
 import online.alarabiya.superapp.model.approvals.ApprovalRequest
 import online.alarabiya.superapp.model.approvals.RejectionReasonPolicy
@@ -26,6 +27,8 @@ data class ApprovalInboxPayload(
     val amount: String? = null,
     val currentQuantity: Double? = null,
     val targetQuantity: Double? = null,
+    /** حقائقُ الحمولة المشتقّة خادمياً (مصدرٌ مشترك مع شاشة الويب). */
+    val facts: List<ApprovalFact> = emptyList(),
     val canReject: Boolean,
 )
 
@@ -48,6 +51,7 @@ object ApprovalMapper {
             amount = payload.amount,
             currentQuantity = payload.currentQuantity,
             targetQuantity = payload.targetQuantity,
+            facts = payload.facts,
             capabilities = ApprovalCapabilities(
                 canApprove = true,
                 canReject = payload.canReject,
@@ -124,10 +128,20 @@ class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
                 "gifts.approveGift",
                 JSONObject().put("giftId", request.id),
             )
-            // الاعتماد ينفّذ الأثر ذرّياً خادمياً (مرتجع/إلغاء/استبدال) بنفس مسار الويب.
+            /**
+             * الاعتماد ينفّذ الأثر ذرّياً خادمياً (مرتجع/إلغاء/استبدال) بنفس مسار الويب.
+             *
+             * `clearShift` = «أعِد اشتقاق مصدر النقد الآن» (تصويب مراجعة Codex على PR #932):
+             * الدرجُ المُختار وقت **الطلب** قد يكون أُقفل، وبلا هذا يفشل الاعتماد على الجوّال
+             * أبداً بينما الويب يستطيع إنقاذه. ولا يختار درجاً بالنيابة عن المُعتمِد: الخادمُ
+             * يأخذ الدرجَ المفتوح الوحيد، ويطلب تحديداً صريحاً إن تعدّد، ويصرف من خزينة الفرع
+             * للإداريّ إن لم يوجد — أيْ نفس افتراض المسار الأونلاينيّ حين لا يُحدَّد درج.
+             */
             ApprovalKind.SALES_CONTROL -> api.mutate(
                 "salesControl.approve",
-                JSONObject().put("requestId", request.id),
+                JSONObject()
+                    .put("requestId", request.id)
+                    .put("cashRouting", JSONObject().put("clearShift", true)),
             )
         }
     }
@@ -185,6 +199,16 @@ private fun JSONObject.toApprovalPayload() = ApprovalInboxPayload(
     amount = nullableText("amount"),
     currentQuantity = nullableDouble("currentQuantity"),
     targetQuantity = nullableDouble("targetQuantity"),
+    facts = optJSONArray("facts")?.let { array ->
+        buildList {
+            for (index in 0 until array.length()) {
+                val row = array.optJSONObject(index) ?: continue
+                val label = row.optString("label")
+                val value = row.optString("value")
+                if (label.isNotBlank()) add(ApprovalFact(label, value))
+            }
+        }
+    } ?: emptyList(),
     canReject = optBoolean("canReject"),
 )
 

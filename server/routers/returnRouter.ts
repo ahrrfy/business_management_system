@@ -89,6 +89,27 @@ export const returnRouter = router({
        * المرتجع بقيمة 0». كلّ مستهلكٍ يتفرّع على `mode` صراحةً بعد اليوم.
        */
       if (ctx.user.isOwner === true) {
+        /**
+         * ⛔ **فاتورةُ أمر الشغل خارج هذا المسار** (أمسكه Codex على PR #932، P1).
+         *
+         * `requestSalesControl` يرفضها صراحةً، لكنّ فرعَ المالك يسبقه فيصل إلى `returnSaleInTx`
+         * مباشرةً — فيعكس الإيرادَ والذمّة ويَسِم الفاتورة RETURNED بينما `workOrders.status`
+         * يبقى DELIVERED وWIP/COGS بلا عكسٍ وعربونُ الأمانة مقفلاً، ثمّ يُقفَل
+         * `reverseDelivery` على مستندٍ صار ميتاً. المخرجُ الوحيد لأمرٍ مُسلَّم هو عكسُ التسليم.
+         * الحارسُ هنا في الراوتر لا في النواة: النواةُ تخدم مسارَي التوصيل الشرعيَّين
+         * (`failCourierDelivery` و`reverseDispatchedInvoice`) على فواتير WORKORDER.
+         */
+        const [invRow] = await withTx(async (tx) => tx
+          .select({ sourceType: invoices.sourceType })
+          .from(invoices)
+          .where(eq(invoices.id, invoiceId))
+          .limit(1), { gate: "NONE" });
+        if (invRow?.sourceType === "WORKORDER") {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع",
+          });
+        }
         if (reason.trim().length < 3) {
           throw new TRPCError({
             code: "BAD_REQUEST",

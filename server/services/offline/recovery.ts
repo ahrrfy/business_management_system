@@ -14,6 +14,7 @@ import { logger } from "../../logger";
 import { logAuditTx } from "../auditService";
 import { requireDb, withTx, type Actor } from "../tx";
 import { replayOfflineSale, type ReplayOfflineSaleInput } from "./replaySale";
+import { replayOfflineReturn, type ReplayOfflineReturnInput } from "./replayReturn";
 
 type AuditContext = Pick<TrpcContext, "user" | "req">;
 
@@ -98,8 +99,15 @@ export async function listRecoveryQueue(actor: Actor): Promise<RecoveryQueueRow[
     let amount = "0";
     let lineCount = 0;
     try {
-      const p = JSON.parse(r.payload) as ReplayOfflineSaleInput;
-      amount = p.payment?.amount ?? "0";
+      /**
+       * حمولةُ RETURN تحمل المبلغ في `refund.amount` لا `payment.amount` — وقراءتُها بعقد
+       * البيع كانت تُظهر كلّ مرتجعٍ مُلتقَط **بصفرٍ** للمدير بينما النقدُ خرج فعلاً، فيسقط من
+       * أولويّته ومطابقته (أمسكه Codex على PR #932، P2).
+       */
+      const p = JSON.parse(r.payload) as ReplayOfflineSaleInput & {
+        refund?: { amount?: string };
+      };
+      amount = (r.channel === "RETURN" ? p.refund?.amount : p.payment?.amount) ?? "0";
       lineCount = p.lines?.length ?? 0;
     } catch {
       // حمولةٌ تالفة تبقى مرئيّةً بأرقام صفرية — إخفاؤها أسوأ من عرضها ناقصة.
@@ -117,7 +125,9 @@ export async function listRecoveryQueue(actor: Actor): Promise<RecoveryQueueRow[
       rejectReason: r.rejectReason,
       ageDays: Math.max(0, Math.floor((now - captured) / 86_400_000)),
       channel: r.channel,
-      postable: r.channel === "RETAIL",
+      // RETURN قابلٌ للترحيل أيضاً: نقدٌ خرج فعلاً وتجميدُه على «إهمال» وحده يترك عجزاً
+      // بلا مخرج — أخطرُ حالةٍ هي مرتجعٌ مُجمَّدٌ على وردية أُقفلت (Codex، P1).
+      postable: r.channel === "RETAIL" || r.channel === "RETURN",
     };
   });
 }
@@ -154,13 +164,13 @@ export async function postRecoveryItem(
     throw new TRPCError({ code: "BAD_REQUEST", message: "اختر ورديةً مفتوحة — لا يُكتب في وردية مقفلة" });
   }
 
-  if (item.channel !== "RETAIL") {
+  if (item.channel !== "RETAIL" && item.channel !== "RETURN") {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "الترحيل الآليّ متاحٌ لبيع التجزئة؛ عمليات الطباعة/الاستقبال مُسجَّلة هنا للرصد وتُسوَّى يدوياً",
+      message: "الترحيل الآليّ متاحٌ لبيع التجزئة والمرتجع؛ عمليات الطباعة/الاستقبال مُسجَّلة هنا للرصد وتُسوَّى يدوياً",
     });
   }
-  if (shift.shiftType !== "RETAIL") {
+  if (item.channel !== "RETURN" && shift.shiftType !== "RETAIL") {
     // بيعُ تجزئةٍ يُرحَّل إلى درج استقبالٍ أو طباعة يُفسد «النقد المتوقَّع» لذلك الدرج وZ-report
     // الخاصّ بنوعه. الشاشة تُصفّي أيضاً — والحدّ هو الحاجز.
     throw new TRPCError({ code: "BAD_REQUEST", message: "وردية التجزئة وحدها تقبل ترحيل بيعٍ أوفلاينيّ" });
@@ -176,6 +186,44 @@ export async function postRecoveryItem(
   const claimed = Number((claim as unknown as { affectedRows?: number })?.affectedRows ?? (claim as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
   if (claimed < 1) {
     throw new TRPCError({ code: "CONFLICT", message: "العنصر رُحِّل أو أُهمل سابقاً" });
+  }
+
+  /**
+   * ⭐ **مرتجعٌ مُلتقَطٌ مرفوضٌ يُرحَّل بدرجٍ يختاره المدير الآن** (Codex، P1).
+   *
+   * أخطرُ حالةٍ في هذا الطابور مرتجعٌ مُجمَّدٌ على وردية أُقفلت: إعادةُ محاولة الجهاز تُرسل
+   * الدرجَ القديم فتفشل أبداً، وكان الصفُّ الخادميّ لا يعرض إلّا «إهمال» — بينما النقدُ خرج.
+   * هنا يُستبدَل الدرجُ بالوردية المفتوحة التي اختارها المدير، **بنفس `clientRequestId`**
+   * فلا يتضاعف الأثر إن كان الترحيل الأوّل قد التزم وضاع ردُّه.
+   */
+  if (item.channel === "RETURN") {
+    const returnPayload = JSON.parse(item.payload) as ReplayOfflineReturnInput & { branchId?: number };
+    try {
+      await replayOfflineReturn(
+        {
+          ...returnPayload,
+          refund: { ...returnPayload.refund, method: "CASH", shiftId: targetShiftId },
+          clientRequestId: returnPayload.clientRequestId,
+        },
+        actor,
+        { skipCaptureWindow: true },
+      );
+    } catch (e) {
+      await db
+        .update(offlineRecoveryItems)
+        .set({ recoveryStatus: "PENDING", reviewedBy: null, reviewedAt: null })
+        .where(eq(offlineRecoveryItems.id, id));
+      throw e;
+    }
+    await db
+      .update(offlineRecoveryItems)
+      .set({ invoiceId: returnPayload.invoiceId })
+      .where(eq(offlineRecoveryItems.id, id));
+    return {
+      recoveryItemId: id,
+      invoiceId: returnPayload.invoiceId,
+      offlineReceiptNumber: item.offlineReceiptNumber,
+    };
   }
 
   const payload = JSON.parse(item.payload) as ReplayOfflineSaleInput;

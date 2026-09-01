@@ -366,6 +366,9 @@ private fun ApprovalDetail(
         item { HorizontalDivider() }
         item { DetailLine("التفاصيل", request.detail) }
         request.amount?.let { amount -> item { DetailLine("القيمة", amount) } }
+        // حقائقُ الحمولة قبل القرار: بلا هذه ينفّذ المُعتمِد حركةَ نقدٍ ومخزونٍ ودفترٍ
+        // وهو لا يرى كمّيةً ولا مبلغَ ردٍّ ولا مصيرَ بضاعة (تصويب مراجعة Codex على PR #932).
+        items(request.facts) { fact -> DetailLine(fact.label, fact.value) }
         if (request.currentQuantity != null && request.targetQuantity != null) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
