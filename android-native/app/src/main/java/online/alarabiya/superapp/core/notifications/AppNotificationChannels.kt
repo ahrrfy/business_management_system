@@ -7,41 +7,58 @@ import android.content.Context
 
 /** Stable channel identifiers. Never derive channel IDs from remote payloads. */
 object AppNotificationChannels {
-    const val ACTIONS = "operational_actions"
-    const val INFORMATION = "business_updates"
-    // New stable ID: channel importance cannot be raised after Android creates a channel.
-    const val ATTENDANCE_UPDATES = "attendance_updates_v1"
+    const val OPERATIONS = "operations_v1"
+    const val ADMIN = "administration_v1"
+    const val EMPLOYEE = "employee_updates_v1"
+    const val SYSTEM = "system_updates_v1"
+    const val APPROVALS = "approvals_v1"
 
     fun create(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannels(
             listOf(
                 NotificationChannel(
-                    ACTIONS,
-                    "إجراءات مطلوبة",
+                    OPERATIONS,
+                    "العمليات والمهام",
                     NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
-                    description = "الموافقات والمهام التي تتطلب إجراءً"
+                    description = "المهام والإسنادات وتحديثات سير العمل"
                     enableVibration(true)
                     lockscreenVisibility = Notification.VISIBILITY_PRIVATE
                 },
                 NotificationChannel(
-                    INFORMATION,
-                    "تحديثات العمل",
+                    ADMIN,
+                    "الإشعارات الإدارية",
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "الحضور والجلسات والتنبيهات الموجهة للإدارة"
+                    enableVibration(true)
+                    lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+                },
+                NotificationChannel(
+                    EMPLOYEE,
+                    "إشعارات الموظف",
                     NotificationManager.IMPORTANCE_DEFAULT,
                 ).apply {
-                    description = "تحديثات الدوام والرواتب والعمليات"
+                    description = "الدوام والإجازات والرواتب والتحديثات الشخصية"
                     lockscreenVisibility = Notification.VISIBILITY_PRIVATE
                 },
                 NotificationChannel(
-                    ATTENDANCE_UPDATES,
-                    "الحضور والانصراف",
+                    SYSTEM,
+                    "إشعارات النظام",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply {
+                    description = "الإعلانات والتنبيهات الآلية من النظام"
+                    lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+                },
+                NotificationChannel(
+                    APPROVALS,
+                    "الاعتمادات المطلوبة",
                     NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
-                    description = "تأكيدات الحضور والانصراف المسجلة من أجهزة الشركة"
+                    description = "الطلبات والقرارات التي تتطلب اعتماداً"
                     enableVibration(true)
-                    // The individual notification decides PUBLIC vs PRIVATE from its sanitized
-                    // payload. A channel-level override would incorrectly expose sensitive events.
+                    lockscreenVisibility = Notification.VISIBILITY_PRIVATE
                 },
             ),
         )

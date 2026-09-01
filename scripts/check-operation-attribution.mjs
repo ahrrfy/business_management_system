@@ -76,6 +76,7 @@ const BACKGROUND_POLICIES = {
   startReconcileScheduler: "read-only financial reconciliation",
   startReservationsSweeper: "durable reservationEvents + system summary",
   startStorefrontPushCampaignWorker: "durable storefrontPushDeliveries",
+  startWebPushOutboxWorker: "durable webPushOutbox + pushNotificationLog",
   startWaOutboxSweeper: "durable waOutbox/waWebhookEvents + system summary",
 };
 const index = read("server/index.ts");
@@ -97,6 +98,7 @@ const CENTRALIZED_JOB_FILES = {
   delivery_stale_sweep: "server/services/delivery/staleSweep.ts",
   morning_push: "server/services/morningPushScheduler.ts",
   native_push_outbox: "server/services/nativePushOutboxWorker.ts",
+  web_push_outbox: "server/services/webPushOutboxWorker.ts",
   online_order_reservation_expiry: "server/services/onlineOrderExpirySweeper.ts",
   product_studio_staging: "server/services/productStudioStagingWorker.ts",
   reception_draft_sweep: "server/services/reception/draft.ts",

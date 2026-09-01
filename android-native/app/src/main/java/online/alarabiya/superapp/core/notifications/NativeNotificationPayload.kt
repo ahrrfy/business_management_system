@@ -106,6 +106,7 @@ object NativeNotificationPayloadParser {
             intent = NativeFeatureIntent.VIEW,
             requiresEntity = true,
         )
+        "SESSION_EVENT", "SYSTEM" -> destination == NativeDestination.Alerts
         else -> false
     }
 

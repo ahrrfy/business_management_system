@@ -75,7 +75,7 @@
     },
     "expressRoutes": 21,
     "expressMounts": 12,
-    "jobs": 23,
+    "jobs": 24,
     "routerFiles": 107,
     "proposedPermissions": 1027,
     "proposedDomains": {
@@ -21329,7 +21329,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 790
+      "line": 796
     },
     {
       "kind": "interval",
@@ -21425,6 +21425,11 @@
       "kind": "interval",
       "file": "server/services/storeAdmin/storefrontPushCampaignService.ts",
       "line": 447
+    },
+    {
+      "kind": "interval",
+      "file": "server/services/webPushOutboxWorker.ts",
+      "line": 239
     },
     {
       "kind": "cron",

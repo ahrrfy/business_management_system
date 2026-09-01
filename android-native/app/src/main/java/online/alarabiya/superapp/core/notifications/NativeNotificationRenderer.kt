@@ -44,9 +44,11 @@ object NativeNotificationRenderer {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val channel = when (NativeNotificationPrivacyPolicy.deliveryLane(payload.kind, payload.urgency)) {
-            NotificationDeliveryLane.ATTENDANCE -> AppNotificationChannels.ATTENDANCE_UPDATES
-            NotificationDeliveryLane.ACTIONS -> AppNotificationChannels.ACTIONS
-            NotificationDeliveryLane.INFORMATION -> AppNotificationChannels.INFORMATION
+            NotificationDeliveryLane.OPERATIONS -> AppNotificationChannels.OPERATIONS
+            NotificationDeliveryLane.ADMIN -> AppNotificationChannels.ADMIN
+            NotificationDeliveryLane.EMPLOYEE -> AppNotificationChannels.EMPLOYEE
+            NotificationDeliveryLane.SYSTEM -> AppNotificationChannels.SYSTEM
+            NotificationDeliveryLane.APPROVAL -> AppNotificationChannels.APPROVALS
         }
         val lockScreenExposure = NativeNotificationPrivacyPolicy.lockScreenExposure(payload.sensitive)
         val publicVersion = NotificationCompat.Builder(context, channel)

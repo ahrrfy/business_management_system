@@ -81,6 +81,8 @@ class NativeNotificationPayloadParserTest {
             "LEAVE_STATUS" to "alrueya://app/profile",
             "LEAVE_STATUS" to "alrueya://app/module/hr/view/11",
             "ANNOUNCEMENT" to "alrueya://app/module/announcements/view/5",
+            "SESSION_EVENT" to "alrueya://app/alerts",
+            "SYSTEM" to "alrueya://app/alerts",
         )
 
         accepted.forEach { (kind, destination) ->
@@ -104,6 +106,7 @@ class NativeNotificationPayloadParserTest {
             "ATTENDANCE_CHECK_OUT" to "alrueya://app/profile",
             "PAYROLL_READY" to "alrueya://app/module/tasks/view/42",
             "SYSTEM" to "alrueya://app/home",
+            "SESSION_EVENT" to "alrueya://app/profile",
             "ANNOUNCEMENT" to "alrueya://app/module/announcements/browse",
         )
 

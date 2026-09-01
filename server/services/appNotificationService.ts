@@ -4,13 +4,10 @@ import {
   appNotificationPreferences,
   appNotifications,
   nativePushOutbox,
+  webPushOutbox,
 } from "../../drizzle/schema";
 import { isDupEntry } from "@shared/errorMap.ar";
-import {
-  isPushEnabled,
-  sendPushToUser,
-  type AppPushPayload,
-} from "./pushService";
+import { type AppPushPayload } from "./pushService";
 import {
   NATIVE_PUSH_ENVIRONMENTS,
   normalizeNativePushPayload,
@@ -33,6 +30,14 @@ export const APP_NOTIFICATION_KINDS = [
   "SYSTEM",
 ] as const;
 export type AppNotificationKind = (typeof APP_NOTIFICATION_KINDS)[number];
+export const APP_NOTIFICATION_FAMILIES = [
+  "OPERATIONS",
+  "ADMIN",
+  "EMPLOYEE",
+  "SYSTEM",
+  "APPROVAL",
+] as const;
+export type AppNotificationFamily = (typeof APP_NOTIFICATION_FAMILIES)[number];
 export const APP_NOTIFICATION_EVENT_KEY_MAX_LENGTH = 190;
 
 export interface NotificationPreferencesInput {
@@ -48,6 +53,8 @@ export interface NotificationPreferencesInput {
 export interface CreateAppNotificationInput {
   userId: number;
   kind: AppNotificationKind;
+  /** التصنيف الظاهر للمستخدم. غيابه يستعمل تصنيفاً آمناً مشتقاً من النوع. */
+  family?: AppNotificationFamily;
   title: string;
   body: string;
   route: string;
@@ -74,6 +81,18 @@ const DEFAULT_PREFERENCES: NotificationPreferencesInput = {
   quietHoursStart: null,
   quietHoursEnd: null,
 };
+
+export function defaultNotificationFamily(
+  kind: AppNotificationKind,
+): AppNotificationFamily {
+  if (kind === "TASK_ASSIGNED") return "OPERATIONS";
+  if (kind === "PAYROLL_READY" || kind === "ATTENDANCE" || kind === "LEAVE_STATUS") {
+    return "EMPLOYEE";
+  }
+  if (kind === "APPROVAL_REQUIRED") return "APPROVAL";
+  if (kind === "SESSION_EVENT") return "ADMIN";
+  return "SYSTEM";
+}
 
 function preferencesFromRow(
   row?: typeof appNotificationPreferences.$inferSelect,
@@ -106,12 +125,16 @@ function pushKindFor(
   | "LEAVE_STATUS"
   | "APPROVAL_REQUIRED"
   | "SESSION_EVENT"
+  | "ANNOUNCEMENT"
+  | "SYSTEM"
   | null {
   if (kind === "TASK_ASSIGNED") return "TASK_ASSIGNED";
   if (kind === "PAYROLL_READY") return "PAYROLL_READY";
   if (kind === "LEAVE_STATUS") return "LEAVE_STATUS";
   if (kind === "APPROVAL_REQUIRED") return "APPROVAL_REQUIRED";
   if (kind === "SESSION_EVENT") return "SESSION_EVENT";
+  if (kind === "ANNOUNCEMENT") return "ANNOUNCEMENT";
+  if (kind === "SYSTEM") return "SYSTEM";
   return null;
 }
 
@@ -142,6 +165,22 @@ export function buildAppWebPushPayload(
   }
   const kind = pushKindFor(input.kind);
   if (!kind) return null;
+  if (input.kind === "ANNOUNCEMENT") {
+    return {
+      kind,
+      title: "إعلان جديد",
+      body: "افتح النظام لقراءة الإعلان.",
+      url: route,
+    };
+  }
+  if (input.kind === "SYSTEM") {
+    return {
+      kind,
+      title: "تحديث من النظام",
+      body: "افتح النظام لعرض التفاصيل.",
+      url: route,
+    };
+  }
   const body =
     input.kind === "PAYROLL_READY"
       ? "تم تحديث كشفك الشخصي."
@@ -248,10 +287,10 @@ function nativeDestinationFor(
     return entity ? `alrueya://app/module/announcements/view/${entity}` : null;
   }
   if (input.kind === "SESSION_EVENT") {
-    // مسارٌ حصريٌّ للأحداث الأمنيّة الإداريّة (ن-٢-د). يحمل معرّف الموظّف كسياق افتتاحيّ
-    // لشاشة التنبيهات — الفتحُ الفعليّ للتفاصيل يبقى على الإدارة داخل التطبيق.
-    return entity ? `alrueya://app/alerts/session/${entity}` : "alrueya://app/alerts";
+    // جذر التنبيهات هو الشكل المسموح في عقد Android؛ تفاصيل الحدث تُقرأ من الصندوق المصادَق.
+    return "alrueya://app/alerts";
   }
+  if (input.kind === "SYSTEM") return "alrueya://app/alerts";
   return null;
 }
 
@@ -274,6 +313,7 @@ function nativePayloadFor(
     input.kind === "APPROVAL_REQUIRED" ||
     // إشعار الجلسة يحمل عنوان IP والموقع الجغرافي ⇒ حسّاس كذلك.
     input.kind === "SESSION_EVENT" ||
+    input.kind === "SYSTEM" ||
     (input.kind === "ATTENDANCE" && input.lockScreenSafe !== true);
   return normalizeNativePushPayload({
     notificationId,
@@ -327,14 +367,15 @@ export async function createAppNotification(
   const route = safeInternalRoute(input.route);
   const eventKey = input.eventKey.trim().slice(0, APP_NOTIFICATION_EVENT_KEY_MAX_LENGTH);
   const normalizedInput = { ...input, eventKey };
+  const family = input.family ?? defaultNotificationFamily(input.kind);
   const webPayload = buildAppWebPushPayload(normalizedInput);
   const nativePayload = nativePayloadFor(normalizedInput);
-  let webPushAllowed = false;
   try {
     await db.transaction(async (tx) => {
       await tx.insert(appNotifications).values({
         userId: input.userId,
         kind: input.kind,
+        family,
         title: input.title.trim().slice(0, 180),
         body: input.body.trim().slice(0, 600),
         route,
@@ -357,7 +398,6 @@ export async function createAppNotification(
         preferences.quietHoursStart,
         preferences.quietHoursEnd,
       );
-      webPushAllowed = quietRelease == null;
       if (nativePayload) {
         await tx.insert(nativePushOutbox).values({
           userId: input.userId,
@@ -367,15 +407,18 @@ export async function createAppNotification(
           availableAt: quietRelease ?? new Date(),
         });
       }
+      if (webPayload) {
+        await tx.insert(webPushOutbox).values({
+          userId: input.userId,
+          eventKey,
+          payload: webPayload,
+          availableAt: quietRelease ?? new Date(),
+        });
+      }
     });
   } catch (error) {
     if (isDupEntry(error)) return { created: false };
     throw error;
-  }
-
-  if (webPushAllowed && webPayload && isPushEnabled()) {
-    // Web Push قناة توافق قديمة best-effort. قناة Android الأصلية وحدها تمر عبر outbox دائم.
-    void sendPushToUser(input.userId, webPayload).catch(() => undefined);
   }
   return { created: true };
 }
