@@ -66,6 +66,12 @@ interface AppSelectProps {
    * بلا `dir="ltr"` تنقلب علامات الترقيم والشرطات في العرض.
    */
   dir?: "rtl" | "ltr";
+  /**
+   * أنماطٌ سطريّة على الزرّ. يلزم شاشات الكاشير (POS/PrintPOS) التي تبني هويّتها
+   * البصريّة على توكنز `--pos-*` بأحجامٍ محسوبة للمس — بلا هذه الخاصّية كانت الشاشة
+   * تبقى على `<select>` خامّ لأنّ المكوّن الموحّد لا يسعها.
+   */
+  style?: React.CSSProperties;
   /** أطفال `<option>`/`<optgroup>` — يُحلَّلون بنيوياً إلى SelectItem/SelectGroup. */
   children: React.ReactNode;
 }
@@ -154,6 +160,7 @@ export function AppSelect({
   "aria-invalid": ariaInvalid,
   title,
   dir,
+  style,
   children,
 }: AppSelectProps) {
   // نستخرج placeholder من `<option value="">` إن وُجد ولم يُمرَّر placeholder صريحاً.
@@ -184,6 +191,7 @@ export function AppSelect({
         aria-invalid={ariaInvalid}
         title={title}
         dir={dir}
+        style={style}
       >
         <SelectValue placeholder={resolvedPlaceholder} />
       </SelectTrigger>

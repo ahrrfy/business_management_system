@@ -2,6 +2,7 @@
 // رصيد/متأخّر/آخر دفعة/أيام تأخّر/أعلى فاتورة/حدّ ائتمان + تصنيف خطر (عالٍ/متوسّط/منخفض).
 // أزرار الصفّ: كشف الحساب · تذكير واتساب (صفري التكلفة). عرض + تصدير Excel + طباعة A4 (ReportShell).
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { MessageCircle, FileText } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -148,19 +149,19 @@ export default function CreditExposureReport() {
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(value) => setBranchId(value ? Number(value) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">مستوى الخطر</label>
-            <select className={selectCls} value={risk} onChange={(e) => setRisk(e.target.value as RiskFilter)}>
+            <AppSelect className="h-9" value={risk} onValueChange={(value) => setRisk(value as RiskFilter)}>
               <option value="all">الكل</option>
               <option value="high">عالٍ</option>
               <option value="medium">متوسّط</option>
               <option value="low">منخفض</option>
-            </select>
+            </AppSelect>
           </div>
         </div>
       }

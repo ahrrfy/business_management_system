@@ -1,6 +1,7 @@
 // سجلّ المبيعات المفصّل — كل بنود الفواتير (سطر-سطر) بفلاتر (تاريخ/فرع) + إجماليات + ترقيم صفحات.
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). ترقيم صفحات بالخادم (limit/offset).
 import { useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -169,10 +170,10 @@ export default function SalesRegister() {
           <PeriodFilter value={period} onChange={changePeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => { setBranchId(e.target.value ? Number(e.target.value) : ""); setPage(0); }}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(value) => { setBranchId(value ? Number(value) : ""); setPage(0); }}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث</label>

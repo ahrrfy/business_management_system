@@ -1,6 +1,7 @@
 // تبويب «تسديد مورد» — تسديد ذمّة مورد عبر الصيرفة (دولار أو دينار) مع معاينة فرق الصرف والعمولة.
 // لا يمسّ الخزينة (النقد غادر عند الإيداع): يخفض محفظة الصيرفة ودين المورد فقط.
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { HandCoins } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -151,39 +152,39 @@ export default function ExchangeSettle() {
         <div className={`grid gap-4 ${currency === "USD" ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
-            <select className={`${selectCls} w-full`} value={houseId} onChange={(e) => setHouseId(Number(e.target.value))}>
+            <AppSelect className={`${selectCls} w-full`} value={String(houseId)} onValueChange={(value) => setHouseId(Number(value))}>
               <option value={0}>— اختر —</option>
               {houseRows.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">المورد</label>
-            <select className={`${selectCls} w-full`} value={supplierId} onChange={(e) => {
-              setSupplierId(Number(e.target.value));
+            <AppSelect className={`${selectCls} w-full`} value={String(supplierId)} onValueChange={(value) => {
+              setSupplierId(Number(value));
               setPurchaseOrderId(0);
             }}>
               <option value={0}>— اختر —</option>
               {supRows.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           {currency === "USD" && (
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">فاتورة الشراء الدولارية</label>
-              <select className={`${selectCls} w-full`} value={purchaseOrderId} onChange={(e) => setPurchaseOrderId(Number(e.target.value))}>
+              <AppSelect className={`${selectCls} w-full`} value={String(purchaseOrderId)} onValueChange={(value) => setPurchaseOrderId(Number(value))}>
                 <option value={0}>— اختر —</option>
                 {usdOrders.map((p) => {
                   const rem = D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).minus(D(p.returnedUsd ?? 0)).toFixed(2);
                   return <option key={p.id} value={p.id}>{p.poNumber} — متبقي {rem}$</option>;
                 })}
-              </select>
+              </AppSelect>
             </div>
           )}
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الفرع</label>
-            <select className={`${selectCls} w-full`} value={effBranch} onChange={(e) => setBranchId(Number(e.target.value))} disabled={!isAdmin}>
+            <AppSelect className={`${selectCls} w-full`} value={String(effBranch)} onValueChange={(value) => setBranchId(Number(value))} disabled={!isAdmin}>
               <option value={0}>— اختر —</option>
               {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
         </div>
 

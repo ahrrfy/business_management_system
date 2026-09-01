@@ -1,4 +1,5 @@
 import { balanceOptionText } from "@/components/BalanceBadge";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { ListToolbar, RowActions } from "@/components/list";
 import { ErrorState } from "@/components/PageState";
 import { PageHeader } from "@/components/PageHeader";
@@ -141,10 +142,10 @@ export default function PurchaseReturns() {
             onResetFilters={resetF}
             filters={
               <>
-                <select
-                  className={selectCls}
+                <AppSelect
+                  className="h-9"
                   value={f.supplierId}
-                  onChange={(e) => setF({ supplierId: e.target.value })}
+                  onValueChange={(value) => setF({ supplierId: value })}
                 >
                   <option value="">— كل الموردين —</option>
                   {(suppliers.data ?? []).map((s) => (
@@ -153,17 +154,17 @@ export default function PurchaseReturns() {
                       {balanceOptionText((s as { currentBalance?: string | null }).currentBalance, "supplier")}
                     </option>
                   ))}
-                </select>
-                <select
-                  className={selectCls}
+                </AppSelect>
+                <AppSelect
+                  className="h-9"
                   value={f.branchId}
-                  onChange={(e) => setF({ branchId: e.target.value })}
+                  onValueChange={(value) => setF({ branchId: value })}
                 >
                   <option value="">— كل الفروع —</option>
                   {(branches.data ?? []).map((b) => (
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
-                </select>
+                </AppSelect>
                 <Input type="date" dir="ltr" className="h-8 w-36" value={f.from} onChange={(e) => setF({ from: e.target.value })} title="من تاريخ" />
                 <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} title="إلى تاريخ" />
               </>

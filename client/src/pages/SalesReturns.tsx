@@ -146,16 +146,16 @@ export default function SalesReturns() {
                   />
                 </FilterField>
                 <FilterField label="الفرع">
-                  <select
-                    className={selectCls}
-                    value={branchId}
-                    onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+                  <AppSelect
+                    className="h-9"
+                    value={String(branchId)}
+                    onValueChange={(value) => setBranchId(value ? Number(value) : "")}
                   >
                     <option value="">— كل الفروع —</option>
                     {(branches.data ?? []).map((b) => (
                       <option key={b.id} value={b.id}>{b.name}</option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="منفّذ المرتجع">
                   <AppSelect
@@ -166,7 +166,7 @@ export default function SalesReturns() {
                   >
                     <option value="ALL">— كل المنفّذين —</option>
                     {(performers.data ?? []).map((p) => (
-                      <option key={p.id} value={String(p.id)}>{p.name}</option>
+                      <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </AppSelect>
                 </FilterField>
