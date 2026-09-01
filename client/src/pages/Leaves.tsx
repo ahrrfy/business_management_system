@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -95,6 +97,7 @@ export default function Leaves() {
     const q = query.trim().toLocaleLowerCase("ar");
     return q ? rows.filter((l) => [l.employeeName, l.leaveType, l.reason, leaveStatusLabel(l.status)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
   }, [rows, query]);
+  type LeaveRow = (typeof visibleRows)[number];
 
   // مؤشّرات: قيد الموافقة، موافق عليها، أيام إجازة هذا الشهر — تُحسب خادمياً على كامل المجموعة
   // المفلترة (لا على الصفحة المعروضة وحدها) كي تبقى صحيحة عبر كل الصفحات.
@@ -148,6 +151,94 @@ export default function Leaves() {
       reason: reason.trim() || undefined,
     });
   };
+  /**
+   * أعمدة طلبات الإجازة — منقولة حرفياً.
+   * ⚠️ «الموظف» هنا **موضوع** السجلّ لا فاعله (صاحب الإجازة)، فلا يُسمّى «نفّذها»:
+   * الفاعل هو من وافق/رفض وهو غير معروضٍ في هذا الجدول (راجع حارس check:row-attribution).
+   */
+  const leaveColumns = useMemo<ColumnDef<LeaveRow, unknown>[]>(() => [
+    {
+      id: "employee", header: "الموظف",
+      accessorFn: (l) => l.employeeName || "—",
+      cell: ({ row }) => (
+        <div className="flex items-center gap-2">
+          <EmpAvatar name={row.original.employeeName} color={row.original.colorTag} photoUrl={row.original.photoUrl} sizePx={28} />
+          <span className="font-medium">{row.original.employeeName || "—"}</span>
+        </div>
+      ),
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "leaveType", header: "النوع",
+      accessorFn: (l) => l.leaveType,
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {row.original.leaveType}
+          {!row.original.paid && <span className="text-muted-foreground"> · غير مدفوعة</span>}
+        </span>
+      ),
+      meta: { kind: "text" },
+    },
+    { id: "fromDate", header: "من", accessorFn: (l) => String(l.fromDate ?? ""), cell: ({ row }) => fmtDate(row.original.fromDate), meta: { kind: "date" } },
+    { id: "toDate", header: "إلى", accessorFn: (l) => String(l.toDate ?? ""), cell: ({ row }) => fmtDate(row.original.toDate), meta: { kind: "date" } },
+    { id: "days", header: "الأيام", accessorFn: (l) => Number(l.days ?? 0), meta: { kind: "number" } },
+    {
+      id: "reason", header: "السبب",
+      accessorFn: (l) => l.reason ?? "—",
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.reason ?? "—"}</span>,
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "status", header: "الحالة",
+      accessorFn: (l) => l.status,
+      cell: ({ row }) => <LeaveStatusBadge status={row.original.status} />,
+      meta: { kind: "status" },
+    },
+    {
+      id: "actions", header: "إجراء",
+      cell: ({ row }) => {
+        const l = row.original;
+        return (
+          <RowActions
+            mode="inline"
+            actions={[
+              {
+                key: "approve", kind: "approve", label: "موافقة",
+                hidden: l.status !== "pending", disabled: decide.isPending,
+                disabledReason: "توجد عملية قرار قيد التنفيذ",
+                onSelect: () => void (async () => {
+                  if (!(await confirm({ variant: "info", title: "الموافقة على الإجازة", description: `الموافقة على إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) وخصم رصيدها؟`, confirmText: "موافقة" }))) return;
+                  decide.mutate({ id: l.id, decision: "approved" });
+                })(),
+                gate: { module: "hr", level: "FULL" },
+              },
+              {
+                key: "reject", kind: "reverse", label: "رفض", variant: "destructive",
+                hidden: l.status !== "pending", disabled: decide.isPending,
+                disabledReason: "توجد عملية قرار قيد التنفيذ",
+                onSelect: () => void (async () => {
+                  if (!(await confirm({ variant: "warning", title: "رفض الطلب", description: `رفض طلب إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم)؟`, confirmText: "رفض" }))) return;
+                  decide.mutate({ id: l.id, decision: "rejected" });
+                })(),
+                gate: { module: "hr", level: "FULL" },
+              },
+              {
+                key: "cancel", kind: "reverse", label: "إلغاء الإجازة", variant: "destructive",
+                hidden: l.status !== "approved", disabled: cancel.isPending,
+                disabledReason: "توجد عملية إلغاء قيد التنفيذ",
+                onSelect: () => void (async () => {
+                  if (!(await confirm({ variant: "danger", title: "إلغاء الإجازة", description: `إلغاء إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) واسترداد الأيام؟ يؤثّر على السجلّات.`, confirmText: "إلغاء الإجازة" }))) return;
+                  cancel.mutate({ id: l.id });
+                })(),
+                gate: { module: "hr", level: "FULL" },
+              },
+            ]}
+          />
+        );
+      },
+      meta: { kind: "actions" },
+    },
+  ], [decide.isPending, cancel.isPending]);
 
   return (
     <div className="space-y-4">
@@ -237,94 +328,14 @@ export default function Leaves() {
               />
             </CardHeader>
             <CardContent className="p-0">
-              <ScrollTableShell bordered={false}>
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="p-2">الموظف</th>
-                      <th className="p-2">النوع</th>
-                      <th className="p-2">من</th>
-                      <th className="p-2">إلى</th>
-                      <th className="p-2 text-center">الأيام</th>
-                      <th className="p-2">السبب</th>
-                      <th className="p-2 text-center">الحالة</th>
-                      <th className="p-2 text-center">إجراء</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleRows.map((l) => (
-                      <tr key={l.id} className="border-t hover:bg-accent/40">
-                        <td className="p-2">
-                          <div className="flex items-center gap-2">
-                            <EmpAvatar name={l.employeeName} color={l.colorTag} photoUrl={l.photoUrl} sizePx={28} />
-                            <span className="font-medium">{l.employeeName || "—"}</span>
-                          </div>
-                        </td>
-                        <td className="p-2 text-xs">{l.leaveType}{!l.paid && <span className="text-muted-foreground"> · غير مدفوعة</span>}</td>
-                        <td className="p-2 text-xs tabular-nums" dir="ltr">{fmtDate(l.fromDate)}</td>
-                        <td className="p-2 text-xs tabular-nums" dir="ltr">{fmtDate(l.toDate)}</td>
-                        <td className="p-2 text-center tabular-nums" dir="ltr">{l.days}</td>
-                        <td className="p-2 text-xs text-muted-foreground max-w-[200px] truncate">{l.reason ?? "—"}</td>
-                        <td className="p-2 text-center"><LeaveStatusBadge status={l.status} /></td>
-                        <td className="p-2 text-center">
-                          <RowActions
-                            mode="inline"
-                            actions={[
-                              {
-                                key: "approve",
-                                kind: "approve",
-                                label: "موافقة",
-                                hidden: l.status !== "pending",
-                                disabled: decide.isPending,
-                                disabledReason: "توجد عملية قرار قيد التنفيذ",
-                                onSelect: () => void (async () => {
-                                  if (!(await confirm({ variant: "info", title: "الموافقة على الإجازة", description: `الموافقة على إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) وخصم رصيدها؟`, confirmText: "موافقة" }))) return;
-                                  decide.mutate({ id: l.id, decision: "approved" });
-                                })(),
-                                gate: { module: "hr", level: "FULL" },
-                              },
-                              {
-                                key: "reject",
-                                kind: "reverse",
-                                label: "رفض",
-                                variant: "destructive",
-                                hidden: l.status !== "pending",
-                                disabled: decide.isPending,
-                                disabledReason: "توجد عملية قرار قيد التنفيذ",
-                                onSelect: () => void (async () => {
-                                  if (!(await confirm({ variant: "warning", title: "رفض الطلب", description: `رفض طلب إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم)؟`, confirmText: "رفض" }))) return;
-                                  decide.mutate({ id: l.id, decision: "rejected" });
-                                })(),
-                                gate: { module: "hr", level: "FULL" },
-                              },
-                              {
-                                key: "cancel",
-                                kind: "reverse",
-                                label: "إلغاء الإجازة",
-                                variant: "destructive",
-                                hidden: l.status !== "approved",
-                                disabled: cancel.isPending,
-                                disabledReason: "توجد عملية إلغاء قيد التنفيذ",
-                                onSelect: () => void (async () => {
-                                  if (!(await confirm({ variant: "danger", title: "إلغاء الإجازة", description: `إلغاء إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) واسترداد الأيام؟ يؤثّر على السجلّات.`, confirmText: "إلغاء الإجازة" }))) return;
-                                  cancel.mutate({ id: l.id });
-                                })(),
-                                gate: { module: "hr", level: "FULL" },
-                              },
-                            ]}
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                    {list.isError && (
-                      <tr><td colSpan={8}><ErrorState message="تعذّر تحميل الطلبات." onRetry={() => list.refetch()} /></td></tr>
-                    )}
-                    {!list.isLoading && !list.isError && visibleRows.length === 0 && (
-                      <TableEmptyRow colSpan={8} message="لا طلبات مطابقة. غيّر الفلاتر أو أضف طلباً جديداً." />
-                    )}
-                  </tbody>
-                </table>
-              </ScrollTableShell>
+              <DataTable
+                columns={leaveColumns}
+                data={visibleRows}
+                loading={list.isLoading}
+                searchable={false}
+                errorState={{ isError: list.isError, message: "تعذّر تحميل الطلبات.", onRetry: () => void list.refetch() }}
+                emptyText="لا طلبات مطابقة. غيّر الفلاتر أو أضف طلباً جديداً."
+              />
               {/* ترقيم حقيقي — خادميّ (offset/limit)، لا تحميل كامل الجدول دفعةً واحدة. */}
               <div className="flex items-center justify-between gap-2 p-2 border-t text-xs text-muted-foreground">
                 <span>
