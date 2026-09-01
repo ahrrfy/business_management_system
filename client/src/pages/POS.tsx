@@ -5,7 +5,6 @@
 import CustomerPicker from "@/components/CustomerPicker";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
-import { ShiftHandoverSection } from "@/components/pos/ShiftHandoverSection";
 import {
   discardLegacyPosDrafts,
   loadPosTabsDraft,
@@ -3443,7 +3442,6 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
   const [countEntered, setCountEntered] = useState(false);
-  const [handoverToUserId, setHandoverToUserId] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
   // ش٤ أوفلاين — حارس الطابور: إغلاق الوردية وثمة مبيعات غير مُزامنة يترك نقداً في الدرج بلا
@@ -3490,18 +3488,17 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
         expectedCash: r.expectedCash,
         countedCash:  r.countedCash,
         variance:     r.variance,
-        cashHandover: r.treasuryReturn
+        treasuryReturn: r.treasuryReturn
           ? {
               amount: r.countedCash,
               referenceNumber: r.treasuryReturn.handoverNumber,
-              recipientName: r.treasuryReturn.recipientName,
             }
           : null,
       });
       if (r.treasuryReturn) {
         notify.ok(
-          `سلّم ${formatIqd(r.countedCash)} إلى ${r.treasuryReturn.recipientName}`,
-          `العهدة ${r.treasuryReturn.handoverNumber} بانتظار العدّ والقبول في الخزينة.`,
+          `أُغلقت الوردية ورُحّل ${formatIqd(r.countedCash)} إلى الخزينة تلقائياً`,
+          `سند الترحيل ${r.treasuryReturn.handoverNumber}`,
         );
       }
       await utils.shifts.current.invalidate();
@@ -3521,17 +3518,14 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const showExpected = isElevatedRole || countEntered;
   const diffD       = showExpected && expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   const hasVariance = diffD != null && diffD.abs().gt("0.005");
-  const needsHandoverRecipient = countedD?.gt(0) === true && handoverToUserId == null;
-  const closeDisabled = !counted || closeShift.isPending || closeBlocked || hasVariance || needsHandoverRecipient;
+  const closeDisabled = !counted || closeShift.isPending || closeBlocked || hasVariance;
   const closeLabel = closeShift.isPending
     ? "جارٍ الإغلاق…"
     : closeBlocked
       ? "أكمل المزامنة أولاً"
       : hasVariance
         ? "الإغلاق مرفوض لوجود فرق"
-        : needsHandoverRecipient
-          ? "اختر مستلم عهدة الإغلاق"
-          : "إغلاق وطباعة Z";
+        : "إغلاق وطباعة Z";
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
   const openingBal  = openingD.toNumber();
   const diff        = diffD?.toNumber() ?? null;
@@ -3636,14 +3630,6 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             )}
 
-            <ShiftHandoverSection
-              branchId={branchId}
-              amount={counted}
-              value={handoverToUserId}
-              onChange={setHandoverToUserId}
-              disabled={closeShift.isPending}
-            />
-
             {/* ش٤ أوفلاين: لا مصدر مالي قبل ترحيل الفاتورة، لذلك لا يوجد تجاوز للإغلاق. */}
             {outboxQueued.count > 0 && (
               <div style={{ marginTop: 14, padding: "10px 12px", background: C.amberSoft, border: `1.5px solid ${C.amber}`, borderRadius: 9, fontSize: 12.5, color: C.fg }}>
@@ -3669,7 +3655,6 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 onClick={() => shift && closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
-                  handoverToUserId,
                 })}
                 style={{ flex: 1, height: 46, background: closeDisabled ? C.muted : C.danger, color: closeDisabled ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: closeDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
                 {closeLabel}

@@ -233,6 +233,7 @@ describe("closed cash-day writer inventory", () => {
       .filter((file): file is string => file != null)
       .sort();
     expect(transitions).toEqual([
+      "cashHandoverService.ts",
       "cashVarianceService.ts",
       "exchange/reverse.ts",
       "expenseService.ts",

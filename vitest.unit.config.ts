@@ -151,6 +151,7 @@ export default defineConfig({
       "client/src/components/cash/MissedDailyCountExceptionPanel.test.tsx",
       "client/src/pages/__tests__/nonPosInboundPaymentFailClosed.test.ts",
       "client/src/pages/__tests__/employmentStatusToggleContract.test.ts",
+      "client/src/pages/__tests__/shiftCloseSimplicity.test.ts",
       "client/src/pages/__tests__/productionPreviewErrorSurfaced.test.ts",
       "client/src/pages/__tests__/productionCapacityAndDivisibility.test.ts",
       "client/src/pages/__tests__/employeeTerminationOfficialPathContract.test.ts",

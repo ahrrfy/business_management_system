@@ -296,8 +296,6 @@ export const shiftRouter = router({
         countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود مبلغ غير سالب"),
         // treasury-stage2: snapshot عدّاد الفئات (اختياري).
         countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
-        // عقد الحيازة: عند وجود نقد يجب تسمية مدير مستقل يستلمه ويعدّه لاحقاً.
-        handoverToUserId: z.number().int().positive().nullish(),
         // مسار مالك استثنائي لورديات سالبة سبقت تفعيل الحارس. لا يَقبل مبلغ تمويل من العميل؛
         // الخدمة تعيد حساب العجز وتضيف خزينة→درج بالقيمة الدقيقة ثم تغلق بصفر.
         legacyNegativeRemediation: z
@@ -374,9 +372,6 @@ export const shiftRouter = router({
         closeShift({
           ...input,
           enforceCashGovernance: true,
-          // توافق العملاء السابقين الذين لا يعرفون handoverToUserId: لا نسقط النقد ولا
-          // ندخله الخزينة؛ يبقى في CASH_IN_TRANSIT بعهدة مالك الوردية حتى يعيد المدير إسناده.
-          allowLegacySelfCustody: input.handoverToUserId == null,
         }, {
           userId: ctx.user.id,
           branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
@@ -399,18 +394,23 @@ export const shiftRouter = router({
           varianceReasonCode: res.varianceReasonCode,
           varianceReason: res.varianceReason,
           requiresManagerReview: res.requiresManagerReview,
-          // النقد خرج من الدرج إلى عهدة المستلم، ولا يدخل الخزينة قبل عدّه وقبوله.
+          // النقد خرج من الدرج ودخل الخزينة تلقائياً داخل معاملة الإغلاق نفسها.
           treasuryReturn: res.treasuryReturn
             ? {
                 handoverNumber: res.treasuryReturn.handoverNumber,
                 amount: res.countedCash,
-                recipientUserId: res.treasuryReturn.recipientUserId,
+                destination: "TREASURY",
               }
             : null,
         },
       });
       return res;
     }),
+
+  // إغلاق الوردية لا يفتح عقد حيازة جديداً ولا يحتاج اسم مستلم.
+  // كامل النقد المطابق ينتقل إلى الخزينة داخل معاملة الإغلاق نفسها،
+  // بينما يبقى السحب أثناء الوردية أدناه مساراً تشغيلياً مستقلاً
+  // ذا مستلم مسمّى وقبول لاحق حتى لا تُخفَّف حوكمته مصادفةً.
 
   // السحب النقديّ أثناء الوردية (cash drop) — نقلٌ مِن الدرج إلى الخزينة في منتصف الوردية لتقليل
   // مخاطرة تكدّس النقد. مرآةٌ لحوكمة close (نفس treasuryCashierProcedure + فحص الملكية داخل الخدمة).
@@ -459,8 +459,8 @@ export const shiftRouter = router({
       return res;
     }),
 
-  // treasury-stage2: مستلِمو تسليم النقد عند إغلاق الوردية أو إعادة إسناد عهدة
-  // معلّقة. المستلِم admin/manager نشط، أمّا القارئ فيشمل الكاشير والمدير والمحاسب
+  // مستلمو السحب النقدي أثناء الوردية وإعادة إسناد العهد التشغيلية المعلّقة.
+  // المستلِم admin/manager نشط، أمّا القارئ فيشمل الكاشير والمدير والمحاسب
   // والمنح الصريح. غير admin يرى مستلمي فرعه فقط؛ admin يعبر الفروع لمعالجة
   // الوردية في الفرع المختار.
   handoverRecipients: treasuryHandoverRecipientsProcedure.query(async ({ ctx }) => {
