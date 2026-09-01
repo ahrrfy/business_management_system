@@ -56,6 +56,16 @@ interface AppSelectProps {
   /** aria-label اختياري (فُضِّل ربط <Label htmlFor={id}> عبر id، هذا للحالات القليلة بلا Label بصريّ). */
   "aria-label"?: string;
   "aria-invalid"?: boolean;
+  /**
+   * تلميحُ مرور (tooltip) على الزرّ. أُضيف ١/٩/٢٦: غيابُه كان يدفع الشاشات إلى `<select>`
+   * خامّ لمجرّد الحاجة إلى `title` — أي أنّ نقصَ الخاصّية كان يُنتج انحرافاً.
+   */
+  title?: string;
+  /**
+   * اتّجاه نصّ الزرّ. يلزم للقيم اللاتينية داخل صفحةٍ RTL (باركود · SKU · مبالغ):
+   * بلا `dir="ltr"` تنقلب علامات الترقيم والشرطات في العرض.
+   */
+  dir?: "rtl" | "ltr";
   /** أطفال `<option>`/`<optgroup>` — يُحلَّلون بنيوياً إلى SelectItem/SelectGroup. */
   children: React.ReactNode;
 }
@@ -142,6 +152,8 @@ export function AppSelect({
   id,
   "aria-label": ariaLabel,
   "aria-invalid": ariaInvalid,
+  title,
+  dir,
   children,
 }: AppSelectProps) {
   // نستخرج placeholder من `<option value="">` إن وُجد ولم يُمرَّر placeholder صريحاً.
@@ -170,6 +182,8 @@ export function AppSelect({
         className={cn("w-full", className)}
         aria-label={ariaLabel}
         aria-invalid={ariaInvalid}
+        title={title}
+        dir={dir}
       >
         <SelectValue placeholder={resolvedPlaceholder} />
       </SelectTrigger>

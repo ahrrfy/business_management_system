@@ -2,6 +2,7 @@
 // على نمط Customers.tsx. تستبدل posList (INNER JOIN يخفي الناقص + حدّ 500) بـadminList
 // التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
 import { AlertTriangle } from "lucide-react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { CopyInline } from "@/components/CopyButton";
@@ -342,16 +343,16 @@ export default function Products() {
                     المعتمد (Purchases/Customers، PR #559). checkbox يبقى inline بتسمية جانبية. */}
                 {canPickBranch && (
                   <FilterField label="الفرع (للمخزون)">
-                    <select
-                      value={branchId ?? ""}
-                      onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}
-                      className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+                    <AppSelect
+                      value={branchId == null ? "" : String(branchId)}
+                      onValueChange={(v) => setPickedBranch(v === "" ? "" : Number(v))}
+                      className="h-8"
                     >
                       <option value="">— اختر الفرع —</option>
                       {(branchesQ.data ?? []).map((b) => (
                         <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                 )}
                 {!canPickBranch && branchId != null && (
@@ -362,28 +363,28 @@ export default function Products() {
                   </FilterField>
                 )}
                 <FilterField label="الفئة">
-                  <select
+                  <AppSelect
                     value={categoryFilter}
-                    onChange={(e) => setCategoryFilter(e.target.value)}
-                    className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+                    onValueChange={setCategoryFilter}
+                    className="h-8"
                   >
                     <option value="">كل الفئات</option>
                     <option value="0">— بلا فئة —</option>
                     <CategoryOptionList categories={categoriesQ.data ?? []} />
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 {/* ٢٤/٨ — فلتر رؤية شبكة كاشير الطباعة (شريحة PR #755/#757/#767). */}
                 <FilterField label="كاشير الطباعة">
-                  <select
+                  <AppSelect
                     value={printPosFilter}
-                    onChange={(e) => setPrintPosFilter(e.target.value as "" | "1" | "0")}
-                    className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+                    onValueChange={(v) => setPrintPosFilter(v as "" | "1" | "0")}
+                    className="h-8"
                     aria-label="فلتر رؤية شبكة كاشير الطباعة"
                   >
                     <option value="">الكل</option>
                     <option value="1">يظهر</option>
                     <option value="0">مخفيّ</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input
@@ -713,14 +714,13 @@ export default function Products() {
           </DialogHeader>
           <div className="space-y-1">
             <label className="text-sm font-medium">الفئة الهدف</label>
-            <select
+            <AppSelect
               value={moveTo == null ? "" : String(moveTo)}
-              onChange={(e) => setMoveTo(e.target.value === "" ? null : Number(e.target.value))}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+              onValueChange={(v) => setMoveTo(v === "" ? null : Number(v))}
             >
               <option value="">— بلا فئة —</option>
               <CategoryOptionList categories={categoriesQ.data ?? []} />
-            </select>
+            </AppSelect>
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setMoveOpen(false)}>إلغاء</Button>
