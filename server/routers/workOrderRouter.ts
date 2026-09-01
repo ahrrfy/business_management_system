@@ -5,6 +5,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
 import { canCrossBranches } from "../lib/branchAuthority";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   auditLogs,
   customers,
@@ -420,6 +421,24 @@ function canSeeDeliveryForUser(user: { role: string; permissionsOverride?: unkno
 function workOrdersFullAccess(user: { role: string; permissionsOverride?: unknown }): boolean {
   if (user.role === "admin") return true;
   return hasModuleAccess(user.role, (user.permissionsOverride as never) ?? null, "workorders", "FULL");
+}
+
+/**
+ * أيحقّ لهذا الفاعل رؤيةُ **أرصدة الأدراج** بالأرقام؟ (مراجعة Codex P2)
+ *
+ * نقطتا التمهيد محروستان ببوّابة الفعل (`workorders`/`store`) عمداً — كي لا يُعطَّل فعلٌ
+ * مصرَّحٌ به لمن لا يملك الخزينة. لكنّ ذلك **لا يمنحه سطحَ الخزينة**: الرقمُ الدقيق يبقى
+ * خلف `treasury:READ`، ومن دونه يكفيه علَمُ `sufficient` لاختيارٍ صائب. (كان `sales_rep` —
+ * بلا صندوق — يتلقّى أرصدةَ كلّ درجٍ مفتوحٍ بالفرع، وهو نقضٌ لعزل الأدراج المقرَّر في تدقيق ٢/٧.)
+ */
+function maySeeDrawerCash(user: { role?: string | null; permissionsOverride?: unknown }): boolean {
+  return moduleAccessAllowed(
+    String(user.role ?? ""),
+    (user.permissionsOverride ?? null) as PermissionMap | null,
+    "treasury",
+    "READ",
+    [],
+  );
 }
 
 export const workOrderRouter = router({
@@ -1774,7 +1793,7 @@ export const workOrderRouter = router({
       operation: z.enum(["CANCEL", "REVERSE_DELIVERY"]),
     }))
     .query(async ({ input, ctx }) => withTx(async (tx) => {
-      const res = await workOrderRefundPreflight(tx, input.workOrderId, input.operation);
+      const res = await workOrderRefundPreflight(tx, input.workOrderId, input.operation, { exposeCash: maySeeDrawerCash(ctx.user) });
       if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
       // عزلُ الفرع بنفس سلطة التنفيذ (`canCrossBranches` = admin/isOwner وحدهما، قرار المالك):
       // التمهيدُ لا يكشف أدراجَ فرعٍ لا يملك الفاعلُ التصرّفَ فيه.

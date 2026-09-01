@@ -361,12 +361,22 @@ export default function WorkOrderDetail() {
           needsCashDrawer: controlPreflight.data.cashRefundRequired,
           estimatedCashOut: controlPreflight.data.expectedCashRefund,
           branchId: controlPreflight.data.branchId,
+          /**
+           * ⛔ **لا تختلق صفراً**: `controlPreflight` يقرأ عمودَ `shifts.expectedCash`، وهو
+           * لقطةٌ تُكتب **عند إغلاق الوردية** ⇒ `NULL` لكلّ وردية مفتوحة. وكان `?? "0.00"`
+           * يحوّل «لا أعرف» إلى «صفر»، فتُعرض «نقدٌ متاح 0 د.ع» على درجٍ يحمل ٥٦٬٠٠٠ فعلاً
+           * (بلاغُ المالك بالصورة، ١/٩). الرقمُ الحيّ يُحسب بـ`computeDrawerCashBalance` —
+           * وهو ما تفعله نقطةُ `refundPreflight`؛ أمّا هنا فنحذف الحقل حين يغيب:
+           * `drawerShortfallWarning` لا يُنذر بما لا يعرف، بدل إنذارٍ كاذبٍ على كلّ درج.
+           */
           drawers: controlPreflight.data.openReceptionShifts.map((shift) => ({
             shiftId: shift.id,
             userId: shift.userId,
             userName: shift.userName ?? `#${shift.userId}`,
             shiftType: "RECEPTION",
-            expectedCash: shift.expectedCash ?? "0.00",
+            ...(shift.expectedCash == null ? {} : { expectedCash: shift.expectedCash }),
+            // مجهولٌ ⇒ لا نَحكم بعدمِ الكفاية؛ الخادمُ هو الحَكَم عند التنفيذ.
+            sufficient: true,
           })),
         }
     : undefined;

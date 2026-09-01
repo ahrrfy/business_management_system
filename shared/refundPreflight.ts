@@ -29,8 +29,20 @@ export interface RefundDrawerCandidate {
   userId: number;
   userName: string;
   shiftType: string;
-  /** النقدُ المتاح الآن بنفس صيغة `assertCashOutAvailable` — نصٌّ لا رقم (§٥). */
-  expectedCash: string;
+  /**
+   * النقدُ المتاح الآن بنفس صيغة `assertCashOutAvailable` — نصٌّ لا رقم (§٥).
+   *
+   * ⚠️ **يُحجَب عمّن لا يملك `treasury:READ`** (مراجعة Codex P2): هذه النقاطُ محروسةٌ ببوّابة
+   * الفعل (`workorders`/`store`)، فدورٌ كـ`sales_rep` (بلا صندوق، `treasury:NONE`) كان يتلقّى
+   * **أرصدةَ كلّ درجٍ مفتوحٍ بالفرع** — تجاوزٌ لعزل الأدراج المُقرَّر في تدقيق ٢/٧ (معرفةُ
+   * أرصدة الزملاء لحظياً تُمكّن استهداف السرقة). المحجوبُ عنه يحصل على `sufficient` وحده.
+   */
+  expectedCash?: string;
+  /**
+   * أيكفي هذا الدرجُ المبلغَ المتوقَّع؟ — بديلٌ غيرُ حسّاس يُغني عن الرقم لمن لا يملك الخزينة:
+   * يكفي لاختيارٍ صائب بلا كشفِ رصيد.
+   */
+  sufficient: boolean;
 }
 
 export interface RefundPreflight {

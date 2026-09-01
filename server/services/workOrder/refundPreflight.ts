@@ -8,8 +8,8 @@
  * [`workOrderFeeHeldNet`](./deliveryFeeRefund.ts)) — فأيُّ تغييرٍ في قواعد الردّ ينعكس هنا
  * تلقائياً. تكرارُ المنطق نسخاً كان سيُنتج تمهيداً يشيخ بصمتٍ ويكذب على الشاشة.
  */
-import { and, eq, isNull, notLike, or, sql } from "drizzle-orm";
-import { deliveryConsignments, invoices, receipts, shifts, users, workOrders } from "../../../drizzle/schema";
+import { and, eq, inArray, isNull, notLike, or, sql } from "drizzle-orm";
+import { deliveryConsignments, invoiceItems, invoices, receipts, shifts, users, workOrders } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import { computeDrawerCashBalance } from "../cash/cashAvailability";
@@ -32,6 +32,7 @@ async function eligibleDrawers(
   tx: Tx,
   branchId: number,
   shiftType: string | null,
+  opts: { needed: ReturnType<typeof money>; exposeCash: boolean },
 ): Promise<RefundDrawerCandidate[]> {
   const conds = [eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")];
   if (shiftType != null) conds.push(eq(shifts.shiftType, shiftType as "RECEPTION"));
@@ -56,55 +57,87 @@ async function eligibleDrawers(
       userId: Number(r.userId),
       userName: String(r.userName ?? ""),
       shiftType: String(r.shiftType ?? ""),
-      expectedCash: toDbMoney(round2(available)),
+      // الرقمُ الحسّاس لمن يملك الخزينة؛ وللبقية علَمُ الكفاية وحده.
+      ...(opts.exposeCash ? { expectedCash: toDbMoney(round2(available)) } : {}),
+      sufficient: available.gte(opts.needed),
     });
   }
   return out;
 }
 
 /**
- * النقدُ الخارج عند **إلغاء** أمر الشغل — ثلاثةُ روافد، كما في
- * [`cancel.ts`](./cancel.ts) حرفاً بحرف:
- *  ١) إيصالُ العربون المباشر (بلا فاتورة، وليس أمانةَ أجرة) إن كانت طريقتُه نقدية.
- *  ٢) **حصصُ العربون المطبَّقة** من مسوّدة الاستقبال — وهي التي كان التخمينُ العميليّ يعميها
- *     كلّياً (`workOrders.deposit` صفرٌ و`paymentMethod` فارغة بينما النقدُ محتجزٌ فعلاً).
- *  ٣) أمانةُ أجرة التوصيل — **نقداً دائماً** ولو كان العربون بطاقة.
+ * النقدُ الخارج عند **إلغاء** أمر الشغل — **مطابقٌ لبنية `cancelWorkOrder` لا لِما ينبغي أن تكون.**
+ *
+ * ⚠️ **قيدٌ حاسم (مراجعة Codex، الجولة الثانية):** كتلةَ الردّ كلَّها في
+ * [`cancel.ts`](./cancel.ts) محكومةٌ بـ`if (refundD.gt(0))` حيث `refundD = wo.deposit` —
+ * فحصصُ العربون المطبَّقة (`orderPayments`) **لا تُصرَف إطلاقاً** حين يكون العمود صفراً، ولو
+ * كان النقدُ محتجزاً فعلاً. فلو ادّعى التمهيدُ خروجَ نقدٍ عندئذٍ لَحجب الإلغاءَ بلا وردية
+ * مفتوحة على أمرٍ **كانت الخدمةُ ستُلغيه بلا درجٍ أصلاً** — أي حائطٌ جديد.
+ *
+ * ⇒ التمهيدُ يعكس السلوكَ القائم حرفياً: بلا عربونٍ موجب لا نُطالب بدرج.
+ *
+ * 🔻 **وهذا يكشف فجوةً ماليّةً أعمق لا يجوز لي سدُّها منفرداً:** حصصُ عربونٍ نقديّةٍ محتجزة
+ * على أمرٍ عموده صفر تبقى بلا مسار خروجٍ عند الإلغاء (§٥ — «لكلّ مالٍ محتجَز مسارُ خروجٍ
+ * ممكنٌ دائماً»). تغييرُ ذلك سلوكٌ ماليّ يقرّره المالك، ومرفوعٌ إليه.
  */
-async function cancelCashOut(tx: Tx, workOrderId: number): Promise<ReturnType<typeof money>> {
+async function cancelCashOut(tx: Tx, workOrderId: number, deposit: string | null): Promise<ReturnType<typeof money>> {
   let total = money(0);
+  const refundD = round2(money(deposit ?? "0"));
 
-  const dep = (
-    await tx
-      .select({ amount: receipts.amount, paymentMethod: receipts.paymentMethod })
-      .from(receipts)
-      .where(and(
-        eq(receipts.workOrderId, workOrderId),
-        eq(receipts.direction, "IN"),
-        eq(receipts.status, "COMPLETED"),
-        eq(receipts.approvalStatus, "APPROVED"),
-        isNull(receipts.invoiceId),
-        or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
-      ))
-      .limit(1)
-  )[0];
-  if (dep && exitsCashDrawer(dep.paymentMethod)) total = total.plus(money(dep.amount));
+  // نفسُ حارس `cancel.ts`: بلا عربونٍ موجب لا يُفتح مسارُ الردّ ولا يُطلَب درج.
+  if (refundD.gt(0)) {
+    const dep = (
+      await tx
+        .select({ amount: receipts.amount, paymentMethod: receipts.paymentMethod })
+        .from(receipts)
+        .where(and(
+          eq(receipts.workOrderId, workOrderId),
+          eq(receipts.direction, "IN"),
+          eq(receipts.status, "COMPLETED"),
+          eq(receipts.approvalStatus, "APPROVED"),
+          isNull(receipts.invoiceId),
+          or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
+        ))
+        .limit(1)
+    )[0];
+    if (dep && exitsCashDrawer(dep.paymentMethod)) total = total.plus(money(dep.amount));
 
-  for (const part of await appliedCollectionsForWorkOrder(tx, workOrderId)) {
-    const amt = round2(money(part.amount));
-    if (amt.lte(0)) continue;
-    if (exitsCashDrawer(part.method)) total = total.plus(amt);
+    for (const part of await appliedCollectionsForWorkOrder(tx, workOrderId)) {
+      const amt = round2(money(part.amount));
+      if (amt.lte(0)) continue;
+      if (exitsCashDrawer(part.method)) total = total.plus(amt);
+    }
   }
 
+  // أمانةُ أجرة التوصيل خارج الحارس أعلاه في `cancel.ts` كذلك — تُردّ نقداً ولو كان العربون صفراً.
   total = total.plus(await workOrderFeeHeldNet(tx, workOrderId));
   return round2(total);
 }
 
 /**
- * النقدُ الخارج عند **استرجاع تسليم** أمر الشغل — مجموعُ إيصالات IN المكتملة على المستند
- * **التي طريقتُها نقدية وحدها** ([`reverseDelivery.ts`](./reverseDelivery.ts)).
- * وهذا ما صحّحته المراجعة: `invoicePaidAmount` الإجماليّ كان يُطالب بدرجٍ لفاتورةٍ بطاقية.
+ * النقدُ الخارج عند **استرجاع تسليم** أمر الشغل.
+ *
+ * ⚠️ **الفاتورةُ ذاتُ البنود لا تمرّ بهذا المسار إطلاقاً** (مراجعة Codex، الجولة الثانية):
+ * [`reverseDelivery.ts`](./reverseDelivery.ts) يُفوّضها كاملةً إلى `returnSaleInTx` **بلا
+ * `refund` ولا `refundShiftId`** ويعود مبكّراً — فلا يُفتح درجٌ قطّ. وحسبُ الإيصالات هنا كان
+ * يُطالب بدرجٍ فيُعطَّل استرجاعٌ **كانت الخدمةُ ستُتمّه بلا وردية** — حائطٌ جديد.
+ * ⇒ صفرٌ للفاتورة ذات البنود، وحسبةُ الإيصالات للخدمة الخالصة وحدها.
+ *
+ * وللأخيرة: مجموعُ إيصالات IN المكتملة **النقديّة وحدها** — لا `paidAmount` الإجماليّ.
  */
-async function reverseCashOut(tx: Tx, workOrderId: number, invoiceId: number | null): Promise<ReturnType<typeof money>> {
+async function reverseCashOut(
+  tx: Tx,
+  workOrderId: number,
+  invoiceId: number | null,
+): Promise<ReturnType<typeof money>> {
+  if (invoiceId != null) {
+    const anyItem = (
+      await tx.select({ id: invoiceItems.id }).from(invoiceItems)
+        .where(eq(invoiceItems.invoiceId, invoiceId)).limit(1)
+    )[0];
+    // مسارُ التفويض (`returnSaleInTx`) لا يمسّ درجاً — فلا نُطالب بواحد.
+    if (anyItem) return money(0);
+  }
   const rows = await tx
     .select({ amount: receipts.amount, paymentMethod: receipts.paymentMethod })
     .from(receipts)
@@ -128,10 +161,11 @@ export async function workOrderRefundPreflight(
   tx: Tx,
   workOrderId: number,
   operation: WorkOrderRefundOperation,
+  opts: { exposeCash: boolean },
 ): Promise<RefundPreflight | null> {
   const wo = (
     await tx
-      .select({ id: workOrders.id, branchId: workOrders.branchId, invoiceId: workOrders.invoiceId })
+      .select({ id: workOrders.id, branchId: workOrders.branchId, invoiceId: workOrders.invoiceId, deposit: workOrders.deposit })
       .from(workOrders)
       .where(eq(workOrders.id, workOrderId))
       .limit(1)
@@ -140,7 +174,7 @@ export async function workOrderRefundPreflight(
 
   const branchId = Number(wo.branchId);
   const cashOut = operation === "CANCEL"
-    ? await cancelCashOut(tx, workOrderId)
+    ? await cancelCashOut(tx, workOrderId, wo.deposit ?? null)
     : await reverseCashOut(tx, workOrderId, wo.invoiceId == null ? null : Number(wo.invoiceId));
   const needsCashDrawer = cashOut.gt(0);
   return {
@@ -148,7 +182,7 @@ export async function workOrderRefundPreflight(
     estimatedCashOut: toDbMoney(cashOut),
     branchId,
     // لا نُحمّل الأدراج حين لا نقدَ يخرج — استعلامٌ بلا مستهلك.
-    drawers: needsCashDrawer ? await eligibleDrawers(tx, branchId, "RECEPTION") : [],
+    drawers: needsCashDrawer ? await eligibleDrawers(tx, branchId, "RECEPTION", { needed: cashOut, exposeCash: opts.exposeCash }) : [],
   };
 }
 
@@ -160,10 +194,16 @@ export async function workOrderRefundPreflight(
 export async function consignmentReturnPreflight(
   tx: Tx,
   consignmentId: number,
+  opts: { exposeCash: boolean },
 ): Promise<RefundPreflight | null> {
   const cn = (
     await tx
-      .select({ branchId: deliveryConsignments.branchId, invoiceId: deliveryConsignments.invoiceId })
+      .select({
+        branchId: deliveryConsignments.branchId,
+        invoiceId: deliveryConsignments.invoiceId,
+        consignmentNumber: deliveryConsignments.consignmentNumber,
+        feeSettledAt: deliveryConsignments.feeSettledAt,
+      })
       .from(deliveryConsignments)
       .where(eq(deliveryConsignments.id, consignmentId))
       .limit(1)
@@ -179,23 +219,39 @@ export async function consignmentReturnPreflight(
     )[0];
     paid = money(inv?.paidAmount ?? "0");
   }
-  const feeRow = (
-    await tx
-      .select({ v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)` })
-      .from(receipts)
-      .where(and(
-        eq(receipts.referenceNumber, `DLV-FEE-CN-${consignmentId}`),
-        eq(receipts.status, "COMPLETED"),
-        eq(receipts.approvalStatus, "APPROVED"),
-      ))
-  )[0];
-  const cashOut = round2(paid.plus(money(feeRow?.v ?? "0")));
+  /**
+   * ⚠️ **مراجعُ الأجرة ليست `DLV-FEE-CN-…`** (مراجعة Codex P1، الجولة الثانية): ذلك نمطٌ
+   * اخترعتُه قياساً على `DLV-FEE-WO-` ولا وجودَ له في المستودع. الاستقبالُ يكتب
+   * `DLV-FEE-INV-{invoiceId}` وصفوفُ صرف المندوب تحمل **اسم الإرسالية** — وهما ما يفحصه
+   * [`returns.ts`](../delivery/returns.ts)، مع شرطٍ ثالث: `feeSettledAt == null` (المُسوّاة
+   * لا تُردّ). فبمرجعٍ لا يطابق شيئاً كان الصافي صفراً دائماً ⇒ طردٌ بأجرةٍ محتجزةٍ وحدها
+   * يُبلَّغ «لا نقد» ⇒ لا منتقيَ ⇒ الخادمُ يرفض بلا مخرج: **الحائطُ الأصليّ يعود**.
+   */
+  let feeNet = money(0);
+  if (cn.feeSettledAt == null) {
+    const feeRefs = [`DLV-FEE-INV-${Number(cn.invoiceId)}`, String(cn.consignmentNumber ?? "")]
+      .filter((r) => r && !r.endsWith("null"));
+    if (feeRefs.length) {
+      const feeRow = (
+        await tx
+          .select({ v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)` })
+          .from(receipts)
+          .where(and(
+            inArray(receipts.referenceNumber, feeRefs),
+            eq(receipts.status, "COMPLETED"),
+            eq(receipts.approvalStatus, "APPROVED"),
+          ))
+      )[0];
+      feeNet = money(feeRow?.v ?? "0");
+    }
+  }
+  const cashOut = round2(paid.plus(feeNet));
   const needsCashDrawer = cashOut.gt(0);
   return {
     needsCashDrawer,
     estimatedCashOut: toDbMoney(cashOut),
     branchId,
     // مسارُ التوصيل يقبل أيّ درجٍ مفتوح بالفرع (`resolveBranchCashShiftTx`) — لا RECEPTION وحدها.
-    drawers: needsCashDrawer ? await eligibleDrawers(tx, branchId, null) : [],
+    drawers: needsCashDrawer ? await eligibleDrawers(tx, branchId, null, { needed: cashOut, exposeCash: opts.exposeCash }) : [],
   };
 }

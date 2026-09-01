@@ -3,6 +3,7 @@ import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
 import { consignmentReturnPreflight } from "../services/workOrder/refundPreflight";
 import { canCrossBranches } from "../lib/branchAuthority";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import { withTx } from "../services/tx";
 import { deliveryOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -108,6 +109,24 @@ async function assertPartyInScope(partyId: number, scopedBranchId: number | null
   if (party && party.branchId != null && Number(party.branchId) !== scopedBranchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "جهة التوصيل تخصّ فرعاً آخر" });
   }
+}
+
+/**
+ * أيحقّ لهذا الفاعل رؤيةُ **أرصدة الأدراج** بالأرقام؟ (مراجعة Codex P2)
+ *
+ * نقطتا التمهيد محروستان ببوّابة الفعل (`workorders`/`store`) عمداً — كي لا يُعطَّل فعلٌ
+ * مصرَّحٌ به لمن لا يملك الخزينة. لكنّ ذلك **لا يمنحه سطحَ الخزينة**: الرقمُ الدقيق يبقى
+ * خلف `treasury:READ`، ومن دونه يكفيه علَمُ `sufficient` لاختيارٍ صائب. (كان `sales_rep` —
+ * بلا صندوق — يتلقّى أرصدةَ كلّ درجٍ مفتوحٍ بالفرع، وهو نقضٌ لعزل الأدراج المقرَّر في تدقيق ٢/٧.)
+ */
+function maySeeDrawerCash(user: { role?: string | null; permissionsOverride?: unknown }): boolean {
+  return moduleAccessAllowed(
+    String(user.role ?? ""),
+    (user.permissionsOverride ?? null) as PermissionMap | null,
+    "treasury",
+    "READ",
+    [],
+  );
 }
 
 export const deliveryRouter = router({
@@ -723,7 +742,7 @@ export const deliveryRouter = router({
   returnPreflight: storeFulfillProcedure
     .input(z.object({ consignmentId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => withTx(async (tx) => {
-      const res = await consignmentReturnPreflight(tx, input.consignmentId);
+      const res = await consignmentReturnPreflight(tx, input.consignmentId, { exposeCash: maySeeDrawerCash(ctx.user) });
       if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
       if (!canCrossBranches(ctx.user) && res.branchId !== Number(ctx.user.branchId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية لا تخصّ فرعك" });
