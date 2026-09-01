@@ -65,6 +65,7 @@ if (!platformRouter.includes("listPlatformAudit")) fail("سجلّ إدارة ا�
 
 // كل عامل جديد يجب أن يُصنّف هنا صراحةً: سجل نظام مركزي، سجل حدث/صندوق دائم، أو قراءة فقط.
 const BACKGROUND_POLICIES = {
+  startAppNotificationOutboxWorker: "durable appNotificationOutbox + system summary",
   startDeliveryOutboxWorker: "durable deliveryOutbox + system summary",
   startLagMonitor: "read-only runtime telemetry",
   startMorningPushCron: "durable pushDailyClaim/pushNotificationLog + system summary",
@@ -76,6 +77,7 @@ const BACKGROUND_POLICIES = {
   startReconcileScheduler: "read-only financial reconciliation",
   startReservationsSweeper: "durable reservationEvents + system summary",
   startStorefrontPushCampaignWorker: "durable storefrontPushDeliveries",
+  startWebPushOutboxWorker: "durable webPushOutbox + pushNotificationLog",
   startWaOutboxSweeper: "durable waOutbox/waWebhookEvents + system summary",
 };
 const index = read("server/index.ts");
@@ -93,10 +95,12 @@ for (const contract of ["backgroundOperationEffectCount", "auditBackgroundFailur
 }
 
 const CENTRALIZED_JOB_FILES = {
+  app_notification_outbox: "server/services/appNotificationOutboxWorker.ts",
   delivery_outbox: "server/services/delivery/outboxWorker.ts",
   delivery_stale_sweep: "server/services/delivery/staleSweep.ts",
   morning_push: "server/services/morningPushScheduler.ts",
   native_push_outbox: "server/services/nativePushOutboxWorker.ts",
+  web_push_outbox: "server/services/webPushOutboxWorker.ts",
   online_order_reservation_expiry: "server/services/onlineOrderExpirySweeper.ts",
   product_studio_staging: "server/services/productStudioStagingWorker.ts",
   reception_draft_sweep: "server/services/reception/draft.ts",

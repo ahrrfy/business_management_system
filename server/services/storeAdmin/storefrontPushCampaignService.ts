@@ -1,7 +1,14 @@
 import crypto from "node:crypto";
+import { eq, sql } from "drizzle-orm";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 
+import {
+  storefrontPushCampaigns,
+  storefrontPushDeliveries,
+  storefrontPushDevices,
+} from "../../../drizzle/schema";
 import { getDb, getPool } from "../../db";
+import type { Tx } from "../../db";
 import { logger } from "../../logger";
 import { decryptSecret, encryptSecret } from "../cryptoService";
 
@@ -80,10 +87,16 @@ export async function registerStorefrontPushDevice(input: {
   transactionalOptIn: boolean;
   platform: "IOS" | "ANDROID";
   appVersion: string;
+  /** هوية موثوقة حُلّت من جلسة العميل خادمياً؛ لا تُقبل مباشرةً من التطبيق. */
+  customerId?: number;
 }) {
   const token = validateExpoPushToken(input.expoPushToken);
   const appVersion = text(input.appVersion, "إصدار التطبيق", 64);
   if (input.platform !== "IOS" && input.platform !== "ANDROID") throw new StorefrontPushValidationError("منصة الجهاز غير صالحة.");
+  const customerId = input.customerId;
+  if (customerId != null && (!Number.isInteger(customerId) || customerId <= 0)) {
+    throw new StorefrontPushValidationError("هوية العميل غير صالحة.");
+  }
   const ciphertext = encryptSecret(token);
   if (!ciphertext) throw new Error("تعذر تأمين رمز إشعارات الجهاز.");
   const tokenHash = crypto.createHash("sha256").update(token, "utf8").digest("hex");
@@ -96,19 +109,87 @@ export async function registerStorefrontPushDevice(input: {
     await pool.execute(
       `UPDATE storefrontPushDevices
           SET tokenCiphertext = ?, platform = ?, appVersion = ?, marketingOptIn = ?, transactionalOptIn = ?,
+              customerId = COALESCE(?, customerId),
               revokedAt = NULL, lastSeenAt = CURRENT_TIMESTAMP
         WHERE id = ?`,
-      [ciphertext, input.platform, appVersion, input.marketingOptIn, input.transactionalOptIn, existing[0].id],
+      [ciphertext, input.platform, appVersion, input.marketingOptIn, input.transactionalOptIn, customerId ?? null, existing[0].id],
     );
     return { ok: true as const, deviceId: existing[0].id };
   }
   const [result] = await pool.execute<ResultSetHeader>(
     `INSERT INTO storefrontPushDevices
-      (tokenHash, tokenCiphertext, platform, appVersion, marketingOptIn, transactionalOptIn)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [tokenHash, ciphertext, input.platform, appVersion, input.marketingOptIn, input.transactionalOptIn],
+      (customerId, tokenHash, tokenCiphertext, platform, appVersion, marketingOptIn, transactionalOptIn)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [customerId ?? null, tokenHash, ciphertext, input.platform, appVersion, input.marketingOptIn, input.transactionalOptIn],
   );
   return { ok: true as const, deviceId: result.insertId };
+}
+
+export type StorefrontOrderPushStatus = "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
+
+const ORDER_STATUS_PUSH_COPY: Record<StorefrontOrderPushStatus, { title: string; body: (orderNumber: string) => string }> = {
+  CONFIRMED: { title: "تم تأكيد طلبك", body: (number) => `تم تأكيد الطلب ${number} وسنبدأ تجهيزه قريباً.` },
+  PROCESSING: { title: "طلبك قيد التجهيز", body: (number) => `بدأ فريق مكتبة العربية تجهيز الطلب ${number}.` },
+  SHIPPED: { title: "طلبك في الطريق", body: (number) => `تم إرسال الطلب ${number} مع جهة التوصيل.` },
+  DELIVERED: { title: "تم تسليم طلبك", body: (number) => `اكتمل تسليم الطلب ${number}. شكراً لاختيارك مكتبة العربية.` },
+  CANCELLED: { title: "تحديث على طلبك", body: (number) => `أُلغي الطلب ${number}. افتح التطبيق للاطلاع على التفاصيل.` },
+};
+
+/**
+ * يكتب حدث حالة الطلب وصندوق أجهزة مالكه في معاملة المجال نفسها.
+ * eventKey الفريد يجعل إعادة المحاولة آمنة، ولا تُضمّن الرسالة مبلغاً أو هاتفاً أو سبب إلغاء.
+ */
+export async function enqueueStorefrontOrderStatusPush(
+  tx: Tx,
+  input: { orderId: number; orderNumber: string; customerId: number | null; status: StorefrontOrderPushStatus },
+): Promise<{ campaignId: number; recipientCount: number }> {
+  const copy = ORDER_STATUS_PUSH_COPY[input.status];
+  const eventKey = `storefront-order:${input.orderId}:status:${input.status}`;
+  const title = text(copy.title, "عنوان إشعار الطلب", 80);
+  const body = text(copy.body(input.orderNumber), "نص إشعار الطلب", 180);
+
+  await tx
+    .insert(storefrontPushCampaigns)
+    .values({
+      eventKey,
+      name: `حالة الطلب ${input.orderNumber}: ${input.status}`,
+      kind: "TRANSACTIONAL",
+      status: "RUNNING",
+      title,
+      body,
+      destination: "/orders",
+      throttlePerMinute: 240,
+      launchedAt: new Date(),
+    })
+    .onDuplicateKeyUpdate({ set: { eventKey } });
+
+  const campaign = (await tx
+    .select({ id: storefrontPushCampaigns.id })
+    .from(storefrontPushCampaigns)
+    .where(eq(storefrontPushCampaigns.eventKey, eventKey))
+    .limit(1))[0];
+  if (!campaign) throw new Error("تعذر إنشاء حدث إشعار حالة الطلب.");
+
+  if (input.customerId != null) {
+    await tx.execute(sql`
+      INSERT IGNORE INTO storefrontPushDeliveries (campaignId, deviceId)
+      SELECT ${campaign.id}, ${storefrontPushDevices.id}
+      FROM ${storefrontPushDevices}
+      WHERE ${storefrontPushDevices.customerId} = ${input.customerId}
+        AND ${storefrontPushDevices.transactionalOptIn} = TRUE
+        AND ${storefrontPushDevices.revokedAt} IS NULL
+    `);
+  }
+  const recipient = (await tx
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(storefrontPushDeliveries)
+    .where(eq(storefrontPushDeliveries.campaignId, campaign.id)))[0];
+  const recipientCount = Number(recipient?.count ?? 0);
+  await tx
+    .update(storefrontPushCampaigns)
+    .set({ recipientCount })
+    .where(eq(storefrontPushCampaigns.id, campaign.id));
+  return { campaignId: Number(campaign.id), recipientCount };
 }
 
 export async function listStorefrontPushCampaigns(limit = 50) {

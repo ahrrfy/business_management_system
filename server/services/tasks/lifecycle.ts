@@ -30,6 +30,8 @@ import {
 } from "./helpers";
 import { canCrossBranches } from "../../lib/branchAuthority";
 import { assertNotDesignApprovalTask } from "../workOrder/designApproval";
+import { extractInsertId } from "../../lib/insertId";
+import { enqueueTaskNotifications, reconcileTaskNotifications } from "./notifications";
 
 type TaskEventType =
   | "COMMENT"
@@ -53,7 +55,7 @@ async function insertEvent(
     userId?: number | null;
   },
 ) {
-  await tx.insert(taskEvents).values({
+  const result = await tx.insert(taskEvents).values({
     taskId: params.taskId,
     eventType: params.eventType,
     fromStatus: params.fromStatus ?? null,
@@ -61,6 +63,7 @@ async function insertEvent(
     note: params.note ?? null,
     userId: params.userId ?? null,
   });
+  return extractInsertId(result);
 }
 
 /** يحوّل Date|string|null القادم من drizzle إلى Date|null بأمان. */
@@ -74,7 +77,7 @@ function toDateOrNull(v: unknown): Date | null {
  * (إعادة إسناد قسرية تبقى لـ`assignTask` المديرية). يضبط firstResponseAt=NOW أول مرّة فقط.
  */
 export async function claimTask(taskId: number, actor: TaskActor) {
-  return withTx(async (tx) => {
+  const outcome = await withTx(async (tx) => {
     const task = await loadTask(tx, taskId);
     assertTaskBranch(task, actor);
     if (task.taskStatus !== "NEW")
@@ -94,7 +97,7 @@ export async function claimTask(taskId: number, actor: TaskActor) {
     };
     if (task.firstResponseAt == null) patch.firstResponseAt = sql`NOW()`;
     await tx.update(tasks).set(patch).where(eq(tasks.id, taskId));
-    await insertEvent(tx, {
+    const statusEventId = await insertEvent(tx, {
       taskId,
       eventType: "ASSIGN",
       note: "سحب ذاتي",
@@ -107,8 +110,24 @@ export async function claimTask(taskId: number, actor: TaskActor) {
       toStatus: "IN_PROGRESS",
       userId: actor.userId,
     });
-    return { taskId, status: "IN_PROGRESS" as const, assignedTo: actor.userId };
+    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+      task,
+      eventId: statusEventId,
+      action: { type: "CLAIMED" },
+      actorUserId: actor.userId,
+    });
+    return { taskId, status: "IN_PROGRESS" as const, assignedTo: actor.userId, notificationOccurrenceId };
   });
+  await reconcileTaskNotifications(outcome.notificationOccurrenceId);
+  const { notificationOccurrenceId: _notificationOccurrenceId, ...publicResult } = outcome;
+  void _notificationOccurrenceId;
+  return publicResult;
+}
+
+function positiveTaskUserId(value: number | string | null): number | null {
+  if (value == null) return null;
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 /** إسناد/إعادة إسناد (مدير): أي حالة مفتوحة (غير RESOLVED/CANCELLED)، بلا تغيير الحالة — فقط الإسناد. */
@@ -117,7 +136,7 @@ export async function assignTask(
   assignedTo: number | null,
   actor: TaskActor,
 ) {
-  return withTx(async (tx) => {
+  const outcome = await withTx(async (tx) => {
     const task = await loadTask(tx, taskId);
     assertTaskBranch(task, actor);
     if (!(OPEN_STATUSES as readonly string[]).includes(task.taskStatus))
@@ -158,13 +177,27 @@ export async function assignTask(
       }
     }
     await tx.update(tasks).set({ assignedTo }).where(eq(tasks.id, taskId));
-    await insertEvent(tx, {
+    const eventId = await insertEvent(tx, {
       taskId,
       eventType: "ASSIGN",
       userId: actor.userId,
     });
-    return { taskId, assignedTo };
+    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+      task,
+      eventId,
+      action: {
+        type: "ASSIGNED",
+        assignedTo,
+        previousAssignedTo: positiveTaskUserId(task.assignedTo),
+      },
+      actorUserId: actor.userId,
+    });
+    return { taskId, assignedTo, notificationOccurrenceId };
   });
+  await reconcileTaskNotifications(outcome.notificationOccurrenceId);
+  const { notificationOccurrenceId: _notificationOccurrenceId, ...publicResult } = outcome;
+  void _notificationOccurrenceId;
+  return publicResult;
 }
 
 /** NEW/IN_PROGRESS → WAITING_CUSTOMER — يوقف عدّاد SLA أثناء انتظار ردّ العميل. المُسنَد إليه أو مدير. */
@@ -173,7 +206,7 @@ export async function setWaiting(
   actor: TaskActor,
   note?: string | null,
 ) {
-  return withTx(async (tx) => {
+  const outcome = await withTx(async (tx) => {
     const task = await loadTask(tx, taskId);
     assertTaskBranch(task, actor);
     assertTaskAssigneeOrElevated(task, actor);
@@ -186,7 +219,7 @@ export async function setWaiting(
       .update(tasks)
       .set({ taskStatus: "WAITING_CUSTOMER", waitingSince: sql`NOW()` })
       .where(eq(tasks.id, taskId));
-    await insertEvent(tx, {
+    const eventId = await insertEvent(tx, {
       taskId,
       eventType: "STATUS",
       fromStatus: task.taskStatus,
@@ -194,13 +227,23 @@ export async function setWaiting(
       note: note ?? null,
       userId: actor.userId,
     });
-    return { taskId, status: "WAITING_CUSTOMER" as const };
+    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+      task,
+      eventId,
+      action: { type: "WAITING" },
+      actorUserId: actor.userId,
+    });
+    return { taskId, status: "WAITING_CUSTOMER" as const, notificationOccurrenceId };
   });
+  await reconcileTaskNotifications(outcome.notificationOccurrenceId);
+  const { notificationOccurrenceId: _notificationOccurrenceId, ...publicResult } = outcome;
+  void _notificationOccurrenceId;
+  return publicResult;
 }
 
 /** WAITING_CUSTOMER → IN_PROGRESS — يراكم waitingAccumMs += (NOW − waitingSince) ثم يصفّر waitingSince. */
 export async function resumeTask(taskId: number, actor: TaskActor) {
-  return withTx(async (tx) => {
+  const outcome = await withTx(async (tx) => {
     const task = await loadTask(tx, taskId);
     assertTaskBranch(task, actor);
     assertTaskAssigneeOrElevated(task, actor, { allowSystem: true });
@@ -220,15 +263,25 @@ export async function resumeTask(taskId: number, actor: TaskActor) {
       .update(tasks)
       .set({ taskStatus: "IN_PROGRESS", waitingAccumMs, waitingSince: null })
       .where(eq(tasks.id, taskId));
-    await insertEvent(tx, {
+    const eventId = await insertEvent(tx, {
       taskId,
       eventType: "STATUS",
       fromStatus: "WAITING_CUSTOMER",
       toStatus: "IN_PROGRESS",
       userId: actor.userId,
     });
-    return { taskId, status: "IN_PROGRESS" as const, waitingAccumMs };
+    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+      task,
+      eventId,
+      action: { type: "RESUMED" },
+      actorUserId: actor.userId,
+    });
+    return { taskId, status: "IN_PROGRESS" as const, waitingAccumMs, notificationOccurrenceId };
   });
+  await reconcileTaskNotifications(outcome.notificationOccurrenceId);
+  const { notificationOccurrenceId: _notificationOccurrenceId, ...publicResult } = outcome;
+  void _notificationOccurrenceId;
+  return publicResult;
 }
 
 /** IN_PROGRESS/WAITING_CUSTOMER → RESOLVED. resolutionNote إلزامي لمهام SUPPORT. يراكم الانتظار أولاً إن كان جارياً. */
@@ -270,13 +323,19 @@ export async function resolveTask(
       patch.waitingSince = null;
     }
     await tx.update(tasks).set(patch).where(eq(tasks.id, taskId));
-    await insertEvent(tx, {
+    const eventId = await insertEvent(tx, {
       taskId,
       eventType: "STATUS",
       fromStatus: task.taskStatus,
       toStatus: "RESOLVED",
       note: resolutionNote ?? null,
       userId: actor.userId,
+    });
+    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+      task,
+      eventId,
+      action: { type: "RESOLVED" },
+      actorUserId: actor.userId,
     });
     return {
       taskId,
@@ -285,8 +344,11 @@ export async function resolveTask(
       branchId: Number(task.branchId),
       conversationId:
         task.conversationId != null ? Number(task.conversationId) : null,
+      notificationOccurrenceId,
     };
   });
+
+  await reconcileTaskNotifications(result.notificationOccurrenceId);
 
   // CSAT (T4.2، خلف مفتاح csatOnResolve) — خارج المعاملة تماماً وبعد نجاحها فقط، محمي بذاته
   // (checkAutomationGate/enqueueAndDispatch لا يُتوقَّع أن يرميا هنا، لكن الغلاف دفاعيّ صريح فوقهما)
@@ -366,7 +428,7 @@ export async function reopenTask(
   actor: TaskActor,
   note?: string | null,
 ) {
-  return withTx(async (tx) => {
+  const outcome = await withTx(async (tx) => {
     const task = await loadTask(tx, taskId);
     assertTaskBranch(task, actor);
     await assertNotDesignApprovalTask(tx, taskId);
@@ -391,7 +453,7 @@ export async function reopenTask(
         reopenCount: sql`${tasks.reopenCount} + 1`,
       })
       .where(eq(tasks.id, taskId));
-    await insertEvent(tx, {
+    const eventId = await insertEvent(tx, {
       taskId,
       eventType: "STATUS",
       fromStatus: "RESOLVED",
@@ -399,8 +461,18 @@ export async function reopenTask(
       note: note ?? null,
       userId: actor.userId,
     });
-    return { taskId, status: "IN_PROGRESS" as const };
+    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+      task,
+      eventId,
+      action: { type: "REOPENED" },
+      actorUserId: actor.userId,
+    });
+    return { taskId, status: "IN_PROGRESS" as const, notificationOccurrenceId };
   });
+  await reconcileTaskNotifications(outcome.notificationOccurrenceId);
+  const { notificationOccurrenceId: _notificationOccurrenceId, ...publicResult } = outcome;
+  void _notificationOccurrenceId;
+  return publicResult;
 }
 
 /** NEW/IN_PROGRESS/WAITING_CUSTOMER → CANCELLED. سبب الإلغاء إلزامي (مدير). */
@@ -409,7 +481,7 @@ export async function cancelTask(
   note: string,
   actor: TaskActor,
 ) {
-  return withTx(async (tx) => {
+  const outcome = await withTx(async (tx) => {
     if (!note?.trim())
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -427,7 +499,7 @@ export async function cancelTask(
       .update(tasks)
       .set({ taskStatus: "CANCELLED" })
       .where(eq(tasks.id, taskId));
-    await insertEvent(tx, {
+    const eventId = await insertEvent(tx, {
       taskId,
       eventType: "STATUS",
       fromStatus: task.taskStatus,
@@ -435,8 +507,18 @@ export async function cancelTask(
       note,
       userId: actor.userId,
     });
-    return { taskId, status: "CANCELLED" as const };
+    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+      task,
+      eventId,
+      action: { type: "CANCELLED" },
+      actorUserId: actor.userId,
+    });
+    return { taskId, status: "CANCELLED" as const, notificationOccurrenceId };
   });
+  await reconcileTaskNotifications(outcome.notificationOccurrenceId);
+  const { notificationOccurrenceId: _notificationOccurrenceId, ...publicResult } = outcome;
+  void _notificationOccurrenceId;
+  return publicResult;
 }
 
 /** تعليق — بلا تغيير حالة. بنطاق الموظف (assignedTo=هو ∪ createdBy=هو)، مدير/أدمن يعبُران دائماً. */
@@ -445,7 +527,7 @@ export async function addComment(
   note: string,
   actor: TaskActor,
 ) {
-  return withTx(async (tx) => {
+  const outcome = await withTx(async (tx) => {
     if (!note?.trim())
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -454,12 +536,22 @@ export async function addComment(
     const task = await loadTask(tx, taskId);
     assertTaskBranch(task, actor);
     assertTaskActorScope(task, actor);
-    await insertEvent(tx, {
+    const eventId = await insertEvent(tx, {
       taskId,
       eventType: "COMMENT",
       note: note.trim(),
       userId: actor.userId,
     });
-    return { taskId, ok: true as const };
+    const notificationOccurrenceId = await enqueueTaskNotifications(tx, {
+      task,
+      eventId,
+      action: { type: "COMMENTED" },
+      actorUserId: actor.userId,
+    });
+    return { taskId, ok: true as const, notificationOccurrenceId };
   });
+  await reconcileTaskNotifications(outcome.notificationOccurrenceId);
+  const { notificationOccurrenceId: _notificationOccurrenceId, ...publicResult } = outcome;
+  void _notificationOccurrenceId;
+  return publicResult;
 }

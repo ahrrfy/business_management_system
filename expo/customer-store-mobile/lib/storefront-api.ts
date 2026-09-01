@@ -120,6 +120,7 @@ export type StorefrontPushDeviceInput = {
   transactionalOptIn: boolean;
   platform: "IOS" | "ANDROID";
   appVersion: string;
+  customerSessionToken?: string;
 };
 export type StorefrontCustomerSession = {
   token: string;
@@ -761,7 +762,7 @@ export function createStorefrontOrder(input: CreateStorefrontOrderInput) {
   );
 }
 
-/** يسجّل رمز Expo Push فقط بعد موافقة العميل؛ لا يحمل هذا النداء رقم هاتف أو معلومات طلب. */
+/** يسجّل رمز Expo Push؛ جلسة الهاتف الاختيارية تُحل إلى هوية العميل على الخادم ولا تُرسل customerId خاماً. */
 export function registerStorefrontPushDevice(input: StorefrontPushDeviceInput) {
   return storefrontMutation<{ ok: true; deviceId: number }>(
     "storefront.registerPushDevice",
