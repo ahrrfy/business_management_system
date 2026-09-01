@@ -15,6 +15,7 @@ import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { idempotencyHash } from "../idempotency";
 import { money, round2 } from "../money";
+import type { RefundRail } from "@shared/refundRail";
 import { type Actor, requireDb, withTx } from "../tx";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
@@ -38,6 +39,16 @@ export type CommercialEditPayload = Omit<UpdateWorkOrderInput, "workOrderId" | "
 export interface MaterialAdjustPayload { materials: WorkOrderMaterialInput[] }
 export interface CancelControlPayload {
   refundShiftId?: number | null;
+  /**
+   * **رافدُ ردّ العربون** — يعبر مسارَ الاعتماد كاملاً (مراجعة Codex P1 على #928).
+   *
+   * ⚠️ بدونه كانت الميزةُ **غائبةً حيث تلزم بالضبط**: `controlRequired.cancel` صحيحٌ لأيّ أمرٍ
+   * بعربونٍ أو حصصٍ أو أمانةٍ أو خامةٍ مستهلَكة — أي لكلّ إلغاءٍ يحتاج ردّاً أصلاً. فحصرُ
+   * الروافد في المسار المباشر يجعلها غيرَ قابلةٍ للبلوغ عملياً.
+   */
+  refundRail?: RefundRail | null;
+  /** مرجعُ التنفيذ الخارجيّ — لرافد البطاقة وحده. */
+  refundReference?: string | null;
   materials?: WorkOrderCancelMaterialDecision[] | null;
 }
 export interface ReverseDeliveryControlPayload {
@@ -361,6 +372,9 @@ export async function approveWorkOrderControlRequest(
         expectedVersion: Number(request.baseVersion),
         reason: request.reason,
         refundShiftId: payload.refundShiftId ?? null,
+        // الرافدُ والمرجعُ يُنفَّذان كما أقرّهما الطالبُ واعتمدهما المدير — لا يُسقَطان بينهما.
+        refundRail: payload.refundRail ?? null,
+        refundReference: payload.refundReference ?? null,
         materials: payload.materials ?? null,
         clientRequestId: `wo-control-cancel-${id}`,
       }, control);

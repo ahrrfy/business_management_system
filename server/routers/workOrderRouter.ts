@@ -5,6 +5,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
 import { canCrossBranches } from "../lib/branchAuthority";
+import { REFUND_RAILS } from "@shared/refundRail";
 import {
   auditLogs,
   customers,
@@ -47,7 +48,7 @@ import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
 import { setWorkOrderDesign } from "../services/workOrder/design";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
-import { hasModuleAccess } from "@shared/permissions";
+import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
@@ -97,6 +98,12 @@ const workOrderMaterialPayload = z.object({
 });
 const workOrderCancelPayload = z.object({
   refundShiftId: z.number().int().positive().nullish(),
+  /**
+   * رافدُ ردّ العربون عبر مسار الاعتماد — بدونه تُصبح الروافدُ غائبةً عن كلّ إلغاءٍ يحتاج ردّاً
+   * (`controlRequired.cancel` صحيحٌ لأيّ أمرٍ بعربونٍ أو حصصٍ أو أمانةٍ أو خامة).
+   */
+  refundRail: z.enum(REFUND_RAILS).nullish(),
+  refundReference: z.string().trim().min(3).max(100).nullish(),
   materials: z.array(z.object({
     workOrderMaterialId: z.number().int().positive(),
     returnBase: z.number().int().min(0),
@@ -420,6 +427,27 @@ function canSeeDeliveryForUser(user: { role: string; permissionsOverride?: unkno
 function workOrdersFullAccess(user: { role: string; permissionsOverride?: unknown }): boolean {
   if (user.role === "admin") return true;
   return hasModuleAccess(user.role, (user.permissionsOverride as never) ?? null, "workorders", "FULL");
+}
+
+/**
+ * أيحقّ لهذا الفاعل رؤيةُ **أرصدة الأدراج** بالأرقام؟ (مراجعة Codex P2)
+ *
+ * نقطتا التمهيد محروستان ببوّابة الفعل (`workorders`/`store`) عمداً — كي لا يُعطَّل فعلٌ
+ * مصرَّحٌ به لمن لا يملك الخزينة. لكنّ ذلك **لا يمنحه سطحَ الخزينة**: الرقمُ الدقيق يبقى
+ * خلف `treasury:READ`، ومن دونه يكفيه علَمُ `sufficient` لاختيارٍ صائب. (كان `sales_rep` —
+ * بلا صندوق — يتلقّى أرصدةَ كلّ درجٍ مفتوحٍ بالفرع، وهو نقضٌ لعزل الأدراج المقرَّر في تدقيق ٢/٧.)
+ */
+function maySeeDrawerCash(user: { role?: string | null; permissionsOverride?: unknown }): boolean {
+  // ⚠️ **لا تُمرّر قائمةَ أدوارٍ فارغة** (مراجعة Codex P2): `moduleAccessAllowed` عندئذٍ يتخطّى
+  // `hasModuleAccess` كلّياً ويسقط إلى الفحص الصريح وحده — فمديرٌ قالبُه `treasury: FULL` بلا
+  // تجاوزٍ يُحجَب رقمُه رغم امتلاكه الخزينة. `hasModuleAccess` يحترم القالبَ والتجاوزَ معاً.
+  if (String(user.role ?? "") === "admin") return true;
+  return hasModuleAccess(
+    String(user.role ?? ""),
+    (user.permissionsOverride ?? null) as PermissionMap | null,
+    "treasury",
+    "READ",
+  );
 }
 
 export const workOrderRouter = router({
@@ -1702,6 +1730,10 @@ export const workOrderRouter = router({
       // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه استرداد العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
+      /** رافدُ ردّ العربون النقديّ (قرار المالك ١/٩) — الافتراض DRAWER. */
+      refundRail: z.enum(REFUND_RAILS).optional(),
+      /** مرجعُ تنفيذ الاسترداد الخارجيّ — إلزاميّ لرافد CARD (تفرضه الخدمة). */
+      refundReference: z.string().trim().min(3).max(100).optional(),
       clientRequestId: z.string().trim().min(1).max(100).optional(),
       /** سببُ الإلغاء — يُكتب على الأمر (0237) فيصير قابلاً للقراءة والتقرير لا حبيسَ التدقيق. */
       reason: workOrderControlReason,
@@ -1721,6 +1753,11 @@ export const workOrderRouter = router({
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
         {
           refundShiftId: input.refundShiftId ?? null,
+          // ⚠️ كان هذان مفقودَين فتسقط الميزةُ كلُّها صامتةً إلى `DRAWER` (مراجعة Codex P1):
+          // الراوترُ يقبلهما والشاشةُ ترسلهما، ثمّ يُهملان هنا — فاختيارُ الخزينة يُصرَف من درج،
+          // أو يفشل لأنّ مسارَها لا يُرسل `refundShiftId` أصلاً. ولا يبلغ مرجعُ البطاقة تحقّقَه.
+          refundRail: input.refundRail ?? null,
+          refundReference: input.refundReference ?? null,
           clientRequestId: input.clientRequestId ?? null,
           expectedVersion: input.expectedVersion,
           reason: input.reason,
@@ -1774,7 +1811,7 @@ export const workOrderRouter = router({
       operation: z.enum(["CANCEL", "REVERSE_DELIVERY"]),
     }))
     .query(async ({ input, ctx }) => withTx(async (tx) => {
-      const res = await workOrderRefundPreflight(tx, input.workOrderId, input.operation);
+      const res = await workOrderRefundPreflight(tx, input.workOrderId, input.operation, { exposeCash: maySeeDrawerCash(ctx.user) });
       if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
       // عزلُ الفرع بنفس سلطة التنفيذ (`canCrossBranches` = admin/isOwner وحدهما، قرار المالك):
       // التمهيدُ لا يكشف أدراجَ فرعٍ لا يملك الفاعلُ التصرّفَ فيه.

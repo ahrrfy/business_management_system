@@ -118,6 +118,7 @@ export default defineConfig({
       "shared/deliveryAging.test.ts",
       "shared/consignmentView.test.ts",
       "shared/shortfallReason.test.ts",
+      "shared/refundRail.test.ts",
       "shared/partyExposure.test.ts",
       "shared/batchDivisibility.test.ts",
       "shared/deliveryTerminology.test.ts",
