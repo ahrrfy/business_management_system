@@ -113,7 +113,6 @@
   "client/src/pages/WIPReport.tsx": 1,
   "client/src/pages/WorkOrderDetail.tsx": 1,
   "client/src/pages/WorkOrderNew.tsx": 2,
-  "client/src/pages/WorkOrderProfitability.tsx": 1,
   "client/src/pages/WorkOrdersReport.tsx": 2,
   "client/src/pages/WorkOrderStation.tsx": 1,
   "client/src/pages/YearEnd.tsx": 2
