@@ -20,7 +20,6 @@ import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
-import { assertCurrentDesignApproved } from "./designApproval";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
@@ -48,9 +47,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للتسليم" });
-    // قد تتغيّر نسخة التصميم بعد انتقال الأمر إلى READY. الحالة وحدها لا تثبت أن النسخة
-    // الحالية هي التي اعتمدها العميل؛ التسليم آخر حاجز دفاعي قبل الفاتورة والقيد.
-    await assertCurrentDesignApproved(tx, input.workOrderId, "deliver");
+    // (حُذف حارسُ اعتماد التصميم — قرار المالك ١/٩/٢٦؛ التعليل في `lifecycle.startWorkOrder`.)
     // إخوةُ السلّة الواحدة: التسليمُ المباشر مخرجٌ ثالثٌ كان يفلت من حارس الإرسال الجزئيّ،
     // ومسوّدةٌ كلُّها أوامرُ شغل لا تصل إليه أصلاً (لا فاتورة بضاعةٍ لها).
     await assertSiblingsReady(tx, {

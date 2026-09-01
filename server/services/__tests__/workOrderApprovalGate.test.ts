@@ -233,10 +233,14 @@ describe("ش٢ — نسخةُ ملفّ التصميم", () => {
     ).rejects.toThrowError();
   });
 
-  it("⭐ حفظُ نسخةٍ يفتح الحجز فيُرفَض البدء", async () => {
+  /** ⭐ انقلب العقد (قرار المالك ١/٩/٢٦): حفظُ نسخةِ تصميمٍ لم يعد يفتح حجزاً على التنفيذ. */
+  it("⭐ حفظُ نسخةٍ لا يفتح حجزاً — البدء يمرّ", async () => {
     const woId = await order("dz-4");
     await setWorkOrderDesign({ workOrderId: woId, images: [{ url: PNG }] }, CASHIER);
-    await expect(startWorkOrder(woId, CASHIER)).rejects.toThrowError(/لا يبدأ التنفيذ|لم تُعتمد النسخة/);
+    await startWorkOrder(woId, CASHIER);
+    expect(
+      (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)).limit(1))[0].status,
+    ).toBe("IN_PROGRESS");
   });
 
   it("لا يُعدَّل تصميم أمرٍ ملغى", async () => {

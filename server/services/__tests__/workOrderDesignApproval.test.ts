@@ -390,56 +390,15 @@ describe("اعتماد تصميم أمر الشغل المتخصص", () => {
     ).rejects.toThrow(/المسار.*المتخصص|قرار اعتماد التصميم/);
   });
 
-  it("يحجز البدء قبل أي أثر مخزني، ثم يسمح بعد اعتماد النسخة الحالية فقط", async () => {
+  /**
+   * ⭐ **العقدُ انقلب** (قرار المالك ١/٩/٢٦): كان هذا الاختبار يحرس أنّ البدء **محجوز** حتى
+   * يُعتمد التصميم. صار يحرس نقيضَه: لا اعتمادَ يقف بين الفنّي وشغله. وإبقاءُ التوثيق مهمّ —
+   * مَن يقرأ الملفّ لاحقاً يجب أن يعرف أنّ الحذف قرارٌ لا سهو.
+   */
+  it("⭐ لا يحجز اعتمادُ التصميم بدءَ التنفيذ ولا وسمَ الجاهزية", async () => {
     const woId = await order("design-start-gate");
-    const beforeStock = Number(
-      (
-        await db()
-          .select()
-          .from(s.branchStock)
-          .where(
-            and(eq(s.branchStock.branchId, 1), eq(s.branchStock.variantId, 1)),
-          )
-      )[0].quantity,
-    );
-    const beforeMoves = Number(
-      (
-        await db()
-          .select({ count: sql<number>`COUNT(*)` })
-          .from(s.inventoryMovements)
-      )[0].count,
-    );
 
-    await expect(startWorkOrder(woId, CREATOR)).rejects.toThrow(
-      /لم تُعتمد|الاعتماد|تغيير التصميم/,
-    );
-    expect(
-      Number(
-        (
-          await db()
-            .select()
-            .from(s.branchStock)
-            .where(
-              and(
-                eq(s.branchStock.branchId, 1),
-                eq(s.branchStock.variantId, 1),
-              ),
-            )
-        )[0].quantity,
-      ),
-    ).toBe(beforeStock);
-    expect(
-      Number(
-        (
-          await db()
-            .select({ count: sql<number>`COUNT(*)` })
-            .from(s.inventoryMovements)
-        )[0].count,
-      ),
-    ).toBe(beforeMoves);
-
-    const approval = await request(woId, "request-start-gate");
-    await approve(Number(approval.id), "decision-start-gate");
+    // بلا أيّ طلبِ اعتمادٍ أصلاً: البدءُ يمرّ ويخصم المواد فعلاً.
     await startWorkOrder(woId, CREATOR);
     expect(
       Number(
@@ -457,13 +416,20 @@ describe("اعتماد تصميم أمر الشغل المتخصص", () => {
       ),
     ).toBe(95);
 
+    // وحتى بعد حفظ نسخةِ تصميمٍ جديدة أثناء الإنتاج (وهي التي كانت تُبطل الاعتماد السابق)
+    // يبقى وسمُ الجاهزية مفتوحاً — الحجزُ الوحيد الباقي هو `kanbanState = BLOCKED`.
     await setWorkOrderDesign(
       { workOrderId: woId, images: [{ url: PNG }], note: "نسخة بعد البدء" },
       CREATOR,
     );
-    await expect(markWorkOrderReady(woId, CREATOR)).rejects.toThrow(
-      /لم تُعتمد|الاعتماد|تغيير التصميم/,
-    );
+    await db()
+      .update(s.workOrders)
+      .set({ kanbanState: "NORMAL", blockedReason: null })
+      .where(eq(s.workOrders.id, woId));
+    await markWorkOrderReady(woId, CREATOR);
+    expect(
+      (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)).limit(1))[0].status,
+    ).toBe("READY");
   });
 
   it("يفرض عزل الفرع ويعيد الطلب والقرار المطابقين فقط", async () => {
