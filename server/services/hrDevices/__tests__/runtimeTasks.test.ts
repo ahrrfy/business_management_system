@@ -26,9 +26,41 @@ afterEach(() => {
   vi.doUnmock("../../attendanceService");
   vi.doUnmock("../../appNotificationService");
   vi.doUnmock("../../pushService");
+  vi.doUnmock("../../sessionEventNotifier");
 });
 
 describe("تصريف مهام عامل جسر الحضور", () => {
+  it("لا يرسل إشعاراً إدارياً عند تسجيل الدخول إلى الحساب", async () => {
+    const createAppNotification = vi.fn();
+    const db = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: async () => [{ id: 1 }],
+        }),
+      })),
+    };
+
+    vi.doMock("../../tx", () => ({ requireDb: () => db }));
+    vi.doMock("../../appNotificationService", () => ({
+      createAppNotification,
+    }));
+
+    const { notifyAdminsOfSessionEvent } = await import(
+      "../../sessionEventNotifier"
+    );
+    await notifyAdminsOfSessionEvent({
+      userId: 9,
+      userBranchId: 1,
+      userDisplayName: "أحمد علي",
+      kind: "LOGIN",
+      sessionId: 77,
+      occurredAt: new Date("2026-09-02T05:05:00.000Z"),
+    });
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(createAppNotification).not.toHaveBeenCalled();
+  });
+
   it("يعيد claim المتزامن مع الإغلاق إلى queued ولا يرسل على وصلة ميتة", async () => {
     const claimStarted = deferred();
     const releaseClaim = deferred();
