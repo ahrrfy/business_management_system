@@ -42,6 +42,11 @@ import {
   type ExternalTreasuryDisbursementApproval,
 } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import {
+  voucherApprovalRetainsLegacy,
+  voucherApprovalTrigger,
+} from "@shared/approvalTriggers";
 import { computeSignature } from "./helpers";
 import type { PartyType, PaymentMethod } from "./types";
 import {
@@ -744,12 +749,32 @@ export async function approveVoucher(
         message: "تغيّر مصدر السند النقدي أثناء الاعتماد — أعد المحاولة",
       });
     }
-    if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
-      });
-    }
+    // بالفعل لا بالإجراء: إجراءٌ واحد (`approveVoucher`) يحمل ثلاثةَ تصنيفاتٍ متمايزة —
+    // `OUT` خروجُ مال · `IN` مع إلغاءِ سندٍ أو استردادِ تصحيحِ استحقاق محوُ أثرٍ منشور ·
+    // و`IN` العاديّ لا مالَ يخرج ولا أثرَ يُمحى ⇒ `null` **وضابطُه مُستبقًى بقرار المالك**
+    // (٢/٩/٢٦) لأنّه البوّابةُ الوحيدة على نقدٍ مجهول المصدر يدخل الخزينة. التفصيل ودليلُه
+    // في `shared/approvalTriggers.ts`. وفصلُ المهام القائم يُنقل إلى `legacy` حرفياً.
+    //
+    // التصنيفُ يُشتقّ من `systemRequestPreview` لا من `systemRequest` كي يبقى الفحصُ في
+    // موضعه الأصليّ بلا إعادة ترتيب؛ وتطابُقُهما مفروضٌ في السطور التالية مباشرةً، وأيُّ
+    // اختلافٍ يرمي `CONFLICT` فيتراجع كلُّ شيء — فلا مسارَ يمرّ بتصنيفٍ منحرف.
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: voucherApprovalTrigger(r.direction, systemRequestPreview?.kind ?? null),
+      retainLegacy: voucherApprovalRetainsLegacy(
+        r.direction,
+        systemRequestPreview?.kind ?? null,
+      ),
+      subject: `سند ${r.voucherNumber}`,
+      legacy: () => {
+        if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
+          });
+        }
+      },
+    });
     const systemRequest = parseSystemPaymentRequest(r.internalNote);
     if (
       JSON.stringify(systemRequest) !== JSON.stringify(systemRequestPreview)
@@ -847,15 +872,26 @@ export async function approveVoucher(
           message: "سند القبض الأصلي تغيّر أو لم يعد صالحاً للإلغاء",
         });
       }
-      if (
-        cancellationOriginal.createdBy != null &&
-        Number(cancellationOriginal.createdBy) === actor.userId
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "لا يجوز لمن أنشأ القبض اعتماد إلغائه — يلزم مالك آخر",
-        });
-      }
+      // إلغاءُ السند مُبوَّبٌ في الحالتين معاً فلا يبلغه استبقاءٌ: عكسُ سندِ قبضٍ يُنتج
+      // إيصالاً `OUT` (خروجُ مال)، وعكسُ سندِ صرفٍ يُنتج `IN` على مستندٍ منشور (محوُ أثر).
+      // وفصلُ المهام الثاني — منشئُ **القبض الأصليّ** لا يعتمد إلغاءه — يُنقل حرفياً.
+      assertApprover({
+        actor: await resolveApprovalActor(tx, actor),
+        trigger: voucherApprovalTrigger(r.direction, systemRequest.kind),
+        retainLegacy: voucherApprovalRetainsLegacy(r.direction, systemRequest.kind),
+        subject: `إلغاء سند ${cancellationOriginal.voucherNumber}`,
+        legacy: () => {
+          if (
+            cancellationOriginal!.createdBy != null &&
+            Number(cancellationOriginal!.createdBy) === actor.userId
+          ) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "لا يجوز لمن أنشأ القبض اعتماد إلغائه — يلزم مالك آخر",
+            });
+          }
+        },
+      });
       cancellationSourceRequest = parseSystemPaymentRequest(
         cancellationOriginal.internalNote,
       );
@@ -2144,12 +2180,26 @@ export async function rejectVoucher(
         message: "السند ملغى — لا يمكن رفضه (الإلغاء أنهى الطلب أصلاً)",
       });
     }
-    if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يجوز رفض سند أنشأته بنفسك — يلزم مالك آخر",
-      });
-    }
+    // **الرفضُ حرّ**: لا `postEntry` ولا إيصالَ أثرٍ ولا مسَّ رصيدِ عميلٍ أو مورّد — الحالة
+    // تصير `FAILED/REJECTED`، والمعلَّقاتُ المرتبطة (صيرفة · محفظة · التزامُ استحقاق) تعود
+    // إلى ما قبل الطلب وكلُّها `PENDING_APPROVAL` لم تُنشر قطّ. ⇒ `null`، وهو نفسُ
+    // `REJECT_IS_FREE` في كل مسارات المشتريات، وأثرُه المقصود فكُّ جمودٍ مضمون: المالكُ
+    // الذي أنشأ السند يسحب طلبه بنفسه بدل أن يبقى معلّقاً إذ لا أحدَ فوقه.
+    // ⚠️ ولا مُصنِّفَ لهذا الفعل: `voucherApprovalTrigger` بلا معامل `action` — التصنيف هنا
+    // صريحٌ حتى يُضيفه القائد (`voucherRejectionTrigger`) فيُحوَّل هذا الموضع إليه.
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: null,
+      subject: `رفض سند ${r.voucherNumber}`,
+      legacy: () => {
+        if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "لا يجوز رفض سند أنشأته بنفسك — يلزم مالك آخر",
+          });
+        }
+      },
+    });
 
     const trimmedReason = reason.trim().slice(0, 500);
     if (!trimmedReason) {

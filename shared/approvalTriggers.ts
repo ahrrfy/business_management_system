@@ -172,3 +172,79 @@ export function supplierPaymentRefundTrigger(
 ): ApprovalTrigger | null {
   return action === "APPROVE" ? "ERASE_EFFECT" : REJECT_IS_FREE;
 }
+
+// ═══════════ الخزينة والسندات — تصنيفٌ عدائيّ (٢/٩/٢٦) ═══════════════════════════════
+// خمسةُ إجراءاتٍ أنتجت **تسعةَ أفعالٍ متمايزة**: الإجراءُ الواحد يحمل تصنيفين مختلفين
+// بحسب اتّجاه الإيصال ونوع الطلب النظاميّ. ⇒ التصنيفُ على **الفعل** لا على اسم الإجراء،
+// وهو نفسُ الدرس الذي أخرج `decideControl` بلا بوّابةٍ عند الاعتماد وببوّابةٍ عند الإلغاء.
+
+/** أنواع الطلبات النظامية التي تُغيّر تصنيفَ سندِ القبض. `null` = سندٌ عاديّ بلا طلبٍ نظاميّ. */
+export type VoucherSystemKind =
+  | "VOUCHER_CANCELLATION"
+  | "ACCRUAL_CORRECTION_REFUND"
+  | (string & {});
+
+/**
+ * اعتمادُ سند.
+ *
+ *   • `OUT` ⇒ **MONEY_OUT**: حارسُ التوفّر ثمّ إيصالٌ بـ`cashBucket` — نقدٌ يخرج من درجٍ أو خزينة.
+ *   • `IN` + إلغاءُ سند ⇒ **ERASE_EFFECT**: الأصل ⇐ `REVERSED` + قيدٌ معاكس + عكسُ الذمّة
+ *     + إنقاصُ `paidAmount`.
+ *   • `IN` + استردادُ تصحيحِ استحقاق ⇒ **ERASE_EFFECT**: `postEntry` بمبلغٍ سالب + عكسُ الاعتراف.
+ *   • `IN` عاديّ ⇒ **null** — مالٌ يدخل ولا قيدَ يُعكس.
+ */
+export function voucherApprovalTrigger(
+  direction: "IN" | "OUT",
+  systemKind: VoucherSystemKind | null,
+): ApprovalTrigger | null {
+  if (direction === "OUT") return "MONEY_OUT";
+  if (systemKind === "VOUCHER_CANCELLATION") return "ERASE_EFFECT";
+  if (systemKind === "ACCRUAL_CORRECTION_REFUND") return "ERASE_EFFECT";
+  return null;
+}
+
+/**
+ * ⭐ **قرار المالك (٢/٩/٢٦): سندُ القبض العاديّ يبقى مُبوَّباً.**
+ *
+ * تصنيفُه `null` صحيحٌ بالقاعدة (لا مالَ يخرج ولا أثرَ يُمحى)، **لكنّه الضابطُ الوحيد على
+ * نقدٍ مجهول المصدر يدخل الخزينة**: إسقاطُه يعني أنّ أيّ موظّفٍ يُدخل مبلغاً بلا اعتماد،
+ * فيُخرق المبدأ المالي الحاكم «لا دينار… ليس له مسار أو تبويب» من الطرف الذي لا ينتبه إليه
+ * أحد — طرفِ **الدخول**.
+ *
+ * والاستبقاءُ **لا يُنشئ مُطلِقاً ثالثاً**: `shared/approvalPolicy.ts` يبقى بحالتين، ويُمرَّر
+ * `retainLegacy` إلى `assertApprover` فيُنفَّذ الضابطُ **القائم** كما هو. أي لا سياسةَ جديدة
+ * ولا رسالةَ جديدة — يُترك ما كان.
+ *
+ * ⚠️ ونظيرُه **زيادةُ فرق النقد** (`SURPLUS`) لم يُحسَم بعد: نفسُ الشكل (مالٌ يدخل، ولا عكسَ
+ * لقيدٍ قائم). حتى يُحسَم، **يُستبقى ضابطُه كما هو** — والاستبقاءُ هو الخيار الآمن لأنّه
+ * لا يُغيّر شيئاً؛ إسقاطُه هو التغيير.
+ */
+export function voucherApprovalRetainsLegacy(
+  direction: "IN" | "OUT",
+  systemKind: VoucherSystemKind | null,
+): boolean {
+  return voucherApprovalTrigger(direction, systemKind) === null && direction === "IN";
+}
+
+/**
+ * اعتمادُ حالة فرق نقد.
+ *
+ *   • عجز (`SHORTAGE`) ⇒ **MONEY_OUT**: `assertCashOutAvailable` ثمّ إيصالُ `OUT/CASH/TREASURY`.
+ *   • زيادة (`SURPLUS`) ⇒ **null**: الاتّجاه `IN`، والقيد Dr خزينة / Cr التزامٌ آخر — إنشاءٌ
+ *     لا عكس. (وضابطُه مُستبقًى — انظر `cashVarianceApprovalRetainsLegacy`.)
+ */
+export function cashVarianceApprovalTrigger(
+  kind: "SHORTAGE" | "SURPLUS",
+  action: "APPROVE" | "REJECT",
+): ApprovalTrigger | null {
+  if (action === "REJECT") return REJECT_IS_FREE;
+  return kind === "SHORTAGE" ? "MONEY_OUT" : null;
+}
+
+/** الزيادةُ نظيرُ سند القبض: مالٌ يدخل بلا عكس ⇒ يُستبقى ضابطُه حتى يحسمه المالك. */
+export function cashVarianceApprovalRetainsLegacy(
+  kind: "SHORTAGE" | "SURPLUS",
+  action: "APPROVE" | "REJECT",
+): boolean {
+  return action === "APPROVE" && kind === "SURPLUS";
+}

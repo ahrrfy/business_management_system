@@ -1,4 +1,9 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 import { assertApprover, planApproval, soloExecutionRecord } from "./ownerGate";
 
 /**
@@ -151,5 +156,117 @@ describe("سجلّ «نُفِّذ بشخصٍ واحد» — التقريرُ ي�
         subject: "س",
       }),
     ).toBeNull();
+  });
+});
+
+describe("الضابطُ المُستبقى بقرار مالك — retainLegacy", () => {
+  beforeEach(() => {
+    process.env[FLAG] = "ON";
+  });
+
+  it("⭐ يُنفَّذ الضابطُ القائم رغم أنّ التصنيف null والسياسةُ الجديدة تعمل", () => {
+    // سندُ القبض العاديّ: لا مالَ يخرج ولا أثرَ يُمحى ⇒ تصنيفُه null. وبلا الاستبقاء كان
+    // تشغيلُ السياسة يُسقط **الضابط الوحيد** على نقدٍ مجهول المصدر يدخل الخزينة.
+    const legacy = vi.fn();
+    assertApprover({ actor: STAFF, trigger: null, subject: "سند V-1", legacy, retainLegacy: true });
+    expect(legacy).toHaveBeenCalledTimes(1);
+  });
+
+  it("ورميُ الضابط المُستبقى يمرّ كما هو — الاستبقاء ليس تخفيفاً", () => {
+    const legacy = () => {
+      throw new Error("لا يجوز اعتماد سند أنشأته بنفسك");
+    };
+    expect(() =>
+      assertApprover({ actor: STAFF, trigger: null, subject: "سند V-1", legacy, retainLegacy: true }),
+    ).toThrow(/أنشأته بنفسك/);
+  });
+
+  it("ولا يُستثنى منه المالك — الضابطُ القائم يقيس ما كان يقيسه", () => {
+    // المالكُ يتجاوز **البوّابة الجديدة** لا الضابطَ الذي قرّر إبقاءه؛ وإلّا صار الاستبقاء
+    // اسماً بلا أثرٍ على الفاعل الوحيد الذي يعتمد.
+    const legacy = vi.fn();
+    assertApprover({ actor: OWNER, trigger: null, subject: "سند V-1", legacy, retainLegacy: true });
+    expect(legacy).toHaveBeenCalledTimes(1);
+  });
+
+  it("وبلا العلَم لا فرق — الضابطُ يعمل في الوضعين", () => {
+    delete process.env[FLAG];
+    const legacy = vi.fn();
+    assertApprover({ actor: STAFF, trigger: null, subject: "سند V-1", legacy, retainLegacy: true });
+    expect(legacy).toHaveBeenCalledTimes(1);
+  });
+
+  it("ولا يُزدوج على فعلٍ له مُطلِقٌ أصلاً: الضابطُ ثمّ البوّابة معاً", () => {
+    // صرفٌ (MONEY_OUT) مع استبقاء: يُنفَّذ الضابط القديم **ثمّ** تُطبَّق البوّابة الجديدة —
+    // فلا يُفلت غيرُ المالك بحجّة أنّ الضابط القديم مرّ.
+    const legacy = vi.fn();
+    expect(() =>
+      assertApprover({ actor: STAFF, trigger: "MONEY_OUT", subject: "سند V-2", legacy, retainLegacy: true }),
+    ).toThrow(/المالك/);
+    expect(legacy).toHaveBeenCalledTimes(1);
+  });
+
+  it("والسلوك بلا retainLegacy لم يتغيّر — null يمرّ بلا استدعاء الضابط", () => {
+    const legacy = vi.fn();
+    assertApprover({ actor: STAFF, trigger: null, subject: "س", legacy });
+    expect(legacy).not.toHaveBeenCalled();
+  });
+});
+
+describe("عقدُ الوصل — لا يبلغ البوّابةَ فاعلٌ لم تُحسَم ملكيّتُه من القاعدة", () => {
+  /**
+   * ⭐ هذا الاختبار يُغلق **النصف الذي لا يمسكه النوع**.
+   *
+   * جعلُ `isOwner` إلزاميةً في `ResolvedApprovalActor` يمنع تمريرَ `Actor` خامّاً (يُحمِّر
+   * `tsc` — وهو ما كشف ثمانيةَ عشرَ موضعاً معطوباً صامتاً). لكنّه **لا يمنع إسكاتَه كذباً**:
+   * `actor: { ...actor, isOwner: actor.isOwner === true }` يُرضي النوعَ ويُعيد العطبَ نفسَه،
+   * لأنّ `undefined` تصير `false` فيُرفَض المالكُ الحقيقيّ.
+   *
+   * الجذرُ المقيس: **٥٥ من ٦٤ راوتراً** تبني الفاعل بلا `isOwner`. ولذلك المصدرُ المقبول
+   * واحدٌ لا غير: `resolveApprovalActor(tx, actor)` — تقرأ `users.isOwner` و`isActive` داخل
+   * المعاملة نفسها، فلا راوترَ ينسى ولا حمولةَ طلبٍ تدّعي.
+   */
+  const CALL = "assertApprover({";
+
+  function serviceFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "__tests__") continue;
+        out.push(...serviceFiles(full));
+      } else if (entry.isFile() && full.endsWith(".ts") && !full.endsWith(".test.ts")) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  const ROOT = join(__dirname, "..");
+  const sites: Array<{ file: string; snippet: string }> = [];
+  for (const file of serviceFiles(ROOT)) {
+    const src = readFileSync(file, "utf8");
+    // ⚠️ قيدٌ ضروريّ: `inventory/adjustmentApproval.ts` فيه دالّةٌ **محلّية** بالاسم نفسه
+    // وتوقيعٍ مختلف تماماً. بلا هذا الشرط يُنذر الاختبارُ كذباً على شيفرةٍ لا علاقة لها.
+    if (!/from "[^"]*approval\/ownerGate"/.test(src) && !/from "\.\/ownerGate"/.test(src)) continue;
+    let at = src.indexOf(CALL);
+    while (at !== -1) {
+      sites.push({ file: file.slice(ROOT.length + 1).split("\\").join("/"), snippet: src.slice(at, at + 260) });
+      at = src.indexOf(CALL, at + 1);
+    }
+  }
+
+  it("تُوجد مواضعُ وصلٍ فعلاً — وإلّا كان الاختبار أخضرَ على الفراغ", () => {
+    expect(sites.length).toBeGreaterThanOrEqual(15);
+  });
+
+  it("⭐ كلُّ موضعٍ يمرّ بـresolveApprovalActor — لا فاعلَ خامّ ولا حسمٌ يدويّ", () => {
+    const offenders = sites.filter((s) => !s.snippet.includes("resolveApprovalActor("));
+    expect(offenders.map((o) => `${o.file}: ${o.snippet.slice(0, 90)}`)).toEqual([]);
+  });
+
+  it("ولا يُحسَم بـ`=== true` يدوياً — يُرضي النوعَ ويُعيد العطب", () => {
+    const faked = sites.filter((s) => /isOwner:\s*[^,\n]*===\s*true/.test(s.snippet));
+    expect(faked.map((o) => o.file)).toEqual([]);
   });
 });

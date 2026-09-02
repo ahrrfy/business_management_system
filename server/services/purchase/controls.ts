@@ -11,7 +11,7 @@ import {
 import { purchaseOrderControlTrigger } from "@shared/approvalTriggers";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
-import { assertApprover } from "../approval/ownerGate";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -525,7 +525,7 @@ export async function decidePurchaseOrderControl(
     // لأنّه يمحو توقيعَ الجرد الافتتاحيّ (openingEligibility.ts:426). التفصيل ودليلُه في
     // `shared/approvalTriggers.ts`.
     assertApprover({
-      actor,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: purchaseOrderControlTrigger(request.kind, input.approve),
       subject: `أمر الشراء ${po.poNumber}`,
       legacy: () => {

@@ -18,7 +18,7 @@ import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { assertIndependentPurchaseReviewer } from "./returnGovernance";
 import { purchaseIntegrityResolutionTrigger } from "@shared/approvalTriggers";
-import { assertApprover } from "../approval/ownerGate";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 
 export type IntegrityCode = typeof purchaseIntegrityCases.$inferInsert["code"];
 export type IntegritySeverity = typeof purchaseIntegrityCases.$inferInsert["severity"];
@@ -140,7 +140,7 @@ export async function decidePurchaseIntegrityResolution(input: DecideIntegrityRe
     if (row.status !== "PENDING_RESOLUTION" || row.resolutionRequestedBy == null) throw new TRPCError({ code: "CONFLICT", message: "لا يوجد طلب حل معلّق" });
     // حلُّ قضية السلامة لا مالَ فيه ولا محو: حالةٌ وحقولُ قرارٍ + حدثُ تدقيق، والمُفرَّغ
     // عند الرفض محفوظٌ في حدث RESOLUTION_REQUESTED فلا يضيع. ⇒ لا بوّابة.
-    assertApprover({ actor, trigger: purchaseIntegrityResolutionTrigger(), subject: `قضية سلامة ${row.caseKey}`, legacy: () => assertIndependentPurchaseReviewer(Number(row.resolutionRequestedBy), actor.userId) });
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseIntegrityResolutionTrigger(), subject: `قضية سلامة ${row.caseKey}`, legacy: () => assertIndependentPurchaseReviewer(Number(row.resolutionRequestedBy), actor.userId) });
     if (input.decision === "REJECT") {
       await tx.update(purchaseIntegrityCases).set({ status: "IN_REVIEW", resolutionRequestKey: null, resolutionRequestHash: null, resolutionRequestedBy: null, resolutionRequestedAt: null, resolutionReason: null, resolutionEvidenceReference: null, pendingResolutionGuard: null }).where(eq(purchaseIntegrityCases.id, input.caseId));
       await appendEvent(tx, { eventKey: `RESOLUTION-DECISION:${decisionKey}`, caseId: input.caseId, branchId: Number(row.branchId), eventType: "RESOLUTION_REJECTED", previousStatus: "PENDING_RESOLUTION", newStatus: "IN_REVIEW", payload: { caseId: input.caseId, decision: input.decision, reason }, reason, actorId: actor.userId, counterpartyActorId: Number(row.resolutionRequestedBy) });

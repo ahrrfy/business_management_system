@@ -10,6 +10,10 @@ import {
   supplierInvoiceApprovalTrigger,
   supplierPaymentRefundTrigger,
   supplierPaymentTrigger,
+  cashVarianceApprovalRetainsLegacy,
+  cashVarianceApprovalTrigger,
+  voucherApprovalRetainsLegacy,
+  voucherApprovalTrigger,
 } from "./approvalTriggers";
 
 /**
@@ -105,5 +109,47 @@ describe("مسارُ الشراء الطبيعيّ — اعتمادٌ واحدٌ
 
   it("والسدادُ وحده يفتح البوّابة", () => {
     expect(supplierPaymentTrigger("APPROVE")).toBe("MONEY_OUT");
+  });
+});
+
+describe("الخزينة والسندات — الفعلُ لا الإجراء، والضابطُ المُستبقى بقرار مالك", () => {
+  it("صرفُ سندٍ خروجُ مال — حارسُ توفّرٍ ثمّ إيصالٌ بـcashBucket", () => {
+    expect(voucherApprovalTrigger("OUT", null)).toBe("MONEY_OUT");
+    // ونوعُ الطلب النظاميّ لا يُخفّف خروج المال.
+    expect(voucherApprovalTrigger("OUT", "VOUCHER_CANCELLATION")).toBe("MONEY_OUT");
+  });
+
+  it("قبضٌ يعكس مستنداً قائماً محوُ أثر — لا قبضٌ عاديّ", () => {
+    expect(voucherApprovalTrigger("IN", "VOUCHER_CANCELLATION")).toBe("ERASE_EFFECT");
+    expect(voucherApprovalTrigger("IN", "ACCRUAL_CORRECTION_REFUND")).toBe("ERASE_EFFECT");
+  });
+
+  it("⭐ سندُ القبض العاديّ تصنيفُه null — والمالك أبقى ضابطَه (٢/٩/٢٦)", () => {
+    // القاعدةُ تقول «لا بوّابة»، والواقعُ أنّه الضابط الوحيد على نقدٍ مجهول المصدر يدخل
+    // الخزينة. الحلُّ ليس مُطلِقاً ثالثاً بل استبقاءُ الضابط القائم كما هو.
+    expect(voucherApprovalTrigger("IN", null)).toBeNull();
+    expect(voucherApprovalRetainsLegacy("IN", null)).toBe(true);
+  });
+
+  it("والاستبقاءُ لا يمسّ ما له مُطلِقٌ أصلاً — فلا يُزدوج الضابط", () => {
+    expect(voucherApprovalRetainsLegacy("OUT", null)).toBe(false);
+    expect(voucherApprovalRetainsLegacy("IN", "VOUCHER_CANCELLATION")).toBe(false);
+    expect(voucherApprovalRetainsLegacy("IN", "ACCRUAL_CORRECTION_REFUND")).toBe(false);
+  });
+
+  it("عجزُ النقد خروجُ مال، وزيادتُه إنشاءُ قيدٍ لا عكسُه", () => {
+    expect(cashVarianceApprovalTrigger("SHORTAGE", "APPROVE")).toBe("MONEY_OUT");
+    expect(cashVarianceApprovalTrigger("SURPLUS", "APPROVE")).toBeNull();
+  });
+
+  it("والزيادةُ نظيرُ سند القبض ⇒ ضابطُها مُستبقًى حتى يحسمها المالك", () => {
+    expect(cashVarianceApprovalRetainsLegacy("SURPLUS", "APPROVE")).toBe(true);
+    expect(cashVarianceApprovalRetainsLegacy("SHORTAGE", "APPROVE")).toBe(false);
+  });
+
+  it("والرفضُ حرٌّ هنا أيضاً — ولا ضابطَ يُستبقى عليه", () => {
+    expect(cashVarianceApprovalTrigger("SHORTAGE", "REJECT")).toBeNull();
+    expect(cashVarianceApprovalTrigger("SURPLUS", "REJECT")).toBeNull();
+    expect(cashVarianceApprovalRetainsLegacy("SURPLUS", "REJECT")).toBe(false);
   });
 });

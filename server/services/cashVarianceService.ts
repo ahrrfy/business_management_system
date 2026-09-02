@@ -48,6 +48,11 @@ import { money, toDbMoney } from "./money";
 import { todayUtcDate } from "./businessDay";
 import { logAuditTx, type AuditMetadata } from "./auditService";
 import { requireDb, withTx, type Actor } from "./tx";
+import { assertApprover, resolveApprovalActor } from "./approval/ownerGate";
+import {
+  cashVarianceApprovalRetainsLegacy,
+  cashVarianceApprovalTrigger,
+} from "@shared/approvalTriggers";
 
 export interface RegisterCashVarianceEvidenceInput {
   branchId: number;
@@ -223,6 +228,22 @@ export function buildCashVariancePostingPlan(input: {
     lines,
     sourceComponents: { roleDebits, roleCredits },
   };
+}
+
+/**
+ * نوعُ الفرق كما **ستراه الخطّة** — الصيغةُ نفسها التي يستعملها
+ * `buildCashVariancePostingPlan` (المعدود − المتوقَّع).
+ *
+ * ⚠️ لا يُشتقّ من عمود `variance`: ذاك منقولٌ من مستند العدّ/المطابقة عند الاقتراح، والخطّة
+ * تطرح بنفسها. وتصنيفُ بوّابة الاعتماد يجب أن يتبع **الأثر الذي سيقع** لا لقطةً بجانبه،
+ * وإلّا صُنِّف عجزٌ زيادةً فسقطت البوّابة عن نقدٍ يغادر الخزينة.
+ */
+function varianceKindOf(
+  row: Pick<typeof cashVarianceCases.$inferSelect, "expectedAmount" | "actualAmount">,
+): "SHORTAGE" | "SURPLUS" {
+  return money(String(row.actualAmount)).minus(money(String(row.expectedAmount))).isNegative()
+    ? "SHORTAGE"
+    : "SURPLUS";
 }
 
 async function latestEventTx(tx: Tx, caseId: number, lock = false) {
@@ -987,16 +1008,34 @@ export async function approveCashVarianceCase(
     if (Number(latest.version) !== input.expectedVersion) {
       throw new TRPCError({ code: "CONFLICT", message: "تغير إصدار حالة فرق النقد؛ حدّث الشاشة" });
     }
-    if (Number(row.proposedByUserId) === actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمن اقترح التسوية اعتمادها" });
-    }
-    if (Number(row.countedByUserId) === actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمن نفذ العد اعتماد فرق العد نفسه" });
-    }
+    // تصنيفُ الفعل يتبع **اتّجاه الإيصال الذي ستكتبه الخطّة** لا عمودَ `variance` المنقول من
+    // المستند: `buildCashVariancePostingPlan` يشتقّ العجز من (المعدود − المتوقَّع) بنفسه،
+    // فاشتقاقُه هنا بالصيغة ذاتها يمنع انحرافَ التصنيف عن الأثر إن اختلفت اللقطتان.
+    const varianceKind = varianceKindOf(row);
+    // **العجزُ خروجُ مال** — مُثبَتٌ أدناه في هذه الدالّة: `plan.direction === "OUT"` يستدعي
+    // `assertCashOutAvailable` على خزينة الفرع ثمّ يُدرج إيصالاً `OUT/CASH/TREASURY` مكتملاً
+    // ومعتمَداً؛ وهو نفسُ ما يُنقص النقد المتوقَّع. و**الزيادةُ** إيصالٌ `IN` وقيدٌ
+    // Dr خزينة / Cr التزامٌ آخر — إنشاءٌ لا عكس ⇒ تصنيفُها `null`، **وضابطُها مُستبقًى**
+    // بـ`retainLegacy` حتى يحسمه المالك (نظيرُ سند القبض العاديّ). التفصيل ودليلُه في
+    // `shared/approvalTriggers.ts`. والفحوصُ الثلاثة تُنقل إلى `legacy` حرفياً.
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: cashVarianceApprovalTrigger(varianceKind, "APPROVE"),
+      retainLegacy: cashVarianceApprovalRetainsLegacy(varianceKind, "APPROVE"),
+      subject: `حالة فرق نقد #${input.caseId}`,
+      legacy: () => {
+        if (Number(row.proposedByUserId) === actor.userId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمن اقترح التسوية اعتمادها" });
+        }
+        if (Number(row.countedByUserId) === actor.userId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمن نفذ العد اعتماد فرق العد نفسه" });
+        }
 
-    if (row.responsibleUserId != null && Number(row.responsibleUserId) === actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز للموظف المسؤول اعتماد قضية فرق النقد الخاصة به" });
-    }
+        if (row.responsibleUserId != null && Number(row.responsibleUserId) === actor.userId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز للموظف المسؤول اعتماد قضية فرق النقد الخاصة به" });
+        }
+      },
+    });
 
     const requiresResponsible =
       row.sourceType === "CUSTODY" && money(row.variance).isNegative();
@@ -1277,13 +1316,24 @@ export async function rejectCashVarianceCase(
     if (Number(latest.version) !== input.expectedVersion) {
       throw new TRPCError({ code: "CONFLICT", message: "تغير إصدار حالة فرق النقد" });
     }
-    if (
-      Number(candidate.proposedByUserId) === actor.userId ||
-      Number(candidate.countedByUserId) === actor.userId ||
-      Number(candidate.responsibleUserId) === actor.userId
-    ) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "قرار فرق النقد يحتاج مراجعاً مستقلاً" });
-    }
+    // **الرفضُ حرّ**: لا إيصال ولا `postEntry` ولا مسَّ خزينة — حدثٌ `REJECTED` وأثرٌ تدقيقيّ
+    // فقط. ⇒ `null` بالتصنيفين معاً (عجزاً كان أو زيادة)، فيتحرّر الجمود حين يكون المقترحُ
+    // هو المالكَ نفسه. والفحصُ القائم يُنقل إلى `legacy` حرفياً بلا حرف.
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: cashVarianceApprovalTrigger(varianceKindOf(row), "REJECT"),
+      retainLegacy: cashVarianceApprovalRetainsLegacy(varianceKindOf(row), "REJECT"),
+      subject: `رفض حالة فرق نقد #${input.caseId}`,
+      legacy: () => {
+        if (
+          Number(candidate.proposedByUserId) === actor.userId ||
+          Number(candidate.countedByUserId) === actor.userId ||
+          Number(candidate.responsibleUserId) === actor.userId
+        ) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "قرار فرق النقد يحتاج مراجعاً مستقلاً" });
+        }
+      },
+    });
     const version = Number(latest.version) + 1;
     await tx.insert(cashVarianceCaseEvents).values({
       caseId: input.caseId,

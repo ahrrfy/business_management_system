@@ -37,7 +37,7 @@ import {
   type SupplierInvoiceDraftIdentity,
 } from "./supplierInvoiceDraftPolicy";
 import { supplierInvoiceApprovalTrigger } from "@shared/approvalTriggers";
-import { assertApprover } from "../approval/ownerGate";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 
 export type SupplierInvoiceEvidenceType = SupplierInvoiceDraftEvidenceType;
 
@@ -727,7 +727,7 @@ export async function decideSupplierInvoiceApproval(
     // ⇒ لا بوّابة؛ و**العكس** محوُ أثرٍ مُثبَت (قيدٌ عكسيّ + إنقاصُ رصيد المورّد + الحالة
     // REVERSED التي لا كاتبَ لها سواه) ⇒ المالك حصراً. والرفضُ حرٌّ في الحالتين.
     assertApprover({
-      actor,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: supplierInvoiceApprovalTrigger(request.kind, input.action),
       subject: `فاتورة المورّد ${invoice.invoiceNumber}`,
       legacy: () => {
@@ -771,7 +771,7 @@ export async function decideSupplierInvoiceApproval(
         });
       }
       assertApprover({
-        actor,
+        actor: await resolveApprovalActor(tx, actor),
         trigger: supplierInvoiceApprovalTrigger(request.kind, input.action),
         subject: `فاتورة المورّد ${invoice.invoiceNumber}`,
         legacy: () => {

@@ -12,7 +12,7 @@ import {
 import { purchaseRequisitionControlTrigger } from "@shared/approvalTriggers";
 import { extractInsertId } from "../../lib/insertId";
 import type { DB, Tx } from "../../db";
-import { assertApprover } from "../approval/ownerGate";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -682,7 +682,7 @@ export async function decidePurchaseRequisitionControl(
     // لا خروجَ مالٍ ولا محوَ أثر — يكتب كمّياتٍ معتمَدة وحالةً داخل مستنده، والالتزامُ
     // التعاقديّ (أمر الشراء) لاحقٌ له. ⇒ بوّابتُه تسقط كاملةً بالسياسة الجديدة.
     assertApprover({
-      actor,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: purchaseRequisitionControlTrigger(),
       subject: `طلب الشراء ${requisition.requisitionNumber}`,
       legacy: () => {

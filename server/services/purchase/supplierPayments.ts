@@ -54,7 +54,7 @@ import {
   assertIndependentPurchaseReviewer,
 } from "./returnGovernance";
 import { supplierPaymentRefundTrigger, supplierPaymentTrigger } from "@shared/approvalTriggers";
-import { assertApprover } from "../approval/ownerGate";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 
 type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 export const SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY = Symbol(
@@ -836,7 +836,7 @@ export async function decideSupplierPayment(
     // سدادُ المورّد **خروجُ مال**، وهذه البوّابة هي التفويض الوحيد له: إيصال OUT مكتمل
     // بـcashBucket + حارسُ توفّرٍ + قفلُ مصدر النقد. ⇒ المالك حصراً.
     assertApprover({
-      actor,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: supplierPaymentTrigger(input.action),
       subject: `سداد مورّد (طلب ${input.requestId})`,
       legacy: () =>
@@ -1445,7 +1445,7 @@ export async function decideSupplierPaymentRefund(
     // استردادُ السداد **محوُ أثر**: عكسٌ جبريٌّ سطراً بسطر للدفع — إيصال IN مقابل OUT،
     // وPAYMENT_IN مقابل PAYMENT_OUT، ورصيدُ المورّد يعود، والفاتورة تعود OPEN.
     assertApprover({
-      actor,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: supplierPaymentRefundTrigger(input.action),
       subject: `استرداد سداد (طلب ${input.requestId})`,
       legacy: () =>

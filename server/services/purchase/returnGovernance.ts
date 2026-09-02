@@ -52,7 +52,7 @@ import { withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { purchaseReturnReversalTrigger, purchaseReturnTrigger } from "@shared/approvalTriggers";
-import { assertApprover } from "../approval/ownerGate";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 
@@ -496,7 +496,7 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
     const lockedInvoice = input.action === "APPROVE" ? (await tx.select().from(supplierInvoices).where(eq(supplierInvoices.id, Number(preview.supplierInvoiceId))).for("update").limit(1))[0] : null;
     const request = (await tx.select().from(purchaseReturnRequests).where(eq(purchaseReturnRequests.id, input.requestId)).for("update").limit(1))[0]!;
     // اعتمادُ المرتجع محوُ أثرٍ مُثبَت: applyMovement بـOUT + قيدٌ منشور + إنقاصُ رصيد المورّد.
-    assertApprover({ actor, trigger: purchaseReturnTrigger(input.action), subject: `مرتجع شراء (طلب ${input.requestId})`, legacy: () => assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId) });
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseReturnTrigger(input.action), subject: `مرتجع شراء (طلب ${input.requestId})`, legacy: () => assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId) });
     if (request.status !== "PENDING") {
       if (request.decisionKey === key && request.decisionHash === hash) {
         const existingReturn = request.status === "APPROVED"
@@ -728,7 +728,7 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
     const request = (await tx.select().from(purchaseReturnReversalRequests).where(eq(purchaseReturnReversalRequests.id, input.requestId)).for("update").limit(1))[0]!;
     // عكسُ المرتجع **يُخرج نقداً فعلاً**: إيصال OUT يُصنَّف otherCashOut في تسوية الوردية
     // فيُنقص expectedCash وZ-report. ⇒ المالك حصراً.
-    assertApprover({ actor, trigger: purchaseReturnReversalTrigger(input.action), subject: `عكس مرتجع شراء (طلب ${input.requestId})`, legacy: () => assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId) });
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseReturnReversalTrigger(input.action), subject: `عكس مرتجع شراء (طلب ${input.requestId})`, legacy: () => assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId) });
     if (request.status !== "PENDING") { if (request.decisionKey === key && request.decisionHash === hash) return { requestId: input.requestId, status: request.status, reversalId: null, idempotent: true as const }; throw new TRPCError({ code: "CONFLICT", message: "حُسم طلب العكس مسبقاً" }); }
     if (input.action === "REJECT") { await tx.update(purchaseReturnReversalRequests).set({ status: "REJECTED", pendingGuard: null, reviewedBy: actor.userId, reviewedAt: new Date(), reviewReason, decisionKey: key, decisionHash: hash }).where(eq(purchaseReturnReversalRequests.id, input.requestId)); return { requestId: input.requestId, status: "REJECTED" as const, reversalId: null, idempotent: false as const }; }
     const purchaseReturn = lockedReturn;
