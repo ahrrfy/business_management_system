@@ -41,7 +41,7 @@
   "client/src/pages/ExchangeStatement.tsx": 1,
   "client/src/pages/ExpenseCategories.tsx": 1,
   "client/src/pages/Expenses.tsx": 1,
-  "client/src/pages/GiftsHub.tsx": 5,
+  "client/src/pages/GiftsHub.tsx": 1,
   "client/src/pages/HrChangesReport.tsx": 2,
   "client/src/pages/HrDevices.tsx": 3,
   "client/src/pages/IntegrationsSettings.tsx": 1,
