@@ -157,7 +157,7 @@ describe("عزل سلة المنتجات عن سلة البطاقات الرقم
   const source = readPage("POS.tsx");
 
   it("يمنع إضافة منتج عادي إلى سلة رقمية قبل الدفع", () => {
-    expect(source).toContain("if (cartHasDigital)");
+    expect(source).toContain("if (cartHasDigitalRef.current)");
     expect(source).toContain("DIGITAL_CART_BLOCKS_REGULAR_MESSAGE");
     expect(source).toContain("regularProductsDisabled={cartHasDigital}");
     expect(source).toContain("disabled={regularProductsDisabled}");
@@ -168,6 +168,25 @@ describe("عزل سلة المنتجات عن سلة البطاقات الرقم
     expect(source).toContain("REGULAR_CART_BLOCKS_DIGITAL_MESSAGE");
     expect(source).toContain("cardsDisabled={offline || cartHasRegular}");
     expect(source).toContain("if (!offline && !cartHasRegular) setCardsOpen(true)");
+  });
+
+  it("يحرس مسح HID بأحدث حالة للسلة قبل البحث وبعده", () => {
+    const lookupBarcode = source.slice(
+      source.indexOf("const lookupBarcode = useCallback"),
+      source.indexOf("const { handleKeyDown: handleScanKeyDown }"),
+    );
+    const addRow = source.slice(
+      source.indexOf("function addRow("),
+      source.indexOf("function changeQty("),
+    );
+
+    expect(source).toContain("useBarcodeScanner(handleHidScan");
+    expect(lookupBarcode).toContain("if (cartHasDigitalRef.current)");
+    expect(lookupBarcode.indexOf("if (cartHasDigitalRef.current)")).toBeLessThan(
+      lookupBarcode.indexOf("utils.catalog.byBarcode.fetch"),
+    );
+    expect(lookupBarcode).toContain("else addRow(row as PosRow)");
+    expect(addRow).toContain("if (cartHasDigitalRef.current)");
   });
 
   it("يعرض سبب الفصل بالعربية داخل شاشة نقطة البيع", () => {
