@@ -26,6 +26,21 @@ export interface CreateAnnouncementInput {
   expiresAt?: Date | null;
 }
 
+/** نطاق العمليات الإدارية؛ غير العابر للفروع لا يدير إلا إعلانات جمهور فرعه. */
+export interface AnnouncementManagementScope {
+  branchId: number | null;
+  canCrossBranches: boolean;
+}
+
+function managementWhere(scope: AnnouncementManagementScope) {
+  if (scope.canCrossBranches) return sql`1 = 1`;
+  if (scope.branchId == null) return sql`1 = 0`;
+  return and(
+    eq(announcements.audienceType, "BRANCH"),
+    eq(announcements.audienceBranchId, Number(scope.branchId)),
+  );
+}
+
 /** هل يُطابق جمهور الإعلان مستخدماً بعينه؟ (حارس القراءة/الإقرار.) */
 function audienceMatchesUser(
   a: { audienceType: string; audienceBranchId: number | null; audienceRole: string | null },
@@ -152,13 +167,17 @@ export async function createAnnouncement(input: CreateAnnouncementInput, actorUs
 }
 
 /** قائمة الإدارة: الإعلانات (الأحدث أولاً) مع عدّادَي القراءة والإقرار. */
-export async function listAnnouncements(opts?: { includeInactive?: boolean; limit?: number }) {
+export async function listAnnouncements(
+  scope: AnnouncementManagementScope,
+  opts?: { includeInactive?: boolean; limit?: number },
+) {
   const db = requireDb();
   const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
+  const activeWhere = opts?.includeInactive ? sql`1 = 1` : eq(announcements.isActive, true);
   const rows = await db
     .select()
     .from(announcements)
-    .where(opts?.includeInactive ? sql`1 = 1` : eq(announcements.isActive, true))
+    .where(and(managementWhere(scope), activeWhere))
     .orderBy(desc(announcements.createdAt))
     .limit(limit);
   if (rows.length === 0) return [];
@@ -181,9 +200,13 @@ export async function listAnnouncements(opts?: { includeInactive?: boolean; limi
 }
 
 /** تفاصيل الإدارة: إعلانٌ واحد + قائمة قرّائه (من قرأ/أقرّ ومتى). null إن لم يوجد. */
-export async function getAnnouncementWithReaders(id: number) {
+export async function getAnnouncementWithReaders(id: number, scope: AnnouncementManagementScope) {
   const db = requireDb();
-  const [row] = await db.select().from(announcements).where(eq(announcements.id, id)).limit(1);
+  const [row] = await db
+    .select()
+    .from(announcements)
+    .where(and(eq(announcements.id, id), managementWhere(scope)))
+    .limit(1);
   if (!row) return null;
   const readers = await db
     .select({
@@ -200,9 +223,16 @@ export async function getAnnouncementWithReaders(id: number) {
 }
 
 /** تفعيل/تعطيل إعلان. يعيد false إن لم يوجد الصفّ (ليميّز الراوتر NOT_FOUND). */
-export async function setAnnouncementActive(id: number, isActive: boolean): Promise<boolean> {
+export async function setAnnouncementActive(
+  id: number,
+  isActive: boolean,
+  scope: AnnouncementManagementScope,
+): Promise<boolean> {
   const db = requireDb();
-  const [res] = await db.update(announcements).set({ isActive }).where(eq(announcements.id, id));
+  const [res] = await db
+    .update(announcements)
+    .set({ isActive })
+    .where(and(eq(announcements.id, id), managementWhere(scope)));
   return Number((res as { affectedRows?: number }).affectedRows ?? 0) > 0;
 }
 
