@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, shifts, users } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
@@ -10,10 +10,11 @@ import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "./accounting/postingEngine";
 import { money, round2, toDbMoney } from "./money";
-import { resolveBranchCashShiftTx } from "./shiftService";
+import { resolveBranchCashShiftTx, shiftIdForCashTx } from "./shiftService";
 import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
+  assertTreasuryOutException,
   lockCashSourceForUpdate,
 } from "./cash/cashAvailability";
 import { effectiveRefundCap, isSurfacedRefundMethod, loadRefundCaps } from "./returns/refundCaps";
@@ -68,6 +69,12 @@ export interface ReturnSaleInput {
    * أيّ فاتورةٍ نقديّةٍ لزبونٍ عابر يُرفَض كلّياً.
    */
   internalCorrectionReversal?: boolean;
+  /**
+   * سببُ المرتجع للعميل **المسجَّل** — يُخزَّن في نصّ قيد RETURN (تصويب مراجعة Codex، P2).
+   * `resolution.reason` يخصّ الزبون العابر وحده، فكان سببُ المالك الفوريّ يُتحقَّق منه في
+   * الراوتر ثمّ **لا يُخزَّن في أيّ مستندٍ دائم** — يبقى في `logAudit` وحده وهو best-effort.
+   */
+  operatorReason?: string | null;
 }
 
 /** جسم عكس المرتجع داخل معاملةٍ قائمة — يُعاد استعماله من correctSale (تصحيح الفاتورة)
@@ -85,7 +92,10 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       : input.refund;
     const resolutionReason = typeof input.resolution?.reason === "string"
       ? input.resolution.reason.trim().replace(/\s+/g, " ")
-      : null;
+      // العميلُ المسجَّل: يقبل سبباً صريحاً من المُنفِّذ فيُخزَّن في نصّ القيد كما يُخزَّن سببُ العابر.
+      : typeof input.operatorReason === "string" && input.operatorReason.trim().length >= 3
+        ? input.operatorReason.trim().replace(/\s+/g, " ").slice(0, 500)
+        : null;
     const resolutionDisposition = input.resolution?.disposition ?? null;
     const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
     // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة المرتجع الأول بلا استرداد مكرّر.
@@ -201,17 +211,59 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
         .limit(1)
     )[0] ?? null;
-    let prelockedRefundShift: { shiftId: number; openingBalance: string } | null = null;
+    /**
+     * ⭐ **مصدرُ النقد الخارج: درجٌ مفتوح، وإلّا الخزينةُ للإداريّ** (تدقيق ١/٩/٢٦).
+     *
+     * كان المسار يقفل `DRAWER` **ثابتاً** ويشترط ورديةً مفتوحة، فخارج ساعات الوردية يُحجَب
+     * المرتجعُ كلّياً — وهو أكثر أنواعه شيوعاً في مكتبة تجزئة (زبونٌ عابر نقديّ يعود مساءً).
+     * فيدفع الموظّف من جيبه ويسجّل غداً، وهو المسار الذي يُنتج النقد اليتيم والعجز في Z-report.
+     *
+     * نظيرُه `cancelSaleInTx` كان محقّاً: `shiftIdForCashTx` يعطي الدرجَ إن وُجد، وإلّا
+     * `TREASURY` للمدير/الأدمن، محروساً بـ`assertTreasuryOutException`. ومفتاحُ المرتجع
+     * `SALE_RETURN_COMPENSATION` كان **معرَّفاً في السياسة وبلا مستدعٍ واحد** — مخرجٌ مبنيٌّ
+     * وغير موصول. هذا يوصله.
+     *
+     * **حدودُ التوسيع مقصودة وضيّقة:**
+     *  · اختيارٌ صريح للدرج (`refund.shiftId`) ⇒ السلوك القديم حرفياً (يفشل إن أُقفل) — الموظّف
+     *    قصد درجاً بعينه فلا نُبدّله من تحته.
+     *  · وردياتٌ مفتوحة موجودة ⇒ السلوك القديم حرفياً (واحدة تُختار، وتعدّدُها يطلب تحديداً).
+     *  · **صفرُ ورديات + فاعلٌ إداريّ** ⇒ الخزينة. وحدها الحالةُ التي كانت تفشل تغيّرت.
+     *  · كاشيرٌ بلا وردية ⇒ يبقى مرفوضاً (حمايةُ النقد اليتيم الحقيقيّ).
+     *
+     * و`cashBucket = TREASURY` **لا يدخل `computeExpectedCash`** لأيّ وردية ⇒ تسويةُ الدرج تبقى
+     * دقيقة، والصرفُ يظهر في تقرير الخزينة الإداريّة بقيدِ `TREASURY_CASH` لا `CASH`.
+     */
+    let prelockedRefundSource: {
+      shiftId: number | null;
+      cashBucket: "DRAWER" | "TREASURY";
+    } | null = null;
     if (refund?.method === "CASH" && money(refund.amount).gt(0)) {
-      prelockedRefundShift = await resolveBranchCashShiftTx(
-        tx,
-        Number(invPreview.branchId),
-        refund.shiftId ?? null,
-      );
+      const branchForRefund = Number(invPreview.branchId);
+      const explicitShiftId = refund.shiftId ?? null;
+      const openShiftCount = explicitShiftId != null
+        ? 1
+        : (await tx
+            .select({ id: shifts.id })
+            .from(shifts)
+            .where(and(eq(shifts.branchId, branchForRefund), eq(shifts.status, "OPEN")))
+          ).length;
+      if (explicitShiftId != null || openShiftCount > 0) {
+        const resolved = await resolveBranchCashShiftTx(tx, branchForRefund, explicitShiftId);
+        prelockedRefundSource = { shiftId: resolved.shiftId, cashBucket: "DRAWER" };
+      } else {
+        // بلا ورديةٍ مفتوحة: `shiftIdForCashTx` يقرّر بالدور — خزينةٌ للإداريّ، ورفضٌ للكاشير.
+        const routed = await shiftIdForCashTx(
+          tx,
+          { userId: actor.userId, branchId: branchForRefund, role: actor.role },
+          branchForRefund,
+          "استرداد مرتجع البيع نقداً",
+        );
+        prelockedRefundSource = routed;
+      }
       await lockCashSourceForUpdate(tx, {
-        branchId: Number(invPreview.branchId),
-        cashBucket: "DRAWER",
-        shiftId: prelockedRefundShift.shiftId,
+        branchId: branchForRefund,
+        cashBucket: prelockedRefundSource.cashBucket,
+        shiftId: prelockedRefundSource.shiftId,
       });
     }
     // مسارات التوصيل تتشارك ترتيباً واحداً بعد المصدر: party→consignment→invoice.
@@ -300,16 +352,24 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
             "في النطاق الحالي تسوية الزبون العابر هي ردّ CASH فوري كامل فقط. لا بطاقة ولا تحويل ولا رصيد معلّق؛ سجّل العميل أولاً إن احتجت مساراً آخر.",
         });
       }
-      if (!Number.isInteger(resolution.shiftId) || Number(resolution.shiftId) <= 0) {
+      /**
+       * الدرجُ صار **اختيارياً** للزبون العابر (تدقيق ١/٩/٢٦): اشتراطُه حرفياً كان يحجب
+       * مرتجعَ العابر النقديّ خارج ساعات الوردية حجباً كاملاً — وهو أكثر أنواع المرتجعات
+       * شيوعاً في مكتبة تجزئة. حين لا يُحدَّد، يقرّر `shiftIdForCashTx` بالدور: درجٌ مفتوح
+       * إن وُجد، وإلّا الخزينةُ للإداريّ، ورفضٌ للكاشير (النقد اليتيم يبقى ممنوعاً).
+       * وحين يُحدَّد يبقى الشرطُ الصارم: رقمٌ صحيحٌ موجبٌ لوردية مفتوحة فعلاً.
+       */
+      if (resolution.shiftId != null
+        && (!Number.isInteger(resolution.shiftId) || Number(resolution.shiftId) <= 0)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "حدّد وردية مفتوحة صراحةً داخل resolution ليخرج منها ردّ الزبون العابر.",
+          message: "رقم الوردية المحدَّدة لردّ الزبون العابر غير صالح.",
         });
       }
-      if ((resolutionReason?.length ?? 0) < 3) {
+      if ((resolution.reason?.trim().length ?? 0) < 3) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "سبب مرتجع الزبون العابر إلزامي (٣ أحرف على الأقل)." });
       }
-      if (resolutionReason!.length > 500) {
+      if (resolution.reason.trim().length > 500) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "سبب مرتجع الزبون العابر طويل جداً (الحد ٥٠٠ حرف)." });
       }
       if (resolution.disposition !== "RESTOCK" && resolution.disposition !== "DAMAGED") {
@@ -334,8 +394,33 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       });
     }
 
-    // فاتورة أمر الشغل تبيع متغيّراً أساس لم يُضَف للمخزون فعلاً (المواد استُهلكت عند البدء)،
-    // فإعادة التخزين تخلق مخزوناً وهمياً لمنتج مُخصَّص. افرض restock=false لها.
+    /**
+     * فاتورة أمر الشغل تبيع متغيّراً أساس لم يُضَف للمخزون فعلاً (المواد استُهلكت عند البدء
+     * على `workOrderMaterials`)، فإعادة التخزين تخلق مخزوناً وهمياً لمنتج مُخصَّص.
+     * افرض `restock=false` لها.
+     *
+     * ⚠️ **عطبٌ كامنٌ موثَّقٌ عمداً (تدقيق ١/٩/٢٦ — ولا تُصلحه بتقييمٍ سطريّ وحده):**
+     * الإجبارُ على مستوى **الفاتورة** لا السطر، فأوّلُ بندٍ مخزنيّ يُضاف إلى فاتورة أمر شغل
+     * سيُبتلَع: يُسجَّل مُرجَعاً مالياً ولا يعود للرفّ ولا تُعكَس تكلفتُه.
+     *
+     * وهو **غير قابلٍ للوقوع اليوم**: مواضعُ `insert(invoiceItems)` لمسار WORKORDER
+     * (`workOrder/deliver.ts` و`delivery/dispatch.ts`) تُدرج **بنداً واحداً** هو
+     * `wo.baseVariantId` الذي لم يُخصَم من المخزون أصلاً.
+     *
+     * ⛔ **ولا يكفي جعلُ القرار سطرياً**: جُرّب في هذه الشريحة فكشف قيدَين لا يُتجاوزان بلا
+     * قرارٍ محاسبيّ صريح (أمسكهما Codex على PR #932):
+     *  ① **لا profile يقبل الحالة**: `RETURN_SALE_FLEX` (المُختار لكلّ فواتير WORKORDER أدناه)
+     *    يقبل `SALES_FLEX/DELIVERY_REVENUE/TAX_PAYABLE` مديناً و`AR` دائناً — بلا
+     *    `INVENTORY`/`COGS`. و`RETURN_SALE_FLEX_WORKORDER` يقبل `COGS` دائناً لكنّ مدينَه
+     *    `WORK_IN_PROGRESS` لا `INVENTORY` (المادّة تعود لقيد التشغيل لا للبضاعة الجاهزة).
+     *    ⇒ إعادةُ سطرٍ مخزنيّ على فاتورة أمر شغل تُصدر `INVENTORY/COGS` فيرفضها التحقّق حين
+     *    يكون الدفتر المزدوج ACTIVE. الإصلاحُ الصحيح يبدأ من **profile** يمثّل الحالة، لا من
+     *    توسيع profile قائمٍ بأدوار مخزون.
+     *  ② **إعادةُ استحقاق الأمانة** (`if (!restock)` أدناه) invoice-wide كذلك؛ فسطرُ أمانةٍ
+     *    لم يَعُد بينما `restock=true` كان يفقد إعادةَ استحقاقه ⇒ نقصٌ دائمٌ في ذمّة المودِع.
+     * ⇒ أيّ إصلاحٍ لاحق يلزمه الثلاثة معاً: profile + إعادة استحقاقٍ لكلّ مودِعٍ على حدة +
+     *   تقييمٌ سطريّ. وليس مستعجَلاً ما دامت الحالة غير قابلةٍ للوقوع.
+     */
     const requestedRestock = input.resolution
       ? input.resolution.disposition === "RESTOCK"
       : input.restock !== false;
@@ -457,7 +542,6 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
 
       const itemVariantId = Number(item.variantId);
       const kind = kindByVariant.get(itemVariantId) ?? "STOCKED";
-
       if (restock) {
         if (kind === "BUNDLE") {
           // gstack B6: نقرأ اللقطة المحفوظة على invoiceItem بدل الوصفة الحيّة.
@@ -693,7 +777,9 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         `عكس كلفة تحليلية=${toDbMoney(reversedCost)}؛ عكس COGS مملوك=${toDbMoney(ownedReversedCost)}؛ ` +
         `خدمة غير معادة=${toDbMoney(returnedServicePaidCost)}؛ أمانة مستقلة=${toDbMoney(consignmentPaidShare)}` +
         (resolutionReason
-          ? `؛ سبب المرتجع=${resolutionReason}؛ مصير البضاعة=${resolutionDisposition === "RESTOCK" ? "إعادة للرف" : "تالف"}`
+          ? `؛ سبب المرتجع=${resolutionReason}؛ مصير البضاعة=${
+              (resolutionDisposition ?? (restock ? "RESTOCK" : "DAMAGED")) === "RESTOCK" ? "إعادة للرف" : "تالف"
+            }`
           : ""),
       postingIntent: returnPostingIntent,
       postingSourceComponents: returnPostingSource,
@@ -843,19 +929,24 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       // في ورديات الفرع المفتوحة كلّها (لا الفاعل فقط)، ويتطلّب اختياراً صريحاً (refund.shiftId)
       // حين يتعدّد الدرج المفتوح. غير النقد لا يمسّ صندوقاً فيبقى على النمط القديم (معلوماتيّ بحت).
       let shiftId: number | null = null;
+      /** دلو النقد الخارج — DRAWER أو TREASURY، ويبقى NULL لغير النقد (لا يمسّ صندوقاً). */
+      let refundCashBucket: "DRAWER" | "TREASURY" | null = null;
       if (refund!.method === "CASH") {
-        const resolved = prelockedRefundShift;
+        const resolved = prelockedRefundSource;
         if (!resolved) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل درج الاسترداد النقدي" });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل مصدر الاسترداد النقدي" });
         }
         shiftId = resolved.shiftId;
+        refundCashBucket = resolved.cashBucket;
+        // وسمٌ تدقيقيّ fail-closed: الصرفُ من الخزينة استثناءٌ مصنَّفٌ في سياسةٍ مغلقة، لا مساراً عاماً.
+        if (refundCashBucket === "TREASURY") assertTreasuryOutException("SALE_RETURN_COMPENSATION");
         // حدّ الدرج (نمط cashDropService — لا يُسحَب أكثر من النقد الحاليّ فيه): سقف الفاتورة
         // (refundCap أعلاه) وحده لا يكفي — يضمن فقط أن المسترَد ≤ ما دُفع بهذه الطريقة على هذه
         // الفاتورة، لا أنّ الدرج المستهدَف يحمل هذا المبلغ *الآن* (سحبٌ نقديّ أو مصروفٌ سابقٌ في
         // نفس الوردية قد يكون أنقص الدرج فعلياً). بلا هذا الحدّ يُطلَب من الكاشير تسليم نقدٍ لا يملكه
         // فعلياً في درجه أثناء العمل، لا أن يُكتشَف الخلل لاحقاً عند الإغلاق فقط.
         await assertCashOutAvailable(tx, {
-          branchId: Number(inv.branchId), cashBucket: "DRAWER", shiftId,
+          branchId: Number(inv.branchId), cashBucket: refundCashBucket, shiftId,
           amount: materializedRefund, operation: "استرداد مرتجع البيع نقداً",
         });
       } else if (isImmediateRefundRail) {
@@ -899,7 +990,7 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         shiftId,
         // cashBucket=DRAWER للنقد (يَخرج من الدُرج بمرتجع نقدي ويظهر في Z-report).
         // البطاقة وغيرها ⇒ NULL (لا يَمسّ صندوقاً). مرآة لنمط saleService/voucherService.
-        cashBucket: refund!.method === "CASH" ? "DRAWER" : null,
+        cashBucket: refundCashBucket,
         direction: "OUT",
         amount: toDbMoney(refundRequest),
         paymentMethod: refund!.method,
@@ -927,11 +1018,8 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       if (materializedRefund.gt(0)) {
         // الدلو يُمرَّر بحسب الرافد فعلاً: النقد من الدرج (CASH)، والبطاقة من الحساب البنكيّ
         // (CARD_BANK) — تمرير "DRAWER" ثابتاً كان يُرحّل ردّ البطاقة على حساب النقد.
-        const refundAssetRole = paymentAssetRole(
-          refund!.method,
-          refund!.method === "CASH" ? "DRAWER" : null,
-          "OUT",
-        );
+        // الدلوُ الفعليّ يقرّر الحساب: درجٌ ⇒ CASH · خزينةٌ ⇒ TREASURY_CASH · بطاقةٌ ⇒ CARD_BANK.
+        const refundAssetRole = paymentAssetRole(refund!.method, refundCashBucket, "OUT");
         const refundPostingSource = {
           roleDebits: { AR: materializedRefund },
           roleCredits: { [refundAssetRole]: materializedRefund },
@@ -1025,6 +1113,46 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
 
 export async function returnSale(input: ReturnSaleInput, actor: Actor) {
   return withTx((tx) => returnSaleInTx(tx, input, actor));
+}
+
+/**
+ * ⭐ **مسارُ المالك الفوريّ** (قرار المالك ١/٩/٢٦ — تدقيق «المرتجع وهميّ»).
+ *
+ * حوكمةُ طلب/اعتماد تفترض وجودَ مراجعٍ مستقلّ. وفي مكتبةٍ يديرها صاحبُها، المالكُ هو البائعُ
+ * والمديرُ معاً ⇒ كلّ مرتجعٍ يحتاج شخصاً ثانياً لا وجود له، فيُسلَّم النقدُ والبضاعةُ خارج
+ * النظام. المالكُ هو **مالكُ المخاطرة** لا موظّفٌ يُراقَب، ولهذا يُنفّذ مرتجعَه مباشرةً.
+ *
+ * ثلاثةُ حرّاسٍ تُبقيه محكوماً لا مفتوحاً:
+ *  ① **إعادةُ قراءة `isOwner`/`isActive` داخل المعاملة نفسها** — راية الجلسة قد تشيخ؛ نفس
+ *    اشتراط `assertTreasuryOutException` (cash/cashAvailability.ts). قفلُ `.for("share")`
+ *    يمنع سحبَ الصفة بين الفحص والتنفيذ.
+ *  ② **سببٌ إلزاميّ** (٣ أحرف فأكثر) يُخزَّن في `notes` القيد — لا تنفيذ صامت.
+ *  ③ الأثرُ يمرّ بـ`returnSaleInTx` نفسها: نفس القيود والإيصالات وحرّاس الدرج والسقوف.
+ *    **لا نسخةَ منطقٍ ماليّ ثانية** — الاختصارُ في الحوكمة لا في المحاسبة.
+ */
+export async function returnSaleAsOwner(
+  input: ReturnSaleInput & { ownerReason: string },
+  actor: Actor,
+) {
+  const reason = input.ownerReason.trim().replace(/\s+/g, " ");
+  if (reason.length < 3 || reason.length > 500) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "سبب المرتجع إلزاميّ للمالك (3-500 محرف)" });
+  }
+  return withTx(async (tx) => {
+    const [owner] = await tx
+      .select({ id: users.id, isActive: users.isActive, isOwner: users.isOwner })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      .for("share")
+      .limit(1);
+    if (!owner?.isActive || !owner.isOwner) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "المرتجع الفوريّ محصورٌ بحساب مالكٍ نشط — استعمل مسار الطلب والاعتماد",
+      });
+    }
+    return returnSaleInTx(tx, { ...input, operatorReason: reason }, actor);
+  });
 }
 
 export interface ListSalesReturnsInput {

@@ -81,6 +81,9 @@ export function OfflineSyncChip({
       SALE: (args) => utils.client.offline.replaySale.mutate(common(args) as never),
       PRINT_SALE: (args) => utils.client.offline.replayPrintSale.mutate(common(args) as never),
       RECEPTION: (args) => utils.client.offline.replayReception.mutate(common(args) as never),
+      // مرتجعٌ نقديّ التُقط أثناء الانقطاع (١/٩/٢٦) — الخادمُ يعيد تقييم سقف الاسترداد
+      // وحالة الفاتورة عند الترحيل، ورفضُه يُعلّق العنصر لمراجعة المدير.
+      RETURN: (args) => utils.client.offline.replayReturn.mutate(common(args) as never),
     };
   }, [utils]);
 
@@ -425,6 +428,14 @@ export function OfflineSyncChip({
                                 SALE: (args) => utils.client.offline.replaySale.mutate(withApproval(args) as never),
                                 PRINT_SALE: (args) => utils.client.offline.replayPrintSale.mutate(withApproval(args) as never),
                                 RECEPTION: (args) => utils.client.offline.replayReception.mutate(withApproval(args) as never),
+                                // ⛔ بلا `managerApproval`: سلطةُ تنفيذ المرتجع تُقرأ من
+                                // `isOwner` داخل معاملة الخادم، فلا يفتحها اعتمادُ مديرٍ هنا.
+                                RETURN: (args) => utils.client.offline.replayReturn.mutate({
+                                  ...(args.payload as never as object),
+                                  capturedAt: args.capturedAt,
+                                  offlineReceiptNumber: args.offlineReceiptNumber,
+                                  deviceId: args.deviceId,
+                                } as never),
                               };
                               void replayParkedWithApproval(item.clientRequestId, approvalApi).then((r) => {
                                 setApprovalBusy(false);

@@ -6,8 +6,11 @@ import {
   listSalesControlRequests,
   rejectSalesControlRequest,
   requestSalesControl,
+  withdrawSalesControlRequest,
 } from "../services/sale/controlRequests";
 import { router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
+import { logAudit } from "../services/auditService";
+import { RETURN_EXECUTED_AUDIT_ACTION, type ReturnExecutionMode } from "../services/returns/auditActions";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 const paymentMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -122,12 +125,50 @@ export const salesControlRouter = router({
     .input(z.object({
       requestId: z.number().int().positive(),
       reviewNote: z.string().trim().max(500).nullish(),
+      /**
+       * توجيهُ خروج النقد لحظة الاعتماد (مرتجع البيع). الدرج المختار وقت **الطلب** قد يكون
+       * أُقفل قبل الاعتماد ⇒ التنفيذ يفشل حتماً بلا مخرج. المُعتمِد يختار درجاً مفتوحاً الآن.
+       * ⛔ لا مبلغ ولا طريقة هنا: الاعتماد موافقةٌ على ما عُرِض، لا فرصةٌ لتغييره.
+       */
+      cashRouting: z.object({
+        shiftId: z.number().int().positive().optional(),
+        /** امسح الدرج المُجمَّد ليُعاد اشتقاق المصدر (درجٌ مفتوح وإلّا خزينةُ الفرع للإداريّ). */
+        clearShift: z.boolean().optional(),
+        reference: z.string().trim().min(1).max(100).optional(),
+      }).optional(),
     }))
-    .mutation(({ input, ctx }) => approveSalesControlRequest(
-      input.requestId,
-      actor(ctx),
-      input.reviewNote,
-    )),
+    .mutation(async ({ input, ctx }) => {
+      const result = await approveSalesControlRequest(
+        input.requestId,
+        actor(ctx),
+        input.reviewNote,
+        input.cashRouting ?? null,
+      );
+      /**
+       * اعتمادُ مرتجعٍ محكوم **ينفّذ الأثر** — فيجب أن يحمل فعلَ التنفيذ نفسه الذي يقرأه
+       * رقيبُ الشذوذ D3-ب. التدقيقُ التلقائيّ يكتب `rpc.salesControl.approve` لكلّ الأنواع
+       * معاً (إلغاء/استبدال/استحقاق) فلا يُميّز المرتجع؛ وتركيزُ المرتجعات على شخصٍ بعينه
+       * لا يُقاس بفعلٍ يخلط أربع عملياتٍ مختلفة.
+       */
+      // ⛔ `replayed` = اعتمادٌ سابقٌ يُعاد تشغيله بلا أثرٍ ثانٍ. كتابةُ فعل التنفيذ له تُضخّم
+      // عدّاد «معالجي الإرجاع» في رقيب D3 بإعادة محاولةٍ شبكية (تصويب مراجعة Codex، P2).
+      const replayedApproval = "replayed" in result && result.replayed === true;
+      if (!replayedApproval && "request" in result && result.request?.requestType === "SALES_RETURN") {
+        await logAudit(ctx, {
+          action: RETURN_EXECUTED_AUDIT_ACTION,
+          entityType: "invoice",
+          entityId: Number(result.request.invoiceId),
+          newValue: {
+            mode: "GOVERNED_APPROVAL" satisfies ReturnExecutionMode,
+            requestId: input.requestId,
+            requestedBy: Number(result.request.requestedBy),
+            reason: result.request.reason,
+            cashRouting: input.cashRouting ?? null,
+          },
+        });
+      }
+      return result;
+    }),
 
   reject: salesManagerProcedure
     .input(z.object({
@@ -135,6 +176,23 @@ export const salesControlRouter = router({
       reason: z.string().trim().min(3).max(500),
     }))
     .mutation(({ input, ctx }) => rejectSalesControlRequest(
+      input.requestId,
+      input.reason,
+      actor(ctx),
+    )),
+
+  /**
+   * سحبُ الطالب لطلبه — المخرج من الطريق المسدود حين لا يوجد مراجعٌ مستقلّ.
+   * ⚠️ البوّابة `salesCashierProcedure` لا `salesManagerProcedure`: مَن استطاع **إنشاء** الطلب
+   * يجب أن يستطيع **سحبه**، وإلّا بقي كاشيرُ الاستبدال حبيسَ طلبٍ لا يملك إغلاقه.
+   * والخدمة تحصر السحب بصاحب الطلب حصراً، فالبوّابة الأوسع لا توسّع الأثر.
+   */
+  withdraw: salesCashierProcedure
+    .input(z.object({
+      requestId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+    }))
+    .mutation(({ input, ctx }) => withdrawSalesControlRequest(
       input.requestId,
       input.reason,
       actor(ctx),

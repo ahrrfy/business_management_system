@@ -71,6 +71,46 @@ export async function createReturnRequest(input: CreateReturnRequestInput, actor
       message: `الفاتورة ${invoiceStatusLabel(inv.status)} — لا يُطلَب إرجاعٌ عليها`,
     });
   }
+  /**
+   * ⭐ فاتورة أمر الشغل خارج هذا الطابور (تدقيق ١/٩/٢٦).
+   *
+   * المسارات الثلاثة الأخرى ترفضها صراحةً (`requestSalesControl` و`sales.cancel` و`sales.correct`)
+   * لأنّ **`workOrders.reverseDelivery` هو المخرج الوحيد لأمرٍ مُسلَّم** — وحدَه يعكس COGS/WIP
+   * ويقيّد هدر الخامة ويُعيد فتح العربون. وكان هذا الطابورُ وحدَه بلا حارس: يعتمده المدير
+   * فيُنفَّذ `returnSaleInTx` على الفاتورة (إيرادٌ وذمّةٌ معكوسان، الحالة RETURNED) بينما
+   * `workOrders.status` يبقى DELIVERED — مستندان متناقضان، و`reverseDelivery` يُقفَل بعدها
+   * إلى الأبد («فاتورة أمر الشغل معكوسة أو ملغاة سلفاً») ⇒ عربونٌ محتجَزٌ بلا مخرج.
+   *
+   * ⛔ الحارس هنا لا في `returnSaleInTx`: النواة تخدم أيضاً مسارَي **التوصيل** الشرعيَّين
+   * (`failCourierDelivery` و`reverseDispatchedInvoice`)، وفواتير `delivery/dispatch.ts:335`
+   * تحمل `sourceType="WORKORDER"` — فحارسٌ في النواة كان يكسر عكسَ طردٍ لم يُسلَّم أصلاً.
+   */
+  if (inv.sourceType === "WORKORDER") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من طابور المرتجعات",
+    });
+  }
+  /**
+   * تماثلُ الحاجزَين: `assertApprovable` يرفض اعتماد هذا الطلب ما دام هناك طلب تحكّمٍ معلّق،
+   * و`requestSalesControl` يرفض إنشاء طلبٍ محكومٍ فوق طلبٍ قديمٍ معلّق — لكنّ هذا الطرف كان
+   * مفتوحاً، فيُنشَأ طلبٌ قديمٌ فوق طلبٍ محكوم فيقفل كلٌّ منهما اعتماد الآخر، والرسالتان تُحيل
+   * كلٌّ منهما إلى الأخرى. المنعُ عند الإنشاء أرحم من حلقةٍ مغلقةٍ عند الاعتماد.
+   */
+  const governedPending = (await d
+    .select({ id: salesControlRequests.id })
+    .from(salesControlRequests)
+    .where(and(
+      eq(salesControlRequests.invoiceId, input.invoiceId),
+      eq(salesControlRequests.status, "PENDING"),
+    ))
+    .limit(1))[0];
+  if (governedPending) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `على هذه الفاتورة طلب تحكّمٍ معلّق (#${governedPending.id}) — احسمه من «طلبات العمليات» قبل طلبٍ جديد`,
+    });
+  }
 
   // الأسطر تخصّ هذه الفاتورة، والكميات ضمن المتبقّي (تحقّقٌ استرشاديّ؛ الحسم عند التنفيذ).
   const itemIds = input.lines.map((l) => Number(l.invoiceItemId));
@@ -99,6 +139,27 @@ export async function createReturnRequest(input: CreateReturnRequestInput, actor
     }
   }
 
+  /**
+   * ⭐ **الحارسان المتقابلان يتسلسلان على صفّ الفاتورة** (Codex، P2).
+   *
+   * فحصُ «طلبٌ معلّقٌ في الجدول الآخر» كان قراءةً حرّة خارج معاملة، فطلبٌ قديمٌ وطلبٌ محكومٌ
+   * يبدآن متزامنين يريان كلاهما لا شيء ثمّ يُدرجان معاً — فيقفل كلٌّ منهما اعتمادَ الآخر.
+   * القفلُ على `invoices` هو المِفتاح المشترك الوحيد بين الجدولين (لا قيدَ قاعدةٍ يجمعهما).
+   */
+  return withTx(async (tx) => {
+    await tx.select({ id: invoices.id }).from(invoices)
+      .where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
+    return insertReturnRequestTx(tx, input, actor, inv);
+  }, { gate: "NONE" });
+}
+
+async function insertReturnRequestTx(
+  d: Tx,
+  input: CreateReturnRequestInput,
+  actor: Actor & { role?: string },
+  inv: { branchId: number | string; returnedTotal: string | null },
+) {
+  const reason = input.reason.trim();
   // طلبٌ معلَّقٌ قائمٌ على نفس الفاتورة ⇒ لا تُكدَّس الطلبات (المدير يحسم القائم أولاً).
   const pending = (await d
     .select({ id: returnRequests.id })
