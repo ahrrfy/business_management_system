@@ -81,8 +81,7 @@ function db() {
   if (!d) throw new Error("DATABASE_URL not set for tests");
   return d;
 }
-const insertId = (res: any): number =>
-  Number(res?.[0]?.insertId ?? res?.insertId);
+const insertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.insertId);
 
 async function reset() {
   const d = db();
@@ -98,24 +97,8 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    {
-      id: 1,
-      openId: "local_test",
-      name: "admin",
-      role: "admin",
-      loginMethod: "local",
-      branchId: 1,
-    },
-    {
-      id: 2,
-      openId: "owner",
-      name: "owner",
-      role: "manager",
-      loginMethod: "local",
-      branchId: 1,
-      isOwner: true,
-      isActive: true,
-    },
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true, isActive: true },
   ]);
   await d.insert(s.serviceTypes).values({
     name: "موافقة تصميم",
@@ -127,33 +110,16 @@ async function seedBase() {
   });
   // M5/M8/M10: عمليات النقد (processPayment CASH هنا) تَستلزم وردية مفتوحة.
   await d.insert(s.shifts).values({
-    userId: 1,
-    branchId: 1,
-    status: "OPEN",
+    userId: 1, branchId: 1, status: "OPEN",
     shiftType: "RECEPTION",
     openedAt: new Date(),
-    openGuard: "1:1",
-    openingBalance: "0",
+    openGuard: "1:1", openingBalance: "0",
   });
   await d.insert(s.products).values({ id: 1, name: "قلم" });
-  await d
-    .insert(s.productVariants)
-    .values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
+  await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([
-    {
-      id: 1,
-      variantId: 1,
-      unitName: "قطعة",
-      conversionFactor: "1",
-      isBaseUnit: true,
-    },
-    {
-      id: 2,
-      variantId: 1,
-      unitName: "درزن",
-      conversionFactor: "12",
-      isBaseUnit: false,
-    },
+    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    { id: 2, variantId: 1, unitName: "درزن", conversionFactor: "12", isBaseUnit: false },
   ]);
   await d.insert(s.productPrices).values([
     { productUnitId: 1, priceTier: "RETAIL", price: "10.00" },
@@ -161,9 +127,7 @@ async function seedBase() {
   ]);
 }
 async function setStock(variantId: number, branchId: number, qty: number) {
-  await db()
-    .insert(s.branchStock)
-    .values({ variantId, branchId, quantity: qty });
+  await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
 }
 
 async function approveCurrentDesign(workOrderId: number) {
@@ -198,47 +162,16 @@ beforeEach(async () => {
 describe("تقارير الذمم المدينة (AR)", () => {
   it("getARAging: يدرج العميل المدين فقط ويجمعه في شريحة 0-30، ويستثني المُسدَّد", async () => {
     await setStock(1, 1, 100);
-    await db()
-      .insert(s.customers)
-      .values([
-        {
-          id: 1,
-          name: "عميل مدين",
-          defaultPriceTier: "RETAIL",
-          currentBalance: "0",
-        },
-        {
-          id: 2,
-          name: "عميل مسدّد",
-          defaultPriceTier: "RETAIL",
-          currentBalance: "0",
-        },
-      ]);
+    await db().insert(s.customers).values([
+      { id: 1, name: "عميل مدين", defaultPriceTier: "RETAIL", currentBalance: "0" },
+      { id: 2, name: "عميل مسدّد", defaultPriceTier: "RETAIL", currentBalance: "0" },
+    ]);
 
     // عميل 1: بيع آجل 240 بلا دفع ⇒ مستحق
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "ORDER",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }],
-      },
-      actor,
-    );
+    await createSale({ branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }] }, actor);
     // عميل 2: بيع آجل ثم تسديد كامل ⇒ لا يظهر
-    const paid = await createSale(
-      {
-        branchId: 1,
-        customerId: 2,
-        sourceType: "ORDER",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
-      },
-      actor,
-    );
-    await processPayment(
-      { invoiceId: paid.invoiceId, amount: "120.00", method: "CASH" },
-      actor,
-    );
+    const paid = await createSale({ branchId: 1, customerId: 2, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
+    await processPayment({ invoiceId: paid.invoiceId, amount: "120.00", method: "CASH" }, actor);
 
     const aging = await getARAging();
     expect(aging).toHaveLength(1);
@@ -253,27 +186,9 @@ describe("تقارير الذمم المدينة (AR)", () => {
 
   it("getCustomerStatement: فواتير + دفعات + ملخّص صحيح بعد دفعة جزئية", async () => {
     await setStock(1, 1, 100);
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
-    const sale = await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "ORDER",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }],
-      },
-      actor,
-    );
-    await processPayment(
-      { invoiceId: sale.invoiceId, amount: "100.00", method: "CASH" },
-      actor,
-    );
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }] }, actor);
+    await processPayment({ invoiceId: sale.invoiceId, amount: "100.00", method: "CASH" }, actor);
 
     const stmt = await getCustomerStatement(1);
     expect(stmt).not.toBeNull();
@@ -307,24 +222,10 @@ describe("تقارير الذمم الدائنة (AP)", () => {
     });
   });
 
-  async function makePO(
-    supplierId: number,
-    qty: number,
-    unitPrice: string,
-    receive: boolean,
-    pay?: string,
-  ) {
+  async function makePO(supplierId: number, qty: number, unitPrice: string, receive: boolean, pay?: string) {
     const po = await createPurchaseOrder(
-      {
-        supplierId,
-        branchId: 1,
-        taxRatePercent: "0",
-        status: "DRAFT",
-        items: [
-          { variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice },
-        ],
-      },
-      actor,
+      { supplierId, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
+      actor
     );
     const submitted = await submitPurchaseOrderForApproval(
       {
@@ -343,33 +244,19 @@ describe("تقارير الذمم الدائنة (AP)", () => {
         reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
       },
       owner,
-      { legacyConfirmOnly: true },
     );
     if (receive) {
-      const poItem = (
-        await db()
-          .select()
-          .from(s.purchaseOrderItems)
-          .where(sql`purchaseOrderId = ${po.purchaseOrderId}`)
-      )[0];
+      const poItem = (await db().select().from(s.purchaseOrderItems).where(sql`purchaseOrderId = ${po.purchaseOrderId}`))[0];
       const received = await receivePurchase(
         {
           purchaseOrderId: po.purchaseOrderId,
-          lines: [
-            {
-              purchaseOrderItemId: Number(poItem.id),
-              receivedBaseQuantity: qty,
-            },
-          ],
+          lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: qty }],
           payment: pay ? { amount: pay, method: "CASH" } : undefined,
         },
-        actor,
+        actor
       );
       if (received.supplierPaymentRequestReceiptId != null) {
-        await approveVoucher(
-          Number(received.supplierPaymentRequestReceiptId),
-          owner,
-        );
+        await approveVoucher(Number(received.supplierPaymentRequestReceiptId), owner);
       }
     }
     return po;
@@ -377,12 +264,10 @@ describe("تقارير الذمم الدائنة (AP)", () => {
 
   it("getAPAging: يجمع المستحق للمورد في 0-30 ويستثني المسدّد كلياً", async () => {
     await setStock(1, 1, 0);
-    await db()
-      .insert(s.suppliers)
-      .values([
-        { id: 1, name: "مورد مستحق", currentBalance: "0" },
-        { id: 2, name: "مورد مسدّد", currentBalance: "0" },
-      ]);
+    await db().insert(s.suppliers).values([
+      { id: 1, name: "مورد مستحق", currentBalance: "0" },
+      { id: 2, name: "مورد مسدّد", currentBalance: "0" },
+    ]);
     // مورد 1: شراء 500، دفع 200 ⇒ مستحق 300
     await makePO(1, 100, "5.00", true, "200.00");
     // مورد 2: شراء 120، دفع كامل ⇒ لا يظهر
@@ -400,22 +285,13 @@ describe("تقارير الذمم الدائنة (AP)", () => {
 
   it("getSupplierStatement: أوامر الشراء + دفعات PAYMENT_OUT + ملخّص", async () => {
     await setStock(1, 1, 0);
-    await db()
-      .insert(s.suppliers)
-      .values({ id: 1, name: "مورد", currentBalance: "0" });
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
     const po = await makePO(1, 100, "5.00", true, "200.00");
 
-    const [storedPo] = await db()
-      .select()
-      .from(s.purchaseOrders)
-      .where(sql`id = ${po.purchaseOrderId}`);
+    const [storedPo] = await db().select().from(s.purchaseOrders).where(sql`id = ${po.purchaseOrderId}`);
     expect(storedPo.paidAmount).toBe("200.00");
-    const linkedPayments = await db()
-      .select()
-      .from(s.accountingEntries)
-      .where(
-        sql`entryType = 'PAYMENT_OUT' AND purchaseOrderId = ${po.purchaseOrderId}`,
-      );
+    const linkedPayments = await db().select().from(s.accountingEntries)
+      .where(sql`entryType = 'PAYMENT_OUT' AND purchaseOrderId = ${po.purchaseOrderId}`);
     expect(linkedPayments).toHaveLength(1);
     expect(linkedPayments[0].amount).toBe("200.00");
 
@@ -442,21 +318,11 @@ describe("تقارير الذمم الدائنة (AP)", () => {
 
   it("AP aging يستثني أوامر DRAFT غير الملتزمة", async () => {
     await setStock(1, 1, 0);
-    await db()
-      .insert(s.suppliers)
-      .values({ id: 1, name: "مورد مسودّة", currentBalance: "0" });
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد مسودّة", currentBalance: "0" });
     // أمر DRAFT — لا يلتزم مالياً (لا AP)
     const r = await createPurchaseOrder(
-      {
-        supplierId: 1,
-        branchId: 1,
-        taxRatePercent: "0",
-        status: "DRAFT",
-        items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" },
-        ],
-      },
-      actor,
+      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }] },
+      actor
     );
     void r;
     const aging = await getAPAging();
@@ -469,24 +335,10 @@ describe("تقارير الذمم الدائنة (AP)", () => {
 /** يضيف منتجاً ثانياً + متغيراً + وحدات + سعراً، في فئة مختلفة لاختبار التجميع بالفئة. */
 async function seedSecondProduct(opts: { categoryId?: number } = {}) {
   const d = db();
-  await d
-    .insert(s.products)
-    .values({ id: 2, name: "كرّاسة", categoryId: opts.categoryId ?? null });
-  await d
-    .insert(s.productVariants)
-    .values({ id: 2, productId: 2, sku: "NB-1", costPrice: "2.00" });
-  await d
-    .insert(s.productUnits)
-    .values({
-      id: 3,
-      variantId: 2,
-      unitName: "قطعة",
-      conversionFactor: "1",
-      isBaseUnit: true,
-    });
-  await d
-    .insert(s.productPrices)
-    .values({ productUnitId: 3, priceTier: "RETAIL", price: "5.00" });
+  await d.insert(s.products).values({ id: 2, name: "كرّاسة", categoryId: opts.categoryId ?? null });
+  await d.insert(s.productVariants).values({ id: 2, productId: 2, sku: "NB-1", costPrice: "2.00" });
+  await d.insert(s.productUnits).values({ id: 3, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+  await d.insert(s.productPrices).values({ productUnitId: 3, priceTier: "RETAIL", price: "5.00" });
 }
 
 /**
@@ -507,37 +359,19 @@ async function seedAnalyticsInvoice(opts: {
   const unitPrice = opts.unitPrice ?? 10;
   const unitCost = opts.unitCost ?? 4;
   const total = opts.quantity * unitPrice;
-  const returnedTotal =
-    opts.quantity > 0 ? (total * opts.returnedQuantity) / opts.quantity : 0;
-  await db()
-    .insert(s.invoices)
-    .values({
-      id: opts.id,
-      invoiceNumber: `AN-${opts.id}`,
-      sourceType: "POS",
-      sourceId: `analytics-${opts.id}`,
-      branchId: 1,
-      subtotal: total.toFixed(2),
-      total: total.toFixed(2),
-      costTotal: (opts.quantity * unitCost).toFixed(2),
-      paidAmount: total.toFixed(2),
-      returnedTotal: returnedTotal.toFixed(2),
-      status: opts.status ?? "PAID",
-      invoiceDate: new Date(),
-    });
-  await db()
-    .insert(s.invoiceItems)
-    .values({
-      invoiceId: opts.id,
-      variantId,
-      quantity: String(opts.quantity),
-      baseQuantity: opts.quantity,
-      returnedBaseQuantity: opts.returnedQuantity,
-      returnedRestockedBaseQuantity: opts.returnedRestockedQuantity,
-      unitPrice: unitPrice.toFixed(2),
-      unitCost: unitCost.toFixed(2),
-      total: total.toFixed(2),
-    });
+  const returnedTotal = opts.quantity > 0 ? total * opts.returnedQuantity / opts.quantity : 0;
+  await db().insert(s.invoices).values({
+    id: opts.id, invoiceNumber: `AN-${opts.id}`, sourceType: "POS", sourceId: `analytics-${opts.id}`,
+    branchId: 1, subtotal: total.toFixed(2), total: total.toFixed(2),
+    costTotal: (opts.quantity * unitCost).toFixed(2), paidAmount: total.toFixed(2),
+    returnedTotal: returnedTotal.toFixed(2), status: opts.status ?? "PAID", invoiceDate: new Date(),
+  });
+  await db().insert(s.invoiceItems).values({
+    invoiceId: opts.id, variantId, quantity: String(opts.quantity), baseQuantity: opts.quantity,
+    returnedBaseQuantity: opts.returnedQuantity,
+    returnedRestockedBaseQuantity: opts.returnedRestockedQuantity,
+    unitPrice: unitPrice.toFixed(2), unitCost: unitCost.toFixed(2), total: total.toFixed(2),
+  });
 }
 
 describe("تقارير المبيعات التحليلية", () => {
@@ -545,35 +379,12 @@ describe("تقارير المبيعات التحليلية", () => {
     await setStock(1, 1, 100);
     await seedSecondProduct();
     await setStock(2, 1, 100);
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 
     // قلم: درزن × 2 = 240 إيراد، تكلفة 4×12×2=96، ربح 144
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }],
-      },
-      actor,
-    );
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }] }, actor);
     // كرّاسة: 10 قطع = 50 إيراد، تكلفة 2×10=20، ربح 30
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 2, productUnitId: 3, quantity: "10" }],
-      },
-      actor,
-    );
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 2, productUnitId: 3, quantity: "10" }] }, actor);
 
     const top = await getTopProducts({ by: "revenue" });
     expect(top.length).toBe(2);
@@ -591,35 +402,12 @@ describe("تقارير المبيعات التحليلية", () => {
     await setStock(1, 1, 100);
     await seedSecondProduct();
     await setStock(2, 1, 100);
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 
     // قلم: درزن واحد = 12 قطعة، 120 إيراد
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
-      },
-      actor,
-    );
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
     // كرّاسة: 30 قطعة = 150 إيراد لكن كمية أعلى
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 2, productUnitId: 3, quantity: "30" }],
-      },
-      actor,
-    );
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 2, productUnitId: 3, quantity: "30" }] }, actor);
 
     const top = await getTopProducts({ by: "qty" });
     expect(top[0].productId).toBe(2); // الكرّاسة أعلى كمية
@@ -630,151 +418,59 @@ describe("تقارير المبيعات التحليلية", () => {
 
   it("getTopProducts يستبعد الفواتير الملغاة والمستبدلة فقط", async () => {
     await setStock(1, 1, 100);
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 
-    const cancelled = await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
-      },
-      actor,
-    );
-    const superseded = await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
-      },
-      actor,
-    );
-    await db()
-      .update(s.invoices)
-      .set({ status: "CANCELLED" })
-      .where(sql`id = ${cancelled.invoiceId}`);
-    await db()
-      .update(s.invoices)
-      .set({ status: "SUPERSEDED" })
-      .where(sql`id = ${superseded.invoiceId}`);
+    const cancelled = await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }] }, actor);
+    const superseded = await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }] }, actor);
+    await db().update(s.invoices).set({ status: "CANCELLED" }).where(sql`id = ${cancelled.invoiceId}`);
+    await db().update(s.invoices).set({ status: "SUPERSEDED" }).where(sql`id = ${superseded.invoiceId}`);
 
     const top = await getTopProducts();
     expect(top).toHaveLength(0);
   });
 
   it("RETURNED تالف بالكامل: الإيراد صفر وCOGS الأصلي باقٍ كخسارة في المنتج والفئة", async () => {
-    await seedAnalyticsInvoice({
-      id: 201,
-      quantity: 10,
-      returnedQuantity: 10,
-      returnedRestockedQuantity: 0,
-      status: "RETURNED",
-    });
+    await seedAnalyticsInvoice({ id: 201, quantity: 10, returnedQuantity: 10, returnedRestockedQuantity: 0, status: "RETURNED" });
 
     const top = await getTopProducts();
     expect(top).toHaveLength(1);
-    expect(top[0]).toMatchObject({
-      productId: 1,
-      qtySold: "0",
-      revenue: "0.00",
-      cost: "40.00",
-      profit: "-40.00",
-      marginPct: "0.00",
-      invoicesCount: 1,
-    });
+    expect(top[0]).toMatchObject({ productId: 1, qtySold: "0", revenue: "0.00", cost: "40.00", profit: "-40.00", marginPct: "0.00", invoicesCount: 1 });
 
     const categories = await getProfitByCategory();
     expect(categories).toHaveLength(1);
-    expect(categories[0]).toMatchObject({
-      categoryName: "بلا فئة",
-      revenue: "0.00",
-      cost: "40.00",
-      profit: "-40.00",
-      marginPct: "0.00",
-      itemsCount: 1,
-    });
+    expect(categories[0]).toMatchObject({ categoryName: "بلا فئة", revenue: "0.00", cost: "40.00", profit: "-40.00", marginPct: "0.00", itemsCount: 1 });
   });
 
   it("RETURNED معاد بالكامل للمخزون: يحيّد الإيراد والتكلفة والربح", async () => {
-    await seedAnalyticsInvoice({
-      id: 202,
-      quantity: 10,
-      returnedQuantity: 10,
-      returnedRestockedQuantity: 10,
-      status: "RETURNED",
-    });
+    await seedAnalyticsInvoice({ id: 202, quantity: 10, returnedQuantity: 10, returnedRestockedQuantity: 10, status: "RETURNED" });
 
     // صفّ صفري الأثر لا يزاحم المبيعات في ترتيب «الأكثر مبيعاً».
     expect(await getTopProducts()).toHaveLength(0);
     // لكنه يبقى حقيقةً ضمن تجميع الفئة، وبأثر مالي صفري لا باستبعاد RETURNED من WHERE.
     const categories = await getProfitByCategory();
     expect(categories).toHaveLength(1);
-    expect(categories[0]).toMatchObject({
-      revenue: "0.00",
-      cost: "0.00",
-      profit: "0.00",
-      marginPct: "0.00",
-      itemsCount: 1,
-    });
+    expect(categories[0]).toMatchObject({ revenue: "0.00", cost: "0.00", profit: "0.00", marginPct: "0.00", itemsCount: 1 });
   });
 
   it("مرتجع جزئي مختلط: الإيراد يتبع الصافي وCOGS يطرح المعاد للمخزون وحده", async () => {
     // بيع 10×10، إرجاع 4 منها: 3 عادت للرف و1 تالفة.
     // الصافي: qty=6، revenue=60، cost=(10−3)×4=28، profit=32.
-    await seedAnalyticsInvoice({
-      id: 203,
-      quantity: 10,
-      returnedQuantity: 4,
-      returnedRestockedQuantity: 3,
-    });
+    await seedAnalyticsInvoice({ id: 203, quantity: 10, returnedQuantity: 4, returnedRestockedQuantity: 3 });
 
     const top = await getTopProducts();
     expect(top).toHaveLength(1);
-    expect(top[0]).toMatchObject({
-      qtySold: "6",
-      revenue: "60.00",
-      cost: "28.00",
-      profit: "32.00",
-      marginPct: "53.33",
-    });
+    expect(top[0]).toMatchObject({ qtySold: "6", revenue: "60.00", cost: "28.00", profit: "32.00", marginPct: "53.33" });
 
     const categories = await getProfitByCategory();
-    expect(categories[0]).toMatchObject({
-      revenue: "60.00",
-      cost: "28.00",
-      profit: "32.00",
-      marginPct: "53.33",
-    });
+    expect(categories[0]).toMatchObject({ revenue: "60.00", cost: "28.00", profit: "32.00", marginPct: "53.33" });
   });
 
   it("ترتيب Top Products بالإيراد يعتمد الصافي بعد المرتجع لا إجمالي السطر", async () => {
     await seedSecondProduct();
     // القلم: إجمالي 1000 لكن 9/10 مرتجع ⇒ صافي 100.
-    await seedAnalyticsInvoice({
-      id: 204,
-      quantity: 10,
-      returnedQuantity: 9,
-      returnedRestockedQuantity: 9,
-      unitPrice: 100,
-    });
+    await seedAnalyticsInvoice({ id: 204, quantity: 10, returnedQuantity: 9, returnedRestockedQuantity: 9, unitPrice: 100 });
     // الكرّاسة: إجمالي وصافي 200 ⇒ يجب أن تتصدر رغم أن إجمالي القلم الخام أكبر.
-    await seedAnalyticsInvoice({
-      id: 205,
-      variantId: 2,
-      quantity: 2,
-      returnedQuantity: 0,
-      returnedRestockedQuantity: 0,
-      unitPrice: 100,
-      unitCost: 2,
-    });
+    await seedAnalyticsInvoice({ id: 205, variantId: 2, quantity: 2, returnedQuantity: 0, returnedRestockedQuantity: 0, unitPrice: 100, unitCost: 2 });
 
     const top = await getTopProducts({ by: "revenue" });
     expect(top.map((row) => row.productId)).toEqual([2, 1]);
@@ -786,35 +482,12 @@ describe("تقارير المبيعات التحليلية", () => {
     await db().insert(s.categories).values({ id: 1, name: "قرطاسية" });
     await seedSecondProduct({ categoryId: 1 });
     await setStock(2, 1, 100);
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 
     // القلم بلا فئة: 5 قطع × 10 = 50 إيراد، تكلفة 5×4=20
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
-      },
-      actor,
-    );
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }] }, actor);
     // الكرّاسة في «قرطاسية»: 20 قطعة × 5 = 100 إيراد، تكلفة 20×2=40
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 2, productUnitId: 3, quantity: "20" }],
-      },
-      actor,
-    );
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 2, productUnitId: 3, quantity: "20" }] }, actor);
 
     const cats = await getProfitByCategory();
     expect(cats).toHaveLength(2);
@@ -840,23 +513,8 @@ describe("تقارير المبيعات التحليلية", () => {
     expect(slow[0].daysSinceLastSale).toBeNull();
 
     // بعد بيع حديث ⇒ لا يجب أن يظهر
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
-      },
-      actor,
-    );
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] }, actor);
     slow = await getSlowMovers({ sinceDays: 30 });
     expect(slow).toHaveLength(0);
   });
@@ -869,34 +527,11 @@ describe("تقارير المبيعات التحليلية", () => {
   });
 
   it("REP-02: مبيعات تاريخية متعددة لا تُضاعِف المخزون المعروض (لا انفجار انضمام)", async () => {
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
     await setStock(1, 1, 100);
     // بيعتان لنفس الصنف ⇒ صفّان في invoiceItems على المتغيّر نفسه (مصدر الانفجار في الاستعلام القديم).
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
-      },
-      actor,
-    );
-    await createSale(
-      {
-        branchId: 1,
-        customerId: 1,
-        sourceType: "POS",
-        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
-      },
-      actor,
-    );
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] }, actor);
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] }, actor);
     // أرجِع تاريخ الفواتير خارج النافذة ⇒ المنتج بطيء الحركة (يظهر) مع بقاء صفّي البيع.
     await db().execute(sql`UPDATE invoices SET invoiceDate = '2020-01-01'`);
     const slow = await getSlowMovers({ sinceDays: 30 });
@@ -911,14 +546,7 @@ describe("تقارير المبيعات التحليلية", () => {
 describe("FIN-05: عرابين أوامر الشغل غير المُسلَّمة التزامٌ يَخفض حقوق الملكية", () => {
   it("عربون على أمر شغل غير مُسلَّم يَظهر customerAdvances ويُحتسَب التزاماً (لا يتضخّم equity)", async () => {
     await setStock(1, 1, 100);
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 
     // المركز المالي قبل أي عربون: لا سُلف ولا أثر على حقوق الملكية.
     const before = await getFinancialPosition({ verify: false });
@@ -926,15 +554,7 @@ describe("FIN-05: عرابين أوامر الشغل غير المُسلَّمة
 
     // أمر شغل بسعر 500 وعربون نقدي 200 (وردية actor مفتوحة في seedBase) — يبقى RECEIVED (غير مُسلَّم).
     await createWorkOrder(
-      {
-        branchId: 1,
-        baseVariantId: 1,
-        title: "درع تكريم",
-        salePrice: "500.00",
-        deposit: "200.00",
-        paymentMethod: "CASH",
-        customerId: 1,
-      },
+      { branchId: 1, baseVariantId: 1, title: "درع تكريم", salePrice: "500.00", deposit: "200.00", paymentMethod: "CASH", customerId: 1 },
       actor,
     );
 
@@ -944,58 +564,29 @@ describe("FIN-05: عرابين أوامر الشغل غير المُسلَّمة
     // النقد ارتفع بمقدار العربون (asset).
     expect(money(after.cash).sub(money(before.cash)).toString()).toBe("200");
     // إجمالي الخصوم ارتفع بمقدار العربون نفسه.
-    expect(
-      money(after.totalLiabilities)
-        .sub(money(before.totalLiabilities))
-        .toString(),
-    ).toBe("200");
+    expect(money(after.totalLiabilities).sub(money(before.totalLiabilities)).toString()).toBe("200");
     // ⭐ جوهر FIN-05: النقد الداخل يُقابَل بالتزام ⇒ حقوق الملكية لا تتغيّر (لا تضخّم).
     expect(after.equity).toBe(before.equity);
     // الميزانية متوازنة: equity = assets − liabilities.
-    expect(
-      money(after.totalAssets).sub(money(after.totalLiabilities)).toString(),
-    ).toBe(money(after.equity).toString());
+    expect(money(after.totalAssets).sub(money(after.totalLiabilities)).toString()).toBe(money(after.equity).toString());
   });
 
   it("بعد التسليم: العربون يُعترَف إيراداً (لا يُحتسَب ضمن customerAdvances — لا ازدواج)", async () => {
     await setStock(1, 1, 100);
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 
     const wo = await createWorkOrder(
-      {
-        branchId: 1,
-        baseVariantId: 1,
-        title: "درع",
-        salePrice: "300.00",
-        deposit: "100.00",
-        paymentMethod: "CASH",
-        customerId: 1,
-      },
+      { branchId: 1, baseVariantId: 1, title: "درع", salePrice: "300.00", deposit: "100.00", paymentMethod: "CASH", customerId: 1 },
       actor,
     );
     // قبل التسليم: العربون التزام.
-    expect(
-      (await getFinancialPosition({ verify: false })).customerAdvances,
-    ).toBe("100.00");
+    expect((await getFinancialPosition({ verify: false })).customerAdvances).toBe("100.00");
 
     // أكمل الدورة حتى التسليم ⇒ الأمر DELIVERED + invoiceId مُعيَّن ⇒ يخرج من نافذة الالتزام.
     await approveCurrentDesign(wo.workOrderId);
     await startWorkOrder(wo.workOrderId, actor);
     await markWorkOrderReady(wo.workOrderId, actor);
-    await deliverWorkOrder(
-      {
-        workOrderId: wo.workOrderId,
-        payment: { amount: "200.00", method: "CASH" },
-      },
-      actor,
-    );
+    await deliverWorkOrder({ workOrderId: wo.workOrderId, payment: { amount: "200.00", method: "CASH" } }, actor);
 
     const after = await getFinancialPosition({ verify: false });
     // العربون لم يَعُد التزام سُلف (صار إيراداً مُعترَفاً عبر قيد SALE + paidAmount).
@@ -1004,30 +595,13 @@ describe("FIN-05: عرابين أوامر الشغل غير المُسلَّمة
 
   it("أمر شغل ملغى لا يُحتسَب عربونه التزاماً (يُسترَدّ نقداً)", async () => {
     await setStock(1, 1, 100);
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 
     const wo = await createWorkOrder(
-      {
-        branchId: 1,
-        baseVariantId: 1,
-        title: "درع ملغى",
-        salePrice: "400.00",
-        deposit: "150.00",
-        paymentMethod: "CASH",
-        customerId: 1,
-      },
+      { branchId: 1, baseVariantId: 1, title: "درع ملغى", salePrice: "400.00", deposit: "150.00", paymentMethod: "CASH", customerId: 1 },
       actor,
     );
-    expect(
-      (await getFinancialPosition({ verify: false })).customerAdvances,
-    ).toBe("150.00");
+    expect((await getFinancialPosition({ verify: false })).customerAdvances).toBe("150.00");
 
     const [current] = await db()
       .select({ version: s.workOrders.version })
@@ -1036,9 +610,7 @@ describe("FIN-05: عرابين أوامر الشغل غير المُسلَّمة
     const [shift] = await db()
       .select({ id: s.shifts.id })
       .from(s.shifts)
-      .where(
-        sql`${s.shifts.userId} = ${actor.userId} AND ${s.shifts.status} = 'OPEN'`,
-      );
+      .where(sql`${s.shifts.userId} = ${actor.userId} AND ${s.shifts.status} = 'OPEN'`);
     const request = await requestWorkOrderControl(
       {
         requestKey: `reports-wo-cancel:${randomUUID()}`,

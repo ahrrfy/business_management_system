@@ -3,43 +3,17 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import {
-  confirmPurchaseOrder,
-  createPurchaseOrder,
-  receivePurchase,
-} from "../purchaseService";
+import { confirmPurchaseOrder, createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { decidePurchaseOrderControl } from "../purchase/controls";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 const approver = { userId: 2, branchId: 1, role: "manager" as const };
-function db() {
-  const d = getDb();
-  if (!d) throw new Error("DATABASE_URL not set");
-  return d;
-}
+function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of [
-    "idempotencyKeys",
-    "auditLogs",
-    "accountingEntries",
-    "receipts",
-    "inventoryMovements",
-    "purchaseOrderEvents",
-    "purchaseOrderControlRequests",
-    "purchaseOrderItems",
-    "purchaseOrders",
-    "branchStock",
-    "productPrices",
-    "productUnits",
-    "productVariants",
-    "products",
-    "suppliers",
-    "branches",
-    "users",
-  ]) {
+  for (const t of ["idempotencyKeys", "auditLogs", "accountingEntries", "receipts", "inventoryMovements", "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products", "suppliers", "branches", "users"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -47,57 +21,20 @@ async function reset() {
 
 async function seed() {
   const d = db();
-  await d.insert(s.branches).values([
-    { id: 1, name: "MAIN", code: "MAIN", type: "MAIN" },
-    { id: 2, name: "SALES", code: "SALES", type: "SALES" },
-  ]);
+  await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }, { id: 2, name: "SALES", code: "SALES", type: "SALES" }]);
   await d.insert(s.users).values([
-    {
-      id: 1,
-      openId: "t",
-      name: "admin",
-      role: "admin",
-      loginMethod: "local",
-      branchId: 1,
-    },
-    {
-      id: 2,
-      openId: "wavg-approver",
-      name: "مدير مستقل",
-      role: "manager",
-      loginMethod: "local",
-      branchId: 1,
-    },
+    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "wavg-approver", name: "مدير مستقل", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
-  await d
-    .insert(s.suppliers)
-    .values({ id: 1, name: "مورد", currentBalance: "0" });
+  await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
   await d.insert(s.products).values({ id: 1, name: "ورق" });
-  await d
-    .insert(s.productVariants)
-    .values({ id: 1, productId: 1, sku: "P-1", costPrice: "0.00" });
-  await d
-    .insert(s.productUnits)
-    .values({
-      id: 1,
-      variantId: 1,
-      unitName: "قطعة",
-      conversionFactor: "1",
-      isBaseUnit: true,
-    });
+  await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "P-1", costPrice: "0.00" });
+  await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
 }
-beforeEach(async () => {
-  await reset();
-  await seed();
-});
+beforeEach(async () => { await reset(); await seed(); });
 
 async function cost(): Promise<string> {
-  const r = (
-    await db()
-      .select({ c: s.productVariants.costPrice })
-      .from(s.productVariants)
-      .where(eq(s.productVariants.id, 1))
-  )[0];
+  const r = (await db().select({ c: s.productVariants.costPrice }).from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
   return String(r?.c);
 }
 async function receiveAt(qty: number, unitPrice: string) {
@@ -107,46 +44,24 @@ async function receiveAt(qty: number, unitPrice: string) {
       branchId: 1,
       taxRatePercent: "0",
       clientRequestId: `wavg-create:${randomUUID()}`,
-      items: [
-        { variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice },
-      ],
+      items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }],
     },
     actor,
   );
-  const request = await confirmPurchaseOrder(
-    {
-      purchaseOrderId: po.purchaseOrderId,
-      expectedVersion: po.version,
-      clientRequestId: `wavg-submit:${randomUUID()}`,
-      reason: "مراجعة أمر اختبار متوسط التكلفة قبل الاستلام",
-    },
-    actor,
-  );
-  await decidePurchaseOrderControl(
-    {
-      requestId: request.requestId,
-      decisionKey: `wavg-approve:${randomUUID()}`,
-      approve: true,
-      reason: "راجعت المورد والكميات والأسعار واعتمدت الاستلام",
-    },
-    approver,
-    { legacyConfirmOnly: true },
-  );
-  const item = (
-    await db()
-      .select()
-      .from(s.purchaseOrderItems)
-      .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
-  )[0];
-  await receivePurchase(
-    {
-      purchaseOrderId: po.purchaseOrderId,
-      lines: [
-        { purchaseOrderItemId: Number(item.id), receivedBaseQuantity: qty },
-      ],
-    },
-    actor,
-  );
+  const request = await confirmPurchaseOrder({
+    purchaseOrderId: po.purchaseOrderId,
+    expectedVersion: po.version,
+    clientRequestId: `wavg-submit:${randomUUID()}`,
+    reason: "مراجعة أمر اختبار متوسط التكلفة قبل الاستلام",
+  }, actor);
+  await decidePurchaseOrderControl({
+    requestId: request.requestId,
+    decisionKey: `wavg-approve:${randomUUID()}`,
+    approve: true,
+    reason: "راجعت المورد والكميات والأسعار واعتمدت الاستلام",
+  }, approver);
+  const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+  await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: qty }] }, actor);
 }
 
 describe("WAVG — المتوسّط المرجّح للتكلفة (من الآن فصاعداً)", () => {
@@ -170,13 +85,13 @@ describe("WAVG — المتوسّط المرجّح للتكلفة (من الآن
 
   it("ترجيح بكميات غير متساوية", async () => {
     await receiveAt(300, "10.00"); // 300 @ 10
-    await receiveAt(100, "2.00"); // (3000+200)/400 = 8.00
+    await receiveAt(100, "2.00");  // (3000+200)/400 = 8.00
     expect(await cost()).toBe("8.00");
   });
 
   it("لا انحراف تقريب على قيم تنتج كسوراً (round2 HALF_UP)", async () => {
-    await receiveAt(3, "10.00"); // 3 @ 10
-    await receiveAt(1, "1.00"); // (30+1)/4 = 7.75
+    await receiveAt(3, "10.00");  // 3 @ 10
+    await receiveAt(1, "1.00");   // (30+1)/4 = 7.75
     expect(await cost()).toBe("7.75");
   });
 });

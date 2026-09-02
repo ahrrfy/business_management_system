@@ -28,9 +28,7 @@ describe("ضوابط P0 للمشتريات على حد API", () => {
       supplierId: 1,
       branchId: 1,
       clientRequestId: "api-create-confirmed",
-      items: [
-        { variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "1.00" },
-      ],
+      items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "1.00" }],
     };
 
     await expect(
@@ -41,12 +39,19 @@ describe("ضوابط P0 للمشتريات على حد API", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
-  it("لا يعرّض الاستلام اليدوي ولا تسديد USD القديم عند API", () => {
-    const routerSource = readFileSync(
-      "server/routers/purchaseRouter.ts",
-      "utf8",
-    );
-    expect(routerSource).not.toMatch(/^\s*receive\s*:/m);
+  it("يرفض CHECK في تسوية الشحن ولا يعرّض تسديد USD القديم عند API", async () => {
+    const caller = purchaseRouter.createCaller(context());
+
+    await expect(
+      caller.receive({
+        purchaseOrderId: 999_991,
+        lines: [{ purchaseOrderItemId: 999_992, receivedBaseQuantity: 1 }],
+        shippingPaymentMethod: "CHECK" as never,
+        clientRequestId: "api-purchase-check-shipping",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const routerSource = readFileSync("server/routers/purchaseRouter.ts", "utf8");
     expect(routerSource).not.toContain("settleUsdDirect:");
   });
 

@@ -13,10 +13,7 @@ import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createSale, processPayment } from "../saleService";
 import { returnSale } from "../returnService";
 import { money } from "../money";
-import {
-  approveVoucher,
-  createVoucher as createVoucherService,
-} from "../voucherService";
+import { approveVoucher, createVoucher as createVoucherService } from "../voucherService";
 import { getCustomerStatement, getSupplierStatement } from "../reportsService";
 import {
   decidePurchaseOrderControl,
@@ -34,8 +31,7 @@ async function createVoucher(
   return createVoucherService(
     {
       ...input,
-      clientRequestId:
-        input.clientRequestId ?? `statement-period:${++voucherRequestSeq}`,
+      clientRequestId: input.clientRequestId ?? `statement-period:${++voucherRequestSeq}`,
     },
     requestActor,
   );
@@ -85,59 +81,25 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    {
-      id: 1,
-      openId: "local_test",
-      name: "admin",
-      role: "admin",
-      loginMethod: "local",
-      branchId: 1,
-    },
-    {
-      id: 2,
-      openId: "statement_owner",
-      name: "owner",
-      role: "manager",
-      loginMethod: "local",
-      branchId: 1,
-      isOwner: true,
-    },
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "statement_owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.products).values({ id: 1, name: "قلم" });
-  await d
-    .insert(s.productVariants)
-    .values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
+  await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([
-    {
-      id: 1,
-      variantId: 1,
-      unitName: "قطعة",
-      conversionFactor: "1",
-      isBaseUnit: true,
-    },
-    {
-      id: 2,
-      variantId: 1,
-      unitName: "درزن",
-      conversionFactor: "12",
-      isBaseUnit: false,
-    },
+    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    { id: 2, variantId: 1, unitName: "درزن", conversionFactor: "12", isBaseUnit: false },
   ]);
   await d.insert(s.productPrices).values([
     { productUnitId: 1, priceTier: "RETAIL", price: "10.00" },
     { productUnitId: 2, priceTier: "RETAIL", price: "120.00" },
   ]);
-  await d
-    .insert(s.branchStock)
-    .values({ variantId: 1, branchId: 1, quantity: 1000 });
+  await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
   // M5/M8: processPayment CASH يَلزم وردية مفتوحة (يُحلّ shiftId من وردية الموظّف).
   await d.insert(s.shifts).values({
-    userId: 1,
-    branchId: 1,
-    status: "OPEN",
+    userId: 1, branchId: 1, status: 'OPEN',
     openedAt: new Date(),
-    openGuard: "1:1",
-    openingBalance: "0",
+    openGuard: '1:1', openingBalance: '0',
   });
   await d.insert(s.receipts).values({
     branchId: 1,
@@ -169,65 +131,36 @@ const TODAY = ymdDaysAgo(0);
 
 /** ترجيع فاتورة إلى الماضي (invoiceDate timestamp). */
 async function backdateInvoice(invoiceId: number, ymd: string) {
-  await db()
-    .update(s.invoices)
-    .set({ invoiceDate: new Date(`${ymd}T10:00:00`) })
-    .where(eq(s.invoices.id, invoiceId));
+  await db().update(s.invoices).set({ invoiceDate: new Date(`${ymd}T10:00:00`) }).where(eq(s.invoices.id, invoiceId));
 }
 /** ترجيع receipts فاتورة إلى الماضي (createdAt هو تاريخ الدفعة في الكشف). */
 async function backdateInvoiceReceipts(invoiceId: number, ymd: string) {
-  await db()
-    .update(s.receipts)
-    .set({ createdAt: new Date(`${ymd}T10:00:00`) })
-    .where(eq(s.receipts.invoiceId, invoiceId));
+  await db().update(s.receipts).set({ createdAt: new Date(`${ymd}T10:00:00`) }).where(eq(s.receipts.invoiceId, invoiceId));
 }
 /** ترجيع receipt واحد (سند مستقل) إلى الماضي. */
 async function backdateReceipt(receiptId: number, ymd: string) {
-  await db()
-    .update(s.receipts)
-    .set({ createdAt: new Date(`${ymd}T10:00:00`) })
-    .where(eq(s.receipts.id, receiptId));
+  await db().update(s.receipts).set({ createdAt: new Date(`${ymd}T10:00:00`) }).where(eq(s.receipts.id, receiptId));
 }
 
 /** بيع آجل (ORDER) بعدد درازن — الدرزن 120.00. */
 async function creditSale(customerId: number, dozens: string) {
   return createSale(
-    {
-      branchId: 1,
-      customerId,
-      sourceType: "ORDER",
-      lines: [{ variantId: 1, productUnitId: 2, quantity: dozens }],
-    },
-    actor,
+    { branchId: 1, customerId, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: dozens }] },
+    actor
   );
 }
 
 describe("كشف حساب العميل بفترة + رصيد مُرحَّل", () => {
   it("الرصيد المُرحَّل = قيد OPENING + فواتير سابقة − دفعات سابقة، والفترة تعرض فواتيرها فقط", async () => {
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
     // قيد OPENING مستورد (import-integration): 1000 لصالحنا.
-    await db()
-      .insert(s.accountingEntries)
-      .values({
-        entryType: "OPENING",
-        customerId: 1,
-        amount: "1000.00",
-        entryDate: new Date(`${OLD}T00:00:00`),
-        dedupeKey: "OPENING:CUSTOMER:1",
-      });
+    await db().insert(s.accountingEntries).values({
+      entryType: "OPENING", customerId: 1, amount: "1000.00",
+      entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "OPENING:CUSTOMER:1",
+    });
     // نشاط سابق للفترة: فاتورة 240 + دفعة 100.
     const saleA = await creditSale(1, "2"); // 240
-    await processPayment(
-      { invoiceId: saleA.invoiceId, amount: "100.00", method: "CASH" },
-      actor,
-    );
+    await processPayment({ invoiceId: saleA.invoiceId, amount: "100.00", method: "CASH" }, actor);
     await backdateInvoice(saleA.invoiceId, OLD);
     await backdateInvoiceReceipts(saleA.invoiceId, OLD);
     // نشاط داخل الفترة: فاتورة 120.
@@ -244,21 +177,11 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
   });
 
   it("الفترة تقصّ على تاريخ المستند نفسه: دفعة حديثة على فاتورة قديمة تظهر والفاتورة لا", async () => {
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
     const saleA = await creditSale(1, "2"); // 240
     await backdateInvoice(saleA.invoiceId, OLD);
     // الدفعة الآن (داخل الفترة) على الفاتورة القديمة.
-    await processPayment(
-      { invoiceId: saleA.invoiceId, amount: "100.00", method: "CASH" },
-      actor,
-    );
+    await processPayment({ invoiceId: saleA.invoiceId, amount: "100.00", method: "CASH" }, actor);
 
     const stmt = await getCustomerStatement(1, { from: FROM, to: TODAY });
     expect(stmt!.invoices).toHaveLength(0);
@@ -269,40 +192,17 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
   });
 
   it("السند المستقل يظهر في الكشف ويؤثّر في المُرحَّل باتجاهه (IN ينقص، OUT يزيد)", async () => {
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
     const saleA = await creditSale(1, "2"); // 240
     await backdateInvoice(saleA.invoiceId, OLD);
     // سند قبض مستقل 50 (ينقص ذمته) + سند صرف مستقل 20 (يزيدها) — كلاهما قبل الفترة.
     const vIn = await createVoucher(
-      {
-        voucherType: "RECEIPT",
-        branchId: 1,
-        amount: "50.00",
-        paymentMethod: "CASH",
-        partyType: "CUSTOMER",
-        partyId: 1,
-        description: "دفعة على الحساب",
-      },
-      actor,
+      { voucherType: "RECEIPT", branchId: 1, amount: "50.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "دفعة على الحساب" },
+      actor
     );
     const vOut = await createVoucher(
-      {
-        voucherType: "PAYMENT",
-        branchId: 1,
-        amount: "20.00",
-        paymentMethod: "CASH",
-        partyType: "CUSTOMER",
-        partyId: 1,
-        description: "صرف للعميل",
-      },
-      actor,
+      { voucherType: "PAYMENT", branchId: 1, amount: "20.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "صرف للعميل" },
+      actor
     );
     await approveVoucher(vOut.receiptId, owner);
 
@@ -310,9 +210,7 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
     const all = await getCustomerStatement(1);
     expect(all!.payments).toHaveLength(2);
     expect(all!.payments.every((p) => p.isStandalone)).toBe(true);
-    expect(
-      all!.payments.map((p) => p.voucherNumber).every((v) => v != null),
-    ).toBe(true);
+    expect(all!.payments.map((p) => p.voucherNumber).every((v) => v != null)).toBe(true);
     // بلا from: المُرحَّل = قيود OPENING فقط (لا قيود هنا).
     expect(all!.summary.openingBalance).toBe("0.00");
 
@@ -326,19 +224,9 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
   });
 
   it("بلا from/to: السلوك القديم نفسه (فواتير + دفعات + ملخّص) و openingBalance = OPENING فقط", async () => {
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
     const sale = await creditSale(1, "2"); // 240
-    await processPayment(
-      { invoiceId: sale.invoiceId, amount: "100.00", method: "CASH" },
-      actor,
-    );
+    await processPayment({ invoiceId: sale.invoiceId, amount: "100.00", method: "CASH" }, actor);
 
     const stmt = await getCustomerStatement(1);
     expect(stmt).not.toBeNull();
@@ -354,35 +242,15 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
   });
 
   it("REP-06: الفاتورة المُرتجَعة جزئياً تكشف returnedTotal، والمتبقّي = total − paid − returned = 0 (لا متبقٍّ وهميّ)", async () => {
-    await db()
-      .insert(s.customers)
-      .values({
-        id: 1,
-        name: "عميل مرتجع",
-        defaultPriceTier: "RETAIL",
-        currentBalance: "0",
-      });
+    await db().insert(s.customers).values({ id: 1, name: "عميل مرتجع", defaultPriceTier: "RETAIL", currentBalance: "0" });
     // بيع آجل درزنان = 240، ثم إرجاع درزن واحد (12 وحدة أساس = 120)، ثم سداد الصافي 120.
     const sale = await creditSale(1, "2"); // 240
-    const item = (
-      await db()
-        .select()
-        .from(s.invoiceItems)
-        .where(eq(s.invoiceItems.invoiceId, sale.invoiceId))
-    )[0];
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
     await returnSale(
-      {
-        invoiceId: sale.invoiceId,
-        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }],
-        restock: true,
-        refund: null,
-      },
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }], restock: true, refund: null },
       actor,
     );
-    await processPayment(
-      { invoiceId: sale.invoiceId, amount: "120.00", method: "CASH" },
-      actor,
-    );
+    await processPayment({ invoiceId: sale.invoiceId, amount: "120.00", method: "CASH" }, actor);
 
     const stmt = await getCustomerStatement(1);
     expect(stmt).not.toBeNull();
@@ -393,16 +261,10 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
     expect(inv.total).toBe("240.00");
     expect(inv.paidAmount).toBe("120.00");
     // صيغة الواجهة الصحيحة: positiveDiff(total, paid + returned) = 240 − (120 + 120) = 0.
-    const remaining = money(inv.total)
-      .sub(money(inv.paidAmount))
-      .sub(money(inv.returnedTotal));
-    expect((remaining.isNegative() ? money(0) : remaining).toFixed(2)).toBe(
-      "0.00",
-    );
+    const remaining = money(inv.total).sub(money(inv.paidAmount)).sub(money(inv.returnedTotal));
+    expect((remaining.isNegative() ? money(0) : remaining).toFixed(2)).toBe("0.00");
     // الصيغة المعطوبة القديمة (total − paid وحدها) كانت تُظهر 120 وهميّاً — نوثّقها كحارس انحدار.
-    expect(money(inv.total).sub(money(inv.paidAmount)).toFixed(2)).toBe(
-      "120.00",
-    );
+    expect(money(inv.total).sub(money(inv.paidAmount)).toFixed(2)).toBe("120.00");
     // الملخّص (REP-06) يستبعد المُرتجَع أصلاً — لا متبقّي ولا رصيد جارٍ.
     expect(stmt!.summary.unpaid).toBe("0.00");
     expect(stmt!.summary.currentBalance).toBe("0.00");
@@ -410,116 +272,64 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
 });
 
 describe("كشف حساب المورد بفترة + رصيد مُرحَّل", () => {
-  async function approvePurchaseOrder(
-    po: Awaited<ReturnType<typeof createPurchaseOrder>>,
-  ) {
-    const submitted = await submitPurchaseOrderForApproval(
-      {
-        purchaseOrderId: po.purchaseOrderId,
-        expectedVersion: po.version,
-        reason: "إرسال أمر اختبار كشف المورد للمراجعة",
-        requestKey: `statement-po-submit:${randomUUID()}`,
-      },
-      actor,
-    );
-    await decidePurchaseOrderControl(
-      {
-        requestId: submitted.requestId,
-        decisionKey: `statement-po-approve:${randomUUID()}`,
-        approve: true,
-        reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
-      },
-      owner,
-      { legacyConfirmOnly: true },
-    );
+  async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchaseOrder>>) {
+    const submitted = await submitPurchaseOrderForApproval({
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار كشف المورد للمراجعة",
+      requestKey: `statement-po-submit:${randomUUID()}`,
+    }, actor);
+    await decidePurchaseOrderControl({
+      requestId: submitted.requestId,
+      decisionKey: `statement-po-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+    }, owner);
   }
 
   /** أمر شراء مؤكَّد + استلام (+ دفعة اختيارية). الإجمالي = qty × unitPrice. */
-  async function poReceived(
-    supplierId: number,
-    qty: number,
-    unitPrice: string,
-    pay?: string,
-  ) {
+  async function poReceived(supplierId: number, qty: number, unitPrice: string, pay?: string) {
     const po = await createPurchaseOrder(
-      {
-        supplierId,
-        branchId: 1,
-        taxRatePercent: "0",
-        status: "DRAFT",
-        items: [
-          { variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice },
-        ],
-      },
-      actor,
+      { supplierId, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
+      actor
     );
     await approvePurchaseOrder(po);
-    const item = (
-      await db()
-        .select()
-        .from(s.purchaseOrderItems)
-        .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
-    )[0];
+    const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
     const received = await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [
-          { purchaseOrderItemId: Number(item.id), receivedBaseQuantity: qty },
-        ],
+        lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: qty }],
         payment: pay ? { amount: pay, method: "CASH" } : undefined,
       },
-      actor,
+      actor
     );
     if (received.supplierPaymentRequestReceiptId != null) {
-      await approveVoucher(
-        Number(received.supplierPaymentRequestReceiptId),
-        owner,
-      );
+      await approveVoucher(Number(received.supplierPaymentRequestReceiptId), owner);
     }
     return po;
   }
   async function backdatePO(purchaseOrderId: number, ymd: string) {
-    await db()
-      .update(s.purchaseOrders)
-      .set({ orderDate: new Date(`${ymd}T10:00:00`) })
-      .where(eq(s.purchaseOrders.id, purchaseOrderId));
+    await db().update(s.purchaseOrders).set({ orderDate: new Date(`${ymd}T10:00:00`) }).where(eq(s.purchaseOrders.id, purchaseOrderId));
     // Supplier statements are ledger-sourced; the posting date, not only the
     // PO header date, determines whether the purchase belongs to opening AP.
     await db()
       .update(s.accountingEntries)
       .set({ entryDate: new Date(`${ymd}T00:00:00`) })
-      .where(
-        and(
-          eq(s.accountingEntries.entryType, "PURCHASE"),
-          eq(s.accountingEntries.purchaseOrderId, purchaseOrderId),
-        ),
-      );
+      .where(and(eq(s.accountingEntries.entryType, "PURCHASE"), eq(s.accountingEntries.purchaseOrderId, purchaseOrderId)));
   }
   async function backdateSupplierPayments(supplierId: number, ymd: string) {
     await db()
       .update(s.accountingEntries)
       .set({ entryDate: new Date(`${ymd}T00:00:00`) })
-      .where(
-        and(
-          eq(s.accountingEntries.entryType, "PAYMENT_OUT"),
-          eq(s.accountingEntries.supplierId, supplierId),
-        ),
-      );
+      .where(and(eq(s.accountingEntries.entryType, "PAYMENT_OUT"), eq(s.accountingEntries.supplierId, supplierId)));
   }
 
   it("المُرحَّل = OPENING + مشتريات ملتزمة − PAYMENT_OUT قبل from، والفترة تقصّ الأوامر والدفعات", async () => {
-    await db()
-      .insert(s.suppliers)
-      .values({ id: 1, name: "مورد", currentBalance: "0" });
-    await db()
-      .insert(s.accountingEntries)
-      .values({
-        entryType: "OPENING",
-        supplierId: 1,
-        amount: "500.00",
-        entryDate: new Date(`${OLD}T00:00:00`),
-        dedupeKey: "OPENING:SUPPLIER:1",
-      });
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+    await db().insert(s.accountingEntries).values({
+      entryType: "OPENING", supplierId: 1, amount: "500.00",
+      entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "OPENING:SUPPLIER:1",
+    });
     // نشاط سابق: أمر 500 (استُلم) + دفعة 200 — يُرجَّعان قبل الفترة.
     const poA = await poReceived(1, 100, "5.00", "200.00");
     await backdatePO(poA.purchaseOrderId, OLD);
@@ -545,93 +355,43 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
   });
 
   it("الرصيد المُرحّل من GL لا يضاعف PURCHASE المرتبط ويحترم الفرع وتاريخ القيد", async () => {
-    await db()
-      .insert(s.suppliers)
-      .values({ id: 1, name: "مورد", currentBalance: "0" });
-    await db()
-      .insert(s.accountingEntries)
-      .values({
-        entryType: "OPENING",
-        branchId: 1,
-        supplierId: 1,
-        amount: "100.00",
-        entryDate: new Date(`${OLD}T00:00:00`),
-        dedupeKey: "OPENING:SUPPLIER:GL-SCOPE",
-      });
-    await db()
-      .insert(s.purchaseOrders)
-      .values([
-        {
-          id: 9101,
-          poNumber: "PO-GL-B1",
-          supplierId: 1,
-          branchId: 1,
-          orderDate: new Date(`${OLD}T10:00:00`),
-          subtotal: "9999.00",
-          total: "9999.00",
-          status: "RECEIVED",
-        },
-        {
-          id: 9102,
-          poNumber: "PO-GL-B2",
-          supplierId: 1,
-          branchId: 2,
-          orderDate: new Date(`${OLD}T10:00:00`),
-          subtotal: "900.00",
-          total: "900.00",
-          status: "RECEIVED",
-        },
-        {
-          id: 9103,
-          poNumber: "PO-GL-POSTED-NOW",
-          supplierId: 1,
-          branchId: 1,
-          orderDate: new Date(`${OLD}T10:00:00`),
-          subtotal: "200.00",
-          total: "200.00",
-          status: "RECEIVED",
-        },
-      ]);
-    await db()
-      .insert(s.accountingEntries)
-      .values([
-        {
-          entryType: "PURCHASE",
-          branchId: 1,
-          supplierId: 1,
-          purchaseOrderId: 9101,
-          amount: "500.00",
-          entryDate: new Date(`${OLD}T00:00:00`),
-          dedupeKey: "PURCHASE:GL-B1",
-        },
-        {
-          entryType: "PAYMENT_OUT",
-          branchId: 1,
-          supplierId: 1,
-          purchaseOrderId: 9101,
-          amount: "50.00",
-          entryDate: new Date(`${OLD}T00:00:00`),
-          dedupeKey: "PAYMENT:GL-B1",
-        },
-        {
-          entryType: "PURCHASE",
-          branchId: 2,
-          supplierId: 1,
-          purchaseOrderId: 9102,
-          amount: "900.00",
-          entryDate: new Date(`${OLD}T00:00:00`),
-          dedupeKey: "PURCHASE:GL-B2",
-        },
-        {
-          entryType: "PURCHASE",
-          branchId: 1,
-          supplierId: 1,
-          purchaseOrderId: 9103,
-          amount: "200.00",
-          entryDate: new Date(`${TODAY}T00:00:00`),
-          dedupeKey: "PURCHASE:GL-NOW",
-        },
-      ]);
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+    await db().insert(s.accountingEntries).values({
+      entryType: "OPENING", branchId: 1, supplierId: 1, amount: "100.00",
+      entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "OPENING:SUPPLIER:GL-SCOPE",
+    });
+    await db().insert(s.purchaseOrders).values([
+      {
+        id: 9101, poNumber: "PO-GL-B1", supplierId: 1, branchId: 1,
+        orderDate: new Date(`${OLD}T10:00:00`), subtotal: "9999.00", total: "9999.00", status: "RECEIVED",
+      },
+      {
+        id: 9102, poNumber: "PO-GL-B2", supplierId: 1, branchId: 2,
+        orderDate: new Date(`${OLD}T10:00:00`), subtotal: "900.00", total: "900.00", status: "RECEIVED",
+      },
+      {
+        id: 9103, poNumber: "PO-GL-POSTED-NOW", supplierId: 1, branchId: 1,
+        orderDate: new Date(`${OLD}T10:00:00`), subtotal: "200.00", total: "200.00", status: "RECEIVED",
+      },
+    ]);
+    await db().insert(s.accountingEntries).values([
+      {
+        entryType: "PURCHASE", branchId: 1, supplierId: 1, purchaseOrderId: 9101,
+        amount: "500.00", entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "PURCHASE:GL-B1",
+      },
+      {
+        entryType: "PAYMENT_OUT", branchId: 1, supplierId: 1, purchaseOrderId: 9101,
+        amount: "50.00", entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "PAYMENT:GL-B1",
+      },
+      {
+        entryType: "PURCHASE", branchId: 2, supplierId: 1, purchaseOrderId: 9102,
+        amount: "900.00", entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "PURCHASE:GL-B2",
+      },
+      {
+        entryType: "PURCHASE", branchId: 1, supplierId: 1, purchaseOrderId: 9103,
+        amount: "200.00", entryDate: new Date(`${TODAY}T00:00:00`), dedupeKey: "PURCHASE:GL-NOW",
+      },
+    ]);
 
     const stmt = await getSupplierStatement(1, { from: FROM, branchId: 1 });
     // 100 OPENING + 500 PURCHASE − 50 PAYMENT_OUT؛ لا total=9999، لا فرع 2، ولا قيد اليوم.
@@ -639,20 +399,10 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
   });
 
   it("أمر DRAFT قبل from لا يدخل الرصيد المُرحَّل (غير ملتزم مالياً)", async () => {
-    await db()
-      .insert(s.suppliers)
-      .values({ id: 1, name: "مورد", currentBalance: "0" });
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
     const draft = await createPurchaseOrder(
-      {
-        supplierId: 1,
-        branchId: 1,
-        taxRatePercent: "0",
-        status: "DRAFT",
-        items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" },
-        ],
-      },
-      actor,
+      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }] },
+      actor
     );
     await backdatePO(draft.purchaseOrderId, OLD);
 
@@ -661,29 +411,16 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
   });
 
   it("أمر ملغى (CANCELLED) يُستبعَد من قائمة الكشف وإجمالي المشتريات (تدقيق ١٧/٧، خطر #10)", async () => {
-    await db()
-      .insert(s.suppliers)
-      .values({ id: 1, name: "مورد", currentBalance: "0" });
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
     // أمر مؤكَّد مستلَم: إجمالي ١٠٠ (يظهر في الكشف).
     await poReceived(1, 10, "10.00");
     // أمر ثانٍ يُلغى — كان يُدرَج بكامل قيمته في totalPurchases فلا يتّزن الكشف مع currentBalance.
     const cancelled = await createPurchaseOrder(
-      {
-        supplierId: 1,
-        branchId: 1,
-        taxRatePercent: "0",
-        status: "DRAFT",
-        items: [
-          { variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "10.00" },
-        ],
-      },
-      actor,
+      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "10.00" }] },
+      actor
     );
     await approvePurchaseOrder(cancelled);
-    await db()
-      .update(s.purchaseOrders)
-      .set({ status: "CANCELLED" })
-      .where(eq(s.purchaseOrders.id, cancelled.purchaseOrderId));
+    await db().update(s.purchaseOrders).set({ status: "CANCELLED" }).where(eq(s.purchaseOrders.id, cancelled.purchaseOrderId));
 
     const stmt = await getSupplierStatement(1);
     expect(stmt!.purchaseOrders).toHaveLength(1); // الملغى غائب
