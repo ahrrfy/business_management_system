@@ -12,7 +12,13 @@
  * الأجرة = deliveryFeeFor(المحافظة) تقديرياً (يثبّتها الموظف عند الإسناد — شريحة ٤).
  */
 import { TRPCError } from "@trpc/server";
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   bundleComponents,
@@ -56,7 +62,8 @@ const GUEST_TRACKING_DOMAIN = "STORE_GUEST_TRACKING_V1";
 
 function guestTrackingSecret(): string {
   const secret = process.env.BARCODE_SECRET;
-  if (!secret) throw new Error("BARCODE_SECRET غير مُعيَّن لتوقيع تتبّع طلب الضيف");
+  if (!secret)
+    throw new Error("BARCODE_SECRET غير مُعيَّن لتوقيع تتبّع طلب الضيف");
   return secret;
 }
 
@@ -83,16 +90,33 @@ function parseAndVerifyGuestTrackingToken(token: string): {
   const normalized = token.trim();
   const [publicId, expiryBase36, receivedMac, extra] = normalized.split(".");
   if (
-    extra != null || !/^[a-f0-9]{32}$/.test(publicId ?? "") ||
+    extra != null ||
+    !/^[a-f0-9]{32}$/.test(publicId ?? "") ||
     !/^[a-z0-9]{1,13}$/.test(expiryBase36 ?? "") ||
     !/^[A-Za-z0-9_-]{43}$/.test(receivedMac ?? "")
-  ) return null;
+  )
+    return null;
   const expiresAtSeconds = Number.parseInt(expiryBase36, 36);
-  if (!Number.isSafeInteger(expiresAtSeconds) || expiresAtSeconds <= Math.floor(Date.now() / 1000)) return null;
-  const expected = Buffer.from(guestTrackingMac(publicId, expiresAtSeconds), "utf8");
+  if (
+    !Number.isSafeInteger(expiresAtSeconds) ||
+    expiresAtSeconds <= Math.floor(Date.now() / 1000)
+  )
+    return null;
+  const expected = Buffer.from(
+    guestTrackingMac(publicId, expiresAtSeconds),
+    "utf8",
+  );
   const received = Buffer.from(receivedMac, "utf8");
-  if (expected.length !== received.length || !timingSafeEqual(expected, received)) return null;
-  return { publicId, tokenHash: hashGuestTrackingToken(normalized), expiresAtSeconds };
+  if (
+    expected.length !== received.length ||
+    !timingSafeEqual(expected, received)
+  )
+    return null;
+  return {
+    publicId,
+    tokenHash: hashGuestTrackingToken(normalized),
+    expiresAtSeconds,
+  };
 }
 
 /** حبيبة اليوم المحلي (بغداد UTC+3) YYYY-MM-DD — لتطابق نافذة العروض مع العرض في الكتالوج. */
@@ -111,15 +135,22 @@ export const MAX_ONLINE_ORDER_DISTINCT_UNITS = 30;
 export const MAX_ONLINE_ORDER_QUANTITY_PER_UNIT = 999;
 export const MAX_ONLINE_ORDER_TOTAL_QUANTITY = 10_000;
 
-function normalizeExpectedUnitPrice(value: string | null | undefined): string | null | undefined {
+function normalizeExpectedUnitPrice(
+  value: string | null | undefined,
+): string | null | undefined {
   if (value == null) return value;
   try {
-    if (!/^\d{1,15}(?:\.\d{1,2})?$/.test(value)) throw new Error("invalid price shape");
+    if (!/^\d{1,15}(?:\.\d{1,2})?$/.test(value))
+      throw new Error("invalid price shape");
     const parsed = money(value);
-    if (!parsed.isFinite() || parsed.lt(0) || parsed.decimalPlaces() > 2) throw new Error("invalid price");
+    if (!parsed.isFinite() || parsed.lt(0) || parsed.decimalPlaces() > 2)
+      throw new Error("invalid price");
     return toDbMoney(parsed);
   } catch {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "السعر المتوقع لأحد المنتجات غير صحيح" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "السعر المتوقع لأحد المنتجات غير صحيح",
+    });
   }
 }
 
@@ -128,9 +159,15 @@ function normalizeExpectedUnitPrice(value: string | null | undefined): string | 
  * (وحدة/متغيّر مختلف) سطراً مستقلاً. الحدود تُطبّق بعد الدمج كي لا تتجاوزها دفعات مكررة.
  */
 export function normalizeOnlineOrderLines(
-  lines: ReadonlyArray<Pick<OnlineOrderLineInput, "productUnitId" | "quantity" | "expectedUnitPrice">>,
+  lines: ReadonlyArray<
+    Pick<
+      OnlineOrderLineInput,
+      "productUnitId" | "quantity" | "expectedUnitPrice"
+    >
+  >,
 ): OnlineOrderLineInput[] {
-  if (!lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "السلة فارغة" });
+  if (!lines.length)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "السلة فارغة" });
   const normalized: OnlineOrderLineInput[] = [];
   const byUnit = new Map<number, OnlineOrderLineInput>();
   let totalQuantity = 0;
@@ -139,12 +176,19 @@ export function normalizeOnlineOrderLines(
     const productUnitId = line.productUnitId;
     const quantity = line.quantity;
     if (
-      !Number.isSafeInteger(productUnitId) || productUnitId <= 0 ||
-      !Number.isSafeInteger(quantity) || quantity <= 0
+      !Number.isSafeInteger(productUnitId) ||
+      productUnitId <= 0 ||
+      !Number.isSafeInteger(quantity) ||
+      quantity <= 0
     ) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "كمية أو منتج غير صحيح" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "كمية أو منتج غير صحيح",
+      });
     }
-    const expectedUnitPrice = normalizeExpectedUnitPrice(line.expectedUnitPrice);
+    const expectedUnitPrice = normalizeExpectedUnitPrice(
+      line.expectedUnitPrice,
+    );
     const current = byUnit.get(productUnitId);
     if (!current) {
       if (byUnit.size >= MAX_ONLINE_ORDER_DISTINCT_UNITS) {
@@ -158,7 +202,8 @@ export function normalizeOnlineOrderLines(
       normalized.push(added);
     } else {
       if (
-        current.expectedUnitPrice != null && expectedUnitPrice != null &&
+        current.expectedUnitPrice != null &&
+        expectedUnitPrice != null &&
         !money(current.expectedUnitPrice).eq(money(expectedUnitPrice))
       ) {
         throw new TRPCError({
@@ -272,7 +317,9 @@ async function loadOwnedReplay(
       guestTrackingPublicId: onlineOrders.guestTrackingPublicId,
       guestTrackingTokenHash: onlineOrders.guestTrackingTokenHash,
       guestTrackingExpiresAt: onlineOrders.guestTrackingExpiresAt,
-      reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))) * 1000)`,
+      reservationExpiryMs: sql<
+        number | null
+      >`ROUND(UNIX_TIMESTAMP(COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))) * 1000)`,
     })
     .from(onlineOrders)
     .where(eq(onlineOrders.clientRequestId, input.clientRequestId))
@@ -299,7 +346,10 @@ async function loadOwnedReplay(
       : ((lock ? await ownerQuery.for("update") : await ownerQuery)[0] ?? null);
   const ownerPhones = owner
     ? [owner.phone, owner.phone2, owner.phone3, owner.whatsapp]
-        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim().length > 0,
+        )
         .map(normalizeStorePhone)
     : [];
   if (!owner || !ownerPhones.includes(phone)) {
@@ -310,7 +360,10 @@ async function loadOwnedReplay(
     input.authenticatedCustomer != null &&
     Number(existing.customerId) !== input.authenticatedCustomer.customerId
   ) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "جلسة العميل لا تملك هذا الطلب" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "جلسة العميل لا تملك هذا الطلب",
+    });
   }
 
   const linesQuery = tx
@@ -336,8 +389,12 @@ async function loadOwnedReplay(
     Array.from(requestedLineQuantities.entries()).every(
       ([unitId, quantity]) => storedLineQuantities.get(unitId) === quantity,
     );
-  const requestedCouponCode = input.couponCode ? normalizeCouponCode(input.couponCode) : null;
-  const existingCouponCode = existing.couponCode ? normalizeCouponCode(existing.couponCode) : null;
+  const requestedCouponCode = input.couponCode
+    ? normalizeCouponCode(input.couponCode)
+    : null;
+  const existingCouponCode = existing.couponCode
+    ? normalizeCouponCode(existing.couponCode)
+    : null;
   if (
     existing.governorate !== input.governorate ||
     existing.shippingAddress !== requestedShippingAddress ||
@@ -351,21 +408,32 @@ async function loadOwnedReplay(
   }
   let guestTrackingToken: string | null = null;
   if (
-    existing.guestTrackingPublicId && existing.guestTrackingTokenHash &&
+    existing.guestTrackingPublicId &&
+    existing.guestTrackingTokenHash &&
     existing.guestTrackingExpiresAt
   ) {
-    const rebuilt = buildGuestTrackingToken(existing.guestTrackingPublicId, existing.guestTrackingExpiresAt);
+    const rebuilt = buildGuestTrackingToken(
+      existing.guestTrackingPublicId,
+      existing.guestTrackingExpiresAt,
+    );
     if (hashGuestTrackingToken(rebuilt) !== existing.guestTrackingTokenHash) {
-      throw new Error("Online order guest tracking token snapshot is inconsistent");
+      throw new Error(
+        "Online order guest tracking token snapshot is inconsistent",
+      );
     }
     guestTrackingToken = rebuilt;
   }
   return {
     orderId: Number(existing.id),
     orderNumber: existing.orderNumber,
-    reservationExpiresAt: existing.reservationExpiryMs != null ? new Date(Number(existing.reservationExpiryMs)) : (() => {
-      throw new Error("Existing online order is missing its reservation expiry snapshot");
-    })(),
+    reservationExpiresAt:
+      existing.reservationExpiryMs != null
+        ? new Date(Number(existing.reservationExpiryMs))
+        : (() => {
+            throw new Error(
+              "Existing online order is missing its reservation expiry snapshot",
+            );
+          })(),
     branchId: Number(existing.branchId),
     subtotal: String(existing.subtotal),
     deliveryFee: String(existing.shippingCost),
@@ -390,37 +458,54 @@ async function lockOrCreateOnlineCustomer(
     // الجلسة الموقعة تحمل customerId؛ هذا هو مفتاح الملكية، لا customers.phone وحده. نقفل الصف
     // نفسه ثم نعيد التحقق من أن الهاتف المطلوب واحدٌ من هواتفه canonical الحالية، كي تعمل
     // phone2/phone3/whatsapp ولا ينشأ عميل جديد بالرقم الثانوي.
-    const existing = (await tx
-      .select({
-        id: customers.id,
-        isActive: customers.isActive,
-        phone: customers.phone,
-        phone2: customers.phone2,
-        phone3: customers.phone3,
-        whatsapp: customers.whatsapp,
-      })
-      .from(customers)
-      .where(eq(customers.id, authenticatedCustomer.customerId))
-      .for("update")
-      .limit(1))[0];
+    const existing = (
+      await tx
+        .select({
+          id: customers.id,
+          isActive: customers.isActive,
+          phone: customers.phone,
+          phone2: customers.phone2,
+          phone3: customers.phone3,
+          whatsapp: customers.whatsapp,
+        })
+        .from(customers)
+        .where(eq(customers.id, authenticatedCustomer.customerId))
+        .for("update")
+        .limit(1)
+    )[0];
     const verifiedPhones = existing
       ? [existing.phone, existing.phone2, existing.phone3, existing.whatsapp]
-          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .filter(
+            (value): value is string =>
+              typeof value === "string" && value.trim().length > 0,
+          )
           .map(normalizeStorePhone)
       : [];
-    if (!existing || existing.isActive !== true || !verifiedPhones.includes(phone)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "جلسة العميل لا تطابق صاحب رقم الهاتف" });
+    if (
+      !existing ||
+      existing.isActive !== true ||
+      !verifiedPhones.includes(phone)
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "جلسة العميل لا تطابق صاحب رقم الهاتف",
+      });
     }
     return Number(existing.id);
   }
 
   const custLock = `online-customer:${phone}`;
-  const lockRes = (await tx.execute(sql`SELECT GET_LOCK(${custLock}, 5) AS locked`)) as unknown;
+  const lockRes = (await tx.execute(
+    sql`SELECT GET_LOCK(${custLock}, 5) AS locked`,
+  )) as unknown;
   const lockedRow = Array.isArray(lockRes)
     ? (lockRes[0] as { locked?: number }[])?.[0]
     : (lockRes as { rows?: { locked?: number }[] })?.rows?.[0];
   if (!lockedRow || Number(lockedRow.locked) !== 1) {
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تأمين إنشاء العميل — أعد المحاولة" });
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "تعذّر تأمين إنشاء العميل — أعد المحاولة",
+    });
   }
   try {
     const existing = (
@@ -498,7 +583,9 @@ async function priceOnlineOrderLines(
   lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>,
   options: { lock: boolean; coupon?: LockedCoupon | null },
 ): Promise<PricedOnlineOrderLine[]> {
-  const unitIds = Array.from(new Set(lines.map((line) => Number(line.productUnitId)))).sort((a, b) => a - b);
+  const unitIds = Array.from(
+    new Set(lines.map((line) => Number(line.productUnitId))),
+  ).sort((a, b) => a - b);
   const query = tx
     .select({
       productId: products.id,
@@ -523,10 +610,13 @@ async function priceOnlineOrderLines(
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(categories.id, products.categoryId))
-    .leftJoin(productPrices, and(
-      eq(productPrices.productUnitId, productUnits.id),
-      eq(productPrices.priceTier, RETAIL),
-    ))
+    .leftJoin(
+      productPrices,
+      and(
+        eq(productPrices.productUnitId, productUnits.id),
+        eq(productPrices.priceTier, RETAIL),
+      ),
+    )
     .where(inArray(productUnits.id, unitIds))
     .orderBy(asc(productUnits.id));
   const rows = options.lock ? await query.for("update") : await query;
@@ -537,9 +627,18 @@ async function priceOnlineOrderLines(
     const quantity = Math.floor(line.quantity);
     const row = byUnit.get(Number(line.productUnitId));
     if (
-      !Number.isSafeInteger(quantity) || quantity <= 0 || !row || !row.productActive ||
-      !row.showInStore || (row.categoryId != null && (!row.categoryActive || !row.categoryShowInStore)) ||
-      row.isService || !row.variantActive || !row.unitActive || !row.unitAvailableInStore || row.price == null
+      !Number.isSafeInteger(quantity) ||
+      quantity <= 0 ||
+      !row ||
+      !row.productActive ||
+      !row.showInStore ||
+      (row.categoryId != null &&
+        (!row.categoryActive || !row.categoryShowInStore)) ||
+      row.isService ||
+      !row.variantActive ||
+      !row.unitActive ||
+      !row.unitAvailableInStore ||
+      row.price == null
     ) {
       throw new TRPCError({
         code: options.lock ? "CONFLICT" : "BAD_REQUEST",
@@ -553,12 +652,16 @@ async function priceOnlineOrderLines(
     if (row.isCustomizable === true) {
       throw new TRPCError({
         code: options.lock ? "CONFLICT" : "BAD_REQUEST",
-        message: "هذا المنتج يتطلب تخصيصاً لا يحفظه الطلب الإلكتروني بأمان حالياً — تواصل مع المكتبة لإتمامه",
+        message:
+          "هذا المنتج يتطلب تخصيصاً لا يحفظه الطلب الإلكتروني بأمان حالياً — تواصل مع المكتبة لإتمامه",
       });
     }
     const base = money(quantity).times(row.conversionFactor ?? 1);
     if (!base.isInteger() || !base.gt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الوحدة لا تتحول إلى كمية أساس صحيحة" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "كمية الوحدة لا تتحول إلى كمية أساس صحيحة",
+      });
     }
     const retail = round2(row.price);
     const productId = Number(row.productId);
@@ -578,7 +681,11 @@ async function priceOnlineOrderLines(
       lockForUpdate: options.lock,
     });
     const automaticDiscount = promo ? money(promo.discountForUnit) : money(0);
-    const priceAfterAutomatic = round2(retail.minus(automaticDiscount).lt(0) ? money(0) : retail.minus(automaticDiscount));
+    const priceAfterAutomatic = round2(
+      retail.minus(automaticDiscount).lt(0)
+        ? money(0)
+        : retail.minus(automaticDiscount),
+    );
     const couponPromo = options.coupon
       ? await resolveCouponPromotionForLine(tx, options.coupon.promotionId, {
           branchId,
@@ -594,11 +701,15 @@ async function priceOnlineOrderLines(
           lockForUpdate: options.lock,
         })
       : null;
-    const couponDiscount = couponPromo ? money(couponPromo.discountForUnit) : money(0);
+    const couponDiscount = couponPromo
+      ? money(couponPromo.discountForUnit)
+      : money(0);
     const discount = automaticDiscount.plus(couponDiscount).gt(retail)
       ? retail
       : automaticDiscount.plus(couponDiscount);
-    const unitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
+    const unitPrice = round2(
+      retail.minus(discount).lt(0) ? money(0) : retail.minus(discount),
+    );
     priced.push({
       productId,
       categoryId,
@@ -624,10 +735,16 @@ async function priceOnlineOrderLines(
  *   ② الافتراض الثابت من `governorates.ts` (السلوك السابق — يبقى للتوافق ولمناطق بلا زون)
  * البذرة (H4، هجرة 0290) تنقل كلّ المحافظات الثمانية عشرة إلى المسار ①.
  */
-async function resolveDeliveryFee(tx: Tx, governorate: string): Promise<import("decimal.js").default> {
+async function resolveDeliveryFee(
+  tx: Tx,
+  governorate: string,
+): Promise<import("decimal.js").default> {
   const zone = (
-    await tx.select({ id: deliveryZones.id, isActive: deliveryZones.isActive })
-      .from(deliveryZones).where(eq(deliveryZones.code, governorate)).limit(1)
+    await tx
+      .select({ id: deliveryZones.id, isActive: deliveryZones.isActive })
+      .from(deliveryZones)
+      .where(eq(deliveryZones.code, governorate))
+      .limit(1)
   )[0];
   if (zone && zone.isActive) {
     const quote = await previewDeliveryQuote(tx, Number(zone.id), null, null);
@@ -641,12 +758,25 @@ async function totalOnlineOrderQuote(
   items: Array<{ lineTotal: string }>,
   governorate: string,
   freeShippingThreshold: string | null | undefined,
-): Promise<Pick<OnlineOrderQuoteResult, "subtotal" | "deliveryFee" | "deliveryFree" | "deliveryWaivedAmount" | "total">> {
+): Promise<
+  Pick<
+    OnlineOrderQuoteResult,
+    | "subtotal"
+    | "deliveryFee"
+    | "deliveryFree"
+    | "deliveryWaivedAmount"
+    | "total"
+  >
+> {
   const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
   const actualDeliveryFee = await resolveDeliveryFee(tx, governorate);
   let customerDeliveryFee = actualDeliveryFee;
-  const freeThreshold = freeShippingThreshold ? money(freeShippingThreshold) : null;
-  const deliveryFree = Boolean(freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold));
+  const freeThreshold = freeShippingThreshold
+    ? money(freeShippingThreshold)
+    : null;
+  const deliveryFree = Boolean(
+    freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold),
+  );
   if (deliveryFree) customerDeliveryFee = round2(money(0));
   return {
     subtotal: subtotal.toFixed(2),
@@ -657,53 +787,89 @@ async function totalOnlineOrderQuote(
   };
 }
 
-export async function quoteOnlineOrder(input: OnlineOrderQuoteInput): Promise<OnlineOrderQuoteResult> {
+export async function quoteOnlineOrder(
+  input: OnlineOrderQuoteInput,
+): Promise<OnlineOrderQuoteResult> {
   const normalizedLines = normalizeOnlineOrderLines(input.lines);
-  if (!governorateById(input.governorate)) throw new TRPCError({ code: "BAD_REQUEST", message: "المحافظة غير صحيحة" });
+  if (!governorateById(input.governorate))
+    throw new TRPCError({ code: "BAD_REQUEST", message: "المحافظة غير صحيحة" });
   // تسعيرةٌ قارئةٌ محضة: **بلا بوّابة الكتابة الماليّة** (فحص الحمل ٣١/٨/٢٦). كانت تأخذ
   // `FINANCIAL_WRITER` (قفلٌ مشترك على صفّ بوّابة الإقفال العالميّ) في كل نداءٍ مجهول من كلّ
   // زائر، وهي لا تكتب شيئاً إطلاقاً — والمعاملة تبقى قائمةً لضمان لقطةٍ متّسقة للأسعار
   // والتوفّر عبر الاستعلامات المتعدّدة، لا للذرّية.
-  return withTx(async (tx) => {
-    const context = await requireStorefrontContext(tx, { requireOpen: true });
-    const settings = (await tx.select({ freeShippingThreshold: storeSettingsTable.freeShippingThreshold })
-      .from(storeSettingsTable).where(eq(storeSettingsTable.id, 1)).limit(1))[0];
-    // بلا `FOR UPDATE` على الكوبون: التسعيرة لا تستهلك استخداماً، والقفل الحصريّ كان يُسلسل
-    // كلّ زائرٍ يجرّب الرمز نفسه. حماية الاستهلاك المزدوج تبقى في مسار الإنشاء (lock افتراضيّ).
-    const lockedCoupon = input.couponCode
-      ? await lockCouponForSale(
-          tx,
-          {
-            code: input.couponCode,
-            branchId: context.branchId,
-            customerId: input.authenticatedCustomer?.customerId ?? null,
-            requireAuthenticatedAssignedCustomer: true,
-            authenticatedCustomerId: input.authenticatedCustomer?.customerId ?? null,
-            todayYmd: todayYmdBaghdad(),
-          },
-          { lock: false },
-        )
-      : null;
-    const items = await priceOnlineOrderLines(tx, context.branchId, normalizedLines, { lock: false, coupon: lockedCoupon });
-    const couponDiscountTotal = round2(items.reduce((sum, item) => sum.plus(money(item.couponDiscountPerUnit ?? "0").times(item.quantity)), money(0)));
-    if (lockedCoupon && couponDiscountTotal.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف السلة" });
-    const totals = await totalOnlineOrderQuote(tx, items, input.governorate, settings?.freeShippingThreshold);
-    return {
-      couponCode: lockedCoupon?.code ?? null,
-      couponProgramName: lockedCoupon?.programName ?? null,
-      couponDiscount: couponDiscountTotal.toFixed(2),
-      lines: items.map((item) => ({
-        productUnitId: item.productUnitId,
-        quantity: item.quantity,
-        retailUnitPrice: item.retailUnitPrice,
-        discountPerUnit: item.discountPerUnit,
-        couponDiscountPerUnit: item.couponDiscountPerUnit ?? "0.00",
-        unitPrice: item.unitPrice,
-        lineTotal: item.lineTotal,
-      })),
-      ...totals,
-    };
-  }, { gate: "NONE" });
+  return withTx(
+    async (tx) => {
+      const context = await requireStorefrontContext(tx, { requireOpen: true });
+      const settings = (
+        await tx
+          .select({
+            freeShippingThreshold: storeSettingsTable.freeShippingThreshold,
+          })
+          .from(storeSettingsTable)
+          .where(eq(storeSettingsTable.id, 1))
+          .limit(1)
+      )[0];
+      // بلا `FOR UPDATE` على الكوبون: التسعيرة لا تستهلك استخداماً، والقفل الحصريّ كان يُسلسل
+      // كلّ زائرٍ يجرّب الرمز نفسه. حماية الاستهلاك المزدوج تبقى في مسار الإنشاء (lock افتراضيّ).
+      const lockedCoupon = input.couponCode
+        ? await lockCouponForSale(
+            tx,
+            {
+              code: input.couponCode,
+              branchId: context.branchId,
+              customerId: input.authenticatedCustomer?.customerId ?? null,
+              requireAuthenticatedAssignedCustomer: true,
+              authenticatedCustomerId:
+                input.authenticatedCustomer?.customerId ?? null,
+              todayYmd: todayYmdBaghdad(),
+            },
+            { lock: false },
+          )
+        : null;
+      const items = await priceOnlineOrderLines(
+        tx,
+        context.branchId,
+        normalizedLines,
+        { lock: false, coupon: lockedCoupon },
+      );
+      const couponDiscountTotal = round2(
+        items.reduce(
+          (sum, item) =>
+            sum.plus(
+              money(item.couponDiscountPerUnit ?? "0").times(item.quantity),
+            ),
+          money(0),
+        ),
+      );
+      if (lockedCoupon && couponDiscountTotal.lte(0))
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الكوبون لا ينطبق على أصناف السلة",
+        });
+      const totals = await totalOnlineOrderQuote(
+        tx,
+        items,
+        input.governorate,
+        settings?.freeShippingThreshold,
+      );
+      return {
+        couponCode: lockedCoupon?.code ?? null,
+        couponProgramName: lockedCoupon?.programName ?? null,
+        couponDiscount: couponDiscountTotal.toFixed(2),
+        lines: items.map((item) => ({
+          productUnitId: item.productUnitId,
+          quantity: item.quantity,
+          retailUnitPrice: item.retailUnitPrice,
+          discountPerUnit: item.discountPerUnit,
+          couponDiscountPerUnit: item.couponDiscountPerUnit ?? "0.00",
+          unitPrice: item.unitPrice,
+          lineTotal: item.lineTotal,
+        })),
+        ...totals,
+      };
+    },
+    { gate: "NONE" },
+  );
 }
 
 /** طلب متجر جديد — server-priced، مُتحقَّق، idempotent، ذرّي. لا أثر مالي (PENDING فقط). */
@@ -734,7 +900,10 @@ function normalizeOwnedReplayIdentity(input: CreateOnlineOrderInput) {
       input.authenticatedCustomer.customerId <= 0 ||
       sessionPhone !== phone
     ) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "رقم الطلب لا يطابق جلسة العميل الموثّقة" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "رقم الطلب لا يطابق جلسة العميل الموثّقة",
+      });
     }
   }
   const address = input.addressText.trim();
@@ -766,13 +935,15 @@ export async function findOwnedOnlineOrderReplay(
 ): Promise<CreateOnlineOrderResult | null> {
   if (!input.clientRequestId) return null;
   const identity = normalizeOwnedReplayIdentity(input);
-  return withTx((tx) => loadOwnedReplay(
-    tx,
-    input,
-    identity.phone,
-    identity.requestedShippingAddress,
-    identity.requestedLineQuantities,
-  ));
+  return withTx((tx) =>
+    loadOwnedReplay(
+      tx,
+      input,
+      identity.phone,
+      identity.requestedShippingAddress,
+      identity.requestedLineQuantities,
+    ),
+  );
 }
 
 async function createOnlineOrderAttempt(
@@ -825,30 +996,48 @@ async function createOnlineOrderAttempt(
 
     // أول قفل أعمال مشترك: العميل. منه نشتق customerId الحقيقي قبل فحص القسيمة، فلا تبقى
     // القسيمة الشخصية/حد العميل معلّقين على customerId=null. الجلسة الموثقة يجب أن تطابق الصف.
-    const customerId = await lockOrCreateOnlineCustomer(tx, phone, name, input.authenticatedCustomer);
+    const customerId = await lockOrCreateOnlineCustomer(
+      tx,
+      phone,
+      name,
+      input.authenticatedCustomer,
+    );
     const lockedCoupon = input.couponCode
       ? await lockCouponForSale(tx, {
           code: input.couponCode,
           branchId,
           customerId,
           requireAuthenticatedAssignedCustomer: true,
-          authenticatedCustomerId: input.authenticatedCustomer?.customerId ?? null,
+          authenticatedCustomerId:
+            input.authenticatedCustomer?.customerId ?? null,
           todayYmd: todayYmdBaghdad(),
         })
       : null;
 
     // ② لقطة تسعير أولية لبناء متطلبات الأقفال. التثبيت المالي الوحيد أدناه يعيد
     // تشغيل المحرك نفسه بقراءة current مقفلة بعد قفل الوحدات.
-    const items = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: false, coupon: lockedCoupon });
+    const items = await priceOnlineOrderLines(tx, branchId, normalizedLines, {
+      lock: false,
+      coupon: lockedCoupon,
+    });
     const requestedBaseByVariant = new Map<number, number>();
 
     // ترتيب الأقفال العالمي: customer → productUnit → variant/branchStock → order/items.
     // نقفل معنى الكمية قبل الوصفة وATP؛ تعديل العامل المتزامن إمّا يسبقنا فنرفض
     // لقطة السلة القديمة، أو ينتظرنا ثم يرى الطلب النشط ويرفض التعديل.
-    const unitIds = Array.from(new Set(items.map((item) => item.productUnitId))).sort((a, b) => a - b);
+    const unitIds = Array.from(
+      new Set(items.map((item) => item.productUnitId)),
+    ).sort((a, b) => a - b);
     const currentUnits = await lockProductUnitsForOnlineAllocation(tx, unitIds);
-    const currentFactorByUnit = new Map(currentUnits.map((unit) => [unit.id, unit.conversionFactor]));
-    const currentItems = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: true, coupon: lockedCoupon });
+    const currentFactorByUnit = new Map(
+      currentUnits.map((unit) => [unit.id, unit.conversionFactor]),
+    );
+    const currentItems = await priceOnlineOrderLines(
+      tx,
+      branchId,
+      normalizedLines,
+      { lock: true, coupon: lockedCoupon },
+    );
     requestedBaseByVariant.clear();
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
@@ -857,12 +1046,15 @@ async function createOnlineOrderAttempt(
         ? currentFactorByUnit.get(current.productUnitId)
         : undefined;
       if (
-        !current || current.productUnitId !== item.productUnitId || factor == null ||
+        !current ||
+        current.productUnitId !== item.productUnitId ||
+        factor == null ||
         !money(item.quantity).times(factor).eq(item.baseQuantity)
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "تغيّرت أهلية منتج أو وحدة في السلة أثناء الطلب — حدّث السلة وأعد المحاولة",
+          message:
+            "تغيّرت أهلية منتج أو وحدة في السلة أثناء الطلب — حدّث السلة وأعد المحاولة",
         });
       }
       item.productId = current.productId;
@@ -875,7 +1067,9 @@ async function createOnlineOrderAttempt(
       item.lineTotal = current.lineTotal;
       item.discountPerUnit = current.discountPerUnit;
       item.couponDiscountPerUnit = current.couponDiscountPerUnit;
-      const requestedBase = (requestedBaseByVariant.get(current.variantId) ?? 0) + current.baseQuantity;
+      const requestedBase =
+        (requestedBaseByVariant.get(current.variantId) ?? 0) +
+        current.baseQuantity;
       requestedBaseByVariant.set(current.variantId, requestedBase);
     }
     for (let index = 0; index < items.length; index++) {
@@ -883,7 +1077,8 @@ async function createOnlineOrderAttempt(
       if (expected != null && !round2(expected).eq(items[index].unitPrice)) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "تغيّر سعر أحد المنتجات منذ عرضه — حدّث السلة ووافق على الإجمالي الجديد",
+          message:
+            "تغيّر سعر أحد المنتجات منذ عرضه — حدّث السلة ووافق على الإجمالي الجديد",
         });
       }
     }
@@ -956,16 +1151,37 @@ async function createOnlineOrderAttempt(
         );
       }
     }
-    const couponDiscount = round2(items.reduce((sum, item) => sum.plus(money(item.couponDiscountPerUnit ?? "0").times(item.quantity)), money(0)));
-    if (lockedCoupon && couponDiscount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون لا ينطبق على أصناف السلة" });
-    const quoteTotals = await totalOnlineOrderQuote(tx, items, input.governorate, storeSettings?.freeShippingThreshold);
+    const couponDiscount = round2(
+      items.reduce(
+        (sum, item) =>
+          sum.plus(
+            money(item.couponDiscountPerUnit ?? "0").times(item.quantity),
+          ),
+        money(0),
+      ),
+    );
+    if (lockedCoupon && couponDiscount.lte(0))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الكوبون لا ينطبق على أصناف السلة",
+      });
+    const quoteTotals = await totalOnlineOrderQuote(
+      tx,
+      items,
+      input.governorate,
+      storeSettings?.freeShippingThreshold,
+    );
     const subtotal = money(quoteTotals.subtotal);
     const deliveryFee = money(quoteTotals.deliveryFee);
     const total = money(quoteTotals.total);
-    if (input.expectedGrandTotal != null && !round2(input.expectedGrandTotal).eq(total)) {
+    if (
+      input.expectedGrandTotal != null &&
+      !round2(input.expectedGrandTotal).eq(total)
+    ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر إجمالي الطلب أو أجرة التوصيل منذ عرضه — حدّث السلة ووافق على الإجمالي الجديد",
+        message:
+          "تغيّر إجمالي الطلب أو أجرة التوصيل منذ عرضه — حدّث السلة ووافق على الإجمالي الجديد",
       });
     }
 
@@ -1008,8 +1224,13 @@ async function createOnlineOrderAttempt(
 
     // ④ إنشاء الطلب (PENDING) — رقمٌ مؤقّت فريد ثم ORD-{id} (بلا سباق ترقيم).
     const guestTrackingPublicId = randomBytes(16).toString("hex");
-    const guestTrackingExpiresAt = new Date(Date.now() + GUEST_TRACKING_TTL_SECONDS * 1000);
-    const guestTrackingToken = buildGuestTrackingToken(guestTrackingPublicId, guestTrackingExpiresAt);
+    const guestTrackingExpiresAt = new Date(
+      Date.now() + GUEST_TRACKING_TTL_SECONDS * 1000,
+    );
+    const guestTrackingToken = buildGuestTrackingToken(
+      guestTrackingPublicId,
+      guestTrackingExpiresAt,
+    );
     const insOrder = await tx.insert(onlineOrders).values({
       orderNumber: `TMP-${randomUUID()}`,
       customerId,
@@ -1047,14 +1268,18 @@ async function createOnlineOrderAttempt(
     const persistedExpiry = (
       await tx
         .select({
-          reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(\`onlineOrders\`.\`reservationExpiresAt\`) * 1000)`,
+          reservationExpiryMs: sql<
+            number | null
+          >`ROUND(UNIX_TIMESTAMP(\`onlineOrders\`.\`reservationExpiresAt\`) * 1000)`,
         })
         .from(onlineOrders)
         .where(eq(onlineOrders.id, orderId))
         .limit(1)
     )[0]?.reservationExpiryMs;
     if (persistedExpiry == null) {
-      throw new Error("Online order reservation expiry snapshot was not persisted");
+      throw new Error(
+        "Online order reservation expiry snapshot was not persisted",
+      );
     }
     const reservationExpiresAt = new Date(Number(persistedExpiry));
 
@@ -1124,7 +1349,10 @@ export async function trackOnlineOrder(
   _orderNumber: string,
   _phone: string,
 ): Promise<never> {
-  throw new TRPCError({ code: "NOT_FOUND", message: "مسار التتبّع القديم مغلق؛ استعمل جلسة العميل أو رمز التتبّع" });
+  throw new TRPCError({
+    code: "NOT_FOUND",
+    message: "مسار التتبّع القديم مغلق؛ استعمل جلسة العميل أو رمز التتبّع",
+  });
 }
 
 type TrackingHeader = {
@@ -1202,42 +1430,63 @@ export async function trackOnlineOrderForCustomer(
   customerId: number,
 ): Promise<OnlineOrderTracking> {
   const db = getDb();
-  if (!db) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
-  const order = (await db
-    .select(trackingHeaderSelection())
-    .from(onlineOrders)
-    .where(and(
-      eq(onlineOrders.orderNumber, orderNumber.trim()),
-      eq(onlineOrders.customerId, customerId),
-    ))
-    .limit(1))[0];
-  if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+  if (!db)
+    throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+  const order = (
+    await db
+      .select(trackingHeaderSelection())
+      .from(onlineOrders)
+      .where(
+        and(
+          eq(onlineOrders.orderNumber, orderNumber.trim()),
+          eq(onlineOrders.customerId, customerId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!order)
+    throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
   return buildOnlineOrderTracking(db, order);
 }
 
 /** تتبّع ضيف برمز opaque وحده؛ توقيع/انتهاء/تطابق hash تُفحص قبل إعادة أيّ بيانات. */
-export async function trackOnlineOrderByGuestToken(token: string): Promise<OnlineOrderTracking> {
+export async function trackOnlineOrderByGuestToken(
+  token: string,
+): Promise<OnlineOrderTracking> {
   const verified = parseAndVerifyGuestTrackingToken(token);
-  if (!verified) throw new TRPCError({ code: "NOT_FOUND", message: "رمز التتبّع غير صالح أو منتهي" });
+  if (!verified)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "رمز التتبّع غير صالح أو منتهي",
+    });
   const db = getDb();
-  if (!db) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
-  const order = (await db
-    .select({
-      ...trackingHeaderSelection(),
-      guestTrackingExpiresAt: onlineOrders.guestTrackingExpiresAt,
-    })
-    .from(onlineOrders)
-    .where(and(
-      eq(onlineOrders.guestTrackingPublicId, verified.publicId),
-      eq(onlineOrders.guestTrackingTokenHash, verified.tokenHash),
-      sql`${onlineOrders.guestTrackingExpiresAt} > CURRENT_TIMESTAMP(3)`,
-    ))
-    .limit(1))[0];
-  const storedExpirySeconds = order?.guestTrackingExpiresAt == null
-    ? null
-    : Math.floor(order.guestTrackingExpiresAt.getTime() / 1000);
+  if (!db)
+    throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+  const order = (
+    await db
+      .select({
+        ...trackingHeaderSelection(),
+        guestTrackingExpiresAt: onlineOrders.guestTrackingExpiresAt,
+      })
+      .from(onlineOrders)
+      .where(
+        and(
+          eq(onlineOrders.guestTrackingPublicId, verified.publicId),
+          eq(onlineOrders.guestTrackingTokenHash, verified.tokenHash),
+          sql`${onlineOrders.guestTrackingExpiresAt} > CURRENT_TIMESTAMP(3)`,
+        ),
+      )
+      .limit(1)
+  )[0];
+  const storedExpirySeconds =
+    order?.guestTrackingExpiresAt == null
+      ? null
+      : Math.floor(order.guestTrackingExpiresAt.getTime() / 1000);
   if (!order || storedExpirySeconds !== verified.expiresAtSeconds) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "رمز التتبّع غير صالح أو منتهي" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "رمز التتبّع غير صالح أو منتهي",
+    });
   }
   return buildOnlineOrderTracking(db, order);
 }
