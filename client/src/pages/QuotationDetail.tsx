@@ -3,7 +3,6 @@ import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { notify } from "@/lib/notify";
 import { DocumentWhatsAppDialog } from "@/components/DocumentWhatsAppDialog";
 import { CopyInline } from "@/components/CopyButton";
@@ -14,12 +13,17 @@ import { fmtDate } from "@/lib/date";
 import { buildQuotationMessage } from "@/lib/whatsapp";
 import { D, fmt, round2 } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { getDeviceCode } from "@/lib/offline/outbox";
 import { allocateLineTax } from "@/components/invoice";
 import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey,
+} from "@shared/permissions";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
+} from "@shared/posPaymentPolicy";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
@@ -32,7 +36,8 @@ const STATUS: Record<string, string> = {
   CONVERTED: "محوّل لفاتورة",
   EXPIRED: "منتهٍ",
 };
-const TIER: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
+const TIER: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي",
+};
 const STATUS_CLS: Record<string, string> = {
   DRAFT: "bg-muted text-foreground/70",
   SENT: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
@@ -41,15 +46,13 @@ const STATUS_CLS: Record<string, string> = {
   CONVERTED: "bg-violet-100 text-violet-700",
   EXPIRED: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
 };
-const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
+const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string;
+}[] = [
   { v: "CASH", label: "نقدي" },
   { v: "TRANSFER", label: "تحويل" },
   { v: "CARD", label: "بطاقة" },
   { v: "WALLET", label: "محفظة" },
 ];
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
 /** حقل وصفي: عنوان صغير + قيمة. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -61,10 +64,13 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 /** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، بلا اقتطاع). */
-function SummaryRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+function SummaryRow({ label, value, strong,
+}: { label: string; value: string; strong?: boolean;
+}) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className={cn("text-muted-foreground", strong && "font-semibold text-foreground")}>{label}</span>
+      <span className={cn("text-muted-foreground", strong && "font-semibold text-foreground",
+        )}>{label}</span>
       <span dir="ltr" className={cn("tabular-nums", strong ? "text-lg font-bold" : "text-sm")}>{fmt(value)}</span>
     </div>
   );
@@ -75,13 +81,15 @@ export default function QuotationDetail() {
   const search = useSearch();
   const quotationId = Number(params.id);
   const utils = trpc.useUtils();
-  const q = trpc.quotations.get.useQuery({ quotationId }, { enabled: Number.isFinite(quotationId) });
+  const q = trpc.quotations.get.useQuery({ quotationId }, { enabled: Number.isFinite(quotationId) },
+  );
 
   // بوّابة عرض مطابقة للخادم: الكتابة (setStatus/convert) salesManagerProcedure(["manager"],"sales","FULL")
   // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد (نمط InvoiceDetail).
   const me = trpc.auth.me.useQuery();
   const canManage = !!me.data?.role &&
-    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "sales", "FULL", ["manager"]);
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "sales", "FULL", ["manager"],
+    );
 
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -89,8 +97,19 @@ export default function QuotationDetail() {
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [payReference, setPayReference] = useState("");
 
+  const [externalAttempt, setExternalAttempt] = useState<{
+    attemptId: number | null;
+    requestId: string;
+    deviceId: string;
+    fingerprint: string;
+    confirmed: boolean;
+  } | null>(null);
+  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+
   const refresh = async () => {
-    await Promise.all([utils.quotations.get.invalidate({ quotationId }), utils.quotations.list.invalidate()]);
+    await Promise.all([utils.quotations.get.invalidate({ quotationId }), utils.quotations.list.invalidate(),
+    ]);
   };
 
   const setStatus = trpc.quotations.setStatus.useMutation({
@@ -99,21 +118,90 @@ export default function QuotationDetail() {
   });
   const convert = trpc.quotations.convert.useMutation({
     onSuccess: async (r) => {
-      setDone(r.alreadyConverted ? "مُحوّل مسبقاً." : `تم التحويل إلى الفاتورة رقم ${r.invoiceNumber ?? r.invoiceId}.`);
+      setDone(r.alreadyConverted ? "مُحوّل مسبقاً." : `تم التحويل إلى الفاتورة رقم ${r.invoiceNumber ?? r.invoiceId}.`,
+      );
       setError("");
       await refresh();
     },
     onError: (e) => { setError(e.message); setDone(""); },
   });
 
-  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
-  if (!q.data) return <div className="p-10 text-center text-muted-foreground">عرض السعر غير موجود.</div>;
+  if (q.isLoading) return (
+      <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>
+    );
+  if (!q.data) return (
+      <div className="p-10 text-center text-muted-foreground">عرض السعر غير موجود.</div>
+    );
   const data = q.data;
   const isOpen = data.status === "DRAFT" || data.status === "SENT" || data.status === "ACCEPTED";
   const hasTax = D(data.taxAmount ?? "0").gt(0);
+  const normalizedPayAmount = round2(D(payAmount || "0")).toFixed(2);
+  const externalNeeded = D(payAmount).gt(0) && payMethod !== "CASH";
+  const externalFingerprint = `SALES_COLLECTION|${data.branchId}|${payMethod}|${normalizedPayAmount}|${payReference.trim()}`;
+  const externalConfirmed =
+    !externalNeeded ||
+    (externalAttempt?.confirmed === true &&
+      externalAttempt.fingerprint === externalFingerprint);
+
+  async function confirmQuotationExternalPayment() {
+    const reference = payReference.trim();
+    if (!reference) return notify.err("أدخل مرجع العملية أولاً.");
+    if (!D(payAmount).gt(0))
+      return notify.err("أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
+    try {
+      const prior =
+        externalAttempt?.fingerprint === externalFingerprint
+          ? externalAttempt
+          : null;
+      const deviceId = prior?.deviceId ?? (await getDeviceCode());
+      const requestId = prior?.requestId ?? crypto.randomUUID();
+      let attemptId = prior?.attemptId ?? null;
+      if (attemptId == null) {
+        const initiated = await initiateExternal.mutateAsync({
+          branchId: Number(data.branchId),
+          channel: "SALES_COLLECTION",
+          method: payMethod as "CARD" | "TRANSFER" | "WALLET",
+          amount: normalizedPayAmount,
+          reference,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        setExternalAttempt({
+          attemptId,
+          requestId,
+          deviceId,
+          fingerprint: externalFingerprint,
+          confirmed: false,
+        });
+      }
+      await confirmExternal.mutateAsync({
+        branchId: Number(data.branchId),
+        channel: "SALES_COLLECTION",
+        attemptId,
+        deviceId,
+      });
+      setExternalAttempt({
+        attemptId,
+        requestId,
+        deviceId,
+        fingerprint: externalFingerprint,
+        confirmed: true,
+      });
+      notify.ok(
+        "تأكّد الدفع الخارجي",
+        `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرة واحدة.`,
+      );
+    } catch (err) {
+      notify.err(
+        err instanceof Error ? err.message : "تعذّر تأكيد الدفع الخارجي",
+      );
+    }
+  }
 
   function printQuote() {
-    const taxableBase = round2(D(data.subtotal).minus(D(data.discountAmount ?? "0"))).toFixed(2);
+    const taxableBase = round2(D(data.subtotal).minus(D(data.discountAmount ?? "0")),
+    ).toFixed(2);
     const taxShares = allocateLineTax(
       data.items.map((it) => ({ total: String(it.total) })),
       String(data.taxAmount ?? "0"),
@@ -144,7 +232,9 @@ export default function QuotationDetail() {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      {new URLSearchParams(search).get("print") === "1" && <AutoPrintOnce onPrint={printQuote} />}
+      {new URLSearchParams(search).get("print") === "1" && (
+        <AutoPrintOnce onPrint={printQuote} />
+      )}
       <PageHeader
         title="عرض سعر"
         backHref="/quotations"
@@ -176,8 +266,12 @@ export default function QuotationDetail() {
 
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="المجموع" value={data.subtotal} />
-              {D(data.discountAmount ?? "0").gt(0) && <SummaryRow label="الخصم" value={data.discountAmount} />}
-              {hasTax && <SummaryRow label={`الضريبة (${data.taxRatePercent ?? "0"}٪)`} value={data.taxAmount} />}
+              {D(data.discountAmount ?? "0").gt(0) && (
+                <SummaryRow label="الخصم" value={data.discountAmount} />
+              )}
+              {hasTax && (
+                <SummaryRow label={`الضريبة (${data.taxRatePercent ?? "0"}٪)`} value={data.taxAmount} />
+              )}
               <div className="border-t pt-2.5">
                 <SummaryRow label="الإجمالي" value={data.total} strong />
               </div>
@@ -204,7 +298,9 @@ export default function QuotationDetail() {
                 {data.items.map((it) => (
                   <tr key={it.id} className="border-t hover:bg-muted/30">
                     <td className="px-3 py-2">{it.productName}{it.variantName ? ` — ${it.variantName}` : ""}{" "}
-                      {it.sku && <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span>}
+                      {it.sku && (
+                        <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-muted-foreground">{it.unitName}</td>
                     <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{it.quantity}</td>
@@ -234,30 +330,43 @@ export default function QuotationDetail() {
             </div>
             <div className="space-y-1">
               <Label>طريقة الدفع</Label>
-              <select
-                className={selectCls}
+              <AppSelect
                 value={payMethod}
-                onChange={(e) => {
-                  if (!isPosPaymentMethodEnabled(e.target.value)) return;
-                  setPayMethod(e.target.value as typeof payMethod);
+                onValueChange={(value) => {
+                  if (!isPosPaymentMethodEnabled(value)) return;
+                  setPayMethod(value as typeof payMethod);
                   setPayReference("");
+                  setExternalAttempt(null);
                 }}
               >
                 {METHODS.map((m) => (
                   <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             {payMethod !== "CASH" && (
-              <div className="space-y-1">
-                <Label htmlFor="quotation-pay-reference">مرجع العملية <span className="text-destructive">*</span></Label>
-                <Input
-                  id="quotation-pay-reference"
-                  dir="ltr"
+              <div className="md:col-span-3 rounded-xl border bg-card p-3">
+                <PaymentReferenceField
                   value={payReference}
-                  onChange={(e) => setPayReference(e.target.value)}
-                  maxLength={100}
-                  placeholder="رقم إشعار الجهاز أو رقم التحويل"
+                  onChange={(value) => {
+                    setPayReference(value);
+                    setExternalAttempt(null);
+                  }}
+                  method={payMethod}
+                  confirmed={externalConfirmed}
+                  confirming={
+                    initiateExternal.isPending || confirmExternal.isPending
+                  }
+                  onConfirm={confirmQuotationExternalPayment}
+                  inputId="quotation-pay-reference"
+                  colors={{
+                    border: "var(--border)",
+                    muted: "var(--muted)",
+                    mutedFg: "var(--muted-foreground)",
+                    fg: "var(--foreground)",
+                    amber: "var(--sem-warn)",
+                    success: "var(--sem-pos)",
+                  }}
                 />
               </div>
             )}
@@ -274,7 +383,18 @@ export default function QuotationDetail() {
                 )
                   return;
                 if (pay && payMethod !== "CASH" && !payReference.trim()) {
-                  notify.err("مرجع عملية البطاقة/التحويل مطلوب — لا يُسجَّل قبضٌ بلا أثرٍ قابلٍ للمطابقة.");
+                  notify.err("مرجع عملية البطاقة/التحويل مطلوب — لا يُسجَّل قبضٌ بلا أثرٍ قابلٍ للمطابقة.",
+                  );
+                  return;
+                }
+                if (
+                  pay &&
+                  payMethod !== "CASH" &&
+                  (!externalConfirmed || externalAttempt?.attemptId == null)
+                ) {
+                  notify.err(
+                    "ثبّت تأكيد الدفع غير النقدي قبل تحويل عرض السعر.",
+                  );
                   return;
                 }
                 convert.mutate({
@@ -284,6 +404,12 @@ export default function QuotationDetail() {
                         amount: round2(D(payAmount)).toFixed(2),
                         method: payMethod,
                         reference: payMethod === "CASH" ? undefined : payReference.trim(),
+                        ...(payMethod === "CASH"
+                          ? {}
+                          : {
+                              externalPaymentAttemptId: externalAttempt!.attemptId!,
+                              externalPaymentDeviceId: externalAttempt!.deviceId,
+                            }),
                       }
                     : undefined,
                 });
@@ -415,5 +541,6 @@ export default function QuotationDetail() {
 }
 
 function esc(s: string): string {
-  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
+  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string,
+  );
 }

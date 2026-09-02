@@ -12,6 +12,8 @@
  *   - فحص التوافق المالي reconcile: admin فقط (adminProcedure) — لغيره إحالة نصية.
  */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { FilterField } from "@/components/list";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader } from "@/components/PageHeader";
@@ -281,38 +283,40 @@ export default function Stocktakes() {
             loading={listQ.isLoading}
             filters={
               <>
-                <select
-                  className={selectClsSm}
-                  value={status}
-                  onChange={(e) => {
-                    setStatus(e.target.value as "" | StStatus);
-                    setPage(0);
-                  }}
-                  aria-label="الحالة"
-                >
-                  <option value="">كل الحالات</option>
-                  <option value="COUNTING">قيد العدّ</option>
-                  <option value="REVIEW">قيد المراجعة</option>
-                  <option value="APPROVED">معتمدة ومُسوّاة</option>
-                  <option value="CANCELLED">ملغاة</option>
-                </select>
-                {isAdmin && (
-                  <select
-                    className={selectClsSm}
-                    value={branchId}
-                    onChange={(e) => {
-                      setBranchId(Number(e.target.value));
+                <FilterField label="الحالة">
+                  <AppSelect
+                    className="h-8"
+                    value={status}
+                    onValueChange={(v) => {
+                      setStatus(v as "" | StStatus);
                       setPage(0);
                     }}
-                    aria-label="الفرع"
                   >
-                    <option value={0}>كل الفروع</option>
-                    {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
+                    <option value="">كل الحالات</option>
+                    <option value="COUNTING">قيد العدّ</option>
+                    <option value="REVIEW">قيد المراجعة</option>
+                    <option value="APPROVED">معتمدة ومُسوّاة</option>
+                    <option value="CANCELLED">ملغاة</option>
+                  </AppSelect>
+                </FilterField>
+                {isAdmin && (
+                  <FilterField label="الفرع">
+                    <AppSelect
+                      className="h-8"
+                      value={String(branchId)}
+                      onValueChange={(v) => {
+                        setBranchId(Number(v));
+                        setPage(0);
+                      }}
+                    >
+                      <option value={0}>كل الفروع</option>
+                      {(branches.data ?? []).map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
+                    </AppSelect>
+                  </FilterField>
                 )}
               </>
             }

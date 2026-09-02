@@ -20,26 +20,10 @@ export interface AttendanceNotificationContent {
   requiresAction: boolean;
 }
 
-export interface AttendanceNotificationDeliveriesInput
+export interface AttendanceSupervisorNotificationInput
   extends AttendanceNotificationInput {
-  employeeUserId?: number | null;
-  employeeDisplayName: string;
-  adminRecipientUserIds: readonly number[];
-  attendanceId: number;
-}
-
-export interface AttendanceNotificationDelivery {
-  userId: number;
-  kind: "ATTENDANCE";
-  title: string;
-  body: string;
-  route: string;
-  eventKey: string;
-  entityType: "attendance";
-  entityId: number;
-  requiresAction: boolean;
-  lockScreenSafe: true;
-  push: true;
+  recipientUserId: number;
+  employeeName: string;
 }
 
 function safeLabel(value: string | null | undefined, maxLength = 36): string | null {
@@ -50,6 +34,18 @@ function safeLabel(value: string | null | undefined, maxLength = 36): string | n
   return normalized ? normalized.slice(0, maxLength) : null;
 }
 
+function assertAttendanceMoment(input: {
+  attendanceDate: string;
+  clock: string;
+}): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.attendanceDate)) {
+    throw new Error("INVALID_ATTENDANCE_DATE");
+  }
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.clock)) {
+    throw new Error("INVALID_ATTENDANCE_CLOCK");
+  }
+}
+
 /**
  * يبني نص شاشة القفل من معلومات تشغيلية غير مالية وغير تعريفية. لا يدخل اسم الموظف أو
  * رقمه أو أي حمولة خام من جهاز البصمة في النص المرسل إلى FCM.
@@ -57,12 +53,7 @@ function safeLabel(value: string | null | undefined, maxLength = 36): string | n
 export function buildAttendanceNotification(
   input: AttendanceNotificationInput,
 ): AttendanceNotificationContent {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.attendanceDate)) {
-    throw new Error("INVALID_ATTENDANCE_DATE");
-  }
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(input.clock)) {
-    throw new Error("INVALID_ATTENDANCE_CLOCK");
-  }
+  assertAttendanceMoment(input);
 
   const checkIn = input.movement === "ATTENDANCE_CHECK_IN";
   const segments = [
@@ -85,56 +76,33 @@ export function buildAttendanceNotification(
 }
 
 /**
- * توزيع حدث البصمة الحقيقي: تأكيدٌ شخصيٌّ للموظف المرتبط بحساب، وتنبيهٌ مسمّى
- * للإدارة. لا تستعمله أحداث جلسة الحساب (login/logout) مطلقاً.
+ * إشعار المدير هو الاستثناء التشغيليّ الصريح من إخفاء هوية الموظف على شاشة القفل:
+ * المالك طلب أن يظهر «أحمد سجّل حضوراً» خارج التطبيق. لا تدخل فيه أرقام مالية أو حمولة
+ * الجهاز الخام، وتُطبَّع كل التسميات وتُحَدّ أطوالها قبل إرسالها.
  */
-export function buildAttendanceNotificationDeliveries(
-  input: AttendanceNotificationDeliveriesInput,
-): AttendanceNotificationDelivery[] {
-  const notification = buildAttendanceNotification(input);
-  const deliveries: AttendanceNotificationDelivery[] = [];
-  const base = {
-    kind: "ATTENDANCE" as const,
-    body: notification.body,
-    route: "/hr?tab=attendance",
-    entityType: "attendance" as const,
-    entityId: input.attendanceId,
-    requiresAction: notification.requiresAction,
-    lockScreenSafe: true as const,
-    push: true as const,
+export function buildAttendanceSupervisorNotification(
+  input: AttendanceSupervisorNotificationInput,
+): AttendanceNotificationContent {
+  assertAttendanceMoment(input);
+  const employeeName =
+    safeLabel(input.employeeName, 70) ?? `الموظف #${input.employeeId}`;
+  const checkIn = input.movement === "ATTENDANCE_CHECK_IN";
+  const segments = [input.clock];
+  if (input.needsReview) segments.push("يحتاج مراجعة");
+  const branch = safeLabel(input.branchName);
+  const device = safeLabel(input.deviceName);
+  if (branch) segments.push(branch);
+  if (device && device !== branch) segments.push(device);
+
+  return {
+    eventKey:
+      `attendance:supervisor:${input.recipientUserId}:${input.employeeId}:` +
+      `${input.attendanceDate}:${input.movement}`,
+    title: `${employeeName} ${checkIn ? "سجّل الحضور" : "سجّل الانصراف"}`.slice(
+      0,
+      80,
+    ),
+    body: segments.join(" • ").slice(0, 180),
+    requiresAction: input.needsReview,
   };
-
-  if (Number.isInteger(input.employeeUserId) && Number(input.employeeUserId) > 0) {
-    deliveries.push({
-      ...base,
-      userId: Number(input.employeeUserId),
-      title: notification.title,
-      eventKey: notification.eventKey,
-    });
-  }
-
-  const employeeName = safeLabel(input.employeeDisplayName, 60) ?? "موظّف";
-  const movementLabel =
-    input.movement === "ATTENDANCE_CHECK_IN" ? "سجل حضور" : "سجل انصراف";
-  const seen = new Set<number>();
-  for (const rawRecipientId of input.adminRecipientUserIds) {
-    const recipientId = Number(rawRecipientId);
-    if (
-      !Number.isInteger(recipientId) ||
-      recipientId <= 0 ||
-      recipientId === input.employeeUserId ||
-      seen.has(recipientId)
-    ) {
-      continue;
-    }
-    seen.add(recipientId);
-    deliveries.push({
-      ...base,
-      userId: recipientId,
-      title: `${employeeName} ${movementLabel}`.slice(0, 90),
-      eventKey: `attendance-admin:${input.employeeId}:${input.attendanceDate}:${input.movement}:${recipientId}`,
-    });
-  }
-
-  return deliveries;
 }

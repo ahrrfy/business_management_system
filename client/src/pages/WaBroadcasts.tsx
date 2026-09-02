@@ -9,6 +9,7 @@
 // بثّ واتساب التسويقي قناة تنفيذ منفصلة عن تبويب «الحملات» القائم (crmCampaigns — المظلّة/الهدف/
 // المدة)؛ الربط بينهما اختياري فقط (crmCampaignId، للعزو لا للتبعية).
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   BarChart3,
@@ -231,12 +232,12 @@ function SegmentBuilder({
         {isAdmin ? (
           <div className="space-y-1.5">
             <label className="text-xs text-muted-foreground">الفرع (يحدّد أيضاً نشاط الشراء المقاس لـRFM)</label>
-            <select className={`${selectCls} w-full sm:w-64`} value={value.branchId} onChange={(e) => set("branchId", e.target.value)}>
+            <AppSelect className={`${selectCls} w-full sm:w-64`} value={value.branchId} onValueChange={(next) => set("branchId", next)}>
               <option value="">كل الفروع</option>
               {branches.map((b) => (
                 <option key={b.id} value={b.id}>{b.name}</option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">الفرع مثبَّت تلقائياً على فرعك — يفرضه الخادم.</p>
@@ -255,11 +256,11 @@ function SegmentBuilder({
 
         <div className="rounded-lg border bg-muted/20 p-3 space-y-2.5">
           <label className="text-xs font-bold text-muted-foreground">RFM (الحداثة/التكرار/الإنفاق)</label>
-          <select className={`${selectCls} w-full sm:w-64`} value={value.rfmPreset} onChange={(e) => set("rfmPreset", e.target.value as SegmentFormState["rfmPreset"])}>
+          <AppSelect className={`${selectCls} w-full sm:w-64`} value={value.rfmPreset} onValueChange={(next) => set("rfmPreset", next as SegmentFormState["rfmPreset"])}>
             {RFM_PRESET_OPTIONS.map((o) => (
               <option key={o.v} value={o.v}>{o.l}</option>
             ))}
-          </select>
+          </AppSelect>
           <div className="grid sm:grid-cols-3 gap-3">
             <div className="space-y-1">
               <label className="text-[11px] text-muted-foreground">اشترى خلال آخر (يوم)</label>
@@ -362,16 +363,16 @@ function TemplatePicker({
           <p className="text-xs text-muted-foreground">لا قوالب تسويقية معتمَدة بعد — زامِنها من إعدادات مركز واتساب.</p>
         )}
         {!isLoading && templates.length > 0 && (
-          <select
+          <AppSelect
             className={`${selectCls} w-full`}
-            value={selectedId ?? ""}
-            onChange={(e) => { onSelect(e.target.value ? Number(e.target.value) : null); onVarsMapChange({}); }}
+            value={String(selectedId ?? "")}
+            onValueChange={(next) => { onSelect(next ? Number(next) : null); onVarsMapChange({}); }}
           >
             <option value="">اختر قالباً…</option>
             {templates.map((t) => (
               <option key={t.id} value={t.id}>{t.name} ({t.language})</option>
             ))}
-          </select>
+          </AppSelect>
         )}
         {selected && selected.variableCount > 0 && (
           <div className="space-y-1.5">
@@ -380,15 +381,15 @@ function TemplatePicker({
               {Array.from({ length: selected.variableCount }, (_, i) => i + 1).map((i) => (
                 <div key={i} className="flex items-center gap-2">
                   <span className="text-xs font-mono text-muted-foreground w-10 shrink-0">{`{{${i}}}`}</span>
-                  <select
+                  <AppSelect
                     className={`${selectCls} flex-1`}
                     value={varsMap[String(i)] ?? ""}
-                    onChange={(e) => onVarsMapChange({ ...varsMap, [String(i)]: e.target.value })}
+                    onValueChange={(next) => onVarsMapChange({ ...varsMap, [String(i)]: next })}
                   >
                     {CUSTOMER_FIELD_OPTIONS.map((o) => (
                       <option key={o.v} value={o.v}>{o.l}</option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </div>
               ))}
             </div>
@@ -487,12 +488,12 @@ function NewBroadcastDialog({
             </div>
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">ربط بحملة CRM (اختياري — للعزو)</label>
-              <select className={`${selectCls} w-full`} value={crmCampaignId} onChange={(e) => setCrmCampaignId(e.target.value)}>
+              <AppSelect className={`${selectCls} w-full`} value={crmCampaignId} onValueChange={(next) => setCrmCampaignId(next)}>
                 <option value="">بلا ربط</option>
                 {(campaignsQ.data ?? []).map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
           </div>
 
@@ -923,10 +924,10 @@ export default function WaBroadcasts() {
 
       <Card>
         <CardContent className="p-3 flex flex-wrap items-center gap-2">
-          <select className={selectCls} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <AppSelect className="h-9" value={statusFilter} onValueChange={(next) => setStatusFilter(next)}>
             <option value="">كل الحالات</option>
             {Object.entries(BROADCAST_STATUS_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
-          </select>
+          </AppSelect>
           <Button variant="outline" size="sm" onClick={() => list.refetch()} className="gap-1.5">
             <RotateCcw aria-hidden className="size-3.5" /> تحديث
           </Button>

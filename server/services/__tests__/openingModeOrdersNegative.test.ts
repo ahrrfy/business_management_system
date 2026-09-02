@@ -1,17 +1,27 @@
 // توسعة «وضع الافتتاح» لقنوات التنفيذ (قرار المالك ١٠/٨) — بدء أمر الشغل (startWorkOrder) يستهلك
 // مواد صنفٍ **غير مُفتتَح** بالسالب أثناء النافذة الفعّالة (تكلفة>0 + ضمن سقف السطر)، ويعود صارماً
 // خارج النافذة أو للمادة المُفتتَحة (المجرودة). يكمّل حارس البيع في openingModeSaleGuard.test.ts.
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { TRPCError } from "@trpc/server";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { startWorkOrder } from "../workOrder/lifecycle";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 const DAY_MS = 86_400_000;
 
 const TABLES = [
+  "auditLogs",
+  "workOrderEvents",
+  "workOrderDesignApprovals",
+  "workOrderDesignRevisions",
+  "serviceTypes",
   "inventoryMovements",
   "branchStock",
   "openingModeSettings",
@@ -39,7 +49,18 @@ async function reset() {
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الفرع", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "opening_design_reviewer", name: "مراجع التصميم", role: "manager", loginMethod: "local", branchId: 1 },
+  ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.suppliers).values({ id: 9, name: "مودِع مواد", supplierKind: "CONSIGNOR" });
   await d.insert(s.products).values([
     { id: 1, name: "ورق" },
@@ -70,6 +91,18 @@ async function seedWorkOrder(materials: { variantId: number; baseQuantity: numbe
     await db()
       .insert(s.workOrderMaterials)
       .values(materials.map((m) => ({ workOrderId: id, variantId: m.variantId, baseQuantity: m.baseQuantity })));
+  const approval = await requestWorkOrderDesignApproval({
+    workOrderId: id,
+    requestKey: `opening-order-design-request:${id}:${randomUUID()}`,
+    note: "اعتماد النسخة الحالية قبل اختبار حارس المخزون",
+  }, actor);
+  await decideWorkOrderDesignApproval({
+    approvalId: Number(approval.approval.id),
+    decisionKey: `opening-order-design-decision:${id}:${randomUUID()}`,
+    decision: "APPROVED",
+    reason: "ثبتت موافقة العميل على النسخة الحالية",
+    evidence: { type: "WHATSAPP_MESSAGE", reference: `wamid.opening-order.${randomUUID()}` },
+  }, { userId: 2, branchId: 1, role: "manager" });
 }
 async function stockOf(variantId: number, branchId = 1): Promise<number> {
   const [r] = await db()

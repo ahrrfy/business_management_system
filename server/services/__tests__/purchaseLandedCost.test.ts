@@ -9,6 +9,7 @@
 //   (٤) الشحن يُسجَّل **صفّ مصروفٍ حقيقياً** (فئة نقل) + قيد استحقاق ADJUST لحظة الاستلام،
 //       ثم إيصال وقيد PAYMENT_OUT عند اعتماد التسوية فقط، بحصّةٍ متناسبة مع المستلَم فعلاً.
 // الجمع بين (٢) و(٤) محظور: لو رُسمِل الشحن **وسُجّل** مصروفاً لاحتُسِب مرّتين فينقص الربح ضعفاً.
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -17,6 +18,10 @@ import {
   createPurchaseOrder,
   receivePurchase as receivePurchaseRaw,
 } from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 import {
   approveVoucher,
   createVoucher,
@@ -54,6 +59,11 @@ async function reset() {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const t of [
     "idempotencyKeys",
+    "purchaseOrderEvents",
+    "purchaseOrderControlRequests",
+    "purchaseOrderRequisitionAllocations",
+    "purchaseOrderRevisionItems",
+    "purchaseOrderRevisions",
     "accrualCorrectionRequests",
     "accrualObligationEvents",
     "accrualObligations",
@@ -172,9 +182,34 @@ async function expenseRows() {
   return db().select().from(s.expenses).orderBy(s.expenses.id);
 }
 
+async function createApprovedPurchaseOrder(
+  input: Parameters<typeof createPurchaseOrder>[0],
+) {
+  const created = await createPurchaseOrder(input, actor);
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: created.purchaseOrderId,
+      expectedVersion: created.version,
+      reason: "اعتماد أمر الشراء قبل اختبار الاستلام والتكلفة الهابطة",
+      requestKey: `landed-submit:${randomUUID()}`,
+    },
+    actor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `landed-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+    },
+    owner,
+  );
+  return created;
+}
+
 /** أمرٌ بقيمة بضاعة ٤٬٠٠٠ وشحن+كمرك ٤٠٠ (بلا ضريبة). */
 async function orderWithShipping(shipping = "300", customs = "100") {
-  return createPurchaseOrder(
+  return createApprovedPurchaseOrder(
     {
       supplierId: 1,
       branchId: 1,
@@ -186,7 +221,6 @@ async function orderWithShipping(shipping = "300", customs = "100") {
       shippingCost: shipping,
       customsCost: customs,
     },
-    actor,
   );
 }
 
@@ -582,7 +616,7 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
   });
 
   it("أمرٌ بلا شحن ⇒ لا مصروف ولا إيصال (حارس انحدار)", async () => {
-    const po = await createPurchaseOrder(
+    const po = await createApprovedPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -596,7 +630,6 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
           },
         ],
       },
-      actor,
     );
     const items = await itemsOf(po.purchaseOrderId);
     await receivePurchase(
@@ -623,7 +656,7 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
   });
 
   it("دفعة المورد النقدية تبقى طلباً بلا أثر حتى مالك آخر، ثم تُعتمد مرة واحدة وتعيد القراءة من PO", async () => {
-    const po = await createPurchaseOrder(
+    const po = await createApprovedPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -637,7 +670,6 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
           },
         ],
       },
-      actor,
     );
     const items = await itemsOf(po.purchaseOrderId);
     const received = await receivePurchase(
@@ -691,7 +723,7 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
   });
 
   it("تغيّر مصدر طلب دفعة المورد قبل الاعتماد يفشل مغلقاً ويرجع كل أثر الاعتماد", async () => {
-    const po = await createPurchaseOrder(
+    const po = await createApprovedPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
@@ -705,7 +737,6 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
           },
         ],
       },
-      actor,
     );
     const items = await itemsOf(po.purchaseOrderId);
     const received = await receivePurchase(

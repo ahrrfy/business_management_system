@@ -1,6 +1,7 @@
 // عقد الشراء المشترك (أمر الشراء/الاستلام/تسديد فاتورة الدولار).
 
-type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
+type SupplierPaymentMethod = "CASH";
 export type PurchaseSettlementType = "CASH" | "CREDIT";
 
 export interface PurchaseLineInput {
@@ -53,9 +54,14 @@ export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
   branchId: number;
   /** CASH = طلب صرف تلقائي لقيمة كل استلام؛ CREDIT = تبقى ذمة حتى دفع صريح. */
   settlementType?: PurchaseSettlementType;
-  status?: "DRAFT" | "SENT" | "CONFIRMED";
+  /** الإنشاء يحفظ مسودة فقط؛ الاعتماد انتقال مستقل بفصل مهام. */
+  status?: "DRAFT";
   notes?: string | null;
   clientRequestId?: string;
+  /** سبب إنشاء النسخة الثابتة الأولى؛ يظهر في سجل المراجعات. */
+  revisionReason?: string | null;
+  /** ربط كل سطر (1-based) بطلب شراء معتمد. */
+  requisitionAllocations?: PurchaseRequisitionAllocationInput[];
 }
 
 /**
@@ -66,6 +72,25 @@ export interface UpdatePurchaseOrderInput extends PurchaseDocumentInput {
   purchaseOrderId: number;
   supplierId: number;
   notes?: string | null;
+  /** نسخة projection التي عاينها المحرر؛ يمنع حفظاً فوق تعديل أحدث. */
+  expectedVersion: number;
+  revisionReason: string;
+  requisitionAllocations?: PurchaseRequisitionAllocationInput[];
+}
+
+export interface PurchaseRequisitionAllocationInput {
+  /** ترتيب السطر في حمولة أمر الشراء، يبدأ من 1. */
+  lineNo: number;
+  requisitionItemId: number;
+  allocatedBaseQuantity: number;
+}
+
+/** عقد إرسال الأمر للمراجعة؛ الاعتماد نفسه يمر بطلب تحكم مستقل. */
+export interface ConfirmPurchaseOrderInput {
+  purchaseOrderId: number;
+  expectedVersion: number;
+  reason: string;
+  clientRequestId: string;
 }
 
 export interface SettlePurchaseUsdDirectInput {
@@ -87,14 +112,14 @@ export interface ReceiveLineInput {
 export interface ReceivePurchaseInput {
   purchaseOrderId: number;
   lines: ReceiveLineInput[];
-  payment?: { amount: string; method: PaymentMethod } | null;
+  payment?: { amount: string; method: SupplierPaymentMethod } | null;
   /**
    * طريقة دفع **مصروف الشحن/الكمرك** المُسجَّل لحظة الاستلام (قرار المالك ٥/٨/٢٦: الشحن مصروفُ
    * شركةٍ لا ذمّةُ مورّد). الافتراضي نقديّ — ويمرّ عندها بحارس وردية/خزينة الصندوق. مستقلٌّ تماماً
    * عن `payment` أعلاه (تلك دفعةٌ للمورّد، وهذه دفعةٌ لشركة النقل).
    */
   shippingPaymentMethod?: PaymentMethod | null;
-  /** مرجع أداة تسوية الشحن؛ إلزامي للتحويل والصك ويُحفظ في السند المالي. */
+  /** مرجع أداة تسوية الشحن؛ إلزامي للتحويل ويُحفظ في السند المالي. */
   shippingPaymentReference?: string | null;
   /** آخر أربعة أرقام للبطاقة عند اختيار CARD. */
   shippingCardLastFour?: string | null;

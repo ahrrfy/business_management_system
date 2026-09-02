@@ -47,6 +47,7 @@ import { classifyGiftPosting } from "./giftPosting";
 import { paymentAssetRole } from "./paymentPosting";
 import { userNameSnapshot } from "../userSnapshot";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 import { titleForChannel } from "@shared/productChannelTitles";
@@ -216,6 +217,16 @@ export async function createSaleInTx(
       if (role !== "admin" && role !== "manager" && Number(s[0].userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
       }
+    }
+    if (isCashPayment) {
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: input.branchId,
+        shiftId: input.shiftId,
+        cashBucket: "DRAWER",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
     }
 
     // 3. Resolve the effective price tier.

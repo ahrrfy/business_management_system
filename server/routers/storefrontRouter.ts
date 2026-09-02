@@ -19,7 +19,14 @@ import {
   storefrontPublicWriteProcedure,
 } from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated, storefrontCartRecommendations } from "../services/storefrontService";
-import { createOnlineOrder, findOwnedOnlineOrderReplay, quoteOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
+import {
+  createOnlineOrder,
+  findOwnedOnlineOrderReplay,
+  quoteOnlineOrder,
+  readOnlineOrderLabel,
+  trackOnlineOrderByGuestToken,
+  trackOnlineOrderForCustomer,
+} from "../services/onlineOrderService";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
@@ -218,7 +225,6 @@ export const storefrontRouter = router({
   /** إعادة تسعير السلة بكمياتها الفعلية؛ نفس محرك createOrder، بلا أي كتابة. */
   quoteOrder: storefrontPublicReadProcedure
     .input(z.object({
-      couponCode: z.string().trim().max(64).nullish(),
       governorate: z.string().trim().min(1).max(40),
       lines: z.array(z.object({
         productUnitId: z.number().int().positive(),
@@ -226,6 +232,28 @@ export const storefrontRouter = router({
       })).min(1).max(100),
     }))
     .query(({ input }) => quoteOnlineOrder(input)),
+
+  /**
+   * تسعير قسيمة عبر POST: رمز القسيمة/جلسة العميل يبقيان في body ولا يظهران في nginx URL.
+   * الجلسة اختيارية للقسيمة العامة، وإلزامية عملياً للشخصية لأن الخدمة تفشل مغلقة عند غياب المالك.
+   */
+  quoteOrderPrivate: storefrontPublicWriteProcedure
+    .input(z.object({
+      couponCode: z.string().trim().min(1).max(64),
+      customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
+      governorate: z.string().trim().min(1).max(40),
+      lines: z.array(z.object({
+        productUnitId: z.number().int().positive(),
+        quantity: z.number().int().positive().max(999),
+      })).min(1).max(100),
+    }))
+    .mutation(async ({ input }) => {
+      const { customerSessionToken, ...quoteInput } = input;
+      const authenticatedCustomer = customerSessionToken
+        ? await requireActiveStorefrontCustomer(customerSessionToken)
+        : null;
+      return quoteOnlineOrder({ ...quoteInput, authenticatedCustomer });
+    }),
 
   /** تسجيل جهاز العميل بعد موافقته الصريحة فقط. الرمز مشفّر خادمياً ولا يرافقه هاتف أو معلومات طلب. */
   registerPushDevice: storefrontPublicWriteProcedure
@@ -235,8 +263,15 @@ export const storefrontRouter = router({
       transactionalOptIn: z.boolean(),
       platform: z.enum(["IOS", "ANDROID"]),
       appVersion: z.string().trim().min(1).max(64),
+      customerSessionToken: z.string().trim().min(40).max(4_000).optional(),
     }))
-    .mutation(({ input }) => registerStorefrontPushDevice(input)),
+    .mutation(async ({ input }) => {
+      const { customerSessionToken, ...device } = input;
+      const customerId = customerSessionToken
+        ? (await requireActiveStorefrontCustomer(customerSessionToken)).customerId
+        : undefined;
+      return registerStorefrontPushDevice({ ...device, customerId });
+    }),
 
   /** حدث فتح بلا هوية؛ يُقبل فقط لتسليم موجود من الحملة، ويحافظ على قياس الأداء من الداشبورد. */
   trackPushInteraction: storefrontPublicWriteProcedure
@@ -253,6 +288,7 @@ export const storefrontRouter = router({
     .input(
       z.object({
         couponCode: z.string().trim().max(64).nullish(),
+        customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
         customerName: z.string().trim().min(1).max(255),
         customerPhone: z.string().trim().min(5).max(20),
         governorate: z.string().trim().min(1).max(40),
@@ -274,11 +310,15 @@ export const storefrontRouter = router({
       })
     )
     .mutation(async ({ input }) => {
-      const { turnstileToken, ...rawOrderInput } = input;
+      const { turnstileToken, customerSessionToken, ...rawOrderInput } = input;
+      const authenticatedCustomer = customerSessionToken
+        ? await requireActiveStorefrontCustomer(customerSessionToken)
+        : null;
       const orderInput = {
         ...rawOrderInput,
         latitude: rawOrderInput.latitude ?? null,
         longitude: rawOrderInput.longitude ?? null,
+        authenticatedCustomer,
       };
       const result = await createVerifiedStorefrontOrder(
         orderInput,
@@ -298,10 +338,21 @@ export const storefrontRouter = router({
       return result;
     }),
 
-  /** تتبّع طلب: يتطلّب رقم الطلب + الهاتف معاً (خصوصية). */
-  trackOrder: publicProcedure
-    .input(z.object({ orderNumber: z.string().trim().min(1).max(50), phone: z.string().trim().min(1).max(20) }))
-    .query(({ input }) => trackOnlineOrder(input.orderNumber, input.phone)),
+  /** تتبّع مالك موثّق؛ رقم الطلب selector فقط وcustomerId يأتي من جلسة Firebase الموقعة. */
+  trackOrderPrivate: storefrontPublicWriteProcedure
+    .input(z.object({
+      customerSessionToken: z.string().trim().min(40).max(4_000),
+      orderNumber: z.string().trim().min(1).max(50),
+    }))
+    .mutation(async ({ input }) => {
+      const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
+      return trackOnlineOrderForCustomer(input.orderNumber, customer.customerId);
+    }),
+
+  /** تتبّع ضيف بالرمز opaque الصادر من createOrder؛ لا هاتف ولا رقم طلب في الإدخال. */
+  trackOrderByToken: storefrontPublicWriteProcedure
+    .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
+    .mutation(({ input }) => trackOnlineOrderByGuestToken(input.trackingToken)),
 
   /** تظهر عند مسح QR الملصق: صفحة عامة محدودة الوصول بتوقيع خاص بالملصق. */
   labelSummary: labelSummaryProcedure

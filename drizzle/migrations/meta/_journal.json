@@ -1926,6 +1926,181 @@
 			"when": 1788052347000,
 			"tag": "0295_delivery_ledger_shortfall",
 			"breakpoints": true
+		},
+		{
+			"idx": 316,
+			"version": "5",
+			"when": 1788052368000,
+			"tag": "0316_storefront_coupon_hold_guest_tracking_delivery_waiver",
+			"breakpoints": true
+		},
+		{
+			"idx": 318,
+			"version": "5",
+			"when": 1788052370000,
+			"tag": "0318_product_allow_backorder",
+			"breakpoints": true
+		},
+		{
+			"idx": 296,
+			"version": "5",
+			"when": 1788052371000,
+			"tag": "0296_cash_daily_reconciliation",
+			"breakpoints": true
+		},
+		{
+			"idx": 297,
+			"version": "5",
+			"when": 1788052372000,
+			"tag": "0297_cash_variance_resolution",
+			"breakpoints": true
+		},
+		{
+			"idx": 298,
+			"version": "5",
+			"when": 1788052373000,
+			"tag": "0298_work_order_control_requests",
+			"breakpoints": true
+		},
+		{
+			"idx": 299,
+			"version": "5",
+			"when": 1788052374000,
+			"tag": "0299_work_order_design_approvals",
+			"breakpoints": true
+		},
+		{
+			"idx": 300,
+			"version": "5",
+			"when": 1788052375000,
+			"tag": "0300_purchase_order_revisions_requisitions",
+			"breakpoints": true
+		},
+		{
+			"idx": 301,
+			"version": "5",
+			"when": 1788052376000,
+			"tag": "0301_goods_receipts_grni",
+			"breakpoints": true
+		},
+		{
+			"idx": 302,
+			"version": "5",
+			"when": 1788052377000,
+			"tag": "0302_supplier_invoices_three_way_match",
+			"breakpoints": true
+		},
+		{
+			"idx": 303,
+			"version": "5",
+			"when": 1788052378000,
+			"tag": "0303_purchase_return_governance",
+			"breakpoints": true
+		},
+		{
+			"idx": 304,
+			"version": "5",
+			"when": 1788052379000,
+			"tag": "0304_supplier_invoice_payment_allocations",
+			"breakpoints": true
+		},
+		{
+			"idx": 305,
+			"version": "5",
+			"when": 1788052380000,
+			"tag": "0305_purchase_ancillary_cost_allocations",
+			"breakpoints": true
+		},
+		{
+			"idx": 306,
+			"version": "5",
+			"when": 1788052381000,
+			"tag": "0306_purchase_integrity_cases",
+			"breakpoints": true
+		},
+		{
+			"idx": 307,
+			"version": "5",
+			"when": 1788052382000,
+			"tag": "0307_external_payment_collection_channels",
+			"breakpoints": true
+		},
+		{
+			"idx": 308,
+			"version": "5",
+			"when": 1788052383000,
+			"tag": "0308_installment_invoice_active_guard",
+			"breakpoints": true
+		},
+		{
+			"idx": 309,
+			"version": "5",
+			"when": 1788052384000,
+			"tag": "0309_delivery_writeoff_control_requests",
+			"breakpoints": true
+		},
+		{
+			"idx": 310,
+			"version": "5",
+			"when": 1788052385000,
+			"tag": "0310_commission_branch_runs",
+			"breakpoints": true
+		},
+		{
+			"idx": 311,
+			"version": "5",
+			"when": 1788052386000,
+			"tag": "0311_sales_leads_opportunities",
+			"breakpoints": true
+		},
+		{
+			"idx": 312,
+			"version": "5",
+			"when": 1788052387000,
+			"tag": "0312_sales_exchange_commands",
+			"breakpoints": true
+		},
+		{
+			"idx": 313,
+			"version": "5",
+			"when": 1788052388000,
+			"tag": "0313_sales_return_pending_guard",
+			"breakpoints": true
+		},
+		{
+			"idx": 314,
+			"version": "5",
+			"when": 1788052389000,
+			"tag": "0314_missed_daily_count_exceptions",
+			"breakpoints": true
+		},
+		{
+			"idx": 315,
+			"version": "5",
+			"when": 1788052390000,
+			"tag": "0315_supplier_invoice_draft_revisions",
+			"breakpoints": true
+		},
+		{
+			"idx": 317,
+			"version": "5",
+			"when": 1788052391000,
+			"tag": "0317_cash_variance_evidence",
+			"breakpoints": true
+		},
+		{
+			"idx": 325,
+			"version": "5",
+			"when": 1788052398000,
+			"tag": "0325_notification_platform_completion_v2",
+			"breakpoints": true
+		},
+		{
+			"idx": 322,
+			"version": "5",
+			"when": 1788052395000,
+			"tag": "0322_remove_design_approval_execution_gate",
+			"breakpoints": true
 		}
 	]
 }

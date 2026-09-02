@@ -5,6 +5,8 @@
  * الأقسام: حالة الجسر + الهجرة | جدول الأجهزة (+أوامر/ربط) | البصمات الخام (طابور المراجعة).
  * trpc.hrDevices.* — القراءة hr/READ والأزرار الكاتبة hr/FULL. */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -619,23 +621,23 @@ export default function HrDevices() {
                 />
               </div>
 
-              <select
+              <AppSelect
                 aria-label="حالة الجهاز"
                 className={selectCls + " h-8 !w-24 text-xs"}
                 value={deviceStatusFilter}
-                onChange={(e) => setDeviceStatusFilter(e.target.value)}
+                onValueChange={(next) => setDeviceStatusFilter(next)}
               >
                 <option value="all">كل الحالات</option>
                 <option value="online">متصل</option>
                 <option value="offline">منقطع</option>
                 <option value="pending">بانتظار الاعتماد</option>
-              </select>
+              </AppSelect>
 
-              <select
+              <AppSelect
                 aria-label="فرع الجهاز"
                 className={selectCls + " h-8 !w-28 text-xs"}
                 value={deviceBranchFilter}
-                onChange={(e) => setDeviceBranchFilter(e.target.value)}
+                onValueChange={(next) => setDeviceBranchFilter(next)}
               >
                 <option value="all">كل الفروع</option>
                 <option value="none">بلا فرع</option>
@@ -644,27 +646,27 @@ export default function HrDevices() {
                     {branch.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
 
-              <select
+              <AppSelect
                 aria-label="الإجراء المطلوب"
                 className={selectCls + " h-8 !w-32 text-xs"}
                 value={deviceActionFilter}
-                onChange={(e) => setDeviceActionFilter(e.target.value)}
+                onValueChange={(next) => setDeviceActionFilter(next)}
               >
                 <option value="all">كل الإجراءات</option>
                 <option value="attention">يحتاج متابعة</option>
                 <option value="unmatched">بصمات غير مرتبطة</option>
                 <option value="approval">بانتظار الاعتماد</option>
-              </select>
+              </AppSelect>
 
               {(activeDeviceFilterCount > 0 || query) && (
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  aria-label="مسح الفلاتر"
-                  title="مسح الفلاتر"
+                  aria-label={FILTER_LABELS.reset}
+                  title={FILTER_LABELS.reset}
                   onClick={resetDeviceFilters}
                 >
                   <X aria-hidden className="size-3.5" />
@@ -1142,10 +1144,10 @@ export default function HrDevices() {
           </div>
           <div className="flex flex-wrap items-end gap-2">
             <FilterField label="الجهاز">
-              <select
-                className={selectCls}
+              <AppSelect
+                className="h-9"
                 value={punchDeviceId}
-                onChange={(e) => setPunchDeviceId(e.target.value)}
+                onValueChange={(next) => setPunchDeviceId(next)}
                 aria-label="الجهاز"
               >
                 <option value="">كل الأجهزة</option>
@@ -1154,13 +1156,13 @@ export default function HrDevices() {
                     {d.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </FilterField>
             <FilterField label="الموظف">
-              <select
-                className={selectCls}
+              <AppSelect
+                className="h-9"
                 value={punchEmployeeId}
-                onChange={(e) => setPunchEmployeeId(e.target.value)}
+                onValueChange={(next) => setPunchEmployeeId(next)}
                 aria-label="الموظف"
               >
                 <option value="">كل الموظفين</option>
@@ -1169,7 +1171,7 @@ export default function HrDevices() {
                     {emp.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </FilterField>
             <FilterField label="من تاريخ">
               <Input
@@ -1198,7 +1200,7 @@ export default function HrDevices() {
                 onClick={resetPunchFilters}
                 className="text-muted-foreground"
               >
-                <X aria-hidden className="size-4" /> مسح الفلاتر
+                <X aria-hidden className="size-4" /> {FILTER_LABELS.reset}
               </Button>
             )}
           </div>
@@ -1345,16 +1347,16 @@ export default function HrDevices() {
                       {u.hasBackup ? "نعم" : "—"}
                     </td>
                     <td className="p-2">
-                      <select
-                        className={selectCls}
+                      <AppSelect
+                        className="h-9"
                         value={u.employeeId ? String(u.employeeId) : ""}
-                        onChange={(e) =>
+                        onValueChange={(next) =>
                           mapDeviceId != null &&
                           mapUser.mutate({
                             deviceId: mapDeviceId,
                             enrollId: u.enrollId,
-                            employeeId: e.target.value
-                              ? Number(e.target.value)
+                            employeeId: next
+                              ? Number(next)
                               : null,
                           })
                         }
@@ -1365,7 +1367,7 @@ export default function HrDevices() {
                             {emp.name}
                           </option>
                         ))}
-                      </select>
+                      </AppSelect>
                     </td>
                   </tr>
                 ))}
@@ -1501,12 +1503,12 @@ export default function HrDevices() {
             </div>
             <div className="space-y-1">
               <Label htmlFor="d-proto">نوع الجهاز</Label>
-              <select
+              <AppSelect
                 id="d-proto"
-                className={selectCls}
+                className="h-9"
                 value={form.protocol}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, protocol: e.target.value }))
+                onValueChange={(next) =>
+                  setForm((f) => ({ ...f, protocol: next }))
                 }
               >
                 {Object.entries(PROTOCOL_LABELS).map(([k, v]) => (
@@ -1514,7 +1516,7 @@ export default function HrDevices() {
                     {v}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1 sm:col-span-2">
               <Label htmlFor="d-ip">عنوان IP الدقيق الخاص بالجهاز</Label>
@@ -1550,12 +1552,12 @@ export default function HrDevices() {
             </div>
             <div className="space-y-1">
               <Label htmlFor="d-branch">الفرع</Label>
-              <select
+              <AppSelect
                 id="d-branch"
-                className={selectCls}
+                className="h-9"
                 value={form.branchId}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, branchId: e.target.value }))
+                onValueChange={(next) =>
+                  setForm((f) => ({ ...f, branchId: next }))
                 }
               >
                 <option value="">— بلا فرع —</option>
@@ -1564,7 +1566,7 @@ export default function HrDevices() {
                     {b.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label htmlFor="d-code">معرّف الجهاز (Device ID)</Label>

@@ -1,13 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 import {
-  confirmPurchaseOrder,
   createPurchaseOrder,
   receivePurchase,
 } from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 import { payPurchaseOrder } from "../purchase/pay";
 import { computeExpectedCash } from "../shiftService";
 import { approveVoucher, cancelVoucher, rejectVoucher } from "../voucherService";
@@ -28,6 +32,11 @@ const approver = { userId: 3, branchId: 1, role: "manager" as const };
 
 const TABLES = [
   "idempotencyKeys",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
   "journalLines",
   "journalEntries",
   "doubleEntrySettings",
@@ -129,6 +138,37 @@ async function expectedDrawerCash() {
   return db().transaction(async (tx) => (await computeExpectedCash(tx, 1, "250.00")).toFixed(2));
 }
 
+async function approveCreatedPurchaseOrder(
+  created: Awaited<ReturnType<typeof createPurchaseOrder>>,
+) {
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: created.purchaseOrderId,
+      expectedVersion: created.version,
+      reason: "إرسال أمر الشراء للاعتماد المستقل",
+      requestKey: `cash-po-submit:${created.purchaseOrderId}:${randomUUID()}`,
+    },
+    creator,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `cash-po-approve:${created.purchaseOrderId}:${randomUUID()}`,
+      approve: true,
+      reason: "مراجعة المورد والكميات والأسعار واعتماد الأمر",
+    },
+    approver,
+  );
+}
+
+async function createApprovedPurchaseOrder(
+  input: Omit<Parameters<typeof createPurchaseOrder>[0], "status">,
+) {
+  const created = await createPurchaseOrder({ ...input, status: "DRAFT" }, creator);
+  await approveCreatedPurchaseOrder(created);
+  return created;
+}
+
 describe("أمر الشراء النقدي — مسار المال الكامل", () => {
   it("DRAFT → اعتماد → استلام → طلب صرف → اعتماد: لا ذمة ولا دينار يضيعان", async () => {
     const created = await createPurchaseOrder(
@@ -149,7 +189,7 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       .where(eq(s.purchaseOrders.id, created.purchaseOrderId));
     expect(order).toMatchObject({ status: "DRAFT", settlementType: "CASH", paidAmount: "0.00" });
 
-    await confirmPurchaseOrder(created.purchaseOrderId, approver);
+    await approveCreatedPurchaseOrder(created);
     [order] = await db()
       .select()
       .from(s.purchaseOrders)
@@ -287,13 +327,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       mode: "SHADOW",
       shadowCycleId: "cash-purchase-clearing-test",
     });
-    const created = await createPurchaseOrder({
+    const created = await createApprovedPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
       settlementType: "CASH",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
-    }, creator);
+    });
     const [item] = await db().select().from(s.purchaseOrderItems)
       .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
     const received = await receivePurchase({
@@ -333,13 +372,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
   });
 
   it("يبقي قيد CASH التاريخي غير الموسوم على AP حتى تُعتمد دفعته القديمة بأمان", async () => {
-    const created = await createPurchaseOrder({
+    const created = await createApprovedPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
       settlementType: "CASH",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
-    }, creator);
+    });
     await db().insert(s.accountingEntries).values({
       entryType: "PURCHASE",
       branchId: 1,
@@ -378,7 +416,7 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       settlementType: "CASH",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
     }, creator);
-    await confirmPurchaseOrder(created.purchaseOrderId, approver);
+    await approveCreatedPurchaseOrder(created);
     const [item] = await db().select().from(s.purchaseOrderItems)
       .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
 
@@ -413,13 +451,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
   });
 
   it("مرتجع الشراء النقدي واسترداده يعكسان التسوية والمخزون والدرج بلا لمس ذمة المورد", async () => {
-    const created = await createPurchaseOrder({
+    const created = await createApprovedPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
       settlementType: "CASH",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
-    }, creator);
+    });
     const [item] = await db().select().from(s.purchaseOrderItems)
       .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
     const received = await receivePurchase({
@@ -469,13 +506,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
   });
 
   it("رفض دفعة PO ثم إعادة تقديمها وإلغاؤها وإعادة طلبها يحافظ على التسوية والتخصيص والنقد بلا ذمة مورد", async () => {
-    const created = await createPurchaseOrder({
+    const created = await createApprovedPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
       settlementType: "CASH",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
-    }, creator);
+    });
     const [item] = await db().select().from(s.purchaseOrderItems)
       .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
     const received = await receivePurchase({
@@ -525,13 +561,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
 
   it("يستخدم معامل الوحدة المثبت في سطر PO حتى لو عُدّلت الوحدة قبل الاستلام", async () => {
     await db().update(s.productUnits).set({ conversionFactor: "12" }).where(eq(s.productUnits.id, 1));
-    const created = await createPurchaseOrder({
+    const created = await createApprovedPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
       settlementType: "CREDIT",
       items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "120.00" }],
-    }, creator);
+    });
     await db().update(s.productUnits).set({ conversionFactor: "24" }).where(eq(s.productUnits.id, 1));
     const [item] = await db().select().from(s.purchaseOrderItems)
       .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
@@ -547,13 +582,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
   });
 
   it("يرفض دفعة CREDIT تتجاوز الرصيد المعترف به لنفس PO ويعيد الاستلام كله", async () => {
-    const other = await createPurchaseOrder({
+    const other = await createApprovedPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
       settlementType: "CREDIT",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
-    }, creator);
+    });
     let [item] = await db().select().from(s.purchaseOrderItems)
       .where(eq(s.purchaseOrderItems.purchaseOrderId, other.purchaseOrderId));
     await receivePurchase({
@@ -562,13 +596,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       clientRequestId: "other-po-debt",
     }, receiver);
 
-    const target = await createPurchaseOrder({
+    const target = await createApprovedPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
       settlementType: "CREDIT",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
-    }, creator);
+    });
     [item] = await db().select().from(s.purchaseOrderItems)
       .where(eq(s.purchaseOrderItems.purchaseOrderId, target.purchaseOrderId));
     await expect(receivePurchase({
@@ -584,13 +617,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
   });
 
   it("تفصيل AP يستبعد غير المستلم ويعرض الاستلام الجزئي بتاريخ الاعتراف لا تاريخ الطلب", async () => {
-    const created = await createPurchaseOrder({
+    const created = await createApprovedPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
       settlementType: "CREDIT",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
-    }, creator);
+    });
     expect((await getArApAgingDetail({ side: "AP", branchId: 1 })).rows).toHaveLength(0);
 
     const oldOrderDate = new Date(Date.now() - 120 * 86_400_000);
@@ -633,13 +665,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
   });
 
   it("طلب D1 المعتمد D2 يظهر في تقارير النقد يوم الاعتماد فقط", async () => {
-    const created = await createPurchaseOrder({
+    const created = await createApprovedPurchaseOrder({
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
       settlementType: "CASH",
       items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "1000.00" }],
-    }, creator);
+    });
     const [item] = await db().select().from(s.purchaseOrderItems)
       .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
     const received = await receivePurchase({
@@ -671,13 +702,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
 
   it("مرتجع شراء بسعر يختلف عن WAVG يثبت فرق السعر ولا يكسر قيمة المخزون مقابل AP", async () => {
     const receiveCredit = async (unitPrice: string, key: string) => {
-      const po = await createPurchaseOrder({
+      const po = await createApprovedPurchaseOrder({
         supplierId: 1,
         branchId: 1,
-        status: "CONFIRMED",
         settlementType: "CREDIT",
         items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice }],
-      }, creator);
+      });
       const [item] = await db().select().from(s.purchaseOrderItems)
         .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId));
       await receivePurchase({

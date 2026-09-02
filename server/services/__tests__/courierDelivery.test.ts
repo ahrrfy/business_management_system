@@ -22,13 +22,16 @@ import { withTx } from "../tx";
 import { reconcileCustomerBalances, reconcileDeliveryFloat, reconcileLedgerProfit } from "../reconcileService";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { createOnlineOrder } from "../onlineOrderService";
+import { hashCouponCode } from "../couponService";
 
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
 
 const TABLES = [
+  "storefrontPushDeliveries", "storefrontPushCampaigns", "storefrontPushDevices",
   "idempotencyKeys", "creditApprovals", "accountingEntries", "receipts",
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
+  "couponRedemptions", "couponReservations", "coupons", "couponPrograms", "promotionTargets", "promotions",
   "onlineOrderItems", "onlineOrders",
   "storeSettings",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
@@ -127,6 +130,13 @@ async function partyBalance(id: number): Promise<string> {
 async function stockOf(variantId: number): Promise<number> {
   return Number((await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, 1))).limit(1))[0]?.q ?? 0);
 }
+async function orderPush(orderId: number, status: "SHIPPED" | "DELIVERED" | "CANCELLED") {
+  return (await db()
+    .select()
+    .from(s.storefrontPushCampaigns)
+    .where(eq(s.storefrontPushCampaigns.eventKey, `storefront-order:${orderId}:status:${status}`))
+    .limit(1))[0];
+}
 async function reconcileClean() {
   expect(await reconcileCustomerBalances()).toEqual([]);
   expect(await reconcileDeliveryFloat()).toEqual([]);
@@ -157,6 +167,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(inv.status).toBe("PAID");
     expect(await customerBalance(1)).toBe("0.00"); // AR صُفّي
     expect(await partyBalance(partyA)).toBe("20.00"); // عهدة المندوب = المُحصَّل
+    expect(await orderPush(o.orderId, "DELIVERED")).toMatchObject({ kind: "TRANSACTIONAL", destination: "/orders" });
     const portal = await listMyDeliveries(3);
     expect(portal.financialSummary?.cashInCustody).toBe("20.00"); // قيد المتجر القديم party-level لا يسقط من حساب الفرد
     await reconcileClean();
@@ -188,6 +199,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     const second = await confirmCourierDelivery({ onlineOrderId: o.orderId }, { userId: 3 });
     expect(second.alreadyDelivered).toBe(true);
     expect(second.collected).toBe("0.00");
+    expect((await db().select().from(s.storefrontPushCampaigns)).filter((row) => row.eventKey === `storefront-order:${o.orderId}:status:DELIVERED`)).toHaveLength(1);
     expect(await customerBalance(1)).toBe("0.00");
     expect(await partyBalance(partyA)).toBe("10.00"); // لم تتضاعف
     await reconcileClean();
@@ -279,6 +291,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     const ord = await order(o.orderId);
     expect(ord.status).toBe("CANCELLED");
     expect(ord.cancelReason).toBe("رفض الزبون الاستلام");
+    expect(await orderPush(o.orderId, "CANCELLED")).toMatchObject({ kind: "TRANSACTIONAL", destination: "/orders" });
     expect(await partyBalance(partyA)).toBe("0.00"); // بلا عهدة (لم يُحصَّل)
     await reconcileClean();
   });
@@ -361,6 +374,7 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(String(row.total)).toBe("3020.00"); // ما يدفعه الزبون للمندوب (بضاعة + أجرته) يبقى على الطلب
     expect(Number(row.invoiceId)).toBe(res.invoiceId);
     expect(Number(row.deliveryPartyId)).toBe(partyA);
+    expect(await orderPush(o.orderId, "SHIPPED")).toMatchObject({ kind: "TRANSACTIONAL", destination: "/orders" });
     const inv = await invoice(res.invoiceId);
     expect(inv.total).toBe("20.00");
     expect(inv.sourceType).toBe("ONLINE");
@@ -399,6 +413,291 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(await partyBalance(partyA)).toBe("20.00");
     expect((await invoice(res.invoiceId)).status).toBe("PAID");
     await reconcileClean();
+  });
+
+  it("مسار زبون متجر جديد: create → confirm → dispatch يعمل كـCOD رغم حد الائتمان الصفري", async () => {
+    const { partyA } = await seedParties();
+    const d = db();
+    await d.update(s.products).set({ showInStore: true }).where(eq(s.products.id, 1));
+    await d.update(s.productUnits).set({ isStoreSaleUnit: true }).where(eq(s.productUnits.id, 1));
+    await d.insert(s.storeSettings).values({ id: 1, fulfillmentBranchId: 1, isOpen: true });
+    const stockBefore = await stockOf(1);
+
+    const created = await createOnlineOrder({
+      customerName: "زبون جديد نقدي",
+      customerPhone: "07801234567",
+      governorate: "baghdad",
+      addressText: "بغداد — الكرادة",
+      clientRequestId: "new-cod-customer-full-journey",
+      lines: [{ productUnitId: 1, quantity: 2 }],
+    });
+    const createdOrder = await order(created.orderId);
+    const createdCustomer = (
+      await d.select().from(s.customers).where(eq(s.customers.id, Number(createdOrder.customerId))).limit(1)
+    )[0];
+    expect(createdCustomer.creditLimit).toBe("0.00");
+
+    await setOnlineOrderStatus({ id: created.orderId, status: "CONFIRMED", scopedBranchId: 1 }, MANAGER.userId);
+    const dispatched = await dispatchOnlineOrder({ onlineOrderId: created.orderId, partyId: partyA }, MANAGER);
+
+    const dispatchedInvoice = await invoice(dispatched.invoiceId);
+    expect(dispatchedInvoice.paymentMode).toBe("COD");
+    expect(dispatchedInvoice.status).toBe("PENDING");
+    expect(await stockOf(1)).toBe(stockBefore - 2);
+    expect(await customerBalance(Number(createdOrder.customerId))).toBe("20.00");
+
+    const consignment = (
+      await d.select().from(s.deliveryConsignments).where(and(
+        eq(s.deliveryConsignments.sourceType, "ONLINE_ORDER"),
+        eq(s.deliveryConsignments.sourceId, created.orderId),
+      )).limit(1)
+    )[0];
+    for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+      await transitionConsignmentParcel(
+        { consignmentId: Number(consignment.id), toStatus, clientRequestId: `new-cod-${toStatus}` },
+        { userId: 3 },
+      );
+    }
+    await confirmConsignmentDelivery(
+      { consignmentId: Number(consignment.id), clientRequestId: "new-cod-delivered" },
+      { userId: 3 },
+    );
+    expect((await invoice(dispatched.invoiceId)).status).toBe("PAID");
+    expect(await customerBalance(Number(createdOrder.customerId))).toBe("0.00");
+    expect(await partyBalance(partyA)).toBe("20.00");
+    await reconcileClean();
+  });
+
+  it("الشحن المجاني يحفظ المتنازل عنه، يحمّل المكتبة أجرة المندوب، ويستهلك حجز القسيمة الموعود", async () => {
+    const { partyA } = await seedParties();
+    const d = db();
+    await d.update(s.products).set({ showInStore: true }).where(eq(s.products.id, 1));
+    await d.update(s.productUnits).set({ isStoreSaleUnit: true }).where(eq(s.productUnits.id, 1));
+    await d.insert(s.storeSettings).values({
+      id: 1,
+      fulfillmentBranchId: 1,
+      isOpen: true,
+      freeShippingThreshold: "1.00",
+    });
+    await d.insert(s.promotions).values({
+      id: 1,
+      name: "قسيمة 10%",
+      type: "PERCENT",
+      discountPercent: "10.00",
+      discountAmount: "0.00",
+      scope: "ALL",
+      effectiveFrom: new Date("2026-01-01"),
+      effectiveTo: new Date("2027-01-01"),
+      branchId: 1,
+      customerTier: "RETAIL",
+      minLineAmount: "0.00",
+      priority: 100,
+      isActive: true,
+      applicationMode: "COUPON",
+      isStoreManaged: true,
+    });
+    await d.insert(s.couponPrograms).values({
+      id: 1,
+      promotionId: 1,
+      name: "قسيمة طلب مؤكد",
+      status: "ACTIVE",
+      branchId: 1,
+      validFrom: new Date("2026-01-01"),
+      validTo: new Date("2027-01-01"),
+      perCouponLimit: 1,
+      perCustomerLimit: 1,
+      codePrefix: "WEB",
+      createdBy: 1,
+    });
+    const couponCode = "WEB-CONFIRMED-HOLD";
+    await d.insert(s.coupons).values({
+      id: 1,
+      programId: 1,
+      code: couponCode,
+      codeHash: hashCouponCode(couponCode),
+      status: "ACTIVE",
+    });
+
+    const created = await createOnlineOrder({
+      customerName: "زبون متجر",
+      customerPhone: "07701234567",
+      authenticatedCustomer: { customerId: 1, phone: "+9647701234567" },
+      governorate: "baghdad",
+      addressText: "بغداد — الكرادة",
+      couponCode,
+      clientRequestId: "free-shipping-coupon-full-journey",
+      lines: [{ productUnitId: 1, quantity: 2 }],
+    });
+    expect(created).toMatchObject({
+      subtotal: "18.00",
+      deliveryFee: "0.00",
+      deliveryFree: true,
+      deliveryWaivedAmount: "5000.00",
+      total: "18.00",
+    });
+    await setOnlineOrderStatus({ id: created.orderId, status: "CONFIRMED", scopedBranchId: 1 }, MANAGER.userId);
+
+    // الحملة تنتهي بعد أن حجز الزبون حقه: dispatch يجب أن يستهلك own ACTIVE reservation
+    // بلا إعادة فحص التاريخ/الحالة، وإلا كان «الحجز» اسماً بلا وعد.
+    await d.update(s.couponPrograms).set({ status: "ENDED", validTo: new Date("2026-08-30") }).where(eq(s.couponPrograms.id, 1));
+    await d.update(s.promotions).set({ isActive: false }).where(eq(s.promotions.id, 1));
+
+    const dispatched = await dispatchOnlineOrder({ onlineOrderId: created.orderId, partyId: partyA }, MANAGER);
+    const dispatchedOrder = await order(created.orderId);
+    const dispatchedInvoice = await invoice(dispatched.invoiceId);
+    expect(dispatchedOrder).toMatchObject({
+      deliveryFree: true,
+      deliveryWaivedAmount: "5000.00",
+      shippingCost: "0.00",
+      total: "18.00",
+    });
+    expect(dispatchedInvoice).toMatchObject({
+      deliveryFee: "0.00",
+      deliveryFree: true,
+      deliveryWaivedAmount: "5000.00",
+      total: "18.00",
+      paymentMode: "COD",
+    });
+    const reservation = (await d.select().from(s.couponReservations).where(
+      eq(s.couponReservations.onlineOrderId, created.orderId),
+    ))[0];
+    expect(reservation.status).toBe("REDEEMED");
+    expect(await d.select().from(s.couponRedemptions)).toHaveLength(1);
+    expect((await d.select().from(s.coupons).where(eq(s.coupons.id, 1)))[0]).toMatchObject({
+      status: "REDEEMED",
+      redemptionCount: 1,
+    });
+
+    const consignment = (await d.select().from(s.deliveryConsignments).where(and(
+      eq(s.deliveryConsignments.sourceType, "ONLINE_ORDER"),
+      eq(s.deliveryConsignments.sourceId, created.orderId),
+    )).limit(1))[0];
+    expect(consignment).toMatchObject({
+      codAmount: "18.00",
+      deliveryFee: "5000.00",
+      feeCollection: "SHOP",
+    });
+    for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+      await transitionConsignmentParcel(
+        { consignmentId: Number(consignment.id), toStatus, clientRequestId: `free-coupon-${toStatus}` },
+        { userId: 3 },
+      );
+    }
+    await confirmConsignmentDelivery(
+      { consignmentId: Number(consignment.id), clientRequestId: "free-coupon-delivered" },
+      { userId: 3 },
+    );
+    expect((await invoice(dispatched.invoiceId)).status).toBe("PAID");
+    expect(await customerBalance(1)).toBe("0.00");
+    const feeEntry = (await d.select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.entryType, "DELIVERY_FEE"),
+      eq(s.accountingEntries.invoiceId, dispatched.invoiceId),
+    )).limit(1))[0];
+    expect(feeEntry).toMatchObject({ amount: "5000.00", cost: "5000.00", profit: "-5000.00" });
+    await reconcileClean();
+  });
+
+  it("يفي بوعدين legacy للقسيمة نفسها حتى بعد أن يجعل dispatch الأول القسيمة REDEEMED", async () => {
+    const { partyA } = await seedParties();
+    const d = db();
+    await d.update(s.products).set({ showInStore: true }).where(eq(s.products.id, 1));
+    await d.update(s.productUnits).set({ isStoreSaleUnit: true }).where(eq(s.productUnits.id, 1));
+    await d.insert(s.storeSettings).values({ id: 1, fulfillmentBranchId: 1, isOpen: true });
+    const couponCode = "WEB-LEGACY-OVERSUBSCRIBED";
+    await seedStorefrontCoupon(couponCode, 2, 1);
+
+    const first = await createOnlineOrder({
+      customerName: "وعد قديم أول",
+      customerPhone: "07701234567",
+      governorate: "baghdad",
+      addressText: "بغداد",
+      couponCode,
+      clientRequestId: "legacy-coupon-promise-first",
+      lines: [{ productUnitId: 1, quantity: 1 }],
+    });
+    const second = await createOnlineOrder({
+      customerName: "وعد قديم ثان",
+      customerPhone: "07801234567",
+      governorate: "baghdad",
+      addressText: "بغداد",
+      couponCode,
+      clientRequestId: "legacy-coupon-promise-second",
+      lines: [{ productUnitId: 1, quantity: 1 }],
+    });
+    await setOnlineOrderStatus({ id: first.orderId, status: "CONFIRMED", scopedBranchId: 1 }, MANAGER.userId);
+    await setOnlineOrderStatus({ id: second.orderId, status: "CONFIRMED", scopedBranchId: 1 }, MANAGER.userId);
+    // يحاكي backfill يحترم وعدين قديمين فوق الحد الحالي.
+    await d.update(s.couponPrograms).set({ perCouponLimit: 1 }).where(eq(s.couponPrograms.id, 1));
+
+    await dispatchOnlineOrder({ onlineOrderId: first.orderId, partyId: partyA }, MANAGER);
+    expect((await d.select().from(s.coupons).where(eq(s.coupons.id, 1)))[0].status).toBe("REDEEMED");
+    await expect(dispatchOnlineOrder({ onlineOrderId: second.orderId, partyId: partyA }, MANAGER))
+      .resolves.toMatchObject({ orderId: second.orderId });
+
+    const reservations = await d.select().from(s.couponReservations);
+    expect(reservations).toHaveLength(2);
+    expect(reservations.every((row) => row.status === "REDEEMED")).toBe(true);
+    expect(await d.select().from(s.couponRedemptions)).toHaveLength(2);
+    expect((await d.select().from(s.coupons).where(eq(s.coupons.id, 1)))[0].redemptionCount).toBe(2);
+  });
+
+  it("يوحّد coupon→productUnit بين create وdispatch تحت انتظار أقفال مُثبت بلا deadlock", async () => {
+    const { partyA } = await seedParties();
+    const d = db();
+    await d.update(s.products).set({ showInStore: true }).where(eq(s.products.id, 1));
+    await d.update(s.productUnits).set({ isStoreSaleUnit: true }).where(eq(s.productUnits.id, 1));
+    await d.insert(s.storeSettings).values({ id: 1, fulfillmentBranchId: 1, isOpen: true });
+    const couponCode = "WEB-DISPATCH-CREATE-LOCK-ORDER";
+    await seedStorefrontCoupon(couponCode, 2, 1);
+    const existing = await createOnlineOrder({
+      customerName: "عميل الإرسال",
+      customerPhone: "07701234567",
+      governorate: "baghdad",
+      addressText: "بغداد",
+      couponCode,
+      clientRequestId: "dispatch-create-deadlock-existing",
+      lines: [{ productUnitId: 1, quantity: 1 }],
+    });
+    await setOnlineOrderStatus({ id: existing.orderId, status: "CONFIRMED", scopedBranchId: 1 }, MANAGER.userId);
+
+    let releaseBlocker!: () => void;
+    let signalBlockerReady!: () => void;
+    const blockerRelease = new Promise<void>((resolve) => { releaseBlocker = resolve; });
+    const blockerReady = new Promise<void>((resolve) => { signalBlockerReady = resolve; });
+    const blocker = withTx(async (tx) => {
+      await tx.select({ id: s.productUnits.id }).from(s.productUnits)
+        .where(eq(s.productUnits.id, 1)).for("update");
+      signalBlockerReady();
+      await blockerRelease;
+    });
+    await blockerReady;
+
+    const dispatchPromise = dispatchOnlineOrder({ onlineOrderId: existing.orderId, partyId: partyA }, MANAGER);
+    await waitForDatabaseLockWaits(1);
+    const createPromise = createOnlineOrder({
+      customerName: "عميل إنشاء مختلف",
+      customerPhone: "07801234567",
+      governorate: "baghdad",
+      addressText: "بغداد",
+      couponCode,
+      clientRequestId: "dispatch-create-deadlock-new",
+      lines: [{ productUnitId: 1, quantity: 1 }],
+    });
+    try {
+      // قبل تحرير القفل: dispatch ينتظر productUnit، وcreate ينتظر إما القسيمة (الترتيب
+      // الصحيح) أو productUnit بعد امتلاك القسيمة (الترتيب القديم الذي يصنع الدورة).
+      await waitForDatabaseLockWaits(2);
+    } finally {
+      releaseBlocker();
+    }
+    const [blockerResult, dispatchResult, createResult] = await Promise.allSettled([
+      blocker,
+      dispatchPromise,
+      createPromise,
+    ]);
+    expect(blockerResult.status).toBe("fulfilled");
+    expect(dispatchResult.status).toBe("fulfilled");
+    expect(createResult.status).toBe("fulfilled");
   });
 
   it("dispatchOnlineOrder idempotent: إعادة الإرسال ⇒ alreadyDispatched بلا ازدواج فاتورة/مخزون/ذمّة", async () => {
@@ -492,4 +791,65 @@ async function seedParties(): Promise<{ partyA: number; partyB: number }> {
   const a = (await d.select({ id: s.deliveryParties.id }).from(s.deliveryParties).where(eq(s.deliveryParties.userId, 3)).limit(1))[0];
   const b = (await d.select({ id: s.deliveryParties.id }).from(s.deliveryParties).where(eq(s.deliveryParties.userId, 4)).limit(1))[0];
   return { partyA: Number(a.id), partyB: Number(b.id) };
+}
+
+async function seedStorefrontCoupon(
+  code: string,
+  perCouponLimit: number,
+  perCustomerLimit: number,
+): Promise<void> {
+  const d = db();
+  await d.insert(s.promotions).values({
+    id: 1,
+    name: "قسيمة متجر متزامنة",
+    type: "PERCENT",
+    discountPercent: "10.00",
+    discountAmount: "0.00",
+    scope: "ALL",
+    effectiveFrom: new Date("2026-01-01"),
+    effectiveTo: new Date("2027-01-01"),
+    branchId: 1,
+    customerTier: "RETAIL",
+    minLineAmount: "0.00",
+    priority: 100,
+    isActive: true,
+    applicationMode: "COUPON",
+    isStoreManaged: true,
+  });
+  await d.insert(s.couponPrograms).values({
+    id: 1,
+    promotionId: 1,
+    name: "برنامج وعود متجر",
+    status: "ACTIVE",
+    branchId: 1,
+    validFrom: new Date("2026-01-01"),
+    validTo: new Date("2027-01-01"),
+    perCouponLimit,
+    perCustomerLimit,
+    codePrefix: "WEB",
+    createdBy: 1,
+  });
+  await d.insert(s.coupons).values({
+    id: 1,
+    programId: 1,
+    code,
+    codeHash: hashCouponCode(code),
+    status: "ACTIVE",
+  });
+}
+
+async function waitForDatabaseLockWaits(minimum: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const result = await db().execute(sql`
+      SELECT COUNT(*) AS count
+      FROM performance_schema.data_lock_waits waits
+      INNER JOIN performance_schema.data_locks requested
+        ON requested.ENGINE_LOCK_ID = waits.REQUESTING_ENGINE_LOCK_ID
+      WHERE requested.OBJECT_SCHEMA = DATABASE()
+    `);
+    const rows = (result as unknown as [Array<{ count: number | string }>, unknown])[0];
+    if (Number(rows[0]?.count ?? 0) >= minimum) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`لم يظهر ${minimum} انتظار قفل في قاعدة الاختبار ضمن المهلة`);
 }

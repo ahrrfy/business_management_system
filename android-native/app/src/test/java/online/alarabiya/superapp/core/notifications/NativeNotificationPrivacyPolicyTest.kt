@@ -21,12 +21,40 @@ class NativeNotificationPrivacyPolicyTest {
     }
 
     @Test
-    fun informationalAttendanceUsesItsOwnHeadsUpDeliveryLane() {
+    fun routesEveryNotificationFamilyToItsOwnStableDeliveryLane() {
         assertEquals(
-            NotificationDeliveryLane.ATTENDANCE,
+            NotificationDeliveryLane.EMPLOYEE,
             NativeNotificationPrivacyPolicy.deliveryLane(
                 kind = "ATTENDANCE",
                 urgency = NotificationUrgency.INFORMATION,
+            ),
+        )
+        assertEquals(
+            NotificationDeliveryLane.ADMIN,
+            NativeNotificationPrivacyPolicy.deliveryLane(
+                kind = "SESSION_EVENT",
+                urgency = NotificationUrgency.INFORMATION,
+            ),
+        )
+        assertEquals(
+            NotificationDeliveryLane.APPROVAL,
+            NativeNotificationPrivacyPolicy.deliveryLane(
+                kind = "APPROVAL_REQUIRED",
+                urgency = NotificationUrgency.ACTION,
+            ),
+        )
+        assertEquals(
+            NotificationDeliveryLane.SYSTEM,
+            NativeNotificationPrivacyPolicy.deliveryLane(
+                kind = "SYSTEM",
+                urgency = NotificationUrgency.INFORMATION,
+            ),
+        )
+        assertEquals(
+            NotificationDeliveryLane.OPERATIONS,
+            NativeNotificationPrivacyPolicy.deliveryLane(
+                kind = "TASK_ASSIGNED",
+                urgency = NotificationUrgency.ACTION,
             ),
         )
     }

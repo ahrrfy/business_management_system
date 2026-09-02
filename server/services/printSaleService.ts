@@ -48,6 +48,7 @@ import { userNameSnapshot } from "./userSnapshot";
 import { paymentAssetRole } from "./sale/paymentPosting";
 import type { Tx } from "../db";
 import { titleForChannel } from "@shared/productChannelTitles";
+import { lockMaterializedCashReceiptSourceForWrite } from "./cash/cashAvailability";
 import {
   assertExternalPaymentReplay,
   bindExternalPaymentAttempt,
@@ -251,6 +252,16 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       if (role !== "admin" && role !== "manager" && Number(s[0].userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
       }
+    }
+    if (isCashPayment) {
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: input.branchId,
+        shiftId: input.shiftId,
+        cashBucket: "DRAWER",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
     }
 
     // ٣. فئة التسعير الفعّالة + قفل العميل (يُسلسِل البيوع الآجلة فلا يتجاوز اثنان حدّ الائتمان معاً).

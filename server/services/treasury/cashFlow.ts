@@ -5,6 +5,7 @@ import { money, toDbMoney } from "../money";
 import { isCashier, rowsOf } from "./helpers";
 import { utcTodayStart } from "../businessDay";
 import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
+import { receiptCashEventAtSql } from "../cash/cashEventAt";
 
 export interface DailyPoint {
   day: string; // YYYY-MM-DD
@@ -13,11 +14,7 @@ export interface DailyPoint {
   net: string;
 }
 
-const RECEIPT_CASH_EVENT_AT_SQL = sql`CASE
-  WHEN r.approvedBy IS NOT NULL AND r.approvedBy <> r.createdBy AND r.approvedAt IS NOT NULL
-    THEN r.approvedAt
-  ELSE r.createdAt
-END`;
+const RECEIPT_CASH_EVENT_AT_SQL = receiptCashEventAtSql("r");
 
 export async function getCashFlowSeries(
   input: { days?: number; branchId?: number },

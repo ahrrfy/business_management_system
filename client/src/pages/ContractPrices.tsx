@@ -3,6 +3,7 @@
 // من نتيجة البحث نفسها — كل صف نتيجة = متغيّر×وحدة) ثم سعر MoneyInput. السعر التعاقدي النشط
 // يتقدّم على سعر الفئة في POS وفي فرض الخادم معاً (resolveContractPrices واحدة للنقطتين).
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { FileSignature, Plus, Printer, Search, X } from "lucide-react";
 import CustomerPicker from "@/components/CustomerPicker";
 import { PageHeader } from "@/components/PageHeader";
@@ -233,15 +234,15 @@ export default function ContractPrices() {
         <Card>
           <CardContent className="pt-4 space-y-1.5">
             <Label htmlFor="cp-branch">الفرع <span className="text-destructive">*</span></Label>
-            <select
+            <AppSelect
               id="cp-branch"
-              className="h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="h-9 max-w-xs border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               value={pickedBranch ?? ""}
-              onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+              onValueChange={(next) => setPickedBranch(next ? Number(next) : null)}
             >
               <option value="">— اختر الفرع —</option>
               {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            </AppSelect>
             <p className="text-[11px] text-muted-foreground">يحدّد سياق معاينة السعر/المخزون أثناء البحث عن المنتج — الأسعار التعاقدية نفسها ليست مرتبطة بفرع.</p>
           </CardContent>
         </Card>

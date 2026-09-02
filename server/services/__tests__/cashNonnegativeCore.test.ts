@@ -751,7 +751,10 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
     const externalLifecycleFiles = [
       "assets/create.ts",
       "assets/lifecycle.ts",
+      "purchase/purchaseCharges.ts",
       "purchase/receive.ts",
+      "purchase/returnGovernance.ts",
+      "purchase/supplierPayments.ts",
       "exchange/deposit.ts",
       "digitalCards/walletOpsService.ts",
       "voucher/approval.ts",
@@ -774,6 +777,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       ["sale/cancel.ts", "SALE_CANCELLATION_COMPENSATION"],
       ["digitalCards/reversalService.ts", "DIGITAL_CARD_REVERSAL_COMPENSATION"],
       ["exchange/reverse.ts", "EXCHANGE_REVERSAL_COMPENSATION"],
+      ["workOrder/cancel.ts", "WORK_ORDER_CANCELLATION_COMPENSATION"],
     ]);
     for (const [relative, key] of exceptionFiles) {
       const source = readFileSync(path.join(root, relative), "utf8");

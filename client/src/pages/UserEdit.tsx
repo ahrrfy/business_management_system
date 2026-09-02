@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -389,10 +390,10 @@ export default function UserEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
-            <select
-              id="role" className={selectClsFull}
+            <AppSelect
+              id="role" className="h-9"
               value={customRoleId ? `custom:${customRoleId}` : role}
-              onChange={(e) => void handleRoleChange(e.target.value)}
+              onValueChange={(value) => void handleRoleChange(value)}
             >
               <optgroup label="أدوار النظام">
                 {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
@@ -402,7 +403,7 @@ export default function UserEdit() {
                   {customRoles.map((r: any) => <option key={r.id} value={`custom:${r.id}`}>{r.label}</option>)}
                 </optgroup>
               )}
-            </select>
+            </AppSelect>
             {customRoleId ? (
               <p className="text-[11px] text-muted-foreground">دور مخصّص — صلاحياته تُدار من شاشة «الأدوار والصلاحيات».</p>
             ) : roleInfo ? <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p> : null}
@@ -419,10 +420,10 @@ export default function UserEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>
-            <select id="branch" className={selectClsFull} value={branchId} onChange={(e) => setBranchId(e.target.value)}>
+            <AppSelect id="branch" className="h-9" value={branchId} onValueChange={(next) => setBranchId(next)}>
               <option value="">— بلا فرع —</option>
               {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           {/* مالك النظام (isOwner): يظهر فقط للمالك الحالي (حارس تصعيد الصلاحيات). المالك يتجاوز
               كل اعتماد ثنائي على السندات ويحتفظ بدور admin. */}

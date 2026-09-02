@@ -2,6 +2,9 @@
 // منتقي المتغيّر يعيد استعمال trpc.catalog.posList (نفس بحث الكاشير/حركات المخزون) + فلتر فرع + فترة اختيارية.
 // عرض: ترويسة المتغيّر + مؤشّرات (رصيد افتتاحي/ختامي) + جدول (تاريخ/نوع/كمية بإشارة/رصيد/مرجع) + تصدير/طباعة.
 import { useEffect, useMemo, useState } from "react";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -13,8 +16,8 @@ import { ArrowUpRight } from "lucide-react";
 import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { LoadingState, ErrorState } from "@/components/PageState";
+
 import { TablePager } from "@/components/table/TablePager";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 
@@ -223,6 +226,44 @@ export default function ItemLedger() {
       setBusy(false);
     }
   }
+  /** أعمدة بطاقة الصنف + ذيلٌ يحمل الرصيد الختاميّ تحت عمود الرصيد نفسه. */
+  const ledgerColumns = useMemo<ColumnDef<LedgerRow, unknown>[]>(() => [
+    {
+      id: "date", header: "التاريخ",
+      accessorFn: (r) => r.date,
+      footer: () => (rows.length ? "الرصيد الختامي" : null),
+      meta: { kind: "date" },
+    },
+    {
+      id: "type", header: "النوع",
+      accessorFn: (r) => r.type,
+      cell: ({ row }) => <TypeBadge type={row.original.type} />,
+      meta: { kind: "status" },
+    },
+    {
+      id: "signedQty", header: "الكمية",
+      accessorFn: (r) => r.signedQty,
+      cell: ({ row }) => (
+        <span className={row.original.signedQty > 0 ? "font-semibold text-money-positive" : row.original.signedQty < 0 ? "font-semibold text-money-negative" : "font-semibold text-muted-foreground"}>
+          {signedDisplay(row.original.signedQty)}
+        </span>
+      ),
+      meta: { kind: "number", align: "start" },
+    },
+    {
+      id: "balance", header: "الرصيد",
+      accessorFn: (r) => r.balance,
+      cell: ({ row }) => <span className="font-medium">{fmtInt(row.original.balance)}</span>,
+      footer: () => (rows.length ? fmtInt(closing) : null),
+      meta: { kind: "number", align: "start" },
+    },
+    {
+      id: "reference", header: "المرجع",
+      accessorFn: (r) => r.reference ?? "—",
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.reference ?? "—"}</span>,
+      meta: { kind: "text", wrap: true },
+    },
+  ], [rows.length, closing]);
 
   return (
     <ReportShell
@@ -274,10 +315,10 @@ export default function ItemLedger() {
           {canPickBranch && (
             <div className="flex flex-col gap-1">
               <label className="text-[11px] text-muted-foreground">الفرع</label>
-              <select
-                className={selectCls}
+              <AppSelect
+                className="h-9"
                 value={pickedBranch === "" ? "" : String(pickedBranch)}
-                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : "")}
+                onValueChange={(next) => setPickedBranch(next ? Number(next) : "")}
               >
                 <option value="">كل الفروع</option>
                 {(branches.data ?? []).map((b) => (
@@ -285,7 +326,7 @@ export default function ItemLedger() {
                     {b.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
           )}
 
@@ -335,49 +376,14 @@ export default function ItemLedger() {
           ) : ledger.isError ? (
             <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void ledger.refetch()} />
           ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-end font-medium">التاريخ</th>
-                    <th className="p-2.5 text-end font-medium">النوع</th>
-                    <th className="p-2.5 text-start font-medium">الكمية</th>
-                    <th className="p-2.5 text-start font-medium">الرصيد</th>
-                    <th className="p-2.5 text-end font-medium">المرجع</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!rows.length && (
-                    <TableEmptyRow colSpan={5} message="لا حركات لهذا المنتج في هذا النطاق." />
-                  )}
-                  {rows.map((r) => (
-                    <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
-                      <td className="p-2.5 text-end"><TypeBadge type={r.type} /></td>
-                      <td
-                        className={`p-2.5 text-start tabular-nums font-semibold ${
-                          r.signedQty > 0 ? "text-money-positive" : r.signedQty < 0 ? "text-money-negative" : "text-muted-foreground"
-                        }`}
-                        dir="ltr"
-                      >
-                        {signedDisplay(r.signedQty)}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{fmtInt(r.balance)}</td>
-                      <td className="p-2.5 text-end text-muted-foreground text-xs">{r.reference ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-                {rows.length > 0 && (
-                  <tfoot>
-                    <tr className="border-t bg-muted/40 text-sm font-semibold">
-                      <td className="p-2.5 text-end" colSpan={3}>الرصيد الختامي</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(closing)}</td>
-                      <td></td>
-                    </tr>
-                  </tfoot>
-                )}
-              </table>
-            </ScrollTableShell>
+            <DataTable
+              columns={ledgerColumns}
+              data={rows}
+              loading={ledger.isLoading}
+              searchable={false}
+              errorState={{ isError: ledger.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void ledger.refetch() }}
+              emptyText="لا حركات لهذا المنتج في هذا النطاق."
+            />
           )}
         </CardContent>
         {picked && (

@@ -4,6 +4,7 @@ import { useRouter } from "expo-router";
 import { Platform } from "react-native";
 
 import { storefrontPathFromNotificationData } from "@/lib/customer-notification-routes";
+import { syncCustomerPushIdentity } from "@/lib/customer-notifications";
 import { trackStorefrontPushInteraction } from "@/lib/storefront-api";
 
 export function CustomerNotificationObserver() {
@@ -11,6 +12,7 @@ export function CustomerNotificationObserver() {
 
   useEffect(() => {
     if (Platform.OS === "web") return;
+    void syncCustomerPushIdentity();
     const openDestination = (response: Notifications.NotificationResponse) => {
       const data = response.notification.request.content.data;
       const path = storefrontPathFromNotificationData(data);

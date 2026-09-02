@@ -5,6 +5,7 @@
  * والمبالغ تُعرض بـ iqd(). الموجّه مركَّب تحت trpc.promotions.
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -737,20 +738,20 @@ export default function Promotions() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="p-emp">الموظف</Label>
-              <select
+              <AppSelect
                 id="p-emp"
-                className={selectCls}
+                className="h-9"
                 value={pEmp}
-                onChange={(e) => {
-                  setPEmp(e.target.value);
+                onValueChange={(next) => {
+                  setPEmp(next);
                   // تعبئة الحزمة من حالة الموظف الحالية: الطلب يُخزَّن **هدفاً كاملاً**،
                   // فبدءُ التحرير من قيمه الفعلية يمنع تصفير جدولٍ لم يُقصَد تغييره.
-                  setPWage(wageValueFromEmployee(activeEmps.find((x) => String(x.id) === e.target.value) ?? null));
+                  setPWage(wageValueFromEmployee(activeEmps.find((x) => String(x.id) === next) ?? null));
                 }}
               >
                 <option value="">— اختر موظفاً —</option>
                 {activeEmps.map((e) => <option key={e.id} value={String(e.id)}>{e.fullName}{e.position ? ` — ${e.position}` : ""}</option>)}
-              </select>
+              </AppSelect>
               {selectedEmp && (
                 <div className="text-xs text-muted-foreground" dir="ltr">
                   المسمّى الحالي: <span dir="rtl">{selectedEmp.position ?? "—"}</span> · الراتب الحالي: <span className="tabular-nums">{iqd(selectedEmp.salary)}</span>
@@ -781,10 +782,10 @@ export default function Promotions() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t pt-3">
                   <div className="space-y-1">
                     <Label htmlFor="p-paytype">طريقة الأجر</Label>
-                    <select id="p-paytype" className={selectCls} value={pWage.payType} onChange={(ev) => setPWage((w) => ({ ...w, payType: ev.target.value as "monthly" | "hourly" }))}>
+                    <AppSelect id="p-paytype" className="h-9" value={pWage.payType} onValueChange={(next) => setPWage((w) => ({ ...w, payType: next as "monthly" | "hourly" }))}>
                       <option value="monthly">راتب شهري</option>
                       <option value="hourly">بالساعة</option>
-                    </select>
+                    </AppSelect>
                   </div>
                   <div className="hidden md:block" aria-hidden />
                   <div className="hidden md:block" aria-hidden />
@@ -814,17 +815,17 @@ export default function Promotions() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="t-emp">الموظف</Label>
-              <select id="t-emp" className={selectCls} value={tEmp} onChange={(e) => setTEmp(e.target.value)}>
+              <AppSelect id="t-emp" className="h-9" value={tEmp} onValueChange={(next) => setTEmp(next)}>
                 <option value="">— اختر موظفاً —</option>
                 {activeEmps.map((e) => <option key={e.id} value={String(e.id)}>{e.fullName}{e.position ? ` — ${e.position}` : ""}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="t-type">نوع الإنهاء</Label>
-                <select id="t-type" className={selectCls} value={tType} onChange={(e) => setTType(e.target.value)}>
+                <AppSelect id="t-type" className="h-9" value={tType} onValueChange={(next) => setTType(next)}>
                   {TERMINATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1"><Label htmlFor="t-lastday">آخر يوم عمل</Label><Input id="t-lastday" type="date" dir="ltr" value={tLastDay} onChange={(e) => setTLastDay(e.target.value)} /></div>
             </div>
@@ -946,9 +947,9 @@ export default function Promotions() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <Label htmlFor="t-payment-method">طريقة صرف التسوية بعد الاعتماد</Label>
-                <select id="t-payment-method" className={selectCls} value={tPaymentMethod} onChange={(event) => setTPaymentMethod(event.target.value as typeof tPaymentMethod)}>
+                <AppSelect id="t-payment-method" className="h-9" value={tPaymentMethod} onValueChange={(next) => setTPaymentMethod(next as typeof tPaymentMethod)}>
                   {Object.entries(TERMINATION_PAYMENT_METHOD_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="t-payment-reference">مرجع وسيلة الدفع</Label>
@@ -986,9 +987,9 @@ export default function Promotions() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
                   <Label htmlFor="termination-reversal-method">طريقة إعادة المبلغ</Label>
-                  <select id="termination-reversal-method" className={selectCls} value={reverseMethod} onChange={(event) => setReverseMethod(event.target.value as typeof reverseMethod)}>
+                  <AppSelect id="termination-reversal-method" className="h-9" value={reverseMethod} onValueChange={(next) => setReverseMethod(next as typeof reverseMethod)}>
                     {Object.entries(TERMINATION_PAYMENT_METHOD_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                  </select>
+                  </AppSelect>
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="termination-reversal-date">تاريخ إعادة المبلغ</Label>

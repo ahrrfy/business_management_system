@@ -2,6 +2,7 @@
 // عروض: إعادة الطلب · راكد عالي القيمة · خطر النفاد · فروقات الجرد. + رابط الكاردكس (بطاقة المنتج).
 // يُركّب endpoints (stockStatus/deadStockValue/reorderRisk/stocktakeVariance). عرض + Excel + طباعة A4.
 import { useEffect, useMemo, useState } from "react";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { Link } from "wouter";
 import { FolderOpen } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -32,8 +33,6 @@ const VIEW_DESC: Record<View, string> = {
   variance: "فروقات الجرد المعتمدة حسب الفرع والتاريخ.",
   negatives: "أرصدة تحت الصفر — بوصلة أولوية الجرد الافتتاحي: اجرد الأعلى انكشافاً أولاً.",
 };
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const STATUS_LABEL: Record<string, string> = { out: "نفد", low: "منخفض", ok: "طبيعي" };
 const STATUS_CLS: Record<string, string> = { out: "badge-stock-out", low: "badge-stock-low", ok: "bg-muted text-muted-foreground" };
 
@@ -318,72 +317,62 @@ export default function InventoryOpsReport() {
         </Link>
       }
       filters={
-        <div className="flex flex-wrap items-end gap-4">
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">العرض</label>
-            <select className={selectCls} value={view} onChange={(e) => setView(e.target.value as View)}>
+        <FilterShell bare columns={4}>
+          <FilterField label="العرض">
+            <AppSelect value={view} onValueChange={(v) => setView(v as View)}>
               {(Object.keys(VIEW_LABEL) as View[]).map((v) => (<option key={v} value={v}>{VIEW_LABEL[v]}</option>))}
-            </select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            </AppSelect>
+          </FilterField>
+          <FilterField label="الفرع">
+            <AppSelect value={branchId === "" ? "" : String(branchId)} onValueChange={(v) => setBranchId(v ? Number(v) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
-          </div>
+            </AppSelect>
+          </FilterField>
           {view === "dead" && (
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-muted-foreground">راكد منذ</label>
-              <select className={selectCls} value={deadDays} onChange={(e) => setDeadDays(Number(e.target.value))}>
-                <option value={90}>٩٠ يوماً</option>
-                <option value={180}>١٨٠ يوماً</option>
-                <option value={365}>٣٦٥ يوماً</option>
-              </select>
-            </div>
+            <FilterField label="راكد منذ">
+              <AppSelect value={String(deadDays)} onValueChange={(v) => setDeadDays(Number(v))}>
+                <option value={90}>90 يوماً</option>
+                <option value={180}>180 يوماً</option>
+                <option value={365}>365 يوماً</option>
+              </AppSelect>
+            </FilterField>
           )}
           {view === "risk" && (
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-muted-foreground">مبيعات آخر</label>
-              <select className={selectCls} value={riskDays} onChange={(e) => setRiskDays(Number(e.target.value))}>
-                <option value={30}>٣٠ يوماً</option>
-                <option value={60}>٦٠ يوماً</option>
-                <option value={90}>٩٠ يوماً</option>
-              </select>
-            </div>
+            <FilterField label="مبيعات آخر">
+              <AppSelect value={String(riskDays)} onValueChange={(v) => setRiskDays(Number(v))}>
+                <option value={30}>30 يوماً</option>
+                <option value={60}>60 يوماً</option>
+                <option value={90}>90 يوماً</option>
+              </AppSelect>
+            </FilterField>
           )}
           {view === "variance" && (
             <>
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-muted-foreground">من</label>
-                <input type="date" className={selectCls} value={from} onChange={(e) => setFrom(e.target.value)} />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-muted-foreground">إلى</label>
-                <input type="date" className={selectCls} value={to} onChange={(e) => setTo(e.target.value)} />
-              </div>
+              <FilterField label="من">
+                <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
+              </FilterField>
+              <FilterField label="إلى">
+                <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+              </FilterField>
             </>
           )}
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">بحث</label>
-            <Input
+          <FilterField label="بحث">
+            <SearchField
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={setSearch}
               placeholder="اسم المنتج/المتغيّر…"
-              aria-label="بحث بالمنتج"
-              className="h-9 w-44"
             />
-          </div>
+          </FilterField>
           {categories.length > 0 && (
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-muted-foreground">الفئة</label>
-              <AppSelect value={category} onValueChange={setCategory} className="w-36">
+            <FilterField label="الفئة">
+              <AppSelect value={category} onValueChange={setCategory}>
                 <option value="">كل الفئات</option>
                 {categories.map((c) => (<option key={c} value={c}>{c}</option>))}
               </AppSelect>
-            </div>
+            </FilterField>
           )}
-        </div>
+        </FilterShell>
       }
     >
       <Card>

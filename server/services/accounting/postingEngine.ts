@@ -28,6 +28,7 @@ export const ACCOUNT_ROLES = [
   "DIGITAL_WALLET",
   "DELIVERY_FLOAT",
   "AP",
+  "GRNI",
   "CONSIGNMENT_PAYABLE",
   "ACCRUED_SALARY",
   "PAYROLL_TAX_PAYABLE",
@@ -92,6 +93,10 @@ export type PostingProfile =
   | "PURCHASE_DIGITAL"
   | "PURCHASE_CONSIGNMENT"
   | "PURCHASE_CONSIGNMENT_SHORTAGE"
+  | "PURCHASE_GRNI_RECEIPT"
+  | "PURCHASE_GRNI_RECEIPT_REVERSAL"
+  | "SUPPLIER_INVOICE_GRNI"
+  | "SUPPLIER_INVOICE_GRNI_REVERSAL"
   | "PAYMENT_IN_CUSTOMER"
   | "PAYMENT_IN_SUPPLIER_REFUND"
   | "PAYMENT_IN_PURCHASE_CASH_CLEARING"
@@ -164,6 +169,8 @@ export type PostingProfile =
   | "ADJUST_FIXED_ASSET_ACCRUAL"
   | "ADJUST_FIXED_ASSET_ACCRUAL_REVERSAL"
   | "ADJUST_EXCHANGE_CONTROL_RECLASS"
+  | "CASH_DAILY_SHORTAGE"
+  | "CASH_DAILY_SURPLUS"
   | "OPENING_CUSTOMER"
   | "OPENING_SUPPLIER"
   | "OPENING_CASH"
@@ -180,11 +187,14 @@ export type PostingProfile =
   | "INTERNAL_USE_INVENTORY"
   | "WASTAGE_INVENTORY"
   | "CASH_HANDOVER_TO_TREASURY"
+  | "CASH_HANDOVER_TO_TRANSIT"
   | "CASH_DROP_TO_TRANSIT"
   | "CASH_TRANSFER_OUT_IN_TRANSIT"
   | "INTERBRANCH_CLEARING_OUT"
   | "CASH_TRANSFER_IN_FROM_TRANSIT"
   | "CASH_TRANSFER_IN_FROM_CLEARING"
+  | "CASH_CUSTODY_SHORTAGE"
+  | "CASH_CUSTODY_SURPLUS"
   | "SHIFT_FLOAT_FROM_TREASURY"
   | "TREASURY_FUNDING_CAPITAL"
   | "TREASURY_FUNDING_OWNER_CURRENT"
@@ -299,6 +309,10 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "RETURN_PURCHASE_CONSIGNMENT",
   ],
   ADJUST: [
+    "PURCHASE_GRNI_RECEIPT",
+    "PURCHASE_GRNI_RECEIPT_REVERSAL",
+    "SUPPLIER_INVOICE_GRNI",
+    "SUPPLIER_INVOICE_GRNI_REVERSAL",
     "ADJUST_INVENTORY_GAIN",
     "ADJUST_INVENTORY_LOSS",
     "ADJUST_WIP_CONSUME",
@@ -328,6 +342,8 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "ADJUST_FIXED_ASSET_ACCRUAL",
     "ADJUST_FIXED_ASSET_ACCRUAL_REVERSAL",
     "ADJUST_EXCHANGE_CONTROL_RECLASS",
+    "CASH_DAILY_SHORTAGE",
+    "CASH_DAILY_SURPLUS",
   ],
   OPENING: [
     "OPENING_CUSTOMER",
@@ -348,6 +364,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
   WASTAGE: ["WASTAGE_INVENTORY"],
   CASH_HANDOVER: ["CASH_HANDOVER_TO_TREASURY"],
   CASH_TRANSFER_OUT: [
+    "CASH_HANDOVER_TO_TRANSIT",
     "CASH_DROP_TO_TRANSIT",
     "CASH_TRANSFER_OUT_IN_TRANSIT",
     "INTERBRANCH_CLEARING_OUT",
@@ -355,6 +372,8 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
   CASH_TRANSFER_IN: [
     "CASH_TRANSFER_IN_FROM_TRANSIT",
     "CASH_TRANSFER_IN_FROM_CLEARING",
+    "CASH_CUSTODY_SHORTAGE",
+    "CASH_CUSTODY_SURPLUS",
   ],
   SHIFT_FLOAT_OUT: ["SHIFT_FLOAT_FROM_TREASURY"],
   TREASURY_FUNDING: [
@@ -858,6 +877,54 @@ export const PROFILE_POLICIES = Object.freeze({
         "TAX_PAYABLE",
         "OTHER_LIABILITY",
       ],
+    },
+  ),
+  PURCHASE_GRNI_RECEIPT: profilePolicy(
+    "ADJUST",
+    ["INVENTORY"],
+    ["GRNI"],
+    {
+      sourceAssertions: [
+        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["INVENTORY"]),
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["GRNI"]),
+      ],
+      requireRoleComponents: ["INVENTORY", "GRNI"],
+    },
+  ),
+  PURCHASE_GRNI_RECEIPT_REVERSAL: profilePolicy(
+    "ADJUST",
+    ["GRNI", "PURCHASE_PRICE_VARIANCE"],
+    ["INVENTORY", "PURCHASE_PRICE_VARIANCE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("cost", "CREDIT_MINUS_DEBIT", ["INVENTORY"]),
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["GRNI"]),
+      ],
+      requireRoleComponents: ["GRNI", "INVENTORY", "PURCHASE_PRICE_VARIANCE"],
+    },
+  ),
+  SUPPLIER_INVOICE_GRNI: profilePolicy(
+    "ADJUST",
+    ["GRNI", "TAX_PAYABLE", "PURCHASE_PRICE_VARIANCE"],
+    ["AP", "PURCHASE_PRICE_VARIANCE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["AP"]),
+        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["GRNI"]),
+      ],
+      requireRoleComponents: ["GRNI", "TAX_PAYABLE", "AP", "PURCHASE_PRICE_VARIANCE"],
+    },
+  ),
+  SUPPLIER_INVOICE_GRNI_REVERSAL: profilePolicy(
+    "ADJUST",
+    ["AP", "PURCHASE_PRICE_VARIANCE"],
+    ["GRNI", "TAX_PAYABLE", "PURCHASE_PRICE_VARIANCE"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["AP"]),
+        sourceAssertion("cost", "CREDIT_MINUS_DEBIT", ["GRNI"]),
+      ],
+      requireRoleComponents: ["AP", "GRNI", "TAX_PAYABLE", "PURCHASE_PRICE_VARIANCE"],
     },
   ),
   PURCHASE_FIXED_ASSET: profilePolicy("PURCHASE", ["FIXED_ASSETS"], ["AP"], {
@@ -1574,6 +1641,30 @@ export const PROFILE_POLICIES = Object.freeze({
     ],
     requireRoleComponents: [...CASH_ASSETS, "ROUNDING_DIFF"],
   }),
+  CASH_DAILY_SHORTAGE: profilePolicy(
+    "ADJUST",
+    ["LOSSES"],
+    ["TREASURY_CASH"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES"]),
+      ],
+      requireRoleComponents: ["LOSSES", "TREASURY_CASH"],
+    },
+  ),
+  CASH_DAILY_SURPLUS: profilePolicy(
+    "ADJUST",
+    ["TREASURY_CASH"],
+    ["OTHER_LIABILITY"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["TREASURY_CASH"]),
+      ],
+      requireRoleComponents: ["TREASURY_CASH", "OTHER_LIABILITY"],
+    },
+  ),
   ADJUST_AR: profilePolicy("ADJUST", ["AR"], ["OPENING_EQUITY"], {
     sourceAssertions: [sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["AR"])],
   }),
@@ -2008,6 +2099,16 @@ export const PROFILE_POLICIES = Object.freeze({
       ],
     },
   ),
+  CASH_HANDOVER_TO_TRANSIT: profilePolicy(
+    "CASH_TRANSFER_OUT",
+    ["CASH_IN_TRANSIT"],
+    ["CASH"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["CASH_IN_TRANSIT"]),
+      ],
+    },
+  ),
   CASH_DROP_TO_TRANSIT: profilePolicy(
     "CASH_TRANSFER_OUT",
     ["CASH_IN_TRANSIT"],
@@ -2057,6 +2158,38 @@ export const PROFILE_POLICIES = Object.freeze({
     {
       sourceAssertions: [
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["TREASURY_CASH"]),
+      ],
+    },
+  ),
+  CASH_CUSTODY_SHORTAGE: profilePolicy(
+    "CASH_TRANSFER_IN",
+    ["TREASURY_CASH", "EMPLOYEE_ADVANCES"],
+    ["CASH_IN_TRANSIT"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["TREASURY_CASH"]),
+      ],
+      requireRoleComponents: [
+        "TREASURY_CASH",
+        "EMPLOYEE_ADVANCES",
+        "CASH_IN_TRANSIT",
+      ],
+    },
+  ),
+  CASH_CUSTODY_SURPLUS: profilePolicy(
+    "CASH_TRANSFER_IN",
+    ["TREASURY_CASH"],
+    ["CASH_IN_TRANSIT", "OTHER_LIABILITY"],
+    {
+      reversible: false,
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["TREASURY_CASH"]),
+      ],
+      requireRoleComponents: [
+        "TREASURY_CASH",
+        "CASH_IN_TRANSIT",
+        "OTHER_LIABILITY",
       ],
     },
   ),
@@ -2420,6 +2553,10 @@ export const PROFILE_POLICIES = Object.freeze({
  * 30-day observation window happened not to exercise that path.
  */
 export const ACTIVATION_REQUIRED_POSTING_PROFILES = Object.freeze([
+  "PURCHASE_GRNI_RECEIPT",
+  "PURCHASE_GRNI_RECEIPT_REVERSAL",
+  "SUPPLIER_INVOICE_GRNI",
+  "SUPPLIER_INVOICE_GRNI_REVERSAL",
   "PURCHASE_INVENTORY_CASH_CLEARING",
   "PAYMENT_OUT_PURCHASE_CASH_CLEARING",
   "PAYMENT_IN_PURCHASE_CASH_CLEARING",
@@ -2454,6 +2591,7 @@ export const ACTIVATION_REQUIRED_POSTING_PROFILES = Object.freeze([
 ] as const satisfies readonly PostingProfile[]);
 
 export const ACTIVATION_REQUIRED_ACCOUNT_ROLES = Object.freeze([
+  "GRNI",
   "OTHER_LIABILITY",
   "PAYROLL_TAX_PAYABLE",
   "SOCIAL_SECURITY_PAYABLE",

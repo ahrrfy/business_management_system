@@ -16,6 +16,10 @@ import { getDb } from "../../db";
 import { createWorkOrder, deliverWorkOrder, markWorkOrderReady, startWorkOrder } from "../workOrderService";
 import { reconcileCustomerBalances } from "../reconcileService";
 import { truncateTables } from "./__testUtils__";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
@@ -24,6 +28,8 @@ const getInsertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.inse
 async function reset() {
   await truncateTables([
     "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
+    "workOrderDesignApprovals", "workOrderDesignRevisions", "workOrderEvents", "auditLogs",
+    "taskEvents", "tasks", "serviceTypes",
     "workOrderMaterials", "workOrderItems", "workOrderImages", "workOrders",
     "branchStock", "productPrices", "productUnits", "productVariants", "products",
     "shifts", "customers", "branches", "users",
@@ -33,7 +39,18 @@ async function reset() {
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" });
-  await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" },
+    { id: 2, openId: "reviewer", name: "مراجع مستقل", role: "manager", loginMethod: "local", branchId: 1 },
+  ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.products).values({ id: 1, name: "خدمة طباعة" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "SVC-1", costPrice: "0" });
   await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "خدمة", conversionFactor: "1", isBaseUnit: true });
@@ -68,6 +85,18 @@ describe("A1: append-only — workOrderService لا يُحدِّث accountingEnt
     expect(wo.workOrderId).toBeGreaterThan(0);
 
     // 2. سيرورة كاملة: START → READY → DELIVER
+    const approval = await requestWorkOrderDesignApproval({
+      workOrderId: wo.workOrderId,
+      requestKey: "append-only-design-request",
+      note: "اعتماد النسخة الحالية قبل التنفيذ",
+    }, actor);
+    await decideWorkOrderDesignApproval({
+      approvalId: Number(approval.approval.id),
+      decisionKey: "append-only-design-approve",
+      decision: "APPROVED",
+      reason: "ثبتت موافقة العميل على التصميم النهائي",
+      evidence: { type: "WHATSAPP_MESSAGE", reference: "wamid.append-only-a1" },
+    }, { userId: 2, branchId: 1, role: "manager" });
     await startWorkOrder(wo.workOrderId, actor);
     await markWorkOrderReady(wo.workOrderId, actor);
     const d = await deliverWorkOrder({ workOrderId: wo.workOrderId, payment: { amount: "100.00", method: "CASH" } }, actor);

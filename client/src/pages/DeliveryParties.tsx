@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Banknote, PackageOpen, Truck, Users } from "lucide-react";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Banknote, PackageOpen, ShieldCheck, Truck, Users, XCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { EmptyState } from "@/components/EmptyState";
@@ -19,6 +20,7 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import DeliveryPartyDetail from "@/pages/DeliveryPartyDetail";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
 
@@ -35,9 +37,19 @@ function ageBadge(days: number | null) {
 
 export default function DeliveryParties() {
   const me = trpc.auth.me.useQuery();
-  const isManager = ["admin", "manager"].includes(me.data?.role ?? "");
-  // مرآة بوّابة الخادم: settle = cashierProcedure = requireRole("cashier","manager") وadmin يمرّ ضمنياً.
-  const canSettle = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
+  const role = me.data?.role as RoleKey | undefined;
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const isManager = !!role && moduleAccessAllowed(role, override, "store", "FULL", ["manager"]);
+  const canRequestWriteOff = role === "admin";
+  const canReviewWriteOff = !!role && moduleAccessAllowed(
+    role,
+    override,
+    "store",
+    "FULL",
+    ["manager"],
+  );
+  // مرآة deliveryCashierProcedure بما فيها المنح الصريح.
+  const canSettle = !!role && moduleAccessAllowed(role, override, "store", "FULL", ["cashier", "manager"]);
   const utils = trpc.useUtils();
   const list = trpc.delivery.listParties.useQuery({});
   const [showCreate, setShowCreate] = useState(false);
@@ -78,6 +90,16 @@ export default function DeliveryParties() {
         <StatCard label="عدد الجهات" value={String(kpis.count)} icon={Users} />
         <StatCard label="أقدم مستحق" value={kpis.oldest != null ? `${kpis.oldest} يوم` : "—"} icon={Truck} tone={kpis.oldest != null && kpis.oldest > 14 ? "warning" : "default"} />
       </div>
+
+      {canReviewWriteOff && (
+        <WriteOffApprovalQueue
+          userId={Number(me.data?.id ?? 0)}
+          onChanged={() => {
+            void utils.delivery.listParties.invalidate();
+            void utils.delivery.listWriteOffRequests.invalidate();
+          }}
+        />
+      )}
 
       <ListToolbar
         title="الجهات"
@@ -204,11 +226,11 @@ export default function DeliveryParties() {
                               kind: "reverse",
                               label: "شطب",
                               variant: "destructive",
-                              hidden: !isManager,
+                              hidden: !canRequestWriteOff,
                               disabled: bal <= 0,
                               disabledReason: "لا يوجد عجز قابل للشطب",
                               onSelect: () => setWriteOffFor(p),
-                              gate: { managerOnly: true },
+                              gate: { roles: ["admin"] },
                             },
                           ]}
                         />
@@ -260,10 +282,10 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
   return (
     <Modal title="جهة توصيل جديدة" onClose={onClose}>
       <label className="mb-1.5 block text-sm font-bold">النوع</label>
-      <select className="mb-3 h-11 w-full rounded-md border bg-transparent px-3 text-sm" value={partyType} onChange={(e) => setPartyType(e.target.value as typeof partyType)}>
+      <AppSelect className="mb-3 h-11 px-3 text-sm" value={partyType} onValueChange={(next) => setPartyType(next as typeof partyType)}>
         <option value="INDIVIDUAL">مندوب فرد</option>
         <option value="COMPANY">شركة توصيل</option>
-      </select>
+      </AppSelect>
       <label className="mb-1.5 block text-sm font-bold">الاسم</label>
       <Input value={name} onChange={(e) => setName(e.target.value)} className="mb-3 h-11" />
       <label className="mb-1.5 block text-sm font-bold">الهاتف</label>
@@ -271,12 +293,12 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
       <label className="mb-1.5 block text-sm font-bold">أجرة توصيل افتراضية (د.ع)</label>
       <MoneyInput value={defaultFee} onChange={setDefaultFee} className="mb-3 h-11 text-end tabular-nums" ariaLabel="الأجرة الافتراضية" />
       <label className="mb-1.5 block text-sm font-bold">حساب بوابة الجهة (اختياري)</label>
-      <select className="mb-1 h-11 w-full rounded-md border bg-transparent px-3 text-sm" value={userId ?? ""} onChange={(e) => setUserId(e.target.value ? Number(e.target.value) : null)}>
+      <AppSelect className="mb-1 h-11 px-3 text-sm" value={String(userId ?? "")} onValueChange={(next) => setUserId(next ? Number(next) : null)}>
         <option value="">بلا حساب دخول</option>
         {available.map((a) => (
           <option key={a.id} value={a.id}>{a.name}{a.username ? ` (${a.username})` : ""}</option>
         ))}
-      </select>
+      </AppSelect>
       <p className="mb-4 text-xs text-muted-foreground">
         {partyType === "COMPANY"
           ? "الحساب الأول يصبح مديراً للشركة؛ وبعد الإنشاء يمكن إضافة عدة سائقين ومديرين ومحاسبين من صفحة الجهة."
@@ -319,6 +341,8 @@ function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () =>
 function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () => void; onDone: () => void }) {
   const [amount, setAmount] = useState(String(Number(party.currentBalance ?? 0)));
   const [reason, setReason] = useState("");
+  const [evidenceNote, setEvidenceNote] = useState("");
+  const [attachmentUrl, setAttachmentUrl] = useState("");
   // ٩/٨ — الشطب الموجَّه: عجز إرساليةٍ بعينها يُشطَب باختيارها فتُقفَل (WRITTEN_OFF) وتُقيَّد
   // فاتورتُها وتُبرَّأ ذمّة عميلها (المندوب حصّل وضيّع — الزبون بريء). بدونه كانت الإرسالية
   // تبقى «زومبي» في شاشة التوريد تقبل توريداً لاحقاً يقلب الرصيد سالباً. «عهدة سائبة» تبقى
@@ -340,28 +364,36 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
   const chosenRemaining = chosen ? Math.max(0, Number(chosen.codAmount) - Number(chosen.collectedAmount)) : null;
   // IDEMPOTENCY (تدقيق ٢/٧): مفتاح ثابت لكل جلسة حوار — النقر المزدوج لا يشطب العجز مرّتين.
   const [reqId] = useState(() => crypto.randomUUID());
-  const m = trpc.delivery.writeOff.useMutation({ onSuccess: () => { notify.ok("شُطِب العجز"); onDone(); }, onError: (e) => notify.err(e) });
+  const m = trpc.delivery.writeOff.useMutation({ onSuccess: () => { notify.ok("أُرسل طلب الشطب بانتظار اعتماد مستقل"); onDone(); }, onError: (e) => notify.err(e) });
   const effAmount = chosenRemaining != null ? chosenRemaining.toFixed(2) : amount;
   const submit = async () => {
     const ok = await confirm({
       variant: "danger",
-      title: "شطب عجز عهدة",
+      title: "إرسال طلب شطب عجز",
       description: chosen
-        ? `ستُقفل الإرسالية ${chosen.consignmentNumber} وتُقيَّد فاتورتها مسدَّدة، ويُشطب ${fmt(effAmount)} د.ع من عهدة «${party.name}» كخسارة لا رجعة فيها (الزبون دفع للمندوب والمندوب ضيّع النقد).`
-        : `سيُشطب ${fmt(effAmount)} د.ع من العهدة السائبة لـ«${party.name}» كمصروف (خسارة) لا رجعة فيه.`,
-      confirmText: "شطب",
+        ? `سيُنشأ طلب لمراجعة شطب الإرسالية ${chosen.consignmentNumber} بقيمة ${fmt(effAmount)} د.ع. لن تُغلق الإرسالية ولن يتغير أي رصيد أو قيد قبل اعتماد مراجع توصيل مستقل ومخوّل.`
+        : `سيُنشأ طلب لمراجعة شطب ${fmt(effAmount)} د.ع من العهدة السائبة لـ«${party.name}». لا أثر مالي قبل الاعتماد المستقل.`,
+      confirmText: "إرسال الطلب",
       requireText: party.name,
     });
-    if (ok) m.mutate({ partyId: party.id, amount: effAmount, reason: reason.trim(), consignmentId: chosen ? chosen.id : undefined, clientRequestId: reqId });
+    if (ok) m.mutate({
+      partyId: party.id,
+      amount: effAmount,
+      reason: reason.trim(),
+      evidenceNote: evidenceNote.trim() || undefined,
+      attachmentUrl: attachmentUrl.trim() || undefined,
+      consignmentId: chosen ? chosen.id : undefined,
+      clientRequestId: reqId,
+    });
   };
   return (
-    <Modal title={`شطب عجز «${party.name}»`} onClose={onClose}>
-      <p className="mb-3 text-sm text-destructive">إبراء دَين غير قابل للتحصيل — يُقيَّد خسارةً. (مدير فقط)</p>
+    <Modal title={`طلب شطب عجز «${party.name}»`} onClose={onClose}>
+      <p className="mb-3 text-sm text-destructive">هذا مستند طلب فقط؛ لا يتغير الرصيد ولا الإرسالية قبل اعتماد مراجع توصيل مستقل ومخوّل.</p>
       <label className="mb-1.5 block text-sm font-bold">ما الذي يُشطب؟</label>
-      <select
-        className="mb-3 h-11 w-full rounded-md border bg-transparent px-3 text-sm"
+      <AppSelect
+        className="mb-3 h-11 px-3 text-sm"
         value={consignmentId}
-        onChange={(e) => setConsignmentId(e.target.value)}
+        onValueChange={(next) => setConsignmentId(next)}
       >
         <option value="">عهدة سائبة (غير مرتبطة بإرسالية مفتوحة)</option>
         {openRows.map((c) => (
@@ -369,7 +401,7 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
             إرسالية {c.consignmentNumber} — {c.invoiceNumber ?? ""} — متبقٍّ {fmt(String(Math.max(0, Number(c.codAmount) - Number(c.collectedAmount))))} د.ع
           </option>
         ))}
-      </select>
+      </AppSelect>
       <label className="mb-1.5 block text-sm font-bold">المبلغ المشطوب (د.ع)</label>
       <MoneyInput
         value={effAmount}
@@ -382,11 +414,108 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
         <p className="mb-2 text-xs text-muted-foreground">شطب الإرسالية يكون بكامل متبقّيها — تُقفل وتُقيَّد فاتورتها مسدَّدة وتُبرَّأ ذمّة العميل.</p>
       )}
       <label className="mb-1.5 block text-sm font-bold">السبب</label>
-      <Input value={reason} onChange={(e) => setReason(e.target.value)} className="mb-4 h-11" placeholder="سبب الشطب (٣ أحرف فأكثر)" />
+      <Input value={reason} onChange={(e) => setReason(e.target.value)} className="mb-3 h-11" placeholder="سبب الشطب (٣ أحرف فأكثر)" />
+      <label className="mb-1.5 block text-sm font-bold">وصف الإثبات</label>
+      <Input value={evidenceNote} onChange={(e) => setEvidenceNote(e.target.value)} className="mb-3 h-11" placeholder="محضر فقد/مطابقة أو مرجع المراجعة" />
+      <label className="mb-1.5 block text-sm font-bold">رابط المرفق (بديل عن الوصف)</label>
+      <Input value={attachmentUrl} onChange={(e) => setAttachmentUrl(e.target.value)} className="mb-4 h-11" placeholder="https://..." dir="ltr" />
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(effAmount) || Number(effAmount) <= 0 || reason.trim().length < 3} onClick={submit}>{m.isPending ? "جارٍ…" : "شطب"}</Button>
+        <Button className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(effAmount) || Number(effAmount) <= 0 || reason.trim().length < 3 || (!evidenceNote.trim() && !attachmentUrl.trim())} onClick={submit}>{m.isPending ? "جارٍ…" : "إرسال طلب الشطب"}</Button>
       </div>
     </Modal>
+  );
+}
+
+function WriteOffApprovalQueue({ userId, onChanged }: { userId: number; onChanged: () => void }) {
+  const pending = trpc.delivery.listWriteOffRequests.useQuery({ status: "PENDING" });
+  const [rejectReasons, setRejectReasons] = useState<Record<number, string>>({});
+  const approve = trpc.delivery.approveWriteOffRequest.useMutation({
+    onSuccess: () => { notify.ok("اعتُمد طلب الشطب وطُبّق الأثر ذرّياً"); onChanged(); },
+    onError: (e) => notify.err(e),
+  });
+  const reject = trpc.delivery.rejectWriteOffRequest.useMutation({
+    onSuccess: () => { notify.ok("رُفض طلب الشطب بلا أثر مالي"); onChanged(); },
+    onError: (e) => notify.err(e),
+  });
+  const rows = pending.data ?? [];
+  return (
+    <section className="rounded-xl border bg-card p-4" aria-label="طلبات شطب عهدة COD المعلقة">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 font-bold"><ShieldCheck className="size-4" aria-hidden /> مراجعة طلبات الشطب</h2>
+          <p className="text-xs text-muted-foreground">الطالب لا يعتمد طلبه، ومحتسب/محصل العهدة لا يراجع شطبها.</p>
+        </div>
+        {!pending.isError ? <Badge variant="outline">{rows.length} معلق</Badge> : null}
+      </div>
+      {pending.isLoading ? (
+          <p className="text-sm text-muted-foreground">جاري تحميل الطلبات…</p>
+      ) : pending.isError ? (
+        <ErrorState onRetry={() => void pending.refetch()} />
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground">لا طلبات شطب معلقة.</p>
+      ) : (
+        <div className="space-y-3">
+          {rows.map((row) => {
+            const own = Number(row.requestedBy) === userId;
+            const reason = rejectReasons[Number(row.id)] ?? "";
+            return (
+              <article key={row.id} className="rounded-lg border p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="font-bold">#{row.id} — {row.partyName} — {fmt(row.amount)} د.ع</p>
+                    <p className="text-xs text-muted-foreground">{row.consignmentNumber ? `إرسالية ${row.consignmentNumber}` : "عهدة سائبة"} · الطالب: {row.requesterName}</p>
+                    <p className="mt-1 text-sm">{row.reason}</p>
+                    <p className="text-xs text-muted-foreground">الإثبات: {row.evidenceNote ?? row.attachmentUrl ?? "—"}</p>
+                  </div>
+                  {own && <Badge variant="outline">طلبك — يلزم مراجع آخر</Badge>}
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto_auto]">
+                  <Input
+                    value={reason}
+                    onChange={(e) => setRejectReasons((old) => ({ ...old, [Number(row.id)]: e.target.value }))}
+                    placeholder="سبب الرفض (عند الرفض)"
+                    disabled={own}
+                  />
+                  <Button
+                    size="sm"
+                    disabled={own || approve.isPending || reject.isPending}
+                    onClick={async () => {
+                      const ok = await confirm({
+                        variant: "danger",
+                        title: `اعتماد طلب الشطب #${row.id}`,
+                        description: `سيُطبّق الشطب بقيمة ${fmt(row.amount)} د.ع الآن داخل معاملة واحدة بعد إعادة مطابقة النسخة وفصل المهام.`,
+                        confirmText: "اعتماد وتطبيق",
+                      });
+                      if (ok) approve.mutate({
+                        id: Number(row.id),
+                        expectedVersion: Number(row.basePartyVersion),
+                        decisionKey: `writeoff-approve-${row.id}-${userId}`,
+                      });
+                    }}
+                  >
+                    <ShieldCheck className="size-4" aria-hidden /> اعتماد
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-destructive"
+                    disabled={own || reason.trim().length < 3 || approve.isPending || reject.isPending}
+                    onClick={() => reject.mutate({
+                      id: Number(row.id),
+                      expectedVersion: Number(row.basePartyVersion),
+                      decisionKey: `writeoff-reject-${row.id}-${userId}`,
+                      reason: reason.trim(),
+                    })}
+                  >
+                    <XCircle className="size-4" aria-hidden /> رفض
+                  </Button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }

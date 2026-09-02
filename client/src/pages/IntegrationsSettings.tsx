@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -979,15 +980,15 @@ function AutomationSettingsCard() {
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <label className="text-xs font-medium">وضع الفرز</label>
-            <select
+            <AppSelect
               value={draft.triageMode}
-              onChange={(e) => setDraft({ ...draft, triageMode: e.target.value as TriageMode })}
-              className="w-full h-9 border rounded-md px-2 text-sm bg-background"
+              onValueChange={(next) => setDraft({ ...draft, triageMode: next as TriageMode })}
+              className="h-9 px-2 text-sm"
             >
               <option value="AUTO_ALL">تلقائي للكلّ</option>
               <option value="KEYWORD_ONLY">حسب الكلمات المفتاحية فقط</option>
               <option value="MANUAL">يدوي بالكامل</option>
-            </select>
+            </AppSelect>
           </div>
           <div className="flex items-center justify-between rounded-md border px-3 h-9 self-end">
             <label className="text-xs font-medium">إنشاء مهام تلقائياً</label>
@@ -1145,13 +1146,13 @@ function TemplateSyncSection({ branches }: { branches: { id: number; name: strin
         <div className="flex flex-wrap items-end gap-2">
           <div className="space-y-1">
             <label className="text-xs font-medium">الفرع (لتحديد تكامل واتساب المصدر)</label>
-            <select
-              value={branchId || ""}
-              onChange={(e) => setBranchId(Number(e.target.value))}
-              className="h-9 border rounded-md px-2 text-sm bg-background"
+            <AppSelect
+              value={String(branchId || "")}
+              onValueChange={(next) => setBranchId(Number(next))}
+              className="h-9 px-2 text-sm"
             >
               {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <Button variant="outline" onClick={() => sync.mutate({ branchId })} disabled={sync.isPending || !branchId}>
             {sync.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : <RefreshCw aria-hidden className="size-4 me-1" />}
@@ -1378,7 +1379,7 @@ pnpm prod:deploy
                   <option value="ALL">كل الفروع</option>
                   {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
                 </AppSelect>
-                <Button variant="outline" onClick={clearFilters} disabled={!hasFilters}>مسح الفلاتر</Button>
+                <Button variant="outline" onClick={clearFilters} disabled={!hasFilters}>{FILTER_LABELS.reset}</Button>
               </div>
               <div className="mt-3 text-xs text-muted-foreground">
                 عرض {filteredIntegrations.length} من {summary.total} اتصال
@@ -1406,7 +1407,7 @@ pnpm prod:deploy
               <CardContent className="space-y-3 py-10 text-center">
                 <Search aria-hidden className="mx-auto size-6 text-muted-foreground" />
                 <div className="font-medium">لا توجد نتائج مطابقة</div>
-                <Button variant="outline" onClick={clearFilters}>مسح الفلاتر</Button>
+                <Button variant="outline" onClick={clearFilters}>{FILTER_LABELS.reset}</Button>
               </CardContent>
             </Card>
           ) : (

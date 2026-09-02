@@ -13,7 +13,7 @@
  *   - **لا تسقط طلبات الطيّ:** نداءٌ أثناء طيٍّ جارٍ يرفع علم إعادة تشغيل فيُعاد بعد الفراغ،
  *     وبلوغ سقف الدفعات يسلّم البقية إلى دورة متابعة منسّقة بدلاً من تركها معلّقة.
  * ========================================================================== */
-import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import {
   attendance,
   branches,
@@ -21,7 +21,6 @@ import {
   hrAttendancePunches,
   hrAttendanceSettings,
   hrFingerprintDevices,
-  users,
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
@@ -29,10 +28,13 @@ import { recordAttendance } from "../attendanceService";
 import { computeDayHours, DEFAULT_MAX_DAILY_HOURS, DEFAULT_NIGHT_CUTOFF_HOUR, type NightShiftOptions } from "./dayHours";
 import { DEFAULT_WORK_SCHEDULE, hoursForDay } from "../hr/attendancePay";
 import { createAppNotification } from "../appNotificationService";
+import { fullEmployeeName } from "@shared/hr";
 import {
-  buildAttendanceNotificationDeliveries,
+  buildAttendanceNotification,
+  buildAttendanceSupervisorNotification,
   type AttendanceMovement,
 } from "./attendanceNotification";
+import { listAttendanceSupervisorRecipientIds } from "./attendanceRecipients";
 
 function baghdadDate(): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -62,9 +64,14 @@ async function punchWorkplaceOf(
   employeeId: number,
   date: string,
   clock: string,
-): Promise<{ branchName: string | null; deviceName: string | null }> {
+): Promise<{
+  branchId: number | null;
+  branchName: string | null;
+  deviceName: string | null;
+}> {
   const [row] = await requireDb()
     .select({
+      branchId: hrFingerprintDevices.branchId,
       branchName: branches.name,
       deviceName: hrFingerprintDevices.name,
       deviceLocation: hrFingerprintDevices.location,
@@ -84,6 +91,7 @@ async function punchWorkplaceOf(
     .orderBy(asc(hrAttendancePunches.id))
     .limit(1);
   return {
+    branchId: row?.branchId == null ? null : Number(row.branchId),
     branchName: row?.branchName ?? row?.deviceLocation ?? null,
     deviceName: row?.deviceName ?? null,
   };
@@ -91,41 +99,6 @@ async function punchWorkplaceOf(
 
 function includeAttendanceWorkplace(): boolean {
   return process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE === "true";
-}
-
-async function attendanceAdminRecipientIds(
-  employeeBranchId: number | null,
-  employeeUserId: number | null,
-): Promise<number[]> {
-  const managerCondition =
-    employeeBranchId != null
-      ? and(
-          eq(users.role, "manager"),
-          eq(users.branchId, employeeBranchId),
-        )
-      : sql`FALSE`;
-  const rows = await requireDb()
-    .select({ id: users.id })
-    .from(users)
-    .where(
-      and(
-        eq(users.isActive, true),
-        or(eq(users.role, "admin"), eq(users.isOwner, true), managerCondition),
-        sql`(${users.accessExpiresAt} IS NULL OR ${users.accessExpiresAt} > NOW())`,
-      ),
-    );
-  return Array.from(
-    new Set(
-      rows
-        .map((row) => Number(row.id))
-        .filter(
-          (id) =>
-            Number.isInteger(id) &&
-            id > 0 &&
-            (employeeUserId == null || id !== employeeUserId),
-        ),
-    ),
-  );
 }
 
 /** إعدادات الاحتساب (صفّ مفرد) — الغياب = الافتراضي المعطَّل، فلا تفشل الوحدة قبل الهجرة/البذر. */
@@ -263,6 +236,8 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
           userId: employees.userId,
           branchId: employees.branchId,
           firstName: employees.firstName,
+          fatherName: employees.fatherName,
+          grandfatherName: employees.grandfatherName,
           lastName: employees.lastName,
           workSchedule: employees.workSchedule,
         })
@@ -307,15 +282,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
       // لا نوسم البصمات الخام معالَجة قبل أن يُحفظ إشعار الموظف وصندوق FCM. إذا تعذّر
       // الحفظ يبقى الصف معلّقاً؛ وإعادة الطيّ آمنة لأن recordAttendance وeventKey كلاهما
       // idempotent. هذه هي وصلة الاعتمادية بين ingest الجهاز وشاشة القفل.
-      if (g.date === baghdadDate()) {
-        const employeeUserId = empRow?.userId ?? null;
-        const adminRecipientUserIds = await attendanceAdminRecipientIds(
-          empRow?.branchId ?? null,
-          employeeUserId,
-        );
-        const employeeDisplayName = [empRow?.firstName, empRow?.lastName]
-          .filter((part): part is string => !!part?.trim())
-          .join(" ") || "موظّف";
+      if (g.date === baghdadDate() && empRow) {
         const events: Array<{ movement: AttendanceMovement; clock: string }> = [];
         if (day.checkIn) {
           events.push({ movement: "ATTENDANCE_CHECK_IN", clock: day.checkIn });
@@ -329,22 +296,70 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
             g.date,
             event.clock,
           );
-          const deliveries = buildAttendanceNotificationDeliveries({
-            employeeId: g.employeeId,
-            employeeUserId,
-            employeeDisplayName,
-            adminRecipientUserIds,
-            attendanceId: savedAttendance.id,
-            attendanceDate: g.date,
-            movement: event.movement,
-            clock: event.clock,
-            // بصمة الحضور ناجحة بذاتها؛ نقص الخروج في منتصف اليوم ليس خطأً للمستخدم.
-            needsReview:
-              event.movement === "ATTENDANCE_CHECK_OUT" && day.needsReview,
-            ...workplace,
-            includeWorkplace: includeAttendanceWorkplace(),
+          // بصمة الحضور ناجحة بذاتها؛ نقص الخروج في منتصف اليوم ليس خطأً للمستخدم.
+          const needsReview =
+            event.movement === "ATTENDANCE_CHECK_OUT" && day.needsReview;
+          if (empRow.userId) {
+            const notification = buildAttendanceNotification({
+              employeeId: g.employeeId,
+              attendanceDate: g.date,
+              movement: event.movement,
+              clock: event.clock,
+              needsReview,
+              ...workplace,
+              includeWorkplace: includeAttendanceWorkplace(),
+            });
+            await createAppNotification({
+              userId: empRow.userId,
+              kind: "ATTENDANCE",
+              family: "EMPLOYEE",
+              title: notification.title,
+              body: notification.body,
+              route: "/hr?tab=attendance",
+              eventKey: notification.eventKey,
+              entityType: "attendance",
+              entityId: savedAttendance.id,
+              requiresAction: notification.requiresAction,
+              lockScreenSafe: true,
+              push: true,
+            });
+          }
+
+          const supervisorIds = await listAttendanceSupervisorRecipientIds({
+            employeeUserId: empRow.userId == null ? null : Number(empRow.userId),
+            branchId:
+              empRow.branchId == null
+                ? workplace.branchId
+                : Number(empRow.branchId),
           });
-          await Promise.all(deliveries.map((delivery) => createAppNotification(delivery)));
+          for (const supervisorUserId of supervisorIds) {
+            const notification = buildAttendanceSupervisorNotification({
+              recipientUserId: supervisorUserId,
+              employeeId: g.employeeId,
+              employeeName: fullEmployeeName(empRow),
+              attendanceDate: g.date,
+              movement: event.movement,
+              clock: event.clock,
+              needsReview,
+              branchName: workplace.branchName,
+              deviceName: workplace.deviceName,
+            });
+            await createAppNotification({
+              userId: supervisorUserId,
+              kind: "ATTENDANCE",
+              family: "ADMIN",
+              title: notification.title,
+              body: notification.body,
+              route: "/hr?tab=attendance",
+              eventKey: notification.eventKey,
+              entityType: "attendance",
+              entityId: savedAttendance.id,
+              requiresAction: notification.requiresAction,
+              // اعتماد المالك صريح: يظهر اسم الموظف وحركته للمدير خارج التطبيق.
+              lockScreenSafe: true,
+              push: true,
+            });
+          }
         }
       }
       await db

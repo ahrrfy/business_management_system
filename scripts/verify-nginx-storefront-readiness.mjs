@@ -94,6 +94,9 @@ export async function verifyStorefrontOrigin(rawOrigin, options = {}) {
   if (!Number.isSafeInteger(settings.fulfillmentBranchId) || settings.fulfillmentBranchId < 1) {
     throw smokeError("STOREFRONT_SMOKE_SETTINGS_NOT_READY", origin, "storefront.settings");
   }
+  if (settings.orderingEnabled !== true || typeof settings.turnstileSiteKey !== "string" || settings.turnstileSiteKey.trim() === "") {
+    throw smokeError("STOREFRONT_SMOKE_ORDERING_NOT_READY", origin, "storefront.settings");
+  }
   if (!Array.isArray(categories)) {
     throw smokeError("STOREFRONT_SMOKE_CATEGORIES_INVALID", origin, "storefront.categories");
   }
@@ -121,10 +124,39 @@ export async function verifyStorefrontOrigin(rawOrigin, options = {}) {
     throw smokeError("STOREFRONT_SMOKE_CATALOG_INVALID", origin, "storefront.catalog");
   }
 
+  const quotedProductUnitId = catalog.items.find((item) =>
+    Number.isSafeInteger(item?.productUnitId) && item.productUnitId > 0
+  )?.productUnitId;
+  if (!quotedProductUnitId) {
+    throw smokeError("STOREFRONT_SMOKE_CATALOG_INVALID", origin, "storefront.catalog", "productUnitId");
+  }
+  // Read-only pricing probe: exercises fulfillment, published sell-unit, stock, price and
+  // delivery dependencies without creating or reserving an order.
+  const quote = await readTrpcJson(fetchImpl, origin, "storefront.quoteOrder", {
+    governorate: "baghdad",
+    lines: [{ productUnitId: quotedProductUnitId, quantity: 1 }],
+  }, timeoutMs);
+  const money = /^\d+(?:\.\d{2})$/;
+  if (
+    !quote ||
+    !Array.isArray(quote.lines) ||
+    quote.lines.length !== 1 ||
+    quote.lines[0]?.productUnitId !== quotedProductUnitId ||
+    quote.lines[0]?.quantity !== 1 ||
+    !money.test(quote.lines[0]?.unitPrice ?? "") ||
+    !money.test(quote.lines[0]?.lineTotal ?? "") ||
+    !money.test(quote.subtotal ?? "") ||
+    !money.test(quote.deliveryFee ?? "") ||
+    !money.test(quote.total ?? "")
+  ) {
+    throw smokeError("STOREFRONT_SMOKE_QUOTE_INVALID", origin, "storefront.quoteOrder");
+  }
+
   return {
     origin,
     categories: categories.length,
     products: catalog.items.length,
+    quotedProductUnitId,
   };
 }
 
@@ -147,9 +179,32 @@ function fakeStorefrontFetch(overrides = {}) {
     }
     const procedure = url.pathname.split("/").at(-1);
     const values = {
-      "storefront.settings": overrides.settings ?? { isOpen: true, fulfillmentBranchId: 1 },
+      "storefront.settings": overrides.settings ?? {
+        isOpen: true,
+        fulfillmentBranchId: 1,
+        orderingEnabled: true,
+        turnstileSiteKey: "smoke-public-site-key",
+      },
       "storefront.categories": overrides.categories ?? [{ id: 1, name: "Ready", productCount: 1 }],
-      "storefront.catalog": overrides.catalog ?? { items: [{ productId: 1 }] },
+      "storefront.catalog": overrides.catalog ?? { items: [{ productId: 1, productUnitId: 11 }] },
+      "storefront.quoteOrder": overrides.quote ?? {
+        couponCode: null,
+        couponProgramName: null,
+        couponDiscount: "0.00",
+        lines: [{
+          productUnitId: 11,
+          quantity: 1,
+          retailUnitPrice: "1000.00",
+          discountPerUnit: "0.00",
+          unitPrice: "1000.00",
+          lineTotal: "1000.00",
+        }],
+        subtotal: "1000.00",
+        deliveryFee: "5000.00",
+        deliveryFree: false,
+        deliveryWaivedAmount: "0.00",
+        total: "6000.00",
+      },
     };
     const status = overrides.statuses?.[procedure] ?? 200;
     return new Response(JSON.stringify({ result: { data: { json: values[procedure] } } }), {
@@ -163,6 +218,7 @@ async function selftest() {
   const good = await verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch(), timeoutMs: 100 });
   assert.equal(good.categories, 1);
   assert.equal(good.products, 1);
+  assert.equal(good.quotedProductUnitId, 11);
   const both = await verifyStorefrontOrigins(
     ["https://internal.example", "https://public.example"],
     { fetchImpl: fakeStorefrontFetch(), timeoutMs: 100 },
@@ -175,6 +231,13 @@ async function selftest() {
   await assert.rejects(
     () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ settings: {} }), timeoutMs: 100 }),
     /STOREFRONT_SMOKE_SETTINGS_NOT_READY/,
+  );
+  await assert.rejects(
+    () => verifyStorefrontOrigin("https://store.example", {
+      fetchImpl: fakeStorefrontFetch({ settings: { isOpen: true, fulfillmentBranchId: 1, orderingEnabled: false, turnstileSiteKey: null } }),
+      timeoutMs: 100,
+    }),
+    /STOREFRONT_SMOKE_ORDERING_NOT_READY/,
   );
 
   await assert.rejects(
@@ -196,6 +259,17 @@ async function selftest() {
   await assert.rejects(
     () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ catalog: { items: [{ productId: 0 }] } }), timeoutMs: 100 }),
     /STOREFRONT_SMOKE_CATALOG_INVALID/,
+  );
+  await assert.rejects(
+    () => verifyStorefrontOrigin("https://store.example", {
+      fetchImpl: fakeStorefrontFetch({ statuses: { "storefront.quoteOrder": 503 } }),
+      timeoutMs: 100,
+    }),
+    /STOREFRONT_SMOKE_HTTP:store\.example:storefront\.quoteOrder:503/,
+  );
+  await assert.rejects(
+    () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ quote: { lines: [] } }), timeoutMs: 100 }),
+    /STOREFRONT_SMOKE_QUOTE_INVALID/,
   );
   await assert.rejects(
     () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ page: "forbidden" }), timeoutMs: 100 }),
@@ -222,7 +296,7 @@ async function runExternalSmoke() {
     try {
       const results = await verifyStorefrontOrigins(origins, options);
       for (const result of results) {
-        console.log(`storefront readiness: ${new URL(result.origin).hostname} OK categories=${result.categories} products=${result.products}`);
+        console.log(`storefront readiness: ${new URL(result.origin).hostname} OK categories=${result.categories} products=${result.products} quote=ok`);
       }
       return;
     } catch (error) {

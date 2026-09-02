@@ -738,6 +738,9 @@ export const catalogRouter = router({
           )
           .max(50)
           .optional(),
+        // «يُباع بالطلب» (0318): صنفٌ مخزنيّ يُسمح ببيعه قبل توريده — يُغذَّى بشراءٍ من مورّد
+        // أو إنتاجٍ داخليّ بوصفته. الحارس الدلاليّ (لا خدمة/بكج/أمانة) في `createProduct`.
+        allowBackorder: z.boolean().optional(),
         // bundles (٧/٧/٢٦): منتج مركّب (بكج). عند true يجب variants.length=1 + وحدة أساس واحدة + bundleComponents ≥1.
         isBundle: z.boolean().optional(),
         bundleComponents: z
@@ -1036,6 +1039,15 @@ export const catalogRouter = router({
         // اختياريّان بلا افتراض ⇒ غيابُهما يُبقي القيمة الحالية بلا مسّ (نمط PATCH).
         showInReception: z.boolean().optional(),
         showInPrintPos: z.boolean().optional(),
+        // (٣١/٨) تصحيحُ التصنيف بعد الإنشاء. الحقل كان **غائباً عن هذا المدخل** بينما شاشة
+        // `ProductEdit` تعرض تبديل «خِدمة (بلا مَخزون)» وترسله فعلاً ⇒ يُسقطه zod بصمتٍ
+        // (الافتراض `strip`)، فالتبديل يبدو عاملاً ولا يفعل شيئاً — «الشاشة تكذب» بعينها.
+        // وكان أثرُه أنّ خطأ تصنيفٍ واحداً عند الإنشاء يقفل الصنف إلى الأبد بلا مخرج.
+        // الحارس (رصيدٌ صفريّ) في `updateProductWithVariants`.
+        isService: z.boolean().optional(),
+        // «يُباع بالطلب» (0318): صفةُ صنفٍ مخزنيّ يُسمح ببيعه قبل توريده. نمط PATCH كسابقيه —
+        // غيابُه يُبقي القيمة. الحارس الدلاليّ (لا خدمة/بكج/أمانة) في `updateProductWithVariants`.
+        allowBackorder: z.boolean().optional(),
         isConsignment: z.boolean().optional(),
         consignorId: z.number().int().positive().nullish(),
         unitTemplate: z.array(updateUnitTemplateSchema).min(1),

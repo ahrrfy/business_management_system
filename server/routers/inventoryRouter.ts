@@ -54,20 +54,8 @@ import {
 } from "../services/inventory/costRevaluationRequest";
 import { withTx } from "../services/tx";
 import { retryOnDup } from "../lib/retryDup";
-import { inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
-
-/** تسميات عربية لأسباب الحركة اليدوية — تكتب في notes. */
-const REASON_LABELS = {
-  STOCK_TAKE: "جرد",
-  DAMAGE: "تالف",
-  SAMPLE: "عيّنة",
-  INTERNAL_USE: "استخدام داخلي",
-  GIFT: "إهداء",
-  CORRECTION: "تصحيح",
-  OTHER: "أخرى",
-} as const;
-type Reason = keyof typeof REASON_LABELS;
-const REASON_KEYS = Object.keys(REASON_LABELS) as [Reason, ...Reason[]];
+import { canSeeCostForUser, inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
+import { listBackorderShortfall } from "../services/inventory/backorderShortfall";
 
 const MOVEMENT_TYPES = ["IN", "OUT", "ADJUST", "RETURN", "TRANSFER_IN", "TRANSFER_OUT"] as const;
 
@@ -169,61 +157,6 @@ async function listStockTransfersFiltered(a: {
 }
 
 export const inventoryRouter = router({
-  transfer: inventoryWarehouseProcedure
-    .input(
-      z.object({
-        variantId: z.number().int().positive(),
-        fromBranchId: z.number().int().positive(),
-        toBranchId: z.number().int().positive(),
-        baseQuantity: z.number().int().positive(),
-        notes: z.string().optional(),
-      })
-    )
-    .mutation(async ({ input, ctx }) => {
-      // عزل الفرع: warehouse يُجبَر على أن يكون فرع المصدر فرعَه (لا يُفرغ مخزن فرع ليس له
-      // عبر استدعاء API مباشر). admin/manager يحترمان fromBranchId المُرسَل (نقل بين أي فرعين).
-      const elevated = ctx.user.role === "admin"; // «كتابة فرعه»: المدير لم يعُد عابر الفروع كتابةً (قرار المالك ٢٣/٧)
-      let fromBranchId = input.fromBranchId;
-      if (!elevated) {
-        if (ctx.user.branchId == null) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
-        }
-        if (Number(ctx.user.branchId) !== input.fromBranchId) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن نقل بضاعة من فرع ليس فرعك" });
-        }
-        fromBranchId = Number(ctx.user.branchId);
-      }
-      // منذ ١٤/٧ (تحويل بخطوتين): هذا الغلاف المفرد ينشئ سنداً «بالطريق» بسطر واحد — الوجهة
-      // تستلمه بمطابقة من شاشة التحويلات. أُبقي الـendpoint لاستقرار الـAPI (rbac tests قائمة).
-      const res = await retryOnDup(() =>
-        withTx((tx) =>
-          createStockTransfer(tx, {
-            fromBranchId,
-            toBranchId: input.toBranchId,
-            items: [{ variantId: input.variantId, baseQuantity: input.baseQuantity }],
-            notes: input.notes,
-            createdBy: ctx.user.id,
-          }),
-        ),
-      );
-      // entityType='transfer' لأن العملية تُعدّل صفّي مخزون (out+in) ومرجعها منطقياً «حدث نقل»
-      // لا صفّ stock مفرد؛ المفاتيح بصيغة كاملة (fromBranchId/toBranchId) لاتساق سجلّ التدقيق
-      // مع بقية الراوترات (sale/purchase). الكمية في الوحدة الأساس (baseQuantity).
-      await logAudit(ctx, {
-        action: "inventory.transfer",
-        entityType: "transfer",
-        entityId: input.variantId,
-        newValue: {
-          variantId: input.variantId,
-          fromBranchId,
-          toBranchId: input.toBranchId,
-          baseQuantity: input.baseQuantity,
-          notes: input.notes ?? null,
-        },
-      });
-      return res;
-    }),
-
   /**
    * تحويل سند بأسطر متعددة بين فرعين — ذرّي (كل الأسطر في معاملة واحدة، إمّا تُطبَّق كلها أو
    * لا شيء). يعيد استخدام transferBetweenBranches (قفل ثنائي تصاعدي لكل متغيّر) بلا قيد محاسبي.
@@ -480,6 +413,7 @@ export const inventoryRouter = router({
         ).map((user) => createAppNotification({
           userId: user.id,
           kind: "APPROVAL_REQUIRED",
+          family: "APPROVAL",
           title: "تسوية مخزون بانتظار قرار",
           body: `طلب #${res.requestId} · الفرع ${branchId}`,
           route: "/inventory?tab=stocktakes",
@@ -506,6 +440,7 @@ export const inventoryRouter = router({
         await createAppNotification({
           userId: request.createdBy,
           kind: "APPROVAL_REQUIRED",
+          family: "EMPLOYEE",
           title: "تم اعتماد تسوية المخزون",
           body: `الطلب #${input.id}`,
           route: "/inventory",
@@ -531,6 +466,7 @@ export const inventoryRouter = router({
         await createAppNotification({
           userId: request.createdBy,
           kind: "APPROVAL_REQUIRED",
+          family: "EMPLOYEE",
           title: "تم تحديث طلب تسوية المخزون",
           body: `الطلب #${input.id}`,
           route: "/inventory",
@@ -591,6 +527,7 @@ export const inventoryRouter = router({
         ).map((user) => createAppNotification({
           userId: user.id,
           kind: "APPROVAL_REQUIRED",
+          family: "APPROVAL",
           title: "إعادة تقييم تكلفة بانتظار قرار",
           body: `طلب #${res.requestId} · ${res.oldCost} ← ${res.newCost} · أثر ${res.expectedValueDelta}`,
           route: "/inventory",
@@ -888,30 +825,6 @@ export const inventoryRouter = router({
       });
     }),
 
-  stockByBranch: inventoryReadProcedure
-    .input(
-      z.object({
-        branchId: z.number().int().positive(),
-        // ترقيم اختياري لتقييد الحجم عند الفروع الكبيرة. غير مُمرَّر ⇒ بلا حدّ (السلوك السابق محفوظ،
-        // فلا قطع صامت). الترتيب الثابت أدناه يجعل limit/offset حتمياً متى استُعملا.
-        limit: z.number().int().positive().max(5000).optional(),
-        offset: z.number().int().nonnegative().optional(),
-      }),
-    )
-    .query(async ({ input, ctx }) => {
-      const db = getDb();
-      if (!db) return [];
-      // «قراءة الكل» (قرار المالك ٢٣/٧): المدير يقرأ مخزون أيّ فرع (إشراف) — scopedBranchId=null له فيمرّ input.branchId.
-      const branchId = ctx.scopedBranchId ?? input.branchId;
-      const q = db
-        .select()
-        .from(branchStock)
-        .where(eq(branchStock.branchId, branchId))
-        .orderBy(asc(branchStock.variantId));
-      if (input.limit != null) return q.limit(input.limit).offset(input.offset ?? 0);
-      return q;
-    }),
-
   movements: inventoryReadProcedure
     .input(z.object({ variantId: z.number().int().positive().optional(), branchId: z.number().int().positive().optional(), limit: z.number().int().positive().max(500).default(100) }))
     .query(async ({ input, ctx }) => {
@@ -1081,6 +994,39 @@ export const inventoryRouter = router({
    * عزل الفرع: الكاشير/المخزن مُجبَران بفرعهما (scopedBranchId)؛ المدير بفرعه (طلب فرع آخر = FORBIDDEN،
    * نمط onHand)؛ الأدمن يختار فرعاً أو يمرّر بلا فرع = كل الفروع.
    */
+  /**
+   * «المُسنَد المطلوب توريده» — أصناف «يُباع بالطلب» (0318) التي بيعت ولم تُورَّد.
+   *
+   * نطاقُ الفرع نسخةٌ حرفية من `reorderAlerts` المجاور (نفس القائمة، نفس المخاطر) كي لا ينحرف
+   * عزلُ الفرع بين شاشتَي نقصٍ متجاورتين. والتكلفة تُحجَب لمن لا يملك رؤيتها — الشاشة تبقى
+   * مفيدةً لأمين المخزن (يرى **ماذا** يلزم) بلا كشف الهامش.
+   */
+  backorderShortfall: inventoryReadProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().int().positive().nullish(),
+          limit: z.number().int().positive().max(500).default(200),
+          offset: z.number().int().min(0).default(0),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId =
+        ctx.scopedBranchId ??
+        input?.branchId ??
+        (ctx.user.role === "admin" ? null : ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+      if (branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      return listBackorderShortfall({
+        branchId,
+        includeCost: canSeeCostForUser(ctx.user),
+        limit: input?.limit ?? 200,
+        offset: input?.offset ?? 0,
+      });
+    }),
+
   reorderAlerts: inventoryReadProcedure
     .input(
       z
@@ -1299,30 +1245,4 @@ export const inventoryRouter = router({
     return { reorderCount, seasonBelowTargetCount };
   }),
 
-  /**
-   * عقد API قديم للحركات اليدوية. يبقى لاستقرار العملاء لكنه يفشل مغلقاً دائماً:
-   * الزيادة تحتاج مستند شراء/مرتجع حقيقي، والتصحيح يمرّ بطلب تسوية ثنائي الاعتماد.
-   */
-  createManualMovement: inventoryWarehouseProcedure
-    .input(
-      z.object({
-        variantId: z.number().int().positive(),
-        branchId: z.number().int().positive(),
-        movementType: z.enum(["IN", "OUT", "RETURN"]),
-        productUnitId: z.number().int().positive(),
-        quantity: z.string().min(1),
-        reason: z.enum(REASON_KEYS),
-        notes: z.string().max(500).optional(),
-        // idempotency (تدقيق ١٧/٧): إعادة إرسال شبكية تكرّر الخصم/الإضافة + قيد ADJUST — نمنعها بمفتاح.
-        clientRequestId: z.string().min(1).max(64).optional(),
-      })
-    )
-    .mutation(async ({ input, ctx }) => {
-      // لا زيادة ولا شطب بلا مصدر: كل التصحيحات تمرّ بمسار التسوية المعتمَد.
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message:
-          "لا تُنشأ كمية مخزون يدوياً بلا مستند مصدر. الشراء والمرتجعات تُسجّل من شاشاتها، وأي تصحيح يمرّ بطلب «تسوية الرصيد» ويعتمده مسؤول آخر.",
-      });
-    }),
 });

@@ -1,10 +1,13 @@
 // عقود حزمة خدمات محطة خدمة الزبائن (Reception) — ش١ من الوثيقة الحاكمة
 // docs/reception-cashier-system-design-2026-08-05.md §٦-§٧.
 
-export type ReceptionDeliveryState = "ALL" | "NOT_DISPATCHED" | "DISPATCHED" | "DELIVERED";
+export type ReceptionDeliveryState =
+  | "ALL" | "NOT_DISPATCHED" | "DISPATCHED" | "DELIVERED";
 /** UNSETTLED = غير مسدَّدة (معلّقة + جزئية معاً) — رقاقة الطابور الشائعة. */
-export type ReceptionPaymentState = "ALL" | "UNSETTLED" | "UNPAID" | "PARTIAL" | "PAID";
-export type ReceptionPayMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM";
+export type ReceptionPaymentState =
+  | "ALL" | "UNSETTLED" | "UNPAID" | "PARTIAL" | "PAID";
+export type ReceptionPayMethod =
+  | "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM";
 
 export interface ReceptionInvoiceQueueInput {
   branchId: number;
@@ -26,5 +29,8 @@ export interface CollectOnInvoiceInput {
   amount: string;
   method: ReceptionPayMethod;
   reference?: string | null;
+  /** محاولة SALES_COLLECTION مؤكدة؛ إلزامية لكل قبض غير نقدي مدعوم. */
+  externalPaymentAttemptId?: number | null;
+  externalPaymentDeviceId?: string | null;
   clientRequestId: string;
 }

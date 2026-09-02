@@ -30,72 +30,6 @@ afterEach(() => {
 });
 
 describe("تصريف مهام عامل جسر الحضور", () => {
-  it("يوجّه حدث البصمة للموظف وللإدارة باسم الموظف ولا يخلطه بدخول الحساب", async () => {
-    const { buildAttendanceNotificationDeliveries } = await import(
-      "../attendanceNotification"
-    );
-
-    const deliveries = buildAttendanceNotificationDeliveries({
-      employeeId: 91,
-      employeeUserId: 9,
-      employeeDisplayName: "أحمد علي",
-      adminRecipientUserIds: [1, 2, 9, 2],
-      attendanceId: 501,
-      attendanceDate: "2026-09-02",
-      movement: "ATTENDANCE_CHECK_IN",
-      clock: "08:05",
-      needsReview: false,
-    });
-
-    expect(deliveries).toEqual([
-      expect.objectContaining({
-        userId: 9,
-        title: "تم تسجيل الحضور",
-        eventKey: "attendance:91:2026-09-02:ATTENDANCE_CHECK_IN",
-        push: true,
-      }),
-      expect.objectContaining({
-        userId: 1,
-        title: "أحمد علي سجل حضور",
-        eventKey:
-          "attendance-admin:91:2026-09-02:ATTENDANCE_CHECK_IN:1",
-        push: true,
-      }),
-      expect.objectContaining({
-        userId: 2,
-        title: "أحمد علي سجل حضور",
-        eventKey:
-          "attendance-admin:91:2026-09-02:ATTENDANCE_CHECK_IN:2",
-        push: true,
-      }),
-    ]);
-
-    const checkOutDeliveries = buildAttendanceNotificationDeliveries({
-      employeeId: 91,
-      employeeUserId: 9,
-      employeeDisplayName: "أحمد علي",
-      adminRecipientUserIds: [1],
-      attendanceId: 501,
-      attendanceDate: "2026-09-02",
-      movement: "ATTENDANCE_CHECK_OUT",
-      clock: "16:05",
-      needsReview: false,
-    });
-
-    expect(checkOutDeliveries).toEqual([
-      expect.objectContaining({
-        userId: 9,
-        title: "تم تسجيل الانصراف",
-      }),
-      expect.objectContaining({
-        userId: 1,
-        title: "أحمد علي سجل انصراف",
-        eventKey:
-          "attendance-admin:91:2026-09-02:ATTENDANCE_CHECK_OUT:1",
-      }),
-    ]);
-  });
-
   it("لا يرسل إشعاراً إدارياً عند تسجيل الدخول إلى الحساب", async () => {
     const createAppNotification = vi.fn();
     const db = {
@@ -506,13 +440,8 @@ describe("تصريف مهام عامل جسر الحضور", () => {
     }
   });
 
-  it("يحفظ إشعار العامل وnative outbox ويطلق Web Push دون انتظاره", async () => {
-    const pushStarted = deferred();
-    const sendPushToUser = vi.fn(() => {
-      pushStarted.resolve();
-      // قناة PWA قد تتأخر؛ لا يجوز أن تحجز طيّ الحضور أو مهلة shutdown.
-      return new Promise<never>(() => undefined);
-    });
+  it("يحفظ إشعار العامل وصندوقي native/Web Push دون انتظار الشبكة", async () => {
+    const sendPushToUser = vi.fn(() => new Promise<never>(() => undefined));
     const inserted: unknown[] = [];
     const tx = {
       insert: vi.fn(() => ({
@@ -551,17 +480,22 @@ describe("تصريف مهام عامل جسر الحضور", () => {
       lockScreenSafe: true,
       push: true,
     });
-    await pushStarted.promise;
-
-    let settled = false;
-    void creating.then(() => {
-      settled = true;
-    });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(inserted).toHaveLength(2);
-    expect(sendPushToUser).toHaveBeenCalledOnce();
-    expect(settled).toBe(true);
     await expect(creating).resolves.toEqual({ created: true });
+    expect(inserted).toHaveLength(3);
+    expect(inserted[0]).toEqual(
+      expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
+    );
+    expect(inserted[1]).toEqual(
+      expect.objectContaining({
+        environment: expect.any(String),
+        payload: expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
+      }),
+    );
+    expect(inserted[2]).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ kind: "ATTENDANCE_CHECK_IN" }),
+      }),
+    );
+    expect(sendPushToUser).not.toHaveBeenCalled();
   });
 });

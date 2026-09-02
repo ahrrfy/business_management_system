@@ -8,6 +8,7 @@ import {
   normalizeNativePushPayload,
   sendNativePushToUser,
   type NativePushEnvironment,
+  type NativePushFamily,
   type NativePushPayloadInput,
 } from "./nativePushService";
 
@@ -89,6 +90,7 @@ function parsePayload(value: unknown): NativePushPayloadInput {
           ? "information"
           : ("" as never),
     sensitive: raw.sensitive === true || raw.sensitive === "true",
+    family: typeof raw.family === "string" ? raw.family as NativePushFamily : undefined,
   });
   return {
     notificationId: normalized.notificationId,
@@ -98,6 +100,7 @@ function parsePayload(value: unknown): NativePushPayloadInput {
     destination: normalized.destination,
     urgency: normalized.urgency,
     sensitive: normalized.sensitive === "true",
+    family: normalized.family,
   };
 }
 

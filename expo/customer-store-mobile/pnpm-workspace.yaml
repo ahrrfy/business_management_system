@@ -1,0 +1,5 @@
+# يُعلن هذا المشروع "workspace root" مستقلاً — بدونه pnpm يمشي إلى الأعلى ويكتشف
+# pnpm-workspace.yaml في جذر ERP فيثبّت الحزم إلى `../../node_modules` (خارج المشروع)
+# وExpo لا يجد `./node_modules/expo-router` في READ_APP_CONFIG.
+# راجع EAS build 9ffef8f5 fail log ("Failed to resolve plugin for module 'expo-router'").
+packages: []

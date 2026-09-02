@@ -9,6 +9,9 @@
  * أفعال markIntentional/markIgnored محجوبة).
  */
 import { useState } from "react";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Link } from "wouter";
 import { AlertTriangle, CheckCircle2, ExternalLink, XCircle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -148,36 +151,46 @@ export default function CatalogAnomalies() {
         </div>
       )}
 
-      {/* الفلاتر */}
-      <Card>
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
-          <Input
-            placeholder="بحث بالمنتج/SKU/رقم المتغيّر (في الصفحة المعروضة)…"
+      <FilterShell
+        columns={3}
+        activeCount={(search ? 1 : 0) + (codeFilter ? 1 : 0) + (sevFilter ? 1 : 0) + (includeOverridden ? 1 : 0)}
+        onReset={() => { setSearch(""); setCodeFilter(""); setSevFilter(""); setIncludeOverridden(false); setPage(0); }}
+        headerActions={
+          <Button variant="outline" size="sm" disabled={total === 0 || exporting} onClick={() => void exportAll()}>
+            {exporting ? ACTION_LABELS.printing : "تصدير Excel (الكل)"}
+          </Button>
+        }
+        toggles={
+          <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer">
+            <input type="checkbox" className="size-4" checked={includeOverridden} onChange={(e) => { setIncludeOverridden(e.target.checked); setPage(0); }} />
+            تضمين المستثنى
+          </label>
+        }
+      >
+        <FilterField label="بحث (منتج / SKU / رقم متغيّر)" hint="ضمن الصفحة المعروضة" wide>
+          <SearchField
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="max-w-xs h-8"
+            onChange={setSearch}
+            placeholder="اسم المنتج أو SKU…"
           />
-          <select value={codeFilter} onChange={(e) => { setCodeFilter(e.target.value as LensCode | ""); setPage(0); }} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+        </FilterField>
+        <FilterField label="العدسة">
+          <AppSelect value={codeFilter} onValueChange={(v) => { setCodeFilter(v as LensCode | ""); setPage(0); }}>
             <option value="">كل العدسات</option>
             {(Object.keys(LENS_LABELS) as LensCode[]).map((k) => (
               <option key={k} value={k}>{LENS_LABELS[k]}</option>
             ))}
-          </select>
-          <select value={sevFilter} onChange={(e) => { setSevFilter(e.target.value as Severity | ""); setPage(0); }} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+          </AppSelect>
+        </FilterField>
+        <FilterField label="الحدّة">
+          <AppSelect value={sevFilter} onValueChange={(v) => { setSevFilter(v as Severity | ""); setPage(0); }}>
             <option value="">كل الحدّات</option>
             <option value="blocker">حاجز</option>
             <option value="warning">تحذير</option>
             <option value="info">إخبار</option>
-          </select>
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-            <input type="checkbox" checked={includeOverridden} onChange={(e) => { setIncludeOverridden(e.target.checked); setPage(0); }} />
-            تضمين المستثنى
-          </label>
-          <Button variant="outline" size="sm" className="me-auto h-8" disabled={total === 0 || exporting} onClick={() => void exportAll()}>
-            {exporting ? "جارٍ التحضير…" : "تصدير Excel (الكل)"}
-          </Button>
-        </CardContent>
-      </Card>
+          </AppSelect>
+        </FilterField>
+      </FilterShell>
 
       {/* لافتة اقتطاع: عدسة بلغ عدد نتائجها الخام سقف limitPerLens ⇒ قد توجد نتائج أخرى لم تُكتشف من المصدر. */}
       {(listQ.data?.truncatedLenses?.length ?? 0) > 0 && (
@@ -185,7 +198,7 @@ export default function CatalogAnomalies() {
           <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
           <span>
             العدسات {listQ.data!.truncatedLenses.map((c) => LENS_LABELS[c as LensCode] ?? c).join("، ")} بلغت سقف الكشف
-            (٢٠٠) — قد توجد نتائج إضافية غير ظاهرة. ضيّق الفلتر بعدسة واحدة لرؤية الكل.
+            (200) — قد توجد نتائج إضافية غير ظاهرة. ضيّق الفلتر بعدسة واحدة لرؤية الكل.
           </span>
         </div>
       )}
@@ -327,17 +340,17 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
       <CardHeader className="flex flex-row items-center justify-between gap-2">
         <CardTitle className="text-base">سجلّ تغيّرات التكلفة (Trigger BEFORE UPDATE)</CardTitle>
         <div className="flex items-center gap-2">
-          <select value={minSeverity} onChange={(e) => setMinSeverity(e.target.value as typeof minSeverity)} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+          <AppSelect value={minSeverity} onValueChange={(v) => setMinSeverity(v as typeof minSeverity)} className="h-8 w-36 text-xs">
             <option value="info">إخبار فأعلى</option>
             <option value="warning">تحذير فأعلى</option>
             <option value="blocker">حاجز فأعلى</option>
             <option value="catastrophic">كارثيّ فقط</option>
-          </select>
-          <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
-            <option value={7}>٧ أيام</option>
-            <option value={30}>٣٠ يوماً</option>
-            <option value={90}>٩٠ يوماً</option>
-          </select>
+          </AppSelect>
+          <AppSelect value={String(days)} onValueChange={(v) => setDays(Number(v))} className="h-8 w-28 text-xs">
+            <option value={7}>7 أيام</option>
+            <option value={30}>30 يوماً</option>
+            <option value={90}>90 يوماً</option>
+          </AppSelect>
         </div>
       </CardHeader>
       <CardContent>
@@ -434,7 +447,7 @@ function MarkOverrideDialog({
         </DialogHeader>
         <div className="space-y-3">
           <div>
-            <label className="text-xs font-medium">التبرير <span className="text-[var(--sem-neg)]">*</span> (≥ ١٠ محارف)</label>
+            <label className="text-xs font-medium">التبرير <span className="text-[var(--sem-neg)]">*</span> (≥ 10 محارف)</label>
             <Textarea
               value={justification}
               onChange={(e) => setJustification(e.target.value)}

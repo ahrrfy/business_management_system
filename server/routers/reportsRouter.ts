@@ -1093,7 +1093,15 @@ export const reportsRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getDayCloseReconciliation({ date: input.date, branchId });
+      return getDayCloseReconciliation({
+        date: input.date,
+        branchId,
+        actor: {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
+        },
+      });
     }),
 
   /** تقرير الإنتاج — مستندات الإنتاج المؤكَّدة + تفصيل الكلفة. manager + عزل الفرع. */

@@ -6,6 +6,7 @@ import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, S
 import { IraqiPhoneInput } from "@/components/iraqi-phone-input";
 import { ScreenContainer } from "@/components/screen-container";
 import { saveVerifiedCustomerSession } from "@/lib/customer-session";
+import { syncCustomerPushIdentity } from "@/lib/customer-notifications";
 import { confirmStorefrontPhoneOtp, sendStorefrontPhoneOtp } from "@/lib/firebase-phone-auth";
 import { LEGAL_ENABLED, openLegalPage } from "@/lib/legal-urls";
 import { claimStorefrontFirebaseCustomer } from "@/lib/storefront-api";
@@ -39,6 +40,7 @@ export default function VerifyPhoneScreen() {
       const verified = await confirmStorefrontPhoneOtp(code);
       const session = await claimStorefrontFirebaseCustomer({ firebaseIdToken: verified.firebaseIdToken, displayName: name.trim() });
       await saveVerifiedCustomerSession(session);
+      await syncCustomerPushIdentity(session.token);
       router.replace("/loyalty" as never);
     } catch (error) {
       Alert.alert("تعذر إتمام التحقق", error instanceof Error ? error.message : "حاول مرة أخرى.");

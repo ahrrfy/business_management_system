@@ -8,14 +8,19 @@ import {
   Ban,
   CheckCircle2,
   Clock,
+  FileCheck2,
+  ImageIcon,
   Inbox as InboxIcon,
   MessageSquarePlus,
   Pause,
   Play,
+  RefreshCcw,
   RotateCcw,
+  ShieldCheck,
   UserCog,
+  XCircle,
 } from "lucide-react";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
@@ -24,7 +29,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   Dialog,
   DialogContent,
@@ -44,11 +51,27 @@ import {
   TASK_WRITE_ROLES,
   type TaskStatus,
 } from "@/pages/TasksHub";
+import { DESIGN_APPROVAL_EVIDENCE_LABELS } from "@shared/designApprovalEvidence";
+import { designApprovalSelfReviewBlocked } from "@/lib/designApprovalPolicy";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
 type TaskDetailData = RouterOutputs["tasks"]["get"];
 type TaskEvent = TaskDetailData["events"][number];
+type DesignApprovalByTask = RouterOutputs["workOrderDesignApproval"]["getByTask"];
+type DesignDecisionInput = RouterInputs["workOrderDesignApproval"]["decide"];
+
+type DesignDecision = DesignDecisionInput["decision"];
+type EvidenceType = DesignDecisionInput["evidence"]["type"];
+
+/**
+ * تسمياتُ الدليل صارت في قاموسٍ مشترك (`@shared/designApprovalEvidence`) بعد أن صار القرارُ
+ * يُتّخذ من بطاقة أمر الشغل أيضاً (١/٩/٢٦) — نسختان للتسمية = انجرافٌ مؤجَّل (§٥).
+ */
+const EVIDENCE_LABELS: Record<EvidenceType, string> = DESIGN_APPROVAL_EVIDENCE_LABELS;
+
+/** أُعيد تصديرُها من `@/lib/designApprovalPolicy` — مكوّنٌ لا يستورد صفحة. */
+export { designApprovalSelfReviewBlocked };
 
 const OPEN_STATUSES: TaskStatus[] = ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"];
 
@@ -196,6 +219,249 @@ function CancelDialog({ onClose, onConfirmed, pending }: { onClose: () => void; 
   );
 }
 
+function newDecisionKey(approvalId: number): string {
+  return `wo-design-decision-${approvalId}-${crypto.randomUUID()}`;
+}
+
+function DesignDecisionDialog({
+  record,
+  decision,
+  onClose,
+  onDecided,
+}: {
+  record: DesignApprovalByTask;
+  decision: DesignDecision;
+  onClose: () => void;
+  onDecided: () => Promise<void>;
+}) {
+  const [reason, setReason] = useState("");
+  const [evidenceType, setEvidenceType] = useState<EvidenceType>("WHATSAPP_MESSAGE");
+  const [evidenceReference, setEvidenceReference] = useState("");
+  const [replayInput, setReplayInput] = useState<DesignDecisionInput | null>(null);
+  const approvalId = Number(record.approval.id);
+
+  const decide = trpc.workOrderDesignApproval.decide.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(
+        result.replayed
+          ? "أُعيدت نتيجة القرار نفسه دون تكرار"
+          : decision === "APPROVED"
+            ? "اعتمد التصميم مع حفظ الدليل"
+            : "رُفض التصميم مع حفظ الدليل",
+      );
+      await onDecided();
+      onClose();
+    },
+    onError: (error) => notify.err(error),
+  });
+
+  const clearReplay = () => setReplayInput(null);
+  const valid = reason.trim().length >= 3 && evidenceReference.trim().length >= 3;
+
+  const submit = () => {
+    const input =
+      replayInput ??
+      ({
+        approvalId,
+        decisionKey: newDecisionKey(approvalId),
+        decision,
+        reason: reason.trim(),
+        evidence: {
+          type: evidenceType,
+          reference: evidenceReference.trim(),
+        },
+      } satisfies DesignDecisionInput);
+    setReplayInput(input);
+    decide.mutate(input);
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open && !decide.isPending) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{decision === "APPROVED" ? "اعتماد نسخة التصميم" : "رفض نسخة التصميم"}</DialogTitle>
+          <DialogDescription>
+            القرار يخص النسخة {Number(record.revision?.revision ?? 0)} وبصمتها المعروضة. الدليل وسبب القرار إلزاميان ولا يُستبدلان بتعليق عام.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <label htmlFor="design-decision-reason" className="text-xs font-bold">سبب القرار</label>
+            <Textarea
+              id="design-decision-reason"
+              value={reason}
+              onChange={(event) => { setReason(event.target.value); clearReplay(); }}
+              rows={3}
+              maxLength={500}
+              aria-invalid={reason.length > 0 && reason.trim().length < 3}
+              placeholder={decision === "APPROVED" ? "مثال: أكد العميل مطابقة الأسماء والمقاسات" : "مثال: طلب العميل تغيير اللون والمقاس"}
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="design-evidence-type" className="text-xs font-bold">نوع الدليل</label>
+            <AppSelect
+              id="design-evidence-type"
+              value={evidenceType}
+              onValueChange={(value) => { setEvidenceType(value as EvidenceType); clearReplay(); }}
+            >
+              {Object.entries(EVIDENCE_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </AppSelect>
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="design-evidence-reference" className="text-xs font-bold">مرجع الدليل</label>
+            <Textarea
+              id="design-evidence-reference"
+              value={evidenceReference}
+              onChange={(event) => { setEvidenceReference(event.target.value); clearReplay(); }}
+              rows={2}
+              maxLength={500}
+              aria-invalid={evidenceReference.length > 0 && evidenceReference.trim().length < 3}
+              placeholder="رقم الرسالة أو رابط المرفق أو وصف مكان التوقيع المؤرشف"
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={decide.isPending}>{ACTION_LABELS.cancel}</Button>
+          <Button
+            variant={decision === "REJECTED" ? "destructive" : "default"}
+            onClick={submit}
+            disabled={decide.isPending || !valid}
+          >
+            {decide.isPending ? ACTION_LABELS.submitting : decision === "APPROVED" ? "اعتماد موثّق" : "رفض موثّق"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DesignApprovalPanel({
+  record,
+  canReview,
+  myId,
+  onChanged,
+}: {
+  record: DesignApprovalByTask;
+  canReview: boolean;
+  myId?: number;
+  onChanged: () => Promise<void>;
+}) {
+  const [decision, setDecision] = useState<DesignDecision | null>(null);
+  const approval = record.approval;
+  const revision = record.revision;
+  const task = record.task;
+  const selfApprovalBlocked = designApprovalSelfReviewBlocked(myId, [
+    approval.requestedBy,
+    revision?.createdBy,
+    record.workOrder.assignedTo,
+    task?.assignedTo,
+  ]);
+  const pending = approval.status === "PENDING";
+
+  const statusMeta = approval.status === "APPROVED"
+    ? { label: "معتمد", icon: CheckCircle2, className: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" }
+    : approval.status === "REJECTED"
+      ? { label: "مرفوض", icon: XCircle, className: "bg-[var(--sem-danger-bg)] text-[var(--sem-danger)]" }
+      : approval.status === "SUPERSEDED"
+        ? { label: "مستبدل", icon: RefreshCcw, className: "bg-muted text-muted-foreground" }
+        : { label: "بانتظار القرار", icon: Clock, className: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" };
+  const StatusIcon = statusMeta.icon;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+          <ShieldCheck aria-hidden className="size-4" /> قرار اعتماد التصميم
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs ${statusMeta.className}`}>
+            <StatusIcon aria-hidden className="size-3" /> {statusMeta.label}
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <div className="grid gap-3 rounded-md bg-muted/30 p-3 sm:grid-cols-2">
+          <div><span className="text-muted-foreground">أمر الشغل: </span><Link href={`/work-orders/${record.workOrder.id}`} className="font-bold text-primary hover:underline">{record.workOrder.orderNumber}</Link></div>
+          <div><span className="text-muted-foreground">نسخة التصميم: </span><strong dir="ltr">{Number(revision?.revision ?? 0)}</strong></div>
+          <div className="sm:col-span-2">
+            <span className="text-muted-foreground">بصمة المحتوى: </span>
+            <code className="break-all font-mono text-[11px]" dir="ltr">{revision?.contentHash ?? "—"}</code>
+          </div>
+          {revision?.customizationSnapshot && (
+            <div className="whitespace-pre-wrap sm:col-span-2">
+              <span className="text-muted-foreground">نص التخصيص المثبت: </span>{revision.customizationSnapshot}
+            </div>
+          )}
+        </div>
+
+        {record.images.length > 0 ? (
+          <div>
+            <div className="mb-2 flex items-center gap-1 text-xs font-bold"><ImageIcon aria-hidden className="size-3.5" /> صور النسخة المثبتة</div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {record.images.map((image, index) => (
+                <a key={`${image.url}-${index}`} href={image.url} target="_blank" rel="noreferrer" className="overflow-hidden rounded-md border">
+                  <img src={image.url} alt={image.caption ?? `صورة التصميم ${index + 1}`} className="aspect-square w-full object-cover" />
+                  {image.caption && <div className="truncate p-1 text-2xs">{image.caption}</div>}
+                </a>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">هذه نسخة نصية بلا صور؛ البصمة تشمل نص التخصيص أعلاه.</p>
+        )}
+
+        <div className="grid gap-2 text-xs sm:grid-cols-2">
+          <div><span className="text-muted-foreground">طالب الاعتماد: </span><span dir="ltr">#{Number(approval.requestedBy)}</span></div>
+          <div><span className="text-muted-foreground">منشئ النسخة: </span><span dir="ltr">#{Number(revision?.createdBy ?? 0)}</span></div>
+          {approval.requestNote && <div className="sm:col-span-2"><span className="text-muted-foreground">ملاحظة الطلب: </span>{approval.requestNote}</div>}
+          {approval.decisionReason && <div className="sm:col-span-2"><span className="text-muted-foreground">سبب القرار: </span>{approval.decisionReason}</div>}
+        </div>
+
+        {approval.evidenceType && approval.evidenceReference && (
+          <div className="rounded-md border p-3 text-xs">
+            <div className="font-bold">الدليل المنظم</div>
+            <div className="mt-1 text-muted-foreground">{EVIDENCE_LABELS[approval.evidenceType as EvidenceType] ?? approval.evidenceType}</div>
+            <div className="mt-1 whitespace-pre-wrap break-words" dir="auto">{approval.evidenceReference}</div>
+            {approval.reviewedBy != null && <div className="mt-2 text-muted-foreground">المراجع: <span dir="ltr">#{Number(approval.reviewedBy)}</span></div>}
+          </div>
+        )}
+
+        {pending && canReview && selfApprovalBlocked && (
+          <div className="rounded-md bg-[var(--sem-warn-bg)] p-3 text-xs text-[var(--sem-warn)]">
+            فصل الواجبات يمنعك من حسم هذا الطلب لأنك طالب الاعتماد أو منشئ النسخة أو الفني/المكلّف المرتبط بها. يلزم مدير آخر.
+          </div>
+        )}
+
+        {pending && canReview && !selfApprovalBlocked && (
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => setDecision("APPROVED")}>
+              <CheckCircle2 aria-hidden className="me-1 size-3.5" /> اعتماد موثّق
+            </Button>
+            <Button size="sm" variant="destructive" onClick={() => setDecision("REJECTED")}>
+              <XCircle aria-hidden className="me-1 size-3.5" /> رفض موثّق
+            </Button>
+          </div>
+        )}
+        {pending && !canReview && (
+          <p className="text-xs text-muted-foreground">يمكنك مراجعة المستند؛ حسمه محصور بمدير يملك صلاحية أوامر الشغل.</p>
+        )}
+      </CardContent>
+
+      {decision && (
+        <DesignDecisionDialog
+          record={record}
+          decision={decision}
+          onClose={() => setDecision(null)}
+          onDecided={onChanged}
+        />
+      )}
+    </Card>
+  );
+}
+
 export default function TaskDetail() {
   const params = useParams();
   const taskId = Number(params.id);
@@ -206,12 +472,24 @@ export default function TaskDetail() {
   const isElevated = role === "admin" || role === "manager";
   const canWrite = !!role && moduleAccessAllowed(role, override, "tasks", "FULL", TASK_WRITE_ROLES);
   const canManage = !!role && moduleAccessAllowed(role, override, "tasks", "FULL", TASK_MANAGER_ROLES);
+  const canReviewDesign = !!role && moduleAccessAllowed(role, override, "workorders", "FULL", ["manager"]);
   const myId = me.data?.id != null ? Number(me.data.id) : undefined;
 
   const task = trpc.tasks.get.useQuery({ taskId }, { enabled: Number.isFinite(taskId) });
+  const designApproval = trpc.workOrderDesignApproval.getByTask.useQuery(
+    { taskId },
+    {
+      enabled: Number.isFinite(taskId) && task.data?.linkedWorkOrderId != null,
+      retry: false,
+    },
+  );
 
   const refreshAll = async () => {
-    await Promise.all([utils.tasks.get.invalidate({ taskId }), utils.tasks.list.invalidate()]);
+    await Promise.all([
+      utils.tasks.get.invalidate({ taskId }),
+      utils.tasks.list.invalidate(),
+      utils.workOrderDesignApproval.getByTask.invalidate({ taskId }),
+    ]);
   };
 
   const [commentText, setCommentText] = useState("");
@@ -259,17 +537,20 @@ export default function TaskDetail() {
   if (!task.data) return <ErrorState message="المهمة غير موجودة." />;
 
   const data = task.data;
+  const looksLikeDesignApproval =
+    data.linkedWorkOrderId != null && data.title.includes("اعتماد تصميم");
+  const isDesignApprovalTask = looksLikeDesignApproval || designApproval.data != null;
   const isAssignee = data.assignedTo != null && myId != null && Number(data.assignedTo) === myId;
   const isCreator = data.createdBy != null && myId != null && Number(data.createdBy) === myId;
 
-  const canClaim = canWrite && data.taskStatus === "NEW" && (data.assignedTo == null || isAssignee);
-  const canSetWaiting = canWrite && (isAssignee || isElevated) && (data.taskStatus === "NEW" || data.taskStatus === "IN_PROGRESS");
-  const canResume = canWrite && (isAssignee || isElevated) && data.taskStatus === "WAITING_CUSTOMER";
-  const canResolve = canWrite && (isAssignee || isElevated) && (data.taskStatus === "IN_PROGRESS" || data.taskStatus === "WAITING_CUSTOMER");
+  const canClaim = !isDesignApprovalTask && canWrite && data.taskStatus === "NEW" && (data.assignedTo == null || isAssignee);
+  const canSetWaiting = !isDesignApprovalTask && canWrite && (isAssignee || isElevated) && (data.taskStatus === "NEW" || data.taskStatus === "IN_PROGRESS");
+  const canResume = !isDesignApprovalTask && canWrite && (isAssignee || isElevated) && data.taskStatus === "WAITING_CUSTOMER";
+  const canResolve = !isDesignApprovalTask && canWrite && (isAssignee || isElevated) && (data.taskStatus === "IN_PROGRESS" || data.taskStatus === "WAITING_CUSTOMER");
   const canComment = canWrite && (isAssignee || isCreator || isElevated);
-  const canCancel = canManage && OPEN_STATUSES.includes(data.taskStatus as TaskStatus);
-  const canAssign = canManage && OPEN_STATUSES.includes(data.taskStatus as TaskStatus);
-  const canReopen = canManage && data.taskStatus === "RESOLVED";
+  const canCancel = !isDesignApprovalTask && canManage && OPEN_STATUSES.includes(data.taskStatus as TaskStatus);
+  const canAssign = !isDesignApprovalTask && canManage && OPEN_STATUSES.includes(data.taskStatus as TaskStatus);
+  const canReopen = !isDesignApprovalTask && canManage && data.taskStatus === "RESOLVED";
   const reopenWithinWindow =
     data.resolvedAt != null && Date.now() - new Date(data.resolvedAt).getTime() <= 7 * 24 * 3600_000;
 
@@ -367,6 +648,33 @@ export default function TaskDetail() {
           )}
         </CardContent>
       </Card>
+
+      {isDesignApprovalTask && designApproval.isLoading && (
+        <Card>
+          <CardContent className="flex items-center gap-2 pt-6 text-sm text-muted-foreground" aria-busy="true">
+            <FileCheck2 aria-hidden className="size-4" /> {ACTION_LABELS.loading}
+          </CardContent>
+        </Card>
+      )}
+      {isDesignApprovalTask && designApproval.isError && (
+        <Card>
+          <CardContent className="pt-6">
+            <p className="font-bold text-destructive">تعذّر تحميل مستند اعتماد التصميم المتخصص.</p>
+            <p className="mt-1 text-xs text-muted-foreground">حُجبت إجراءات المهمة العامة كي لا تتجاوز سجل القرار والدليل.</p>
+            <Button className="mt-3" size="sm" variant="outline" onClick={() => designApproval.refetch()}>
+              <RefreshCcw aria-hidden className="me-1 size-3.5" /> {ACTION_LABELS.retry}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+      {designApproval.data && (
+        <DesignApprovalPanel
+          record={designApproval.data}
+          canReview={canReviewDesign}
+          myId={myId}
+          onChanged={refreshAll}
+        />
+      )}
 
       {/* أزرار الإجراءات — تُظهَر فقط المتاح للحالة الحالية وللدور/نطاق المستخدم. */}
       <div className="flex flex-wrap gap-2">

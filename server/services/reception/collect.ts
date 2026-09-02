@@ -30,7 +30,8 @@ export async function collectOnReceptionInvoice(
   // رفض قبل جلب الفاتورة/الوردية: مرجع يكتبه الموظف ليس إثبات تسوية خارجية.
   assertPosPaymentMethodEnabled(input.method);
   const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مهيّأة" });
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مهيّأة",
+    });
 
   // الحصر البنيويّ: الفاتورة وُلدت على وردية استقبال — **أو** هي فاتورةُ أمر شغلٍ بلا وردية
   // (٢٠/٨، انظر أدناه). فواتير التجزئة تبقى خارج النطاق: تُسدَّد من شاشة الفواتير لمن يملكها.
@@ -38,7 +39,8 @@ export async function collectOnReceptionInvoice(
   // يعيد التحقّق من كل شيءٍ ماليّ تحت FOR UPDATE داخل معاملته.
   const inv = (
     await db
-      .select({ id: invoices.id, branchId: invoices.branchId, shiftId: invoices.shiftId, sourceType: invoices.sourceType })
+      .select({ id: invoices.id, branchId: invoices.branchId, shiftId: invoices.shiftId, sourceType: invoices.sourceType,
+      })
       .from(invoices)
       .where(eq(invoices.id, input.invoiceId))
       .limit(1)
@@ -79,8 +81,10 @@ export async function collectOnReceptionInvoice(
       amount: input.amount,
       method: input.method,
       reference: input.reference ?? null,
-      shiftId: myShift ? Number(myShift.id) : null,
-      enforceBranchId: elevated ? null : actor.branchId ?? null,
+        externalPaymentAttemptId: input.externalPaymentAttemptId,
+        externalPaymentDeviceId: input.externalPaymentDeviceId,
+        shiftId: myShift ? Number(myShift.id) : null,
+      enforceBranchId: elevated ? null : (actor.branchId ?? null),
       clientRequestId: input.clientRequestId,
       // ش٥ (§٩.٤): ضوابط رصيد زين **داخل** معاملة الدفع نفسها (مراجعة عدائية ٦/٨): الفحص
       // بمعاملةٍ مستقلّة قبل النداء كان يفتح TOCTOU (كودٌ واحد يُقبَض مرّتين تحت التزامن —
@@ -109,6 +113,8 @@ export async function collectOnReceptionInvoice(
       },
     },
     actor,
-  ));
-  return { ...result, collectedIntoShiftId: myShift ? Number(myShift.id) : null };
+  ),
+  );
+  return { ...result, collectedIntoShiftId: myShift ? Number(myShift.id) : null,
+  };
 }

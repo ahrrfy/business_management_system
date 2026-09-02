@@ -58,6 +58,7 @@ export const CONFIRMED_OPERATIONAL_ROLES = [
   "FIXED_ASSETS",
   "ACCUMULATED_DEPRECIATION",
   "AP",
+  "GRNI",
   "CONSIGNMENT_PAYABLE",
   "COURIER_PAYABLE",
   "OTHER_LIABILITY",
@@ -76,6 +77,7 @@ export const CONFIRMED_OPERATIONAL_ROLES = [
   "SOCIAL_SECURITY_PAYABLE",
   "EOS_PROVISION",
   "ACCRUED_EXPENSES",
+  "GRNI",
   "CAPITAL",
 ] as const;
 
@@ -923,6 +925,39 @@ export async function readOperationalBalanceSnapshot(
       row.branchId,
       money(row.quantity).times(money(row.costPrice)),
       "branchStock.quantity×productVariants.costPrice",
+    );
+  }
+
+  // GRNI is an operational liability, not AP: accepted stock remains here until
+  // a POSTED supplier invoice clears the matched quantity. REVERSED invoices
+  // restore the exposure automatically because only live POSTED documents are
+  // subtracted. The snapshot is current-only, like stock/AP above; an asOf
+  // mismatch is already a hard blocker at the start of this function.
+  const grniResult = await db.execute(sql`
+    SELECT gr.branchId AS branchId,
+      CAST(COALESCE(SUM(
+        (gri.acceptedBaseQuantity - gri.reversedBaseQuantity - gri.returnedBaseQuantity)
+          * gri.unitCostIqd
+        - COALESCE((
+          SELECT SUM(sima.matchedBaseQuantity * sima.grnUnitCostIqd)
+          FROM supplierInvoiceMatchAllocations sima
+          INNER JOIN supplierInvoiceMatchRuns simr ON simr.id = sima.matchRunId
+          INNER JOIN supplierInvoices si ON si.id = simr.supplierInvoiceId
+          WHERE sima.goodsReceiptItemId = gri.id AND si.status = 'POSTED'
+        ), 0)
+      ), 0) AS CHAR) AS balance
+    FROM goodsReceiptItems gri
+    INNER JOIN goodsReceipts gr ON gr.id = gri.goodsReceiptId
+    WHERE gr.status IN ('POSTED','PARTIALLY_REVERSED')
+    GROUP BY gr.branchId
+  `);
+  const grniRows = (grniResult as unknown as [Array<{ branchId: number; balance: string }>])[0];
+  for (const row of grniRows) {
+    add(
+      "GRNI",
+      Number(row.branchId),
+      money(row.balance).negated(),
+      "goodsReceiptItems.netUninvoicedValue",
     );
   }
 

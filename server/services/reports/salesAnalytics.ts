@@ -1,7 +1,8 @@
 // تقارير المبيعات التحليلية: أكثر مبيعاً، بطيئات الحركة، الربح حسب الفئة.
 //
 // النمط: SQL خام بأسماء أعمدة DB الفعلية (راجع [[raw-sql-column-names]]):
-//   - invoices.invoiceStatus (لا status)؛ استبعد CANCELLED/RETURNED من إجماليات المبيعات.
+//   - invoices.invoiceStatus (لا status)؛ استبعد CANCELLED/SUPERSEDED فقط. RETURNED بيعٌ وقع
+//     ثم عُكس، لذلك يجب أن يدخل صافي الأسطر حتى تبقى تكلفة التالف خسارةً ظاهرة.
 //   - invoiceItems.baseQuantity جاهز بالوحدة الأساس ⇒ لا حاجة لحساب quantity×conversionFactor.
 //   - الكمية: تخصم returnedBaseQuantity للحصول على صافي البيع (ما بقي مع العميل).
 //   - التكلفة (COGS): تخصم returnedRestockedBaseQuantity فقط (المُعاد للرفّ) ⇒ التالف يبقى خسارةً مطابِقةً للدفتر.
@@ -9,6 +10,17 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
+
+// مصدر واحد لصيغ Top Products وProfit by Category كي لا تنجرف التقارير عن بعضها:
+// - الإيراد يتبع ما بقي مع العميل، سواء كانت الفاتورة جزئية المرتجع أم RETURNED بالكامل.
+// - COGS يُعكس فقط للوحدات التي عادت فعلاً للمخزون؛ المرتجع التالف لا يعكس تكلفته.
+// GREATEST يحمي التقرير من عدّاد تاريخي منجرف من إنتاج قيمة سالبة، ولا يغيّر أي قيد دفتر.
+const netBaseQuantitySql = sql`GREATEST(ii.baseQuantity - COALESCE(ii.returnedBaseQuantity, 0), 0)`;
+const netLineRevenueSql = sql`CASE WHEN ii.baseQuantity > 0
+  THEN ii.total * ${netBaseQuantitySql} / ii.baseQuantity ELSE ii.total END`;
+const netLineCostSql = sql`GREATEST(
+  ii.baseQuantity - COALESCE(ii.returnedRestockedBaseQuantity, 0), 0
+) * ii.unitCost`;
 
 export interface SalesAnalyticsFilters {
   from?: string; // YYYY-MM-DD
@@ -30,7 +42,8 @@ export interface TopProductRow {
 
 /**
  * أكثر المنتجات مبيعاً — تجميع على مستوى المنتج (لا المتغيّر) عبر فترة.
- * يستبعد CANCELLED و RETURNED من الإجماليات. الترتيب: revenue أو qty.
+ * يستبعد المستندات التي لم يقع بيعها (CANCELLED/SUPERSEDED)، ويصافي RETURNED من عدّادات السطر.
+ * الترتيب: revenue أو qty.
  */
 export async function getTopProducts(
   opts: SalesAnalyticsFilters & { limit?: number; by?: "revenue" | "qty" } = {}
@@ -43,8 +56,8 @@ export async function getTopProducts(
   // ملاحظة: نرتّب على التعبير الرقمي مباشرة لا على الاسم المستعار — لأن
   // العمود في SELECT مُحوَّل CAST AS CHAR ⇒ الترتيب عليه يصبح أبجدياً («50»>«240»).
   const orderCol = opts.by === "qty"
-    ? sql`SUM(ii.baseQuantity - ii.returnedBaseQuantity) DESC`
-    : sql`SUM(ii.total) DESC`;
+    ? sql`SUM(${netBaseQuantitySql}) DESC`
+    : sql`SUM(${netLineRevenueSql}) DESC`;
   const fromFilter = opts.from ? sql`AND i.invoiceDate >= ${opts.from + " 00:00:00"}` : sql``;
   const toFilter = opts.to ? sql`AND i.invoiceDate <= ${opts.to + " 23:59:59"}` : sql``;
   const branchFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
@@ -54,20 +67,15 @@ export async function getTopProducts(
       p.id AS productId,
       p.name AS productName,
       c.name AS categoryName,
-      CAST(COALESCE(SUM(ii.baseQuantity - ii.returnedBaseQuantity), 0) AS CHAR) AS qtySold,
+      CAST(COALESCE(SUM(${netBaseQuantitySql}), 0) AS CHAR) AS qtySold,
       -- #reports-1 (تدقيق التثبيت): كانت الإيرادات تُجمع gross (بلا تصافي المرتجعات) بينما التكلفة
       -- تُخفَّض بالمُعاد للمخزون ⇒ الربح مبالَغ. الآن نصافي الإيرادات على الوحدات المرتجعة تناسبياً
       -- (guard على baseQuantity=0 للخدمات). التكلفة كما هي — الوحدات غير المُعادة للمخزون
       -- (تالف/استهلاك أمر شغل) تبقى تكلفتها خسارةً مطابقةً لدفتر P&L.
-      CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
-        THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-        ELSE ii.total END), 0) AS CHAR) AS revenue,
-      CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
+      CAST(COALESCE(SUM(${netLineRevenueSql}), 0) AS CHAR) AS revenue,
+      CAST(COALESCE(SUM(${netLineCostSql}), 0) AS CHAR) AS cost,
       CAST(COALESCE(
-        SUM(CASE WHEN ii.baseQuantity > 0
-          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-          ELSE ii.total END)
-        - SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost),
+        SUM(${netLineRevenueSql}) - SUM(${netLineCostSql}),
       0) AS CHAR) AS profit,
       COUNT(DISTINCT ii.invoiceId) AS invoicesCount
     FROM invoiceItems ii
@@ -75,12 +83,14 @@ export async function getTopProducts(
     INNER JOIN productVariants v ON v.id = ii.variantId
     INNER JOIN products p ON p.id = v.productId
     LEFT JOIN categories c ON c.id = p.categoryId
-    WHERE i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
+    WHERE i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
       ${fromFilter}
       ${toFilter}
       ${branchFilter}
     GROUP BY p.id, p.name, c.name
-    HAVING qtySold > 0
+    -- المرتجع الكامل التالف: qty/revenue = 0 لكن COGS باقٍ، فيجب أن يظهر كخسارة.
+    -- المرتجع الكامل المعاد للمخزون صفر الأثر اقتصادياً، فلا يزاحم المبيعات في ترتيب «الأكثر».
+    HAVING SUM(${netBaseQuantitySql}) > 0 OR SUM(${netLineCostSql}) > 0
     ORDER BY ${orderCol}
     LIMIT ${limit}
   `);
@@ -202,15 +212,10 @@ export async function getProfitByCategory(opts: SalesAnalyticsFilters = {}): Pro
       COALESCE(c.name, 'بلا فئة') AS categoryName,
       -- #reports-1 (تدقيق التثبيت): مرآة إصلاح getTopProducts — الإيرادات تُصافى بالمرتجعات
       -- تناسبياً (باقي التفصيل هناك). ضروري لاتّساق تقرير الربح بالفئة مع تقرير المنتجات وP&L.
-      CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
-        THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-        ELSE ii.total END), 0) AS CHAR) AS revenue,
-      CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
+      CAST(COALESCE(SUM(${netLineRevenueSql}), 0) AS CHAR) AS revenue,
+      CAST(COALESCE(SUM(${netLineCostSql}), 0) AS CHAR) AS cost,
       CAST(COALESCE(
-        SUM(CASE WHEN ii.baseQuantity > 0
-          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
-          ELSE ii.total END)
-        - SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost),
+        SUM(${netLineRevenueSql}) - SUM(${netLineCostSql}),
       0) AS CHAR) AS profit,
       COUNT(*) AS itemsCount
     FROM invoiceItems ii
@@ -218,12 +223,12 @@ export async function getProfitByCategory(opts: SalesAnalyticsFilters = {}): Pro
     INNER JOIN productVariants v ON v.id = ii.variantId
     INNER JOIN products p ON p.id = v.productId
     LEFT JOIN categories c ON c.id = p.categoryId
-    WHERE i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
+    WHERE i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
       ${fromFilter}
       ${toFilter}
       ${branchFilter}
     GROUP BY p.categoryId, c.name
-    ORDER BY SUM(ii.total) DESC
+    ORDER BY SUM(${netLineRevenueSql}) DESC
   `);
   const data = (rows as any)[0] ?? rows;
   if (!Array.isArray(data)) return [];

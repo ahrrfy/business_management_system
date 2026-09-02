@@ -1,9 +1,13 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
+import { consignmentReturnPreflight } from "../services/workOrder/refundPreflight";
+import { canCrossBranches } from "../lib/branchAuthority";
+import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
+import { withTx } from "../services/tx";
 import { deliveryOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { cashierProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, managerProcedure, reportViewerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
+import { deliveryAdminProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, reportViewerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
@@ -41,8 +45,13 @@ import {
   staffHandoverConsignments,
   staffMarkFailed,
   updateDeliveryParty,
-  writeOffDeliveryShortfall,
 } from "../services/deliveryService";
+import {
+  approveDeliveryCodWriteOff,
+  listDeliveryCodWriteOffRequests,
+  rejectDeliveryCodWriteOff,
+  requestDeliveryCodWriteOff,
+} from "../services/delivery/writeoffRequests";
 import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
 import { logAudit } from "../services/auditService";
@@ -50,6 +59,21 @@ import { SHORTFALL_REASONS } from "@shared/shortfallReason";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
+const deliveryWriteOffInput = z
+  .object({
+    partyId: z.number().int().positive(),
+    branchId: z.number().int().positive().nullish(),
+    amount: moneyStr,
+    reason: z.string().trim().min(3).max(500),
+    evidenceNote: z.string().trim().min(3).max(500).nullish(),
+    attachmentUrl: z.string().trim().url().max(2048).nullish(),
+    consignmentId: z.number().int().positive().nullish(),
+    clientRequestId: z.string().trim().min(8).max(64),
+  })
+  .refine((input) => Boolean(input.evidenceNote?.trim() || input.attachmentUrl?.trim()), {
+    message: "يلزم إثبات وصفي أو رابط مرفق للشطب.",
+    path: ["evidenceNote"],
+  });
 
 function actorOf(ctx: { user: { id: number; branchId?: number | null; role?: string } }) {
   return {
@@ -58,13 +82,17 @@ function actorOf(ctx: { user: { id: number; branchId?: number | null; role?: str
     role: ctx.user.role,
   };
 }
+function governanceActorOf(ctx: { user: { id: number; branchId?: number | null; role?: string } }) {
+  const actor = actorOf(ctx);
+  return { ...actor, branchId: actor.branchId ?? 0, reviewAuthorized: true as const };
+}
 function effectiveBranch(ctx: { user: { role?: string; branchId?: number | null } }, requested?: number | null) {
   // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يختاران فرعاً (owner مُطبَّع ⇒ admin)؛
   // مدير الفرع يُثبَّت على فرعه المُسنَد (يُتجاهَل requested) — كان `|| manager` يُمرِّر أيّ فرع (ثغرة writeOff).
   const crossBranch = ctx.user.role === "admin";
   return crossBranch ? (requested ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : 0)) : Number(ctx.user.branchId);
 }
-// نطاق فرع الفاعل لفحص الملكية (مثيل ctx.scopedBranchId لكن على cashierProcedure الذي لا يوفّره):
+// نطاق فرع الفاعل لفحص الملكية (مثيل ctx.scopedBranchId لكن على بوابات الكتابة التي لا توفّره):
 // المالك/الأدمن عابرا الفروع ⇒ null؛ مدير الفرع وغيره مقيَّدون بفرعهم (قرار المالك ١٢/٨؛ requireOwnBranch يضمن branchId).
 function scopedBranchOf(ctx: { user: { role?: string; branchId?: number | null } }): number | null {
   const crossBranch = ctx.user.role === "admin";
@@ -81,6 +109,27 @@ async function assertPartyInScope(partyId: number, scopedBranchId: number | null
   if (party && party.branchId != null && Number(party.branchId) !== scopedBranchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "جهة التوصيل تخصّ فرعاً آخر" });
   }
+}
+
+/**
+ * أيحقّ لهذا الفاعل رؤيةُ **أرصدة الأدراج** بالأرقام؟ (مراجعة Codex P2)
+ *
+ * نقطتا التمهيد محروستان ببوّابة الفعل (`workorders`/`store`) عمداً — كي لا يُعطَّل فعلٌ
+ * مصرَّحٌ به لمن لا يملك الخزينة. لكنّ ذلك **لا يمنحه سطحَ الخزينة**: الرقمُ الدقيق يبقى
+ * خلف `treasury:READ`، ومن دونه يكفيه علَمُ `sufficient` لاختيارٍ صائب. (كان `sales_rep` —
+ * بلا صندوق — يتلقّى أرصدةَ كلّ درجٍ مفتوحٍ بالفرع، وهو نقضٌ لعزل الأدراج المقرَّر في تدقيق ٢/٧.)
+ */
+function maySeeDrawerCash(user: { role?: string | null; permissionsOverride?: unknown }): boolean {
+  // ⚠️ **لا تُمرّر قائمةَ أدوارٍ فارغة** (مراجعة Codex P2): `moduleAccessAllowed` عندئذٍ يتخطّى
+  // `hasModuleAccess` كلّياً ويسقط إلى الفحص الصريح وحده — فمديرٌ قالبُه `treasury: FULL` بلا
+  // تجاوزٍ يُحجَب رقمُه رغم امتلاكه الخزينة. `hasModuleAccess` يحترم القالبَ والتجاوزَ معاً.
+  if (String(user.role ?? "") === "admin") return true;
+  return hasModuleAccess(
+    String(user.role ?? ""),
+    (user.permissionsOverride ?? null) as PermissionMap | null,
+    "treasury",
+    "READ",
+  );
 }
 
 export const deliveryRouter = router({
@@ -119,7 +168,7 @@ export const deliveryRouter = router({
     }),
 
   // حسابات المناديب (دور courier) لربطها بجهة — لمنتقي الربط في نموذج الجهة (مدير).
-  courierAccounts: managerProcedure.query(({ ctx }) => listCourierAccounts(scopedBranchOf(ctx))),
+  courierAccounts: deliveryManagerProcedure.query(({ ctx }) => listCourierAccounts(scopedBranchOf(ctx))),
 
   partyMembers: deliveryReadProcedure
     .input(z.object({ partyId: z.number().int().positive() }))
@@ -185,7 +234,7 @@ export const deliveryRouter = router({
   // `payDeliveryFee` تبقى مستعملةً داخل `payPartyDeliveryFees` (لكل إرسالية على حدة) وفي
   // الاختبارات، فلا فقدَ سلوكيّ. إبقاؤه كنقطةٍ راوترية بلا مستهلكٍ كان يوسّع خطّ الأساس بلا داعٍ.
 
-  createParty: managerProcedure
+  createParty: deliveryManagerProcedure
     .input(
       z.object({
         partyType: partyKind,
@@ -214,7 +263,7 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  updateParty: managerProcedure
+  updateParty: deliveryManagerProcedure
     .input(
       z.object({
         id: z.number().int().positive(),
@@ -244,7 +293,7 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  setPartyActive: managerProcedure
+  setPartyActive: deliveryManagerProcedure
     .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       await assertPartyInScope(input.id, scopedBranchOf(ctx));
@@ -360,8 +409,8 @@ export const deliveryRouter = router({
     }),
 
   // ─── التحوّلات ───
-  // إرسال طلب جاهز عبر مندوب (يُصدر فاتورة COD + عهدة) — مالٌ/نقد ⇒ cashierProcedure.
-  dispatch: cashierProcedure
+  // إرسال طلب جاهز عبر مندوب (يُصدر فاتورة COD + عهدة) — store=FULL بكاشير/مدير أو منح صريح.
+  dispatch: deliveryCashierProcedure
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
@@ -390,7 +439,7 @@ export const deliveryRouter = router({
 
   // 5/8: isnad fatura qa'ima lil-tawseel (bay' mubashir bila amr shughl).
   // Nafs bawwabat receptionQueue (workorders=FULL) — a'la min delivery.dispatch al-qadim
-  // (cashierProcedure kham) wa-la tuda''if shay'an qa'iman.
+  // (بوابة وحدة لا دور خام) wa-la tuda''if shay'an qa'iman.
   dispatchInvoice: storeFulfillProcedure
     .input(
       z.object({
@@ -422,8 +471,8 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  // تسجيل توريد (قبض الصافي) — يتطلّب وردية مفتوحة (النقد يدخل الدرج) ⇒ cashierProcedure.
-  recordRemittance: cashierProcedure
+  // تسجيل توريد (قبض الصافي) — يتطلّب وردية مفتوحة + store=FULL (النقد يدخل الدرج).
+  recordRemittance: deliveryCashierProcedure
     .input(
       z.object({
         partyId: z.number().int().positive(),
@@ -687,6 +736,23 @@ export const deliveryRouter = router({
   //       الكاشير يملكه والمنح/التقييد الصريح يُطاع) + فرعٌ مُسنَد إلزاميّ ⇒ authz-guard أخضر.
   //   (٢) فحص ملكية الفرع **داخل** `returnConsignment` قبل الردّ الـidempotent وقبل المعاملة
   //       المدمِّرة (الجهة تُشتقّ من الإرسالية لا من المدخل، فلا يحميها حارسٌ راوتريّ).
+  /**
+   * **تمهيدُ إرجاع الإرسالية** — بنفس بوّابة الفعل (`storeFulfillProcedure`) لا بالخزينة.
+   * يُخبر الشاشةَ هل يخرج نقدٌ أصلاً: طردٌ غيرُ محصَّلٍ بلا أمانةِ أجرة **لا يحتاج درجاً**،
+   * وكان الحوارُ يفترض الحاجةَ دائماً فيُعطّل إرجاعاً روتينياً خارج الوردية (Codex P1 #920).
+   * والأدراجُ مُصفّاةٌ بفرع الإرسالية — فلا يُعرَض على الأدمن درجُ فرعٍ آخر يرفضه الخادم.
+   */
+  returnPreflight: storeFulfillProcedure
+    .input(z.object({ consignmentId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => withTx(async (tx) => {
+      const res = await consignmentReturnPreflight(tx, input.consignmentId, { exposeCash: maySeeDrawerCash(ctx.user) });
+      if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+      if (!canCrossBranches(ctx.user) && res.branchId !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية لا تخصّ فرعك" });
+      }
+      return res;
+    })),
+
   returnConsignment: storeFulfillProcedure
     .input(z.object({
       consignmentId: z.number().int().positive(),
@@ -741,8 +807,8 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  // الجهة تدفع عجزاً نقداً — يتطلّب وردية ⇒ cashierProcedure.
-  settle: cashierProcedure
+  // الجهة تدفع عجزاً نقداً — يتطلّب وردية + store=FULL.
+  settle: deliveryCashierProcedure
     .input(
       z.object({
         partyId: z.number().int().positive(),
@@ -765,25 +831,78 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  // شطب عجز عهدة (إبراء دَين) — مديرٌ فقط (SOD: القابض لا يُبرئ عجزه).
-  // ٩/٨: consignmentId يوجّه الشطب لإرسالية بعينها (يقفلها WRITTEN_OFF ويقيّد فاتورتها) —
-  // الشطب المجمّع محصور بالعهدة السائبة (الحارس في الخدمة).
-  writeOff: managerProcedure
-    .input(
-      z.object({
-        partyId: z.number().int().positive(),
-        branchId: z.number().int().positive().nullish(),
-        amount: moneyStr,
-        reason: z.string().min(3).max(500),
-        consignmentId: z.number().int().positive().nullish(),
-        clientRequestId: z.string().trim().min(8).max(64),
-      }),
-    )
+  // ينشئ طلب شطب صفر الأثر. لا يتغير رصيد/إرسالية/فاتورة قبل اعتماد أدمن مستقل.
+  writeOff: deliveryAdminProcedure
+    .input(deliveryWriteOffInput)
     .mutation(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
-      const res = await retryOnDeadlock(() => writeOffDeliveryShortfall({ branchId, partyId: input.partyId, amount: input.amount, reason: input.reason, consignmentId: input.consignmentId, clientRequestId: input.clientRequestId }, actorOf(ctx)));
-      await logAudit(ctx, { action: "delivery.writeOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount, reason: input.reason, consignmentId: input.consignmentId ?? null } });
+      const res = await retryOnDeadlock(() => requestDeliveryCodWriteOff({
+        requestKey: input.clientRequestId,
+        branchId,
+        partyId: input.partyId,
+        amount: input.amount,
+        reason: input.reason,
+        evidenceNote: input.evidenceNote,
+        attachmentUrl: input.attachmentUrl,
+        consignmentId: input.consignmentId,
+      }, governanceActorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.writeOffRequest",
+        entityType: "deliveryCodWriteOffRequest",
+        entityId: res.id,
+        newValue: {
+          partyId: input.partyId,
+          amount: input.amount,
+          reason: input.reason,
+          evidenceNote: input.evidenceNote ?? null,
+          attachmentUrl: input.attachmentUrl ?? null,
+          consignmentId: input.consignmentId ?? null,
+        },
+      });
+      return res;
+    }),
+
+  listWriteOffRequests: deliveryManagerProcedure
+    .input(z.object({
+      status: z.enum(["PENDING", "APPROVED", "REJECTED", "STALE"]).optional(),
+      branchId: z.number().int().positive().optional(),
+    }).optional())
+    .query(({ input, ctx }) => listDeliveryCodWriteOffRequests(governanceActorOf(ctx), input)),
+
+  approveWriteOffRequest: deliveryManagerProcedure
+    .input(z.object({
+      id: z.number().int().positive(),
+      expectedVersion: z.number().int().positive(),
+      decisionKey: z.string().trim().min(8).max(120),
+      reviewNote: z.string().trim().max(500).nullish(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await retryOnDeadlock(() => approveDeliveryCodWriteOff(input, governanceActorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.writeOffApprove",
+        entityType: "deliveryCodWriteOffRequest",
+        entityId: input.id,
+        newValue: { expectedVersion: input.expectedVersion, decisionKey: input.decisionKey },
+      });
+      return res;
+    }),
+
+  rejectWriteOffRequest: deliveryManagerProcedure
+    .input(z.object({
+      id: z.number().int().positive(),
+      expectedVersion: z.number().int().positive(),
+      decisionKey: z.string().trim().min(8).max(120),
+      reason: z.string().trim().min(3).max(500),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await rejectDeliveryCodWriteOff(input, governanceActorOf(ctx));
+      await logAudit(ctx, {
+        action: "delivery.writeOffReject",
+        entityType: "deliveryCodWriteOffRequest",
+        entityId: input.id,
+        newValue: { expectedVersion: input.expectedVersion, reason: input.reason },
+      });
       return res;
     }),
 
@@ -794,11 +913,11 @@ export const deliveryRouter = router({
    * (Tier-1 #1، ٢٥/٨) قائمةُ رسائل outbox المستنفَدة (DEAD_LETTER) — أدمن فقط. تُعرَض في شاشة
    * صحّة النظام كي لا تختفي محاولاتُ الإشعار السامّة صامتاً بلا اكتشاف.
    */
-  listDeadLetterOutbox: deliveryManagerProcedure
+  listDeadLetterOutbox: deliveryAdminProcedure
     .input(z.object({ limit: z.number().int().positive().max(200).default(50) }).optional())
     .query(async ({ input }) => {
       const db = getDb();
-      if (!db) return [];
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
       const limit = input?.limit ?? 50;
       const rows = await db.select({
         id: deliveryOutbox.id,
@@ -819,7 +938,7 @@ export const deliveryRouter = router({
    * إعادةُ صفٍّ إلى الطابور بعد إصلاح السبب الجذريّ — تصفير `attempts` و`status='PENDING'`.
    * إجراءٌ إداريّ صريح لأنّ إعادة صفٍّ سامٍّ بلا إصلاحٍ تعيده إلى DEAD_LETTER بعد ~٥٠ دقيقة.
    */
-  requeueDeadLetter: deliveryManagerProcedure
+  requeueDeadLetter: deliveryAdminProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const db = getDb();

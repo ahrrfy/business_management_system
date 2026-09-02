@@ -1,6 +1,7 @@
 // تبويب «مطابقة الأرصدة» — مقارنة رصيدنا الدفتري (حتى تاريخ قطع) برصيد كشف الصيرفة + البنود المعلّقة.
 // قراءة فقط: أي فرق حقيقي يُسوّى لاحقاً بقيد تصحيح يدوي صريح (لا تسوية صامتة).
 import { useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Scale as ScaleIcon, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -56,10 +57,10 @@ export default function ExchangeReconcile() {
         <div className="grid gap-4 sm:grid-cols-4">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
-            <select className={`${selectCls} w-full`} value={houseId} onChange={(e) => setHouseId(Number(e.target.value))}>
+            <AppSelect className={`${selectCls} w-full`} value={String(houseId)} onValueChange={(value) => setHouseId(Number(value))}>
               <option value={0}>— اختر —</option>
               {houseRows.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">رصيد كشفهم (دينار)</label>

@@ -153,6 +153,11 @@ export function CartTable({
                           {isCustom ? l.custom!.title : l.row.productName}
                         </span>
                         <span className="text-xs text-muted-foreground" dir="ltr">{l.row.sku}</span>
+                        {!isCustom && l.row.allowBackorder && (l.row.availableBase ?? 0) <= 0 && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
+                            يُباع بالطلب — يُورَّد لاحقاً
+                          </span>
+                        )}
                         {!isCustom && stock.isOut && (
                           <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
                             نافذ — لا مخزون

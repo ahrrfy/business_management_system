@@ -6,9 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { EmptyState } from "@/components/EmptyState";
-import { ErrorState } from "@/components/PageState";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { RowActions, type RowAction } from "@/components/list";
-import type { RoleGate } from "@/lib/navVisibility";
+import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog, type DispatchParty } from "@/components/delivery/DispatchDialog";
@@ -25,6 +25,7 @@ import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } fr
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { computeStateAgeMinutes, formatAgeShort, slaLevel, slaLevelChipClass } from "@shared/orderSla";
 import { cn } from "@/lib/utils";
+import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
 type PickupPayment = NonNullable<RouterInputs["workOrders"]["deliver"]["payment"]>;
@@ -47,8 +48,20 @@ const DISPATCH_GATE: RoleGate = { roles: ["cashier", "manager"] };
 export default function ReceptionOrderQueue({ branchId }: { branchId: number }) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const role = me.data?.role ?? "";
-  const canFulfill = role === "admin" || role === "cashier" || role === "manager";
+  const role = me.data?.role as RoleKey | undefined;
+  const permissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const canFulfill = !!role && moduleAccessAllowed(
+    role,
+    permissions,
+    "workorders",
+    "FULL",
+    ["cashier", "manager"],
+  );
+  // dispatch لا يزال خلف cashierProcedure الخام، لكن بناء حواره يحتاج listParties المحروس بـstore:READ.
+  // نجمع العقدين كي لا نعرض إجراءً يتوقف دائماً عند استعلام جهاتٍ سيرفضه الخادم بـ403.
+  const canDispatch = canFulfill
+    && canSeeGate(DISPATCH_GATE, role, permissions)
+    && hasModuleAccess(role ?? "", permissions, "store", "READ");
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   // Polling كل ١٥ث + على استعادة التركيز: بلاغ المالك ٢٨/٨/٢٦ («الطلب يتيه — الاستقبال لا يرى»).
@@ -66,7 +79,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     { branchId, statuses: ["DELIVERED"], deliveredFrom: todayStr, deliveredTo: todayStr, limit: 100 },
     { refetchInterval: 30_000, refetchOnWindowFocus: true },
   );
-  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canFulfill });
+  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: canDispatch });
 
   // كشف READY الجدد بين استعلامَين متتاليَين — يُشعِر الموظّف بجاهزيّة أمر شغل خرج من المطبعة
   // للتوّ (بلاغ ٢٨/٨/٢٦). يقارن Set<workOrderId> بالسابق: النقلة تفلترها ورشة الطلب لا الاستعلام
@@ -175,7 +188,18 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
     },
   });
 
-  if (active.isError) return <ErrorState onRetry={() => active.refetch()} />;
+  if (me.isLoading) return <LoadingState message="جارٍ التحقق من صلاحيات طابور الطلبات…" />;
+  if (me.isError) {
+    return <ErrorState message="تعذّر التحقق من صلاحيات طابور الطلبات." onRetry={() => { void me.refetch(); }} />;
+  }
+  if (active.isError) {
+    return (
+      <ErrorState
+        message="تعذّر تحميل الطلبات النشطة. لا يمكن افتراض أن الطابور فارغ."
+        onRetry={() => { void active.refetch(); }}
+      />
+    );
+  }
 
   const rows = active.data ?? [];
   const readyRows = rows.filter((r) => r.status === "READY");
@@ -189,8 +213,19 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         <p className="text-xs text-muted-foreground">من الاستلام حتى التسليم — استلام مباشر أو إسناد لمندوب/شركة توصيل.</p>
       </div>
 
+      {canDispatch && parties.isLoading && (
+        <LoadingState message="جارٍ تحميل جهات التوصيل…" className="rounded-xl border p-4" />
+      )}
+      {canDispatch && parties.isError && (
+        <ErrorState
+          message="تعذّر تحميل جهات التوصيل؛ أُوقف الإسناد للمندوب حتى نجاح التحميل."
+          onRetry={() => { void parties.refetch(); }}
+          className="rounded-xl border p-4"
+        />
+      )}
+
       {active.isLoading ? (
-        <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
+        <LoadingState message="جارٍ تحميل الطلبات النشطة…" className="p-8" />
       ) : (
         <>
           <QueueSection
@@ -199,6 +234,8 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             rows={readyRows}
             emptyLabel="لا طلبات جاهزة حالياً."
             canFulfill={canFulfill}
+            canDispatch={canDispatch}
+            partiesReady={parties.isSuccess}
             onDispatch={setDispatchTarget}
             onPickup={setPickupTarget}
             onReclassify={setReclassifyTarget}
@@ -219,6 +256,9 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
             rows={deliveredRows}
             emptyLabel="لا طلبات مُسلَّمة اليوم بعد."
             canFulfill={false}
+            loading={deliveredToday.isLoading}
+            error={deliveredToday.isError}
+            onRetry={() => { void deliveredToday.refetch(); }}
           />
         </>
       )}
@@ -306,12 +346,17 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
 }
 
 // ───────────────────────── قسم القائمة ─────────────────────────
-function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, onDispatch, onPickup, onReclassify }: {
+function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, canDispatch = false, partiesReady = true, loading = false, error = false, onRetry, onDispatch, onPickup, onReclassify }: {
   title: string;
   icon: LucideIcon;
   rows: QueueRow[];
   emptyLabel: string;
   canFulfill: boolean;
+  canDispatch?: boolean;
+  partiesReady?: boolean;
+  loading?: boolean;
+  error?: boolean;
+  onRetry?: () => void;
   onDispatch?: (r: QueueRow) => void;
   onPickup?: (r: QueueRow) => void;
   onReclassify?: (r: QueueRow) => void;
@@ -322,14 +367,18 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, onDispa
       <div className="flex items-center gap-2 border-b px-4 py-2.5">
         <Icon aria-hidden className="size-4 text-muted-foreground" />
         <h2 className="text-sm font-bold">{title}</h2>
-        <Badge variant="secondary" className="ms-1">{rows.length}</Badge>
+        <Badge variant="secondary" className="ms-1">{loading || error ? "—" : rows.length}</Badge>
       </div>
-      {rows.length === 0 ? (
+      {loading ? (
+        <LoadingState message={`جارٍ تحميل ${title}…`} className="p-6" />
+      ) : error ? (
+        <ErrorState message={`تعذّر تحميل ${title}. لا يمكن افتراض عدم وجود طلبات.`} onRetry={onRetry} className="p-6" />
+      ) : rows.length === 0 ? (
         <EmptyState icon={Icon} title="لا شيء هنا" description={emptyLabel} />
       ) : (
         <ul className="divide-y">
           {groups.map((group) => group.draftId == null ? (
-            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
+            <QueueRowItem key={group.rows[0]!.id} row={group.rows[0]!} canFulfill={canFulfill} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />
           ) : (
             <li key={`draft-${group.draftId}`}>
               <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-4 py-2 text-xs">
@@ -340,7 +389,7 @@ function QueueSection({ title, icon: Icon, rows, emptyLabel, canFulfill, onDispa
                 {group.readyCount < group.totalCount && <span className="text-muted-foreground">لا يُسلَّم الجزء الجاهز إلا بإقرار صريح</span>}
               </div>
               <ul className="divide-y">
-                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />)}
+                {group.rows.map((r: QueueRow) => <QueueRowItem key={r.id} row={r} canFulfill={canFulfill} canDispatch={canDispatch} partiesReady={partiesReady} onDispatch={onDispatch} onPickup={onPickup} onReclassify={onReclassify} />)}
               </ul>
             </li>
           ))}
@@ -368,9 +417,11 @@ function groupQueueRows(rows: QueueRow[]) {
   return Array.from(groups.values());
 }
 
-function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }: {
+function QueueRowItem({ row: r, canFulfill, canDispatch, partiesReady, onDispatch, onPickup, onReclassify }: {
   row: QueueRow;
   canFulfill: boolean;
+  canDispatch: boolean;
+  partiesReady: boolean;
   onDispatch?: (r: QueueRow) => void;
   onPickup?: (r: QueueRow) => void;
   onReclassify?: (r: QueueRow) => void;
@@ -388,7 +439,17 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
   // زرّ الإسناد كان يظهر لأيّ READY+توصيل **بلا فحص إرسالية قائمة** ⇒ النقر على طلبٍ مُسنَد
   // أصلاً يصطدم بقيدٍ فريد برسالةٍ غامضة. الآن تحلّ محلّه شارةُ حالته (أدناه).
   if (isReady && r.hasDelivery && !hasLiveConsignment && onDispatch) {
-    actions.push({ key: "dispatch", kind: "approve", label: "إسناد لمندوب", icon: Truck, hidden: !canFulfill, onSelect: () => onDispatch(r), gate: DISPATCH_GATE });
+    actions.push({
+      key: "dispatch",
+      kind: "approve",
+      label: "إسناد لمندوب",
+      icon: Truck,
+      hidden: !canDispatch,
+      disabled: !partiesReady,
+      disabledReason: "جهات التوصيل لم تُحمّل بعد — أعد المحاولة أولاً",
+      onSelect: () => onDispatch(r),
+      gate: DISPATCH_GATE,
+    });
   }
   if (isReady && !r.hasDelivery && onPickup) {
     actions.push({ key: "pickup", kind: "approve", label: "تسليم مباشر", icon: Store, hidden: !canFulfill, onSelect: () => onPickup(r), gate: FULFILL_GATE });

@@ -69,6 +69,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     reservedBase: number;
     availableBase: number;
     isService: boolean;
+    /** «يُباع بالطلب» (0318): يقبله الخادم قبل التوريد ⇒ لا يُوسَم نافداً. */
+    allowBackorder: boolean;
     price: string;
     costBase: string;
   };
@@ -89,6 +91,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         reservedBase: 0,
         availableBase: r.stockBase ?? 0,
         isService: false,
+        allowBackorder: false, // جانب الشراء لا يعنيه وسمُ البيع بالطلب.
         price: r.costPriceBase,
         costBase: r.costPriceBase,
       }));
@@ -107,6 +110,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       reservedBase: r.reservedBase ?? 0,
       availableBase: r.availableBase ?? (r.stockBase ?? 0),
       isService: r.isService || r.isPrintService,
+      allowBackorder: r.allowBackorder === true,
       price: r.price ?? "0",
       // التكلفة من الخادم للمخوَّل برؤيتها (مدير/أدمن)، وnull لغيره (كاشير) — الحجب في الراوتر.
       costBase: r.costPriceBase ?? "0",
@@ -143,6 +147,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         reservedBase: r.reservedBase,
         availableBase: r.availableBase,
         isService: r.isService,
+        allowBackorder: r.allowBackorder,
         price: r.price || "0",
         costBase: r.costBase || "0",
         discount: "0",

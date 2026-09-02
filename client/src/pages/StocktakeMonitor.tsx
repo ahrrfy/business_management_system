@@ -11,6 +11,7 @@
  *   conflicts: [{ variantId, variantLabel, qty1, by1, qty2, by2 }]
  */
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -918,19 +919,19 @@ export default function StocktakeMonitor() {
           <div className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="stocktake-worker-method">طريقة الدخول</Label>
-              <select
+              <AppSelect
                 id="stocktake-worker-method"
                 value={addMethod}
-                onChange={(e) => {
-                  setAddMethod(e.target.value as "PIN" | "USER");
+                onValueChange={(next) => {
+                  setAddMethod(next as "PIN" | "USER");
                   setAddName("");
                   setAddUserId("");
                 }}
-                className="h-10 w-full rounded-md border bg-card px-3 text-sm"
+                className="h-10 px-3 text-sm"
               >
                 <option value="PIN">عامل ميداني برمز PIN</option>
                 <option value="USER">موظف بحساب داخل النظام</option>
-              </select>
+              </AppSelect>
             </div>
             {addMethod === "PIN" ? (
               <div className="space-y-1.5">
@@ -947,17 +948,17 @@ export default function StocktakeMonitor() {
             ) : (
               <div className="space-y-1.5">
                 <Label htmlFor="stocktake-worker-user">حساب الموظف</Label>
-                <select
+                <AppSelect
                   id="stocktake-worker-user"
                   value={addUserId}
-                  onChange={(e) => setAddUserId(e.target.value)}
-                  className="h-10 w-full rounded-md border bg-card px-3 text-sm"
+                  onValueChange={(next) => setAddUserId(next)}
+                  className="h-10 px-3 text-sm"
                 >
                   <option value="">اختر الموظف…</option>
                   {availableUsers.map((u) => (
                     <option key={u.id} value={u.id}>{u.name} — {u.role}</option>
                   ))}
-                </select>
+                </AppSelect>
                 {availableUsers.length === 0 && !assignableUsers.isLoading && (
                   <p className="text-xs text-muted-foreground">لا توجد حسابات أخرى متاحة للإضافة.</p>
                 )}

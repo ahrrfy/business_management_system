@@ -385,6 +385,13 @@ export function ProductTable({
                           خدمة — بلا رصيد مخزني
                         </span>
                       )}
+                      {/* «يُباع بالطلب» (0318): نُصرّح بأن الرصيد الصفريّ/السالب مقصود ومسموح،
+                          كي لا يقرأه المستعمل عطباً ويمتنع عن حفظ فاتورةٍ ستنجح. */}
+                      {!isPurchase && stock.allowBackorder && stock.availableBase <= 0 && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-warn)] px-2 py-0.5 text-[10px] font-extrabold text-background">
+                          يُباع بالطلب — يُورَّد لاحقاً
+                        </span>
+                      )}
                       {!isPurchase && stock.isKnown && stock.isOut && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
                           لا يوجد متاح للبيع

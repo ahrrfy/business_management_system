@@ -82,6 +82,15 @@ import { receptionRouter } from "./routers/receptionRouter";
 import { executiveRouter } from "./routers/executiveRouter";
 import { cashRemediationRouter } from "./routers/cashRemediationRouter";
 import { statutoryAccountingRouter } from "./routers/statutoryAccountingRouter";
+import { workOrderDesignApprovalRouter } from "./routers/workOrderDesignApprovalRouter";
+import { goodsReceiptsRouter } from "./routers/goodsReceiptsRouter";
+import { supplierInvoicesRouter } from "./routers/supplierInvoicesRouter";
+import { salesPipelineRouter } from "./routers/salesPipelineRouter";
+import { salesControlRouter } from "./routers/salesControlRouter";
+import { purchaseReturnGovernanceRouter } from "./routers/purchaseReturnGovernanceRouter";
+import { supplierPaymentsRouter } from "./routers/supplierPaymentsRouter";
+import { purchaseChargesRouter } from "./routers/purchaseChargesRouter";
+import { purchaseIntegrityRouter } from "./routers/purchaseIntegrityRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -98,7 +107,15 @@ export const appRouter = router({
   users: userRouter,
   roles: roleRouter,
   sales: saleRouter,
+  salesPipeline: salesPipelineRouter,
+  salesControl: salesControlRouter,
   purchases: purchaseRouter,
+  goodsReceipts: goodsReceiptsRouter,
+  supplierInvoices: supplierInvoicesRouter,
+  purchaseReturnGovernance: purchaseReturnGovernanceRouter,
+  supplierPayments: supplierPaymentsRouter,
+  purchaseCharges: purchaseChargesRouter,
+  purchaseIntegrity: purchaseIntegrityRouter,
   inventory: inventoryRouter,
   accounts: accountsRouter,
   returns: returnRouter,
@@ -113,6 +130,7 @@ export const appRouter = router({
   gifts: giftsRouter,
   branches: branchRouter,
   workOrders: workOrderRouter,
+  workOrderDesignApproval: workOrderDesignApprovalRouter,
   customers: customerRouter,
   customerNotes: customerNoteRouter,
   arReminders: arRemindersRouter,

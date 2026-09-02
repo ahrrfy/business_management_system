@@ -75,7 +75,7 @@ const READ_CASES: Array<{ mod: string; name: string; call: (c: any) => Promise<u
   // باباً على مبيعات التجزئة — وذلك مُثبَتٌ في `invoiceListVisibility.test.ts` (حالة
   // «نطاق الاستقبال يرى فاتورة محطّته ولا يرى فاتورة التجزئة»). الحالة المكرَّسة أدناه.
   { mod: "purchases", name: "purchases.list", call: (c) => c.purchases.list({}) },
-  { mod: "inventory", name: "inventory.stockByBranch", call: (c) => c.inventory.stockByBranch({ branchId: 1 }) },
+  { mod: "inventory", name: "inventory.onHand", call: (c) => c.inventory.onHand({ branchId: 1 }) },
   { mod: "customers", name: "customers.list", call: (c) => c.customers.list() },
   { mod: "suppliers", name: "suppliers.list", call: (c) => c.suppliers.list() },
   { mod: "expenses", name: "expenses.list", call: (c) => c.expenses.list({}) },
@@ -99,8 +99,8 @@ describe("F2 — مدير قالبيّ (بلا override) يمرّ (لا انحد
   it("suppliers.list يمرّ", async () => {
     await expect(caller("manager", null).suppliers.list()).resolves.toBeDefined();
   });
-  it("inventory.stockByBranch يمرّ", async () => {
-    await expect(caller("manager", null).inventory.stockByBranch({ branchId: 1 })).resolves.toBeDefined();
+  it("inventory.onHand يمرّ", async () => {
+    await expect(caller("manager", null).inventory.onHand({ branchId: 1 })).resolves.toBeDefined();
   });
   it("workOrders.list يمرّ", async () => {
     await expect(caller("manager", null).workOrders.list()).resolves.toBeDefined();

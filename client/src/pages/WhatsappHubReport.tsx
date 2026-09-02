@@ -7,6 +7,7 @@
 //   ٤) أداء الحملات — قمع أُرسل→سُلّم→قُرئ لكل حملة + الكلفة التقديرية مقابل الفعلية.
 // لا اعتماديات جديدة — القمع/التوزيع بأشرطة CSS بسيطة (لا مكتبة رسوم).
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem, type KpiTone } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -419,10 +420,10 @@ export default function WhatsappHubReport() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }

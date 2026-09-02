@@ -45,6 +45,20 @@ type AuditContext = {
   req?: TrpcContext["req"];
 };
 
+/**
+ * بيانات تدقيق محايدة عن tRPC وExpress. الخدمات التشغيلية تستقبل هذه اللقطة فقط؛
+ * الراوتر هو المسؤول عن استخراجها من سياق النقل.
+ */
+export type AuditMetadata = {
+  userId?: number | null;
+  branchId?: number | null;
+  ipAddress?: string | null;
+  screenPath?: string | null;
+  actor?: AuditActorDescriptor;
+};
+
+type AuditSource = AuditContext | AuditMetadata;
+
 type MutationAuditScope = { writes: number };
 
 /**
@@ -182,14 +196,36 @@ export function auditScreenPath(req: AuditContext["req"]): string | null {
   }
 }
 
-function operationEnvelope(ctx: AuditContext, data: AuditData): OperationAuditEnvelope {
-  const rawActor = data.actor ?? (ctx.user ? { source: "user" as const } : ctx.req ? { source: "external" as const } : { source: "system" as const });
+export function auditMetadataFromContext(ctx: AuditContext): AuditMetadata {
+  return {
+    userId: ctx.user?.id ?? null,
+    branchId: ctx.user?.branchId == null ? null : Number(ctx.user.branchId),
+    ipAddress: ctx.req?.ip ?? null,
+    screenPath: auditScreenPath(ctx.req),
+  };
+}
+
+function normalizeAuditMetadata(source: AuditSource): AuditMetadata {
+  return "user" in source || "req" in source
+    ? auditMetadataFromContext(source)
+    : (source as AuditMetadata);
+}
+
+function operationEnvelope(metadata: AuditMetadata, data: AuditData): OperationAuditEnvelope {
+  const rawActor =
+    data.actor ??
+    metadata.actor ??
+    (metadata.userId != null
+      ? { source: "user" as const }
+      : metadata.ipAddress != null || metadata.screenPath != null
+        ? { source: "external" as const }
+        : { source: "system" as const });
   const actor = {
     source: rawActor.source,
     ...(rawActor.label?.trim() ? { label: rawActor.label.trim().slice(0, 255) } : {}),
   };
   const screenPath = normalizedScreenPath(
-    data.screenPath === undefined ? auditScreenPath(ctx.req) : data.screenPath,
+    data.screenPath === undefined ? metadata.screenPath : data.screenPath,
   );
   return {
     version: "operation.v2",
@@ -299,16 +335,17 @@ export function redactAuditValue(value: unknown): unknown {
 }
 
 /** يكتب سطر تدقيق. لا يرمي أبداً — السجلّ لا يجب أن يُسقط عمليةً ناجحة. */
-export async function logAudit(ctx: AuditContext, data: AuditData): Promise<boolean> {
+export async function logAudit(source: AuditSource, data: AuditData): Promise<boolean> {
   try {
     const db = getDb();
     if (!db) return false;
-    const operation = operationEnvelope(ctx, data);
+    const metadata = normalizeAuditMetadata(source);
+    const operation = operationEnvelope(metadata, data);
     // req.ip وحده يحترم إعداد Express trust proxy=1؛ قراءة أول XFF مباشرة تسمح بالتزوير.
-    const ip = ctx.req?.ip ?? null;
+    const ip = metadata.ipAddress ?? null;
     await db.insert(auditLogs).values({
-      userId: ctx.user?.id ?? null,
-      branchId: data.branchId ?? ctx.user?.branchId ?? null,
+      userId: metadata.userId ?? null,
+      branchId: data.branchId ?? metadata.branchId ?? null,
       action: data.action,
       entityType: data.entityType,
       entityId: data.entityId != null ? String(data.entityId) : null,
@@ -332,14 +369,15 @@ export async function logAudit(ctx: AuditContext, data: AuditData): Promise<bool
  */
 export async function logAuditTx(
   tx: Tx,
-  ctx: AuditContext,
+  source: AuditSource,
   data: AuditData,
 ): Promise<void> {
-  const operation = operationEnvelope(ctx, data);
-  const ip = ctx.req?.ip ?? null;
+  const metadata = normalizeAuditMetadata(source);
+  const operation = operationEnvelope(metadata, data);
+  const ip = metadata.ipAddress ?? null;
   await tx.insert(auditLogs).values({
-    userId: ctx.user?.id ?? null,
-    branchId: data.branchId ?? ctx.user?.branchId ?? null,
+    userId: metadata.userId ?? null,
+    branchId: data.branchId ?? metadata.branchId ?? null,
     action: data.action,
     entityType: data.entityType,
     entityId: data.entityId != null ? String(data.entityId) : null,

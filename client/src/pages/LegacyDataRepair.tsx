@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -484,10 +485,10 @@ function RepairDialog({
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="legacy-party">جهة التوصيل المختارة</Label>
-                    <select id="legacy-party" value={state.partyId ?? ""} onChange={(event) => patch({ partyId: event.target.value })} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                    <AppSelect id="legacy-party" value={state.partyId ?? ""} onValueChange={(next) => patch({ partyId: next })} className="h-10 border-input px-3 text-sm">
                       <option value="">اختر الجهة…</option>
                       {(report?.options.parties ?? []).map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
-                    </select>
+                    </AppSelect>
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="legacy-fee">أجرة التوصيل المثبتة</Label>
@@ -499,7 +500,7 @@ function RepairDialog({
               {needsGateway && (
                 <div className="space-y-1.5">
                   <Label htmlFor="legacy-gateway">حساب المندوب</Label>
-                  <select id="legacy-gateway" value={state.gatewayUserId ?? ""} onChange={(event) => patch({ gatewayUserId: event.target.value })} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                  <AppSelect id="legacy-gateway" value={state.gatewayUserId ?? ""} onValueChange={(next) => patch({ gatewayUserId: next })} className="h-10 border-input px-3 text-sm">
                     <option value="">اختر حساباً نشطاً…</option>
                     {(report?.options.courierAccounts ?? []).map((account) => (
                       <option key={account.id} value={account.id} disabled={account.linkedPartyId != null && account.linkedPartyId !== state.targetId}>
@@ -507,7 +508,7 @@ function RepairDialog({
                         {account.linkedPartyId === state.targetId ? " — عضوية سابقة" : account.linkedPartyId != null ? " — مرتبط" : ""}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </div>
               )}
 
@@ -524,18 +525,18 @@ function RepairDialog({
                   {needsFeeDecision && (
                     <div className="space-y-1.5 sm:col-span-2">
                       <Label htmlFor="legacy-fee-settlement">قرار أجرة التوصيل ({fmtMoney(state.proofDeliveryFee)})</Label>
-                      <select
+                      <AppSelect
                         id="legacy-fee-settlement"
                         value={state.feeSettlementAction ?? ""}
-                        onChange={(event) => patch({ feeSettlementAction: event.target.value as RepairDialogState["feeSettlementAction"] })}
-                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                        onValueChange={(next) => patch({ feeSettlementAction: next as RepairDialogState["feeSettlementAction"] })}
+                        className="h-10 border-input px-3 text-sm"
                       >
                         <option value="">اختر ما يثبته السجل فقط…</option>
                         <option value="EARN_ONLY">تثبيت استحقاق الأجرة فقط — الدفع/الصرف غير مثبت</option>
                         {state.proofFeeCollection === "COURIER" && (
                           <option value="EARN_AND_DIRECT_PAID">تثبيت الاستحقاق والقبض المباشر — المندوب قبضها من العميل</option>
                         )}
-                      </select>
+                      </AppSelect>
                     </div>
                   )}
                 </div>
@@ -544,16 +545,16 @@ function RepairDialog({
               {needsCustomerBalanceDecision && (
                 <div className="space-y-1.5">
                   <Label htmlFor="legacy-customer-balance">قرار ذمة العميل</Label>
-                  <select
+                  <AppSelect
                     id="legacy-customer-balance"
                     value={state.customerBalanceAction ?? ""}
-                    onChange={(event) => patch({ customerBalanceAction: event.target.value as RepairDialogState["customerBalanceAction"] })}
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    onValueChange={(next) => patch({ customerBalanceAction: next as RepairDialogState["customerBalanceAction"] })}
+                    className="h-10 border-input px-3 text-sm"
                   >
                     <option value="">اختر بعد مراجعة السجل…</option>
                     <option value="IDENTITY_ONLY">استعادة الهوية فقط — الذمة مسجلة مسبقاً</option>
                     <option value="ADD_OUTSTANDING">استعادة الهوية وإضافة المتبقي — الذمة غير مسجلة</option>
-                  </select>
+                  </AppSelect>
                 </div>
               )}
 

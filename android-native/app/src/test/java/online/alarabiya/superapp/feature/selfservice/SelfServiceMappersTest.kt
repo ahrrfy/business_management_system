@@ -2,6 +2,7 @@ package online.alarabiya.superapp.feature.selfservice
 
 import online.alarabiya.superapp.model.selfservice.PersonalTask
 import online.alarabiya.superapp.model.selfservice.PersonalTaskAction
+import online.alarabiya.superapp.model.selfservice.NotificationFamily
 import online.alarabiya.superapp.model.selfservice.SelfServiceCapabilities
 import online.alarabiya.superapp.model.selfservice.SelfServiceMappers
 import org.junit.Assert.assertEquals
@@ -158,6 +159,7 @@ class SelfServiceMappersTest {
                     mapOf(
                         "id" to 9,
                         "kind" to "ATTENDANCE",
+                        "family" to "ADMIN",
                         "title" to "تم تسجيل الدخول",
                         "body" to "تمت مزامنة بصمة دخولك",
                         "route" to "/mobile#attendance",
@@ -185,6 +187,7 @@ class SelfServiceMappersTest {
         assertEquals(1, center.unreadCount)
         assertTrue(center.rows.single().isUnread)
         assertEquals("attendance", center.rows.single().entityType)
+        assertEquals(NotificationFamily.ADMIN, center.rows.single().family)
         assertEquals("/mobile#attendance", center.rows.single().route)
         assertFalse(preferences.leaveStatus)
         assertEquals("22:00", preferences.quietHoursStart)

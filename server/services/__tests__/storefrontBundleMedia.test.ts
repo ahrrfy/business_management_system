@@ -70,7 +70,7 @@ describe("storefront bundle component media", () => {
 
     const detail = await storefrontProduct(3, 1);
     expect(detail?.bundleImageUrls).toHaveLength(2);
-    expect(detail?.bundleImageUrls?.[0]).toMatch(/^\/api\/img\/product\/11\?v=[0-9a-f]{16}$/);
+    expect(detail?.bundleImageUrls?.[0]).toMatch(/^\/api\/img\/product\/11\?v=[0-9a-f]{16}&w=320$/);
     expect(detail?.bundleImageUrls?.[1]).toBe("/media/notebook-blue.webp");
     expect(detail?.bundleImageUrls).not.toContain("/media/pending.webp");
     expect(detail?.imageUrl).toBe(detail?.bundleImageUrls?.[0]);

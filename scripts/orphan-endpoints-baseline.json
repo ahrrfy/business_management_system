@@ -1,13 +1,6 @@
 {
   "generatedNote": "يتامى قائمون مسموحون مؤقّتاً (تدقيق ١٧/٧) — قلّصها بحذف الميت أو وصله بواجهة. لا تُوسِّعها.",
   "orphans": [
-    "delivery.listDeadLetterOutbox",
-    "delivery.requeueDeadLetter",
-    "inventory.createManualMovement",
-    "inventory.stockByBranch",
-    "inventory.transfer",
-    "salesPromotions.activeToday",
-    "storefront.customerBenefitsPrivate",
-    "workOrders.eventTimeline"
+    "storefront.customerBenefitsPrivate"
   ]
 }
