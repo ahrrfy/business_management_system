@@ -20,7 +20,7 @@
   "client/src/pages/CommissionRuns.tsx": 1,
   "client/src/pages/CommissionTargets.tsx": 1,
   "client/src/pages/ConsignmentNotes.tsx": 2,
-  "client/src/pages/ConsignmentSettlements.tsx": 4,
+  "client/src/pages/ConsignmentSettlements.tsx": 1,
   "client/src/pages/ContractPrices.tsx": 1,
   "client/src/pages/Coupons.tsx": 3,
   "client/src/pages/CreditApprovals.tsx": 2,

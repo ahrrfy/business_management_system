@@ -515,9 +515,15 @@ export function DataTable<T, K = string>({
    *
    * النمط من `TABLE_TFOOT_CLS` نفسه الذي يستعمله `TableTotalsRow` — مصدرٌ بصريّ واحد.
    */
-  const hasFooter = effectiveColumns.some(
-    (c) => (c as { footer?: unknown }).footer != null,
-  );
+  /*
+   * ⚠️ ولا ذيلَ على جدولٍ فارغ: إجماليٌّ فوق صفر صفوفٍ لا معنى له، وكان يُصيَّر صفَّ
+   * ذيلٍ **فارغاً** يشغل مساحةً تحت رسالة «لا بيانات» (أمسكته جولةٌ بصرية على تسويات
+   * الأمانة: الشاشةُ الأصل كانت تشترط صفوفاً قبل رسم صفّ الإجماليات، والتحويلُ أسقط
+   * الشرط لأنّ `footer` مُعرَّفٌ على العمود لا مشروطاً بالبيانات).
+   */
+  const hasFooter =
+    data.length > 0 &&
+    effectiveColumns.some((c) => (c as { footer?: unknown }).footer != null);
 
   const footerRows = hasFooter
     ? table.getFooterGroups().map((fg) => (
