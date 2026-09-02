@@ -24,6 +24,7 @@ import { qrCodeSvg } from "@/lib/printing/qr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { useEffect, useMemo, useState } from "react";
+import { hasModuleAccess } from "@shared/permissions";
 
 // نوع صفّ أمر الشراء (يوحّد فرعَي الإخراج: المُقنَّع cost=null وغير المُقنَّع).
 type PurchaseRow = RouterOutputs["purchases"]["list"][number];
@@ -31,8 +32,8 @@ type PurchaseRow = RouterOutputs["purchases"]["list"][number];
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
   SENT: "مُرسَل",
-  CONFIRMED: "مؤكّد",
-  RECEIVED: "مُستلَم",
+  CONFIRMED: "بانتظار الترحيل (قديم)",
+  RECEIVED: "معتمدة ومضافة للمخزون",
   CANCELLED: "ملغى",
 };
 
@@ -91,6 +92,13 @@ export default function Purchases() {
   // فلتر الفرع وعموده — للمرتفعين العابرين للفروع فقط (الخادم يتجاهل branchId لغيرهم أصلاً:
   // scopedBranchId الحاكم في buildPurchasesListConds، فالإخفاء هنا عرضيّ لا أمنيّ — نمط Invoices.tsx).
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const canWritePurchases = hasModuleAccess(
+    me.data?.role ?? "",
+    (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)
+      ?.permissionsOverride ?? null,
+    "purchases",
+    "FULL",
+  );
   // ٢٤/٨ (Codex P2 على PR #749): تبويبُ الوجهة `statement` في `SuppliersHub` مُحصَّنٌ
   // بـ`managerOnly` صراحةً — لا يحترم `permissionsOverride`. مستخدمُ شراءٍ مخصَّصٌ مُنِح
   // `reports:READ` صراحةً كان يرى الرابط ثمّ يُدفَع خارج التبويب. البوّابة الصحيحة الوحيدة
@@ -145,28 +153,6 @@ export default function Purchases() {
     },
     onError: (e) => notify.err(e),
   });
-
-  const confirmMut = trpc.purchases.confirmOrder.useMutation({
-    onSuccess: async () => {
-      await utils.purchases.list.invalidate();
-      notify.ok("اعتُمد أمر الشراء — أصبح قابلاً للاستلام");
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  // اعتماد مسوّدة (DRAFT ← CONFIRMED): يُتمّم دورة «حفظ مسوّدة» في شاشة الإنشاء — بعدها الأمر
-  // قابل للاستلام عبر شاشة الاستلام.
-  async function confirmOrder(p: { id: number; poNumber: string }) {
-    const ok = await confirm({
-      variant: "info",
-      title: "اعتماد أمر الشراء",
-      description: `سيُعتمَد الأمر ${p.poNumber} فيصبح قابلاً للاستلام. هل تتابع؟`,
-      confirmText: "اعتماد",
-      cancelText: "تراجع",
-    });
-    if (!ok) return;
-    confirmMut.mutate({ purchaseOrderId: p.id });
-  }
 
   // إلغاء أمر شراء لم يُستلم منه شيء — الحارس النهائي في الخادم (يرفض أي أمر استُلمت منه بضاعة).
   async function cancelOrder(p: { id: number; poNumber: string; total: string }) {
@@ -335,7 +321,7 @@ export default function Purchases() {
                 },
               ],
             }}
-            add={{ href: "/purchases/new", label: "أمر شراء جديد" }}
+            add={canWritePurchases ? { href: "/purchases/new", label: "فاتورة شراء جديدة" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -343,7 +329,7 @@ export default function Purchases() {
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
-                  <th className="p-2">رقم الأمر</th>
+                  <th className="p-2">رقم الفاتورة</th>
                   <th className="p-2">المورد</th>
                   {/* عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (نمط Invoices.tsx). */}
                   {showBranchCol && <th className="p-2">الفرع</th>}
@@ -361,7 +347,7 @@ export default function Purchases() {
               <tbody>
                 {rows.map((p) => {
                   const terminal = p.status === "RECEIVED" || p.status === "CANCELLED";
-                  const needsConfirmation = p.status === "DRAFT" || p.status === "SENT";
+                  const needsConfirmation = p.status === "DRAFT" || p.status === "SENT" || p.status === "CONFIRMED";
                   const fr = rowProps(p.id);
                   return (
                     <tr key={p.id} ref={fr.ref} className={`border-t ${fr.className}`}>
@@ -425,30 +411,11 @@ export default function Purchases() {
                               title: `إجمالي الأمر: ${fmt(p.total)} د.ع`,
                               dueAt: p.orderDate,
                               status: PO_STATUS[p.status] ?? p.status,
-                              nextAction: p.status === "CONFIRMED" ? "يرجى تأكيد موعد تجهيز الطلب." : undefined,
+                              nextAction: p.status === "DRAFT" || p.status === "SENT" ? "يرجى مراجعة الفاتورة قبل اعتمادها." : undefined,
                             }),
                             gate: { module: "purchases", level: "READ" },
                           }}
                           actions={[
-                            {
-                              key: "confirm",
-                              kind: "approve",
-                              label: "اعتماد الأمر",
-                              // اعتماد المسوّدة (DRAFT ← CONFIRMED) — بعده يصبح قابلاً للاستلام.
-                              hidden: !needsConfirmation,
-                              disabled: confirmMut.isPending,
-                              disabledReason: "توجد عملية اعتماد قيد التنفيذ",
-                              onSelect: () =>
-                                void confirmOrder({
-                                  id: p.id,
-                                  poNumber: p.poNumber,
-                                }),
-                              gate: {
-                                roles: ["manager", "purchasing"],
-                                module: "purchases",
-                                level: "FULL",
-                              },
-                            },
                             {
                               key: "edit",
                               kind: "edit",
@@ -464,19 +431,11 @@ export default function Purchases() {
                               },
                             },
                             {
-                              key: "receive",
-                              kind: terminal ? "view" : "approve",
-                              label: terminal ? "عرض" : "استلام",
-                              href: `/purchases/${p.id}/receive`,
-                              // مسوّدة غير قابلة للاستلام قبل الاعتماد (receive يشترط status=CONFIRMED خادمياً).
-                              hidden: needsConfirmation,
-                              gate: terminal
-                                ? { module: "purchases", level: "READ" }
-                                : {
-                                    roles: ["warehouse", "manager", "purchasing"],
-                                    module: "purchases",
-                                    level: "FULL",
-                                  },
+                              key: "view",
+                              kind: "view",
+                              label: needsConfirmation ? "مراجعة واعتماد الفاتورة" : "عرض التفاصيل",
+                              href: `/purchases/${p.id}`,
+                              gate: { module: "purchases", level: "READ" },
                             },
                             {
                               key: "print",
@@ -499,7 +458,7 @@ export default function Purchases() {
                               label: "مرتجع شراء",
                               href: `/purchase-returns/new?po=${encodeURIComponent(p.poNumber)}`,
                               // الإرجاع للمورد ممكن فقط بعد استلام البضاعة فعلياً.
-                              hidden: p.status !== "RECEIVED" && p.status !== "CONFIRMED",
+                              hidden: p.status !== "RECEIVED",
                               gate: {
                                 roles: ["manager", "purchasing"],
                                 module: "purchases",

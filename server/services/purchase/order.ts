@@ -2,7 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like } from "drizzle-orm";
-import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../../drizzle/schema";
+import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
 import { isWithinPriceDecimals, priceDecimalsMessage, type PriceCurrency } from "../../../shared/moneyPrecision";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
@@ -15,6 +15,7 @@ import {
 import type { Tx } from "../../db";
 import { requireDb, withTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
+import { postPurchaseInvoiceInTx, type PurchasePostingDetails } from "./receive";
 import type { CreatePurchaseOrderInput, PurchaseDocumentInput, UpdatePurchaseOrderInput } from "./types";
 
 /** تسلسل سعر ضمني لعمود decimal(15,4) — نظير toDbRate في exchangeHouseService. */
@@ -306,7 +307,24 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
   return { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal };
 }
 
+/**
+ * منشئ سجل أمر منخفض المستوى لمسودات إعادة الطلب واختبارات النواة التاريخية. التطبيق لا يستعمله
+ * لحفظ فاتورة معتمدة؛ راوتر المشتريات يستعمل `createPurchaseInvoice` كي يكون الحفظ والترحيل ذريين.
+ */
 export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor: Actor) {
+  return persistPurchaseOrder(input, actor, false);
+}
+
+/** حفظ فاتورة شراء: المسودة بلا أثر، والمعتمدة تُرحّل كاملةً إلى المخزون والدفتر في المعاملة نفسها. */
+export async function createPurchaseInvoice(input: CreatePurchaseOrderInput, actor: Actor & { role?: string }) {
+  return persistPurchaseOrder(input, actor, true);
+}
+
+async function persistPurchaseOrder(
+  input: CreatePurchaseOrderInput,
+  actor: Actor & { role?: string },
+  autoPostConfirmed: boolean,
+) {
   return withTx(async (tx) => {
     // IDEM-06: idempotency check — نفس clientRequestId يعيد نفس المعرّف بدل إنشاء أمر مزدوج.
     // المسار ج-٥ (١٧/٨): المفتاح وحده كان يُطابَق ⇒ طلبٌ بنفس المفتاح لكن **بمورّدٍ أو أسطرٍ أو
@@ -326,6 +344,12 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       invoiceDiscount: input.invoiceDiscount ?? null,
       shippingCost: input.shippingCost ?? null,
       customsCost: input.customsCost ?? null,
+      shippingPaymentMethod: input.shippingPaymentMethod ?? null,
+      shippingPaymentReference: input.shippingPaymentReference ?? null,
+      shippingCardLastFour: input.shippingCardLastFour ?? null,
+      shippingBeneficiarySupplierId: input.shippingBeneficiarySupplierId ?? null,
+      shippingBeneficiaryName: input.shippingBeneficiaryName ?? null,
+      shippingEvidenceReference: input.shippingEvidenceReference ?? null,
       items: [...input.items]
         .map((i) => ({
           variantId: i.variantId,
@@ -349,7 +373,59 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
         payloadHash,
         { requireStoredHash: true },
       );
-      if (existing != null) return { purchaseOrderId: existing, idempotent: true };
+      if (existing != null) {
+        const [existingOrder] = await tx
+          .select({
+            poNumber: purchaseOrders.poNumber,
+            total: purchaseOrders.total,
+            usdTotal: purchaseOrders.usdTotal,
+            status: purchaseOrders.status,
+          })
+          .from(purchaseOrders)
+          .where(eq(purchaseOrders.id, existing))
+          .limit(1);
+        if (!existingOrder) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعذّر استعادة فاتورة الشراء المحفوظة سابقاً",
+          });
+        }
+        const [shippingRequest] = existingOrder.status === "RECEIVED"
+          ? await tx
+              .select({ id: receipts.id })
+              .from(receipts)
+              .where(like(receipts.referenceNumber, `SHIP-${existingOrder.poNumber}-%`))
+              .orderBy(desc(receipts.id))
+              .limit(1)
+          : [];
+        const [supplierRequest] = existingOrder.status === "RECEIVED"
+          ? await tx
+              .select({ id: receipts.id })
+              .from(receipts)
+              .where(like(receipts.referenceNumber, `PO-PAY-${existingOrder.poNumber}-%`))
+              .orderBy(desc(receipts.id))
+              .limit(1)
+          : [];
+        const posting = existingOrder.status === "RECEIVED"
+          ? {
+              purchaseOrderId: existing,
+              fullyReceived: true,
+              receivedTotal: existingOrder.total,
+              receivedUsd: existingOrder.usdTotal ?? "0.00",
+              shippingPaymentRequestReceiptId: shippingRequest ? Number(shippingRequest.id) : null,
+              supplierPaymentRequestReceiptId: supplierRequest ? Number(supplierRequest.id) : null,
+              idempotentReplay: true as const,
+            }
+          : null;
+        return {
+          purchaseOrderId: existing,
+          poNumber: existingOrder.poNumber,
+          total: existingOrder.total,
+          status: existingOrder.status,
+          posting,
+          idempotent: true as const,
+        };
+      }
     }
 
     // نفس قفل الفرع الذي تبدأ به جلسة الجرد: يمنع سباق «التقاط نطاق OPENING ↔ إنشاء قائمة شراء».
@@ -400,6 +476,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     const seq = lastRows[0]?.n ? parseInt(lastRows[0].n.slice(prefix.length), 10) + 1 : 1;
     const poNumber = prefix + String(seq).padStart(5, "0");
 
+    const requestedStatus = input.status ?? "CONFIRMED";
     const insRes = await tx.insert(purchaseOrders).values({
       poNumber,
       supplierId: input.supplierId,
@@ -411,7 +488,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       customsCost: customsCost.toFixed(2),
       total: total.toFixed(2),
       settlementType,
-      status: input.status ?? "CONFIRMED",
+      status: requestedStatus,
       agreedCurrency,
       usdTotal: usdTotalVal ? usdTotalVal.toFixed(2) : null,
       // خصم فاتورة المورّد (0204): إفصاحٌ وإعادةُ تحميلٍ للمحرّر — الأعمدة المالية مخزَّنة صافيةً
@@ -429,29 +506,45 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     }
     // قائمة الشراء غير الملغاة تخرج الصنف فوراً من أي جرد افتتاحي نشط في الفرع، حتى لو بدأ العد.
     await removeVariantsFromActiveOpeningStocktakes(tx, input.branchId, uniqueVariantIds);
+    const posting =
+      autoPostConfirmed && requestedStatus === "CONFIRMED"
+        ? await postPurchaseInvoiceInTx(tx, purchaseOrderId, actor, ["CONFIRMED"], {
+            shippingPaymentMethod: input.shippingPaymentMethod,
+            shippingPaymentReference: input.shippingPaymentReference,
+            shippingCardLastFour: input.shippingCardLastFour,
+            shippingBeneficiarySupplierId: input.shippingBeneficiarySupplierId,
+            shippingBeneficiaryName: input.shippingBeneficiaryName,
+            shippingEvidenceReference: input.shippingEvidenceReference,
+          })
+        : null;
     // IDEM-06: سجّل مفتاح الـidempotency — طلب متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK).
     if (input.clientRequestId)
       await recordIdempotencyKey(tx, "purchase.create", input.clientRequestId, purchaseOrderId, payloadHash);
-    return { purchaseOrderId, poNumber, total: total.toFixed(2) };
+    return {
+      purchaseOrderId,
+      poNumber,
+      total: total.toFixed(2),
+      status: posting ? ("RECEIVED" as const) : requestedStatus,
+      posting,
+    };
   });
 }
 
-/** اعتماد مسودة أمر شراء: انتقال حالة فقط؛ لا مخزون ولا قيد ولا ذمة قبل الاستلام. */
-export async function confirmPurchaseOrder(purchaseOrderId: number, actor: Actor & { role?: string }) {
+/** اعتماد فاتورة شراء: يرحّل كامل المتبقّي إلى المخزون والدفتر في المعاملة نفسها. */
+export async function confirmPurchaseOrder(
+  purchaseOrderId: number,
+  actor: Actor & { role?: string },
+  postingDetails: PurchasePostingDetails = {},
+) {
   return withTx(async (tx) => {
-    const [po] = await tx
-      .select()
-      .from(purchaseOrders)
-      .where(eq(purchaseOrders.id, purchaseOrderId))
-      .for("update")
-      .limit(1);
-    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
-    assertPurchaseBranch(po, actor);
-    if (po.status !== "DRAFT" && po.status !== "SENT") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُعتمَد إلا أمر شراء مسوّدة أو مُرسَل" });
-    }
-    await tx.update(purchaseOrders).set({ status: "CONFIRMED" }).where(eq(purchaseOrders.id, purchaseOrderId));
-    return { purchaseOrderId, status: "CONFIRMED" as const };
+    const posting = await postPurchaseInvoiceInTx(
+      tx,
+      purchaseOrderId,
+      actor,
+      ["DRAFT", "SENT", "CONFIRMED"],
+      postingDetails,
+    );
+    return { purchaseOrderId, status: "RECEIVED" as const, posting };
   });
 }
 
@@ -498,7 +591,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     if (po.status === "RECEIVED" || po.status === "CANCELLED") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يُعدَّل أمر شراء مستلَم أو ملغى — استعمل مرتجع شراء أو أنشئ أمراً جديداً",
+        message: "لا تُعدَّل فاتورة شراء معتمدة ومضافة للمخزون أو ملغاة — استعمل مرتجع شراء أو أنشئ فاتورة جديدة",
       });
     }
 
@@ -509,7 +602,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     if (existingItems.some((i) => (i.receivedBaseQuantity ?? 0) > 0)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "استُلمت بضاعة من هذا الأمر — لا يُعدَّل بعد الاستلام؛ استعمل مرتجع شراء",
+        message: "أُضيفت بضاعة هذه الفاتورة إلى المخزون — لا تُعدّل بعد الاعتماد؛ استعمل مرتجع شراء",
       });
     }
     // دفاع متعمّق: الدفع للمورّد لا يقع إلّا مع الاستلام ⇒ وجودُه يعني أثراً مالياً قائماً.
@@ -608,7 +701,7 @@ export async function cancelPurchaseOrder(purchaseOrderId: number, actor: Actor 
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
     assertPurchaseBranch(po, actor);
     if (po.status === "RECEIVED" || po.status === "CANCELLED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء مستلَم أو ملغى" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "فاتورة الشراء معتمدة ومضافة للمخزون أو ملغاة" });
     }
 
     const items = await tx

@@ -88,7 +88,6 @@ const ProductContentDrafts = lazy(() => import("@/pages/ProductContentDrafts"));
 const ProductImageStudio = lazy(() => import("@/pages/ProductImageStudio"));
 const StudioCampaignsManager = lazy(() => import("@/pages/StudioCampaignsManager"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
-const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
 const PurchaseEdit = lazy(() => import("@/pages/PurchaseEdit"));
 const PurchaseOrderDetail = lazy(() => import("@/pages/PurchaseOrderDetail"));
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
@@ -382,9 +381,12 @@ export default function App() {
       <Route path="/purchase-returns"><Redirect to="/purchases?tab=returns" /></Route>
       <Route path="/purchases"><Shell><PurchasesHub /></Shell></Route>
       <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>
-      <Route path="/purchases/:id/receive"><Shell><PurchaseReceive /></Shell></Route>
+      {/* توافق الروابط القديمة فقط: لم تعد هناك شاشة استلام؛ اعتماد الفاتورة يضيف المخزون مباشرةً. */}
+      <Route path="/purchases/:id/receive">
+        {(params) => <Redirect to={`/purchases/${params.id}`} />}
+      </Route>
       <Route path="/purchases/:id/edit"><Shell><PurchaseEdit /></Shell></Route>
-      {/* بعد /purchases/new و/:id/receive و/:id/edit عمداً: مسارٌ عامّ لا يبتلع الأخصّ منه. */}
+      {/* بعد /purchases/new و/:id/edit والرابط التاريخي أعلاه عمداً: مسارٌ عامّ لا يبتلع الأخصّ منه. */}
       <Route path="/purchases/:id"><Shell><PurchaseOrderDetail /></Shell></Route>
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
       <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>

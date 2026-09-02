@@ -31,8 +31,7 @@ import {
 import {
   cancelPurchaseOrder,
   confirmPurchaseOrder,
-  createPurchaseOrder,
-  receivePurchase,
+  createPurchaseInvoice,
   settlePurchaseUsdDirect,
   updatePurchaseOrder,
 } from "../services/purchaseService";
@@ -41,32 +40,26 @@ import {
   canSeeCostForUser,
   purchasesManagerProcedure,
   purchasesReadProcedure,
-  purchasesWarehouseProcedure,
   router,
 } from "../trpc";
 import { pauseIfRetryableDbError } from "../lib/retryDup";
 
-const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
-/**
- * دفعةُ المورّد **لحظة الاستلام**: نقديّة فقط — العقد الخادميّ يرفض غيرها منذ أوّل سطر في
- * `receivePurchase` («الدفع غير النقدي للمورد يتطلب سند صرف موثقاً بمرجع الأداة المالية»)،
- * والرفض يُسقِط **الاستلام كلّه** داخل نفس المعاملة: لا مخزون، ولا ذمّة مورّد، ولا قيد شراء.
- *
- * كان الزود يقبل الخمس طرق فتصل الحمولة إلى الخدمة لتُرفَض هناك ⇒ أمين المخزن يُدخل الكميات
- * ويختار «تحويل» فيخسر الإدخال كلّه برسالةٍ تحيله إلى سندٍ لا مسار له في الشاشة. تضييق الزود
- * يجعل الرفض عند **حدّ العقد** (خطأ تحقّقٍ واضح) بدل عملٍ يسقط كاملاً — وهو الدرس المُوثَّق
- * في CLAUDE.md §٦: لا تُفتَح طريقةٌ قبل التحقّق أنّ الخادم يقبل حمولتها.
- *
- * ⚠️ تسويةُ الشحن/الكمرك (`shippingPaymentMethod`) تبقى على `method` الكامل: مسارها مختلف
- * تماماً — تُنشئ سند صرفٍ نظاميّاً يقبل غير النقد فعلاً.
- */
 const supplierPaymentMethod = z.enum(["CASH"]);
+const shippingPaymentMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const shippingPostingShape = {
+  shippingPaymentMethod: shippingPaymentMethod.optional(),
+  shippingPaymentReference: z.string().trim().min(1).max(50).optional(),
+  shippingCardLastFour: z.string().regex(/^\d{4}$/).optional(),
+  shippingBeneficiarySupplierId: z.number().int().positive().nullish(),
+  shippingBeneficiaryName: z.string().trim().min(2).max(200).nullish(),
+  shippingEvidenceReference: z.string().trim().min(2).max(191).nullish(),
+} as const;
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على orderDate).
 const ymd = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
-// المشتريات تحمل التكلفة (unitPrice = سعر الشراء) ⇒ مدير فأعلى للإنشاء والعرض، والمخزن للاستلام.
+// المشتريات تحمل التكلفة (unitPrice = سعر الشراء) ⇒ مدير فأعلى للإنشاء والعرض والاعتماد.
 /** مدخلات فلترة قائمة المشتريات (بلا limit/offset/cursor) — يتقاسمها list وlistCount. */
 type PurchasesListFilters =
   | {
@@ -257,14 +250,15 @@ export const purchaseRouter = router({
         supplierInvoiceTotal: nonNegMoneyString.optional(),
         // خصم فاتورة المورّد بعملة الأمر (0204) — يُوزَّع بنسبة القيمة فتُخزَّن الأعمدة صافيةً.
         invoiceDiscount: nonNegMoneyString.optional(),
-        // landed-cost: تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة). تُرسمَل
-        // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
+        // تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة): تُثبت مصروف نقل مستقلّاً
+        // عند اعتماد الفاتورة، خارج WAVG وخارج ذمّة مورّد البضاعة، وتسويتها تبقى بطلب صرف معلّق.
         shippingCost: nonNegMoneyString.optional(),
         customsCost: nonNegMoneyString.optional(),
+        ...shippingPostingShape,
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      // عزل الفرع (تدقيق ١٧/٧، AUTHZ-2 + عزل مدير الفرع ١٢/٨): createPurchaseOrder كان يستعمل input.branchId
+      // عزل الفرع (تدقيق ١٧/٧، AUTHZ-2 + عزل مدير الفرع ١٢/٨): الخدمة تستعمل input.branchId
       // في الترقيم والتخزين لا actor.branchId. المالك/الأدمن وحدهما يعبُران الفروع؛ مدير الفرع وغيره
       // يُجبَرون على فرعهم المُسنَد ويُتجاهَل input.branchId.
       const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
@@ -277,21 +271,46 @@ export const purchaseRouter = router({
       const effectiveBranchId = elevated
         ? input.branchId
         : Number(ctx.user.branchId);
-      const res = await createPurchaseOrder(
-        { ...input, branchId: effectiveBranchId },
-        { userId: ctx.user.id, branchId: effectiveBranchId },
-      );
+      let res: Awaited<ReturnType<typeof createPurchaseInvoice>>;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          res = await createPurchaseInvoice(
+            { ...input, branchId: effectiveBranchId },
+            { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role },
+          );
+          break;
+        } catch (error) {
+          if (attempt < 2 && (await pauseIfRetryableDbError(error, attempt))) continue;
+          if (error instanceof TRPCError) throw error;
+          failOpaque(error, {
+            op: "purchases.createOrder",
+            userMessage: "تعذّر حفظ واعتماد فاتورة الشراء",
+            context: { userId: ctx.user.id, supplierId: input.supplierId },
+          });
+        }
+      }
       await logAudit(ctx, {
-        action: "purchase.createOrder",
+        action: res.idempotent ? "purchase.createOrder.replay" : "purchase.createOrder",
         entityType: "purchaseOrder",
         entityId: (res as { purchaseOrderId?: number })?.purchaseOrderId,
-        newValue: { supplierId: input.supplierId, items: input.items.length },
+        newValue: {
+          supplierId: input.supplierId,
+          items: input.items.length,
+          idempotentReplay: res.idempotent === true,
+          status: res.status,
+          autoPostedToInventory: res.status === "RECEIVED",
+          receivedTotal: res.posting?.receivedTotal ?? null,
+          supplierPaymentRequestReceiptId:
+            res.posting?.supplierPaymentRequestReceiptId ?? null,
+          shippingPaymentRequestReceiptId:
+            res.posting?.shippingPaymentRequestReceiptId ?? null,
+        },
       });
       return res;
     }),
 
-  // تعديل أمر شراء قبل الاستلام — بنفس محرّر الإنشاء (شاشة `/purchases/:id/edit`). الحرّاس
-  // (لا استلام، لا دفعة، حالة غير نهائية) في الخدمة نفسها كي تحرس أيّ قناةٍ أخرى تستدعيها.
+  // تعديل مسوّدة شراء قبل اعتمادها — بنفس محرّر الإنشاء (شاشة `/purchases/:id/edit`). الحرّاس
+  // (لا ترحيل مخزني، لا دفعة، حالة غير نهائية) في الخدمة نفسها كي تحرس أيّ قناةٍ أخرى تستدعيها.
   // الفرع **لا يُستقبَل من المدخلات**: تغييره يغيّر عزل الأمر وترقيمه ⇒ الخدمة تُبقيه على حاله.
   updateOrder: purchasesManagerProcedure
     .input(
@@ -354,11 +373,9 @@ export const purchaseRouter = router({
       return res;
     }),
 
-  // اعتماد مسوّدة (DRAFT → CONFIRMED): يُتمّم دورة «حفظ مسوّدة» — مسوّدةٌ تُحفَظ بلا التزام فوري
-  // (لا تُستلَم منها بضاعة، لا أثر مخزني/مالي أصلاً — createOrder لا يكتب شيئاً غير سطور الأمر
-  // نفسها) ثم تُعتمَد لاحقاً فتصبح قابلة للاستلام عبر receive (الذي يشترط status=CONFIRMED حرفياً).
+  // اعتماد المسوّدة = ترحيل كامل الفاتورة في العملية نفسها: مخزون + WAVG + دفتر + ذمّة/طلب تسوية.
   confirmOrder: purchasesManagerProcedure
-    .input(z.object({ purchaseOrderId: z.number().int().positive() }))
+    .input(z.object({ purchaseOrderId: z.number().int().positive(), ...shippingPostingShape }))
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
         throw new TRPCError({
@@ -366,121 +383,51 @@ export const purchaseRouter = router({
           message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن اعتماد أمر شراء",
         });
       }
-      const res = await confirmPurchaseOrder(input.purchaseOrderId, {
-        userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId),
-        role: ctx.user.role,
-      });
-      await logAudit(ctx, {
-        action: "purchase.confirmOrder",
-        entityType: "purchaseOrder",
-        entityId: input.purchaseOrderId,
-        newValue: { status: "CONFIRMED" },
-      });
-      return res;
-    }),
-
-  receive: purchasesWarehouseProcedure
-    .input(
-      z.object({
-        purchaseOrderId: z.number().int().positive(),
-        lines: z
-          .array(
-            z.object({
-              purchaseOrderItemId: z.number().int().positive(),
-              receivedBaseQuantity: z.number().int().positive(),
-            }),
-          )
-          .min(1)
-          .superRefine((lines, ctx) => {
-            const seen = new Set<number>();
-            lines.forEach((line, index) => {
-              if (seen.has(line.purchaseOrderItemId)) {
-                ctx.addIssue({
-                  code: z.ZodIssueCode.custom,
-                  path: [index, "purchaseOrderItemId"],
-                  message: "لا يجوز تكرار بند أمر الشراء في الاستلام نفسه",
-                });
-              }
-              seen.add(line.purchaseOrderItemId);
-            });
-          }),
-        payment: z
-          .object({
-            amount: positiveMoneyString,
-            method: supplierPaymentMethod,
-          })
-          .optional(),
-        // طريقة دفع مصروف الشحن/الكمرك (لشركة النقل، لا للمورّد). الافتراضي نقديّ.
-        shippingPaymentMethod: method.optional(),
-        shippingPaymentReference: z.string().trim().min(1).max(50).optional(),
-        shippingCardLastFour: z
-          .string()
-          .regex(/^\d{4}$/)
-          .optional(),
-        shippingBeneficiarySupplierId: z.number().int().positive().nullish(),
-        shippingBeneficiaryName: z.string().trim().min(2).max(200).nullish(),
-        shippingEvidenceReference: z.string().trim().min(2).max(191).nullish(),
-        // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
-        clientRequestId: z.string().min(1).max(80),
-      }),
-    )
-    .mutation(async ({ input, ctx }) => {
-      // G3: purchasesWarehouseProcedure يضمن branchId لغير-المدير عبر requireOwnBranch.
-      // المدير/الأدمن قد يصل بلا فرع (شرعي)، لكن الاستلام نفسه يحتاج فرعاً.
-      if (ctx.user.branchId == null) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن استلام بضاعة",
-        });
-      }
-      const actorBranchId = Number(ctx.user.branchId);
-      for (let attempt = 0; attempt < 3; attempt++) {
+      let res: Awaited<ReturnType<typeof confirmPurchaseOrder>>;
+      for (let attempt = 0; ; attempt++) {
         try {
-          const res = await receivePurchase(input, {
-            userId: ctx.user.id,
-            branchId: actorBranchId,
-            role: ctx.user.role,
-          });
-          // AUDIT-DETAIL (تدقيق ٢/٧): كان يسجّل «عدد الأسطر» فقط — لا الكميات المستلمة ولا مبلغ دفعة
-          // المورد ⇒ لا يميّز استلام قطعة عن ألف مع دفعة ملايين. الآن نلتقط الكميات والدفعة.
-          await logAudit(ctx, {
-            action: "purchase.receive",
-            entityType: "purchaseOrder",
-            entityId: input.purchaseOrderId,
-            newValue: {
-              lines: input.lines.map((l) => ({
-                purchaseOrderItemId: l.purchaseOrderItemId,
-                receivedBaseQuantity: l.receivedBaseQuantity,
-              })),
-              totalReceivedBaseQuantity: input.lines.reduce(
-                (s, l) => s + l.receivedBaseQuantity,
-                0,
-              ),
-              payment: input.payment
-                ? { amount: input.payment.amount, method: input.payment.method }
-                : null,
-              shippingPaymentRequestReceiptId:
-                res.shippingPaymentRequestReceiptId,
-              supplierPaymentRequestReceiptId:
-                res.supplierPaymentRequestReceiptId,
+          res = await confirmPurchaseOrder(
+            input.purchaseOrderId,
+            {
+              userId: ctx.user.id,
+              branchId: Number(ctx.user.branchId),
+              role: ctx.user.role,
             },
-          });
-          return res;
-        } catch (e: any) {
-          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
-          if (e instanceof TRPCError) throw e;
-          failOpaque(e, {
-            op: "purchases.receive",
-            userMessage: "تعذّر إتمام الاستلام",
+            {
+              shippingPaymentMethod: input.shippingPaymentMethod,
+              shippingPaymentReference: input.shippingPaymentReference,
+              shippingCardLastFour: input.shippingCardLastFour,
+              shippingBeneficiarySupplierId: input.shippingBeneficiarySupplierId,
+              shippingBeneficiaryName: input.shippingBeneficiaryName,
+              shippingEvidenceReference: input.shippingEvidenceReference,
+            },
+          );
+          break;
+        } catch (error) {
+          if (attempt < 2 && (await pauseIfRetryableDbError(error, attempt))) continue;
+          if (error instanceof TRPCError) throw error;
+          failOpaque(error, {
+            op: "purchases.confirmOrder",
+            userMessage: "تعذّر اعتماد فاتورة الشراء وإضافتها إلى المخزون",
             context: { userId: ctx.user.id, purchaseOrderId: input.purchaseOrderId },
           });
         }
       }
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "تعذّر إتمام الاستلام (تكرار)",
+      await logAudit(ctx, {
+        action: "purchase.confirmOrder",
+        entityType: "purchaseOrder",
+        entityId: input.purchaseOrderId,
+        newValue: {
+          status: "RECEIVED",
+          autoPostedToInventory: true,
+          receivedTotal: res.posting.receivedTotal,
+          supplierPaymentRequestReceiptId:
+            res.posting.supplierPaymentRequestReceiptId,
+          shippingPaymentRequestReceiptId:
+            res.posting.shippingPaymentRequestReceiptId,
+        },
       });
+      return res;
     }),
 
   /**

@@ -532,7 +532,6 @@ export const invoiceViewProcedure = branchScopedProcedure.use(
 // purchases — «مسؤول مشتريات» قالبه purchases=FULL ووصفه المعلن «أوامر شراء وموردون».
 export const purchasesReadProcedure = branchScopedProcedure.use(requireModule("purchases", "READ"));
 export const purchasesManagerProcedure = moduleProcedure(["manager", "purchasing"], "purchases", "FULL");
-export const purchasesWarehouseProcedure = moduleProcedure(["warehouse", "manager", "purchasing"], "purchases", "FULL");
 // inventory (يشمل production/stocktake — كلاهما يُحرّك المخزون)
 export const inventoryReadProcedure = branchScopedProcedure.use(requireModule("inventory", "READ"));
 export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manager"], "inventory", "FULL");
@@ -659,9 +658,8 @@ export const consignmentReadProcedure = branchScopedProcedure.use(requireModule(
 // products (catalog)
 export const productsReadProcedure = protectedProcedure.use(requireModule("products", "READ"));
 export const productsManagerProcedure = moduleProcedure(["manager"], "products", "FULL");
-// forPurchase (بحث منتجات جانب الشراء — يكشف التكلفة): أدوار الشراء التي تبني/تستلم أوامر الشراء
-// (purchasing/warehouse) تحتاجه لإضافة سطور PO، وكان محصوراً بالمدير فتعذّر عليها بناء أمر الشراء
-// رغم تخويلها إنشاءه (purchasesManagerProcedure)/استلامه (purchasesWarehouseProcedure). قراءة فقط،
+// forPurchase (بحث منتجات جانب الشراء — يكشف التكلفة): مسؤول الشراء يبني الفاتورة، وأمين المخزن
+// يحتاج قراءة بيانات الوحدة/التكلفة لأعمال الجرد والتحقيق. قراءة فقط،
 // ومحصور بأدوار الشراء + المدير ⇒ لا تتسرّب التكلفة للكاشير/المندوب/المستخدم العام.
 export const productsPurchaseProcedure = moduleProcedure(["manager", "warehouse", "purchasing"], "products", "READ");
 // استوديو المنتجات وحدة مستقلة: العامل يقرأ/يكتب الصور والمحتوى المقترح فقط، ولا يعبر بوابة

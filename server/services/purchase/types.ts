@@ -56,6 +56,13 @@ export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
   status?: "DRAFT" | "SENT" | "CONFIRMED";
   notes?: string | null;
   clientRequestId?: string;
+  /** تفاصيل تسوية مصروف الشحن عند الاعتماد؛ تبقى داخل الفاتورة بدلاً من شاشة استلام مستقلة. */
+  shippingPaymentMethod?: PaymentMethod | null;
+  shippingPaymentReference?: string | null;
+  shippingCardLastFour?: string | null;
+  shippingBeneficiarySupplierId?: number | null;
+  shippingBeneficiaryName?: string | null;
+  shippingEvidenceReference?: string | null;
 }
 
 /**

@@ -1,12 +1,10 @@
 package online.alarabiya.superapp.data
 
 import online.alarabiya.superapp.core.network.TrpcClient
-import online.alarabiya.superapp.model.purchasing.PaymentMethod
 import online.alarabiya.superapp.model.purchasing.PurchaseCatalogItem
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderDetail
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderSummary
-import online.alarabiya.superapp.model.purchasing.PurchaseReceiveDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseReturnDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseReturnPage
 import online.alarabiya.superapp.model.purchasing.PurchasingCapabilities
@@ -35,8 +33,7 @@ interface PurchasingDataSource {
     suspend fun orders(query: String = ""): List<PurchaseOrderSummary>
     suspend fun order(id: Long): PurchaseOrderDetail
     suspend fun createOrder(draft: PurchaseOrderDraft): PurchaseCreateResult
-    suspend fun confirmOrder(id: Long)
-    suspend fun receiveOrder(draft: PurchaseReceiveDraft)
+    suspend fun confirmOrder(id: Long, shippingPaymentMethod: String? = null)
     suspend fun cancelOrder(id: Long)
     suspend fun returns(query: String = ""): PurchaseReturnPage
     suspend fun createReturn(draft: PurchaseReturnDraft): PurchaseReturnResult
@@ -116,25 +113,24 @@ class PurchasingRepository(
             .put("shippingCost", draft.shippingCost).put("customsCost", draft.customsCost)
             .put("items", JSONArray().apply { draft.items.forEach { line -> put(JSONObject().put("variantId", line.variantId).put("productUnitId", line.productUnitId).put("quantity", line.quantity.trim()).put("unitPrice", line.unitPrice.trim())) } })
         if (draft.currency.name == "USD") input.put("usdTotal", draft.usdTotal.trim()).put("agreedRate", draft.agreedRate.trim())
+        val hasShipping = (draft.shippingCost.toBigDecimalOrNull()?.signum() ?: 0) > 0 ||
+            (draft.customsCost.toBigDecimalOrNull()?.signum() ?: 0) > 0
+        if (hasShipping) {
+            input.put("shippingPaymentMethod", draft.shippingPaymentMethod)
+            if (draft.shippingPaymentReference.isNotBlank()) input.put("shippingPaymentReference", draft.shippingPaymentReference.trim())
+            if (draft.shippingCardLastFour.isNotBlank()) input.put("shippingCardLastFour", draft.shippingCardLastFour.trim())
+            if (draft.shippingBeneficiaryName.isNotBlank()) input.put("shippingBeneficiaryName", draft.shippingBeneficiaryName.trim())
+            if (draft.shippingEvidenceReference.isNotBlank()) input.put("shippingEvidenceReference", draft.shippingEvidenceReference.trim())
+        }
         val result = api.mutate("purchases.createOrder", input)
         return PurchaseCreateResult(result.getLong("purchaseOrderId"), result.optBoolean("idempotent", false))
     }
 
-    override suspend fun confirmOrder(id: Long) {
+    override suspend fun confirmOrder(id: Long, shippingPaymentMethod: String?) {
         require(capabilities.canWriteOrders) { "لا تملك صلاحية اعتماد أمر الشراء" }
-        api.mutate("purchases.confirmOrder", JSONObject().put("purchaseOrderId", id))
-    }
-
-    override suspend fun receiveOrder(draft: PurchaseReceiveDraft) {
-        require(capabilities.canReceiveOrders) { "لا تملك صلاحية استلام أمر الشراء أو لا يوجد فرع مرتبط" }
-        val detail = order(draft.purchaseOrderId)
-        PurchasingValidation.receive(draft, detail)?.let { throw IllegalArgumentException(it) }
-        val input = JSONObject().put("purchaseOrderId", draft.purchaseOrderId).put("clientRequestId", draft.clientRequestId)
-            .put("lines", JSONArray().apply { draft.lines.forEach { put(JSONObject().put("purchaseOrderItemId", it.purchaseOrderItemId).put("receivedBaseQuantity", it.receivedBaseQuantity.toInt())) } })
-        draft.paymentAmount.trim().takeIf(String::isNotEmpty)?.let {
-            input.put("payment", JSONObject().put("amount", it).put("method", draft.paymentMethod.name))
-        }
-        api.mutate("purchases.receive", input)
+        val input = JSONObject().put("purchaseOrderId", id)
+        shippingPaymentMethod?.let { input.put("shippingPaymentMethod", it) }
+        api.mutate("purchases.confirmOrder", input)
     }
 
     override suspend fun cancelOrder(id: Long) {

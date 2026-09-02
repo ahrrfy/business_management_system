@@ -93,17 +93,24 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
     expect((await db().select().from(s.accountingEntries)).filter((e) => e.entryType === "PAYMENT_IN")).toHaveLength(1);
   });
 
-  it("purchases.receive: نفس clientRequestId ⇒ استلام واحد", async () => {
+  it("purchases.createOrder: نفس clientRequestId ⇒ فاتورة وترحيل مخزني واحد", async () => {
     await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
-    const po = await createPurchaseOrder({ supplierId: 1, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }] }, actor);
-    const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
-    const input = { purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 5 }], clientRequestId: "recv-key-1" };
-    await caller().purchases.receive(input);
-    await caller().purchases.receive(input);
+    const input = {
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
+      status: "CONFIRMED" as const,
+      settlementType: "CREDIT" as const,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }],
+      clientRequestId: "purchase-auto-post-key-1",
+    };
+    const first = await caller().purchases.createOrder(input);
+    const second = await caller().purchases.createOrder(input);
+    expect(second.purchaseOrderId).toBe(first.purchaseOrderId);
     expect((await db().select().from(s.inventoryMovements)).filter((m) => m.movementType === "IN")).toHaveLength(1);
     expect((await db().select().from(s.accountingEntries)).filter((e) => e.entryType === "PURCHASE")).toHaveLength(1);
     const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
-    expect(sup.currentBalance).toBe("25.00"); // 5×5.00 مرّة واحدة
+    expect(sup.currentBalance).toBe("50.00"); // 10×5.00 مرّة واحدة
   });
 
   it("vouchers.create: نفس clientRequestId ⇒ سند واحد", async () => {

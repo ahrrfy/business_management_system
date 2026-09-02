@@ -1,54 +1,31 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const source = readFileSync(
-  new URL("../PurchaseReceive.tsx", import.meta.url),
+const appSource = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
+const createSource = readFileSync(new URL("../PurchaseNew.tsx", import.meta.url), "utf8");
+const detailSource = readFileSync(new URL("../PurchaseOrderDetail.tsx", import.meta.url), "utf8");
+const routerSource = readFileSync(
+  new URL("../../../../server/routers/purchaseRouter.ts", import.meta.url),
   "utf8",
 );
 
-describe("واجهة استحقاق وتسوية شحن المشتريات", () => {
-  it("تفصل الاعتراف عند الاستلام عن التسوية المعلّقة", () => {
-    expect(source).toContain("أُثبت مصروف الشحن والتزامه");
-    expect(source).toContain("تسويته معلّقة لاعتماد مالكٍ آخر");
-    expect(source).toContain("لا يحدث أي صرف عند الاستلام");
-    expect(source).toContain("لا تُسجّله مرةً ثانية من شاشة المصروفات");
-    expect(source).toContain("shippingPaymentRequestReceiptId");
+describe("واجهة اعتماد فاتورة الشراء والترحيل الآلي", () => {
+  it("لا تحمّل شاشة استلام مستقلة وتحوّل رابطها التاريخي إلى تفاصيل الفاتورة", () => {
+    expect(appSource).not.toMatch(/import\(["'][^"']*PurchaseReceive["']\)/);
+    expect(appSource).toContain('<Route path="/purchases/:id/receive">');
+    expect(appSource).toContain('<Redirect to={`/purchases/${params.id}`} />');
   });
 
-  it("تجمع دليل أداة الدفع غير النقدية وترسله إلى API", () => {
-    expect(source).toContain('shipMethod === "TRANSFER"');
-    expect(source).toContain("مرجع التحويل");
-    expect(source).toContain("آخر أربعة أرقام للبطاقة");
-    expect(source).toContain("shippingPaymentReference:");
-    expect(source).toContain("shippingCardLastFour:");
+  it("تشرح أن اعتماد الفاتورة يضيف كامل الكميات إلى المخزون", () => {
+    expect(createSource).toContain("تم اعتماد فاتورة الشراء وإضافة كامل كمياتها إلى المخزون");
+    expect(createSource).toContain("اعتماد الفاتورة");
+    expect(createSource).not.toContain("تسجيل استلام");
   });
 
-  /**
-   * قرار المالك «لا تعامل بالصكوك» كان مطبَّقاً في راوتر السندات وفي `lib/paymentMethod`،
-   * وهذا المنتقي هو المنفذ الوحيد الباقي الذي كان يُنشئ صكّاً فعلياً (عبر
-   * `createSystemPaymentRequestTx`). يُمنَع رجوعه نصّياً.
-   */
-  it("لا يعرض «صك» في تسوية الشحن — منفذٌ خلفيّ لقرارٍ مُقفلٍ في كل بابٍ آخر", () => {
-    expect(source).not.toContain('"CHECK"');
-    expect(source).not.toContain("رقم الصك");
-  });
-
-  it("تسوية المورّد نقديّة فقط بلا منتقيٍ يَعِد بما يرفضه الخادم", () => {
-    expect(source).not.toContain("SUPPLIER_PAYMENT_METHODS");
-    expect(source).not.toContain("payMethod");
-    const inlinePayment =
-      source.match(
-        /const payment = data\.settlementType[\s\S]*?: undefined;/,
-      )?.[0] ?? "";
-    const laterPayment =
-      source.match(
-        /async function submitLaterSupplierPayment\(\)[\s\S]*?\r?\n  }\r?\n\r?\n  async function submit\(\)/,
-      )?.[0] ?? "";
-    expect(inlinePayment).toContain('method: "CASH"');
-    expect(laterPayment).toContain('method: "CASH"');
-    for (const rejected of ["CARD", "TRANSFER", "WALLET", "CHECK"]) {
-      expect(inlinePayment).not.toContain(rejected);
-      expect(laterPayment).not.toContain(rejected);
-    }
+  it("تبقي التسديد والبونص في صفحة التفاصيل من دون إعادة إدخال كميات الفاتورة", () => {
+    expect(detailSource).toContain("تسديد للمورّد");
+    expect(detailSource).toContain("بونص مجاني من المورّد");
+    expect(detailSource).not.toContain("purchases.receive.useMutation");
+    expect(routerSource).not.toMatch(/^\s*receive:\s*purchasesWarehouseProcedure/m);
   });
 });

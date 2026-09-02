@@ -51,8 +51,8 @@ const INVOICE_TYPE = "PURCHASE" as const;
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
   SENT: "مُرسَل",
-  CONFIRMED: "مؤكّد",
-  RECEIVED: "مُستلَم",
+  CONFIRMED: "بانتظار الترحيل (قديم)",
+  RECEIVED: "معتمدة ومضافة للمخزون",
   CANCELLED: "ملغى",
 };
 
@@ -615,7 +615,7 @@ export default function PurchaseEdit() {
               {landed.hasLanded && landed.hasBase && (
                 <div className="mt-1 rounded-lg border border-dashed bg-muted/40 p-2.5 text-[11px] text-muted-foreground">
                   <strong>لا تُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف.</strong> تُسجَّل مصروف نقلٍ
-                  على الشركة لحظة الاستلام (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
+                  على الشركة لحظة اعتماد الفاتورة (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
                 </div>
               )}
               {landed.hasLanded && !landed.hasBase && (

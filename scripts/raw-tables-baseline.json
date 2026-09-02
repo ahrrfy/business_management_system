@@ -86,7 +86,6 @@
   "client/src/pages/ProfitLoss.tsx": 1,
   "client/src/pages/Promotions.tsx": 2,
   "client/src/pages/PurchaseOrderDetail.tsx": 1,
-  "client/src/pages/PurchaseReceive.tsx": 1,
   "client/src/pages/PurchaseRegister.tsx": 1,
   "client/src/pages/PurchaseReturnDetail.tsx": 1,
   "client/src/pages/PurchaseReturns.tsx": 1,

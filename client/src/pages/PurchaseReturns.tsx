@@ -252,7 +252,7 @@ export default function PurchaseReturns() {
                         {
                           key: "po",
                           kind: "view",
-                          href: r.purchaseReturnId ? `/purchase-returns/${r.purchaseReturnId}` : `/purchases/${r.purchaseOrderId}/receive`,
+                          href: r.purchaseReturnId ? `/purchase-returns/${r.purchaseReturnId}` : `/purchases/${r.purchaseOrderId}`,
                           label: r.purchaseReturnId ? "فتح مستند المرتجع" : "فتح أمر الشراء",
                           hidden: r.purchaseOrderId == null,
                           gate: { module: "purchases", level: "READ" },

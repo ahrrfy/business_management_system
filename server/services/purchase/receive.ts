@@ -13,6 +13,7 @@ import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../l
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { assertNonPhysicalOutReceipt, lockCashSourceForUpdate } from "../cash/cashAvailability";
+import type { Tx } from "../../db";
 import { withTx, type Actor } from "../tx";
 import { createSystemPaymentRequestTx } from "../voucher/create";
 import {
@@ -53,9 +54,61 @@ export function cumulativePurchaseTax(
   return tax;
 }
 
+interface PostPurchaseOptions {
+  /** اعتماد الفاتورة يرحّل كامل المتبقّي آلياً؛ المسار اليدوي القديم يمرّر أسطره صراحةً. */
+  autoPostAll?: boolean;
+  /** حالات البداية المسموحة قبل الترحيل. الاستلام اليدوي التاريخي يقبل CONFIRMED فقط. */
+  allowedStatuses?: ReadonlyArray<"DRAFT" | "SENT" | "CONFIRMED">;
+  /** دمج الاعتماد والترحيل ألغى فصل «المنشئ/المستلم»؛ اعتماد الصرف النقدي يبقى بشخص ثانٍ. */
+  allowCreatorToPost?: boolean;
+}
+
+export type PurchasePostingDetails = Pick<
+  ReceivePurchaseInput,
+  | "shippingPaymentMethod"
+  | "shippingPaymentReference"
+  | "shippingCardLastFour"
+  | "shippingBeneficiarySupplierId"
+  | "shippingBeneficiaryName"
+  | "shippingEvidenceReference"
+>;
+
+/**
+ * مسار توافق داخلي للاختبارات والبيانات القديمة. لم يعد مكشوفاً عبر tRPC أو الواجهة؛ مسار
+ * التطبيق الوحيد هو `postPurchaseInvoiceInTx` الذي يرحّل كامل الفاتورة مع حفظها/اعتمادها.
+ */
 export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor & { role?: string }) {
-  return withTx(async (tx) => {
-    assertUniqueReceiveLines(input.lines);
+  return withTx((tx) => receivePurchaseInTx(tx, input, actor));
+}
+
+/** يرحّل كامل فاتورة الشراء داخل معاملة الحفظ/الاعتماد نفسها. */
+export async function postPurchaseInvoiceInTx(
+  tx: Tx,
+  purchaseOrderId: number,
+  actor: Actor & { role?: string },
+  allowedStatuses: ReadonlyArray<"DRAFT" | "SENT" | "CONFIRMED"> = ["CONFIRMED"],
+  postingDetails: PurchasePostingDetails = {},
+) {
+  return receivePurchaseInTx(
+    tx,
+    {
+      purchaseOrderId,
+      lines: [],
+      clientRequestId: `purchase-auto-post-${purchaseOrderId}`,
+      ...postingDetails,
+    },
+    actor,
+    { autoPostAll: true, allowedStatuses, allowCreatorToPost: true },
+  );
+}
+
+async function receivePurchaseInTx(
+  tx: Tx,
+  input: ReceivePurchaseInput,
+  actor: Actor & { role?: string },
+  options: PostPurchaseOptions = {},
+) {
+    if (!options.autoPostAll) assertUniqueReceiveLines(input.lines);
     if (input.payment && input.payment.method !== "CASH") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -69,7 +122,8 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     const receiveRequestHash = input.clientRequestId
       ? idempotencyHash({
           purchaseOrderId: input.purchaseOrderId,
-          lines: [...input.lines]
+          mode: options.autoPostAll ? "AUTO_FULL_INVOICE" : "MANUAL_LEGACY",
+          lines: options.autoPostAll ? [] : [...input.lines]
             .map((line) => ({
               purchaseOrderItemId: line.purchaseOrderItemId,
               receivedBaseQuantity: line.receivedBaseQuantity,
@@ -238,15 +292,53 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع أمر الشراء أثناء الاستلام؛ أعد المحاولة" });
     }
     assertPurchaseBranch(po, actor);
-    if (po.status !== "CONFIRMED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُستلم إلا أمر شراء معتمد بحالة مؤكدة" });
+    const allowedStatuses = options.allowedStatuses ?? ["CONFIRMED"];
+    if (!allowedStatuses.includes(po.status as "DRAFT" | "SENT" | "CONFIRMED")) {
+      // قد يمرّ اعتمادان متزامنان بفحص المفتاح قبل أن يلتزم الأول. بعد قفل الأمر نعيد فحص
+      // المفتاح: إن كان الأول قد رحّل الفاتورة نعيد نتيجة ناجحة بدل 400 زائف للنقرة الثانية.
+      if (options.autoPostAll && po.status === "RECEIVED" && input.clientRequestId) {
+        const racedRefId = await checkIdempotency(
+          tx,
+          "purchase.receive",
+          input.clientRequestId,
+          receiveRequestHash,
+          { requireStoredHash: true, forUpdate: true },
+        );
+        if (racedRefId === input.purchaseOrderId) {
+          const [replayShippingRequest] = await tx
+            .select({ id: receipts.id })
+            .from(receipts)
+            .where(eq(receipts.referenceNumber, `SHIP-${po.poNumber}-${paymentRequestToken}`))
+            .limit(1);
+          const [replaySupplierRequest] = await tx
+            .select({ id: receipts.id })
+            .from(receipts)
+            .where(eq(receipts.referenceNumber, `PO-PAY-${po.poNumber}-${paymentRequestToken}`))
+            .limit(1);
+          return {
+            purchaseOrderId: input.purchaseOrderId,
+            fullyReceived: true,
+            receivedTotal: money(po.total).toFixed(2),
+            receivedUsd: money(po.usdTotal ?? "0").toFixed(2),
+            shippingPaymentRequestReceiptId: replayShippingRequest ? Number(replayShippingRequest.id) : null,
+            supplierPaymentRequestReceiptId: replaySupplierRequest ? Number(replaySupplierRequest.id) : null,
+            idempotentReplay: true as const,
+          };
+        }
+      }
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُرحّل إلا فاتورة شراء غير ملغاة ولم تُرحّل سابقاً" });
     }
     // SOD-06 (تدقيق ٢٠/٦، قرار المالك): اعتماد الشراء بفصل المهام — الاستلام يُلزِم الذمم الدائنة (AP)
     // ويُرحّل قيد PURCHASE، فيجب أن يَختلف المُستلِم (المُعتمِد) عن مُنشئ الأمر، إلّا للأدمن. يضمن
     // شخصين في الشراء الآجل (مُنشئ + مُعتمِد) — نفس نمط SOD-05 في cancelVoucher.
     const receiverRole =
       actor.role ?? (await tx.select({ role: users.role }).from(users).where(eq(users.id, actor.userId)).limit(1))[0]?.role ?? "";
-    if (receiverRole !== "admin" && po.createdBy != null && Number(po.createdBy) === actor.userId) {
+    if (
+      !options.allowCreatorToPost &&
+      receiverRole !== "admin" &&
+      po.createdBy != null &&
+      Number(po.createdBy) === actor.userId
+    ) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "لا يجوز استلام أمر شراء أنشأته بنفسك — يلزم شخص آخر لاعتماده (فصل المهام).",
@@ -258,6 +350,29 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       .from(purchaseOrderItems)
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     const itemById = new Map(items.map((i) => [Number(i.id), i]));
+
+    const effectiveLines = options.autoPostAll
+      ? items
+          .map((item) => ({
+            purchaseOrderItemId: Number(item.id),
+            receivedBaseQuantity: Number(item.baseQuantity) - Number(item.receivedBaseQuantity ?? 0),
+          }))
+          .filter((line) => line.receivedBaseQuantity > 0)
+      : input.lines;
+    if (options.autoPostAll && effectiveLines.length === 0) {
+      await tx
+        .update(purchaseOrders)
+        .set({ status: "RECEIVED" })
+        .where(eq(purchaseOrders.id, input.purchaseOrderId));
+      return {
+        purchaseOrderId: input.purchaseOrderId,
+        fullyReceived: true,
+        receivedTotal: "0.00",
+        receivedUsd: "0.00",
+        shippingPaymentRequestReceiptId: null,
+        supplierPaymentRequestReceiptId: null,
+      };
+    }
 
     // landed-cost: توزيع (الشحن + الكمرك) على بنود الأمر بنسبة قيمة كلّ بند من المجموع الفرعي.
     // يُحسب من حقول الأمر المخزَّنة على **كلّ** البنود (لا المستلَمة فقط) ⇒ حصّة البند ثابتة طوال
@@ -286,7 +401,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     }
 
     // Validate, then sort received lines by variantId for deterministic locking.
-    const work = input.lines.map((l) => {
+    const work = effectiveLines.map((l) => {
       const item = itemById.get(l.purchaseOrderItemId);
       if (!item) throw new TRPCError({ code: "BAD_REQUEST", message: `بند الشراء ${l.purchaseOrderItemId} لا يخص هذا الأمر` });
       if (!Number.isInteger(l.receivedBaseQuantity) || l.receivedBaseQuantity <= 0) {
@@ -737,7 +852,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           paymentMethod: "CASH",
           partyType: "SUPPLIER",
           partyId: Number(po.supplierId),
-          description: `دفعة مورد عند استلام أمر الشراء ${po.poNumber}`,
+          description: `طلب دفع مورد لفاتورة الشراء ${po.poNumber}`,
           referenceNumber: `PO-PAY-${po.poNumber}-${paymentRequestToken}`,
           clientRequestId: `purchase-supplier-${paymentRequestToken}`,
         }, actor, {
@@ -819,5 +934,4 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       shippingPaymentRequestReceiptId,
       supplierPaymentRequestReceiptId,
     };
-  });
 }

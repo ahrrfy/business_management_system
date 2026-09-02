@@ -130,7 +130,7 @@ async function expectedDrawerCash() {
 }
 
 describe("أمر الشراء النقدي — مسار المال الكامل", () => {
-  it("DRAFT → اعتماد → استلام → طلب صرف → اعتماد: لا ذمة ولا دينار يضيعان", async () => {
+  it("DRAFT → اعتماد وترحيل كامل → طلب صرف → اعتماد: لا ذمة ولا دينار يضيعان", async () => {
     const created = await createPurchaseOrder(
       {
         supplierId: 1,
@@ -149,32 +149,19 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       .where(eq(s.purchaseOrders.id, created.purchaseOrderId));
     expect(order).toMatchObject({ status: "DRAFT", settlementType: "CASH", paidAmount: "0.00" });
 
-    await confirmPurchaseOrder(created.purchaseOrderId, approver);
+    const confirmed = await confirmPurchaseOrder(created.purchaseOrderId, creator);
     [order] = await db()
       .select()
       .from(s.purchaseOrders)
       .where(eq(s.purchaseOrders.id, created.purchaseOrderId));
-    expect(order.status).toBe("CONFIRMED");
+    expect(order.status).toBe("RECEIVED");
     expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
-    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
     expect(await treasuryBalance()).toBe("5000.00");
     expect(await expectedDrawerCash()).toBe("250.00");
 
-    const [item] = await db()
-      .select()
-      .from(s.purchaseOrderItems)
-      .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
-    const received = await receivePurchase(
-      {
-        purchaseOrderId: created.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: item.baseQuantity }],
-        clientRequestId: "cash-po-full-receipt",
-      },
-      receiver,
-    );
-
-    const requestId = Number(received.supplierPaymentRequestReceiptId);
+    const requestId = Number(confirmed.posting.supplierPaymentRequestReceiptId);
     expect(requestId).toBeGreaterThan(0);
     const [pending] = await db().select().from(s.receipts).where(eq(s.receipts.id, requestId));
     expect(pending).toMatchObject({
@@ -370,7 +357,7 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
     expect(await reconcileSupplierBalances()).toEqual([]);
   });
 
-  it("الاستلام الجزئي ينشئ طلباً بقيمة كل دفعة، ويقبل اعتماد الطلبات بأي ترتيب", async () => {
+  it("تكرار اعتماد الفاتورة لا يكرر المخزون أو طلب الصرف", async () => {
     const created = await createPurchaseOrder({
       supplierId: 1,
       branchId: 1,
@@ -378,34 +365,18 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       settlementType: "CASH",
       items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
     }, creator);
-    await confirmPurchaseOrder(created.purchaseOrderId, approver);
-    const [item] = await db().select().from(s.purchaseOrderItems)
-      .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
+    const first = await confirmPurchaseOrder(created.purchaseOrderId, creator);
+    const second = await confirmPurchaseOrder(created.purchaseOrderId, creator);
 
-    const first = await receivePurchase({
-      purchaseOrderId: created.purchaseOrderId,
-      lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 4 }],
-      clientRequestId: "cash-po-part-1",
-    }, receiver);
-    const second = await receivePurchase({
-      purchaseOrderId: created.purchaseOrderId,
-      lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 6 }],
-      clientRequestId: "cash-po-part-2",
-    }, receiver);
-
-    const [firstRequest] = await db().select().from(s.receipts)
-      .where(eq(s.receipts.id, Number(first.supplierPaymentRequestReceiptId)));
-    const [secondRequest] = await db().select().from(s.receipts)
-      .where(eq(s.receipts.id, Number(second.supplierPaymentRequestReceiptId)));
-    expect(firstRequest.amount).toBe("400.00");
-    expect(secondRequest.amount).toBe("600.00");
+    expect(second.posting.supplierPaymentRequestReceiptId).toBe(first.posting.supplierPaymentRequestReceiptId);
+    expect(second.posting).toMatchObject({ idempotentReplay: true, receivedTotal: "1000.00" });
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
+    expect((await db().select().from(s.accountingEntries)).filter((entry) => entry.entryType === "PURCHASE")).toHaveLength(1);
+    expect((await db().select().from(s.receipts)).filter((receipt) => receipt.direction === "OUT")).toHaveLength(1);
     expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
     expect(await treasuryBalance()).toBe("5000.00");
 
-    await approveVoucher(Number(secondRequest.id), approver);
-    expect((await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, created.purchaseOrderId)))[0].paidAmount).toBe("600.00");
-    expect(await treasuryBalance()).toBe("4400.00");
-    await approveVoucher(Number(firstRequest.id), approver);
+    await approveVoucher(Number(first.posting.supplierPaymentRequestReceiptId), approver);
     expect((await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, created.purchaseOrderId)))[0].paidAmount).toBe("1000.00");
     expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
     expect(await treasuryBalance()).toBe("4000.00");

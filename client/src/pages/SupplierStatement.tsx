@@ -404,7 +404,7 @@ export default function SupplierStatement() {
                         </td>
                         <td className="p-2 text-xs">{p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق")}</td>
                         <td className="p-2 text-center">
-                          <Link href={`/purchases/${p.id}/receive`}>
+                          <Link href={`/purchases/${p.id}`}>
                             <Button variant="outline" size="sm">فتح</Button>
                           </Link>
                         </td>

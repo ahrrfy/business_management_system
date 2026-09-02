@@ -33,7 +33,7 @@ describe("RBAC — الكاشير ممنوع من العمليات الإدار�
   it("لا يطّلع على بحث المشتريات (يكشف التكلفة)", () => expectForbidden(c.catalog.forPurchase({ branchId: 1 })));
   it("لا يعطّل/يفعّل منتجاً", () => expectForbidden(c.catalog.setProductActive({ productId: 1, isActive: false })));
   it("لا يُنشئ أمر شراء", () => expectForbidden(c.purchases.createOrder({ supplierId: 1, branchId: 1, items: [] as never })));
-  it("لا يستلم مشتريات (مخزن فأعلى)", () => expectForbidden(c.purchases.receive({ purchaseOrderId: 1, lines: [] as never })));
+  it("لا يعتمد فاتورة شراء", () => expectForbidden(c.purchases.confirmOrder({ purchaseOrderId: 1 })));
   it("لا يُنشئ مرتجعاً", () => expectForbidden(c.returns.create({ invoiceId: 1, lines: [] as never })));
   it("لا يحوّل مخزوناً", () => expectForbidden(c.inventory.transfer({ variantId: 1, fromBranchId: 1, toBranchId: 2, baseQuantity: 1 })));
   it("لا يسوّي مخزوناً", () => expectForbidden(c.inventory.adjust({ variantId: 1, branchId: 1, targetQuantity: 0 })));

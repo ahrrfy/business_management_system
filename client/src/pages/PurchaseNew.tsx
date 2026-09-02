@@ -8,7 +8,7 @@
  *     (يفعّله ProductTable عند `isPurchase=true`).
  *   • `showCost = true` (مدير — له رؤية التكلفة والهامش).
  *   • «رقم أمر شراء مرجعي» اختياري (InvoiceHeader يظهره عند PURCHASE).
- *   • بنجاح الإنشاء ⇒ تنقّل لشاشة الاستلام `/purchases/:id/receive`.
+ *   • «حفظ واعتماد» ⇒ فاتورة + كامل المخزون + WAVG + القيود في معاملة واحدة، ثم التفاصيل.
  *
  * الذرّية والأموال يتولاها الخادم (createPurchaseOrder ⇒ withTx + decimal.js). الواجهة هنا
  * لا تستخدم parseFloat/Number في الأموال (الجمعات داخل calcTotals + decimal.js).
@@ -19,6 +19,9 @@ import { Landmark, Truck } from "lucide-react";
 import { isWithinPriceDecimals, priceDecimalsMessage } from "@shared/moneyPrecision";
 import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -100,10 +103,16 @@ export default function PurchaseNew() {
   const [clientRequestId] = useState(() => crypto.randomUUID());
 
   /* ─── landed cost (شحن/كمرك) ────────────────────────────────────── */
-  // تُسجَّل مصروف نقل عند الاستلام ولا تُضاف إلى ذمّة المورّد أو تكلفة الصنف. تُوزَّع
+  // تُسجَّل مصروف نقل عند اعتماد الفاتورة ولا تُضاف إلى ذمّة المورّد أو تكلفة الصنف. تُوزَّع
   // على الأصناف بنسبة القيمة للعرض فقط؛ المعاينة هنا بـdecimal.js والخادم يعيد الحساب مرجعياً.
   const [shippingCost, setShippingCost] = useState("");
   const [customsCost, setCustomsCost] = useState("");
+  const [shippingPaymentMethod, setShippingPaymentMethod] =
+    useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("CASH");
+  const [shippingPaymentReference, setShippingPaymentReference] = useState("");
+  const [shippingCardLastFour, setShippingCardLastFour] = useState("");
+  const [shippingBeneficiaryName, setShippingBeneficiaryName] = useState("");
+  const [shippingEvidenceReference, setShippingEvidenceReference] = useState("");
 
   /* ─── bulk picker overlay ──────────────────────────────────────── */
   const [bulkOpen, setBulkOpen] = useState(false);
@@ -177,22 +186,25 @@ export default function PurchaseNew() {
     state.supplierInvoiceTotal.trim() !== "" ||
     state.globalDiscount.trim() !== "" ||
     shippingCost.trim() !== "" ||
-    customsCost.trim() !== "";
+    customsCost.trim() !== "" ||
+    shippingPaymentReference.trim() !== "" ||
+    shippingCardLastFour.trim() !== "" ||
+    shippingBeneficiaryName.trim() !== "" ||
+    shippingEvidenceReference.trim() !== "";
   useUnsavedGuard(isDirty);
 
   /* ─── mutation ─────────────────────────────────────────────────── */
-  // «حفظ مسوّدة» يميَّز عن «حفظ واعتماد» بالتوجيه بعد النجاح: المسوّدة تعود للقائمة (لا تُستلَم
-  // إلا بعد اعتمادها من هناك)، والمعتمَد ينتقل مباشرةً لشاشة الاستلام.
+  // المسودة بلا أثر، أمّا «حفظ واعتماد» فيرحّل كامل الفاتورة آلياً ثم يفتح التفاصيل.
   const savingDraftRef = useRef(false);
   const create = trpc.purchases.createOrder.useMutation({
     onSuccess: async (r) => {
       await utils.purchases.list.invalidate();
       if (savingDraftRef.current) {
-        notify.ok("حُفظ أمر الشراء مسوّدة — اعتمده من قائمة المشتريات لاستلامه لاحقاً");
+        notify.ok("حُفظت فاتورة الشراء مسوّدة — اعتمدها لاحقاً لإضافتها إلى المخزون");
         navigate("/purchases");
       } else {
-        notify.ok("تم إنشاء أمر الشراء — انتقال للاستلام");
-        navigate(`/purchases/${r.purchaseOrderId}/receive`);
+        notify.ok("تم اعتماد فاتورة الشراء وإضافة كامل كمياتها إلى المخزون");
+        navigate(`/purchases/${r.purchaseOrderId}`);
       }
     },
     onError: (e) => notify.err(e),
@@ -307,11 +319,23 @@ export default function PurchaseNew() {
       return "أدخل سعر الصرف المثبت للفاتورة.";
     }
     if (state.currency === "USD" && state.paymentTerms === "CASH") {
-      return "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة؛ اختر «آجل» ثم سجّل التسديد الفعلي بعد الاستلام.";
+      return "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة؛ اختر «آجل» ثم سجّل التسديد الفعلي من تفاصيل الفاتورة.";
     }
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
     if (landed.hasLanded && !landed.hasBase) {
       return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
+    }
+    if (
+      landed.hasLanded &&
+      (shippingPaymentMethod === "TRANSFER" || shippingPaymentMethod === "CHECK") &&
+      !shippingPaymentReference.trim()
+    ) {
+      return shippingPaymentMethod === "CHECK"
+        ? "أدخل رقم صك تسوية الشحن."
+        : "أدخل مرجع تحويل تسوية الشحن.";
+    }
+    if (landed.hasLanded && shippingPaymentMethod === "CARD" && !/^\d{4}$/.test(shippingCardLastFour)) {
+      return "أدخل آخر أربعة أرقام لبطاقة تسوية الشحن.";
     }
     // مطابقة فاتورة المورّد (مرآة حارس الخادم): رسالةٌ بالأرقام على الشاشة توفّر رحلة ذهابٍ وإياب.
     if (invoiceMatch.verdict !== "UNSET" && invoiceMatch.verdict !== "MATCH") {
@@ -329,7 +353,7 @@ export default function PurchaseNew() {
       taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
       status,
       // المصطلح المشترك INSTALLMENT هو تسوية مؤجلة في المشتريات؛ أمر CASH وحده يولّد طلب
-      // صرف تلقائياً بقيمة كل استلام، ولا يعود اختيار الواجهة معلومةً مهدورة.
+      // صرف تلقائياً بكامل قيمة الفاتورة المعتمدة، ولا يعود اختيار الواجهة معلومةً مهدورة.
       settlementType: state.paymentTerms === "CASH" ? ("CASH" as const) : ("CREDIT" as const),
       // IDEMPOTENCY (تدقيق ٢/٧): كان المفتاح يُولَّد ويُعلَّق في DOM مخفيّ فقط ولا يُرسَل ⇒ النقر
       // المزدوج يُنشئ أمرَي شراء. الآن نمرّره في الحمولة فيَحرس الخادم من الازدواج.
@@ -350,10 +374,29 @@ export default function PurchaseNew() {
       supplierInvoiceTotal: state.supplierInvoiceTotal.trim()
         ? round2(safeMoney(state.supplierInvoiceTotal)).toFixed(2)
         : undefined,
-      // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
+      // الشحن/الكمرك: مصروف نقل مستقل، وتُحمل تفاصيل تسويته مع الاعتماد نفسه بلا شاشة استلام.
       // safeMoney: قيمة وسيطة غير مكتملة («.») ⇒ صفر بدل رمي D() الخام أثناء الحفظ.
       shippingCost: safeMoney(shippingCost).gt(0) ? round2(safeMoney(shippingCost)).toFixed(2) : undefined,
       customsCost: safeMoney(customsCost).gt(0) ? round2(safeMoney(customsCost)).toFixed(2) : undefined,
+      shippingPaymentMethod:
+        status === "CONFIRMED" && landed.hasLanded ? shippingPaymentMethod : undefined,
+      shippingPaymentReference:
+        status === "CONFIRMED" && landed.hasLanded &&
+        (shippingPaymentMethod === "TRANSFER" || shippingPaymentMethod === "CHECK")
+          ? shippingPaymentReference.trim()
+          : undefined,
+      shippingCardLastFour:
+        status === "CONFIRMED" && landed.hasLanded && shippingPaymentMethod === "CARD"
+          ? shippingCardLastFour
+          : undefined,
+      shippingBeneficiaryName:
+        status === "CONFIRMED" && landed.hasLanded && shippingBeneficiaryName.trim().length >= 2
+          ? shippingBeneficiaryName.trim()
+          : undefined,
+      shippingEvidenceReference:
+        status === "CONFIRMED" && landed.hasLanded && shippingEvidenceReference.trim().length >= 2
+          ? shippingEvidenceReference.trim()
+          : undefined,
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -382,8 +425,7 @@ export default function PurchaseNew() {
 
   // حفظ مسوّدة فعلي (كان زرّاً يوهم بإنذار «سيُفعَّل لاحقاً» بلا استدعاء — الراوتر يدعم
   // status=DRAFT فعلياً منذ createOrder، فقط لم تكن الواجهة تستدعيه): يحفظ نفس بيانات الأمر بحالة
-  // «مسوّدة» بلا أثر مخزني/مالي فوري (createOrder لا يكتب شيئاً غير سطور الأمر)، قابلة للاستكمال
-  // لاحقاً من قائمة المشتريات عبر «اعتماد الأمر» ثم استلامها كالمعتاد.
+  // «مسوّدة» بلا أثر مخزني/مالي، قابلة للاستكمال ثم الاعتماد والترحيل الكامل بنقرة واحدة.
   function handleSaveDraft() {
     if (create.isPending) return;
     const err = validate();
@@ -404,7 +446,7 @@ export default function PurchaseNew() {
         handleSaveDraft();
         return;
       case "print":
-        // اطبع المسوّدة الحالية (المتصفّح) — الطباعة المعتمدة من شاشة الاستلام.
+        // اطبع المسوّدة الحالية من المتصفّح؛ الفاتورة المحفوظة تُطبع من القائمة/التفاصيل.
         window.print();
         return;
       case "duplicate":
@@ -472,6 +514,11 @@ export default function PurchaseNew() {
         // landed-cost حالة محلّية (خارج reducer) ⇒ نُصفّرها يدوياً مع تفريغ السلّة.
         setShippingCost("");
         setCustomsCost("");
+        setShippingPaymentMethod("CASH");
+        setShippingPaymentReference("");
+        setShippingCardLastFour("");
+        setShippingBeneficiaryName("");
+        setShippingEvidenceReference("");
         return;
       }
       // Esc ⇒ إغلاق Bulk Picker إن كان مفتوحاً
@@ -485,7 +532,18 @@ export default function PurchaseNew() {
     // landed-cost: shippingCost/customsCost حالة محلّية خارج state ⇒ يجب إدراجها في التبعيّات وإلّا
     // قرأ حفظُ F4 قيمةً قديمة (الإغلاق مُلتقَط عند آخر تشغيل للـeffect) فيُسقط الشحن/الكمرك بصمت.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bulkOpen, create.isPending, state, shippingCost, customsCost]);
+  }, [
+    bulkOpen,
+    create.isPending,
+    state,
+    shippingCost,
+    customsCost,
+    shippingPaymentMethod,
+    shippingPaymentReference,
+    shippingCardLastFour,
+    shippingBeneficiaryName,
+    shippingEvidenceReference,
+  ]);
 
   /* ─── render ───────────────────────────────────────────────────── */
   const meta = INVOICE_TYPES[INVOICE_TYPE];
@@ -544,7 +602,7 @@ export default function PurchaseNew() {
         </div>
 
         <aside className="flex w-full shrink-0 flex-col gap-2 lg:w-80">
-          {/* الشحن/الكمرك يُحفظان على الأمر ويُسجّلان مصروف نقل عند الاستلام، خارج ذمة المورد
+          {/* الشحن/الكمرك يُحفظان ويُسجّلان مصروف نقل عند اعتماد الفاتورة، خارج ذمة المورد
               وتكلفة الصنف. باقي حقول المحرر غير المدعومة تبقى مخفية. */}
           <section className="overflow-hidden rounded-xl border bg-card">
             <header className="flex items-center gap-2 border-b bg-muted px-4 py-2.5">
@@ -575,6 +633,76 @@ export default function PurchaseNew() {
                 />
               </label>
 
+              {landed.hasLanded ? (
+                <div className="space-y-2 border-t pt-3">
+                  <p className="text-xs text-muted-foreground">
+                    تسوية مصروف الشحن تُحدّد هنا، ويظل طلب الصرف معلّقاً حتى اعتماد شخص آخر.
+                  </p>
+                  <div className="space-y-1">
+                    <Label htmlFor="purchase-shipping-method">أداة تسوية الشحن</Label>
+                    <AppSelect
+                      id="purchase-shipping-method"
+                      value={shippingPaymentMethod}
+                      onValueChange={(value) =>
+                        setShippingPaymentMethod(value as typeof shippingPaymentMethod)
+                      }
+                    >
+                      <option value="CASH">نقدي</option>
+                      <option value="TRANSFER">تحويل</option>
+                      <option value="CHECK">صك</option>
+                      <option value="CARD">بطاقة</option>
+                      <option value="WALLET">محفظة</option>
+                    </AppSelect>
+                  </div>
+                  {shippingPaymentMethod === "TRANSFER" || shippingPaymentMethod === "CHECK" ? (
+                    <div className="space-y-1">
+                      <Label htmlFor="purchase-shipping-reference">
+                        {shippingPaymentMethod === "CHECK" ? "رقم الصك" : "مرجع التحويل"}
+                      </Label>
+                      <Input
+                        id="purchase-shipping-reference"
+                        value={shippingPaymentReference}
+                        onChange={(event) => setShippingPaymentReference(event.target.value)}
+                        maxLength={50}
+                      />
+                    </div>
+                  ) : null}
+                  {shippingPaymentMethod === "CARD" ? (
+                    <div className="space-y-1">
+                      <Label htmlFor="purchase-shipping-card">آخر أربعة أرقام</Label>
+                      <Input
+                        id="purchase-shipping-card"
+                        value={shippingCardLastFour}
+                        onChange={(event) =>
+                          setShippingCardLastFour(event.target.value.replace(/\D/g, "").slice(0, 4))
+                        }
+                        inputMode="numeric"
+                        dir="ltr"
+                        maxLength={4}
+                      />
+                    </div>
+                  ) : null}
+                  <div className="space-y-1">
+                    <Label htmlFor="purchase-shipping-beneficiary">اسم الناقل (اختياري)</Label>
+                    <Input
+                      id="purchase-shipping-beneficiary"
+                      value={shippingBeneficiaryName}
+                      onChange={(event) => setShippingBeneficiaryName(event.target.value)}
+                      maxLength={200}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="purchase-shipping-evidence">فاتورة/وصل الشحن (اختياري)</Label>
+                    <Input
+                      id="purchase-shipping-evidence"
+                      value={shippingEvidenceReference}
+                      onChange={(event) => setShippingEvidenceReference(event.target.value)}
+                      maxLength={191}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
               {landed.hasLanded && landed.hasBase && (
                 <div className="mt-1 rounded-lg border border-dashed bg-muted/40 p-2.5 text-xs">
                   <div className="mb-1.5 font-bold text-foreground">توزيع الشحن على البنود بنسبة القيمة (للعِلم فقط)</div>
@@ -603,7 +731,7 @@ export default function PurchaseNew() {
                   </ul>
                   <div className="mt-1.5 border-t pt-1.5 text-[11px] text-muted-foreground">
                     <strong>لا تُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف.</strong> تُسجَّل مصروف نقلٍ
-                    على الشركة لحظة الاستلام (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
+                    على الشركة لحظة اعتماد الفاتورة (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
                   </div>
                 </div>
               )}
@@ -616,15 +744,22 @@ export default function PurchaseNew() {
           </section>
 
           <section className="rounded-xl border bg-card px-4 py-3 text-sm">
+            <div className="font-extrabold">معنى الاعتماد</div>
+            <p className="mt-1 text-muted-foreground">
+              اعتمد فقط بعد وصول البضاعة فعلياً ومطابقة كمياتها؛ الاعتماد يضيف كامل الفاتورة إلى المخزون فوراً.
+            </p>
+          </section>
+
+          <section className="rounded-xl border bg-card px-4 py-3 text-sm">
             <div className="font-extrabold">سياسة تسوية المورد</div>
             {state.paymentTerms === "CASH" ? (
               <p className="mt-1 text-muted-foreground">
-                نقدي: عند كل استلام ينشئ النظام طلب صرف من الخزينة بكامل قيمة الجزء المستلم. لا يخرج
+                نقدي: عند اعتماد الفاتورة ينشئ النظام طلب صرف من الخزينة بكامل قيمتها. لا يخرج
                 النقد حتى يعتمد شخص آخر، ويظل المبلغ في حساب تسوية مستقل بلا إنشاء ذمة على المورد.
               </p>
             ) : (
               <p className="mt-1 text-muted-foreground">
-                آجل: قيمة المستلم تُثبت ذمة على المورد، ولا تُسدد إلا بدفعة صريحة لاحقاً.
+                آجل: قيمة الفاتورة تُثبت ذمة على المورد، ولا تُسدد إلا بدفعة صريحة لاحقاً.
               </p>
             )}
           </section>
@@ -663,7 +798,7 @@ export default function PurchaseNew() {
                 <span dir="ltr" className="font-bold text-foreground">{fmtAr(state.agreedRate)} د.ع/$</span>
               </div>
               {/* التكلفة بالدينار = فاتورة المورد × سعر التثبيت. الشحن/الكمرك **ليسا** ضمنها
-                  (مصروفُ نقلٍ مستقلٌّ لحظة الاستلام، قرار المالك ٥/٨) — لذا لا نقول «مع الشحن». */}
+                  (مصروفُ نقلٍ مستقلٌّ لحظة اعتماد الفاتورة، قرار المالك ٥/٨) — لذا لا نقول «مع الشحن». */}
               <div className="mt-1 flex justify-between border-t pt-2 font-bold">
                 <span>التكلفة بالدينار</span>
                 <span dir="ltr">{fmtAr(landed.grand.toFixed(2))} د.ع</span>

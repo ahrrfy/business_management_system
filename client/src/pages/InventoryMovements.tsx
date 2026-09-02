@@ -481,7 +481,7 @@ export default function InventoryMovements() {
                             href:
                               r.referenceType === "INVOICE"
                                 ? `/invoices/${r.referenceId}`
-                                : `/purchases/${r.referenceId}/receive`,
+                                : `/purchases/${r.referenceId}`,
                             gate: r.referenceType === "INVOICE"
                               ? { module: "sales", level: "READ" }
                               : { module: "purchases", level: "READ" },
