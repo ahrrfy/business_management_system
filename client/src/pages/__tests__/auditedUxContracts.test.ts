@@ -152,3 +152,27 @@ describe("audited public UX contracts", () => {
     expect(dataTableSource).toContain("md:hidden space-y-2.5");
   });
 });
+
+describe("عزل سلة المنتجات عن سلة البطاقات الرقمية في POS", () => {
+  const source = readPage("POS.tsx");
+
+  it("يمنع إضافة منتج عادي إلى سلة رقمية قبل الدفع", () => {
+    expect(source).toContain("if (cartHasDigital)");
+    expect(source).toContain("DIGITAL_CART_BLOCKS_REGULAR_MESSAGE");
+    expect(source).toContain("regularProductsDisabled={cartHasDigital}");
+    expect(source).toContain("disabled={regularProductsDisabled}");
+  });
+
+  it("يمنع فتح البطاقات أو إضافتها إلى سلة منتجات عادية", () => {
+    expect(source).toContain("if (cartHasRegular)");
+    expect(source).toContain("REGULAR_CART_BLOCKS_DIGITAL_MESSAGE");
+    expect(source).toContain("cardsDisabled={offline || cartHasRegular}");
+    expect(source).toContain("if (!offline && !cartHasRegular) setCardsOpen(true)");
+  });
+
+  it("يعرض سبب الفصل بالعربية داخل شاشة نقطة البيع", () => {
+    expect(source).toContain('data-testid="pos-cart-mode-guard"');
+    expect(source).toContain("السلة الحالية للبطاقات الرقمية فقط");
+    expect(source).toContain("السلة الحالية للمنتجات العادية فقط");
+  });
+});
