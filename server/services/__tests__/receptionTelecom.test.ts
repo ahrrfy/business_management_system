@@ -347,7 +347,7 @@ describe("T9 — محاولة SALES_COLLECTION المؤكدة: replay + single-u
     await expect(collectOnReceptionInvoice(
       { invoiceId: 9001, amount: "10000.00", method: "CARD", reference: "CARD-T9-51", clientRequestId: uuid("t9k00002"), externalPaymentAttemptId: attempt.attemptId, externalPaymentDeviceId: deviceId },
       CASHIER,
-    )).rejects.toThrowError(/استُهلكت/);
+    )).rejects.toThrowError(/استُهلك/);
   });
 });
 

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import {
   and,
   asc,
@@ -94,13 +95,21 @@ async function checkReopenIdempotencyCurrentTx(
   if (row.payloadHash == null) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "معرّف طلب إعادة الفتح قديم ولا يملك بصمة قابلة للتحقق",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة فتح شهادة إقفال اليوم",
+        why: "معرّف الطلب المُرسَل مسجَّل من نسخةٍ قديمة بلا بصمة، فلا سبيل للتأكّد أنّه طلبك أنت لا طلب إعادة فتحٍ آخر بنفس المعرّف",
+        doThis: "حدّث شاشة إقفال اليوم ليُولَّد معرّف طلبٍ جديد، ثمّ أعد إعادة الفتح بالسبب نفسه",
+      }),
     });
   }
   if (row.payloadHash !== payloadHash) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "طلب إعادة فتح بنفس المعرّف لكن بسبب أو نسخة مختلفة",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة فتح شهادة إقفال اليوم",
+        why: "نفس معرّف الطلب وصل قبل قليل بسببٍ أو بنسخة شهادةٍ مختلفة عمّا أرسلتَه الآن، وإتمامه يعني تنفيذ طلبين بهويّةٍ واحدة",
+        doThis: "حدّث الصفحة ليُولَّد معرّف طلبٍ جديد، ثمّ أعد الإرسال بالسبب والنسخة المعروضين أمامك",
+      }),
     });
   }
   return Number(row.refId);
@@ -132,7 +141,11 @@ async function checkDailyCountIdempotencyCurrentTx(
   if (row.payloadHash == null || row.payloadHash !== payloadHash) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "معرّف طلب الجرد مستعمل لحمولة مختلفة أو قديمة بلا بصمة",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل جرد الخزينة",
+        why: "معرّف طلب الجرد المُرسَل مستعمَلٌ لعدٍّ آخر يختلف عنه في المبلغ أو الفئات أو الملاحظة، أو أنّه مسجَّل من نسخةٍ قديمة بلا بصمة",
+        doThis: "حدّث شاشة إقفال اليوم ليُولَّد معرّف طلبٍ جديد، ثمّ أعد إدخال العدّ",
+      }),
     });
   }
   return Number(row.refId);
@@ -149,7 +162,11 @@ async function loadDailyCountReplayTx(tx: Tx, refId: number) {
   if (!row) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "سجل إعادة الجرد يشير إلى شهادة مفقودة",
+      message: appErrorMessage({
+        what: "تعذّر عرض نتيجة الجرد المُعاد",
+        why: `معرّف الطلب مسجَّل على الشهادة ${refId} وهذه الشهادة لم تعد موجودة، فلا نتيجة نعيدها لك`,
+        doThis: "حدّث شاشة إقفال اليوم وأعد الجرد بمعرّف طلبٍ جديد، وأبلغ المدير لمراجعة سجلّ التدقيق إن تكرّر",
+      }),
     });
   }
   return { ...row, idempotent: true as const };
@@ -159,7 +176,11 @@ function assertBranchScope(actor: Actor, branchId: number) {
   if (actor.role !== "admin" && Number(actor.branchId) !== Number(branchId)) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "لا يمكنك مطابقة خزينة فرع آخر",
+      message: appErrorMessage({
+        what: `تعذّر فتح مطابقة خزينة الفرع ${branchId}`,
+        why: `صلاحيتك محصورةٌ بفرعك (${actor.branchId})، وعبور الفروع للمدير العام وحده`,
+        doThis: "افتح مطابقة خزينة فرعك من شاشة إقفال اليوم، أو اطلب من المدير العام تنفيذها على الفرع الآخر",
+      }),
     });
   }
 }
@@ -412,7 +433,11 @@ async function assertTreasurySnapshotStillCurrentTx(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "تغيّرت حركة الخزينة أثناء تجهيز دليل الجرد؛ أعد المحاولة",
+      message: appErrorMessage({
+        what: `تعذّر تسجيل جرد خزينة يوم ${businessDate}`,
+        why: `سُجّلت حركة خزينةٍ نقدية أثناء تجهيز الدليل: الرصيد المتوقَّع صار ${String(snapshot?.expected ?? 0)} بعد أن كان ${evidence.expectedTreasuryCash} لحظة بدء العدّ`,
+        doThis: "حدّث الشاشة ليُعاد حساب الرصيد المتوقَّع على الحركات الحالية، ثمّ أعد إدخال العدّ",
+      }),
     });
   }
 }
@@ -519,6 +544,29 @@ async function findApprovedDailyResolutionTx(
       resolution.advanceId == null ? null : Number(resolution.advanceId),
     approvedAt: resolution.approvedAt,
   };
+}
+
+/**
+ * علاجُ كلّ عائق. الرسالة كانت تُسمّي العائق وتقف، فيقرأ المحاسب «توجد ورديات غير مطابقة»
+ * ولا يعرف أين يعالجها. الخريطة **نصٌّ محضٌ** يُركَّب عند الرمي — لا تدخل في أيّ فحصٍ ولا
+ * تغيّر أيّ قرار.
+ */
+const DAILY_CASH_BLOCKER_REMEDY: Record<DailyCashBlockerCode, string> = {
+  OPEN_SHIFT: "أغلق الورديات المفتوحة من تبويب الورديات في الخزينة",
+  UNMATCHED_SHIFT: "طابِق كل وردية مغلقة حتى يتساوى متوقَّعها مع معدودها",
+  PENDING_CUSTODY: "اعدد عهد النقد واقبلها من طابور عهد الاستلام في الخزينة",
+  STALE_EVIDENCE: "أعد جرد الخزينة على الحركات الحالية",
+  TREASURY_VARIANCE: "افتح قضية فرق نقد واعتمد سند التصحيح بمبلغ الفرق",
+  SEPARATION_OF_DUTIES: "اطلب الاعتماد من مستخدمٍ غير من عدّ الخزينة",
+};
+
+/** يجمع علاجات العوائق القائمة بلا تكرار، بترتيب ظهورها. */
+function dailyCashBlockerRemedy(
+  blockers: ReadonlyArray<{ code: DailyCashBlockerCode }>,
+): string {
+  return Array.from(
+    new Set(blockers.map((item) => DAILY_CASH_BLOCKER_REMEDY[item.code])),
+  ).join("، ثمّ ");
 }
 
 function blockersFor(evidence: Evidence) {
@@ -680,7 +728,11 @@ export async function recordDailyTreasuryCount(
   if (!clientRequestId || clientRequestId.length > 64) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "معرّف طلب الجرد مطلوب",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل جرد الخزينة",
+        why: `معرّف طلب الجرد مفقود أو يتجاوز 64 محرفاً (المُرسَل ${clientRequestId.length} محرفاً)، وهو ما يمنع تسجيل العدّ نفسه مرّتين عند إعادة الإرسال`,
+        doThis: "حدّث شاشة إقفال اليوم ليُولَّد معرّف طلبٍ صالح، ثمّ أعد إدخال العدّ",
+      }),
     });
   }
   const idempotencyOperation = "treasury.dailyCash.count";
@@ -718,7 +770,11 @@ export async function recordDailyTreasuryCount(
     if (input.businessDate !== todayUtcDate()) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "الجرد المادي متاح لليوم الحالي فقط",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل الجرد المادي لتاريخ ${input.businessDate}`,
+          why: `الجرد المادي متاح لليوم الحالي فقط (${todayUtcDate()})، وشهادة يومٍ مضى دليلٌ مقفل لا يُعاد عدّه`,
+          doThis: "اجرد خزينة اليوم الحالي من شاشة إقفال اليوم؛ ولتوثيق يومٍ فائت بلا جرد استعمل «استثناء الجرد الفائت» في الشاشة نفسها",
+        }),
       });
     }
     await lockCashSourceForUpdate(tx, {
@@ -756,7 +812,11 @@ export async function recordDailyTreasuryCount(
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "مفتاح المحاولة مستعمل لجرد مختلف",
+          message: appErrorMessage({
+            what: `تعذّر تسجيل جرد خزينة يوم ${input.businessDate}`,
+            why: `مفتاح المحاولة نفسه سجّل عدّاً سابقاً بمبلغ ${String(existing.countedTreasuryCash)}، وأنت ترسل الآن ${toDbMoney(counted)} أو فئاتٍ أو ملاحظةً مختلفة`,
+            doThis: "حدّث الشاشة ليُولَّد مفتاح محاولةٍ جديد، ثمّ أعد إدخال العدّ الصحيح",
+          }),
         });
       }
       return { ...existing, idempotent: true };
@@ -764,7 +824,11 @@ export async function recordDailyTreasuryCount(
     if (evidenceBeforeLock == null) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "الجرد المادي متاح لليوم الحالي فقط",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل الجرد المادي لتاريخ ${input.businessDate}`,
+          why: `الجرد المادي متاح لليوم الحالي فقط (${todayUtcDate()})، ولم يُجهَّز دليل خزينةٍ لتاريخٍ غيره`,
+          doThis: "اجرد خزينة اليوم الحالي من شاشة إقفال اليوم؛ ولتوثيق يومٍ فائت بلا جرد استعمل «استثناء الجرد الفائت» في الشاشة نفسها",
+        }),
       });
     }
     await assertTreasurySnapshotStillCurrentTx(
@@ -778,20 +842,33 @@ export async function recordDailyTreasuryCount(
     if (evidenceBlockers.length > 0) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: evidenceBlockers.map((item) => item.message).join("، "),
+        message: appErrorMessage({
+          what: `تعذّر تسجيل جرد خزينة يوم ${input.businessDate}`,
+          why: `العوائق القائمة: ${evidenceBlockers
+            .map((item) => `${item.message} (${item.count})`)
+            .join("، ")}`,
+          doThis: `${dailyCashBlockerRemedy(evidenceBlockers)}، ثمّ أعد جرد الخزينة من شاشة إقفال اليوم`,
+        }),
       });
     }
     if (existing?.status === "CLOSED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "مطابقة اليوم مغلقة؛ أعد فتحها أولاً",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل جرد خزينة يوم ${input.businessDate}`,
+          why: "مطابقة اليوم مغلقة، والمغلقة لا تقبل عدّاً جديداً كي لا يتبدّل الدليل بعد اعتماده",
+          doThis: "اطلب من مستخدمٍ ثالثٍ — غير من عدّ ومن اعتمد — إعادة فتح الشهادة بسببٍ مكتوب، ثمّ أعد الجرد",
+        }),
       });
     }
     if (existing?.status === "RESOLVED_WITH_ADJUSTMENT") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message:
-          "فرق الجرد محسوم بسند تصحيح؛ أغلق الشهادة ولا تستبدل دليلها بإعادة عد",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل جرد خزينة يوم ${input.businessDate}`,
+          why: `فرق الجرد المسجَّل ${String(existing?.variance ?? "0")} محسومٌ بسند تصحيح معتمد، وإعادة العدّ تستبدل الدليل الذي بُني عليه السند`,
+          doThis: "أغلق الشهادة كما هي من شاشة إقفال اليوم؛ ولتغيير الحسم اعكس سند التصحيح أوّلاً ثمّ أعد الجرد",
+        }),
       });
     }
     if (
@@ -801,7 +878,11 @@ export async function recordDailyTreasuryCount(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيرت المطابقة؛ حدّث الشاشة ثم أعد الجرد",
+        message: appErrorMessage({
+          what: `تعذّر تسجيل جرد خزينة يوم ${input.businessDate}`,
+          why: `نسخة المطابقة تغيّرت: شاشتك ترسل النسخة ${input.expectedVersion} والمخزَّن الآن ${existing ? Number(existing.version) : 0}`,
+          doThis: "حدّث الشاشة لتقرأ النسخة الحالية وأرقامها، ثمّ أعد إدخال العدّ",
+        }),
       });
     }
     const variance = counted.minus(evidence.expectedTreasuryCash);
@@ -889,7 +970,11 @@ export async function closeDailyCashReconciliation(
     if (!candidate)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "مطابقة اليوم غير موجودة",
+        message: appErrorMessage({
+          what: `تعذّر إقفال شهادة المطابقة ${input.reconciliationId}`,
+          why: "لا توجد مطابقة خزينةٍ بهذا الرقم — إمّا حُذفت وإمّا أنّ الرقم من شاشةٍ قديمة",
+          doThis: "ارجع إلى شاشة إقفال اليوم واختر الفرع والتاريخ من القائمة بدل الرقم المباشر",
+        }),
       });
     assertBranchScope(actor, Number(candidate.branchId));
     await lockCashSourceForUpdate(tx, {
@@ -909,7 +994,11 @@ export async function closeDailyCashReconciliation(
     if (!row)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "مطابقة اليوم غير موجودة",
+        message: appErrorMessage({
+          what: `تعذّر إقفال شهادة المطابقة ${input.reconciliationId}`,
+          why: "الشهادة اختفت بين قراءتها وقفلها، فلم يبقَ صفٌّ نُقفله",
+          doThis: "حدّث شاشة إقفال اليوم واختر الفرع والتاريخ من القائمة من جديد",
+        }),
       });
     assertBranchScope(actor, Number(row.branchId));
     if (
@@ -921,20 +1010,31 @@ export async function closeDailyCashReconciliation(
     if (row.status !== "MATCHED" && row.status !== "RESOLVED_WITH_ADJUSTMENT") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message:
-          "يجب أن يكون جرد الخزينة مطابقاً أو محسوم الفرق بسند تصحيح قبل الإقفال",
+        message: appErrorMessage({
+          what: `تعذّر إقفال مطابقة يوم ${row.businessDate}`,
+          why: `الشهادة ليست «مطابقة» ولا «محسومة الفرق بسند تصحيح معتمد»، وهما الحالتان الوحيدتان اللتان يقبلهما الإقفال — والفرق المسجَّل عليها الآن ${String(row.variance)}`,
+          doThis: "أعد جرد الخزينة حتى يطابق المعدود رصيد النظام، أو افتح قضية فرق نقد واعتمد سند التصحيح ثمّ أقفل",
+        }),
       });
     }
     if (Number(row.version) !== input.expectedVersion) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيرت المطابقة؛ حدّث الشاشة ثم أعد المحاولة",
+        message: appErrorMessage({
+          what: `تعذّر إقفال مطابقة يوم ${row.businessDate}`,
+          why: `نسخة المطابقة تغيّرت: شاشتك ترسل النسخة ${input.expectedVersion} والمخزَّن الآن ${Number(row.version)}`,
+          doThis: "حدّث الشاشة لتقرأ النسخة الحالية وأرقامها، ثمّ أعد اعتماد الإقفال",
+        }),
       });
     }
     if (Number(row.countedByUserId) === actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "لا يجوز لمن عدّ الخزينة اعتماد إقفال اليوم نفسه",
+        message: appErrorMessage({
+          what: `تعذّر اعتماد إقفال يوم ${row.businessDate}`,
+          why: "أنت من عدّ الخزينة، وفصل المهام يمنع أن يعتمد العادُّ إقفال عدّه نفسه",
+          doThis: "اطلب من مستخدمٍ آخر له صلاحية الخزينة اعتماد الإقفال من شاشة إقفال اليوم",
+        }),
       });
     }
     const resolution =
@@ -944,7 +1044,11 @@ export async function closeDailyCashReconciliation(
     if (row.status === "RESOLVED_WITH_ADJUSTMENT" && resolution == null) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "حالة التسوية لا ترتبط بقضية فرق نقد معتمدة تطابق دليل الجرد",
+        message: appErrorMessage({
+          what: `تعذّر إقفال مطابقة يوم ${row.businessDate}`,
+          why: `الشهادة موسومة «محسومة بسند تصحيح» ولا قضية فرق نقدٍ معتمدة تطابق أرقامها: المتوقَّع ${String(row.expectedTreasuryCash)} والمعدود ${String(row.countedTreasuryCash)} والفرق ${String(row.variance)}`,
+          doThis: "افتح قضية فرق النقد لهذا اليوم واعتمد سند التصحيح بمبلغ الفرق نفسه، ثمّ أعد الإقفال",
+        }),
       });
     }
     const evidence = await buildDailyCashEvidenceTx(
@@ -966,7 +1070,11 @@ export async function closeDailyCashReconciliation(
     ) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "تغيرت أدلة اليوم أو بقيت عوائق؛ أعد الجرد قبل الإقفال",
+        message: appErrorMessage({
+          what: `تعذّر إقفال مطابقة يوم ${row.businessDate}`,
+          why: `أرقام اليوم لم تعد كما عُدَّت: الرصيد المتوقَّع الآن ${evidence.expectedTreasuryCash} مقابل ${String(row.expectedTreasuryCash)} وقت العدّ، والفرق المسجَّل ${String(row.variance)}، والعوائق القائمة ${blockers.length}`,
+          doThis: "عالِج ما تعرضه «عوائق المطابقة» في شاشة إقفال اليوم، ثمّ أعد جرد الخزينة على الأرقام الحالية قبل الإقفال",
+        }),
       });
     }
     const now = new Date();
@@ -1019,19 +1127,31 @@ export async function reopenDailyCashReconciliation(
   if (reason.length < 10) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "سبب إعادة الفتح التفصيلي مطلوب",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة فتح شهادة إقفال اليوم",
+        why: `سبب إعادة الفتح يُحفظ في سجلّ التدقيق فيلزمه تفصيل: أرسلتَ ${reason.length} حرفاً والحدّ الأدنى 10`,
+        doThis: "اكتب ما الذي استجدّ ويوجب إعادة العدّ (حركةٌ فاتت، أو خطأ إدخال، أو عهدة وصلت متأخّرة) ثمّ أعد الإرسال",
+      }),
     });
   }
   if (!clientRequestId || clientRequestId.length > 64) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "معرّف طلب إعادة الفتح مطلوب",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة فتح شهادة إقفال اليوم",
+        why: `معرّف طلب إعادة الفتح مفقود أو يتجاوز 64 محرفاً (المُرسَل ${clientRequestId.length} محرفاً)، وهو ما يمنع تكرار التنفيذ عند إعادة الإرسال`,
+        doThis: "حدّث شاشة إقفال اليوم ليُولَّد معرّف طلبٍ صالح، ثمّ أعد إعادة الفتح",
+      }),
     });
   }
   if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "نسخة شهادة الإقفال المتوقعة غير صالحة",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة فتح شهادة إقفال اليوم",
+        why: `نسخة الشهادة المتوقَّعة المُرسَلة (${String(input.expectedVersion)}) ليست عدداً صحيحاً لا يقلّ عن 1، والنسخة هي ما يمنع إعادة فتح شهادةٍ تغيّرت`,
+        doThis: "حدّث الصفحة لتقرأ نسخة الشهادة الحالية، ثمّ أعد إعادة الفتح",
+      }),
     });
   }
   const idempotencyOperation = "treasury.dailyCash.reopen";
@@ -1057,7 +1177,11 @@ export async function reopenDailyCashReconciliation(
     if (!candidate)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "مطابقة اليوم غير موجودة",
+        message: appErrorMessage({
+          what: `تعذّرت إعادة فتح شهادة المطابقة ${input.reconciliationId}`,
+          why: "لا توجد مطابقة خزينةٍ بهذا الرقم — إمّا حُذفت وإمّا أنّ الرقم من شاشةٍ قديمة",
+          doThis: "ارجع إلى شاشة إقفال اليوم واختر الفرع والتاريخ من القائمة بدل الرقم المباشر",
+        }),
       });
     assertBranchScope(actor, Number(candidate.branchId));
 
@@ -1074,7 +1198,11 @@ export async function reopenDailyCashReconciliation(
       if (Number(replay) !== Number(candidate.id)) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "معرّف طلب إعادة الفتح مرتبط بشهادة أخرى",
+          message: appErrorMessage({
+            what: "تعذّرت إعادة فتح شهادة إقفال اليوم",
+            why: `معرّف طلب إعادة الفتح مستعمَلٌ سابقاً لشهادةٍ أخرى، لا للشهادة ${input.reconciliationId} التي تطلبها الآن`,
+            doThis: "حدّث الصفحة ليُولَّد معرّف طلبٍ جديد لهذه الشهادة، ثمّ أعد إعادة الفتح",
+          }),
         });
       }
       return {
@@ -1103,7 +1231,11 @@ export async function reopenDailyCashReconciliation(
     if (!row)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "مطابقة اليوم غير موجودة",
+        message: appErrorMessage({
+          what: `تعذّرت إعادة فتح شهادة المطابقة ${input.reconciliationId}`,
+          why: "الشهادة اختفت بين قراءتها وقفلها، فلم يبقَ صفٌّ نعيد فتحه",
+          doThis: "حدّث شاشة إقفال اليوم واختر الفرع والتاريخ من القائمة من جديد",
+        }),
       });
     assertBranchScope(actor, Number(row.branchId));
 
@@ -1119,7 +1251,11 @@ export async function reopenDailyCashReconciliation(
       if (Number(replayAfterLock) !== Number(row.id)) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "معرّف طلب إعادة الفتح مرتبط بشهادة أخرى",
+          message: appErrorMessage({
+            what: "تعذّرت إعادة فتح شهادة إقفال اليوم",
+            why: `معرّف طلب إعادة الفتح مستعمَلٌ سابقاً لشهادةٍ أخرى، لا للشهادة ${input.reconciliationId} التي تطلبها الآن`,
+            doThis: "حدّث الصفحة ليُولَّد معرّف طلبٍ جديد لهذه الشهادة، ثمّ أعد إعادة الفتح",
+          }),
         });
       }
       return {
@@ -1134,20 +1270,31 @@ export async function reopenDailyCashReconciliation(
     if (row.businessDate !== todayUtcDate()) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message:
-          "لا يمكن إعادة فتح شهادة يوم سابق؛ المطابقة التاريخية دليل غير قابل لإعادة العد",
+        message: appErrorMessage({
+          what: `تعذّرت إعادة فتح شهادة يوم ${row.businessDate}`,
+          why: `إعادة الفتح متاحة لليوم الحالي فقط (${todayUtcDate()})، ومطابقة يومٍ مضى دليلٌ تاريخيّ لا يُعاد عدّه`,
+          doThis: "عالِج الفرق على اليوم الحالي بسند تصحيح معتمد؛ ولتوثيق يومٍ فائت بلا جرد استعمل «استثناء الجرد الفائت» من شاشة إقفال اليوم",
+        }),
       });
     }
     if (row.status !== "CLOSED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "المطابقة ليست مغلقة",
+        message: appErrorMessage({
+          what: `تعذّرت إعادة فتح شهادة يوم ${row.businessDate}`,
+          why: "الشهادة ليست في حالة «مغلقة»، وإعادة الفتح لا تُطبَّق إلّا على شهادةٍ أُقفلت واعتُمدت",
+          doThis: "حدّث الشاشة لترى حالتها الحالية؛ إن كانت ما تزال مفتوحة فأكمل الجرد أو الإقفال مباشرةً",
+        }),
       });
     }
     if (Number(row.version) !== input.expectedVersion) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيرت نسخة شهادة الإقفال؛ حدّث الصفحة قبل إعادة الفتح",
+        message: appErrorMessage({
+          what: `تعذّرت إعادة فتح شهادة يوم ${row.businessDate}`,
+          why: `نسخة الشهادة تغيّرت: صفحتك ترسل النسخة ${input.expectedVersion} والمخزَّن الآن ${Number(row.version)}`,
+          doThis: "حدّث الصفحة لتقرأ النسخة الحالية، ثمّ أعد إعادة الفتح بالسبب نفسه",
+        }),
       });
     }
     if (
@@ -1156,8 +1303,11 @@ export async function reopenDailyCashReconciliation(
     ) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message:
-          "إعادة الفتح تحتاج مستخدماً ثالثاً مختلفاً عن منفّذ الجرد ومعتمد الإقفال",
+        message: appErrorMessage({
+          what: `تعذّرت إعادة فتح شهادة يوم ${row.businessDate}`,
+          why: "أنت من عدّ الخزينة أو من اعتمد إقفالها، وإعادة الفتح تحتاج مستخدماً ثالثاً غيرهما",
+          doThis: "اطلب من مستخدمٍ ثالثٍ له صلاحية الخزينة أن يعيد الفتح بسببٍ مكتوب من شاشة إقفال اليوم",
+        }),
       });
     }
     const now = new Date();
@@ -1186,7 +1336,11 @@ export async function reopenDailyCashReconciliation(
     if (affectedRows !== 1) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيرت حالة شهادة الإقفال أو نسختها أثناء إعادة الفتح",
+        message: appErrorMessage({
+          what: `تعذّرت إعادة فتح شهادة يوم ${row.businessDate}`,
+          why: `حالة الشهادة أو نسختها تبدّلت في اللحظة نفسها (كانت النسخة المتوقَّعة ${input.expectedVersion})، فلم يُطبَّق التعديل ولم يتغيّر شيء`,
+          doThis: "حدّث الصفحة لتقرأ الحالة والنسخة الحاليتين، ثمّ أعد إعادة الفتح إن كانت ما تزال مغلقة",
+        }),
       });
     }
     await recordIdempotencyKey(
