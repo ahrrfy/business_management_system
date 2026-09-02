@@ -34,6 +34,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
 import { printGiftVoucherA4 } from "@/lib/printing/giftVoucher";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { buildGiftMessage, openWhatsApp } from "@/lib/whatsapp";
 
 type Mode = "list" | "in" | "out" | "report" | "campaigns";
@@ -347,6 +348,43 @@ export default function GiftsHub() {
     });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بأشرطتها وأزرار الإجراءات).
+  // الصفوف هي المعروضة نفسها (صفحة الخادم الحالية) بلا استعلامٍ جديد — والنطاق مُعلَنٌ في الرأس
+  // لأنّ الترقيم خادميّ: الورقة تحمل الصفحة لا كلّ المطابقات.
+  function printGiftsList() {
+    const branchName = (branches.data ?? []).find((b) => String(b.id) === String(listBranchId))?.name;
+    printReportDoc({
+      title: "سندات الهدايا",
+      headerExtra: [
+        { label: "النطاق", value: `الصفحة المعروضة — ${listRows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${listTotal.toLocaleString("ar-IQ-u-nu-latn")}` },
+        { label: "الفترة", value: listFrom || listTo ? `${listFrom || "البداية"} — ${listTo || "اليوم"}` : "كل الفترات" },
+        { label: "الاتجاه", value: dirFilter === "ALL" ? "الكل" : dirFilter === "IN" ? "واردة" : "صادرة" },
+        { label: "الحالة", value: statusFilter === "ALL" ? "كل الحالات" : (STATUS_AR[statusFilter] ?? statusFilter) },
+        // البحث يُضيّق الصفوف **خادمياً** (`q` في filterInput) ⇒ إسقاطه من الرأس يُنتج ورقةً
+        // تدّعي أنّ التضييق كان بالفلاتر المذكورة وحدها. بقيّةُ شاشات الموجة تذكره — وهذه مثلها.
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+        ...(elevated ? [{ label: "الفرع", value: branchName ?? "كل الفروع" }] : []),
+      ],
+      columns: [
+        { key: "giftNumber", label: "رقم السند" },
+        { key: "direction", label: "الاتجاه" },
+        { key: "date", label: "التاريخ" },
+        { key: "party", label: "الطرف" },
+        { key: "status", label: "الحالة", align: "center" },
+        { key: "value", label: "القيمة التقديرية", align: "left" },
+      ],
+      rows: listRows.map((r) => ({
+        giftNumber: r.giftNumber,
+        direction: r.direction === "IN" ? "وارد" : "صادر",
+        date: r.createdAt ? new Date(r.createdAt as unknown as string).toISOString().slice(0, 10) : "",
+        party: r.supplierName ?? r.customerName ?? "—",
+        status: STATUS_AR[r.status] ?? r.status,
+        value: r.estimatedValue ?? "—",
+      })),
+      emptyText: "لا توجد سندات هدايا مطابقة.",
+    });
+  }
+
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4">
       <PageHeader
@@ -399,7 +437,7 @@ export default function GiftsHub() {
             onResetFilters={resetListFilters}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printGiftsList}
             exportSpec={{
               filename: "سندات-الهدايا",
               rows: listRows,

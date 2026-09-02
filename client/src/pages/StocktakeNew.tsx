@@ -392,15 +392,9 @@ export default function StocktakeNew() {
 
   return (
     <div className="space-y-4">
-      {/* شريط الرجوع */}
-      <div className="flex items-center gap-2 text-sm">
-        <Link href="/stocktakes" className="font-semibold text-primary hover:underline">
-          → جلسات الجرد
-        </Link>
-        <span className="text-border">/</span>
-        <span className="text-muted-foreground">جلسة جرد جديدة</span>
-      </div>
-      <PageHeader title="جلسة جرد جديدة" />
+      {/* شريط الرجوع اليدويّ («→ جلسات الجرد / جلسة جرد جديدة») صار `backHref` داخل الرأس نفسه:
+          سهمٌ موحّد بدل محرفٍ خامّ، والقطعة الأخيرة كانت تكرّر العنوان الذي تحتها حرفياً. */}
+      <PageHeader title="جلسة جرد جديدة" backHref="/stocktakes" backLabel="جلسات الجرد" />
 
       {/* مؤشر الخطوات */}
       <div className="flex items-center gap-2">

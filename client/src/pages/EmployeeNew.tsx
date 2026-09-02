@@ -25,7 +25,6 @@ import { AlertCircle, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { ROLE_OPTIONS } from "@/lib/roles";
-import { selectClsFull } from "@/lib/ui/formStyles";
 
 type AccountMode = "none" | "new" | "link";
 const roleLabelOf = (r: string) => ROLE_OPTIONS.find((o) => o.value === r)?.label ?? r;
@@ -248,7 +247,7 @@ export default function EmployeeNew() {
   const isDirty = !!initialSnapshotRef.current && dirtySnapshot() !== initialSnapshotRef.current;
   useUnsavedGuard(isDirty && !createdInfo);
 
-  // اختصار: Ctrl+S حفظ — بلا Esc (النموذج مكتظّ بـ<select> أصليّة، راجع تحذير الهوك).
+  // اختصار: Ctrl+S حفظ — بلا Esc (النموذج مكتظّ بقوائم منسدلة، راجع تحذير الهوك).
   useSaveShortcuts({ onSave: submit, enabled: !pending });
 
   /** يبني حقول الحساب الجديد للإرسال (الاسم من الموظف؛ الفرع/الهاتف/المسمّى تُؤخذ من الموظف خادمياً). */
@@ -360,11 +359,11 @@ export default function EmployeeNew() {
         <CardHeader><CardTitle className="text-base">المعلومات الشخصية</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1"><Label htmlFor="gender">الجنس</Label>
-            <AppSelect id="gender" className="h-9" value={form.gender} onValueChange={(value) => set({ gender: value })}>{GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}</AppSelect>
+            <AppSelect id="gender" value={form.gender} onValueChange={(value) => set({ gender: value })}>{GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="birth">تاريخ الميلاد</Label><Input id="birth" type="date" dir="ltr" value={form.birthDate} onChange={(e) => set({ birthDate: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="marital">الحالة الاجتماعية</Label>
-            <AppSelect id="marital" className="h-9" value={form.maritalStatus} onValueChange={(next) => set({ maritalStatus: next })}><option value="">—</option>{MARITAL_STATUSES.map((m) => <option key={m} value={m}>{m}</option>)}</AppSelect>
+            <AppSelect id="marital" value={form.maritalStatus} onValueChange={(next) => set({ maritalStatus: next })}><option value="">—</option>{MARITAL_STATUSES.map((m) => <option key={m} value={m}>{m}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="nat">الجنسية</Label><Input id="nat" value={form.nationality} onChange={(e) => set({ nationality: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="nid">رقم الهوية الوطنية</Label><Input id="nid" dir="ltr" value={form.nationalId} onChange={(e) => set({ nationalId: e.target.value })} /></div>
@@ -388,19 +387,19 @@ export default function EmployeeNew() {
         <CardHeader><CardTitle className="text-base">الوظيفة والأجر</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1"><Label htmlFor="dept">القسم</Label>
-            <AppSelect id="dept" className="h-9" value={form.department} onValueChange={(next) => set({ department: next })}>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect>
+            <AppSelect id="dept" value={form.department} onValueChange={(next) => set({ department: next })}>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="pos">المسمى الوظيفي</Label><Input id="pos" value={form.position} onChange={(e) => set({ position: e.target.value })} placeholder="مدير المبيعات" /></div>
           <div className="space-y-1"><Label htmlFor="br">الفرع</Label>
-            <AppSelect id="br" className="h-9" value={form.branchId} onValueChange={(next) => set({ branchId: next })}><option value="">—</option>{(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</AppSelect>
+            <AppSelect id="br" value={form.branchId} onValueChange={(next) => set({ branchId: next })}><option value="">—</option>{(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="mgr">المدير المباشر</Label>
-            <AppSelect id="mgr" className="h-9" value={form.managerId} onValueChange={(next) => set({ managerId: next })}><option value="">—</option>{(opts.data?.managers ?? []).filter((m) => m.id !== editId).map((m) => <option key={m.id} value={String(m.id)}>{m.name}{m.position ? ` — ${m.position}` : ""}</option>)}</AppSelect>
+            <AppSelect id="mgr" value={form.managerId} onValueChange={(next) => set({ managerId: next })}><option value="">—</option>{(opts.data?.managers ?? []).filter((m) => m.id !== editId).map((m) => <option key={m.id} value={String(m.id)}>{m.name}{m.position ? ` — ${m.position}` : ""}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="hire">تاريخ المباشرة</Label><Input id="hire" type="date" dir="ltr" value={form.hireDate} onChange={(e) => set({ hireDate: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="pt">طريقة الأجر</Label>
             {/* جزءٌ من البصمة الأجرية (يبدّل نموذج الاحتساب كلَّه) ⇒ يتبع قفل الحزمة. */}
-            <AppSelect id="pt" className="h-9" disabled={payLocked} value={form.payType} onValueChange={(next) => set({ payType: next as "monthly" | "hourly" })}>{PAY_TYPES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}</AppSelect>
+            <AppSelect id="pt" disabled={payLocked} value={form.payType} onValueChange={(next) => set({ payType: next as "monthly" | "hourly" })}>{PAY_TYPES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}</AppSelect>
           </div>
 
           {/*
@@ -513,7 +512,7 @@ export default function EmployeeNew() {
           {edu.map((e) => (
             <div key={e.key} className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end border-t pt-3">
               <div className="space-y-1"><Label className="text-xs">الشهادة</Label>
-                <AppSelect className="h-9" value={e.degree} onValueChange={(next) => patchEdu(e.key, { degree: next })}>{DEGREES.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect>
+                <AppSelect aria-label="الشهادة" value={e.degree} onValueChange={(next) => patchEdu(e.key, { degree: next })}>{DEGREES.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect>
               </div>
               <div className="space-y-1"><Label className="text-xs">التخصص</Label><Input value={e.major ?? ""} onChange={(ev) => patchEdu(e.key, { major: ev.target.value })} /></div>
               <div className="space-y-1 md:col-span-2"><Label className="text-xs">الجهة</Label><Input value={e.school ?? ""} onChange={(ev) => patchEdu(e.key, { school: ev.target.value })} /></div>

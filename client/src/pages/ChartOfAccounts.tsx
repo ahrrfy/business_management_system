@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /**
  * شجرة الحسابات (P0، الدفتر المزدوج) — عرضٌ للقراءة فقط في هذه المرحلة. الحسابات بياناتٌ مرجعية تُبذَر
@@ -57,7 +58,7 @@ export default function ChartOfAccounts() {
         title="شجرة الحسابات"
         description="أساس الدفتر المزدوج — كل حساب مربوطٌ بالمفهوم القائم في النظام عبر «الدور النظاميّ». عرضٌ للقراءة (المرحلة الأولى)."
       />
-      {tree.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+      {tree.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
       {!tree.isLoading && groups.length === 0 && (
         <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">لا حسابات بعد.</CardContent></Card>
       )}

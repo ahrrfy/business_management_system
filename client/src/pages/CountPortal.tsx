@@ -31,6 +31,7 @@ import {
   type ProductBarcodeMatch,
 } from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
 import {
@@ -689,7 +690,7 @@ export default function CountPortal() {
       ) : (
         <CenterScreen>
           <BrandMark />
-          <p className="text-sm font-semibold text-muted-foreground">جارٍ التحقّق…</p>
+          <p className="text-sm font-semibold text-muted-foreground">{ACTION_LABELS.verifying}</p>
         </CenterScreen>
       ),
     );
@@ -1486,7 +1487,7 @@ function QtySheet({
             : "cursor-not-allowed bg-muted text-muted-foreground",
         )}
       >
-        {saving ? "جارٍ الحفظ…" : isVerify ? "تسجيل العدّ التحقّقي" : isRecount ? "تسجيل إعادة العدّ" : "تسجيل الكمية"}
+        {saving ? ACTION_LABELS.saving : isVerify ? "تسجيل العدّ التحقّقي" : isRecount ? "تسجيل إعادة العدّ" : "تسجيل الكمية"}
       </button>
       <p className="mt-2 text-center text-[11px] text-muted-foreground">
         يُسجَّل الإدخال باسمك ووقته — يمكنك تعديل العدّ قبل التسليم.

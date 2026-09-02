@@ -4,6 +4,7 @@
 import { AlertTriangle } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
@@ -841,7 +842,7 @@ function DeleteProductDialog({
             disabled={usage.isLoading || !usage.data?.clean || del.isPending}
             onClick={() => target && del.mutate({ productId: target.productId })}
           >
-            {del.isPending ? "جارٍ الحذف…" : "حذف نهائياً"}
+            {del.isPending ? ACTION_LABELS.deleting : "حذف نهائياً"}
           </Button>
         </DialogFooter>
       </DialogContent>

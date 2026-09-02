@@ -22,6 +22,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { Plus } from "lucide-react";
@@ -136,6 +137,35 @@ export default function Branches() {
       }))) return;
     }
     setActive.mutate({ id: b.id, isActive: !b.isActive });
+  }
+
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بشريط الأدوات والقائمة الجانبية).
+  // نفس صفوف الجدول المعروضة (visibleRows بعد البحث) ونفس أعمدته — بلا استعلامٍ جديد.
+  function printBranches() {
+    printReportDoc({
+      title: "قائمة الفروع",
+      headerExtra: [
+        { label: "عدد الفروع", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "name", label: "الاسم" },
+        { key: "code", label: "الرمز" },
+        { key: "type", label: "النوع" },
+        { key: "address", label: "العنوان" },
+        { key: "phone", label: "الهاتف" },
+        { key: "isActive", label: "الحالة", align: "center" },
+      ],
+      rows: visibleRows.map((b) => ({
+        name: b.name,
+        code: b.code,
+        type: TYPE_LABEL[b.type] ?? b.type,
+        address: b.address || "—",
+        phone: b.phone || "—",
+        isActive: b.isActive ? "مفعّل" : "معطّل",
+      })),
+      emptyText: "لا فروع مطابقة.",
+    });
   }
 
   // الأعمدة تُبنى داخل العَرض لأنّها تُغلِق على `openEdit`/`toggle` وحالة `setActive.isPending`.
@@ -256,7 +286,7 @@ export default function Branches() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printBranches}
             exportSpec={{
               filename: "الفروع",
               rows: visibleRows,

@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -88,9 +89,6 @@ function loadColumnVisibility(): OfferingColumnVisibility {
   }
   return defaults;
 }
-
-const selectCls =
-  "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 function todayYmd(): string {
   const d = new Date();
@@ -710,31 +708,29 @@ export default function DigitalOfferings() {
                 <label className="text-sm font-medium" htmlFor="do-provider">
                   المزوّد
                 </label>
-                <select
+                <AppSelect
                   id="do-provider"
-                  className={selectCls}
                   value={fProviderId}
                   disabled={editing}
-                  onChange={(e) => { setFProviderId(e.target.value); setFWalletByBranch({}); }}
+                  onValueChange={(next) => { setFProviderId(next); setFWalletByBranch({}); }}
                 >
                   <option value="">— اختر المزوّد —</option>
                   {activeProviders.map((p) => (
-                    <option key={p.id} value={p.id}>
+                    <option key={p.id} value={String(p.id)}>
                       {p.supplierName}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="do-type">
                   النوع
                 </label>
-                <select
+                <AppSelect
                   id="do-type"
-                  className={selectCls}
                   value={fType}
-                  onChange={(e) => {
-                    const type = e.target.value as OfferingType;
+                  onValueChange={(next) => {
+                    const type = next as OfferingType;
                     setFType(type);
                     if (type === "EDUCATIONAL_SUBSCRIPTION") {
                       setFRequiresStudent(true);
@@ -746,7 +742,7 @@ export default function DigitalOfferings() {
                       {v}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             </div>
 
@@ -851,17 +847,16 @@ export default function DigitalOfferings() {
                       {b.name}
                     </label>
                     {fBranchIds.includes(b.id) && (providers.data ?? []).find((p) => p.id === Number(fProviderId))?.settlementMode === "PREPAID" && (
-                      <select
-                        className={selectCls}
+                      <AppSelect
                         aria-label={`محفظة ${b.name}`}
                         value={fWalletByBranch[b.id] ?? ""}
-                        onChange={(e) => setFWalletByBranch((prev) => ({ ...prev, [b.id]: e.target.value }))}
+                        onValueChange={(next) => setFWalletByBranch((prev) => ({ ...prev, [b.id]: next }))}
                       >
                         <option value="">— اختر حساب رصيد الجهاز لهذا الفرع —</option>
                         {(wallets.data ?? [])
                           .filter((w) => w.providerId === Number(fProviderId) && w.branchId === b.id && w.isActive)
-                          .map((w) => <option key={w.id} value={w.id}>{w.name} — المتاح {fmtAr(String(Number(w.currentBalance) - Number(w.reservedBalance)))}</option>)}
-                      </select>
+                          .map((w) => <option key={w.id} value={String(w.id)}>{w.name} — المتاح {fmtAr(String(Number(w.currentBalance) - Number(w.reservedBalance)))}</option>)}
+                      </AppSelect>
                     )}
                   </div>
                 ))}

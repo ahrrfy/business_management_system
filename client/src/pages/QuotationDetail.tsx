@@ -29,6 +29,7 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -160,7 +161,7 @@ export default function QuotationDetail() {
   });
 
   if (q.isLoading) return (
-      <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>
+      <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
     );
   if (!q.data) return (
       <div className="p-10 text-center text-muted-foreground">عرض السعر غير موجود.</div>

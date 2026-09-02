@@ -1,21 +1,10 @@
 {
-  "client/src/pages/AuditLogs.tsx": 1,
-  "client/src/pages/Branches.tsx": 1,
-  "client/src/pages/CommissionPlans.tsx": 1,
   "client/src/pages/ConsignmentSettlements.tsx": 1,
   "client/src/pages/ContractPrices.tsx": 1,
   "client/src/pages/digitalCards/DigitalOfferings.tsx": 1,
   "client/src/pages/digitalCards/DigitalWallets.tsx": 1,
-  "client/src/pages/ExpenseCategories.tsx": 1,
-  "client/src/pages/GiftsHub.tsx": 1,
-  "client/src/pages/KioskDevices.tsx": 2,
-  "client/src/pages/Leaves.tsx": 1,
-  "client/src/pages/OrderFulfillment.tsx": 1,
-  "client/src/pages/Promotions.tsx": 2,
   "client/src/pages/PurchaseEdit.tsx": 2,
   "client/src/pages/PurchaseNew.tsx": 2,
-  "client/src/pages/Roles.tsx": 1,
   "client/src/pages/Users.tsx": 1,
-  "client/src/pages/VoucherCategories.tsx": 1,
   "client/src/pages/WorkOrderNew.tsx": 1
 }

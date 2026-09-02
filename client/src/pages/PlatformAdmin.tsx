@@ -18,6 +18,7 @@ import { AlertTriangle, CheckCircle2, CopyIcon, XCircle } from "lucide-react";
 import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /** فرزٌ زمنيّ على الطابع الخامّ: نصّ العرض «21/06/2026» يُفرَز باليوم لا بالتاريخ. */
 const cmpTime = (a: DateInput, b: DateInput) => {
@@ -100,7 +101,9 @@ function PlatformAdminLoginForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-const CODE_RE = /^[a-z0-9][a-z0-9-]{1,38}$/;
+// 2..40 محرفاً — مطابقٌ لعقد الخادم `z.string().min(2).max(40)`. كان `{1,38}` (أي 2..39)
+// فيرفض المحرّر رمزاً من 40 يقبله الخادم، برسالةٍ تعد بـ 40 — شاشةٌ تحجب ما يملكه الخادم.
+const CODE_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 
 const STATUS_LABEL: Record<string, string> = {
   PENDING: "قيد الانتظار",
@@ -110,9 +113,11 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 function StatusBadge({ status }: { status: string }) {
+  // حالةُ توفيرٍ لا مبلغ: الأخضر هنا يقول «اكتمل» لا «مبلغ موجب» ⇒ صنف الحالة الجاهز
+  // `badge-status-active` بدل توكن المال `money-positive` الذي كان مستعمَلاً هنا.
   const cls =
     status === "DONE"
-      ? "bg-money-positive/15 text-money-positive"
+      ? "badge-status-active"
       : status === "FAILED"
       ? "bg-destructive/15 text-destructive"
       : "bg-muted text-muted-foreground";
@@ -132,9 +137,10 @@ function TempPasswordReveal({
 }) {
   const [copied, setCopied] = useState(false);
   const text = `البريد: ${adminEmail}\nاسم المستخدم: ${adminUsername}\nكلمة المرور المؤقّتة: ${tempPassword}`;
+  // نجاحُ إجراءٍ لا مبلغ ⇒ تِنت `--sem-pos` الدلاليّ بدل `money-positive`.
   return (
-    <div className="rounded-lg border border-money-positive/40 bg-money-positive/5 p-3 space-y-2">
-      <p className="text-sm font-semibold text-money-positive inline-flex items-center gap-1">
+    <div className="rounded-lg border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] p-3 space-y-2">
+      <p className="text-sm font-semibold text-[var(--sem-pos)] inline-flex items-center gap-1">
         <CheckCircle2 aria-hidden className="size-4" /> طُلِب التوفير — احفظ كلمة المرور الآن
       </p>
       <div className="font-mono text-sm space-y-1" dir="ltr">
@@ -200,7 +206,7 @@ function NewCompanyForm() {
   function submit() {
     setError("");
     if (!CODE_RE.test(code.trim())) {
-      setError("رمز الشركة بحروف صغيرة/أرقام/شُرَط فقط (kebab-case)، بين حرفين و٤٠ حرفاً.");
+      setError("رمز الشركة بحروف صغيرة/أرقام/شُرَط فقط (kebab-case)، بين حرفين و40 حرفاً.");
       return;
     }
     if (!name.trim()) return setError("أدخل اسم الشركة.");
@@ -240,7 +246,7 @@ function NewCompanyForm() {
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         <Button onClick={submit} disabled={requestCreate.isPending}>
-          {requestCreate.isPending ? "…" : "طلب توفير الشركة"}
+          {requestCreate.isPending ? ACTION_LABELS.sending : "طلب توفير الشركة"}
         </Button>
 
         {reveal && (
@@ -248,7 +254,16 @@ function NewCompanyForm() {
             <TempPasswordReveal adminEmail={reveal.adminEmail} adminUsername={reveal.adminUsername} tempPassword={reveal.tempPassword} />
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground">حالة التوفير:</span>
-              {status.data ? <StatusBadge status={status.data.status} /> : <span className="text-muted-foreground">…</span>}
+              {status.data ? (
+                <StatusBadge status={status.data.status} />
+              ) : status.isError ? (
+                // لا نَعِد بتحميلٍ جارٍ بينما الاستعلام ساقط: المؤشّر الأبديّ يخفي خطأً يملكه الخادم.
+                <span className="inline-flex items-center gap-1 text-destructive text-xs">
+                  <XCircle aria-hidden className="size-3.5" /> {status.error?.message ?? "خطأ غير معروف"}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">{ACTION_LABELS.loading}</span>
+              )}
               {status.data?.status === "FAILED" && (
                 <span className="inline-flex items-center gap-1 text-destructive text-xs">
                   <XCircle aria-hidden className="size-3.5" /> {status.data.errorMessage ?? "خطأ غير معروف"}
@@ -270,8 +285,9 @@ function PlatformAuditTable() {
     {
       accessorKey: "success",
       header: "النتيجة",
+      // عمودُ نتيجةٍ (meta.kind = "status") لا عمودُ مال ⇒ `--sem-pos` لا `money-positive`.
       cell: ({ row }) => (
-        <span className={row.original.success ? "font-medium text-money-positive" : "font-medium text-destructive"}>
+        <span className={row.original.success ? "font-medium text-[var(--sem-pos)]" : "font-medium text-destructive"}>
           {row.original.success ? "نجحت" : "فشلت"}
         </span>
       ),

@@ -45,6 +45,7 @@ import { ImportModal, LabelPrintModal } from "@/components/product/variantModals
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /**
  * إضافة منتج بمتغيّرات — كل لون/قياس منتجٌ مخزنيّ مستقل (product-variants).
@@ -816,7 +817,7 @@ export default function ProductNew() {
         <div className="flex gap-2">
           <Link href="/products"><Button type="button" variant="outline" size="sm">إلغاء</Button></Link>
           <Button type="button" size="sm" onClick={save} disabled={create.isPending}>
-            {create.isPending ? "جارٍ الحفظ…" : "حفظ المنتج والمتغيّرات"}
+            {create.isPending ? ACTION_LABELS.saving : "حفظ المنتج والمتغيّرات"}
           </Button>
         </div>
       </div>

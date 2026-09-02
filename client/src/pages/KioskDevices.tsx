@@ -17,6 +17,7 @@ import { downloadInstallerCmd, kioskUrl } from "@/lib/kioskLauncher";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtDateTime, toDate, type DateInput } from "@/lib/date";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { internalUrl } from "@/lib/siteHosts";
 import { Download, X } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -180,6 +181,36 @@ export default function KioskDevices() {
     create.mutate({ branchId, label: label.trim() });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الصفحة كاملةً ببطاقة المُشغّل ونموذج
+  // الإضافة وأشرطة الأدوات). ممنوعٌ قطعاً غير **بادئة الرمز** كما تعرضها الشاشة — الرمز الخام لا يدخل
+  // المستند إطلاقاً (`visibleDevices` لا يحمله أصلاً؛ هو في حالة `reveal` المستقلّة).
+  function printDevices() {
+    const branchName = branches.find((b) => String(b.id) === f.branch)?.name;
+    printReportDoc({
+      title: "أجهزة قارئ الأسعار",
+      headerExtra: [
+        { label: "عدد الأجهزة", value: visibleDevices.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "الفرع", value: branchName ?? "كل الفروع" },
+        { label: "الحالة", value: f.status === "active" ? "مفعّل" : f.status === "inactive" ? "مُلغى" : "الكل" },
+      ],
+      columns: [
+        { key: "label", label: "الجهاز" },
+        { key: "branchName", label: "الفرع" },
+        { key: "tokenPrefix", label: "الرمز" },
+        { key: "isActive", label: "الحالة", align: "center" },
+        { key: "lastSeenAt", label: "آخر ظهور" },
+      ],
+      rows: visibleDevices.map((d) => ({
+        label: d.label,
+        branchName: d.branchName ?? "—",
+        tokenPrefix: `${d.tokenPrefix}…`,
+        isActive: d.isActive ? "مفعّل" : "مُلغى",
+        lastSeenAt: fmtDateTime(d.lastSeenAt),
+      })),
+      emptyText: "لا أجهزة مطابقة للفلاتر.",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -214,8 +245,9 @@ export default function KioskDevices() {
         </CardContent>
       </Card>
 
-      {/* الرمز المكشوف مرّة واحدة — يُستثنى من الطباعة (print:hidden): زرّ «طباعة» أدناه يطبع
-          الصفحة كاملة بـwindow.print()، ولا يصحّ أن يخرج الرمز السرّي الخام على الورق أبداً. */}
+      {/* الرمز المكشوف مرّة واحدة — يبقى `print:hidden` **حزاماً ثانياً**: زرّ «طباعة» أدناه صار
+          يبني مستند A4 من صفوف الجدول (بادئة الرمز فقط) لا من الصفحة، لكنّ طباعة المتصفّح
+          المباشرة (Ctrl+P) تبقى ممكنةً دائماً — ولا يصحّ أن يخرج الرمز السرّي الخام على الورق أبداً. */}
       {reveal && (
         <Card className="border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)]/60 print:hidden">
           <CardHeader className="flex flex-row items-center justify-between">
@@ -305,7 +337,7 @@ export default function KioskDevices() {
             onResetFilters={resetF}
             onRefresh={() => void devicesQ.refetch()}
             refreshing={devicesQ.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printDevices}
             exportSpec={{
               filename: "أجهزة-قارئ-الأسعار",
               rows: visibleDevices,

@@ -17,6 +17,7 @@ import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { UnitPriceHistory } from "@/components/product/UnitPriceHistory";
 import { trpc } from "@/lib/trpc";
+import { confirm } from "@/lib/confirm";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
@@ -224,8 +225,18 @@ export default function SimpleProductEditForm({
   }, [hydrated, formSig]);
   const dirty = hydrated && baseline.current !== null && formSig !== baseline.current;
   // الانتقال للتحرير المتقدّم يعيد التحميل من الخادم ⇒ نؤكّد قبل تجاهل تعديلات غير محفوظة.
-  const goAdvanced = () => {
-    if (dirty && !window.confirm("لديك تعديلات غير محفوظة ستُتجاهَل عند الانتقال للتحرير المتقدّم. هل تريد المتابعة؟")) return;
+  const goAdvanced = async () => {
+    if (
+      dirty &&
+      !(await confirm({
+        variant: "warning",
+        title: "الانتقال للتحرير المتقدّم؟",
+        description:
+          "لديك تعديلات غير محفوظة ستُتجاهَل عند الانتقال للتحرير المتقدّم. هل تريد المتابعة؟",
+        confirmText: "متابعة بلا حفظ",
+      }))
+    )
+      return;
     onAdvanced();
   };
 

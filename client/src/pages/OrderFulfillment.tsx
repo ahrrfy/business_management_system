@@ -32,6 +32,7 @@ import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 import { printOnlineOrderPreparationA4, printOnlineOrderThermal } from "@/lib/printing/onlineOrder";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { storefrontUrl } from "@/lib/siteHosts";
 
 // حالات الطلب + خرائط العرض/الانتقال ⇐ shared/onlineOrderStatus.ts (مصدر الحقيقة الوحيد).
@@ -322,6 +323,48 @@ export default function OrderFulfillment() {
     finally { setPrintingId(null); }
   }
 
+  // طباعة قائمة الطلبات على A4 بهوية المستند بدل window.print() (كان يطبع الشاشة ببطاقات
+  // الحالة وشريط الأدوات ولافتة «تحميل المزيد» وقوائم الإجراءات). الصفوف هي المعروضة نفسها
+  // (الصفحات المحمَّلة بعد البحث) بلا استعلامٍ جديد — ولافتةُ «قد توجد طلبات أقدم» تنتقل
+  // إلى الرأس كي لا تُقرأ الورقة على أنّها كلّ الطلبات.
+  function printOrdersList() {
+    printReportDoc({
+      title: "قائمة طلبات الموقع",
+      headerExtra: [
+        {
+          label: "النطاق",
+          value: `${visibleOrders.length.toLocaleString("ar-IQ-u-nu-latn")} طلباً معروضاً${listQ.hasNextPage ? " — قد توجد طلبات أقدم غير محمَّلة" : ""}`,
+        },
+        { label: "الحالة", value: FILTERS.find((o) => o.value === filter)?.label ?? "الكل" },
+        { label: "تاريخ الطلب", value: f.from || f.to ? `${f.from || "البداية"} — ${f.to || "اليوم"}` : "كل الفترات" },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "orderNumber", label: "رقم الطلب" },
+        { key: "customerName", label: "العميل" },
+        { key: "customerPhone", label: "الهاتف" },
+        { key: "governorate", label: "المحافظة" },
+        { key: "itemCount", label: "أصناف", align: "center" },
+        { key: "total", label: "الإجمالي (COD)", align: "left" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: visibleOrders.map((o) => {
+        const st = normalizeOrderStatus(o.status);
+        return {
+          orderNumber: o.orderNumber,
+          customerName: o.customerName ?? "—",
+          customerPhone: o.customerPhone ?? "—",
+          governorate: o.governorate ?? "—",
+          itemCount: String(o.itemCount),
+          total: `${money(o.total)} د.ع`,
+          // سبب الإلغاء يظهر تحت شارة الحالة على الشاشة — يبقى ملازماً لها على الورق.
+          status: `${orderStatusLabel(st)}${st === "CANCELLED" && o.cancelReason ? ` — ${o.cancelReason}` : ""}`,
+        };
+      }),
+      emptyText: "لا طلبات مطابقة.",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -349,7 +392,7 @@ export default function OrderFulfillment() {
         onResetFilters={() => { setQuery(""); setFilter(null); resetF(); }}
         onRefresh={() => { void listQ.refetch(); void countsQ.refetch(); }}
         refreshing={listQ.isFetching || countsQ.isFetching}
-        onPrint={() => window.print()}
+        onPrint={printOrdersList}
         printDisabled={visibleOrders.length === 0}
         exportSpec={{
           filename: "طلبات-المتجر",

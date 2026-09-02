@@ -17,6 +17,7 @@ import { allocateLineTax } from "@/components/invoice";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useMemo } from "react";
 import { buildQuotationMessage } from "@/lib/whatsapp";
@@ -322,7 +323,7 @@ export default function Quotations() {
           {rows.hasNextPage && (
             <div className="border-t p-3 text-center">
               <Button variant="outline" size="sm" onClick={() => void rows.fetchNextPage()} disabled={rows.isFetchingNextPage}>
-                {rows.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+                {rows.isFetchingNextPage ? ACTION_LABELS.loading : "تحميل المزيد"}
               </Button>
             </div>
           )}

@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
+import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions, type RowAction } from "@/components/list/RowActions";
 import { FilterField } from "@/components/list/FilterField";
@@ -349,8 +350,14 @@ export default function HrDevices() {
 
   /*
    * أعمدة الأجهزة — داخل المكوّن لأنّها تقرأ الجهاز المختار وتُبدّله.
-   * ⚠️ الأعمدةُ المخفيّة على الشاشات الصغيرة (`hidden md:table-cell`) لا مقابلَ لها في
-   * `DataTable`؛ عوضُها التمريرُ الأفقيّ داخل حاوية الجدول ومنتقي الأعمدة.
+   *
+   * الشاشاتُ الصغيرة: الجدولُ الخامّ كان يُخفي «آخر إشارة» بـ`hidden md:table-cell`
+   * و«البصمات المستلمة» بـ`hidden lg:table-cell`، فيبقى على الهاتف أربعةُ أعمدةٍ تسع
+   * العرض. ولا مقابلَ لذلك في عقد أعمدة `DataTable` (لا مدخلَ لصنفٍ استجابيّ على
+   * `<td>`/`<th>`). وتعليقٌ سابقٌ هنا أحال إلى «منتقي الأعمدة» — وهو **غيرُ متاح**:
+   * `embedded` يكتمه (DataTable.tsx: `!embedded && …`)، فلم يبقَ إلّا التمريرُ الأفقيّ
+   * على ستّة أعمدة، أي أنّ قارئ الهاتف يجرّ الجدولَ جانبياً ليرى حالةَ جهاز.
+   * البديلُ الصحيح هو `mobileCardRenderer` أدناه: كروتٌ دون `md` والجدولُ كاملاً فوقها.
    */
   const deviceColumns = useMemo<ColumnDef<DeviceRow, unknown>[]>(
     () => [
@@ -914,6 +921,60 @@ export default function HrDevices() {
                  !important يختفي تمييزُ الجهاز المختار على الصفوف الفردية (وهو المؤشّر الوحيد
                  بعد أن سقط `aria-selected` بالتحويل). */
               getRowClassName={(d) => (d.id === selectedDeviceId ? "!bg-primary/10" : undefined)}
+              /*
+               * كروتُ الهاتف — بديلُ `hidden md:table-cell` الذي أسقطه التحويل (انظر تعليق
+               * `deviceColumns`). دون `md` تُعرَض هذه الكروت وفوقها الجدولُ كاملاً، فلا
+               * يُجرّ الجدولُ جانبياً ولا يُخفى عمود.
+               * ⚠️ مسارُ الكروت في `DataTable` لا يستدعي `getRowClassName` ⇒ تمييزُ الجهاز
+               * المختار يُكتب هنا صراحةً، وإلّا ضاع المؤشّرُ الوحيد على الهاتف.
+               */
+              mobileCardRenderer={(d) => {
+                const online = d.enabled && d.status === "online";
+                const serial = d.serialNumber ?? d.model ?? null;
+                return (
+                  <MobileDataCard
+                    key={d.id}
+                    title={d.name}
+                    /* `dir="ltr"` كما في الجدول الخامّ وفي عمود «الجهاز»: الرقم التسلسليّ
+                       قيمةٌ لاتينية داخل صفحة RTL، فبلا عزلٍ تنقلب شرطاتُه وأرقامه في
+                       العرض (`AI518-01/24` تُقرأ مقلوبة). */
+                    subtitle={serial ? <span dir="ltr">{serial}</span> : undefined}
+                    badge={{
+                      label: !d.enabled ? "بانتظار الاعتماد" : online ? "متصل" : "منقطع",
+                      variant: !d.enabled ? "warning" : online ? "success" : "destructive",
+                    }}
+                    metadata={[
+                      {
+                        /* الموقعُ مضمومٌ إلى الفرع بنفس صيغة لوحة التفاصيل أعلاه
+                           (`الفرع · الموقع`). عمودُ «الفرع» في الجدول الخامّ كان ظاهراً
+                           على الهاتف بسطرَيه، فإسقاطُ الموقع هنا يخسر ما كان مرئياً قبل
+                           التحويل — وهو التمييزُ الوحيد بين جهازَي فرعٍ واحد. */
+                        label: "الفرع",
+                        value: `${d.branchName ?? "بلا فرع"}${d.location ? ` · ${d.location}` : ""}`,
+                        icon: MapPin,
+                      },
+                      { label: "آخر إشارة", value: fmtRelativeTime(d.lastSeenAt), icon: Clock3 },
+                      {
+                        label: "البصمات المستلمة",
+                        value: (d.receivedPunches ?? 0).toLocaleString("en-US"),
+                        icon: Fingerprint,
+                      },
+                      ...((d.pendingPunches ?? 0) > 0
+                        ? [{
+                            label: "بلا موظف",
+                            value: (d.pendingPunches ?? 0).toLocaleString("en-US"),
+                            icon: ShieldQuestion,
+                          }]
+                        : []),
+                    ]}
+                    onClick={() => setSelectedDeviceId(d.id)}
+                    ariaLabel={`عرض تفاصيل ${d.name}`}
+                    /* `mx-3`: حاوية البطاقة `CardContent p-0` (صحيحٌ للجدول الممتدّ حافّةً
+                       لحافّة) — فبلا هذا الإزاحة تلتصق حوافُّ الكروت المُدوَّرة بحافّة البطاقة. */
+                    className={`mx-3 ${d.id === selectedDeviceId ? "border-primary bg-primary/10" : ""}`}
+                  />
+                );
+              }}
               emptyState="لا أجهزة بعد. أضف جهازاً أو وجّهه إلى الخادم ليظهر هنا."
               emptyFilteredState="لا توجد أجهزة مطابقة للبحث والفلاتر."
             />

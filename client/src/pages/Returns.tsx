@@ -24,6 +24,17 @@ import { Link, useLocation, useSearch } from "wouter";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { notify } from "@/lib/notify";
+import { SubmitButton } from "@/components/ui/SubmitButton";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /** حالات فلتر الفاتورة — مرآة enum الخادم (`salesListInput.status`) عبر المصدر المشترك.
  *  `SUPERSEDED` كانت مفقودةً من القاموس المحلّي ⇒ يقبلها الخادم ولا سبيل لاختيارها من الشاشة،
@@ -36,6 +47,9 @@ const PAGE_SIZE = 50;
 
 /** صفُّ قائمة الفواتير — مشتقٌّ من عقد `sales.listPage` فلا ينجرف عن الخادم. */
 type InvoicePickRow = RouterOutputs["sales"]["listPage"]["rows"][number];
+
+/** صفُّ طلبِ إرجاعٍ معلَّق — مشتقٌّ من عقد `returns.requests` فلا ينجرف عنه. */
+type PendingReturnRequestRow = RouterOutputs["returns"]["requests"][number];
 
 export default function Returns() {
   const utils = trpc.useUtils();
@@ -268,6 +282,12 @@ export default function Returns() {
 function PendingReturnRequests() {
   const utils = trpc.useUtils();
   const [, navigate] = useLocation();
+  // حالة حوار الرفض — تُعلَن هنا (قبل `return null` المشروط أدناه) التزاماً بقاعدة الخطّافات.
+  // الصفُّ المستهدَف منفصلٌ عن راية الفتح عمداً (نفس نمط Reconcile): تصفيرُه عند الإغلاق
+  // كان يُفرغ رقم الفاتورة من العنوان أثناء حركة الخروج فيُقرأ «رفض طلب الإرجاع #».
+  const [rejectTarget, setRejectTarget] = useState<PendingReturnRequestRow | null>(null);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
   const requests = trpc.returns.requests.useQuery(
     { status: "PENDING_APPROVAL" },
     { refetchInterval: 30_000, retry: false },
@@ -275,6 +295,8 @@ function PendingReturnRequests() {
   const reject = trpc.returns.rejectRequest.useMutation({
     onSuccess: () => {
       notify.ok("رُفض الطلب", "يرى الموظّف السبب في شاشته.");
+      setRejectOpen(false);
+      setRejectReason("");
       utils.returns.requests.invalidate();
     },
     onError: (e) => notify.err(e),
@@ -317,9 +339,9 @@ function PendingReturnRequests() {
                 variant="outline"
                 disabled={reject.isPending}
                 onClick={() => {
-                  const reason = window.prompt("سبب رفض الطلب (يراه الموظّف):")?.trim();
-                  if (!reason || reason.length < 3) return;
-                  reject.mutate({ requestId: Number(r.id), reason });
+                  setRejectTarget(r);
+                  setRejectReason("");
+                  setRejectOpen(true);
                 }}
               >
                 رفض
@@ -328,6 +350,73 @@ function PendingReturnRequests() {
           </div>
         ))}
       </CardContent>
+
+      {/* حوار رفض الطلب — بديل window.prompt: RTL + هويّة النظام + سببٌ يبقى إلزاميّاً.
+          العقد الخادميّ `returns.rejectRequest` يفرض 3..500 حرفاً، فالحقل يعكسه حرفياً. */}
+      <Dialog
+        open={rejectOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRejectOpen(false);
+            setRejectReason("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              رفض طلب الإرجاع{" "}
+              <span className="font-mono" dir="ltr">
+                {rejectTarget?.invoiceNumber ?? `#${rejectTarget?.invoiceId ?? ""}`}
+              </span>
+            </DialogTitle>
+            <DialogDescription>
+              السبب إلزاميّ ويظهر للموظّف في شاشته — اكتبه واضحاً كي لا يُعيد الطلب نفسه.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <label className="text-sm font-medium" htmlFor="return-reject-reason">
+              سبب الرفض
+            </label>
+            <Textarea
+              id="return-reject-reason"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              rows={3}
+              maxLength={500}
+              placeholder="مثال: البضاعة مستعملة ولا تقبل الإرجاع"
+            />
+            <p className="text-[11px] text-muted-foreground">3 أحرف على الأقل.</p>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setRejectOpen(false);
+                setRejectReason("");
+              }}
+            >
+              تراجع
+            </Button>
+            <SubmitButton
+              type="button"
+              variant="destructive"
+              pending={reject.isPending}
+              pendingText={ACTION_LABELS.processing}
+              disabled={rejectReason.trim().length < 3}
+              onClick={() => {
+                const reason = rejectReason.trim();
+                // نفس حارس window.prompt السابق: سببٌ فارغ أو أقصر من 3 أحرف لا يُرسَل.
+                if (!rejectTarget || !reason || reason.length < 3) return;
+                reject.mutate({ requestId: Number(rejectTarget.id), reason });
+              }}
+            >
+              تأكيد الرفض
+            </SubmitButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

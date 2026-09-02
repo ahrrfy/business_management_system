@@ -34,6 +34,7 @@ import {
   type TerminationSettlementBreakdown,
 } from "@/lib/terminationSettlement";
 import { printTerminationSettlement } from "@/lib/printing/printTerminationSettlement";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { WagePackageFields, wageValueFromEmployee, type WagePackageValue } from "@/components/form/WagePackageFields";
 import { TERMINATION_TYPES } from "@shared/hr";
 import { describeWageDiff, type WageProfileShape } from "@shared/wageDiff";
@@ -408,6 +409,84 @@ export default function Promotions() {
     return q ? termRows.filter((t) => [t.employeeName, t.terminationType, t.reason, termStatusLabel(t.status)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : termRows;
   }, [termRows, query]);
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بالتبويبات وشريط الأدوات
+  // وأزرار الاعتماد، وبكلا الجدولين معاً أحياناً). لكلّ تبويبٍ مستنده، وصفوفُه هي المعروضة
+  // نفسها (بعد البحث) بلا استعلامٍ جديد.
+  function printPromotions() {
+    printReportDoc({
+      title: "سجل الترقيات",
+      orientation: "landscape",
+      headerExtra: [
+        { label: "عدد الترقيات", value: filteredPromos.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "employeeName", label: "الموظف" },
+        { key: "fromTitle", label: "من مسمّى" },
+        { key: "toTitle", label: "إلى مسمّى" },
+        { key: "salaryChange", label: "تغيّر الراتب" },
+        { key: "effectiveDate", label: "التاريخ" },
+        { key: "reason", label: "السبب" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: filteredPromos.map((p) => {
+        // تفكيك حزمة الأجر معروضٌ تحت الرقمين على الشاشة (WageDiffList) — يبقى على الورق نصّاً.
+        const wageDiff = describeWageDiff(p.fromWage as WageProfileShape | null, p.toWage as WageProfileShape | null);
+        return {
+          employeeName: p.employeeName,
+          fromTitle: p.fromTitle ?? "—",
+          toTitle: p.toTitle || "—",
+          salaryChange:
+            `${iqd(p.fromSalary)} ← ${p.toSalary != null ? iqd(p.toSalary) : "—"}` +
+            (wageDiff.length ? ` · حزمة أجر: ${wageDiff.map((r) => `${r.label}: ${r.before} ← ${r.after}`).join(" · ")}` : ""),
+          effectiveDate: p.effectiveDate,
+          reason: p.reason ?? "—",
+          status: promoStatusLabel(p.status),
+        };
+      }),
+      emptyText: "لا ترقيات مطابقة.",
+    });
+  }
+
+  function printTerminations() {
+    printReportDoc({
+      title: "سجل إنهاء الخدمات",
+      orientation: "landscape",
+      headerExtra: [
+        { label: "عدد الإجراءات", value: filteredTerms.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "employeeName", label: "الموظف" },
+        { key: "terminationType", label: "نوع الإنهاء" },
+        { key: "lastDay", label: "آخر يوم عمل" },
+        { key: "settlement", label: "التسوية النهائية", align: "left" },
+        { key: "breakdown", label: "تفكيك التسوية" },
+        { key: "reason", label: "السبب" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: filteredTerms.map((t) => ({
+        employeeName: t.employeeName,
+        terminationType: t.terminationType,
+        lastDay: t.lastDay,
+        settlement: iqd(t.settlement),
+        // نفس أسطر التفكيك المعروضة تحت المبلغ في خليّة الشاشة — بلا حذفٍ ولا إضافة.
+        breakdown:
+          `إجمالي أجر ${iqd(t.earnedGrossWages)} · تخفيض ${iqd(t.wageReductions)} · سلفة ${iqd(t.advanceRecovery)} · ` +
+          `ضريبة ${iqd(t.incomeTax)} · ضمان موظف ${iqd(t.employeeSocialSecurity)} · ضمان شركة ${iqd(t.employerSocialSecurity)} · ` +
+          `رصيد السلفة بعد التسوية ${iqd(t.remainingAdvanceAtRecognition)} · الرصيد الحالي وقت العرض ${iqd(t.currentRemainingAdvanceBalance)} · ` +
+          `إجازات ${iqd(t.leaveCompensation)} · إشعار ${iqd(t.noticeCompensation)} · ` +
+          `نهاية خدمة ${iqd(t.eosBenefit)} · آخر ${iqd(t.otherSettlement)}` +
+          (t.recognizedAt
+            ? ` · من المخصص ${iqd(t.eosProvisionConsumed)} · محرر ${iqd(t.eosProvisionReleased)} · فرق مصروف ${iqd(t.eosExpenseRecognized)}`
+            : ""),
+        reason: t.reason ?? "—",
+        status: terminationFinancialStatus(t),
+      })),
+      emptyText: "لا إجراءات مطابقة.",
+    });
+  }
+
   /** أعمدة سجلّ الترقيات — تُغلِق على `approvePromo` وحوار الاعتماد. */
   const promoColumns: ColumnDef<PromoRow, unknown>[] = [
     {
@@ -716,7 +795,7 @@ export default function Promotions() {
                 onResetFilters={() => setQuery("")}
                 onRefresh={() => void promotions.refetch()}
                 refreshing={promotions.isFetching}
-                onPrint={() => window.print()}
+                onPrint={printPromotions}
                 exportSpec={{
                   filename: "ترقيات-الموظفين",
                   rows: filteredPromos,
@@ -769,7 +848,7 @@ export default function Promotions() {
                   onResetFilters={() => setQuery("")}
                   onRefresh={() => void terminations.refetch()}
                   refreshing={terminations.isFetching}
-                  onPrint={() => window.print()}
+                  onPrint={printTerminations}
                   exportSpec={{
                     filename: "إنهاء-الخدمات",
                     rows: filteredTerms,

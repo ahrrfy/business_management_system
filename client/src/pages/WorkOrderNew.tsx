@@ -476,9 +476,11 @@ export default function WorkOrderNew() {
   // التركيز التلقائي على البحث عند فتح الصفحة لتسريع العمل.
   useEffect(() => { barcodeRef.current?.focus(); }, []);
 
-  // اختصارات: Ctrl+S يحفظ (بلا طباعة، نمط الزرّ الأساسي). بلا Esc — النموذج مكتظّ بعناصر
-  // <select> أصلية (الفرع/المنفّذ/طريقة التسليم) لا تُكتشَف حالتها فيتعارض إغلاقها مع إلغاء النموذج
-  // (نفس تحذير CustomerNew.tsx). حارس فقدان البيانات لكل حقلٍ أدخله المستخدم فعلياً.
+  // اختصارات: Ctrl+S يحفظ (بلا طباعة، نمط الزرّ الأساسي). بلا Esc — النموذج مكتظّ بقوائم منسدلة
+  // (الفرع/المنفّذ/طريقة التسليم) تبتلع Esc لإغلاق قائمتها فيتعارض ذلك مع إلغاء النموذج
+  // (نفس تحذير CustomerNew.tsx). والسبب باقٍ بعد الهجرة إلى AppSelect: Radix Select يبتلع Esc
+  // كما كان يفعل <select> الأصليّ — تغيَّر المكوّن لا التعارض.
+  // حارس فقدان البيانات لكل حقلٍ أدخله المستخدم فعلياً.
   useSaveShortcuts({
     onSave: () => void handleSave({ print: false }),
     enabled: !createWO.isPending && !createSale.isPending && !createCustomer.isPending,

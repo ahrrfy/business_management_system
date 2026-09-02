@@ -27,6 +27,7 @@ import { matchQuery } from "@/components/search/filter";
 import { categoryOptionElements } from "@/lib/categoryTree";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { CornerDownLeft, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -426,7 +427,7 @@ export default function Categories() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={createMut.isPending || updateMut.isPending}>
-              {createMut.isPending || updateMut.isPending ? "جارٍ الحفظ…" : "حفظ"}
+              {createMut.isPending || updateMut.isPending ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -461,7 +462,7 @@ export default function Categories() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setDelTarget(null)}>إلغاء</Button>
             <Button variant="destructive" size="sm" onClick={confirmDelete} disabled={deleteMut.isPending || delChildrenCount > 0}>
-              {deleteMut.isPending ? "جارٍ الحذف…" : "حذف الفئة"}
+              {deleteMut.isPending ? ACTION_LABELS.deleting : "حذف الفئة"}
             </Button>
           </DialogFooter>
         </DialogContent>

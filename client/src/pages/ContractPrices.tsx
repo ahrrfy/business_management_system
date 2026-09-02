@@ -24,6 +24,7 @@ import { notify } from "@/lib/notify";
 import { esc } from "@/lib/printing/brand";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { normalizeSearchText } from "@shared/searchNormalize";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type ContractRow = RouterOutputs["customers"]["contractPricesList"][number];
 
@@ -338,7 +339,7 @@ export default function ContractPrices() {
                   </div>
                   <Button type="button" onClick={submit} disabled={upsert.isPending}>
                     <Plus aria-hidden className="size-4" />
-                    {upsert.isPending ? "جارٍ الحفظ…" : "حفظ السعر"}
+                    {upsert.isPending ? ACTION_LABELS.saving : "حفظ السعر"}
                   </Button>
                 </div>
               )}

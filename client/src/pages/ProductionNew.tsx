@@ -270,8 +270,9 @@ export default function ProductionNew() {
       laborCost: D(mLabor).toFixed(2), notes: notes.trim() || null, clientRequestId,
     });
   }
-  // اختصارات: Ctrl+S يرحّل المستند وفق الوضع الحاليّ (وصفة/يدوي)؛ بلا Esc (النموذج مكتظّ بـ<select>
-  // أصلية — نمط CustomerNew.tsx §16 يحذّر من تعارض Esc مع إغلاق القائمة).
+  // اختصارات: Ctrl+S يرحّل المستند وفق الوضع الحاليّ (وصفة/يدوي)؛ بلا Esc (النموذج مكتظّ بقوائم
+  // منسدلة — نمط CustomerNew.tsx §16 يحذّر من تعارض Esc مع إغلاق القائمة). والسبب باقٍ بعد
+  // الهجرة إلى AppSelect: Radix Select يبتلع Esc كما كان يفعل <select> الأصليّ.
   useSaveShortcuts({
     onSave: () => void (mode === "recipe" ? submitRecipe() : submitManual()),
     enabled: !create.isPending,

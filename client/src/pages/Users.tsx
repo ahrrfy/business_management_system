@@ -19,6 +19,8 @@ type Row = RouterOutputs["users"]["list"]["rows"][number];
 /** شارة «القسم الفعليّ» — ما سيفتحه الحساب فعلاً في نقطة البيع (طبقة الشفافية ش١، محسوب خادمياً). */
 function StationBadge({ station }: { station?: PosStation | "MULTI" | "NONE" }) {
   if (!station || station === "NONE") return <span className="text-muted-foreground text-xs">—</span>;
+  // لوحةُ هويّةٍ تصنيفية (قسمٌ لا حالة): كلّ قسمٍ صِبغةٌ مستقلّة تُميّزه عن جاره. لا تُترجَم إلى
+  // توكنز sem-* لأنّ «التجزئة» ليست موجباً و«الاستقبال» ليست معلومة — والترجمة تُوحّد لونَ قسمين.
   const cls: Record<string, string> = {
     RETAIL: "bg-emerald-100 text-emerald-700",
     PRINT_SERVICES: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
@@ -41,12 +43,19 @@ function stationExportLabel(station?: PosStation | "MULTI" | "NONE"): string {
  *  تتكرر حرفياً لو حُصر الحساب بالمصفوفة اليدوية بدل دور مخصّص وظلّت شارته «كاشير» مجرّدة. */
 export function RoleBadge({ role, customRoleLabel, hasOverride, isOwner }: { role: string; customRoleLabel?: string | null; hasOverride?: boolean; isOwner?: boolean }) {
   if (isOwner) {
+    // كان `bg-amber-200 text-amber-900`: طبقةُ التوافق الداكن في tokens.css تُترجم النصّ (amber-900)
+    // إلى --sem-warn ولا تملك مقابلاً لخلفية amber-200 ⇒ نصٌّ فاتحٌ على خلفيةٍ فاتحة في الوضع الداكن.
+    // التوكن يُصلح ذلك ويحفظ الهيو. لكنّ --sem-warn-bg أخفّ من amber-200: بعد التحويل قِيست الشارة
+    // (خلفية #ffefd5 ونصّ #8a6000) فصارت شبهَ توأمٍ لشارة «مخزن» (#fef3c7 / #b45309)، وحدٌّ بشفافية ٤٠٪
+    // لا يعوّض فارقَ التشبُّع. فالحدُّ كاملُ القوّة و font-bold يُعيدان بروزَ أعلى شارةِ صلاحيةٍ في الشاشة.
     return (
-      <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-amber-200 text-amber-900">
+      <span className="inline-block rounded-full border border-[var(--sem-warn)] px-2 py-0.5 text-xs font-bold bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
         مالك النظام
       </span>
     );
   }
+  // لوحةُ هويّةٍ تصنيفية أيضاً (١١ دوراً بصِبغٍ متمايز): «admin» أحمرُ تمييزٍ لا خطر، و«cashier»
+  // أخضرُ تمييزٍ لا موجب. ترجمتُها إلى أربعة توكنز دلالية تُلوّن دورين بلونٍ واحد فتُلغي التمييز.
   const colors: Record<string, string> = {
     admin:          "bg-red-100 text-red-700",
     manager:        "bg-purple-100 text-purple-700",
@@ -165,7 +174,7 @@ export default function Users() {
             {row.original.name ?? "—"}
             {/* الحقلان mustChangePassword وisOwner خارج نوع الصفّ المُصدَّر — نفس الصبّ الذي كان. */}
             {!!(row.original as any).mustChangePassword && (
-              <span className="me-1 inline-flex text-amber-600" title="إلزام تغيير كلمة المرور">
+              <span className="me-1 inline-flex text-[var(--sem-warn)]" title="إلزام تغيير كلمة المرور">
                 <AlertTriangle aria-hidden className="size-3.5" />
               </span>
             )}

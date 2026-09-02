@@ -10,6 +10,18 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { D, fmt, round2 } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
+import { SubmitButton } from "@/components/ui/SubmitButton";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { exportSheets } from "@/lib/export";
 import {
@@ -87,6 +99,13 @@ export default function Reconcile() {
   const [openingAllocationAmounts, setOpeningAllocationAmounts] = useState<
     Record<string, string>
   >({});
+  /** حوار السبب الموحَّد (بديل window.prompt): إيقاف الدفتر أو مسح مصادقة السياسة.
+      يُعلَن هنا مع بقيّة الحالة — أي قبل حاجز «غير المدير» أدناه — التزاماً بقاعدة الخطّافات.
+      النوع منفصلٌ عن راية الفتح عمداً: تصفيرُه عند الإغلاق يقلب عناوين الحوار أثناء
+      حركة الخروج فيقرأ المستعمل عنواناً غير الذي أكّده. */
+  const [reasonKind, setReasonKind] = useState<"STOP" | "CLEAR_POLICY">("STOP");
+  const [reasonOpen, setReasonOpen] = useState(false);
+  const [reasonText, setReasonText] = useState("");
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
   const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
@@ -115,6 +134,8 @@ export default function Reconcile() {
             ? "اعتمد الدفتر المزدوج بوضع ACTIVE."
             : "أُوقف الدفتر المزدوج مع حفظ اليوميات التاريخية.",
       );
+      setReasonOpen(false);
+      setReasonText("");
       void recon.refetch();
     },
     onError: (error) => notify.err(error),
@@ -129,6 +150,8 @@ export default function Reconcile() {
         );
         setPolicyReference("");
         setPolicyAccountantName("");
+        setReasonOpen(false);
+        setReasonText("");
         void recon.refetch();
       },
       onError: (error) => notify.err(error),
@@ -483,17 +506,21 @@ export default function Reconcile() {
     ]);
   }
 
-  function requestActivation() {
+  async function requestActivation() {
     if (
-      !window.confirm(
-        "تأكيد اعتماد ACTIVE: بعد التفعيل سيفشل أي حدث مالي لا يملك خريطة أو بيانات مكتملة، وستتراجع معاملة الأعمال كاملة. هل راجعت كل موانع البوابة وتريد المتابعة؟",
-      )
+      !(await confirm({
+        variant: "danger",
+        title: "اعتماد الدفتر المزدوج بوضع ACTIVE؟",
+        description:
+          "بعد التفعيل سيفشل أي حدث مالي لا يملك خريطة أو بيانات مكتملة، وستتراجع معاملة الأعمال كاملة. هل راجعت كل موانع البوابة وتريد المتابعة؟",
+        confirmText: "اعتماد ACTIVE",
+      }))
     )
       return;
     setMode.mutate({ target: "ACTIVE" });
   }
 
-  function requestStartShadow() {
+  async function requestStartShadow() {
     const prepared = openingPreparation.data;
     if (!prepared) {
       notify.warn("أعدّ معاينة الافتتاح أولاً.");
@@ -504,9 +531,13 @@ export default function Reconcile() {
       return;
     }
     if (
-      !window.confirm(
-        "تأكيد لقطة القطع وبدء SHADOW؟ ستُعاد مطابقة البصمة داخل معاملة ذرية. اللقطة تنقل أرصدة الميزانية عند القطع ولا تعيد بناء أرباح وخسائر ما قبل تاريخ القطع.",
-      )
+      !(await confirm({
+        variant: "warning",
+        title: "تأكيد لقطة القطع وبدء وضع الظل؟",
+        description:
+          "ستُعاد مطابقة البصمة داخل معاملة ذرية. اللقطة تنقل أرصدة الميزانية عند القطع ولا تعيد بناء أرباح وخسائر ما قبل تاريخ القطع.",
+        confirmText: "بدء وضع الظل",
+      }))
     )
       return;
     setMode.mutate({
@@ -560,23 +591,11 @@ export default function Reconcile() {
     openingPreparation.mutate({ allocations });
   }
 
+  /** إيقاف الدفتر المزدوج — السبب إلزاميّ (10 أحرف فأكثر) والتأكيد صريحٌ في الحوار نفسه. */
   function requestStop() {
-    const reason = window.prompt(
-      "أدخل سبب إيقاف الدفتر المزدوج. سيُحفظ السبب في سجل التدقيق ولن تُحذف اليوميات التاريخية:",
-    );
-    if (reason === null) return;
-    const trimmed = reason.trim();
-    if (trimmed.length < 10) {
-      notify.warn("سبب الإيقاف يجب ألا يقل عن 10 أحرف.");
-      return;
-    }
-    if (
-      !window.confirm(
-        "تأكيد الإيقاف إلى OFF؟ ستتوقف كتابة القيود المزدوجة الجديدة، وتبقى اليوميات السابقة محفوظة.",
-      )
-    )
-      return;
-    setMode.mutate({ target: "OFF", reason: trimmed });
+    setReasonText("");
+    setReasonKind("STOP");
+    setReasonOpen(true);
   }
 
   function approvePolicy() {
@@ -597,17 +616,32 @@ export default function Reconcile() {
     });
   }
 
+  /** مسح مصادقة السياسة — السبب إلزاميّ (10 أحرف فأكثر) ويُحفظ في سجل التدقيق. */
   function clearPolicyApproval() {
-    const reason = window.prompt(
-      "أدخل سبب مسح مصادقة السياسة. سيُحفظ السبب في سجل التدقيق:",
-    );
-    if (reason === null) return;
-    const trimmed = reason.trim();
-    if (trimmed.length < 10) {
-      notify.warn("سبب المسح يجب ألا يقل عن 10 أحرف.");
+    setReasonText("");
+    setReasonKind("CLEAR_POLICY");
+    setReasonOpen(true);
+  }
+
+  /** إرسال حوار السبب — يحفظ نفس الحدّ الأدنى ونفس رسائل التحذير لكلا المسارين.
+      الزرّ مُعطَّل تحت 10 أحرف، والفحص هنا يبقى دفاعاً ثانياً لا يُسقَط. */
+  function submitReasonDialog() {
+    const trimmed = reasonText.trim();
+    if (reasonKind === "STOP") {
+      if (trimmed.length < 10) {
+        notify.warn("سبب الإيقاف يجب ألا يقل عن 10 أحرف.");
+        return;
+      }
+      setMode.mutate({ target: "OFF", reason: trimmed });
       return;
     }
-    setPolicyApproval.mutate({ action: "CLEAR", reason: trimmed });
+    if (reasonKind === "CLEAR_POLICY") {
+      if (trimmed.length < 10) {
+        notify.warn("سبب المسح يجب ألا يقل عن 10 أحرف.");
+        return;
+      }
+      setPolicyApproval.mutate({ action: "CLEAR", reason: trimmed });
+    }
   }
 
   return (
@@ -727,10 +761,13 @@ export default function Reconcile() {
             onStop={requestStop}
           />
 
+          {/* لونُ الانحراف دلاليّ لا مخزنيّ: كان `badge-stock-out` — توكن «نفد المخزون» —
+              في شاشة مطابقةٍ نقديّة لا مخزون فيها. الدلالة هنا خطرٌ يستوجب المراجعة، فصار
+              `--sem-neg` (نفس الأحمر الطوبيّ قيمةً، والصنف صار يصف ما يعنيه). */}
           <Card>
             <CardContent
               className={`p-6 text-center text-lg font-bold inline-flex items-center justify-center gap-2 w-full ${
-                total === 0 ? "badge-status-active" : "badge-stock-out"
+                total === 0 ? "badge-status-active" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
               }`}
             >
               {total === 0 ? (
@@ -839,6 +876,72 @@ export default function Reconcile() {
           />
         </>
       )}
+
+      {/* حوار السبب الموحَّد — بديل window.prompt + window.confirm المتتاليَين.
+          يجمع في خطوةٍ واحدة: السبب الإلزاميّ (10 أحرف فأكثر، مطابقاً لعقد الخادم 10..500)
+          ونصّ التحذير الذي كان في window.confirm، فلا يسقط حارسٌ ولا معلومة. */}
+      <Dialog
+        open={reasonOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReasonOpen(false);
+            setReasonText("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {reasonKind === "STOP"
+                ? "إيقاف الدفتر المزدوج إلى OFF؟"
+                : "مسح مصادقة السياسة؟"}
+            </DialogTitle>
+            <DialogDescription>
+              {reasonKind === "STOP"
+                ? "ستتوقف كتابة القيود المزدوجة الجديدة، وتبقى اليوميات السابقة محفوظة ولن تُحذف. يُحفظ السبب في سجل التدقيق."
+                : "تُمسح مصادقة المحاسب على سياسة الترحيل، ويُحفظ السبب في سجل التدقيق."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <label className="text-sm font-medium" htmlFor="reconcile-reason">
+              {reasonKind === "STOP" ? "سبب الإيقاف" : "سبب المسح"}
+            </label>
+            <Textarea
+              id="reconcile-reason"
+              value={reasonText}
+              onChange={(event) => setReasonText(event.target.value)}
+              rows={3}
+              maxLength={500}
+              placeholder="اكتب سبباً واضحاً يفهمه من يراجع سجل التدقيق لاحقاً"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              10 أحرف على الأقل.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setReasonOpen(false);
+                setReasonText("");
+              }}
+            >
+              تراجع
+            </Button>
+            <SubmitButton
+              type="button"
+              variant="destructive"
+              pending={setMode.isPending || setPolicyApproval.isPending}
+              pendingText={ACTION_LABELS.processing}
+              disabled={reasonText.trim().length < 10}
+              onClick={submitReasonDialog}
+            >
+              {reasonKind === "STOP" ? "تأكيد الإيقاف إلى OFF" : "تأكيد المسح"}
+            </SubmitButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -921,11 +1024,12 @@ function DoubleEntryStatus({
       : activation.mode === "SHADOW"
         ? "ظل"
         : "فعّال";
+  // موانعُ التفعيل والانحرافُ خطرٌ لا نفادُ مخزون: `--sem-neg` بدل توكن المخزون `badge-stock-out`.
   const modeClass =
     activation.mode === "ACTIVE"
       ? activation.blockers.length === 0
         ? "badge-status-active"
-        : "badge-stock-out"
+        : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
       : activation.mode === "SHADOW"
         ? "badge-status-pending"
         : "badge-status-cancelled";
@@ -1473,7 +1577,7 @@ function DoubleEntryStatus({
               </p>
             </div>
             <span
-              className={`rounded-full px-3 py-1 text-xs font-semibold ${monthlyIssueCount === 0 ? "badge-status-active" : "badge-stock-out"}`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${monthlyIssueCount === 0 ? "badge-status-active" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"}`}
             >
               {monthlyIssueCount === 0
                 ? "مطابق"
@@ -1509,7 +1613,7 @@ function DoubleEntryStatus({
                   accessorFn: (row) => fmt(row.drift),
                   meta: { kind: "money" },
                   cell: ({ row }) => (
-                    <span className={row.original.drift === "0.00" ? undefined : "font-semibold text-money-negative"}>
+                    <span className={row.original.drift === "0.00" ? undefined : "font-semibold text-[var(--sem-neg)]"}>
                       {fmt(row.original.drift)}
                     </span>
                   ),
@@ -1602,7 +1706,7 @@ function DriftSection({
             {action}
             <span
               className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold inline-flex items-center gap-1 ${
-                rows.length === 0 ? "badge-status-active" : "badge-stock-out"
+                rows.length === 0 ? "badge-status-active" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
               }`}
             >
               {rows.length === 0 ? (
@@ -1650,8 +1754,12 @@ function DriftSection({
                 header: "الانحراف",
                 accessorFn: (r) => `${val(r.drift)}${r.note ? ` — ${r.note}` : ""}`,
                 meta: { kind: "money" },
+                /* الانحراف هنا **ليس مالاً دائماً**: ثلاثة من مستدعي هذا المكوّن تمرّر بلا `money`
+                   (أرصدة المخزون كمّية، وطلبات المتجر «رقمٌ رمزيّ ١ لكل صفّ»، والأيتام عدّة أسطر) ⇒
+                   `money-negative` كان يصبغ قيمةً غير ماليّة بتوكن إشارة المبلغ. الدلالة خطرٌ/انحراف
+                   ⇒ `--sem-neg` مثل شارة الرأس في المكوّن نفسه. */
                 cell: ({ row }) => (
-                  <span className="font-semibold text-money-negative">
+                  <span className="font-semibold text-[var(--sem-neg)]">
                     {val(row.original.drift)}
                     {row.original.note && (
                       <span

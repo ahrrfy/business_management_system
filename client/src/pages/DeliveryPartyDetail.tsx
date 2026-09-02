@@ -25,6 +25,7 @@ import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type PartyRow = RouterOutputs["delivery"]["listParties"][number];
 type StatementEntry = NonNullable<RouterOutputs["delivery"]["partyStatement"]>["entries"][number];
@@ -923,7 +924,7 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
             </div>
           </div>
           <div className="mt-3 flex gap-2">
-            <Button onClick={submit} disabled={save.isPending}>{save.isPending ? "جارٍ…" : (form.id ? "حفظ" : "إضافة قاعدة")}</Button>
+            <Button onClick={submit} disabled={save.isPending}>{save.isPending ? ACTION_LABELS.saving : (form.id ? "حفظ" : "إضافة قاعدة")}</Button>
             {form.id && (
               <Button variant="outline" onClick={() => setForm({ id: null, ruleType: "FLAT_PER_DELIVERY", flatAmount: "2000", percentValue: "", minGuarantee: "", maxCap: "", notes: "" })}>إلغاء</Button>
             )}
@@ -980,7 +981,7 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
     onError: (e) => notify.err(e),
   });
 
-  if (!form) return <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (!form) return <div className="p-8 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
   const moneyOk = (v: string) => /^\d+(\.\d{1,2})?$/.test(v);
 
   return (
@@ -1047,7 +1048,7 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
                 notes: form.notes || null,
                 userId: form.userId,
               })}
-            >{update.isPending ? "جارٍ…" : "حفظ"}</Button>
+            >{update.isPending ? ACTION_LABELS.saving : "حفظ"}</Button>
             <Button
               variant="outline"
               disabled={setActive.isPending}

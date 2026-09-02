@@ -13,6 +13,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Edit3, Info, Plus, RotateCcw, Wrench } from "lucide-react";
@@ -188,6 +189,39 @@ export default function ExpenseCategories() {
 
   const pendingCount = unclassified.data ?? 0;
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة كما تُرى: بطاقة التنويه
+  // والنموذج المفتوح وشريط الأدوات). نفس صفوف الجدول المعروضة وأعمدته — بلا استعلامٍ جديد.
+  function printCategories() {
+    printReportDoc({
+      title: "فئات المصروفات",
+      headerExtra: [
+        { label: "عدد الفئات", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      note: "الدلو المحاسبي هو ما يقرأه دفتر الأستاذ والتقارير؛ الفئة طبقة تشغيلية فوقه لا تغيّر الحساب الذي يهبط فيه المصروف.",
+      columns: [
+        { key: "id", label: "#", align: "center" },
+        { key: "name", label: "الاسم" },
+        { key: "bucket", label: "الدلو المحاسبي" },
+        { key: "description", label: "الوصف" },
+        { key: "usedExpenseCount", label: "مصروفات", align: "center" },
+        { key: "sortOrder", label: "ترتيب", align: "center" },
+        { key: "isActive", label: "نشطة", align: "center" },
+      ],
+      rows: visibleRows.map((r) => ({
+        id: String(r.id),
+        // شارة «احتياطية الدلو» تظهر على الشاشة بجانب الاسم — نُبقيها نصّاً كي لا تضيع على الورق.
+        name: `${r.name}${r.isBucketDefault ? " (احتياطية الدلو)" : ""}`,
+        bucket: expenseBucketLabel(r.bucket),
+        description: r.description ?? "—",
+        usedExpenseCount: r.usedExpenseCount.toLocaleString("ar-IQ-u-nu-latn"),
+        sortOrder: String(r.sortOrder),
+        isActive: r.isActive ? "نشطة" : "معطّلة",
+      })),
+      emptyText: "لا فئات مطابقة.",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -351,7 +385,7 @@ export default function ExpenseCategories() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printCategories}
             exportSpec={{
               filename: "فئات-المصروفات",
               rows: visibleRows,

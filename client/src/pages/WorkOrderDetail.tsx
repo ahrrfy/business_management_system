@@ -16,6 +16,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
@@ -63,9 +64,6 @@ const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: st
   { v: "CARD", label: "بطاقة" },
   { v: "WALLET", label: "محفظة" },
 ];
-
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 type CancelInput = RouterInputs["workOrders"]["cancel"];
 type CancelControlInput = Extract<
@@ -815,10 +813,11 @@ export default function WorkOrderDetail() {
                 <MoneyInput value={payAmount} onChange={setPayAmount} placeholder="الرصيد المستحق" ariaLabel="مبلغ الدفعة" />
               </div>
               <div className="space-y-1">
-                <Label>طريقة الدفع</Label>
-                <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
+                <Label htmlFor="wo-pay-method">طريقة الدفع</Label>
+                {/* `disabled` على الخيار محفوظ — AppSelect يمرّره إلى SelectItem (سياسة القبض تبقى مُنفَّذة). */}
+                <AppSelect id="wo-pay-method" value={payMethod} onValueChange={(value) => setPayMethod(value as typeof payMethod)}>
                   {METHODS.map((m) => <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>)}
-                </select>
+                </AppSelect>
               </div>
               {/* مرآة PaymentReferenceField من POS (client/src/components/pos/PaymentReferenceField.tsx) —
                *  ذاك المكوّن مبنيّ بأنماط CSS خام تخصّ ثيم POS (colors prop)؛ هنا حقل مطابق ببنى Tailwind

@@ -31,6 +31,7 @@ import { payrollStatusLabel as accrualStatusLabel, toExcelMoney } from "@/lib/pa
 import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, TriangleAlert, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { selectClsSm } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 const STATUS_CLS: Record<string, string> = {
@@ -213,6 +214,23 @@ export default function Payroll() {
     });
   }, [items, itemQ, payTypeF]);
   const itemsFiltered = Boolean(itemQ.trim() || payTypeF);
+
+  /*
+   * رسالةُ الفراغ — تسلسلٌ ثلاثيّ **بأولويةٍ لغياب المسيّرات نفسها**، ومصدرُه واحدٌ يُغذّي
+   * كلا فرعَي DataTable (المفلتَر وغير المفلتَر) كي لا ينجرف أحدهما عن الآخر.
+   * ما كان: بعد التحويل صار فحصُ `runs.length === 0` في فرع `emptyState` وحدَه، وحقلا
+   * البحث ونوع الأجر معروضان دائماً في ترويسة البطاقة حتى بلا أيّ مسيّر. فمن يكتب حرفاً
+   * في البحث وهو لا يملك مسيّراً واحداً كان يُنقَل إلى فرع `emptyFilteredState` فيقرأ
+   * «لا بنود في هذا المسيّر» — جملةٌ تُثبت وجودَ مسيّرٍ لا وجودَ له، وتُسقط دعوةَ
+   * «ولّد مسيّراً شهرياً للبدء» التي هي خطوتُه التالية الوحيدة. الجدولُ الخامّ كان يفحص
+   * `runs.length` أوّلاً قبل أيّ اعتبارٍ للفلتر، وهذا يعيد ذلك السلوك حرفياً.
+   */
+  const itemsEmptyMessage =
+    runs.length === 0
+      ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء."
+      : items.length === 0
+        ? "لا بنود في هذا المسيّر."
+        : "لا بنود مطابقة للبحث/الفلتر.";
 
   /*
    * بنودٌ تحتاج انتباهاً قبل الاعتماد (اليوم المفتوح: دخولٌ بلا انصراف ⇒ ساعاتٌ غير محتسَبة).
@@ -594,8 +612,8 @@ export default function Payroll() {
             loading={runQ.isLoading}
             errorState={{ isError: runQ.isError, message: runQ.error?.message, onRetry: () => void runQ.refetch() }}
             getRowClassName={(p) => (payrollItemNeedsAttention(p.note) ? "bg-[var(--sem-warn-bg)]/60" : undefined)}
-            emptyState={runs.length === 0 ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء." : "لا بنود في هذا المسيّر."}
-            emptyFilteredState={items.length === 0 ? "لا بنود في هذا المسيّر." : "لا بنود مطابقة للبحث/الفلتر."}
+            emptyState={itemsEmptyMessage}
+            emptyFilteredState={itemsEmptyMessage}
           />
         </CardContent>
       </Card>
@@ -816,7 +834,7 @@ function EditItemDialog({
             onClick={() => onSave(round2(D(overtime || 0)).toFixed(2), round2(D(deductions || 0)).toFixed(2), note)}
             disabled={saving}
           >
-            {saving ? "جارٍ الحفظ…" : "حفظ"}
+            {saving ? ACTION_LABELS.saving : "حفظ"}
           </Button>
         </DialogFooter>
       </DialogContent>

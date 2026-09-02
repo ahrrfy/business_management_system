@@ -2,6 +2,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -321,8 +322,12 @@ export default function InventoryMovements() {
 
   const rows: RichRow[] = movements.data?.rows ?? [];
   const total = movements.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const currentPage = page + 1;
+  /*
+   * لا `currentPage`/`totalPages` هنا بعد اليوم: شريط `TablePager` داخل `DataTable` يشتقّهما
+   * من `serverPagination` نفسه ويطبعهما («عرض 1–50 من N · صفحة X من Y»)، فحسابُهما ثانيةً
+   * في هذه الشاشة تعريفٌ مكرَّر لمقدارٍ واحد — وهو بابُ الانحراف: يكفي أن يتغيّر PAGE_SIZE
+   * في أحد الموضعين ليعرض الشريطان صفحتين مختلفتين لنفس البيانات.
+   */
 
   const [exporting, setExporting] = useState(false);
 
@@ -493,12 +498,11 @@ export default function InventoryMovements() {
               ({fmtInt(total)} حركة)
             </span>
           </CardTitle>
+          {/* مؤشّر «صفحة X من Y» كان هنا وحُذف: صار `TablePager` أسفل الجدول يطبعه ضمن
+              «عرض 1–50 من N · صفحة X من Y»، فبقاؤه هنا مؤشّرٌ ثانٍ لنفس المقدار يشغل النظر
+              ويوهم أنّهما شيئان. وتغذيتُه الأخرى (نصّ التحميل) لم تعد لازمة: `DataTable`
+              يستقبل `loading` فيعرض صفوفاً هيكلية، وهي إشارةُ تحميلٍ أوضح من كلمةٍ في الترويسة. */}
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">
-              {movements.isLoading
-                ? "جارٍ التحميل…"
-                : `صفحة ${fmtInt(currentPage)} من ${fmtInt(totalPages)}`}
-            </span>
             <Button
               variant="outline"
               size="sm"
@@ -549,7 +553,7 @@ export default function InventoryMovements() {
               disabled={total === 0 || exporting}
               onClick={() => void exportAll()}
             >
-              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
+              {exporting ? ACTION_LABELS.exporting : "تصدير Excel"}
             </Button>
           </div>
         </CardHeader>

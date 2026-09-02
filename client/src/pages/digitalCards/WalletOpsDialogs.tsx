@@ -9,6 +9,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { D, fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -19,8 +20,6 @@ import { useEffect, useMemo, useState } from "react";
 export type WalletRow = RouterOutputs["digitalCards"]["wallets"]["list"][number];
 /** صفُّ كشف حساب المحفظة — مشتقٌّ من عقد `digitalCards.wallets.statement`. */
 type WalletTxRow = RouterOutputs["digitalCards"]["wallets"]["statement"][number];
-
-const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 /** مبلغ الحركة موقَّعاً باتّجاهها — أساسُ فرزٍ رقميّ صادق بدل نصّ «+1,234». */
 const signedAmount = (r: WalletTxRow) => (r.direction === "IN" ? D(r.amount) : D(r.amount).neg());
@@ -121,10 +120,10 @@ export function WalletMoveDialog({
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium" htmlFor="wm-method">وسيلة الحركة</label>
-            <select id="wm-method" className={selectCls} value={method} onChange={(e) => { setMethod(e.target.value as "CASH" | "TRANSFER"); setReference(""); }}>
+            <AppSelect id="wm-method" value={method} onValueChange={(next) => { setMethod(next as "CASH" | "TRANSFER"); setReference(""); }}>
               <option value="CASH">{isDep ? "نقداً من الخزينة" : "نقداً إلى الخزينة"}</option>
               <option value="TRANSFER">تحويل بنكي</option>
-            </select>
+            </AppSelect>
           </div>
           {method !== "CASH" && (
             <div className="space-y-1">
@@ -183,10 +182,10 @@ export function WalletAdjustDialog({ wallet, onClose }: { wallet: WalletRow | nu
         <div className="space-y-3">
           <div className="space-y-1">
             <label className="text-sm font-medium" htmlFor="wa-dir">اتجاه التعديل</label>
-            <select id="wa-dir" className={selectCls} value={direction} onChange={(e) => setDirection(e.target.value as "IN" | "OUT")}>
+            <AppSelect id="wa-dir" value={direction} onValueChange={(next) => setDirection(next as "IN" | "OUT")}>
               <option value="OUT">خفض الرصيد (عجز)</option>
               <option value="IN">رفع الرصيد (زيادة)</option>
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">المبلغ</label>
@@ -250,7 +249,7 @@ export function WalletReconcileDialog({ wallet, onClose }: { wallet: WalletRow |
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium" htmlFor="wr-date">تاريخ يوم العمل</label>
-            <input id="wr-date" type="date" className={selectCls} value={date} onChange={(e) => setDate(e.target.value)} dir="ltr" />
+            <Input id="wr-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} dir="ltr" />
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">الرصيد الفعليّ على الجهاز</label>

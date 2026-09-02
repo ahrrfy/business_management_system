@@ -1,8 +1,4 @@
 {
-  "client/src/components/product/SimpleProductEditForm.tsx": 1,
   "client/src/pages/EmployeeNew.tsx": 1,
-  "client/src/pages/InvoiceDetail.tsx": 1,
-  "client/src/pages/Reconcile.tsx": 5,
-  "client/src/pages/Returns.tsx": 1,
   "client/src/pages/Vouchers.tsx": 1
 }

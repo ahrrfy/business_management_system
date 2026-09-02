@@ -300,7 +300,8 @@ export default function CatalogAnomalies() {
         onReset={() => { setSearch(""); setCodeFilter(""); setSevFilter(""); setIncludeOverridden(false); setPage(0); }}
         headerActions={
           <Button variant="outline" size="sm" disabled={total === 0 || exporting} onClick={() => void exportAll()}>
-            {exporting ? ACTION_LABELS.printing : "تصدير Excel (الكل)"}
+            {/* المخرَج ملفّ Excel لا طباعة ⇒ مفتاح التصدير لا مفتاح الطباعة. */}
+            {exporting ? ACTION_LABELS.exporting : "تصدير Excel (الكل)"}
           </Button>
         }
         toggles={
@@ -634,7 +635,7 @@ function MarkOverrideDialog({
             disabled={disabled}
             onClick={() => onConfirm({ variantId: info.variantId, code: info.code, justification: justification.trim(), excludeUntil: excludeUntil || null })}
           >
-            {isPending ? "جارٍ الحفظ…" : "تأكيد"}
+            {isPending ? ACTION_LABELS.saving : "تأكيد"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -203,9 +203,9 @@ export default function BalanceSheet() {
         <Card><CardContent className="p-0">{q.isLoading ? <LoadingState /> : q.isError ? <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} /> : <div className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</div>}</CardContent></Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
-          <SectionCard title="الأصول" rows={sections.assets} total={p.totalAssets} totalLabel="إجمالي الأصول" tone="emerald" />
+          <SectionCard title="الأصول" rows={sections.assets} total={p.totalAssets} totalLabel="إجمالي الأصول" tone="pos" />
           <div className="space-y-4">
-            <SectionCard title="الخصوم" rows={sections.liabilities} total={p.totalLiabilities} totalLabel="إجمالي الخصوم" tone="amber" />
+            <SectionCard title="الخصوم" rows={sections.liabilities} total={p.totalLiabilities} totalLabel="إجمالي الخصوم" tone="warn" />
             <Card>
               <CardContent className="flex items-center justify-between p-4">
                 <span className="font-bold">حقوق الملكية (مشتقّة)</span>
@@ -223,7 +223,9 @@ export default function BalanceSheet() {
 type SectionRow = { label: string; v: string };
 
 function SectionCard({ title, rows, total, totalLabel, tone }: {
-  title: string; rows: SectionRow[]; total: string; totalLabel: string; tone: "emerald" | "amber";
+  // اسمُ النغمة دلاليّ لا لونيّ («pos/warn» لا «emerald/amber») — الاسمُ اللونيّ يُغري بإعادة
+  // إدخال صنفٍ خامّ عند أوّل تعديل، بينما الرسم فعلياً يخرج من توكنَي --sem-pos/--sem-warn.
+  title: string; rows: SectionRow[]; total: string; totalLabel: string; tone: "pos" | "warn";
 }) {
   // الإجمالي في `<tfoot>` عبر `footer` على الأعمدة — يبقى محاذياً لعموده (لا سطرَ ملخّصٍ حرّ).
   const columns = useMemo<ColumnDef<SectionRow, unknown>[]>(
@@ -251,7 +253,7 @@ function SectionCard({ title, rows, total, totalLabel, tone }: {
   return (
     <Card>
       <CardContent className="p-0">
-        <div className={`px-4 py-2.5 font-semibold border-b ${tone === "emerald" ? "text-[var(--sem-pos)]" : "text-[var(--sem-warn)]"}`}>{title}</div>
+        <div className={`px-4 py-2.5 font-semibold border-b ${tone === "pos" ? "text-[var(--sem-pos)]" : "text-[var(--sem-warn)]"}`}>{title}</div>
         {/* قسمٌ مُضمَّن في بطاقةٍ تحمل عنوانه ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
         <DataTable<SectionRow>
           embedded

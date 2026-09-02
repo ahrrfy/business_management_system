@@ -464,7 +464,7 @@ export default function CustomerEdit() {
         </Card>
 
         {isElevated && (
-          <Card className="lg:col-span-2 border-sky-200">
+          <Card className="lg:col-span-2 border-[var(--sem-info)]/40">
             <CardHeader>
               <CardTitle className="text-base">تصحيح الرصيد الافتتاحي</CardTitle>
             </CardHeader>
@@ -486,7 +486,7 @@ export default function CustomerEdit() {
                 <MoneyInput id="openAmt" value={openingAmount} onChange={setOpeningAmount} placeholder="0" ariaLabel="مبلغ الرصيد الافتتاحي" />
               </div>
               <div className="md:col-span-2">
-                <p className="text-[11px] text-sky-800">
+                <p className="text-[11px] text-[var(--sem-info)]">
                   يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الحالي
                   دون المساس بأي حركةٍ لاحقة. اتركه فارغاً لإزالة الرصيد الافتتاحي. لا يتغيّر شيء إن لم تُعدّله.
                 </p>

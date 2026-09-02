@@ -17,6 +17,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -414,6 +415,45 @@ export default function VoucherCategories() {
     });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة كما تُرى: بطاقة التنبيه
+  // والنموذج المفتوح وشريط الأدوات وقوائم الإجراءات). نفس صفوف الجدول المعروضة وأعمدته
+  // بلا استعلامٍ جديد — بما فيها تحذير «تحتاج مساراً تخصصياً» وبديلُه، فهما جوهر الشاشة.
+  function printCategories() {
+    printReportDoc({
+      title: "فئات السندات",
+      headerExtra: [
+        { label: "عدد الفئات", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "بلا حساب مقابل", value: unresolvedCount.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "id", label: "#", align: "center" },
+        { key: "name", label: "الاسم" },
+        { key: "direction", label: "الاتجاه", align: "center" },
+        { key: "postingRole", label: "الحساب المقابل" },
+        { key: "description", label: "الوصف" },
+        { key: "sortOrder", label: "ترتيب", align: "center" },
+        { key: "isActive", label: "نَشِطة", align: "center" },
+      ],
+      rows: visibleRows.map((r) => {
+        const resolved = isVoucherCategoryRoleCompatible(r.direction, r.postingRole);
+        const hint = replacementHint(r.name);
+        return {
+          id: String(Number(r.id)),
+          name: r.name,
+          direction: DIR_LABEL[r.direction] ?? r.direction,
+          postingRole: resolved
+            ? voucherCategoryRoleLabel(r.postingRole)
+            : `${unresolvedCategoryLabel(r.name)}${hint ? ` — البديل: ${hint}` : ""}`,
+          description: r.description ?? "—",
+          sortOrder: String(r.sortOrder),
+          isActive: r.isActive ? "نعم" : "لا",
+        };
+      }),
+      emptyText: "لا فئات مطابقة للبحث.",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -702,7 +742,7 @@ export default function VoucherCategories() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printCategories}
             exportSpec={{
               filename: "فئات-السندات",
               rows: visibleRows,
@@ -737,9 +777,10 @@ export default function VoucherCategories() {
             data={visibleRows}
             /* البحث في ListToolbar أعلاه (يغذّي visibleRows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
             searchable={false}
-            /* بلا ترقيم: الشاشة تعرض زرَّ «طباعة» (window.print) و**الصفوف بعد الصفحة الأولى
-               غير موجودةٍ في DOM أصلاً** ⇒ ترقيمُ ٥٠ يطبع أوّل ٥٠ فئةٍ صامتاً. الفئات بياناتٌ
-               مرجعية محدودة، والحاويةُ المحبوسة تُمرِّرها بترويسةٍ لاصقة كما كانت. */
+            /* بلا ترقيم: الفئات بياناتٌ مرجعية محدودة، والحاويةُ المحبوسة تُمرِّرها بترويسةٍ
+               لاصقة. (الطباعة لم تعُد تقرأ DOM بعد التحوّل إلى `printReportDoc` — تبني المستند
+               من `visibleRows` كاملةً ⇒ لا اقتطاع صامت أياً كان الترقيم. يبقى `Infinity`
+               قراراً عرضياً قائماً بذاته، ولم يُمَسّ.) */
             pageSize={Infinity}
             externalFiltersActive={query.trim() !== ""}
             loading={list.isLoading}

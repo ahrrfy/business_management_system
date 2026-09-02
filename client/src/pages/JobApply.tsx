@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { employmentTypeLabel } from "@shared/hr";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Check } from "lucide-react";
 
 const COMPANY = "الرؤية العربية للتجارة العامة";
@@ -706,7 +707,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
             </div>
 
             <button type="submit" className="cj-submit" disabled={apply.isPending || encodingCv}>
-              {apply.isPending || encodingCv ? "جارٍ الإرسال…" : "إرسال الطلب"}
+              {apply.isPending || encodingCv ? ACTION_LABELS.sending : "إرسال الطلب"}
             </button>
             <p className="cj-note">تُستخدم بياناتك لغرض التوظيف فقط. الحقول التي عليها <i style={{ color: "#A02F23", fontStyle: "normal" }}>*</i> إلزامية.</p>
           </form>

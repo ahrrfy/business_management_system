@@ -6,6 +6,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import {
   Dialog,
   DialogContent,
@@ -25,8 +26,6 @@ import {
 } from "./WalletOpsDialogs";
 
 type WalletRow = RouterOutputs["digitalCards"]["wallets"]["list"][number];
-
-const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 export default function DigitalWallets() {
   const utils = trpc.useUtils();
@@ -321,33 +320,31 @@ export default function DigitalWallets() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dw-provider">المزوّد</label>
-                <select
+                <AppSelect
                   id="dw-provider"
-                  className={selectCls}
                   value={fProviderId}
                   disabled={editing}
-                  onChange={(e) => setFProviderId(e.target.value)}
+                  onValueChange={setFProviderId}
                 >
                   <option value="">— اختر المزوّد —</option>
                   {prepaidProviders.map((p) => (
-                    <option key={p.id} value={p.id}>{p.supplierName}</option>
+                    <option key={p.id} value={String(p.id)}>{p.supplierName}</option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dw-branch">الفرع</label>
-                <select
+                <AppSelect
                   id="dw-branch"
-                  className={selectCls}
                   value={fBranchId}
                   disabled={editing}
-                  onChange={(e) => setFBranchId(e.target.value)}
+                  onValueChange={setFBranchId}
                 >
                   <option value="">— اختر الفرع —</option>
                   {(branches.data ?? []).map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
+                    <option key={b.id} value={String(b.id)}>{b.name}</option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             </div>
 

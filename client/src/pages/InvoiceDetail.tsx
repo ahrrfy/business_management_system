@@ -469,7 +469,7 @@ export default function InvoiceDetail() {
   if (inv.isLoading)
     return (
       <div className="p-10 text-center text-muted-foreground">
-        جارٍ التحميل…
+        {ACTION_LABELS.loading}
       </div>
     );
   if (inv.isError)

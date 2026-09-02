@@ -32,7 +32,6 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@/lib/permissionsModel";
-import { selectClsFull } from "@/lib/ui/formStyles";
 
 
 /** يحوّل تاريخاً قادماً من الخادم (Date عبر superjson أو سلسلة) إلى yyyy-mm-dd لحقل type=date. */
@@ -189,7 +188,7 @@ export default function UserEdit() {
     [role, permsOverride]
   );
 
-  // Ctrl/⌘+S ⇒ حفظ. بلا onCancel/Esc عمداً — الشاشة مكتظّة بـ<select> أصلية (الدور/الفرع) وEsc
+  // Ctrl/⌘+S ⇒ حفظ. بلا onCancel/Esc عمداً — الشاشة مكتظّة بقوائم منسدلة (الدور/الفرع) وEsc
   // يتعارض مع إغلاقها (تحذير الهوك نفسه).
   useSaveShortcuts({ onSave: () => submit(), enabled: !update.isPending });
 
@@ -391,7 +390,7 @@ export default function UserEdit() {
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
             <AppSelect
-              id="role" className="h-9"
+              id="role"
               value={customRoleId ? `custom:${customRoleId}` : role}
               onValueChange={(value) => void handleRoleChange(value)}
             >
@@ -420,7 +419,7 @@ export default function UserEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>
-            <AppSelect id="branch" className="h-9" value={branchId} onValueChange={(next) => setBranchId(next)}>
+            <AppSelect id="branch" value={branchId} onValueChange={(next) => setBranchId(next)}>
               <option value="">— بلا فرع —</option>
               {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>)}
             </AppSelect>

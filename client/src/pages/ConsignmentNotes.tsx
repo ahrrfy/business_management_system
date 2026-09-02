@@ -16,6 +16,7 @@ import { type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { cn } from "@/lib/utils";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
@@ -489,7 +490,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
 
       <div className="sticky bottom-0 z-10 flex items-center gap-2 border-t bg-background/95 py-3 backdrop-blur">
         <Button onClick={submit} disabled={create.isPending || !consignorId || !lines.length}>
-          {create.isPending ? "جارٍ الحفظ…" : "حفظ السند"}
+          {create.isPending ? ACTION_LABELS.saving : "حفظ السند"}
         </Button>
         <Button variant="outline" onClick={onSaved}>إلغاء</Button>
       </div>

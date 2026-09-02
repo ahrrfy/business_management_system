@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { EntityPicker } from "@/components/invoice/EntityPicker";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -43,8 +44,6 @@ const SETTLEMENT_CYCLE: Record<string, string> = {
   MONTHLY: "شهري",
   ON_DEMAND: "عند الطلب",
 };
-
-const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 export default function DigitalProviders() {
   const utils = trpc.useUtils();
@@ -271,15 +270,15 @@ export default function DigitalProviders() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dc-type">نوع المزوّد</label>
-                <select id="dc-type" className={selectCls} value={fType} onChange={(e) => setFType(e.target.value)}>
+                <AppSelect id="dc-type" value={fType} onValueChange={setFType}>
                   {Object.entries(PROVIDER_TYPE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dc-mode">كيف ندفع لهذا المزوّد؟</label>
-                <select id="dc-mode" className={selectCls} value={fMode} disabled={editing} onChange={(e) => setFMode(e.target.value)}>
+                <AppSelect id="dc-mode" value={fMode} disabled={editing} onValueChange={setFMode}>
                   {Object.entries(SETTLEMENT_MODE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
+                </AppSelect>
                 {editing && <p className="text-xs text-muted-foreground">لا يتغير بعد الإنشاء لأنه يحدد هل يخصم البيع من رصيد الجهاز أم يسجّل مبلغاً مستحقاً للمزوّد.</p>}
               </div>
             </div>
@@ -287,9 +286,9 @@ export default function DigitalProviders() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dc-cycle">متى نسدد للمزوّد؟</label>
-                <select id="dc-cycle" className={selectCls} value={fCycle} onChange={(e) => setFCycle(e.target.value)}>
+                <AppSelect id="dc-cycle" value={fCycle} onValueChange={setFCycle}>
                   {Object.entries(SETTLEMENT_CYCLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
+                </AppSelect>
               </div>
               <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
                 رقم العملية أو الاشتراك يُحفظ إلزامياً عند كل بيع للمطابقة وحفظ الحقوق.

@@ -16,6 +16,7 @@ import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   EXPENSE_BUCKET_LABEL,
   type ExpenseBucket,
@@ -818,7 +819,7 @@ export default function ExpenseNew() {
               }
             >
               {create.isPending
-                ? "جارٍ الحفظ…"
+                ? ACTION_LABELS.saving
                 : executionMode === "PENDING_OWNER_APPROVAL"
                   ? "رفع طلب الاعتماد"
                   : "حفظ وتنفيذ المصروف"}
