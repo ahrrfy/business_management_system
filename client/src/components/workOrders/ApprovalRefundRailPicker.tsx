@@ -14,7 +14,7 @@
  * مراجعاتٍ متتابعة (ترتيبُ المؤثّرات · تصفيرُ البطاقة · تصفيرُ المرجع بين المحاولات)،
  * وإعادةُ تركيبها في خطّاف مشترك تُخاطر بإرجاع أعطابٍ أُغلقت للتوّ. الاستخراجُ يستحقّ شريحتَه.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Wallet } from "lucide-react";
 import {
   REFUND_RAILS,
@@ -49,20 +49,41 @@ export function useApprovalRefundChoice(args: {
   /** ما اقترحه الطالبُ في حمولة الطلب. */
   requestedRail: RefundRail | null;
   requestedShiftId: number | null;
+  requestedReference: string | null;
 }): ApprovalRefundChoice {
-  const { open, preflight, requestedRail, requestedShiftId } = args;
+  const { open, preflight, requestedRail, requestedShiftId, requestedReference } = args;
   const needsCash = preflight?.needsCashDrawer === true;
   const [rail, setRail] = useState<RefundRail>(requestedRail ?? "DRAWER");
-  const [reference, setReference] = useState("");
+  const [reference, setReference] = useState(requestedReference ?? "");
   const drawer = useRefundDrawer({ preflight: open ? preflight : null, emptyLabel: "وردية استقبال" });
 
   // فتحٌ جديد ⇒ نبدأ من اقتراح الطالب لا من قيمةٍ عالقة.
   useEffect(() => {
     if (!open) return;
     setRail(requestedRail ?? "DRAWER");
-    setReference("");
+    // ⚠️ **مرجعُ البطاقة يُبذَر من الطلب** (مراجعة Codex P2): طلبٌ يقترح `CARD` يحمل مرجعاً
+    // مُتحقَّقاً منه سلفاً؛ تفريغُه كان يحجب الاعتماد حتى يُعيد المديرُ كتابتَه، ويَعُدّ ما
+    // يكتبه **تجاوزاً** — فيستحيل اعتمادُ الطلب كما قُدِّم رغم أنّ الخادم يقبله.
+    setReference(requestedReference ?? "");
     drawer.reset();
-  }, [open, requestedRail]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, requestedRail, requestedReference]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * ⭐⛔ **درجُ الطالب يُصان** (مراجعة Codex P1): `drawer.reset()` يُفرّغ الاختيار، فيختار
+   * `pickDefaultRefundDrawer` **درجَ المعتمِد نفسه** متى كان مفتوحاً. النتيجة: نقدٌ يخرج من
+   * درجٍ لم يُقصَد، و`changed` يصير صحيحاً فيُرسَل تجاوزٌ لم يطلبه أحد — وتنكسر تسويةُ درجَين
+   * معاً (§٥: لكلّ دينارٍ مسارٌ منسوبٌ لفاعله). فنُعيد بذرَ درج الطلب **ما دام مؤهَّلاً**،
+   * ولا نسقط إلى اختيارٍ جديد إلّا إن أُغلق أو لم يعد صالحاً.
+   */
+  const drawerSeededRef = useRef(false);
+  useEffect(() => { if (!open) drawerSeededRef.current = false; }, [open]);
+  useEffect(() => {
+    if (!open || !preflight || drawerSeededRef.current) return;
+    drawerSeededRef.current = true;
+    if (requestedShiftId != null && preflight.drawers.some((d) => d.shiftId === requestedShiftId)) {
+      drawer.setRefundShiftId(requestedShiftId);
+    }
+  }, [open, preflight, requestedShiftId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * ⭐ **جوهرُ الإصلاح**: إن كان رافدُ الطالب لا يغطّي المبلغَ الآن وتغطّيه الخزينة، نبدأ على
@@ -96,8 +117,10 @@ export function useApprovalRefundChoice(args: {
     if (!needsCash) return false;
     if (rail !== (requestedRail ?? "DRAWER")) return true;
     if (refundRailNeedsShift(rail) && (shiftId ?? null) !== (requestedShiftId ?? null)) return true;
-    return refundRailNeedsReference(rail) && reference.trim().length > 0;
-  }, [needsCash, rail, requestedRail, shiftId, requestedShiftId, reference]);
+    // المرجعُ تجاوزٌ حين **يختلف** عمّا قدّمه الطالب — لا لمجرّد وجوده.
+    return refundRailNeedsReference(rail)
+      && reference.trim() !== (requestedReference ?? "").trim();
+  }, [needsCash, rail, requestedRail, shiftId, requestedShiftId, reference, requestedReference]);
 
   return { rail, shiftId, reference, blockReason, changed, setRail, setReference, drawer };
 }

@@ -335,13 +335,15 @@ export function WorkOrderControlDecisionDialog({
     { enabled: cancelRequest != null && decision?.mode === "APPROVE", staleTime: 0 },
   );
   const requestedPayload = (cancelRequest?.payload ?? null) as
-    | { refundRail?: RefundRail | null; refundShiftId?: number | null }
+    | { refundRail?: RefundRail | null; refundShiftId?: number | null; refundReference?: string | null }
     | null;
   const refundChoice = useApprovalRefundChoice({
     open: cancelRequest != null && decision?.mode === "APPROVE",
     preflight: refundPreflight.data ?? null,
     requestedRail: requestedPayload?.refundRail ?? null,
     requestedShiftId: requestedPayload?.refundShiftId ?? null,
+    // مرجعُ البطاقة يمرّ كاملاً — إسقاطُه كان يمنع اعتمادَ الطلب كما قُدِّم (مراجعة Codex P2).
+    requestedReference: requestedPayload?.refundReference ?? null,
   });
   const ownRequest = request != null
     && currentUserId != null
@@ -396,7 +398,7 @@ export function WorkOrderControlDecisionDialog({
             )}
 
             {!rejecting && cancelRequest && (
-              refundPreflight.isLoading ? (
+              (refundPreflight.isLoading || refundPreflight.isFetching) ? (
                 <p className="rounded-md border p-3 text-sm text-muted-foreground">
                   جارٍ قراءة الأرصدة الحيّة…
                 </p>
@@ -443,7 +445,10 @@ export function WorkOrderControlDecisionDialog({
             variant={rejecting ? "destructive" : "default"}
             disabled={
               !request || !!errorMessage || isLoading || isPending || ownRequest || invalidNote
-              || (!rejecting && cancelRequest != null && (refundPreflight.isLoading || refundPreflight.isError))
+              // ⚠️ `isFetching` لا `isLoading` وحده (مراجعة Codex P2): مع بياناتٍ مخبّأة
+              // و`staleTime: 0` تبدأ إعادةُ جلبٍ في الخلفية و`isLoading === false` — فيبقى
+              // الزرُّ مفعَّلاً على **أرصدةٍ قديمة**، وهو عينُ ما بُني هذا الحوار ليمنعه.
+              || (!rejecting && cancelRequest != null && (refundPreflight.isLoading || refundPreflight.isFetching || refundPreflight.isError))
               || (!rejecting && refundChoice.blockReason != null)
             }
             onClick={() => onSubmit(refundChoice.changed
