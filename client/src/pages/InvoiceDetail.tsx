@@ -32,7 +32,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatInvoiceAsWhatsApp } from "@/lib/copy/formatters";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
-import { fmtDate, fmtDateTime } from "@/lib/date";
+import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printWarehouseSlipV2 } from "@/lib/printing/printTemplatesV2";
@@ -41,7 +41,9 @@ import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { allocateLineTax } from "@/components/invoice";
 import { D, fmt, round2 } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { trpc } from "@/lib/trpc";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
   hasModuleAccess,
   moduleAccessAllowed,
@@ -97,6 +99,178 @@ const PAY_STATUS: Record<string, string> = {
 };
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/* ─────────── أعمدة جداول تفاصيل الفاتورة ───────────
+ * دوالّ لا ثوابت حيث تحتاج قيمةً من المستند (مجموع البنود) أو من الصلاحية (فتح السند) —
+ * والشاشة تخرج مبكّراً قبل توفّر البيانات فلا يصحّ بناؤها بـuseMemo بعد ذلك الخروج.
+ */
+type InvoiceDetailData = NonNullable<RouterOutputs["sales"]["get"]>;
+type InvoiceReturnRow = NonNullable<InvoiceDetailData["returns"]>[number];
+type InvoiceItemRow = InvoiceDetailData["items"][number];
+type InvoicePaymentRow = NonNullable<InvoiceDetailData["payments"]>[number];
+
+/**
+ * `accessorFn` في هذه الجداول يُرجع **نصّ العرض** (كي ينسخه المستعمِل كما يقرأه) — ولذلك يلزم
+ * كلَّ عمودٍ ماليّ/زمنيّ `sortingFn` صريح: الفرز الافتراضيّ نصّيّ فيقرأ «1,234» أصغر من «999»
+ * و«01/12/2025» قبل «05/01/2026» (يفرز باليوم لا بالتاريخ). نفس علاج `moneyCol` في ARAging.
+ */
+const cmpMoney = (a: string | number | null | undefined, b: string | number | null | undefined) => D(a ?? 0).cmp(D(b ?? 0));
+const cmpTime = (a: DateInput, b: DateInput) => {
+  const ta = toDate(a)?.getTime() ?? -Infinity;
+  const tb = toDate(b)?.getTime() ?? -Infinity;
+  return ta === tb ? 0 : ta < tb ? -1 : 1;
+};
+
+const invoiceReturnColumns: ColumnDef<InvoiceReturnRow, unknown>[] = [
+  { id: "createdAt", header: "التاريخ", accessorFn: (r) => fmtDateTime(r.createdAt), meta: { kind: "datetime" }, sortingFn: (a, b) => cmpTime(a.original.createdAt, b.original.createdAt), cell: ({ row }) => fmtDateTime(row.original.createdAt) },
+  { id: "performedBy", header: "منفّذ المرتجع", accessorFn: (r) => r.performedByName ?? "غير موثّق", meta: { kind: "actor" }, cell: ({ row }) => row.original.performedByName ?? "غير موثّق" },
+  {
+    id: "amount",
+    header: "القيمة",
+    // المرتجع مخزَّن سالباً — يُعرض بقيمته المطلقة (العمود نفسه يقول إنّه مرتجع).
+    accessorFn: (r) => fmt(D(r.amount).abs().toString()),
+    meta: { kind: "money" },
+    sortingFn: (a, b) => D(a.original.amount).abs().cmp(D(b.original.amount).abs()),
+    cell: ({ row }) => fmt(D(row.original.amount).abs().toString()),
+  },
+];
+
+function invoiceItemColumns(subtotal: string): ColumnDef<InvoiceItemRow, unknown>[] {
+  return [
+    {
+      id: "product",
+      header: "المنتج",
+      accessorFn: (it) => `${it.productName ?? "—"}${it.variantName ? ` — ${it.variantName}` : ""}`,
+      meta: { width: "wide", wrap: true },
+      footer: "مجموع البنود",
+      cell: ({ row }) => {
+        const it = row.original;
+        return (
+          <span>
+            {it.productName ?? "—"}
+            {it.variantName ? ` — ${it.variantName}` : ""}{" "}
+            {it.isGift && (
+              // وسمُ الهدية على الشاشة: يميّز «مجّانيّ مقصود» عن «سعر صفر بالخطأ»،
+              // ويشرح لماذا لا يزيد هذا السطر إجمالي الفاتورة.
+              <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-extrabold">
+                <Gift aria-hidden className="size-3" /> هدية
+              </span>
+            )}{" "}
+            {it.sku && <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span>}
+          </span>
+        );
+      },
+    },
+    { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName ?? "—", cell: ({ row }) => <span className="text-muted-foreground">{row.original.unitName ?? "—"}</span> },
+    { id: "quantity", header: "الكمية", accessorFn: (it) => it.quantity, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.quantity },
+    {
+      id: "unitPrice",
+      header: "سعر الوحدة",
+      accessorFn: (it) => fmt(it.unitPrice),
+      meta: { kind: "money" },
+      sortingFn: (a, b) => cmpMoney(a.original.unitPrice, b.original.unitPrice),
+      cell: ({ row }) => <CopyInline value={row.original.unitPrice} display={fmt(row.original.unitPrice)} />,
+    },
+    {
+      id: "total",
+      header: "إجمالي السطر",
+      accessorFn: (it) => fmt(it.total),
+      meta: { kind: "money" },
+      sortingFn: (a, b) => cmpMoney(a.original.total, b.original.total),
+      footer: fmt(subtotal),
+      cell: ({ row }) => <CopyInline value={row.original.total} display={fmt(row.original.total)} />,
+    },
+    {
+      id: "returned",
+      header: "مرتجع",
+      accessorFn: (it) => `${it.returnedBaseQuantity}/${it.baseQuantity}`,
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => {
+        const it = row.original;
+        const returned = Number(it.returnedBaseQuantity) > 0;
+        return (
+          <span className={`text-xs ${returned ? "text-[var(--sem-warn)] font-medium" : "text-muted-foreground"}`}>
+            {it.returnedBaseQuantity}/{it.baseQuantity}
+          </span>
+        );
+      },
+    },
+  ];
+}
+
+function invoicePaymentColumns(canOpenVouchers: boolean): ColumnDef<InvoicePaymentRow, unknown>[] {
+  return [
+    { id: "createdAt", header: "التاريخ", accessorFn: (p) => fmtDateTime(p.createdAt), meta: { kind: "datetime" }, sortingFn: (a, b) => cmpTime(a.original.createdAt, b.original.createdAt), cell: ({ row }) => fmtDateTime(row.original.createdAt) },
+    {
+      id: "direction",
+      header: "الاتجاه",
+      accessorFn: (p) => (p.direction === "IN" ? "وارد" : "صادر"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span
+          className={cn(
+            "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
+            row.original.direction === "IN"
+              ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+              : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
+          )}
+        >
+          {row.original.direction === "IN" ? "وارد" : "صادر"}
+        </span>
+      ),
+    },
+    { id: "paymentMethod", header: "الطريقة", accessorFn: (p) => paymentMethodLabel(p.paymentMethod), cell: ({ row }) => paymentMethodLabel(row.original.paymentMethod) },
+    {
+      id: "amount",
+      header: "المبلغ",
+      accessorFn: (p) => fmt(p.amount),
+      meta: { kind: "money" },
+      sortingFn: (a, b) => cmpMoney(a.original.amount, b.original.amount),
+      cell: ({ row }) => <CopyInline value={row.original.amount} display={fmt(row.original.amount)} />,
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (p) => PAY_STATUS[p.status] ?? p.status,
+      meta: { kind: "status" },
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{PAY_STATUS[row.original.status] ?? row.original.status}</span>,
+    },
+    {
+      id: "voucher",
+      header: "سند/مرفق",
+      accessorFn: (p) => p.voucherNumber ?? (p.attachmentUrl ? "مرفق" : "—"),
+      enableSorting: false,
+      cell: ({ row }) => {
+        const p = row.original;
+        return (
+          <span className="text-xs">
+            {p.voucherNumber &&
+              // ٢٤/٨ (تدقيق + Codex P2): رقمُ السند رابطٌ لصفحة السندات — لأدوار الخزينة
+              // فقط (Cashier يذهب إلى /treasury بلا تبويب vouchers). الفلترُ عبر `q` — العقد
+              // الفعليّ في Vouchers.tsx (لا يتعرّف على `number`).
+              (canOpenVouchers ? (
+                <Link
+                  href={`/vouchers?q=${encodeURIComponent(p.voucherNumber)}`}
+                  className="text-primary hover:underline"
+                  title="فتح السند"
+                >
+                  {p.voucherNumber}
+                </Link>
+              ) : (
+                <span className="text-muted-foreground">{p.voucherNumber}</span>
+              ))}
+            {p.attachmentUrl && (
+              <a href={p.attachmentUrl} target="_blank" rel="noreferrer" title="فتح المُرفق" className="ms-1 inline-block">
+                <Paperclip aria-hidden className="size-3.5 text-[var(--sem-pos)] inline" />
+              </a>
+            )}
+            {!p.voucherNumber && !p.attachmentUrl && "—"}
+          </span>
+        );
+      },
+    },
+  ];
+}
 
 /** حقل وصفي: عنوان صغير + قيمة. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -295,7 +469,7 @@ export default function InvoiceDetail() {
   if (inv.isLoading)
     return (
       <div className="p-10 text-center text-muted-foreground">
-        جارٍ التحميل…
+        {ACTION_LABELS.loading}
       </div>
     );
   if (inv.isError)
@@ -1080,35 +1254,16 @@ export default function InvoiceDetail() {
             <CardTitle className="text-base">سجل المرتجعات ومنفّذها</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-xs text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">التاريخ</th>
-                    <th className="px-3 py-2 font-medium">منفّذ المرتجع</th>
-                    <th className="px-3 py-2 font-medium text-right">القيمة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.returns.map((r) => (
-                    <tr key={r.id} className="border-t">
-                      <td className="px-3 py-2" dir="ltr">
-                        {fmtDateTime(r.createdAt)}
-                      </td>
-                      <td className="px-3 py-2">
-                        {r.performedByName ?? "غير موثّق"}
-                      </td>
-                      <td
-                        className="px-3 py-2 text-right tabular-nums"
-                        dir="ltr"
-                      >
-                        {fmt(D(r.amount).abs().toString())}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {/* مُضمَّن: العنوان في رأس البطاقة، والسجلّ يُقرأ كاملاً بلا بحثٍ ولا ترقيم. */}
+            <DataTable<InvoiceReturnRow>
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+              columns={invoiceReturnColumns}
+              data={data.returns ?? []}
+              emptyText="لا مرتجعات على هذه الفاتورة."
+            />
           </CardContent>
         </Card>
       )}
@@ -1118,95 +1273,17 @@ export default function InvoiceDetail() {
           <CardTitle className="text-base">البنود</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium">المنتج</th>
-                  <th className="px-3 py-2 font-medium">الوحدة</th>
-                  <th className="px-3 py-2 font-medium text-center">الكمية</th>
-                  <th className="px-3 py-2 font-medium text-right">
-                    سعر الوحدة
-                  </th>
-                  <th className="px-3 py-2 font-medium text-right">
-                    إجمالي السطر
-                  </th>
-                  <th className="px-3 py-2 font-medium text-center">مرتجع</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.items.map((it) => {
-                  const returned = Number(it.returnedBaseQuantity) > 0;
-                  return (
-                    <tr key={it.id} className="border-t hover:bg-muted/30">
-                      <td className="px-3 py-2">
-                        {it.productName ?? "—"}
-                        {it.variantName ? ` — ${it.variantName}` : ""}{" "}
-                        {it.isGift && (
-                          // وسمُ الهدية على الشاشة: يميّز «مجّانيّ مقصود» عن «سعر صفر بالخطأ»،
-                          // ويشرح لماذا لا يزيد هذا السطر إجمالي الفاتورة.
-                          <span className="badge-status-active inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-extrabold">
-                            <Gift aria-hidden className="size-3" /> هدية
-                          </span>
-                        )}{" "}
-                        {it.sku && (
-                          <span
-                            className="text-xs text-muted-foreground font-mono"
-                            dir="ltr"
-                          >
-                            {it.sku}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-muted-foreground">
-                        {it.unitName ?? "—"}
-                      </td>
-                      <td
-                        className="px-3 py-2 text-center tabular-nums"
-                        dir="ltr"
-                      >
-                        {it.quantity}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        <CopyInline
-                          value={it.unitPrice}
-                          display={fmt(it.unitPrice)}
-                        />
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        <CopyInline value={it.total} display={fmt(it.total)} />
-                      </td>
-                      <td
-                        className="px-3 py-2 text-center text-xs tabular-nums"
-                        dir="ltr"
-                      >
-                        <span
-                          className={
-                            returned
-                              ? "text-[var(--sem-warn)] font-medium"
-                              : "text-muted-foreground"
-                          }
-                        >
-                          {it.returnedBaseQuantity}/{it.baseQuantity}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 bg-muted/40 font-semibold">
-                  <td className="px-3 py-2" colSpan={4}>
-                    مجموع البنود
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums" dir="ltr">
-                    {fmt(data.subtotal)}
-                  </td>
-                  <td className="px-3 py-2"></td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
+          {/* بنود المستند: مُضمَّنة وبلا ترقيم — الفاتورة تُقرأ كاملةً.
+              صفّ «مجموع البنود» صار `footer` فيقع تحت عمود إجمالي السطر مباشرةً. */}
+          <DataTable<InvoiceItemRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={invoiceItemColumns(data.subtotal)}
+            data={data.items}
+            emptyText="لا بنود في هذه الفاتورة."
+          />
         </CardContent>
       </Card>
 
@@ -1218,96 +1295,16 @@ export default function InvoiceDetail() {
           <CardTitle className="text-base">سجل الدفعات</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium">التاريخ</th>
-                  <th className="px-3 py-2 font-medium">الاتجاه</th>
-                  <th className="px-3 py-2 font-medium">الطريقة</th>
-                  <th className="px-3 py-2 font-medium text-right">المبلغ</th>
-                  <th className="px-3 py-2 font-medium">الحالة</th>
-                  <th className="px-3 py-2 font-medium">سند/مرفق</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(data.payments ?? []).map((p) => (
-                  <tr key={p.id} className="border-t hover:bg-muted/30">
-                    <td
-                      className="px-3 py-2 whitespace-nowrap tabular-nums"
-                      dir="ltr"
-                    >
-                      {fmtDateTime(p.createdAt)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={cn(
-                          "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
-                          p.direction === "IN"
-                            ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
-                            : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
-                        )}
-                      >
-                        {p.direction === "IN" ? "وارد" : "صادر"}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      {paymentMethodLabel(p.paymentMethod)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      <CopyInline value={p.amount} display={fmt(p.amount)} />
-                    </td>
-                    <td className="px-3 py-2 text-xs text-muted-foreground">
-                      {PAY_STATUS[p.status] ?? p.status}
-                    </td>
-                    <td className="px-3 py-2 text-xs">
-                      {p.voucherNumber &&
-                        // ٢٤/٨ (تدقيق + Codex P2): رقمُ السند رابطٌ لصفحة السندات — لأدوار الخزينة
-                        // فقط (Cashier يذهب إلى /treasury بلا تبويب vouchers). الفلترُ عبر `q` — العقد
-                        // الفعليّ في Vouchers.tsx (لا يتعرّف على `number`).
-                        (canOpenVouchers ? (
-                          <Link
-                            href={`/vouchers?q=${encodeURIComponent(p.voucherNumber)}`}
-                            className="text-primary hover:underline"
-                            title="فتح السند"
-                          >
-                            {p.voucherNumber}
-                          </Link>
-                        ) : (
-                          <span className="text-muted-foreground">{p.voucherNumber}</span>
-                        )
-                      )}
-                      {p.attachmentUrl && (
-                        <a
-                          href={p.attachmentUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          title="فتح المُرفق"
-                          className="ms-1 inline-block"
-                        >
-                          <Paperclip
-                            aria-hidden
-                            className="size-3.5 text-[var(--sem-pos)] inline"
-                          />
-                        </a>
-                      )}
-                      {!p.voucherNumber && !p.attachmentUrl && "—"}
-                    </td>
-                  </tr>
-                ))}
-                {(data.payments ?? []).length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={6}
-                      className="p-4 text-center text-muted-foreground"
-                    >
-                      لا دفعات بعد.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          {/* مُضمَّن: العنوان في رأس البطاقة، وسجلّ الدفعات يُقرأ كاملاً بلا بحثٍ ولا ترقيم. */}
+          <DataTable<InvoicePaymentRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={invoicePaymentColumns(canOpenVouchers)}
+            data={data.payments ?? []}
+            emptyText="لا دفعات بعد."
+          />
         </CardContent>
       </Card>
 
@@ -1585,9 +1582,13 @@ export default function InvoiceDetail() {
                 correctInvoice.isPending || requestDueDateChange.isPending || correctionReason.trim().length < 3
               }
             >
-              {correctInvoice.isPending || requestDueDateChange.isPending
-                ? "جارٍ الحفظ والإرسال…"
-                : "حفظ الملاحظات / إرسال طلب التاريخ"}
+              {/* الطلبان يتعاقبان لا يتزامنان (submitCorrection: حفظ الملاحظات ثمّ إرسال طلب التاريخ)
+                  ⇒ لكلّ طورٍ نصُّه الدقيق من القاموس بدل نصٍّ مركّب واحد. */}
+              {correctInvoice.isPending
+                ? ACTION_LABELS.saving
+                : requestDueDateChange.isPending
+                  ? ACTION_LABELS.sending
+                  : "حفظ الملاحظات / إرسال طلب التاريخ"}
             </Button>
           </DialogFooter>
         </DialogContent>

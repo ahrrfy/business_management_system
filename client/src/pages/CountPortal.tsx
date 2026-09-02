@@ -31,6 +31,7 @@ import {
   type ProductBarcodeMatch,
 } from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
 import {
@@ -162,7 +163,6 @@ export default function CountPortal() {
     if (account.data && code) navigate(`/my-stocktake/${encodeURIComponent(code)}`, { replace: true });
   }, [account.data, code, navigate]);
 
-  if (account.data) return null;
 
   /* ── الدخول الصامت: كوكي سارٍ ⇒ مباشرة، وإلا auth بلا PIN (مستخدم نظام بتكليف USER)، وإلا شاشة PIN ── */
   const boot = useCallback(async () => {
@@ -646,6 +646,15 @@ export default function CountPortal() {
 
   /* ═══════════════════════ العرض ═══════════════════════ */
 
+  /*
+   * ⚠️ **بعد كلّ الخطّافات** (٢/٩/٢٦): كان هذا الحارس فوقها بسبعةٍ وعشرين خطّافاً، فحين
+   * يصل `account.data` يخرج المكوّن مبكّراً ⇒ عددُ الخطّافات ينهار من ٢٧ إلى صفر بين
+   * تصييرَين وReact يسقط. كان يستتر خلف `useEffect` أعلاه ينقل المستعمِل في نفس اللحظة،
+   * فالسباقُ وحدَه ما كان يخفيه. أمسكه `react-hooks/rules-of-hooks` أوّلَ تشغيلٍ للمُدقّق.
+   * الخروجُ هنا يبقى بنفس الأثر (لا يُصيَّر شيء) بلا كسر ترتيب الخطّافات.
+   */
+  if (account.data) return null;
+
   const frame = (body: ReactNode) => (
     <div dir="rtl" className="fixed inset-0 z-0 flex justify-center overflow-hidden bg-muted/40 font-sans">
       <div className="relative flex h-full w-full max-w-md flex-col overflow-hidden bg-background sm:border-x sm:border-border sm:shadow-sm">
@@ -681,7 +690,7 @@ export default function CountPortal() {
       ) : (
         <CenterScreen>
           <BrandMark />
-          <p className="text-sm font-semibold text-muted-foreground">جارٍ التحقّق…</p>
+          <p className="text-sm font-semibold text-muted-foreground">{ACTION_LABELS.verifying}</p>
         </CenterScreen>
       ),
     );
@@ -1478,7 +1487,7 @@ function QtySheet({
             : "cursor-not-allowed bg-muted text-muted-foreground",
         )}
       >
-        {saving ? "جارٍ الحفظ…" : isVerify ? "تسجيل العدّ التحقّقي" : isRecount ? "تسجيل إعادة العدّ" : "تسجيل الكمية"}
+        {saving ? ACTION_LABELS.saving : isVerify ? "تسجيل العدّ التحقّقي" : isRecount ? "تسجيل إعادة العدّ" : "تسجيل الكمية"}
       </button>
       <p className="mt-2 text-center text-[11px] text-muted-foreground">
         يُسجَّل الإدخال باسمك ووقته — يمكنك تعديل العدّ قبل التسليم.

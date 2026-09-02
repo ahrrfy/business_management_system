@@ -19,14 +19,15 @@ import {
 } from "@/components/ui/dialog";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { RowActions } from "@/components/list";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { notify } from "@/lib/notify";
 import { matchQuery } from "@/components/search/filter";
 import { categoryOptionElements } from "@/lib/categoryTree";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { CornerDownLeft, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -176,6 +177,137 @@ export default function Categories() {
     mergeMut.mutate({ sourceIds, targetId: mergeTarget });
   }
 
+  /*
+   * أعمدة جدول الفئات. ⛔ **بلا فرز على أيّ عمود**: الصفوف مرتَّبة شجرياً (كل فئة رئيسية
+   * يليها أبناؤها مباشرةً) والتداخل البصريّ يعتمد ذلك الترتيب — أيّ فرزٍ يفصل الابن عن أبيه
+   * فتصير الإزاحة كذباً. والجدول الخامّ لم يكن قابلاً للفرز أصلاً.
+   */
+  const columns: ColumnDef<CategoryRow, unknown>[] = [
+    {
+      id: "name",
+      header: "الفئة",
+      accessorFn: (c) => c.name,
+      enableSorting: false,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => {
+        const c = row.original;
+        const isChild = c.parentId != null;
+        const kids = isChild ? [] : childrenOf(c.id);
+        return (
+          <span className="inline-flex items-center gap-1.5 font-medium">
+            {isChild && <CornerDownLeft aria-hidden className="size-3.5 text-muted-foreground shrink-0" />}
+            {c.name}
+            {!isChild && kids.length > 0 && (
+              <span
+                className="rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                title="عدد الأقسام الفرعية تحت هذه الفئة"
+              >
+                {num(kids.length)} فرعية
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    {
+      id: "description",
+      header: "الوصف",
+      accessorFn: (c) => c.description || "—",
+      enableSorting: false,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.description || "—"}</span>,
+    },
+    {
+      id: "productCount",
+      header: "عدد المنتجات",
+      // القيمة المعروضة (شاملةً الأبناء حين تكون فئةً أمّاً) لا الرقم المباشر وحده.
+      accessorFn: (c) =>
+        c.parentId == null && childrenOf(c.id).length > 0
+          ? `${num(c.productCountWithChildren)}${c.productCount > 0 ? ` (${num(c.productCount)} مباشرة)` : ""}`
+          : num(c.productCount),
+      enableSorting: false,
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => {
+        const c = row.original;
+        const isChild = c.parentId != null;
+        const kids = isChild ? [] : childrenOf(c.id);
+        return !isChild && kids.length > 0 ? (
+          <>
+            <span className="font-medium">{num(c.productCountWithChildren)}</span>
+            {c.productCount > 0 && <span className="text-xs text-muted-foreground"> ({num(c.productCount)} مباشرة)</span>}
+          </>
+        ) : (
+          num(c.productCount)
+        );
+      },
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (c) => (c.isActive ? "مفعّلة" : "معطّلة"),
+      enableSorting: false,
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span
+          className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "badge-status-cancelled"}`}
+          title={row.original.isActive ? "الفئة تظهر في نماذج تصنيف المنتج" : "الفئة مخفيّة عن نماذج تصنيف المنتج — منتجاتها القائمة تبقى فيها"}
+        >
+          {row.original.isActive ? "مفعّلة" : "معطّلة"}
+        </span>
+      ),
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const c = row.original;
+        const isChild = c.parentId != null;
+        const kids = isChild ? [] : childrenOf(c.id);
+        return (
+          <RowActions
+            actions={[
+              {
+                key: "edit",
+                kind: "edit",
+                label: "تعديل",
+                onSelect: () => openEdit(c),
+                gate: { roles: ["manager"], module: "products", level: "FULL" },
+              },
+              {
+                key: "addChild",
+                kind: "create",
+                label: "+ قسم فرعي",
+                onSelect: () => openAdd(c.id),
+                hidden: isChild,
+                gate: { roles: ["manager"], module: "products", level: "FULL" },
+              },
+              {
+                key: "products",
+                kind: "view",
+                label: "عرض منتجاتها",
+                // /products هو Redirect ثابت لـ/inventory?tab=products يُسقِط أي querystring
+                // أصلي (App.tsx) — الرابط المباشر لتبويب المخزون يحافظ على فلتر الفئة.
+                href: `/inventory?tab=products&category=${c.id}`,
+                hidden: c.productCount === 0 && (isChild || kids.length === 0),
+                gate: { module: "products", level: "READ" },
+              },
+              {
+                key: "delete",
+                kind: "delete",
+                label: "حذف",
+                variant: "destructive",
+                onSelect: () => openDelete(c),
+                gate: { roles: ["manager"], module: "products", level: "FULL" },
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -209,143 +341,31 @@ export default function Categories() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 w-8">
-                  <input
-                    type="checkbox"
-                    className="size-4"
-                    aria-label="تحديد كل الفئات"
-                    checked={filtered.length > 0 && filtered.every((r) => sel.isSelected(r.id))}
-                    onChange={(e) => sel.setMany(filtered.map((r) => r.id), e.target.checked)}
-                  />
-                </th>
-                <th className="p-2">الفئة</th>
-                <th className="p-2">الوصف</th>
-                <th className="p-2 text-center">عدد المنتجات</th>
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {orderedRows.map((c) => {
-                const isChild = c.parentId != null;
-                const kids = isChild ? [] : childrenOf(c.id);
-                return (
-                  <tr key={c.id} className={`border-t ${c.isActive ? "" : "opacity-60"} ${isChild ? "bg-muted/20" : ""}`}>
-                    <td className="p-2">
-                      <input
-                        type="checkbox"
-                        className="size-4"
-                        aria-label={`تحديد ${c.name}`}
-                        checked={sel.isSelected(c.id)}
-                        onChange={() => sel.toggle(c.id)}
-                      />
-                    </td>
-                    <td className="p-2 font-medium">
-                      <span className="inline-flex items-center gap-1.5">
-                        {isChild && <CornerDownLeft aria-hidden className="size-3.5 text-muted-foreground shrink-0" />}
-                        {c.name}
-                        {!isChild && kids.length > 0 && (
-                          <span
-                            className="rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
-                            title="عدد الأقسام الفرعية تحت هذه الفئة"
-                          >
-                            {num(kids.length)} فرعية
-                          </span>
-                        )}
-                      </span>
-                    </td>
-                    <td className="p-2 text-muted-foreground">{c.description || "—"}</td>
-                    <td className="p-2 text-center tabular-nums">
-                      {!isChild && kids.length > 0 ? (
-                        <>
-                          <span className="font-medium">{num(c.productCountWithChildren)}</span>
-                          {c.productCount > 0 && (
-                            <span className="text-xs text-muted-foreground"> ({num(c.productCount)} مباشرة)</span>
-                          )}
-                        </>
-                      ) : (
-                        num(c.productCount)
-                      )}
-                    </td>
-                    <td className="p-2 text-center">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${c.isActive ? "badge-status-active" : "badge-status-cancelled"}`}
-                        title={c.isActive ? "الفئة تظهر في نماذج تصنيف المنتج" : "الفئة مخفيّة عن نماذج تصنيف المنتج — منتجاتها القائمة تبقى فيها"}
-                      >
-                        {c.isActive ? "مفعّلة" : "معطّلة"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        actions={[
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل",
-                            onSelect: () => openEdit(c),
-                            gate: { roles: ["manager"], module: "products", level: "FULL" },
-                          },
-                          {
-                            key: "addChild",
-                            kind: "create",
-                            label: "+ قسم فرعي",
-                            onSelect: () => openAdd(c.id),
-                            hidden: isChild,
-                            gate: { roles: ["manager"], module: "products", level: "FULL" },
-                          },
-                          {
-                            key: "products",
-                            kind: "view",
-                            label: "عرض منتجاتها",
-                            // /products هو Redirect ثابت لـ/inventory?tab=products يُسقِط أي querystring
-                            // أصلي (App.tsx) — الرابط المباشر لتبويب المخزون يحافظ على فلتر الفئة.
-                            href: `/inventory?tab=products&category=${c.id}`,
-                            hidden: c.productCount === 0 && (isChild || kids.length === 0),
-                            gate: { module: "products", level: "READ" },
-                          },
-                          {
-                            key: "delete",
-                            kind: "delete",
-                            label: "حذف",
-                            variant: "destructive",
-                            onSelect: () => openDelete(c),
-                            gate: { roles: ["manager"], module: "products", level: "FULL" },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-              {list.isLoading && (
-                <tr><td colSpan={6}><LoadingState /></td></tr>
-              )}
-              {!list.isLoading && filtered.length === 0 && (
-                <TableEmptyRow
-                  colSpan={6}
-                  message={
-                    query ? (
-                      <div className="space-y-2">
-                        <div>لا فئات مطابقة للبحث «{query}».</div>
-                        <Button variant="outline" size="sm" onClick={() => setQuery("")}>
-                          مسح البحث
-                        </Button>
-                      </div>
-                    ) : canWrite ? (
-                      "لا فئات بعد — أضِف أوّل فئة بزرّ «إضافة فئة» أعلاه."
-                    ) : (
-                      "لا فئات بعد."
-                    )
-                  }
-                />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          {/* البحث في ترويسة البطاقة أعلاه (يغذّي `filtered`) ⇒ `searchable={false}` وإلّا ظهر
+              حقلا بحثٍ متجاوران. والصفوف كلّها بلا ترقيم كما كان الجدول الخامّ.
+              التحديد المتعدّد يُصيّره DataTable نفسه (عمود الاختيار + «تحديد كل المرئي»). */}
+          <DataTable<CategoryRow, number>
+            columns={columns}
+            data={orderedRows}
+            searchable={false}
+            externalFiltersActive={query.trim() !== ""}
+            pageSize={Infinity}
+            selection={sel}
+            getRowId={(c) => c.id}
+            getRowSelectionLabel={(c) => `تحديد ${c.name}`}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            getRowClassName={(c) => [c.isActive ? "" : "opacity-60", c.parentId != null ? "bg-muted/20" : ""].filter(Boolean).join(" ") || undefined}
+            emptyState={canWrite ? "لا فئات بعد — أضِف أوّل فئة بزرّ «إضافة فئة» أعلاه." : "لا فئات بعد."}
+            emptyFilteredState={
+              <div className="space-y-2">
+                <div>لا فئات مطابقة للبحث «{query}».</div>
+                <Button variant="outline" size="sm" onClick={() => setQuery("")}>
+                  مسح البحث
+                </Button>
+              </div>
+            }
+          />
         </CardContent>
       </Card>
 
@@ -408,7 +428,7 @@ export default function Categories() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={createMut.isPending || updateMut.isPending}>
-              {createMut.isPending || updateMut.isPending ? "جارٍ الحفظ…" : "حفظ"}
+              {createMut.isPending || updateMut.isPending ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -443,7 +463,7 @@ export default function Categories() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setDelTarget(null)}>إلغاء</Button>
             <Button variant="destructive" size="sm" onClick={confirmDelete} disabled={deleteMut.isPending || delChildrenCount > 0}>
-              {deleteMut.isPending ? "جارٍ الحذف…" : "حذف الفئة"}
+              {deleteMut.isPending ? ACTION_LABELS.deleting : "حذف الفئة"}
             </Button>
           </DialogFooter>
         </DialogContent>

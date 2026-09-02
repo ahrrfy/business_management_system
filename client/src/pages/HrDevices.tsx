@@ -24,14 +24,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { PageHeader } from "@/components/PageHeader";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import { MobileDataCard } from "@/components/ui/MobileDataCard";
+import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions, type RowAction } from "@/components/list/RowActions";
 import { FilterField } from "@/components/list/FilterField";
-import {
-  ErrorState,
-  LoadingState,
-  TableEmptyRow,
-} from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { notify } from "@/lib/notify";
@@ -346,6 +343,199 @@ export default function HrDevices() {
     Number(deviceBranchFilter !== "all") +
     Number(deviceActionFilter !== "all");
   const selectedDevice = devices.find((d) => d.id === selectedDeviceId) ?? null;
+
+  /** صفّا الجدولين — مشتقّان من مخرَج الاستعلام نفسه فلا ينجرفان عن عقد الخادم. */
+  type DeviceRow = (typeof devices)[number];
+  type PunchRow = NonNullable<(typeof punches)["data"]>["rows"][number];
+
+  /*
+   * أعمدة الأجهزة — داخل المكوّن لأنّها تقرأ الجهاز المختار وتُبدّله.
+   *
+   * الشاشاتُ الصغيرة: الجدولُ الخامّ كان يُخفي «آخر إشارة» بـ`hidden md:table-cell`
+   * و«البصمات المستلمة» بـ`hidden lg:table-cell`، فيبقى على الهاتف أربعةُ أعمدةٍ تسع
+   * العرض. ولا مقابلَ لذلك في عقد أعمدة `DataTable` (لا مدخلَ لصنفٍ استجابيّ على
+   * `<td>`/`<th>`). وتعليقٌ سابقٌ هنا أحال إلى «منتقي الأعمدة» — وهو **غيرُ متاح**:
+   * `embedded` يكتمه (DataTable.tsx: `!embedded && …`)، فلم يبقَ إلّا التمريرُ الأفقيّ
+   * على ستّة أعمدة، أي أنّ قارئ الهاتف يجرّ الجدولَ جانبياً ليرى حالةَ جهاز.
+   * البديلُ الصحيح هو `mobileCardRenderer` أدناه: كروتٌ دون `md` والجدولُ كاملاً فوقها.
+   */
+  const deviceColumns = useMemo<ColumnDef<DeviceRow, unknown>[]>(
+    () => [
+      {
+        id: "device",
+        header: "الجهاز",
+        accessorFn: (d) => d.name,
+        meta: { width: "wide" },
+        cell: ({ row }) => {
+          const d = row.original;
+          const selected = d.id === selectedDeviceId;
+          return (
+            <button
+              type="button"
+              onClick={() => setSelectedDeviceId(d.id)}
+              className="flex w-full items-center gap-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span
+                className={`grid size-8 shrink-0 place-items-center rounded-lg ${selected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+              >
+                <ScanFace aria-hidden className="size-4.5" />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate font-semibold">{d.name}</span>
+                <span className="block truncate text-[11px] text-muted-foreground" dir="ltr">
+                  {d.serialNumber ?? d.model ?? "—"}
+                </span>
+              </span>
+            </button>
+          );
+        },
+      },
+      {
+        id: "branch",
+        header: "الفرع",
+        accessorFn: (d) => d.branchName ?? "بلا فرع",
+        cell: ({ row }) => (
+          <span className="text-xs">
+            <span className="block font-medium">{row.original.branchName ?? "بلا فرع"}</span>
+            {row.original.location && (
+              <span className="block truncate text-[11px] text-muted-foreground">{row.original.location}</span>
+            )}
+          </span>
+        ),
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        accessorFn: (d) => (!d.enabled ? "بانتظار الاعتماد" : d.status === "online" ? "متصل" : "منقطع"),
+        meta: { kind: "status" },
+        cell: ({ row }) => {
+          const d = row.original;
+          const online = d.enabled && d.status === "online";
+          return (
+            <span
+              className={`inline-flex items-center gap-1.5 text-xs font-medium ${!d.enabled ? "text-[var(--sem-warn)]" : online ? "text-[var(--status-active)]" : "text-[var(--sem-neg)]"}`}
+            >
+              <Circle aria-hidden className="size-2 fill-current" />
+              {!d.enabled ? "بانتظار الاعتماد" : online ? "متصل" : "منقطع"}
+            </span>
+          );
+        },
+      },
+      {
+        id: "lastSeen",
+        header: "آخر إشارة",
+        accessorFn: (d) => fmtRelativeTime(d.lastSeenAt),
+        // نصٌّ نسبيّ بالعربية («قبل ٣ دقائق») لا تاريخٌ لاتينيّ ⇒ بلا عزل اتّجاه.
+        meta: { align: "center", width: "date" },
+        cell: ({ row }) => (
+          <span className="text-[11px] text-muted-foreground">{fmtRelativeTime(row.original.lastSeenAt)}</span>
+        ),
+      },
+      {
+        id: "punches",
+        header: "البصمات المستلمة",
+        accessorFn: (d) => (d.receivedPunches ?? 0).toLocaleString("en-US"),
+        meta: { kind: "number", align: "center" },
+        cell: ({ row }) => (
+          <span className="text-xs">
+            <span className="font-semibold">{(row.original.receivedPunches ?? 0).toLocaleString("en-US")}</span>
+            {(row.original.pendingPunches ?? 0) > 0 && (
+              <span className="mt-0.5 block text-[10px] text-[var(--sem-warn)]">
+                {row.original.pendingPunches} بلا موظف
+              </span>
+            )}
+          </span>
+        ),
+      },
+      {
+        id: "open",
+        header: "تفاصيل",
+        meta: { kind: "actions" },
+        cell: ({ row }) => (
+          <button
+            type="button"
+            aria-label={`عرض تفاصيل ${row.original.name}`}
+            onClick={() => setSelectedDeviceId(row.original.id)}
+            className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ChevronLeft aria-hidden className="size-4" />
+          </button>
+        ),
+      },
+    ],
+    [selectedDeviceId],
+  );
+
+  /** أعمدة طابور البصمات — كلّها مشتقّة من الصفّ وحده. */
+  const punchColumns = useMemo<ColumnDef<PunchRow, unknown>[]>(
+    () => [
+      {
+        id: "punchAt",
+        header: "الوقت",
+        accessorFn: (p) => String(p.punchAt),
+        meta: { kind: "datetime", align: "start" },
+        cell: ({ row }) => <span className="text-xs">{String(row.original.punchAt)}</span>,
+      },
+      {
+        id: "device",
+        header: "الجهاز",
+        accessorFn: (p) => p.deviceName ?? p.serialNumber,
+        cell: ({ row }) => <span className="text-xs">{row.original.deviceName ?? row.original.serialNumber}</span>,
+      },
+      {
+        id: "enrollId",
+        header: "رقم المستخدم",
+        accessorFn: (p) => p.enrollId,
+        meta: { kind: "number", align: "center" },
+        cell: ({ row }) => <span className="text-xs">{row.original.enrollId}</span>,
+      },
+      {
+        id: "employee",
+        header: "الموظف",
+        accessorFn: (p) => p.employeeName ?? "غير مربوط — اربطه من زر «الربط»",
+        meta: { width: "wide" },
+        cell: ({ row }) => (
+          <span className="text-xs">
+            {row.original.employeeName ?? (
+              <span className="text-[var(--sem-warn)]">غير مربوط — اربطه من زر «الربط»</span>
+            )}
+          </span>
+        ),
+      },
+      {
+        id: "mode",
+        header: "الوسيلة",
+        accessorFn: (p) => p.mode ?? "—",
+        meta: { align: "center" },
+        cell: ({ row }) => <span className="text-xs">{row.original.mode ?? "—"}</span>,
+      },
+      {
+        id: "processed",
+        header: "المعالجة",
+        accessorFn: (p) => (p.processedAt ? (p.processNote ? "مركونة" : "في الحضور") : "بالانتظار"),
+        meta: { kind: "status" },
+        cell: ({ row }) => {
+          const p = row.original;
+          return (
+            <span className="text-xs">
+              {p.processedAt ? (
+                p.processNote ? (
+                  <span className="text-[var(--sem-neg)]" title={p.processNote}>
+                    مركونة
+                  </span>
+                ) : (
+                  <span className="text-[var(--sem-pos)]">في الحضور</span>
+                )
+              ) : (
+                <span className="text-muted-foreground">بالانتظار</span>
+              )}
+            </span>
+          );
+        },
+      },
+    ],
+    [],
+  );
   const selectedOrigin = selectedDevice
     ? (pendingOrigins.find(
         (o) =>
@@ -714,141 +904,80 @@ export default function HrDevices() {
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/40">
-                  <tr>
-                    <th className="px-3 py-2">الجهاز</th>
-                    <th className="px-3 py-2">الفرع</th>
-                    <th className="px-3 py-2 text-center">الحالة</th>
-                    <th className="hidden px-3 py-2 text-center md:table-cell">
-                      آخر إشارة
-                    </th>
-                    <th className="hidden px-3 py-2 text-center lg:table-cell">
-                      البصمات المستلمة
-                    </th>
-                    <th className="w-10 px-3 py-2">
-                      <span className="sr-only">اختيار</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleDevices.map((d) => {
-                    const online = d.enabled && d.status === "online";
-                    const selected = d.id === selectedDeviceId;
-                    return (
-                      <tr
-                        key={d.id}
-                        aria-selected={selected}
-                        className={`border-t transition-colors ${selected ? "bg-primary/10" : "hover:bg-accent/40"}`}
-                      >
-                        <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedDeviceId(d.id)}
-                            className="flex w-full items-center gap-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            <span
-                              className={`grid size-8 shrink-0 place-items-center rounded-lg ${selected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
-                            >
-                              <ScanFace aria-hidden className="size-4.5" />
-                            </span>
-                            <span className="min-w-0">
-                              <span className="block truncate font-semibold">
-                                {d.name}
-                              </span>
-                              <span
-                                className="block truncate text-[11px] text-muted-foreground"
-                                dir="ltr"
-                              >
-                                {d.serialNumber ?? d.model ?? "—"}
-                              </span>
-                            </span>
-                          </button>
-                        </td>
-                        <td className="px-3 py-2 text-xs">
-                          <span className="block font-medium">
-                            {d.branchName ?? "بلا فرع"}
-                          </span>
-                          {d.location && (
-                            <span className="block truncate text-[11px] text-muted-foreground">
-                              {d.location}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-center">
-                          <span
-                            className={`inline-flex items-center gap-1.5 text-xs font-medium ${!d.enabled ? "text-[var(--sem-warn)]" : online ? "text-[var(--status-active)]" : "text-[var(--sem-neg)]"}`}
-                          >
-                            <Circle
-                              aria-hidden
-                              className="size-2 fill-current"
-                            />
-                            {!d.enabled
-                              ? "بانتظار الاعتماد"
-                              : online
-                                ? "متصل"
-                                : "منقطع"}
-                          </span>
-                        </td>
-                        <td className="hidden px-3 py-2 text-center text-[11px] text-muted-foreground md:table-cell">
-                          {fmtRelativeTime(d.lastSeenAt)}
-                        </td>
-                        <td className="hidden px-3 py-2 text-center text-xs lg:table-cell">
-                          <span className="font-semibold tabular-nums">
-                            {(d.receivedPunches ?? 0).toLocaleString("en-US")}
-                          </span>
-                          {(d.pendingPunches ?? 0) > 0 && (
-                            <span className="mt-0.5 block text-[10px] text-[var(--sem-warn)]">
-                              {d.pendingPunches} بلا موظف
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-muted-foreground">
-                          <button
-                            type="button"
-                            aria-label={`عرض تفاصيل ${d.name}`}
-                            onClick={() => setSelectedDeviceId(d.id)}
-                            className="grid size-8 place-items-center rounded-md hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            <ChevronLeft aria-hidden className="size-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {list.isError && (
-                    <tr>
-                      <td colSpan={6} className="p-0">
-                        <ErrorState
-                          message="تعذّر تحميل الأجهزة."
-                          onRetry={() => list.refetch()}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                  {!list.isLoading &&
-                    !list.isError &&
-                    visibleDevices.length === 0 && (
-                      <TableEmptyRow
-                        colSpan={6}
-                        message={
-                          devices.length === 0
-                            ? "لا أجهزة بعد. أضف جهازاً أو وجّهه إلى الخادم ليظهر هنا."
-                            : "لا توجد أجهزة مطابقة للبحث والفلاتر."
-                        }
-                      />
-                    )}
-                  {list.isLoading && (
-                    <tr>
-                      <td colSpan={6} className="p-0">
-                        <LoadingState />
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            {/* مُضمَّن: العدّ والملاحظة في الشريط أسفله وترويسة البطاقة أعلاه — فلا شريطَ حالةٍ ثانٍ. */}
+            <DataTable<DeviceRow>
+              embedded
+              columns={deviceColumns}
+              data={visibleDevices}
+              /* البحث والفلاتر في ترويسة البطاقة (تُغذّي visibleDevices) — بلا هذا يظهر حقلا
+                 بحثٍ متجاوران، وتُعلن الشاشةُ «لا أجهزة بعد» بينما الفلترُ وحده هو الحاجب. */
+              searchable={false}
+              externalFiltersActive={activeDeviceFilterCount > 0 || query.trim() !== ""}
+              pageSize={Infinity}
+              loading={list.isLoading}
+              errorState={{ isError: list.isError, message: "تعذّر تحميل الأجهزة.", onRetry: () => void list.refetch() }}
+              onRowClick={(d) => setSelectedDeviceId(d.id)}
+              /* `!` مقصود: `odd:bg-background` على الصفّ أعلى خصوصيّةً من صنفٍ مجرّد ⇒ بلا
+                 !important يختفي تمييزُ الجهاز المختار على الصفوف الفردية (وهو المؤشّر الوحيد
+                 بعد أن سقط `aria-selected` بالتحويل). */
+              getRowClassName={(d) => (d.id === selectedDeviceId ? "!bg-primary/10" : undefined)}
+              /*
+               * كروتُ الهاتف — بديلُ `hidden md:table-cell` الذي أسقطه التحويل (انظر تعليق
+               * `deviceColumns`). دون `md` تُعرَض هذه الكروت وفوقها الجدولُ كاملاً، فلا
+               * يُجرّ الجدولُ جانبياً ولا يُخفى عمود.
+               * ⚠️ مسارُ الكروت في `DataTable` لا يستدعي `getRowClassName` ⇒ تمييزُ الجهاز
+               * المختار يُكتب هنا صراحةً، وإلّا ضاع المؤشّرُ الوحيد على الهاتف.
+               */
+              mobileCardRenderer={(d) => {
+                const online = d.enabled && d.status === "online";
+                const serial = d.serialNumber ?? d.model ?? null;
+                return (
+                  <MobileDataCard
+                    key={d.id}
+                    title={d.name}
+                    /* `dir="ltr"` كما في الجدول الخامّ وفي عمود «الجهاز»: الرقم التسلسليّ
+                       قيمةٌ لاتينية داخل صفحة RTL، فبلا عزلٍ تنقلب شرطاتُه وأرقامه في
+                       العرض (`AI518-01/24` تُقرأ مقلوبة). */
+                    subtitle={serial ? <span dir="ltr">{serial}</span> : undefined}
+                    badge={{
+                      label: !d.enabled ? "بانتظار الاعتماد" : online ? "متصل" : "منقطع",
+                      variant: !d.enabled ? "warning" : online ? "success" : "destructive",
+                    }}
+                    metadata={[
+                      {
+                        /* الموقعُ مضمومٌ إلى الفرع بنفس صيغة لوحة التفاصيل أعلاه
+                           (`الفرع · الموقع`). عمودُ «الفرع» في الجدول الخامّ كان ظاهراً
+                           على الهاتف بسطرَيه، فإسقاطُ الموقع هنا يخسر ما كان مرئياً قبل
+                           التحويل — وهو التمييزُ الوحيد بين جهازَي فرعٍ واحد. */
+                        label: "الفرع",
+                        value: `${d.branchName ?? "بلا فرع"}${d.location ? ` · ${d.location}` : ""}`,
+                        icon: MapPin,
+                      },
+                      { label: "آخر إشارة", value: fmtRelativeTime(d.lastSeenAt), icon: Clock3 },
+                      {
+                        label: "البصمات المستلمة",
+                        value: (d.receivedPunches ?? 0).toLocaleString("en-US"),
+                        icon: Fingerprint,
+                      },
+                      ...((d.pendingPunches ?? 0) > 0
+                        ? [{
+                            label: "بلا موظف",
+                            value: (d.pendingPunches ?? 0).toLocaleString("en-US"),
+                            icon: ShieldQuestion,
+                          }]
+                        : []),
+                    ]}
+                    onClick={() => setSelectedDeviceId(d.id)}
+                    ariaLabel={`عرض تفاصيل ${d.name}`}
+                    /* `mx-3`: حاوية البطاقة `CardContent p-0` (صحيحٌ للجدول الممتدّ حافّةً
+                       لحافّة) — فبلا هذا الإزاحة تلتصق حوافُّ الكروت المُدوَّرة بحافّة البطاقة. */
+                    className={`mx-3 ${d.id === selectedDeviceId ? "border-primary bg-primary/10" : ""}`}
+                  />
+                );
+              }}
+              emptyState="لا أجهزة بعد. أضف جهازاً أو وجّهه إلى الخادم ليظهر هنا."
+              emptyFilteredState="لا توجد أجهزة مطابقة للبحث والفلاتر."
+            />
             <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2.5 text-[11px] text-muted-foreground">
               <span>
                 عرض {visibleDevices.length} من {total} جهاز
@@ -1206,93 +1335,25 @@ export default function HrDevices() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">الوقت</th>
-                  <th className="p-2">الجهاز</th>
-                  <th className="p-2 text-center">رقم المستخدم</th>
-                  <th className="p-2">الموظف</th>
-                  <th className="p-2 text-center">الوسيلة</th>
-                  <th className="p-2 text-center">المعالجة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(punches.data?.rows ?? []).map((p) => (
-                  <tr key={p.id} className="border-t">
-                    <td className="p-2 text-xs tabular-nums" dir="ltr">
-                      {String(p.punchAt)}
-                    </td>
-                    <td className="p-2 text-xs">
-                      {p.deviceName ?? p.serialNumber}
-                    </td>
-                    <td className="p-2 text-center text-xs tabular-nums">
-                      {p.enrollId}
-                    </td>
-                    <td className="p-2 text-xs">
-                      {p.employeeName ?? (
-                        <span className="text-[var(--sem-warn)]">
-                          غير مربوط — اربطه من زر «الربط»
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2 text-center text-xs">{p.mode ?? "—"}</td>
-                    <td className="p-2 text-center text-xs">
-                      {p.processedAt ? (
-                        p.processNote ? (
-                          <span
-                            className="text-[var(--sem-neg)]"
-                            title={p.processNote}
-                          >
-                            مركونة
-                          </span>
-                        ) : (
-                          <span className="text-[var(--sem-pos)]">
-                            في الحضور
-                          </span>
-                        )
-                      ) : (
-                        <span className="text-muted-foreground">بالانتظار</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {!punches.isLoading &&
-                  (punches.data?.rows.length ?? 0) === 0 && (
-                    <TableEmptyRow
-                      colSpan={6}
-                      message="لا بصمات واردة بعد — ستظهر هنا لحظة وصولها من الأجهزة."
-                    />
-                  )}
-                {punches.isLoading && (
-                  <tr>
-                    <td colSpan={6} className="p-0">
-                      <LoadingState />
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
-          <div className="flex items-center justify-between p-2 border-t">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={punchOffset === 0}
-              onClick={() => setPunchOffset((o) => Math.max(0, o - 25))}
-            >
-              الأحدث
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!punches.data?.hasMore}
-              onClick={() => setPunchOffset((o) => o + 25)}
-            >
-              الأقدم
-            </Button>
-          </div>
+          {/* ترقيمٌ خادميّ (offset + hasMore) — استبدل زرَّي «الأحدث/الأقدم» اليدويَّين كي لا
+             يقفز شريطان بمقدارَين مختلفَين فتُتخطّى صفوفٌ بصمت. */}
+          <DataTable<PunchRow>
+            columns={punchColumns}
+            data={punches.data?.rows ?? []}
+            /* الفلاتر في ترويسة البطاقة أعلاه (تُغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={punchFiltersActive || unmatchedOnly}
+            loading={punches.isLoading}
+            errorState={{ isError: punches.isError, message: punches.error?.message, onRetry: () => void punches.refetch() }}
+            serverPagination={{
+              page: Math.floor(punchOffset / 25),
+              onPageChange: (next) => setPunchOffset(next * 25),
+              pageSize: 25,
+              hasMore: punches.data?.hasMore,
+              isFetching: punches.isFetching,
+            }}
+            emptyText="لا بصمات واردة بعد — ستظهر هنا لحظة وصولها من الأجهزة."
+          />
         </CardContent>
       </Card>
 
@@ -1326,6 +1387,9 @@ export default function HrDevices() {
               className="h-8 w-full pr-8"
             />
           </div>
+          {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل `AppSelect` يربط رقمَ
+              الجهاز بموظّف ويُطلق `mapUser.mutate` مباشرةً — `DataTable` أداةُ عرضٍ فتبقى هذه
+              خامّةً عن قصد. جدولا الأجهزة والبصمات في الشاشة نفسها محوَّلان أصلاً. */}
           <div className="max-h-[50vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 sticky top-0">

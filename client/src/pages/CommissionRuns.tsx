@@ -9,8 +9,9 @@ import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { CommissionGuide } from "@/components/commissions/CommissionGuide";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -27,7 +28,6 @@ import { printCommissionStatementV2 } from "@/lib/printing/printCommissionV2";
 import { Calculator, Check, FileDown, Link2, Printer, RotateCcw, ShieldCheck, Trash2, TrendingUp, Undo2, Wallet, XCircle } from "lucide-react";
 import { Link } from "wouter";
 import { useMemo, useState } from "react";
-import { selectClsSm } from "@/lib/ui/formStyles";
 
 
 const STATUS_LABEL: Record<string, string> = { draft: "مسوّدة", approved: "معتمدة" };
@@ -211,6 +211,146 @@ export default function CommissionRuns() {
     });
   }
 
+  /*
+   * أعمدة كشف العمولات — تُبنى في العَرض لأنّها تُغلِق على `run`/`stats` (صفّ الإجماليات)
+   * وعلى `printStatement`/`setDetailLine`. صفُّ الإجماليات صار `footer` على الأعمدة
+   * فيُصيَّر في `<tfoot>` محاذياً لأعمدته بدل صفٍّ يدويّ داخل `<tbody>`.
+   */
+  const columns: ColumnDef<RunLine, unknown>[] = [
+    {
+      id: "employee",
+      header: "الموظف",
+      accessorFn: (l) => l.employeeName,
+      cell: ({ row }) => {
+        const l = row.original;
+        const detail = (l.detail ?? {}) as { planName?: string };
+        return (
+          <div className="flex items-center gap-2.5">
+            <EmpAvatar name={l.employeeName} color={l.colorTag} photoUrl={l.photoUrl} sizePx={32} />
+            <div className="min-w-0">
+              <div className="font-medium text-[13px] whitespace-nowrap">{l.employeeName}</div>
+              {/* اسم الخطة قد يطول — يُقصّ بدل توسيع العمود ودفع الجدول خارج الشاشة. */}
+              <div className="max-w-[11rem] truncate text-[11px] text-muted-foreground" title={l.planName ?? detail.planName ?? undefined}>
+                {l.planName ?? detail.planName ?? "—"}
+              </div>
+            </div>
+          </div>
+        );
+      },
+      footer: () => "الإجمالي",
+    },
+    {
+      id: "baseSales",
+      header: "المبيعات",
+      accessorFn: (l) => iqd(l.baseSales),
+      meta: { kind: "money" },
+      cell: ({ row }) => iqd(row.original.baseSales),
+      footer: () => (run ? iqd(run.totalBaseSales) : null),
+    },
+    {
+      id: "baseReturns",
+      header: "المرتجعات",
+      accessorFn: (l) => (D(l.baseReturns).gt(0) ? `−${iqd(l.baseReturns)}` : "—"),
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <span className="text-money-negative">{D(row.original.baseReturns).gt(0) ? `−${iqd(row.original.baseReturns)}` : "—"}</span>
+      ),
+      footer: () => (run ? <span className="text-money-negative">−{iqd(run.totalBaseReturns)}</span> : null),
+    },
+    {
+      // بلا اختصارٍ غامض: تسميةٌ مفهومة تُلَفّ خيرٌ من ترويسةٍ مبتورة.
+      id: "carryIn",
+      header: "مرحَّل من السابق",
+      accessorFn: (l) => (D(l.carryIn).isZero() ? "—" : iqd(l.carryIn)),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="text-muted-foreground">{D(row.original.carryIn).isZero() ? "—" : iqd(row.original.carryIn)}</span>,
+    },
+    {
+      id: "effectiveBase",
+      header: "المبلغ المحتسَب عليه",
+      accessorFn: (l) => iqd(l.effectiveBase),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{iqd(row.original.effectiveBase)}</span>,
+      footer: () => (run ? iqd(stats.effectiveSum) : null),
+    },
+    {
+      id: "targetAmount",
+      header: "هدفه",
+      accessorFn: (l) => (l.targetAmount != null ? iqd(l.targetAmount) : "—"),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.targetAmount != null ? iqd(row.original.targetAmount) : "—"}</span>,
+    },
+    {
+      id: "achievementPct",
+      header: "نسبة التحقيق",
+      accessorFn: (l) => {
+        const detail = (l.detail ?? {}) as { noTarget?: boolean };
+        if (l.achievementPct != null) return `${fmtAr(l.achievementPct)}%`;
+        return detail.noTarget ? "بلا هدف" : "—";
+      },
+      meta: { align: "center" },
+      cell: ({ row }) => {
+        const l = row.original;
+        const detail = (l.detail ?? {}) as { noTarget?: boolean };
+        return l.achievementPct != null ? (
+          <AchievementBar pct={Number(l.achievementPct)} />
+        ) : detail.noTarget ? (
+          <span className="inline-block rounded-full px-2 py-0.5 text-[11px] badge-stock-low">بلا هدف</span>
+        ) : (
+          <span className="text-muted-foreground text-xs">—</span>
+        );
+      },
+    },
+    {
+      id: "tier",
+      header: "المستوى المطبَّق",
+      accessorFn: (l) => (l.tierIndex != null ? `${fmtAr(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => {
+        const l = row.original;
+        return (
+          <span className="text-xs">
+            {l.tierIndex != null ? `${fmtAr(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"}
+          </span>
+        );
+      },
+    },
+    {
+      id: "commissionAmount",
+      header: "عمولته",
+      accessorFn: (l) => iqd(l.commissionAmount),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-bold">{iqd(row.original.commissionAmount)}</span>,
+      footer: () => (run ? iqd(run.totalCommission) : null),
+    },
+    {
+      id: "carryOut",
+      header: "يُرحَّل للقادم",
+      accessorFn: (l) => (D(l.carryOut).isZero() ? "—" : iqd(l.carryOut)),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="text-money-negative">{D(row.original.carryOut).isZero() ? "—" : iqd(row.original.carryOut)}</span>,
+      footer: () => (run ? <span className="text-money-negative">{iqd(stats.carryNeg)}</span> : null),
+    },
+    {
+      /* ترويسةٌ مسمّاة لا فارغة: الجدول أحدَ عشرَ عموداً ⇒ يظهر منتقي أعمدة DataTable،
+         وعمودٌ بترويسةٍ فارغة يُصيَّر فيه بنداً بلا اسم يُخفي «كشف/تفاصيل» بلا دليلٍ لإعادته. */
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <span className="whitespace-nowrap">
+          <button onClick={() => printStatement(row.original)} className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1">
+            <Printer className="size-3.5" aria-hidden /> كشف
+          </button>
+          <button onClick={() => setDetailLine(row.original)} className="text-xs text-muted-foreground font-medium hover:underline ms-3">
+            تفاصيل
+          </button>
+        </span>
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -334,105 +474,17 @@ export default function CommissionRuns() {
           <CardTitle>{run ? `عمولات ${run.period} — ${lines.length} موظف` : "احتساب العمولات الشهري"}</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2.5 text-start">الموظف</th>
-                  <th className="p-2.5 text-right">المبيعات</th>
-                  <th className="p-2.5 text-right">المرتجعات</th>
-                  {/* بلا whitespace-nowrap: تسميات مفهومة تُلَفّ على سطرين أفضل من ترويسة
-                      مختصرة غامضة أو من جدول يتجاوز عرض الشاشة. */}
-                  <th className="p-2.5 text-right">مرحَّل من السابق</th>
-                  <th className="p-2.5 text-right">المبلغ المحتسَب عليه</th>
-                  <th className="p-2.5 text-right">هدفه</th>
-                  <th className="p-2.5">نسبة التحقيق</th>
-                  <th className="p-2.5 text-center">المستوى المطبَّق</th>
-                  <th className="p-2.5 text-right">عمولته</th>
-                  <th className="p-2.5 text-right">يُرحَّل للقادم</th>
-                  <th className="p-2.5 text-center"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((l) => {
-                  const detail = (l.detail ?? {}) as { noTarget?: boolean; planName?: string };
-                  return (
-                    <tr key={l.id} className="border-t hover:bg-accent/40">
-                      <td className="p-2.5">
-                        <div className="flex items-center gap-2.5">
-                          <EmpAvatar name={l.employeeName} color={l.colorTag} photoUrl={l.photoUrl} sizePx={32} />
-                          <div className="min-w-0">
-                            <div className="font-medium text-[13px] whitespace-nowrap">{l.employeeName}</div>
-                            {/* اسم الخطة قد يطول — يُقصّ بدل توسيع العمود ودفع الجدول خارج الشاشة. */}
-                            <div
-                              className="max-w-[11rem] truncate text-[11px] text-muted-foreground"
-                              title={l.planName ?? detail.planName ?? undefined}
-                            >
-                              {l.planName ?? detail.planName ?? "—"}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(l.baseSales)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
-                        {D(l.baseReturns).gt(0) ? `−${iqd(l.baseReturns)}` : "—"}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">
-                        {D(l.carryIn).isZero() ? "—" : iqd(l.carryIn)}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{iqd(l.effectiveBase)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">
-                        {l.targetAmount != null ? iqd(l.targetAmount) : "—"}
-                      </td>
-                      <td className="p-2.5">
-                        {l.achievementPct != null ? (
-                          <AchievementBar pct={Number(l.achievementPct)} />
-                        ) : detail.noTarget ? (
-                          <span className="inline-block rounded-full px-2 py-0.5 text-[11px] badge-stock-low">بلا هدف</span>
-                        ) : (
-                          <span className="text-muted-foreground text-xs">—</span>
-                        )}
-                      </td>
-                      <td className="p-2.5 text-center tabular-nums text-xs" dir="ltr">
-                        {l.tierIndex != null ? `${fmtAr(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">{iqd(l.commissionAmount)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
-                        {D(l.carryOut).isZero() ? "—" : iqd(l.carryOut)}
-                      </td>
-                      <td className="p-2.5 text-center whitespace-nowrap">
-                        <button onClick={() => printStatement(l)} className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1">
-                          <Printer className="size-3.5" aria-hidden /> كشف
-                        </button>
-                        <button onClick={() => setDetailLine(l)} className="text-xs text-muted-foreground font-medium hover:underline ms-3">
-                          تفاصيل
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {lines.length > 0 && run && (
-                  <tr className="border-t-2 bg-muted/40 font-bold">
-                    <td className="p-2.5">الإجمالي</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(run.totalBaseSales)}</td>
-                    <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">−{iqd(run.totalBaseReturns)}</td>
-                    <td></td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(stats.effectiveSum)}</td>
-                    <td colSpan={3}></td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(run.totalCommission)}</td>
-                    <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{iqd(stats.carryNeg)}</td>
-                    <td></td>
-                  </tr>
-                )}
-                {runQ.isLoading && effectiveId != null && (
-                  <tr><td colSpan={11}><LoadingState /></td></tr>
-                )}
-                {!runQ.isLoading && lines.length === 0 && (
-                  <TableEmptyRow colSpan={11} message={runs.length === 0 ? "لا كشوف عمولات بعد — اضغط «احتساب شهر» للبدء." : "لا أسطر في كشف هذا الشهر."} />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/* كل الأسطر معروضةٌ دفعةً واحدة (pageSize=Infinity) كما كانت: صفُّ الإجماليات
+              يخصّ الكشف كلَّه، وترقيمُه إلى صفحاتٍ يجعل الإجماليّ يبدو إجماليَّ صفحة. */}
+          <DataTable<RunLine>
+            columns={columns}
+            data={lines}
+            pageSize={Infinity}
+            loading={runQ.isLoading && effectiveId != null}
+            errorState={{ isError: runQ.isError, message: runQ.error?.message, onRetry: () => void runQ.refetch() }}
+            emptyText={runs.length === 0 ? "لا كشوف عمولات بعد — اضغط «احتساب شهر» للبدء." : "لا أسطر في كشف هذا الشهر."}
+            searchPlaceholder="بحث باسم الموظف…"
+          />
         </CardContent>
       </Card>
 

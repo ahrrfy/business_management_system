@@ -4,6 +4,7 @@ import { AlertTriangle, FileDown, FlaskConical, Printer, Search } from "lucide-r
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/PageHeader";
 import { exportRows } from "@/lib/export";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
@@ -289,15 +290,20 @@ export default function CashRemediation() {
 
   return (
     <main className="space-y-4 p-4" dir="rtl">
+      {/* عنوان الشاشة انتقل إلى PageHeader (رأس واحد + رجوعٌ لمركز التقارير — الشاشة تُبلَغ من
+          `/reports`). يبقى الشريط أدناه تحذيراً خالصاً بنصّه حرفياً: بلا عنوانٍ فيه لا ينافس الرأس. */}
+      <PageHeader
+        title="تشخيص تاريخي للأرصدة السالبة"
+        backHref="/reports"
+        backLabel="مركز التقارير"
+      />
+
       <section className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-4 text-[var(--sem-warn)]">
         <div className="flex items-start gap-3">
           <AlertTriangle aria-hidden className="mt-0.5 size-5 shrink-0" />
-          <div>
-            <h1 className="text-lg font-bold">تشخيص تاريخي للأرصدة السالبة</h1>
-            <p className="mt-1 text-sm">
-              مسودة قراءة ومحاكاة فقط. لا تنشئ إيصالاً أو قيداً أو حركة درج/خزينة، ولا تعتمد أي تسوية.
-            </p>
-          </div>
+          <p className="text-sm">
+            مسودة قراءة ومحاكاة فقط. لا تنشئ إيصالاً أو قيداً أو حركة درج/خزينة، ولا تعتمد أي تسوية.
+          </p>
         </div>
       </section>
 
@@ -363,6 +369,9 @@ export default function CashRemediation() {
                   </div>
                 </div>
 
+                {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل `AppSelect` لتصنيف
+                    المحاكاة يكتب في حالة `selections` المحلّية (و`disabled` مشتقٌّ من الصفّ نفسه)
+                    — `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. */}
                 <div className="overflow-x-auto rounded-md border">
                   <table className="w-full min-w-[1200px] text-sm">
                     <thead className="bg-muted/60 text-right">

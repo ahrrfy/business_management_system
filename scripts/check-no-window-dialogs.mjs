@@ -59,9 +59,23 @@ for (const file of walkCode(SCAN_ROOT)) {
   let count = 0;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+    /*
+     * ⚠️ **وتعليقُ JSX `{/* … *\/}` كذلك** (٢/٩/٢٦): كانت الأسطر الثلاثة أدناه تُسقط
+     * `//` و`*` و`/*` وحدها، فبقي تعليقُ JSX يُفحَص كأنّه شيفرة. والنتيجةُ إنذارٌ كاذب:
+     * `Vouchers.tsx` كان في خطّ الأساس بمخالفةٍ واحدة، وهي **تعليق** يقول «بديل
+     * window.prompt (سجل تدقيقيّ إلزاميّ)» — والقوس بعد الاسم يُطابق النمط. فالملفّ لم
+     * يحمل حواراً حقيقياً قطّ، والحارسُ كان يطالب بإصلاح ما ليس معطوباً.
+     * والإنذارُ الكاذب أسوأ من الصمت: يدفع إلى تشويه تعليقٍ صحيحٍ للتملّص منه.
+     */
+    if (
+      trimmed.startsWith("//") ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("/*") ||
+      trimmed.startsWith("{/*")
+    ) continue;
     // اقتطاع كل نصٍّ بعد `//` في السطر — تعليقٌ خلفيّ قد يذكرها.
-    const codeOnly = line.split("//")[0];
+    // ونزعُ تعليقات JSX المضمَّنة في وسط السطر كذلك.
+    const codeOnly = line.replace(/\{\/\*[\s\S]*?\*\/\}/g, "").split("//")[0];
     DIALOG_RE.lastIndex = 0;
     const matches = codeOnly.match(DIALOG_RE);
     if (matches) count += matches.length;

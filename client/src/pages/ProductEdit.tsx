@@ -60,6 +60,7 @@ import { categoryOptionElements } from "@/lib/categoryTree";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /**
  * تعديل منتج بنموذج المتغيّرات المستقلة (product-variants).
@@ -898,7 +899,7 @@ export default function ProductEdit() {
         </div>
         <div className="flex gap-2">
           <Link href="/products"><Button type="button" variant="outline" size="sm">إلغاء</Button></Link>
-          <Button type="button" size="sm" onClick={save} disabled={update.isPending}>{update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}</Button>
+          <Button type="button" size="sm" onClick={save} disabled={update.isPending}>{update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}</Button>
         </div>
       </div>
 
@@ -943,7 +944,10 @@ function BarcodeAliasDialog({
           <DialogDescription>باركودات إضافية تُشير لنفس السلعة/الوحدة (نفس السعر والمخزون). تُحفظ فوراً بلا حاجة لزرّ «حفظ التعديلات».</DialogDescription>
         </DialogHeader>
         {productUnitId == null ? (
-          <p className="text-sm text-muted-foreground">جارٍ التحديد…</p>
+          // `productUnitId = unitIdQ.data ?? null` ⇒ هذا الفرع يغطّي انتظارَ الاستعلام **وفشلَه**
+          // معاً، فالنصّ يبقى معروضاً أبداً إن تعذّر حلّ الوحدة. بابٌ مسدود **قائمٌ قبل التوحيد**
+          // (كان يقول «جارٍ التحديد…» ويبقى كذلك) — يلزمه حالةُ خطأ صريحة في شريحةٍ لاحقة.
+          <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>
         ) : (
           <div className="space-y-3">
             <div className="text-xs text-muted-foreground">
@@ -951,7 +955,7 @@ function BarcodeAliasDialog({
             </div>
             <div className="space-y-1.5">
               {listQ.isLoading ? (
-                <p className="text-xs text-muted-foreground">جارٍ التحميل…</p>
+                <p className="text-xs text-muted-foreground">{ACTION_LABELS.loading}</p>
               ) : (listQ.data?.aliases ?? []).length === 0 ? (
                 <p className="text-xs text-muted-foreground">لا بدائل بعد.</p>
               ) : (

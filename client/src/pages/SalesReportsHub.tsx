@@ -6,6 +6,7 @@
 import { lazy, Suspense } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/PageHeader";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const SalesReport = lazy(() => import("./SalesReport"));
 const SalesRegister = lazy(() => import("./SalesRegister"));
@@ -13,7 +14,7 @@ const SalesByDimension = lazy(() => import("./SalesByDimension"));
 const WorkOrderProfitability = lazy(() => import("./WorkOrderProfitability"));
 
 function TabFallback() {
-  return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  return <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
 }
 
 export default function SalesReportsHub() {

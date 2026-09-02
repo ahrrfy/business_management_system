@@ -44,7 +44,6 @@ import {
   KindBadge,
   OverdueBadge,
   PriorityBadge,
-  selectCls,
   STATUS_META,
   StatusBadge,
   TASK_MANAGER_ROLES,
@@ -176,10 +175,10 @@ function AssignDialog({
           <DialogTitle>إسناد المهمة</DialogTitle>
           <DialogDescription>يمكن إعادة الإسناد أو تفريغه في أي حالة مفتوحة.</DialogDescription>
         </DialogHeader>
-        <select className={`${selectCls} w-full`} value={value} onChange={(e) => setValue(e.target.value)} disabled={staff.isLoading}>
+        <AppSelect value={value} onValueChange={setValue} disabled={staff.isLoading} aria-label="إسناد المهمة لموظف">
           <option value="">بلا إسناد</option>
           {(staff.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
+        </AppSelect>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>إلغاء</Button>
           <Button onClick={() => onConfirm(value ? Number(value) : null)} disabled={pending}>{pending ? "جارٍ…" : "حفظ الإسناد"}</Button>

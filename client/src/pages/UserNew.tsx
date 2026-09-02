@@ -1,3 +1,4 @@
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
@@ -183,7 +184,7 @@ export default function UserNew() {
         <div className="flex flex-wrap gap-2">
           {/* type="submit" وبلا onClick مباشر — onSubmit في <form> وحده مصدر الإرسال. */}
           <Button type="submit" disabled={create.isPending}>
-            {create.isPending ? "جارٍ الحفظ…" : "حفظ المستخدم"}
+            {create.isPending ? ACTION_LABELS.saving : "حفظ المستخدم"}
           </Button>
           <Link href="/users"><Button type="button" variant="ghost">إلغاء</Button></Link>
         </div>

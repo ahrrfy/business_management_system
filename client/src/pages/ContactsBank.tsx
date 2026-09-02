@@ -7,6 +7,7 @@ import { useLocation } from "wouter";
 import { Eye, Link2, Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
@@ -257,7 +258,7 @@ export default function ContactsBank() {
           {search.hasNextPage && (
             <div className="flex justify-center">
               <Button variant="outline" size="sm" onClick={() => search.fetchNextPage()} disabled={search.isFetchingNextPage}>
-                {search.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+                {search.isFetchingNextPage ? ACTION_LABELS.loading : "تحميل المزيد"}
               </Button>
             </div>
           )}

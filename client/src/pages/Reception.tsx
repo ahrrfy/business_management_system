@@ -57,6 +57,7 @@ import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { cn } from "@/lib/utils";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -91,8 +92,7 @@ import DraftPaymentsDialog from "@/components/reception/DraftPaymentsDialog";
 import OrderDeliveryDialog, { type OrderDeliveryValue } from "@/components/reception/OrderDeliveryDialog";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { CashDropDialog } from "@/components/pos/CashDropDialog";
-import { ShiftHandoverSection, type PosTokens } from "@/components/pos/ShiftHandoverSection";
+import { CashDropDialog, type PosTokens } from "@/components/pos/CashDropDialog";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   getServerBridgeStatus,
@@ -206,7 +206,6 @@ export default function Reception() {
   const [opening, setOpening] = useState("0");
   const [closing, setClosing] = useState(false);
   const [counted, setCounted] = useState("");
-  const [handoverToUserId, setHandoverToUserId] = useState<number | null>(null);
   const [countEntered, setCountEntered] = useState(false);
   const branchName = useMemo(
     () => (branchesQ.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
@@ -264,23 +263,21 @@ export default function Reception() {
         // ش٤ (I14): إفصاح عرابين الطلبات غير المُثبَّتة على Z المطبوع أيضاً.
         heldDepositsCount: rep?.heldDepositsCount ?? 0,
         heldDepositsTotal: rep?.heldDepositsTotal ?? "0",
-        cashHandover: r.treasuryReturn
+        treasuryReturn: r.treasuryReturn
           ? {
               amount: r.countedCash,
               referenceNumber: r.treasuryReturn.handoverNumber,
-              recipientName: r.treasuryReturn.recipientName,
             }
           : null,
       });
       if (r.treasuryReturn) {
         notify.ok(
-          `سلّم ${formatIqd(r.countedCash)} إلى ${r.treasuryReturn.recipientName}`,
-          `العهدة ${r.treasuryReturn.handoverNumber} بانتظار العدّ والقبول في الخزينة.`,
+          `أُغلقت الوردية ورُحّل ${formatIqd(r.countedCash)} إلى الخزينة تلقائياً`,
+          `سند الترحيل ${r.treasuryReturn.handoverNumber}`,
         );
       }
       setClosing(false);
       setCounted("");
-      setHandoverToUserId(null);
       setCountEntered(false);
       await utils.shifts.current.invalidate();
     },
@@ -2230,7 +2227,7 @@ export default function Reception() {
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
   if (me.isLoading || shiftQ.isLoading) {
-    return <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>;
+    return <div className="p-8 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
   }
 
   // بوّابة وردية خدمة العملاء: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
@@ -2427,24 +2424,16 @@ export default function Reception() {
                     </p>
                   </div>
                 )}
-                <ShiftHandoverSection
-                  branchId={Number(shift.branchId)}
-                  amount={counted}
-                  value={handoverToUserId}
-                  onChange={setHandoverToUserId}
-                  disabled={closeShiftM.isPending}
-                />
                 <div className="mt-5 flex gap-2.5">
                   <Button variant="outline" className="flex-1" onClick={() => setClosing(false)}>
                     إلغاء
                   </Button>
                   <Button
                     className="flex-1"
-                    disabled={!counted || closeShiftM.isPending || hasRecVariance || (D(counted || 0).gt(0) && handoverToUserId == null)}
+                    disabled={!counted || closeShiftM.isPending || hasRecVariance}
                     onClick={() => closeShiftM.mutate({
                       shiftId: shift.id,
                       countedCash: counted,
-                      handoverToUserId,
                     })}
                   >
                     {closeShiftM.isPending ? "جارٍ الإنهاء…" : hasRecVariance ? "لا يمكن الإنهاء قبل حل الفرق" : "تأكيد الإنهاء وطباعة الملخص"}

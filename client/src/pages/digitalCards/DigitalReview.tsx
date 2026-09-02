@@ -1,12 +1,15 @@
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
@@ -22,8 +25,6 @@ type QueueRow = RouterOutputs["digitalCards"]["sales"]["needsReview"][number];
 type ReviewDetails = RouterOutputs["digitalCards"]["sales"]["reviewDetails"];
 type Decision = "CANCEL_NO_ISSUE" | "FINALIZE_SALE" | "WRITEOFF_LOSS";
 type ItemOutcome = "ISSUED" | "NOT_ISSUED";
-
-const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 const DECISION_COPY: Record<Decision, { title: string; detail: string; effect: string }> = {
   CANCEL_NO_ISSUE: {
@@ -137,6 +138,194 @@ export default function DigitalReview() {
   const queue = needsReview.data ?? [];
   const openVariances = variances.data ?? [];
 
+  /** أعمدة طابور «مبيعات كروت لم تكتمل» — تُغلِق على `setReviewing`. */
+  const queueColumns: ColumnDef<QueueRow, unknown>[] = [
+    {
+      id: "id",
+      header: "رقم العملية",
+      accessorFn: (row) => `#${row.id}`,
+      meta: { kind: "code", width: "id" },
+      cell: ({ row }) => <span className="font-bold">#{row.original.id}</span>,
+    },
+    {
+      id: "branchName",
+      header: "الفرع",
+      accessorFn: (row) => row.branchName,
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName}</span>,
+    },
+    {
+      id: "createdBy",
+      header: "الموظف والوردية",
+      accessorFn: (row) => row.createdByName || `حساب #${row.createdBy}`,
+      // `wrap` لازمٌ مع `width: actor`: بدونه يفرض العقدُ `whitespace-nowrap` فيبقى سطرُ
+      // «@اسم · وردية #١٢ · مفتوحة» سطراً واحداً طويلاً، فيتمدّد العمود متجاوزاً عرضَه
+      // المُعلَن (w-40) ويضغط بقيّةَ الأعمدة. الجدولُ الخامّ قبل التحويل كان يسمح باللفّ.
+      meta: { width: "actor", wrap: true },
+      cell: ({ row }) => (
+        <>
+          <p className="font-medium">{row.original.createdByName || `حساب #${row.original.createdBy}`}</p>
+          <p className="text-xs text-muted-foreground">
+            {row.original.createdByUsername ? `@${row.original.createdByUsername} · ` : ""}وردية #{row.original.shiftId} ·{" "}
+            {row.original.shiftStatus === "OPEN" ? "مفتوحة" : "مغلقة"}
+          </p>
+        </>
+      ),
+    },
+    {
+      id: "cause",
+      header: "ما الذي حدث؟",
+      accessorFn: (row) => causeFor(row).title,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => {
+        const cause = causeFor(row.original);
+        return (
+          <>
+            <p className="font-semibold">{cause.title}</p>
+            <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">{cause.detail}</p>
+          </>
+        );
+      },
+    },
+    {
+      id: "expectedTotal",
+      header: "قيمة البيع",
+      accessorFn: (row) => fmtAr(row.expectedTotal),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmtAr(row.original.expectedTotal),
+    },
+    {
+      id: "reservedAmount",
+      header: "مبلغ معلّق",
+      accessorFn: (row) => fmtAr(row.reservedAmount),
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <>
+          <span className="font-bold">{fmtAr(row.original.reservedAmount)}</span>
+          {/* dir="auto" لأنّ خليّة المال معزولة LTR — والجملة العربية تحتاج اتّجاهها.
+              و`whitespace-normal` يُلغي `nowrap` الآتي من `kind: money` عن هذه الجملة وحدها:
+              بدونه تبقى الجملة (٣٣ محرفاً) سطراً واحداً فيتضاعف عرضُ عمود المال. ولا نستعمل
+              `wrap: true` على العمود كلّه لأنّه يجرّ `[overflow-wrap:anywhere]` فيكسر الرقمَ
+              نفسه على سطرين في الشاشات الضيّقة — والمبلغُ المقطوع أسوأ من عمودٍ عريض. */}
+          <p className="mt-1 whitespace-normal text-xs text-muted-foreground" dir="auto">محمي ولا يعود للمتاح قبل اعتماد القرار</p>
+        </>
+      ),
+    },
+    {
+      id: "createdAt",
+      header: "بدأت في",
+      accessorFn: (row) => fmtDateTime(row.createdAt),
+      meta: { kind: "datetime" },
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtDateTime(row.original.createdAt)}</span>,
+    },
+    {
+      id: "next",
+      header: "المطلوب الآن",
+      accessorFn: (row) => causeFor(row).next,
+      meta: { wrap: true },
+      cell: ({ row }) => <span className="block max-w-xs">{causeFor(row.original).next}</span>,
+    },
+    {
+      id: "actions",
+      header: "الإجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <RowActions
+          mode="inline"
+          actions={[{
+            key: "review",
+            kind: "view",
+            label: row.original.resolutionStatus === "PENDING" ? "مراجعة القرار" : "معالجة الآن",
+            gate: { module: "digital_cards", level: "READ" },
+            disabled: Number(row.original.activeClaimCount) > 0,
+            disabledReason: "نافذة الإصدار ما زالت نشطة",
+            onSelect: () => setReviewing(row.original),
+          }]}
+        />
+      ),
+    },
+  ];
+
+  /** أعمدة «اختلافات رصيد تحتاج تصحيحاً» — تُغلِق على `setResolving`. */
+  const varianceColumns: ColumnDef<Reconciliation, unknown>[] = [
+    {
+      id: "walletName",
+      header: "رصيد جهاز المزوّد",
+      accessorFn: (row) => row.walletName,
+      cell: ({ row }) => <span className="font-medium">{row.original.walletName}</span>,
+    },
+    {
+      id: "branchName",
+      header: "الفرع",
+      accessorFn: (row) => row.branchName,
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName}</span>,
+    },
+    { id: "businessDate", header: "التاريخ", accessorFn: (row) => row.businessDate, meta: { kind: "date" }, cell: ({ row }) => row.original.businessDate },
+    {
+      id: "countedBy",
+      header: "من سجّل الرصيد",
+      accessorFn: (row) => row.countedByName || `حساب #${row.countedBy}`,
+      meta: { width: "actor" },
+      cell: ({ row }) => (
+        <>
+          <p className="font-medium">{row.original.countedByName || `حساب #${row.original.countedBy}`}</p>
+          {row.original.countedByUsername && <p className="text-xs text-muted-foreground" dir="ltr">@{row.original.countedByUsername}</p>}
+          <p className="text-xs text-muted-foreground" dir="ltr">{fmtDateTime(row.original.createdAt)}</p>
+        </>
+      ),
+    },
+    {
+      id: "expectedBalance",
+      header: "في النظام",
+      accessorFn: (row) => fmtAr(row.expectedBalance),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmtAr(row.original.expectedBalance),
+    },
+    {
+      id: "actualBalance",
+      header: "في جهاز المزوّد",
+      accessorFn: (row) => fmtAr(row.actualBalance),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{fmtAr(row.original.actualBalance)}</span>,
+    },
+    {
+      id: "variance",
+      header: "الاختلاف",
+      accessorFn: (row) => fmtAr(D(row.variance).abs().toFixed(2)),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-bold text-destructive">{fmtAr(D(row.original.variance).abs().toFixed(2))}</span>,
+    },
+    {
+      id: "explanation",
+      header: "التفسير",
+      accessorFn: (row) => `جهاز المزوّد ${D(row.variance).gt(0) ? "أعلى" : "أقل"} من النظام بهذا المبلغ`,
+      meta: { wrap: true },
+      cell: ({ row }) => (
+        <span className="text-muted-foreground">
+          جهاز المزوّد {D(row.original.variance).gt(0) ? "أعلى" : "أقل"} من النظام بهذا المبلغ
+        </span>
+      ),
+    },
+    {
+      id: "actions",
+      header: "الإجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <RowActions
+          mode="inline"
+          actions={[{
+            key: "resolve-variance",
+            kind: "correct",
+            label: "معالجة الفرق",
+            gate: { module: "digital_cards", level: "FULL" },
+            onSelect: () => setResolving(row.original),
+          }]}
+        />
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -165,70 +354,33 @@ export default function DigitalReview() {
           مبيعات كروت لم تكتمل ({queue.length})
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full min-w-[1200px] text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-3 text-start">رقم العملية</th>
-                  <th className="p-3 text-start">الفرع</th>
-                  <th className="p-3 text-start">الموظف والوردية</th>
-                  <th className="p-3 text-start">ما الذي حدث؟</th>
-                  <th className="p-3 text-start">قيمة البيع</th>
-                  <th className="p-3 text-start">مبلغ معلّق</th>
-                  <th className="p-3 text-start">بدأت في</th>
-                  <th className="p-3 text-start">المطلوب الآن</th>
-                  <th className="p-3 text-center">الإجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {queue.map((row) => {
-                  const cause = causeFor(row);
-                  const active = Number(row.activeClaimCount) > 0;
-                  return (
-                    <tr key={row.id} className="border-t align-top">
-                      <td className="p-3 font-mono font-bold" dir="ltr">#{row.id}</td>
-                      <td className="p-3 text-muted-foreground">{row.branchName}</td>
-                      <td className="p-3">
-                        <p className="font-medium">{row.createdByName || `حساب #${row.createdBy}`}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {row.createdByUsername ? `@${row.createdByUsername} · ` : ""}وردية #{row.shiftId} · {row.shiftStatus === "OPEN" ? "مفتوحة" : "مغلقة"}
-                        </p>
-                      </td>
-                      <td className="p-3">
-                        <p className="font-semibold">{cause.title}</p>
-                        <p className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">{cause.detail}</p>
-                      </td>
-                      <td className="p-3 tabular-nums">{fmtAr(row.expectedTotal)}</td>
-                      <td className="p-3">
-                        <span className="font-bold tabular-nums">{fmtAr(row.reservedAmount)}</span>
-                        <p className="mt-1 text-xs text-muted-foreground">محمي ولا يعود للمتاح قبل اعتماد القرار</p>
-                      </td>
-                      <td className="p-3 text-muted-foreground whitespace-nowrap" dir="ltr">{fmtDateTime(row.createdAt)}</td>
-                      <td className="p-3 max-w-xs">{cause.next}</td>
-                      <td className="p-3 text-center">
-                        <RowActions
-                          mode="inline"
-                          actions={[{
-                            key: "review",
-                            kind: "view",
-                            label: row.resolutionStatus === "PENDING" ? "مراجعة القرار" : "معالجة الآن",
-                            gate: { module: "digital_cards", level: "READ" },
-                            disabled: active,
-                            disabledReason: "نافذة الإصدار ما زالت نشطة",
-                            onSelect: () => setReviewing(row),
-                          }]}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-                {needsReview.isLoading && <tr><td colSpan={9}><LoadingState /></td></tr>}
-                {!needsReview.isLoading && queue.length === 0 && (
-                  <TableEmptyRow colSpan={9} message="لا توجد عمليات تحتاج معالجة — كل مبيعات الكروت مكتملة." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/* مُضمَّن: البطاقة تحمل العنوان والعدّ؛ و`pageSize=Infinity` لازمٌ معه لأنّ شريط
+              الحالة (وفيه الترقيم) مكتوم. الارتفاع كما كان في ScrollTableShell. */}
+          <DataTable<QueueRow>
+            embedded
+            searchable={false}
+            pageSize={Infinity}
+            maxHeightClass="max-h-[calc(100dvh-15rem)]"
+            data={queue}
+            columns={queueColumns}
+            /*
+             * محاذاةٌ علوية للخلايا — استعادةُ ما أسقطه التحويل.
+             * كان الصفّ الخامّ `<tr className="border-t align-top">`، و`<td>` يرث المحاذاة
+             * عن الصفّ بحكم `vertical-align: inherit` في ورقة المتصفّح. أمّا `DataTable`
+             * فيكتب `align-middle` على كلّ خليّة صراحةً، فينقطع التوريث: ثلاثُ خلايا هنا
+             * متعدّدةُ الأسطر (الموظف+الوردية · السبب+تفصيله · المبلغ+تحذيره) وبقيّتُها سطرٌ
+             * واحد، فتتوسّط القصيرةُ عمودياً وينفكّ ارتباطُ السطر الأوّل في كلّ عمودٍ بنظيره
+             * — يقرأ المديرُ اسمَ موظّفٍ بإزاء سببِ صفٍّ يبدو غيرَه.
+             * `align-top` على `<tr>` وحدَه **لا يكفي** (الخليّة تحمل `align-middle` صريحاً
+             * فلا ترث)، فالإصلاح متغيّرٌ يستهدف الخلايا: خصوصيّتُه (0,1,1) تعلو صنفَ
+             * المكوّن (0,1,0). ولا يمسّ الزخرفةَ الشريطية: `rowShellClass` لا يكتمها إلّا
+             * على صنفِ خلفية (`bg-`).
+             */
+            getRowClassName={() => "[&>td]:align-top"}
+            loading={needsReview.isLoading}
+            errorState={{ isError: needsReview.isError, message: needsReview.error?.message, onRetry: () => void needsReview.refetch() }}
+            emptyText="لا توجد عمليات تحتاج معالجة — كل مبيعات الكروت مكتملة."
+          />
         </CardContent>
       </Card>
 
@@ -237,62 +389,17 @@ export default function DigitalReview() {
           اختلافات رصيد تحتاج تصحيحاً ({openVariances.length})
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full min-w-[850px] text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-3 text-start">رصيد جهاز المزوّد</th>
-                  <th className="p-3 text-start">الفرع</th>
-                  <th className="p-3 text-start">التاريخ</th>
-                  <th className="p-3 text-start">من سجّل الرصيد</th>
-                  <th className="p-3 text-start">في النظام</th>
-                  <th className="p-3 text-start">في جهاز المزوّد</th>
-                  <th className="p-3 text-start">الاختلاف</th>
-                  <th className="p-3 text-start">التفسير</th>
-                  <th className="p-3 text-center">الإجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {openVariances.map((row) => {
-                  const higher = D(row.variance).gt(0);
-                  return (
-                    <tr key={row.id} className="border-t">
-                      <td className="p-3 font-medium">{row.walletName}</td>
-                      <td className="p-3 text-muted-foreground">{row.branchName}</td>
-                      <td className="p-3" dir="ltr">{row.businessDate}</td>
-                      <td className="p-3">
-                        <p className="font-medium">{row.countedByName || `حساب #${row.countedBy}`}</p>
-                        {row.countedByUsername && <p className="text-xs text-muted-foreground" dir="ltr">@{row.countedByUsername}</p>}
-                        <p className="text-xs text-muted-foreground" dir="ltr">{fmtDateTime(row.createdAt)}</p>
-                      </td>
-                      <td className="p-3 tabular-nums">{fmtAr(row.expectedBalance)}</td>
-                      <td className="p-3 tabular-nums font-medium">{fmtAr(row.actualBalance)}</td>
-                      <td className="p-3 tabular-nums font-bold text-destructive">{fmtAr(D(row.variance).abs().toFixed(2))}</td>
-                      <td className="p-3 text-muted-foreground">
-                        جهاز المزوّد {higher ? "أعلى" : "أقل"} من النظام بهذا المبلغ
-                      </td>
-                      <td className="p-3 text-center">
-                        <RowActions
-                          mode="inline"
-                          actions={[{
-                            key: "resolve-variance",
-                            kind: "correct",
-                            label: "معالجة الفرق",
-                            gate: { module: "digital_cards", level: "FULL" },
-                            onSelect: () => setResolving(row),
-                          }]}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-                {variances.isLoading && <tr><td colSpan={9}><LoadingState /></td></tr>}
-                {!variances.isLoading && openVariances.length === 0 && (
-                  <TableEmptyRow colSpan={9} message="لا توجد اختلافات مفتوحة — الأرصدة مطابقة." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable<Reconciliation>
+            embedded
+            searchable={false}
+            pageSize={Infinity}
+            maxHeightClass="max-h-[calc(100dvh-15rem)]"
+            data={openVariances}
+            columns={varianceColumns}
+            loading={variances.isLoading}
+            errorState={{ isError: variances.isError, message: variances.error?.message, onRetry: () => void variances.refetch() }}
+            emptyText="لا توجد اختلافات مفتوحة — الأرصدة مطابقة."
+          />
         </CardContent>
       </Card>
 
@@ -507,15 +614,15 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
                           </div>
                           <div>
                             <label className="mb-1 block text-xs text-muted-foreground">نتيجة الجهاز</label>
-                            <select
-                              className={selectCls}
+                            <AppSelect
+                              aria-label="نتيجة الجهاز"
                               value={outcome}
                               disabled={fixed}
-                              onChange={(event) => setOutcomes((current) => ({ ...current, [id]: event.target.value as ItemOutcome }))}
+                              onValueChange={(next) => setOutcomes((current) => ({ ...current, [id]: next as ItemOutcome }))}
                             >
                               <option value="ISSUED">صدر الكرت</option>
                               <option value="NOT_ISSUED">لم يصدر</option>
-                            </select>
+                            </AppSelect>
                           </div>
                           <div>
                             <label className="mb-1 block text-xs text-muted-foreground">رقم العملية أو ID الكرت {outcome === "ISSUED" ? "(إلزامي)" : ""}</label>
@@ -566,7 +673,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
           <Button variant="outline" size="sm" onClick={onClose}>إغلاق</Button>
           {data && !pending && (
             <Button size="sm" disabled={requestMut.isPending || !decision} onClick={submitRequest}>
-              {requestMut.isPending ? "جارٍ الإرسال…" : "إرسال لمدير آخر"}
+              {requestMut.isPending ? ACTION_LABELS.sending : "إرسال لمدير آخر"}
             </Button>
           )}
         </DialogFooter>
@@ -747,7 +854,7 @@ function ResolveVarianceDialog({
                 <label className="text-sm font-medium" htmlFor="variance-reason">سبب الاختلاف بعد مراجعة تقرير الجهاز</label>
                 <Textarea id="variance-reason" value={reason} onChange={(event) => setReason(event.target.value)} rows={3} placeholder="مثال: حركة شحن ظهرت في جهاز المزوّد ولم تكن مسجلة في النظام…" />
                 <Button size="sm" disabled={requestMut.isPending} onClick={requestCorrection}>
-                  {requestMut.isPending ? "جارٍ الإرسال…" : "إرسال طلب تصحيح"}
+                  {requestMut.isPending ? ACTION_LABELS.sending : "إرسال طلب تصحيح"}
                 </Button>
                 <p className="text-xs text-muted-foreground">إرسال الطلب لا يغير الرصيد.</p>
               </div>

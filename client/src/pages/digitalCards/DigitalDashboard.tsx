@@ -1,15 +1,15 @@
 // داشبورد البطاقات الرقمية (ش١١). كل الأرقام مُجمَّعة خادمياً على فترة **نصف مفتوحة**،
 // والحصة/الربح يظهران فقط لمن يملك رؤية التكلفة (الخادم يُصفّرهما لغيره — لا إخفاء بالعرض).
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { StatCard } from "@/components/StatCard";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { fmtAr } from "@/lib/money";
 import { RowActions } from "@/components/list/RowActions";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { digitalSaleIntentStatusLabel } from "@shared/digitalSaleIntentStatus";
 import { AlertTriangle, CreditCard, TrendingUp, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -58,6 +58,12 @@ const AVAIL_LABEL: Record<string, string> = {
   WALLET_INACTIVE: "محفظة المزوّد معطّلة",
   INSUFFICIENT_BALANCE: "رصيد المزوّد لا يكفي لبيع كرت واحد",
 };
+
+/** الخصائص المشتركة لجداول اللوحة: مُضمَّنة في بطاقةٍ تحمل عنوانَها وإجماليَّها. */
+const PANEL_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
+
+type TopColumn = ColumnDef<NonNullable<RouterOutputs["digitalCards"]["dashboard"]["topOfferings"]>[number], unknown>;
+type ModeColumn = ColumnDef<NonNullable<RouterOutputs["digitalCards"]["dashboard"]["summary"]["byMode"]>[number], unknown>;
 
 export default function DigitalDashboard() {
   const [, navigate] = useLocation();
@@ -204,32 +210,24 @@ export default function DigitalDashboard() {
             أرصدة المحافظ — الإجمالي {fmtAr(balances.data?.totalAsset ?? "0")}
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">حساب رصيد الجهاز</th>
-                    <th className="p-2 text-start">المزوّد</th>
-                    <th className="p-2 text-start">المتاح</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(balances.data?.wallets ?? []).map((w) => (
-                    <tr key={w.walletId} className="border-t">
-                      <td className="p-2">{w.walletName}</td>
-                      <td className="p-2 text-muted-foreground">{w.providerName}</td>
-                      <td className={`p-2 tabular-nums ${w.isLow ? "text-destructive font-medium" : ""}`}>
-                        {fmtAr(w.available)}
-                      </td>
-                    </tr>
-                  ))}
-                  {balances.isLoading && <tr><td colSpan={3}><LoadingState /></td></tr>}
-                  {!balances.isLoading && (balances.data?.wallets.length ?? 0) === 0 && (
-                    <TableEmptyRow colSpan={3} message="لا محافظ مفعّلة." />
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            <DataTable
+              {...PANEL_TABLE}
+              data={balances.data?.wallets ?? []}
+              loading={balances.isLoading}
+              emptyText="لا محافظ مفعّلة."
+              columns={[
+                { id: "wallet", header: "حساب رصيد الجهاز", cell: ({ row }) => row.original.walletName },
+                { id: "provider", header: "المزوّد", cell: ({ row }) => <span className="text-muted-foreground">{row.original.providerName}</span> },
+                {
+                  id: "available",
+                  header: "المتاح",
+                  meta: { kind: "money" },
+                  cell: ({ row }) => (
+                    <span className={row.original.isLow ? "text-destructive font-medium" : undefined}>{fmtAr(row.original.available)}</span>
+                  ),
+                },
+              ]}
+            />
           </CardContent>
         </Card>
 
@@ -239,28 +237,16 @@ export default function DigitalDashboard() {
             مستحقّات المزوّدين الآجلين — الإجمالي {fmtAr(dues.data?.totalDue ?? "0")}
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">المزوّد</th>
-                    <th className="p-2 text-start">المستحقّ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(dues.data?.providers ?? []).map((p) => (
-                    <tr key={p.providerId} className="border-t">
-                      <td className="p-2">{p.providerName}</td>
-                      <td className="p-2 tabular-nums font-medium">{fmtAr(p.due)}</td>
-                    </tr>
-                  ))}
-                  {dues.isLoading && <tr><td colSpan={2}><LoadingState /></td></tr>}
-                  {!dues.isLoading && (dues.data?.providers.length ?? 0) === 0 && (
-                    <TableEmptyRow colSpan={2} message="لا مزوّدين آجلين." />
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            <DataTable
+              {...PANEL_TABLE}
+              data={dues.data?.providers ?? []}
+              loading={dues.isLoading}
+              emptyText="لا مزوّدين آجلين."
+              columns={[
+                { id: "provider", header: "المزوّد", cell: ({ row }) => row.original.providerName },
+                { id: "due", header: "المستحقّ", meta: { kind: "money" }, cell: ({ row }) => <span className="font-medium">{fmtAr(row.original.due)}</span> },
+              ]}
+            />
           </CardContent>
         </Card>
       </div>
@@ -269,34 +255,22 @@ export default function DigitalDashboard() {
       <Card>
         <CardHeader className="text-sm font-medium">الأكثر مبيعاً في الفترة</CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">البطاقة</th>
-                  <th className="p-2 text-start">المزوّد</th>
-                  <th className="p-2 text-start">العدد</th>
-                  <th className="p-2 text-start">المبيعات</th>
-                  {showCost && <th className="p-2 text-start">الربح</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {(top.data ?? []).map((t) => (
-                  <tr key={t.offeringId} className="border-t">
-                    <td className="p-2 font-medium">{t.offeringName}</td>
-                    <td className="p-2 text-muted-foreground">{t.providerName}</td>
-                    <td className="p-2 tabular-nums">{t.cards}</td>
-                    <td className="p-2 tabular-nums">{fmtAr(t.sales)}</td>
-                    {showCost && <td className="p-2 tabular-nums">{fmtAr(t.profit ?? "0")}</td>}
-                  </tr>
-                ))}
-                {top.isLoading && <tr><td colSpan={showCost ? 5 : 4}><LoadingState /></td></tr>}
-                {!top.isLoading && (top.data?.length ?? 0) === 0 && (
-                  <TableEmptyRow colSpan={showCost ? 5 : 4} message="لا مبيعات في هذه الفترة." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable
+            {...PANEL_TABLE}
+            data={top.data ?? []}
+            loading={top.isLoading}
+            emptyText="لا مبيعات في هذه الفترة."
+            columns={[
+              { id: "offering", header: "البطاقة", cell: ({ row }) => <span className="font-medium">{row.original.offeringName}</span> },
+              { id: "provider", header: "المزوّد", cell: ({ row }) => <span className="text-muted-foreground">{row.original.providerName}</span> },
+              { id: "cards", header: "العدد", meta: { kind: "number" }, cell: ({ row }) => row.original.cards },
+              { id: "sales", header: "المبيعات", meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.sales) },
+              // عمود الربح يتبع صلاحية رؤية الكلفة — مرآةُ الحارس نفسه في بقيّة اللوحة.
+              ...(showCost
+                ? [{ id: "profit", header: "الربح", meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.profit ?? "0") } as TopColumn]
+                : []),
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -306,32 +280,19 @@ export default function DigitalDashboard() {
           عمليات بيع لم تكتمل ({pending.data?.total ?? 0})
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">رقم</th>
-                  <th className="p-2 text-start">الفرع</th>
-                  <th className="p-2 text-start">الحالة</th>
-                  <th className="p-2 text-start">قيمة البيع</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(pending.data?.items ?? []).map((p) => (
-                  <tr key={p.id} className={`border-t ${p.status === "NEEDS_REVIEW" ? "bg-destructive/5" : ""}`}>
-                    <td className="p-2 tabular-nums">{p.id}</td>
-                    <td className="p-2 text-muted-foreground">{p.branchName}</td>
-                    <td className="p-2">{digitalSaleIntentStatusLabel(p.status)}</td>
-                    <td className="p-2 tabular-nums">{fmtAr(p.expectedTotal)}</td>
-                  </tr>
-                ))}
-                {pending.isLoading && <tr><td colSpan={4}><LoadingState /></td></tr>}
-                {!pending.isLoading && (pending.data?.items.length ?? 0) === 0 && (
-                  <TableEmptyRow colSpan={4} message="لا عمليات معلّقة — كل البيوع مُثبَّتة." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable
+            {...PANEL_TABLE}
+            data={pending.data?.items ?? []}
+            loading={pending.isLoading}
+            emptyText="لا عمليات معلّقة — كل البيوع مُثبَّتة."
+            getRowClassName={(p) => (p.status === "NEEDS_REVIEW" ? "bg-destructive/5" : undefined)}
+            columns={[
+              { id: "id", header: "رقم", meta: { kind: "number", width: "id" }, cell: ({ row }) => row.original.id },
+              { id: "branch", header: "الفرع", cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName}</span> },
+              { id: "status", header: "الحالة", cell: ({ row }) => digitalSaleIntentStatusLabel(row.original.status) },
+              { id: "expected", header: "قيمة البيع", meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.expectedTotal) },
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -342,90 +303,64 @@ export default function DigitalDashboard() {
             جاهزية البيع — {health.data?.ready ?? 0} من {health.data?.total ?? 0} جاهزة
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">البطاقة</th>
-                    <th className="p-2 text-start">الفرع</th>
-                    <th className="p-2 text-start">ما الذي يمنع البيع؟</th>
-                    <th className="p-2 text-center">الإجراء</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(health.data?.needsAttention ?? []).map((h) => (
-                    <tr key={`${h.branchId}-${h.offeringId}`} className="border-t">
-                      <td className="p-2">{h.offeringName}</td>
-                      <td className="p-2 text-muted-foreground">{h.branchName}</td>
-                      <td className="p-2">{AVAIL_LABEL[h.availability] ?? h.availability}</td>
-                      <td className="p-2 text-center">
-                        <RowActions
-                          mode="inline"
-                          actions={[{
-                            key: "fix-readiness",
-                            kind: "edit",
-                            label: h.availability === "NO_PRICE" || h.availability === "STALE_PRICE"
-                              ? "فتح التسعير"
-                              : h.availability === "INSUFFICIENT_BALANCE" || h.availability === "WALLET_INACTIVE"
-                                ? "فتح رصيد المزوّد"
-                                : "إصلاح الربط",
-                            gate: { module: "digital_cards", level: "READ" },
-                            onSelect: () => {
-                              const pricingIssue = h.availability === "NO_PRICE" || h.availability === "STALE_PRICE";
-                              const tab = pricingIssue
-                                ? "pricing"
-                                : h.availability === "INSUFFICIENT_BALANCE" || h.availability === "WALLET_INACTIVE"
-                                  ? "wallets"
-                                  : "offerings";
-                              const params = new URLSearchParams({ tab });
-                              params.set("branchId", String(h.branchId));
-                              params.set("providerId", String(h.providerId));
-                              navigate(`/digital-cards?${params.toString()}`);
-                            },
-                          }]}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                  {health.isLoading && <tr><td colSpan={4}><LoadingState /></td></tr>}
-                  {!health.isLoading && (health.data?.needsAttention.length ?? 0) === 0 && (
-                    <TableEmptyRow colSpan={4} message="كل البطاقات جاهزة للبيع في النطاق المحدد." />
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            <DataTable
+              {...PANEL_TABLE}
+              data={health.data?.needsAttention ?? []}
+              loading={health.isLoading}
+              emptyText="كل البطاقات جاهزة للبيع في النطاق المحدد."
+              columns={[
+                { id: "offering", header: "البطاقة", cell: ({ row }) => row.original.offeringName },
+                { id: "branch", header: "الفرع", cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName}</span> },
+                { id: "reason", header: "ما الذي يمنع البيع؟", meta: { wrap: true }, cell: ({ row }) => AVAIL_LABEL[row.original.availability] ?? row.original.availability },
+                {
+                  id: "action",
+                  header: "الإجراء",
+                  meta: { kind: "actions" },
+                  cell: ({ row }) => {
+                    const h = row.original;
+                    const pricingIssue = h.availability === "NO_PRICE" || h.availability === "STALE_PRICE";
+                    const balanceIssue = h.availability === "INSUFFICIENT_BALANCE" || h.availability === "WALLET_INACTIVE";
+                    return (
+                      <RowActions
+                        mode="inline"
+                        actions={[{
+                          key: "fix-readiness",
+                          kind: "edit",
+                          label: pricingIssue ? "فتح التسعير" : balanceIssue ? "فتح رصيد المزوّد" : "إصلاح الربط",
+                          gate: { module: "digital_cards", level: "READ" },
+                          onSelect: () => {
+                            const params = new URLSearchParams({ tab: pricingIssue ? "pricing" : balanceIssue ? "wallets" : "offerings" });
+                            params.set("branchId", String(h.branchId));
+                            params.set("providerId", String(h.providerId));
+                            navigate(`/digital-cards?${params.toString()}`);
+                          },
+                        }]}
+                      />
+                    );
+                  },
+                },
+              ]}
+            />
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="text-sm font-medium">حسب طريقة سداد المزوّد</CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">طريقة السداد</th>
-                    <th className="p-2 text-start">كروت</th>
-                    <th className="p-2 text-start">المبيعات</th>
-                    {showCost && <th className="p-2 text-start">الربح</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(s?.byMode ?? []).map((m) => (
-                    <tr key={m.settlementMode} className="border-t">
-                      <td className="p-2">{MODE_LABEL[m.settlementMode] ?? m.settlementMode}</td>
-                      <td className="p-2 tabular-nums">{m.cards}</td>
-                      <td className="p-2 tabular-nums">{fmtAr(m.sales)}</td>
-                      {showCost && <td className="p-2 tabular-nums">{fmtAr(m.profit ?? "0")}</td>}
-                    </tr>
-                  ))}
-                  {summary.isLoading && <tr><td colSpan={showCost ? 4 : 3}><LoadingState /></td></tr>}
-                  {!summary.isLoading && (s?.byMode.length ?? 0) === 0 && (
-                    <TableEmptyRow colSpan={showCost ? 4 : 3} message="لا مبيعات في هذه الفترة." />
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            <DataTable
+              {...PANEL_TABLE}
+              data={s?.byMode ?? []}
+              loading={summary.isLoading}
+              emptyText="لا مبيعات في هذه الفترة."
+              columns={[
+                { id: "mode", header: "طريقة السداد", cell: ({ row }) => MODE_LABEL[row.original.settlementMode] ?? row.original.settlementMode },
+                { id: "cards", header: "كروت", meta: { kind: "number" }, cell: ({ row }) => row.original.cards },
+                { id: "sales", header: "المبيعات", meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.sales) },
+                ...(showCost
+                  ? [{ id: "profit", header: "الربح", meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.profit ?? "0") } as ModeColumn]
+                  : []),
+              ]}
+            />
           </CardContent>
         </Card>
       </div>

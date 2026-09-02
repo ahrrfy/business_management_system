@@ -5,10 +5,23 @@ import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { D, fmt, round2 } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
+import { SubmitButton } from "@/components/ui/SubmitButton";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { exportSheets } from "@/lib/export";
 import {
@@ -51,6 +64,16 @@ type OpeningAllocation = NonNullable<
 >[number];
 type OpeningAllocationRole = OpeningAllocation["role"];
 
+/** صفوفٌ مشتقّة من عقد الخادم فلا تنجرف عنه. */
+type OperationalMismatchRow = NonNullable<
+  ActivationData["operationalReconciliation"]
+>["mismatches"][number];
+type OpeningRoleTotalRow = OpeningPreparation["preview"]["roleTotals"][number];
+type DoubleEntryRoleRow = DoubleEntryData["roles"][number];
+
+/** جداول هذه الشاشة كلّها مُضمَّنة في بطاقاتٍ/أقسامٍ تحمل عناوينها وعدَّها ⇒ بلا شريط حالة. */
+const PANEL_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
+
 const OPENING_ALLOCATION_ROLES: OpeningAllocationRole[] = [
   "CAPITAL",
   "RETAINED_EARNINGS",
@@ -76,6 +99,13 @@ export default function Reconcile() {
   const [openingAllocationAmounts, setOpeningAllocationAmounts] = useState<
     Record<string, string>
   >({});
+  /** حوار السبب الموحَّد (بديل window.prompt): إيقاف الدفتر أو مسح مصادقة السياسة.
+      يُعلَن هنا مع بقيّة الحالة — أي قبل حاجز «غير المدير» أدناه — التزاماً بقاعدة الخطّافات.
+      النوع منفصلٌ عن راية الفتح عمداً: تصفيرُه عند الإغلاق يقلب عناوين الحوار أثناء
+      حركة الخروج فيقرأ المستعمل عنواناً غير الذي أكّده. */
+  const [reasonKind, setReasonKind] = useState<"STOP" | "CLEAR_POLICY">("STOP");
+  const [reasonOpen, setReasonOpen] = useState(false);
+  const [reasonText, setReasonText] = useState("");
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
   const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
@@ -104,6 +134,8 @@ export default function Reconcile() {
             ? "اعتمد الدفتر المزدوج بوضع ACTIVE."
             : "أُوقف الدفتر المزدوج مع حفظ اليوميات التاريخية.",
       );
+      setReasonOpen(false);
+      setReasonText("");
       void recon.refetch();
     },
     onError: (error) => notify.err(error),
@@ -118,6 +150,8 @@ export default function Reconcile() {
         );
         setPolicyReference("");
         setPolicyAccountantName("");
+        setReasonOpen(false);
+        setReasonText("");
         void recon.refetch();
       },
       onError: (error) => notify.err(error),
@@ -472,17 +506,21 @@ export default function Reconcile() {
     ]);
   }
 
-  function requestActivation() {
+  async function requestActivation() {
     if (
-      !window.confirm(
-        "تأكيد اعتماد ACTIVE: بعد التفعيل سيفشل أي حدث مالي لا يملك خريطة أو بيانات مكتملة، وستتراجع معاملة الأعمال كاملة. هل راجعت كل موانع البوابة وتريد المتابعة؟",
-      )
+      !(await confirm({
+        variant: "danger",
+        title: "اعتماد الدفتر المزدوج بوضع ACTIVE؟",
+        description:
+          "بعد التفعيل سيفشل أي حدث مالي لا يملك خريطة أو بيانات مكتملة، وستتراجع معاملة الأعمال كاملة. هل راجعت كل موانع البوابة وتريد المتابعة؟",
+        confirmText: "اعتماد ACTIVE",
+      }))
     )
       return;
     setMode.mutate({ target: "ACTIVE" });
   }
 
-  function requestStartShadow() {
+  async function requestStartShadow() {
     const prepared = openingPreparation.data;
     if (!prepared) {
       notify.warn("أعدّ معاينة الافتتاح أولاً.");
@@ -493,9 +531,13 @@ export default function Reconcile() {
       return;
     }
     if (
-      !window.confirm(
-        "تأكيد لقطة القطع وبدء SHADOW؟ ستُعاد مطابقة البصمة داخل معاملة ذرية. اللقطة تنقل أرصدة الميزانية عند القطع ولا تعيد بناء أرباح وخسائر ما قبل تاريخ القطع.",
-      )
+      !(await confirm({
+        variant: "warning",
+        title: "تأكيد لقطة القطع وبدء وضع الظل؟",
+        description:
+          "ستُعاد مطابقة البصمة داخل معاملة ذرية. اللقطة تنقل أرصدة الميزانية عند القطع ولا تعيد بناء أرباح وخسائر ما قبل تاريخ القطع.",
+        confirmText: "بدء وضع الظل",
+      }))
     )
       return;
     setMode.mutate({
@@ -549,23 +591,11 @@ export default function Reconcile() {
     openingPreparation.mutate({ allocations });
   }
 
+  /** إيقاف الدفتر المزدوج — السبب إلزاميّ (10 أحرف فأكثر) والتأكيد صريحٌ في الحوار نفسه. */
   function requestStop() {
-    const reason = window.prompt(
-      "أدخل سبب إيقاف الدفتر المزدوج. سيُحفظ السبب في سجل التدقيق ولن تُحذف اليوميات التاريخية:",
-    );
-    if (reason === null) return;
-    const trimmed = reason.trim();
-    if (trimmed.length < 10) {
-      notify.warn("سبب الإيقاف يجب ألا يقل عن 10 أحرف.");
-      return;
-    }
-    if (
-      !window.confirm(
-        "تأكيد الإيقاف إلى OFF؟ ستتوقف كتابة القيود المزدوجة الجديدة، وتبقى اليوميات السابقة محفوظة.",
-      )
-    )
-      return;
-    setMode.mutate({ target: "OFF", reason: trimmed });
+    setReasonText("");
+    setReasonKind("STOP");
+    setReasonOpen(true);
   }
 
   function approvePolicy() {
@@ -586,17 +616,32 @@ export default function Reconcile() {
     });
   }
 
+  /** مسح مصادقة السياسة — السبب إلزاميّ (10 أحرف فأكثر) ويُحفظ في سجل التدقيق. */
   function clearPolicyApproval() {
-    const reason = window.prompt(
-      "أدخل سبب مسح مصادقة السياسة. سيُحفظ السبب في سجل التدقيق:",
-    );
-    if (reason === null) return;
-    const trimmed = reason.trim();
-    if (trimmed.length < 10) {
-      notify.warn("سبب المسح يجب ألا يقل عن 10 أحرف.");
+    setReasonText("");
+    setReasonKind("CLEAR_POLICY");
+    setReasonOpen(true);
+  }
+
+  /** إرسال حوار السبب — يحفظ نفس الحدّ الأدنى ونفس رسائل التحذير لكلا المسارين.
+      الزرّ مُعطَّل تحت 10 أحرف، والفحص هنا يبقى دفاعاً ثانياً لا يُسقَط. */
+  function submitReasonDialog() {
+    const trimmed = reasonText.trim();
+    if (reasonKind === "STOP") {
+      if (trimmed.length < 10) {
+        notify.warn("سبب الإيقاف يجب ألا يقل عن 10 أحرف.");
+        return;
+      }
+      setMode.mutate({ target: "OFF", reason: trimmed });
       return;
     }
-    setPolicyApproval.mutate({ action: "CLEAR", reason: trimmed });
+    if (reasonKind === "CLEAR_POLICY") {
+      if (trimmed.length < 10) {
+        notify.warn("سبب المسح يجب ألا يقل عن 10 أحرف.");
+        return;
+      }
+      setPolicyApproval.mutate({ action: "CLEAR", reason: trimmed });
+    }
   }
 
   return (
@@ -716,10 +761,13 @@ export default function Reconcile() {
             onStop={requestStop}
           />
 
+          {/* لونُ الانحراف دلاليّ لا مخزنيّ: كان `badge-stock-out` — توكن «نفد المخزون» —
+              في شاشة مطابقةٍ نقديّة لا مخزون فيها. الدلالة هنا خطرٌ يستوجب المراجعة، فصار
+              `--sem-neg` (نفس الأحمر الطوبيّ قيمةً، والصنف صار يصف ما يعنيه). */}
           <Card>
             <CardContent
               className={`p-6 text-center text-lg font-bold inline-flex items-center justify-center gap-2 w-full ${
-                total === 0 ? "badge-status-active" : "badge-stock-out"
+                total === 0 ? "badge-status-active" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
               }`}
             >
               {total === 0 ? (
@@ -828,6 +876,72 @@ export default function Reconcile() {
           />
         </>
       )}
+
+      {/* حوار السبب الموحَّد — بديل window.prompt + window.confirm المتتاليَين.
+          يجمع في خطوةٍ واحدة: السبب الإلزاميّ (10 أحرف فأكثر، مطابقاً لعقد الخادم 10..500)
+          ونصّ التحذير الذي كان في window.confirm، فلا يسقط حارسٌ ولا معلومة. */}
+      <Dialog
+        open={reasonOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReasonOpen(false);
+            setReasonText("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {reasonKind === "STOP"
+                ? "إيقاف الدفتر المزدوج إلى OFF؟"
+                : "مسح مصادقة السياسة؟"}
+            </DialogTitle>
+            <DialogDescription>
+              {reasonKind === "STOP"
+                ? "ستتوقف كتابة القيود المزدوجة الجديدة، وتبقى اليوميات السابقة محفوظة ولن تُحذف. يُحفظ السبب في سجل التدقيق."
+                : "تُمسح مصادقة المحاسب على سياسة الترحيل، ويُحفظ السبب في سجل التدقيق."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <label className="text-sm font-medium" htmlFor="reconcile-reason">
+              {reasonKind === "STOP" ? "سبب الإيقاف" : "سبب المسح"}
+            </label>
+            <Textarea
+              id="reconcile-reason"
+              value={reasonText}
+              onChange={(event) => setReasonText(event.target.value)}
+              rows={3}
+              maxLength={500}
+              placeholder="اكتب سبباً واضحاً يفهمه من يراجع سجل التدقيق لاحقاً"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              10 أحرف على الأقل.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setReasonOpen(false);
+                setReasonText("");
+              }}
+            >
+              تراجع
+            </Button>
+            <SubmitButton
+              type="button"
+              variant="destructive"
+              pending={setMode.isPending || setPolicyApproval.isPending}
+              pendingText={ACTION_LABELS.processing}
+              disabled={reasonText.trim().length < 10}
+              onClick={submitReasonDialog}
+            >
+              {reasonKind === "STOP" ? "تأكيد الإيقاف إلى OFF" : "تأكيد المسح"}
+            </SubmitButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -910,11 +1024,12 @@ function DoubleEntryStatus({
       : activation.mode === "SHADOW"
         ? "ظل"
         : "فعّال";
+  // موانعُ التفعيل والانحرافُ خطرٌ لا نفادُ مخزون: `--sem-neg` بدل توكن المخزون `badge-stock-out`.
   const modeClass =
     activation.mode === "ACTIVE"
       ? activation.blockers.length === 0
         ? "badge-status-active"
-        : "badge-stock-out"
+        : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
       : activation.mode === "SHADOW"
         ? "badge-status-pending"
         : "badge-status-cancelled";
@@ -1020,47 +1135,47 @@ function DoubleEntryStatus({
                 </p>
               </div>
               {activation.operationalReconciliation.mismatches.length > 0 && (
-                <ScrollTableShell bordered={false}>
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr>
-                        <th className="px-3 py-2 text-start">النطاق</th>
-                        <th className="px-3 py-2 text-start">الدور المحاسبي</th>
-                        <th className="px-3 py-2 text-end">المصدر التشغيلي</th>
-                        <th className="px-3 py-2 text-end">اليومية</th>
-                        <th className="px-3 py-2 text-end">الفرق</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activation.operationalReconciliation.mismatches.map(
-                        (row) => (
-                          <tr
-                            key={`${row.scope}:${row.branchId ?? "GLOBAL"}:${row.role}`}
-                            className="border-t"
-                          >
-                            <td className="px-3 py-2">
-                              {row.scope === "GLOBAL"
-                                ? "الشركة"
-                                : `الفرع ${row.branchId}`}
-                            </td>
-                            <td className="px-3 py-2">
-                              {ROLE_LABELS[row.role] ?? row.role}
-                            </td>
-                            <td className="px-3 py-2 text-end tabular-nums">
-                              {fmt(row.operationalNetDebit)}
-                            </td>
-                            <td className="px-3 py-2 text-end tabular-nums">
-                              {fmt(row.journalNetDebit)}
-                            </td>
-                            <td className="px-3 py-2 text-end tabular-nums text-destructive">
-                              {fmt(row.difference)}
-                            </td>
-                          </tr>
-                        ),
-                      )}
-                    </tbody>
-                  </table>
-                </ScrollTableShell>
+                <DataTable<OperationalMismatchRow>
+                  {...PANEL_TABLE}
+                  data={activation.operationalReconciliation.mismatches}
+                  emptyText="لا فروق مطابقة تشغيلية."
+                  columns={[
+                    {
+                      id: "scope",
+                      header: "النطاق",
+                      accessorFn: (row) => (row.scope === "GLOBAL" ? "الشركة" : `الفرع ${row.branchId}`),
+                      cell: ({ row }) => (row.original.scope === "GLOBAL" ? "الشركة" : `الفرع ${row.original.branchId}`),
+                    },
+                    {
+                      id: "role",
+                      header: "الدور المحاسبي",
+                      // التسمية المعروضة لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+                      accessorFn: (row) => ROLE_LABELS[row.role] ?? row.role,
+                      cell: ({ row }) => ROLE_LABELS[row.original.role] ?? row.original.role,
+                    },
+                    {
+                      id: "operationalNetDebit",
+                      header: "المصدر التشغيلي",
+                      accessorFn: (row) => fmt(row.operationalNetDebit),
+                      meta: { kind: "money" },
+                      cell: ({ row }) => fmt(row.original.operationalNetDebit),
+                    },
+                    {
+                      id: "journalNetDebit",
+                      header: "اليومية",
+                      accessorFn: (row) => fmt(row.journalNetDebit),
+                      meta: { kind: "money" },
+                      cell: ({ row }) => fmt(row.original.journalNetDebit),
+                    },
+                    {
+                      id: "difference",
+                      header: "الفرق",
+                      accessorFn: (row) => fmt(row.difference),
+                      meta: { kind: "money" },
+                      cell: ({ row }) => <span className="text-destructive">{fmt(row.original.difference)}</span>,
+                    },
+                  ]}
+                />
               )}
               {activation.operationalReconciliation.blockers.map((item) => (
                 <div
@@ -1282,32 +1397,22 @@ function DoubleEntryStatus({
                   />
                 </div>
 
-                <ScrollTableShell bordered={false}>
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/50">
-                      <tr>
-                        <th className="p-2">الدور المحاسبي</th>
-                        <th className="p-2 text-right">مدين</th>
-                        <th className="p-2 text-right">دائن</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {openingPreparation.preview.roleTotals.map((row) => (
-                        <tr key={row.role} className="border-t">
-                          <td className="p-2 font-medium">
-                            {ROLE_LABELS[row.role] ?? row.role}
-                          </td>
-                          <td className="p-2 text-right tabular-nums" dir="ltr">
-                            {fmt(row.debit)}
-                          </td>
-                          <td className="p-2 text-right tabular-nums" dir="ltr">
-                            {fmt(row.credit)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </ScrollTableShell>
+                <DataTable<OpeningRoleTotalRow>
+                  {...PANEL_TABLE}
+                  data={openingPreparation.preview.roleTotals}
+                  emptyText="لا مجاميع أدوار في المعاينة."
+                  columns={[
+                    {
+                      id: "role",
+                      header: "الدور المحاسبي",
+                      accessorFn: (row) => ROLE_LABELS[row.role] ?? row.role,
+                      cell: ({ row }) => <span className="font-medium">{ROLE_LABELS[row.original.role] ?? row.original.role}</span>,
+                    },
+                    // kind: "money" يتكفّل بالمحاذاة وtabular-nums وعزل الاتّجاه ⇒ لا dir="ltr" يدويّ.
+                    { id: "debit", header: "مدين", accessorFn: (row) => fmt(row.debit), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.debit) },
+                    { id: "credit", header: "دائن", accessorFn: (row) => fmt(row.credit), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.credit) },
+                  ]}
+                />
 
                 {openingPreparation.preview.unallocatedOpeningBalance.scopes
                   .length > 0 && (
@@ -1472,7 +1577,7 @@ function DoubleEntryStatus({
               </p>
             </div>
             <span
-              className={`rounded-full px-3 py-1 text-xs font-semibold ${monthlyIssueCount === 0 ? "badge-status-active" : "badge-stock-out"}`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${monthlyIssueCount === 0 ? "badge-status-active" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"}`}
             >
               {monthlyIssueCount === 0
                 ? "مطابق"
@@ -1481,49 +1586,40 @@ function DoubleEntryStatus({
           </div>
 
           {reconciliation.roles.length > 0 ? (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">الدور المحاسبي</th>
-                    <th className="p-2 text-right">المتوقّع</th>
-                    <th className="p-2 text-right">الفعلي</th>
-                    <th className="p-2 text-right">الانحراف</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {reconciliation.roles.map((row) => (
-                    <tr key={row.role} className="border-t">
-                      <td className="p-2 font-medium">
-                        {ROLE_LABELS[row.role] ?? row.role}
-                        <div
-                          className="text-[11px] font-normal text-muted-foreground"
-                          dir="ltr"
-                        >
-                          {row.role}
-                        </div>
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {fmt(row.expected)}
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {fmt(row.actual)}
-                      </td>
-                      <td
-                        className={
-                          row.drift === "0.00"
-                            ? "p-2 text-right tabular-nums"
-                            : "p-2 text-right tabular-nums font-semibold text-money-negative"
-                        }
-                        dir="ltr"
-                      >
-                        {fmt(row.drift)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            <DataTable<DoubleEntryRoleRow>
+              {...PANEL_TABLE}
+              data={reconciliation.roles}
+              emptyText="لا أحداث مالية في هذا النطاق."
+              columns={[
+                {
+                  id: "role",
+                  header: "الدور المحاسبي",
+                  accessorFn: (row) => ROLE_LABELS[row.role] ?? row.role,
+                  meta: { width: "wide" },
+                  cell: ({ row }) => (
+                    <span className="font-medium">
+                      {ROLE_LABELS[row.original.role] ?? row.original.role}
+                      <div className="text-[11px] font-normal text-muted-foreground" dir="ltr">
+                        {row.original.role}
+                      </div>
+                    </span>
+                  ),
+                },
+                { id: "expected", header: "المتوقّع", accessorFn: (row) => fmt(row.expected), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.expected) },
+                { id: "actual", header: "الفعلي", accessorFn: (row) => fmt(row.actual), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.actual) },
+                {
+                  id: "drift",
+                  header: "الانحراف",
+                  accessorFn: (row) => fmt(row.drift),
+                  meta: { kind: "money" },
+                  cell: ({ row }) => (
+                    <span className={row.original.drift === "0.00" ? undefined : "font-semibold text-[var(--sem-neg)]"}>
+                      {fmt(row.original.drift)}
+                    </span>
+                  ),
+                },
+              ]}
+            />
           ) : (
             <p className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">
               لا أحداث مالية في هذا النطاق.
@@ -1610,7 +1706,7 @@ function DriftSection({
             {action}
             <span
               className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold inline-flex items-center gap-1 ${
-                rows.length === 0 ? "badge-status-active" : "badge-stock-out"
+                rows.length === 0 ? "badge-status-active" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
               }`}
             >
               {rows.length === 0 ? (
@@ -1625,53 +1721,66 @@ function DriftSection({
           </div>
         </div>
         {rows.length > 0 && (
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">{idLabel}</th>
-                  <th className="p-2 text-right">المتوقّع</th>
-                  <th className="p-2 text-right">الفعلي</th>
-                  <th className="p-2 text-right">الانحراف</th>
-                  {link && <th className="p-2 text-center">إجراء</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  // المخزون: متغيّر سالب في فرعين يُنتج id مكرّراً (reconcileInventory يُسقط branchId) ⇒ مفتاح مركّب بالـindex.
-                  <tr key={`${title}-${r.id}-${i}`} className="border-t">
-                    <td className="p-2 font-medium">
-                      <div className="tabular-nums" dir="ltr">
-                        {r.id}
+          <DataTable<Row>
+            {...PANEL_TABLE}
+            data={rows}
+            emptyText="لا انحراف."
+            columns={[
+              {
+                id: "id",
+                header: idLabel,
+                accessorFn: (r) => (names ? `${r.id} — ${names.get(r.id) ?? "—"}` : String(r.id)),
+                /* ⛔ لا `kind: "code"` هنا: الخليّة تحمل **اسم الطرف بالعربية** تحت الرقم،
+                   وkind الرمز يفرض `font-mono` + `whitespace-nowrap` + عزلَ اتّجاهٍ LTR على
+                   الخليّة كلّها ⇒ اسمٌ عربيّ بخطٍّ أحاديّ لا يلتفّ. الرقم وحده يُعزَل بـdir. */
+                meta: { width: "wide", wrap: true },
+                cell: ({ row }) => (
+                  <span className="font-medium">
+                    <div className="tabular-nums" dir="ltr">
+                      {row.original.id}
+                    </div>
+                    {names && (
+                      <div className="text-xs font-normal text-muted-foreground">
+                        {names.get(row.original.id) ?? "—"}
                       </div>
-                      {names && (
-                        <div className="text-xs font-normal text-muted-foreground">
-                          {names.get(r.id) ?? "—"}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">
-                      {val(r.expected)}
-                    </td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">
-                      {val(r.actual)}
-                    </td>
-                    <td
-                      className="p-2 text-right font-semibold tabular-nums text-money-negative"
-                      dir="ltr"
-                    >
-                      {val(r.drift)}
-                      {r.note && (
-                        <span
-                          dir="rtl"
-                          className="mr-2 inline-block rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]"
-                        >
-                          {r.note}
-                        </span>
-                      )}
-                    </td>
-                    {link && (
-                      <td className="p-2 text-center">
+                    )}
+                  </span>
+                ),
+              },
+              { id: "expected", header: "المتوقّع", accessorFn: (r) => val(r.expected), meta: { kind: "money" }, cell: ({ row }) => val(row.original.expected) },
+              { id: "actual", header: "الفعلي", accessorFn: (r) => val(r.actual), meta: { kind: "money" }, cell: ({ row }) => val(row.original.actual) },
+              {
+                id: "drift",
+                header: "الانحراف",
+                accessorFn: (r) => `${val(r.drift)}${r.note ? ` — ${r.note}` : ""}`,
+                meta: { kind: "money" },
+                /* الانحراف هنا **ليس مالاً دائماً**: ثلاثة من مستدعي هذا المكوّن تمرّر بلا `money`
+                   (أرصدة المخزون كمّية، وطلبات المتجر «رقمٌ رمزيّ ١ لكل صفّ»، والأيتام عدّة أسطر) ⇒
+                   `money-negative` كان يصبغ قيمةً غير ماليّة بتوكن إشارة المبلغ. الدلالة خطرٌ/انحراف
+                   ⇒ `--sem-neg` مثل شارة الرأس في المكوّن نفسه. */
+                cell: ({ row }) => (
+                  <span className="font-semibold text-[var(--sem-neg)]">
+                    {val(row.original.drift)}
+                    {row.original.note && (
+                      <span
+                        dir="rtl"
+                        className="mr-2 inline-block rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]"
+                      >
+                        {row.original.note}
+                      </span>
+                    )}
+                  </span>
+                ),
+              },
+              // عمود الإجراء يظهر فقط حين يوجد رابطٌ للسجل — كما كان بالضبط.
+              ...(link
+                ? ([
+                    {
+                      id: "actions",
+                      header: "إجراء",
+                      enableSorting: false,
+                      meta: { kind: "actions" },
+                      cell: ({ row }) => (
                         <RowActions
                           mode="inline"
                           actions={[
@@ -1679,18 +1788,17 @@ function DriftSection({
                               key: "open",
                               kind: "view",
                               label: linkLabel,
-                              href: link(r.id),
+                              href: link(row.original.id),
                               gate: { adminOnly: true },
                             },
                           ]}
                         />
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+                      ),
+                    },
+                  ] as ColumnDef<Row, unknown>[])
+                : []),
+            ]}
+          />
         )}
       </CardContent>
     </Card>

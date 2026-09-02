@@ -10,6 +10,7 @@ import { UsagePanel } from "@/components/UsagePanel";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { fmtDateTime } from "@/lib/date";
@@ -32,7 +33,6 @@ import {
   type PermissionMap,
   type RoleKey,
 } from "@/lib/permissionsModel";
-import { selectClsFull } from "@/lib/ui/formStyles";
 
 
 /** يحوّل تاريخاً قادماً من الخادم (Date عبر superjson أو سلسلة) إلى yyyy-mm-dd لحقل type=date. */
@@ -214,7 +214,7 @@ export default function UserEdit() {
     [role, permsOverride]
   );
 
-  // Ctrl/⌘+S ⇒ حفظ. بلا onCancel/Esc عمداً — الشاشة مكتظّة بـ<select> أصلية (الدور/الفرع) وEsc
+  // Ctrl/⌘+S ⇒ حفظ. بلا onCancel/Esc عمداً — الشاشة مكتظّة بقوائم منسدلة (الدور/الفرع) وEsc
   // يتعارض مع إغلاقها (تحذير الهوك نفسه).
   useSaveShortcuts({ onSave: () => submit(), enabled: !update.isPending });
 
@@ -465,7 +465,7 @@ export default function UserEdit() {
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
             <AppSelect
-              id="role" className="h-9"
+              id="role"
               value={customRoleId ? `custom:${customRoleId}` : role}
               onValueChange={(value) => void handleRoleChange(value)}
             >
@@ -620,7 +620,7 @@ export default function UserEdit() {
         {/* type="submit" وبلا onClick مباشر — يعتمد على onSubmit في <form> وحده كمصدرٍ واحد
             (تفادياً لاستدعاء submit() مرّتين لو حمل الزرّ onClick أيضاً). */}
         <Button type="submit" disabled={update.isPending}>
-          {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}
+          {update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}
         </Button>
         {isActive ? (
           <Button
@@ -734,7 +734,7 @@ export default function UserEdit() {
           <p className="text-xs text-muted-foreground">
             أجهزة هذا المستخدم المسجَّل دخولها حالياً — يمكن إنهاء جهازٍ واحدٍ بعينه بدل كل الأجهزة.
           </p>
-          {userSessions.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+          {userSessions.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
           {!userSessions.isLoading && (userSessions.data?.length ?? 0) === 0 && (
             <p className="text-sm text-muted-foreground">لا جلسات مسجَّلة (ربما دخل قبل تفعيل هذه الميزة).</p>
           )}
@@ -788,7 +788,7 @@ export default function UserEdit() {
             disabled={usage.isLoading || !usage.data?.clean || del.isPending}
             onClick={() => void handleDelete()}
           >
-            {del.isPending ? "جارٍ الحذف…" : "حذف نهائياً"}
+            {del.isPending ? ACTION_LABELS.deleting : "حذف نهائياً"}
           </Button>
         </CardContent>
       </Card>

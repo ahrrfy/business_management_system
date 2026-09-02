@@ -4,9 +4,13 @@
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
@@ -22,9 +26,6 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
 
-const selectCls =
-  "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
-
 type PriceLine = {
   offeringId: number;
   providerShare: string;
@@ -33,6 +34,10 @@ type PriceLine = {
 
 type MismatchReport =
   RouterOutputs["digitalCards"]["pricing"]["mismatchReports"][number];
+
+/** صفُّ «تغيير كبير في الحصة» كما يصله من ورقة الصباح. */
+type BigChangeRow =
+  RouterOutputs["digitalCards"]["pricing"]["getMorningSheet"]["bigChanges"][number];
 
 /** بصمة حتمية تمنع نشر أرقام لم تصل معاينتها الخادمية الحالية بعد. */
 function priceLinesKey(lines: PriceLine[]): string {
@@ -428,6 +433,87 @@ export default function DigitalPricing() {
   const canApproveBig =
     Boolean(me.data?.isOwner) || Number(me.data?.id) !== Number(draftCreatedBy);
   const bigChangeBlocking = bigChanges.length > 0 && bigApprovedBy == null;
+
+  /** أعمدة «تغيير كبير في الحصة» — عرضٌ محض، مُضمَّنٌ في بطاقة العنوان. */
+  const bigChangeColumns: ColumnDef<BigChangeRow, unknown>[] = [
+    { id: "name", header: "البطاقة", accessorFn: (b) => b.name, cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
+    {
+      id: "currentShare",
+      header: "التكلفة النافذة",
+      accessorFn: (b) => fmtAr(b.currentShare),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.currentShare)}</span>,
+    },
+    {
+      id: "newShare",
+      header: "التكلفة الجديدة",
+      accessorFn: (b) => fmtAr(b.newShare),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{fmtAr(row.original.newShare)}</span>,
+    },
+    {
+      id: "changePercent",
+      header: "نسبة التغيّر",
+      accessorFn: (b) => `${b.changePercent}%`,
+      meta: { kind: "number" },
+      cell: ({ row }) => <span className="text-destructive font-medium">{row.original.changePercent}%</span>,
+    },
+  ];
+
+  /** أعمدة «بلاغات تغيّر السعر» — تُغلِق على قراري الاعتماد والرفض. */
+  const reportColumns: ColumnDef<MismatchReport, unknown>[] = [
+    { id: "offeringName", header: "البطاقة", accessorFn: (r) => r.offeringName, cell: ({ row }) => <span className="font-medium">{row.original.offeringName}</span> },
+    {
+      id: "providerName",
+      header: "المزوّد",
+      accessorFn: (r) => r.providerName,
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.providerName}</span>,
+    },
+    {
+      id: "currentProviderShare",
+      header: "التكلفة في النظام",
+      accessorFn: (r) => fmtAr(r.currentProviderShare),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmtAr(row.original.currentProviderShare),
+    },
+    {
+      id: "reportedProviderShare",
+      header: "التكلفة التي أبلغ بها الكاشير",
+      accessorFn: (r) => fmtAr(r.reportedProviderShare),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{fmtAr(row.original.reportedProviderShare)}</span>,
+    },
+    {
+      id: "currentSellPrice",
+      header: "سعر البيع الذي سيبقى",
+      accessorFn: (r) => (r.currentSellPrice != null ? fmtAr(r.currentSellPrice) : "—"),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{row.original.currentSellPrice != null ? fmtAr(row.original.currentSellPrice) : "—"}</span>,
+    },
+    {
+      id: "notes",
+      header: "ملاحظة",
+      accessorFn: (r) => r.notes || "—",
+      meta: { wrap: true },
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.notes || "—"}</span>,
+    },
+    {
+      id: "decision",
+      header: "قرار",
+      enableSorting: false,
+      meta: { kind: "actions", width: "wide" },
+      cell: ({ row }) => (
+        <div className="flex justify-center gap-2">
+          <Button size="sm" disabled={approveMut.isPending} onClick={() => void approveMismatch(row.original)}>
+            مراجعة واعتماد
+          </Button>
+          <Button size="sm" variant="outline" disabled={rejectMut.isPending} onClick={() => rejectMut.mutate({ reportId: row.original.id })}>
+            رفض
+          </Button>
+        </div>
+      ),
+    },
+  ];
   const publishBlockedReason = bigChangeBlocking
     ? `تغييرٌ ≥${threshold}% ينتظر اعتماد مديرٍ آخر`
     : rows.length > 0 && !previewReady
@@ -451,48 +537,41 @@ export default function DigitalPricing() {
             <label className="text-sm font-medium" htmlFor="dp-branch">
               الفرع
             </label>
-            <select
+            <AppSelect
               id="dp-branch"
-              className={selectCls}
-              value={branchId ?? ""}
-              onChange={(e) =>
-                setBranchId(e.target.value ? Number(e.target.value) : null)
-              }
+              value={branchId == null ? "" : String(branchId)}
+              onValueChange={(next) => setBranchId(next ? Number(next) : null)}
             >
               {(branches.data ?? []).map((b) => (
-                <option key={b.id} value={b.id}>
+                <option key={b.id} value={String(b.id)}>
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium" htmlFor="dp-provider">
               المزوّد
             </label>
-            <select
+            <AppSelect
               id="dp-provider"
-              className={selectCls}
-              value={providerId ?? ""}
-              onChange={(e) =>
-                setProviderId(e.target.value ? Number(e.target.value) : null)
-              }
+              value={providerId == null ? "" : String(providerId)}
+              onValueChange={(next) => setProviderId(next ? Number(next) : null)}
             >
               {activeProviders.map((p) => (
-                <option key={p.id} value={p.id}>
+                <option key={p.id} value={String(p.id)}>
                   {p.supplierName}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium" htmlFor="dp-date">
               تاريخ يوم العمل
             </label>
-            <input
+            <Input
               id="dp-date"
               type="date"
-              className={selectCls}
               value={businessDate}
               onChange={(e) => setBusinessDate(e.target.value)}
               dir="ltr"
@@ -546,34 +625,22 @@ export default function DigitalPricing() {
             )}
           </CardHeader>
           <CardContent className="space-y-3 p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">البطاقة</th>
-                    <th className="p-2 text-start">التكلفة النافذة</th>
-                    <th className="p-2 text-start">التكلفة الجديدة</th>
-                    <th className="p-2 text-start">نسبة التغيّر</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bigChanges.map((b) => (
-                    <tr key={b.offeringId} className="border-t">
-                      <td className="p-2 font-medium">{b.name}</td>
-                      <td className="p-2 tabular-nums text-muted-foreground">
-                        {fmtAr(b.currentShare)}
-                      </td>
-                      <td className="p-2 tabular-nums font-medium">
-                        {fmtAr(b.newShare)}
-                      </td>
-                      <td className="p-2 tabular-nums text-destructive font-medium">
-                        {b.changePercent}%
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            {/* مُضمَّن: البطاقة تحمل العنوان والعدّ؛ pageSize=Infinity لازمٌ معه (شريط الترقيم مكتوم).
+                و`maxHeightClass` (مع `bounded` الافتراضيّة) استعادةٌ لِـ`ScrollTableShell` الذي
+                كان يلفّ الجدول قبل التحويل: كان `bounded={false}` يعطي حاويةً بلا سقفِ ارتفاعٍ
+                ولا ترويسةٍ لاصقة، فعلى موجةٍ فيها عشراتُ البطاقات يختفي رأسُ الأعمدة عند
+                التمرير — والمديرُ يقرأ عمودَي «التكلفة النافذة/الجديدة» متجاورَين بلا عنوان،
+                وهما رقمان متشابهان لا يفرّقهما إلّا الرأس. والقيمةُ هي افتراضُ `ScrollTableShell`
+                نفسه قبل التحويل. وفائدةٌ ثانية: زرّ «اعتماد التغيير الكبير» أسفلَه يبقى
+                مرئياً بدل أن يدفعه الجدولُ الطويل خارج الشاشة. */}
+            <DataTable<BigChangeRow>
+              embedded
+              searchable={false}
+              maxHeightClass="max-h-[calc(100dvh-15rem)]"
+              pageSize={Infinity}
+              data={bigChanges}
+              columns={bigChangeColumns}
+            />
             <div className="flex flex-wrap items-center gap-3 px-4 pb-4 text-sm text-muted-foreground">
               {bigApprovedBy != null ? (
                 <span>
@@ -618,66 +685,18 @@ export default function DigitalPricing() {
             بلاغات تغيّر السعر ({openReports.length})
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">البطاقة</th>
-                    <th className="p-2 text-start">المزوّد</th>
-                    <th className="p-2 text-start">التكلفة في النظام</th>
-                    <th className="p-2 text-start">
-                      التكلفة التي أبلغ بها الكاشير
-                    </th>
-                    <th className="p-2 text-start">سعر البيع الذي سيبقى</th>
-                    <th className="p-2 text-start">ملاحظة</th>
-                    <th className="p-2 text-center">قرار</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {openReports.map((r) => (
-                    <tr key={r.id} className="border-t">
-                      <td className="p-2 font-medium">{r.offeringName}</td>
-                      <td className="p-2 text-muted-foreground">
-                        {r.providerName}
-                      </td>
-                      <td className="p-2 tabular-nums">
-                        {fmtAr(r.currentProviderShare)}
-                      </td>
-                      <td className="p-2 tabular-nums font-medium">
-                        {fmtAr(r.reportedProviderShare)}
-                      </td>
-                      <td className="p-2 tabular-nums font-medium">
-                        {r.currentSellPrice != null
-                          ? fmtAr(r.currentSellPrice)
-                          : "—"}
-                      </td>
-                      <td className="p-2 text-muted-foreground">
-                        {r.notes || "—"}
-                      </td>
-                      <td className="p-2 text-center">
-                        <div className="flex justify-center gap-2">
-                          <Button
-                            size="sm"
-                            disabled={approveMut.isPending}
-                            onClick={() => void approveMismatch(r)}
-                          >
-                            مراجعة واعتماد
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={rejectMut.isPending}
-                            onClick={() => rejectMut.mutate({ reportId: r.id })}
-                          >
-                            رفض
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            {/* نفس السبب: سقفُ ارتفاعٍ + ترويسةٌ لاصقة كما كان `ScrollTableShell` قبل التحويل.
+                وهذا الجدولُ أشدُّ حاجةً إليها — سبعةُ أعمدةٍ منها ثلاثةُ مبالغَ متشابهة
+                («في النظام» · «التي أبلغ بها الكاشير» · «الذي سيبقى»)، وقرارُ الاعتماد
+                يُتّخذ من موضعِ العمود. رأسٌ يغيب عند التمرير = اعتمادُ الرقم الخطأ. */}
+            <DataTable<MismatchReport>
+              embedded
+              searchable={false}
+              maxHeightClass="max-h-[calc(100dvh-15rem)]"
+              pageSize={Infinity}
+              data={openReports}
+              columns={reportColumns}
+            />
           </CardContent>
         </Card>
       )}
@@ -727,6 +746,10 @@ export default function DigitalPricing() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل `MoneyInput`ين — تكلفة
+              الشراء وسعر البيع — يكتبان في `costs`/`sellPrices` المحلّيتين اللتين تُبنى منهما
+              المسوّدة والنشر؛ `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. (جدولا «التغيير
+              الكبير» و«بلاغات تغيّر السعر» أعلاه محوَّلان أصلاً — كلاهما عرضٌ خالص.) */}
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">

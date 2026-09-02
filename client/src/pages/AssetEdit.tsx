@@ -10,6 +10,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { ASSET_CATEGORIES, DEPRECIATION_METHODS } from "@shared/assets";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { AlertCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
@@ -78,7 +79,7 @@ export default function AssetEdit() {
     onError: (e) => { setError(e.message); notify.err(e); },
   });
 
-  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
   if (q.error) return <div className="p-10 text-center text-destructive">تعذّر تحميل الأصل: {q.error.message}</div>;
   if (!q.data) return <div className="p-10 text-center text-muted-foreground">الأصل غير موجود. <Link href="/assets/register" className="text-primary">رجوع للسجلّ</Link></div>;
   if (q.data.status === "disposed") {
@@ -205,7 +206,7 @@ export default function AssetEdit() {
         </div>
       )}
       <div className="flex gap-2">
-        <Button onClick={submit} disabled={update.isPending}>{update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}</Button>
+        <Button onClick={submit} disabled={update.isPending}>{update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}</Button>
         <Link href={`/assets/${id}`}><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

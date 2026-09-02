@@ -11,10 +11,16 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { Field } from "@/components/product/variantBits";
 import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { confirm } from "@/lib/confirm";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { canSeeGate } from "@/lib/navVisibility";
 import { D, fmtAr, formatIqd } from "@/lib/money";
+import { ACTION_LABELS } from "@shared/actionLabels";
+
+/** صفُّ العرض — مشتقٌّ من عقد `salesPromotions.list` فلا ينجرف عن الخادم. */
+type OfferRow = RouterOutputs["salesPromotions"]["list"][number];
 
 type PromoType = "PERCENT" | "AMOUNT";
 type PromoScope = "ALL" | "CATEGORIES" | "PRODUCTS";
@@ -256,6 +262,174 @@ export default function Offers() {
       });
   }, [listQ.data, channelFilter, validityFilter, searchQuery]);
 
+  /** هامشُ العرض نسبةً مئوية — null حين لا مبيعات مرتبطة (لا قسمة على صفر). */
+  const marginOf = (promotionId: number): string | null => {
+    const performance = performanceById.get(promotionId);
+    if (D(performance?.netSales).isZero()) return null;
+    return D(performance?.grossProfit).div(performance?.netSales ?? 1).times(100).toDecimalPlaces(1).toString();
+  };
+
+  /** عمودُ الإجراءات — يُضاف فقط لمن يملك الصلاحية (كما كان محتواه محجوباً بـ`canManage`). */
+  const offerActionsColumn: ColumnDef<OfferRow, unknown> = {
+    id: "actions",
+    header: "إجراء",
+    meta: { kind: "actions", width: "wide" },
+    cell: ({ row }) => {
+      const p = row.original;
+      return (
+        <div className="flex items-center justify-center gap-1">
+          <Button size="sm" variant="ghost" onClick={() => startEdit(p)}>
+            <FileEdit aria-hidden className="size-3.5" />
+            تعديل
+          </Button>
+          {p.isActive ? (
+            <Button size="sm" variant="ghost" onClick={() => doDeactivate(p)} disabled={deactivateM.isPending}>
+              تعطيل
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => reactivateM.mutate({ promotionId: Number(p.id) })}
+              disabled={reactivateM.isPending}
+            >
+              <RotateCcw aria-hidden className="size-3.5" />
+              تفعيل
+            </Button>
+          )}
+        </div>
+      );
+    },
+  };
+
+  /*
+   * أعمدة القائمة — داخل المكوّن لأنّها تقرأ مؤشّرات الأداء وتستدعي إجراءات الصفّ.
+   * عمودُ الإجراءات **مشروطٌ بالصلاحية** (`canManage`) كما كان محتواه في الجدول الخامّ.
+   */
+  const columns = useMemo<ColumnDef<OfferRow, unknown>[]>(
+    () => [
+      {
+        id: "name",
+        header: "الاسم",
+        accessorFn: (p) => p.name,
+        meta: { width: "wide" },
+        cell: ({ row }) => (
+          <div>
+            <div className="font-medium">{row.original.name}</div>
+            <div className="text-xs text-muted-foreground">أولوية {row.original.priority}</div>
+          </div>
+        ),
+      },
+      {
+        id: "type",
+        header: "النوع",
+        accessorFn: (p) => (p.type === "PERCENT" ? "نسبة" : "مبلغ ثابت"),
+        cell: ({ row }) => (row.original.type === "PERCENT" ? "نسبة" : "مبلغ ثابت"),
+      },
+      {
+        id: "value",
+        header: "قيمة العرض",
+        accessorFn: (p) => (p.type === "PERCENT" ? `${p.discountPercent}٪` : `${fmtAr(p.discountAmount)} د.ع/وحدة`),
+        cell: ({ row }) =>
+          row.original.type === "PERCENT"
+            ? `${row.original.discountPercent}٪`
+            : `${fmtAr(row.original.discountAmount)} د.ع/وحدة`,
+      },
+      {
+        id: "scope",
+        header: "النطاق",
+        accessorFn: (p) => (p.scope === "ALL" ? "الكل" : p.scope === "CATEGORIES" ? "فئات" : "منتجات"),
+        cell: ({ row }) => (row.original.scope === "ALL" ? "الكل" : row.original.scope === "CATEGORIES" ? "فئات" : "منتجات"),
+      },
+      {
+        id: "channel",
+        header: "القناة",
+        accessorFn: (p) => CHANNEL_LABEL[p.isStoreManaged ? "STORE" : "POS"],
+        cell: ({ row }) => <span className="text-xs">{CHANNEL_LABEL[row.original.isStoreManaged ? "STORE" : "POS"]}</span>,
+      },
+      {
+        id: "applicationMode",
+        header: "التطبيق",
+        accessorFn: (p) => APPLICATION_LABEL[p.applicationMode as string] ?? p.applicationMode,
+        cell: ({ row }) => (
+          <span className="text-xs">{APPLICATION_LABEL[row.original.applicationMode as string] ?? row.original.applicationMode}</span>
+        ),
+      },
+      {
+        id: "period",
+        header: "من — إلى",
+        accessorFn: (p) => `${toYmd(p.effectiveFrom)} — ${p.effectiveTo ? toYmd(p.effectiveTo) : "مستمرّ"}`,
+        // kind: "date" يعزل اتّجاه التاريخين (بدل dir="ltr" اليدويّ)، وwide يمنع قصّ المدى.
+        meta: { kind: "date", width: "wide" },
+        cell: ({ row }) => (
+          <span className="text-xs text-muted-foreground">
+            {toYmd(row.original.effectiveFrom)} — {row.original.effectiveTo ? toYmd(row.original.effectiveTo) : "مستمرّ"}
+          </span>
+        ),
+      },
+      {
+        id: "invoiceCount",
+        header: "الفواتير",
+        accessorFn: (p) => performanceById.get(p.id)?.invoiceCount ?? 0,
+        meta: { kind: "number" },
+        cell: ({ row }) => performanceById.get(row.original.id)?.invoiceCount ?? 0,
+      },
+      {
+        id: "netSales",
+        header: "المبيعات",
+        accessorFn: (p) => formatIqd(performanceById.get(p.id)?.netSales ?? "0"),
+        meta: { kind: "money" },
+        cell: ({ row }) => formatIqd(performanceById.get(row.original.id)?.netSales ?? "0"),
+      },
+      {
+        id: "discount",
+        header: "خصم محقق",
+        accessorFn: (p) => formatIqd(performanceById.get(p.id)?.discount ?? "0"),
+        meta: { kind: "money" },
+        cell: ({ row }) => formatIqd(performanceById.get(row.original.id)?.discount ?? "0"),
+      },
+      {
+        id: "grossProfit",
+        header: "الربح",
+        accessorFn: (p) => formatIqd(performanceById.get(p.id)?.grossProfit ?? "0"),
+        meta: { kind: "money" },
+        cell: ({ row }) => {
+          const value = performanceById.get(row.original.id)?.grossProfit;
+          return <span className={D(value).isNegative() ? "text-destructive" : undefined}>{formatIqd(value ?? "0")}</span>;
+        },
+      },
+      {
+        id: "margin",
+        header: "الهامش",
+        accessorFn: (p) => {
+          const margin = marginOf(p.id);
+          return margin == null ? "—" : `${margin}٪`;
+        },
+        meta: { kind: "number" },
+        cell: ({ row }) => {
+          const margin = marginOf(row.original.id);
+          return (
+            <span className={margin != null && D(margin).isNegative() ? "text-destructive" : undefined}>
+              {margin == null ? "—" : `${margin}٪`}
+            </span>
+          );
+        },
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        accessorFn: (p) => (p.isActive ? "نشط" : "معطَّل"),
+        meta: { kind: "status" },
+        cell: ({ row }) =>
+          row.original.isActive ? <Badge variant="default">نشط</Badge> : <Badge variant="secondary">معطَّل</Badge>,
+      },
+      // عمودُ الأفعال مشروطٌ بالصلاحية — كان محتواه محجوباً بـ`canManage` في الجدول الخامّ.
+      ...(canManage ? [offerActionsColumn] : []),
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [performanceById, canManage, deactivateM.isPending, reactivateM.isPending],
+  );
+
   return (
     <div className="max-w-7xl mx-auto space-y-4 pb-8">
       <PageHeader
@@ -414,7 +588,7 @@ export default function Offers() {
             <div className="md:col-span-3 flex justify-end gap-2">
               <Button variant="outline" onClick={() => { setShowForm(false); resetForm(); }}>إلغاء</Button>
               <Button onClick={submit} disabled={createM.isPending || updateM.isPending}>
-                {createM.isPending || updateM.isPending ? "جارٍ الحفظ…" : editingId != null ? "حفظ التعديلات" : "حفظ العرض"}
+                {createM.isPending || updateM.isPending ? ACTION_LABELS.saving : editingId != null ? "حفظ التعديلات" : "حفظ العرض"}
               </Button>
             </div>
           </CardContent>
@@ -447,81 +621,17 @@ export default function Offers() {
           </div>
         </CardHeader>
         <CardContent>
-          {list.length === 0 ? (
-            <div className="text-center text-sm text-muted-foreground py-12">لا عروض مطابقة للفلاتر.</div>
-          ) : (
-            <div className="overflow-x-auto rounded-md border">
-              <table className="w-full min-w-[1500px] text-sm">
-                <thead className="bg-muted/50 text-xs text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2 text-right font-medium">الاسم</th>
-                    <th className="px-3 py-2 text-right font-medium">النوع</th>
-                    <th className="px-3 py-2 text-right font-medium">قيمة العرض</th>
-                    <th className="px-3 py-2 text-right font-medium">النطاق</th>
-                    <th className="px-3 py-2 text-right font-medium">القناة</th>
-                    <th className="px-3 py-2 text-right font-medium">التطبيق</th>
-                    <th className="px-3 py-2 text-right font-medium">من — إلى</th>
-                    <th className="px-3 py-2 text-right font-medium">الفواتير</th>
-                    <th className="px-3 py-2 text-right font-medium">المبيعات</th>
-                    <th className="px-3 py-2 text-right font-medium">خصم محقق</th>
-                    <th className="px-3 py-2 text-right font-medium">الربح</th>
-                    <th className="px-3 py-2 text-right font-medium">الهامش</th>
-                    <th className="px-3 py-2 text-right font-medium">الحالة</th>
-                    <th className="px-3 py-2"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.map((p: any) => {
-                    const performance = performanceById.get(p.id);
-                    const margin = D(performance?.netSales).isZero()
-                      ? null
-                      : D(performance?.grossProfit).div(performance?.netSales ?? 1).times(100).toDecimalPlaces(1).toString();
-                    return <tr key={p.id} className="border-t">
-                      <td className="px-3 py-2"><div className="font-medium">{p.name}</div><div className="text-xs text-muted-foreground">أولوية {p.priority}</div></td>
-                      <td className="px-3 py-2">{p.type === "PERCENT" ? "نسبة" : "مبلغ ثابت"}</td>
-                      <td className="px-3 py-2">
-                        {p.type === "PERCENT" ? `${p.discountPercent}٪` : `${fmtAr(p.discountAmount)} د.ع/وحدة`}
-                      </td>
-                      <td className="px-3 py-2">{p.scope === "ALL" ? "الكل" : p.scope === "CATEGORIES" ? "فئات" : "منتجات"}</td>
-                      <td className="px-3 py-2 text-xs">{CHANNEL_LABEL[p.isStoreManaged ? "STORE" : "POS"]}</td>
-                      <td className="px-3 py-2 text-xs">{APPLICATION_LABEL[p.applicationMode as string] ?? p.applicationMode}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground" dir="ltr">
-                        {toYmd(p.effectiveFrom)} — {p.effectiveTo ? toYmd(p.effectiveTo) : "مستمرّ"}
-                      </td>
-                      <td className="px-3 py-2 tabular-nums">{performance?.invoiceCount ?? 0}</td>
-                      <td className="px-3 py-2 tabular-nums">{formatIqd(performance?.netSales ?? "0")}</td>
-                      <td className="px-3 py-2 tabular-nums">{formatIqd(performance?.discount ?? "0")}</td>
-                      <td className={`px-3 py-2 tabular-nums ${D(performance?.grossProfit).isNegative() ? "text-destructive" : ""}`}>{formatIqd(performance?.grossProfit ?? "0")}</td>
-                      <td className={`px-3 py-2 tabular-nums ${margin != null && D(margin).isNegative() ? "text-destructive" : ""}`}>{margin == null ? "—" : `${margin}٪`}</td>
-                      <td className="px-3 py-2">
-                        {p.isActive ? <Badge variant="default">نشط</Badge> : <Badge variant="secondary">معطَّل</Badge>}
-                      </td>
-                      <td className="px-3 py-2 text-left">
-                        {canManage && (
-                          <div className="flex items-center justify-end gap-1">
-                            <Button size="sm" variant="ghost" onClick={() => startEdit(p)}>
-                              <FileEdit aria-hidden className="size-3.5" />
-                              تعديل
-                            </Button>
-                            {p.isActive ? (
-                              <Button size="sm" variant="ghost" onClick={() => doDeactivate(p)} disabled={deactivateM.isPending}>
-                                تعطيل
-                              </Button>
-                            ) : (
-                              <Button size="sm" variant="ghost" onClick={() => reactivateM.mutate({ promotionId: Number(p.id) })} disabled={reactivateM.isPending}>
-                                <RotateCcw aria-hidden className="size-3.5" />
-                                تفعيل
-                              </Button>
-                            )}
-                          </div>
-                        )}
-                      </td>
-                    </tr>;
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <DataTable<OfferRow>
+            columns={columns}
+            data={list}
+            /* البحث والفلاتر في ترويسة البطاقة أعلاه (تُغذّي `list`) — بلا هذا يظهر حقلا بحثٍ
+               متجاوران، وتُعلن الشاشةُ «لا عروض بعد» بينما الفلترُ وحده هو الحاجب. */
+            searchable={false}
+            externalFiltersActive={searchQuery.trim() !== "" || channelFilter !== "ALL" || validityFilter !== "ALL"}
+            loading={listQ.isLoading}
+            errorState={{ isError: listQ.isError, message: listQ.error?.message, onRetry: () => void listQ.refetch() }}
+            emptyText="لا عروض مطابقة للفلاتر."
+          />
         </CardContent>
       </Card>
     </div>

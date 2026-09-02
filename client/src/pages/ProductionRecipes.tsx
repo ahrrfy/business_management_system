@@ -15,6 +15,7 @@ import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 let _k = 1;
@@ -292,7 +293,7 @@ export default function ProductionRecipes() {
             )}
             {error && <p className="text-sm text-destructive">{error}</p>}
             <div className="flex gap-2">
-              <Button onClick={save} disabled={busy}>{busy ? "جارٍ الحفظ…" : "حفظ الوصفة"}</Button>
+              <Button onClick={save} disabled={busy}>{busy ? ACTION_LABELS.saving : "حفظ الوصفة"}</Button>
               <Button variant="outline" onClick={resetForm}>إلغاء</Button>
             </div>
           </div>

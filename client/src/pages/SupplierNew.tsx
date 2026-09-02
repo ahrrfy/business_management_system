@@ -8,6 +8,7 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { FormError } from "@/components/form/FormError";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { fmt } from "@/lib/money";
@@ -496,7 +497,7 @@ export default function SupplierNew() {
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <Button onClick={submit} disabled={create.isPending} title="Ctrl+S">
-          {create.isPending ? "جارٍ الحفظ…" : "حفظ المورّد"}
+          {create.isPending ? ACTION_LABELS.saving : "حفظ المورّد"}
         </Button>
         <Link href="/suppliers"><Button variant="outline" title="Esc">إلغاء</Button></Link>
       </div>

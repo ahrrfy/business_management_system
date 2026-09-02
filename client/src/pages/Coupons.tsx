@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, FileText, Plus, Printer, Search, Ticket, XCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { TablePager } from "@/components/table/TablePager";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Field } from "@/components/product/variantBits";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +19,8 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { RowActions } from "@/components/list/RowActions";
 
 type IssuedCoupon = RouterOutputs["crm"]["coupons"]["listIssued"]["rows"][number];
+type ProgramRow = RouterOutputs["crm"]["coupons"]["programs"][number];
+type BatchRow = RouterOutputs["crm"]["coupons"]["batches"][number];
 type CouponStatusFilter = "ALL" | "ACTIVE" | "REDEEMED" | "VOID";
 type LastIssue = { codes: string[]; batchReference: string; issuedAt: Date };
 
@@ -30,6 +33,10 @@ function displayDate(value: unknown) {
   if (!value) return "—";
   const date = value instanceof Date ? value : new Date(String(value));
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" });
+}
+/** معدّل استخدام كوبونات البرنامج نسبةً مئوية (نصّاً) — بلا قسمةٍ على صفر. */
+function redemptionRate(program: { issued: number; redeemed: number }): string {
+  return program.issued ? D(program.redeemed).div(program.issued).times(100).toDecimalPlaces(1).toString() : "0";
 }
 function clampInt(value: string, min: number, max: number) {
   const parsed = Math.trunc(Number(value));
@@ -193,6 +200,105 @@ export default function Coupons() {
     });
   }
 
+  // أعمدة جدول البرامج — تُبنى في جسم المكوّن لأنّها تقرأ العرض المرتبط والبرنامج المحدَّد والطفرات.
+  const programColumns: ColumnDef<ProgramRow, unknown>[] = [
+    {
+      id: "program",
+      header: "البرنامج / العرض",
+      accessorFn: (r) => r.name,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => {
+        const offer = offerById.get(row.original.promotionId);
+        return <button type="button" className="text-right" onClick={() => setSelected(row.original.id)}><div className="font-medium text-primary">{row.original.name}</div><div className="text-xs text-muted-foreground">{offer?.name ?? `عرض #${row.original.promotionId}`} · {offer?.type === "PERCENT" ? `${offer.discountPercent}٪` : `${fmtAr(offer?.discountAmount)} د.ع/وحدة`}</div></button>;
+      },
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      // التسمية العربية لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+      accessorFn: (r) => PROGRAM_STATUS_AR[r.status] ?? r.status,
+      meta: { kind: "status" },
+      cell: ({ row }) => <Badge variant={row.original.status === "ACTIVE" ? "default" : "secondary"}>{PROGRAM_STATUS_AR[row.original.status] ?? row.original.status}</Badge>,
+    },
+    {
+      id: "counts",
+      header: "صادر / صالح / مستخدم",
+      accessorFn: (r) => `${r.issued} / ${r.activeCoupons} / ${r.redeemed}`,
+      meta: { kind: "number" },
+      cell: ({ row }) => `${row.original.issued} / ${row.original.activeCoupons} / ${row.original.redeemed}`,
+    },
+    {
+      id: "rate",
+      header: "معدل الاستخدام",
+      accessorFn: (r) => `${redemptionRate(r)}٪`,
+      meta: { kind: "number" },
+      cell: ({ row }) => `${redemptionRate(row.original)}٪`,
+    },
+    { id: "discount", header: "الخصم", accessorFn: (r) => formatIqd(r.redeemedDiscount), meta: { kind: "money" }, cell: ({ row }) => formatIqd(row.original.redeemedDiscount) },
+    { id: "sales", header: "المبيعات", accessorFn: (r) => formatIqd(r.linkedNetSales), meta: { kind: "money" }, cell: ({ row }) => formatIqd(row.original.linkedNetSales) },
+    {
+      id: "profit",
+      header: "الربح الإجمالي",
+      accessorFn: (r) => formatIqd(r.linkedGrossProfit),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className={D(row.original.linkedGrossProfit).isNegative() ? "text-destructive" : undefined}>{formatIqd(row.original.linkedGrossProfit)}</span>,
+    },
+    {
+      id: "actions",
+      header: "الإجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const program = row.original;
+        return <RowActions mode="auto" actions={[...(program.status === "DRAFT" ? [{ key: "activate", kind: "approve" as const, label: "تفعيل", gate: { module: "crm" as const, level: "FULL" as const }, onSelect: () => status.mutate({ programId: program.id, status: "ACTIVE" }) }] : []), ...(program.status === "ACTIVE" ? [{ key: "pause", kind: "other" as const, label: "إيقاف", gate: { module: "crm" as const, level: "FULL" as const }, onSelect: () => status.mutate({ programId: program.id, status: "PAUSED" }) }] : []), ...(program.status === "PAUSED" ? [{ key: "resume", kind: "approve" as const, label: "استئناف", gate: { module: "crm" as const, level: "FULL" as const }, onSelect: () => status.mutate({ programId: program.id, status: "ACTIVE" }) }] : []), ...(program.status !== "ENDED" ? [{ key: "end", kind: "cancel" as const, label: "إنهاء", variant: "destructive" as const, gate: { module: "crm" as const, level: "FULL" as const }, onSelect: () => void endProgram(program.id, program.name) }] : []), { key: "open", kind: "view", label: "فتح", gate: { module: "crm", level: "READ" }, onSelect: () => setSelected(program.id) }]} />;
+      },
+    },
+  ];
+
+  // أعمدة دفعات الإصدار — جدولٌ مُضمَّن صغير في بطاقةٍ تحمل عنوانه.
+  const batchColumns: ColumnDef<BatchRow, unknown>[] = [
+    { id: "reference", header: "المرجع", accessorFn: (r) => r.batchReference, meta: { kind: "code" }, cell: ({ row }) => row.original.batchReference },
+    { id: "count", header: "العدد", accessorFn: (r) => r.count, meta: { kind: "number" }, cell: ({ row }) => row.original.count },
+    {
+      id: "issuedAt",
+      header: "الوقت / المستخدم",
+      accessorFn: (r) => displayDate(r.issuedAt),
+      meta: { width: "wide" },
+      cell: ({ row }) => <div className="text-xs">{displayDate(row.original.issuedAt)}<div className="text-muted-foreground">{row.original.issuedBy}</div></div>,
+    },
+  ];
+
+  // أعمدة سجلّ الكوبونات الصادرة — الترقيم خادميّ (offset/limit) والبحث في شريط الشاشة أعلاه.
+  const issuedColumns: ColumnDef<IssuedCoupon, unknown>[] = [
+    { id: "code", header: "الرمز", accessorFn: (r) => r.code, meta: { kind: "code" }, cell: ({ row }) => <span className="font-bold">{row.original.code}</span> },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (r) => COUPON_STATUS_AR[r.status] ?? r.status,
+      meta: { kind: "status" },
+      cell: ({ row }) => <Badge variant={row.original.status === "ACTIVE" ? "default" : "secondary"}>{COUPON_STATUS_AR[row.original.status] ?? row.original.status}</Badge>,
+    },
+    { id: "customer", header: "العميل", accessorFn: (r) => r.assignedCustomerName ?? "عام", cell: ({ row }) => row.original.assignedCustomerName ?? "عام" },
+    { id: "issuedAt", header: "الإصدار", accessorFn: (r) => displayDate(r.issuedAt), meta: { kind: "datetime" }, cell: ({ row }) => <span className="text-xs">{displayDate(row.original.issuedAt)}</span> },
+    {
+      id: "redemption",
+      header: "الاستخدام / الفاتورة",
+      accessorFn: (r) => (r.lastInvoiceNumber ? `${r.lastInvoiceNumber} · ${displayDate(r.lastRedeemedAt)}` : "—"),
+      meta: { width: "wide" },
+      cell: ({ row }) => row.original.lastInvoiceNumber
+        ? <div className="text-xs"><div>{row.original.lastInvoiceNumber}</div><div className="text-muted-foreground">{displayDate(row.original.lastRedeemedAt)}</div></div>
+        : "—",
+    },
+    { id: "discount", header: "الخصم", accessorFn: (r) => formatIqd(r.redeemedDiscount), meta: { kind: "money" }, cell: ({ row }) => formatIqd(row.original.redeemedDiscount) },
+    {
+      id: "actions",
+      header: "",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => <RowActions mode="inline" actions={row.original.status === "ACTIVE" ? [{ key: "void", kind: "cancel", label: "إبطال", icon: XCircle, variant: "destructive", gate: { module: "crm", level: "FULL" }, onSelect: () => void doVoid(row.original.id, row.original.code) }] : []} />,
+    },
+  ];
+
   return <div className="mx-auto max-w-7xl space-y-4 pb-8">
     <PageHeader title="الكوبونات" description="برامج وإصدارات قابلة للتدقيق، مرتبطة بعرض مالي حقيقي، مع Excel وطباعة 54×84 مم أو A4/PDF." actions={<Button onClick={() => setShowForm((value) => !value)}><Plus className="size-4" /> برنامج جديد</Button>} />
 
@@ -224,8 +330,20 @@ export default function Coupons() {
       </CardContent>
     </Card>}
 
-    <Card><CardHeader><CardTitle className="text-base">البرامج والأثر المالي</CardTitle></CardHeader><CardContent><div className="overflow-x-auto rounded-md border"><table className="w-full min-w-[1050px] text-sm"><thead className="bg-muted/60 text-xs text-muted-foreground"><tr><th className="px-3 py-2 text-right">البرنامج / العرض</th><th className="px-3 py-2 text-right">الحالة</th><th className="px-3 py-2 text-right">صادر / صالح / مستخدم</th><th className="px-3 py-2 text-right">معدل الاستخدام</th><th className="px-3 py-2 text-right">الخصم</th><th className="px-3 py-2 text-right">المبيعات</th><th className="px-3 py-2 text-right">الربح الإجمالي</th><th className="px-3 py-2 text-right">الإجراء</th></tr></thead>
-      <tbody>{(programs.data ?? []).map((program) => { const offer = offerById.get(program.promotionId); const redemptionRate = program.issued ? D(program.redeemed).div(program.issued).times(100).toDecimalPlaces(1).toString() : "0"; return <tr key={program.id} className={`border-t ${selected === program.id ? "bg-primary/5" : ""}`}><td className="px-3 py-2"><button type="button" className="text-right" onClick={() => setSelected(program.id)}><div className="font-medium text-primary">{program.name}</div><div className="text-xs text-muted-foreground">{offer?.name ?? `عرض #${program.promotionId}`} · {offer?.type === "PERCENT" ? `${offer.discountPercent}٪` : `${fmtAr(offer?.discountAmount)} د.ع/وحدة`}</div></button></td><td className="px-3 py-2"><Badge variant={program.status === "ACTIVE" ? "default" : "secondary"}>{PROGRAM_STATUS_AR[program.status] ?? program.status}</Badge></td><td className="px-3 py-2 tabular-nums">{program.issued} / {program.activeCoupons} / {program.redeemed}</td><td className="px-3 py-2 tabular-nums">{redemptionRate}٪</td><td className="px-3 py-2 tabular-nums">{formatIqd(program.redeemedDiscount)}</td><td className="px-3 py-2 tabular-nums">{formatIqd(program.linkedNetSales)}</td><td className={`px-3 py-2 tabular-nums ${D(program.linkedGrossProfit).isNegative() ? "text-destructive" : ""}`}>{formatIqd(program.linkedGrossProfit)}</td><td className="px-3 py-2"><RowActions mode="auto" actions={[...(program.status === "DRAFT" ? [{ key: "activate", kind: "approve" as const, label: "تفعيل", gate: { module: "crm" as const, level: "FULL" as const }, onSelect: () => status.mutate({ programId: program.id, status: "ACTIVE" }) }] : []), ...(program.status === "ACTIVE" ? [{ key: "pause", kind: "other" as const, label: "إيقاف", gate: { module: "crm" as const, level: "FULL" as const }, onSelect: () => status.mutate({ programId: program.id, status: "PAUSED" }) }] : []), ...(program.status === "PAUSED" ? [{ key: "resume", kind: "approve" as const, label: "استئناف", gate: { module: "crm" as const, level: "FULL" as const }, onSelect: () => status.mutate({ programId: program.id, status: "ACTIVE" }) }] : []), ...(program.status !== "ENDED" ? [{ key: "end", kind: "cancel" as const, label: "إنهاء", variant: "destructive" as const, gate: { module: "crm" as const, level: "FULL" as const }, onSelect: () => void endProgram(program.id, program.name) }] : []), { key: "open", kind: "view", label: "فتح", gate: { module: "crm", level: "READ" }, onSelect: () => setSelected(program.id) }]} /></td></tr>; })}{(programs.data?.length ?? 0) === 0 && <tr><td colSpan={8} className="py-10 text-center text-muted-foreground">لا برامج بعد. أنشئ عرضاً بنمط كوبون أولاً، ثم أنشئ البرنامج.</td></tr>}</tbody></table></div></CardContent></Card>
+    <Card><CardHeader><CardTitle className="text-base">البرامج والأثر المالي</CardTitle></CardHeader><CardContent>
+      {/* قائمة البرامج كاملةً بلا ترقيم (كما كانت) — والبحث المحلّي يعمل على كل الصفوف. */}
+      <DataTable<ProgramRow>
+        columns={programColumns}
+        data={programs.data ?? []}
+        bounded={false}
+        pageSize={Infinity}
+        searchPlaceholder="بحث في البرامج…"
+        loading={programs.isLoading}
+        errorState={{ isError: programs.isError, message: programs.error?.message, onRetry: () => void programs.refetch() }}
+        getRowClassName={(program) => (selected === program.id ? "bg-primary/5" : undefined)}
+        emptyText="لا برامج بعد. أنشئ عرضاً بنمط كوبون أولاً، ثم أنشئ البرنامج."
+      />
+    </CardContent></Card>
 
     {selectedProgram && <div className="grid gap-4 xl:grid-cols-[0.8fr_1.5fr]">
       <div className="space-y-4">
@@ -235,11 +353,36 @@ export default function Coupons() {
           <Button className="w-full" disabled={selectedProgram.status === "ENDED" || issue.isPending} onClick={() => issue.mutate({ programId: selectedProgram.id, count: clampInt(count, 1, 500), customerId })}><Ticket className="size-4" /> {issue.isPending ? "جارٍ الإصدار…" : "إصدار الدفعة"}</Button><div className="text-xs text-muted-foreground">الإصدار عملية ذرية مسجلة: إما تُنشأ الدفعة كاملة أو لا يُنشأ شيء.</div>
           {lastIssue && <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3"><div className="font-medium">تم الإصدار: <span dir="ltr">{lastIssue.batchReference}</span></div><div className="text-xs text-muted-foreground">{lastIssue.codes.length} كوبون · {displayDate(lastIssue.issuedAt)}</div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "CARD")}><Printer className="size-4" /> بطاقات 54×84</Button><Button size="sm" variant="outline" onClick={() => void printCodes(lastIssue.codes, "A4")}><FileText className="size-4" /> A4 / حفظ PDF</Button></div></div>}
         </CardContent></Card>
-        <Card><CardHeader><CardTitle className="text-base">دفعات الإصدار الأخيرة</CardTitle></CardHeader><CardContent><div className="max-h-72 overflow-auto rounded-md border"><table className="w-full text-sm"><thead className="bg-muted/60 text-xs"><tr><th className="p-2 text-right">المرجع</th><th className="p-2 text-right">العدد</th><th className="p-2 text-right">الوقت / المستخدم</th></tr></thead><tbody>{(batches.data ?? []).map((batch) => <tr key={batch.id} className="border-t"><td className="p-2 font-mono text-xs" dir="ltr">{batch.batchReference}</td><td className="p-2">{batch.count}</td><td className="p-2 text-xs">{displayDate(batch.issuedAt)}<div className="text-muted-foreground">{batch.issuedBy}</div></td></tr>)}{batches.isFetched && (batches.data?.length ?? 0) === 0 && <tr><td colSpan={3} className="py-8 text-center text-muted-foreground">لا دفعات مسجلة.</td></tr>}</tbody></table></div></CardContent></Card>
+        <Card><CardHeader><CardTitle className="text-base">دفعات الإصدار الأخيرة</CardTitle></CardHeader><CardContent>
+          {/* مُضمَّن في بطاقةٍ تحمل عنوانه ⇒ بلا شريط حالةٍ ولا بحث؛ والارتفاع محبوسٌ كما كان. */}
+          <DataTable<BatchRow>
+            embedded
+            searchable={false}
+            pageSize={Infinity}
+            maxHeightClass="max-h-72"
+            columns={batchColumns}
+            data={batches.data ?? []}
+            loading={batches.isLoading}
+            errorState={{ isError: batches.isError, message: batches.error?.message, onRetry: () => void batches.refetch() }}
+            emptyText="لا دفعات مسجلة."
+          />
+        </CardContent></Card>
       </div>
       <Card><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-base">سجل الكوبونات</CardTitle><span className="text-xs text-muted-foreground">حقل الرمز في الطباعة: 40×8 مم</span></CardHeader><CardContent><div className="mb-3 flex flex-wrap items-center gap-2"><div className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-8 pr-8" value={codeQuery} onChange={(event) => setCodeQuery(event.target.value)} placeholder="بحث خادمي بالرمز…" /></div><AppSelect value={statusFilter} onValueChange={(value) => setStatusFilter(value as CouponStatusFilter)} className="h-8 w-32" size="sm"><option value="ALL">كل الحالات</option><option value="ACTIVE">نشط</option><option value="REDEEMED">مستخدم</option><option value="VOID">ملغى</option></AppSelect><Button size="sm" variant="outline" onClick={exportWorkbook}><Download className="size-4" /> Excel شامل</Button><Button size="sm" variant="outline" disabled={activeCount === 0 || printing} onClick={() => void printActive()}><FileText className="size-4" /> {printing ? "تحضير…" : `A4 / PDF للنشطة (${activeCount})`}</Button></div>
-        <div className="max-h-[620px] overflow-auto rounded-md border"><table className="w-full min-w-[900px] text-sm"><thead className="sticky top-0 bg-muted"><tr><th className="p-2 text-right">الرمز</th><th className="p-2 text-right">الحالة</th><th className="p-2 text-right">العميل</th><th className="p-2 text-right">الإصدار</th><th className="p-2 text-right">الاستخدام / الفاتورة</th><th className="p-2 text-right">الخصم</th><th className="p-2"></th></tr></thead><tbody>{issuedRows.map((coupon) => <tr key={coupon.id} className="border-t"><td className="p-2 font-mono font-bold" dir="ltr">{coupon.code}</td><td className="p-2"><Badge variant={coupon.status === "ACTIVE" ? "default" : "secondary"}>{COUPON_STATUS_AR[coupon.status] ?? coupon.status}</Badge></td><td className="p-2">{coupon.assignedCustomerName ?? "عام"}</td><td className="p-2 text-xs">{displayDate(coupon.issuedAt)}</td><td className="p-2 text-xs">{coupon.lastInvoiceNumber ? <><div>{coupon.lastInvoiceNumber}</div><div className="text-muted-foreground">{displayDate(coupon.lastRedeemedAt)}</div></> : "—"}</td><td className="p-2 tabular-nums">{formatIqd(coupon.redeemedDiscount)}</td><td className="p-1"><RowActions mode="inline" actions={coupon.status === "ACTIVE" ? [{ key: "void", kind: "cancel", label: "إبطال", icon: XCircle, variant: "destructive", gate: { module: "crm", level: "FULL" }, onSelect: () => void doVoid(coupon.id, coupon.code) }] : []} /></td></tr>)}{issued.isFetched && issuedRows.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-muted-foreground">لا كوبونات مطابقة.</td></tr>}</tbody></table></div>
-        <TablePager page={page} onPageChange={setPage} pageSize={PAGE_SIZE} rowsOnPage={issuedRows.length} total={issuedTotal} isLoading={issued.isFetching} />
+        {/* الترقيم خادميّ ويُصيّره DataTable نفسه — لا `TablePager` منفصل تحته (شريطان يقفزان
+            بمقدارين مختلفين). والبحث بالرمز خادميٌّ في شريط الشاشة أعلاه ⇒ `searchable={false}`
+            مع `externalFiltersActive` كي لا يُعلن الجدول «لا صفوف بعد» على فلترٍ حاجب. */}
+        <DataTable<IssuedCoupon>
+          columns={issuedColumns}
+          data={issuedRows}
+          searchable={false}
+          externalFiltersActive={debouncedCodeQuery !== "" || statusFilter !== "ALL"}
+          maxHeightClass="max-h-[620px]"
+          loading={issued.isLoading}
+          errorState={{ isError: issued.isError, message: issued.error?.message, onRetry: () => void issued.refetch() }}
+          serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total: issuedTotal, isFetching: issued.isFetching }}
+          emptyText="لا كوبونات مطابقة."
+        />
       </CardContent></Card>
     </div>}
   </div>;

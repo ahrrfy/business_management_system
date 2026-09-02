@@ -17,6 +17,7 @@ import {
   Send,
   WifiOff,
 } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
@@ -30,6 +31,7 @@ import {
 } from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
 import { CameraScanner } from "@/components/scan/CameraScanner";
+import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { errMsg, notify } from "@/lib/notify";
 import { isNetworkError } from "@/lib/netError";
@@ -682,45 +684,51 @@ export default function MyStocktakeWorkspace() {
 
   return (
     <div className="mx-auto max-w-[1500px] space-y-4 p-1 sm:space-y-5">
-      <header className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border bg-card p-4 shadow-sm sm:p-6">
-        <div className="min-w-0">
-          <div className="mb-1.5 flex items-center gap-2 text-primary sm:mb-2">
-            <ClipboardCheck className="size-4 sm:size-5" aria-hidden />
-            <span className="text-xs font-bold sm:text-sm">
-              مساحة عملي في الجرد
-            </span>
-          </div>
-          <h1 className="truncate text-lg font-bold sm:text-2xl">
-            {st.session.name}
-          </h1>
-          <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-            {st.session.branchName} · مرحباً {st.assignment.name}
-            {st.assignment.zone ? ` · المنطقة: ${st.assignment.zone}` : ""}
-          </p>
+      {/* بطاقة الرأس تبقى كما هي؛ صار عنوانها وشارات حالتها داخل PageHeader الموحّد —
+          ومعه رجوعٌ صريح إلى «جردي» كان مفقوداً هنا (لا مخرجَ إلّا بعد التسليم). */}
+      <header className="rounded-2xl border bg-card p-4 shadow-sm sm:p-6">
+        <div className="mb-1.5 flex items-center gap-2 text-primary sm:mb-2">
+          <ClipboardCheck className="size-4 sm:size-5" aria-hidden />
+          <span className="text-xs font-bold sm:text-sm">
+            مساحة عملي في الجرد
+          </span>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {queueCount > 0 && (
-            <span
-              className="inline-flex items-center gap-1 rounded-xl bg-muted px-2.5 py-1.5 text-xs font-bold text-muted-foreground"
-              title="عدّات محفوظة على الجهاز بانتظار المزامنة"
-            >
-              <Hourglass className="size-3.5" aria-hidden /> {fmtInt(queueCount)}
-            </span>
-          )}
-          <span
-            className={cn(
-              "inline-block size-2.5 rounded-full",
-              online ? "bg-[var(--stock-ok)]" : "bg-[var(--stock-out)]",
-            )}
-            title={online ? "متصل" : "لا اتصال"}
-            aria-label={online ? "متصل" : "لا اتصال"}
-          />
-          {st.session.blind && (
-            <div className="flex items-center gap-2 rounded-xl bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary sm:px-4 sm:py-2 sm:text-sm">
-              <ClipboardCheck className="size-4" aria-hidden /> جرد أعمى
-            </div>
-          )}
-        </div>
+        <PageHeader
+          title={st.session.name}
+          backHref="/my-stocktake"
+          backLabel="جردي"
+          description={
+            <>
+              {st.session.branchName} · مرحباً {st.assignment.name}
+              {st.assignment.zone ? ` · المنطقة: ${st.assignment.zone}` : ""}
+            </>
+          }
+          actions={
+            <>
+              {queueCount > 0 && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-xl bg-muted px-2.5 py-1.5 text-xs font-bold text-muted-foreground"
+                  title="عدّات محفوظة على الجهاز بانتظار المزامنة"
+                >
+                  <Hourglass className="size-3.5" aria-hidden /> {fmtInt(queueCount)}
+                </span>
+              )}
+              <span
+                className={cn(
+                  "inline-block size-2.5 rounded-full",
+                  online ? "bg-[var(--stock-ok)]" : "bg-[var(--stock-out)]",
+                )}
+                title={online ? "متصل" : "لا اتصال"}
+                aria-label={online ? "متصل" : "لا اتصال"}
+              />
+              {st.session.blind && (
+                <div className="flex items-center gap-2 rounded-xl bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary sm:px-4 sm:py-2 sm:text-sm">
+                  <ClipboardCheck className="size-4" aria-hidden /> جرد أعمى
+                </div>
+              )}
+            </>
+          }
+        />
       </header>
 
       {!online && (
@@ -1226,7 +1234,7 @@ function QtyEditor({
         </Button>
         <Button disabled={saving || !valid} onClick={handleSave}>
           {saving
-            ? "جارٍ الحفظ…"
+            ? ACTION_LABELS.saving
             : isVerify
               ? "تسجيل العدّ التحقّقي"
               : isRecount

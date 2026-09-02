@@ -34,6 +34,7 @@ import { FileEdit, ShoppingCart } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string }): string {
@@ -150,6 +151,10 @@ export default function ReorderAlerts() {
     clearBranchOverride.mutate({ variantId, branchId: branchIdOfRow });
   }
   const editSaving = setThresholds.isPending || setBranchOverride.isPending || clearBranchOverride.isPending;
+  // نصُّ انتظار زرّ «حفظ» يقتصر على مُغيّرَي العتبة: `editSaving` يشمل أيضاً مسح الـoverride
+  // («استعادة الافتراض») ⇒ استعمالُه في النصّ يجعل الزرّ يدّعي حفظاً لم يطلبه المستخدم أصلاً،
+  // بينما تعطيلُ الأزرار الثلاثة يبقى على العَلَم الجامع كما كان.
+  const thresholdSaving = setThresholds.isPending || setBranchOverride.isPending;
 
   // ── تحديد الصفوف + حوار المسوّدة ─────────────────────────────────────────
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -298,7 +303,7 @@ export default function ReorderAlerts() {
           <CardTitle className="text-base">المنتجات الواجب إعادة طلبها</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} من ${fmtInt(total)} صنف`}
+              {alerts.isLoading ? ACTION_LABELS.loading : `${fmtInt(rows.length)} من ${fmtInt(total)} صنف`}
             </span>
             {canWrite && overridesCount > 0 && (
               <span
@@ -437,8 +442,9 @@ export default function ReorderAlerts() {
                                 </label>
                               </div>
                               <div className="flex gap-1 justify-center">
+                                {/* كان نصُّ الانتظار نقاطاً مجرّدة؛ وُحِّد مع بقيّة الأزرار بعَلَمٍ مقصورٍ على الحفظ. */}
                                 <Button size="sm" onClick={() => saveEdit(r.variantId, r.branchId)} disabled={editSaving}>
-                                  {editSaving ? "…" : "حفظ"}
+                                  {thresholdSaving ? ACTION_LABELS.saving : "حفظ"}
                                 </Button>
                                 <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={editSaving}>
                                   إلغاء

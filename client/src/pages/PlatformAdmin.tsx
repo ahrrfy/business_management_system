@@ -13,14 +13,23 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ErrorState } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
 import { AlertTriangle, CheckCircle2, CopyIcon, XCircle } from "lucide-react";
-import { fmtDate, fmtDateTime } from "@/lib/date";
+import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
+import { ACTION_LABELS } from "@shared/actionLabels";
+
+/** فرزٌ زمنيّ على الطابع الخامّ: نصّ العرض «21/06/2026» يُفرَز باليوم لا بالتاريخ. */
+const cmpTime = (a: DateInput, b: DateInput) => {
+  const ta = toDate(a)?.getTime() ?? -Infinity;
+  const tb = toDate(b)?.getTime() ?? -Infinity;
+  return ta === tb ? 0 : ta < tb ? -1 : 1;
+};
 
 type PlatformAuditRow = RouterOutputs["platformAdmin"]["audit"]["list"]["rows"][number];
+type CompanyRow = RouterOutputs["platformAdmin"]["companies"]["list"][number];
+type ProvisionRequestRow = RouterOutputs["platformAdmin"]["companies"]["provisionRequests"][number];
 
 const PLATFORM_ACTION_LABELS: Record<string, string> = {
   login: "تسجيل دخول",
@@ -92,7 +101,9 @@ function PlatformAdminLoginForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-const CODE_RE = /^[a-z0-9][a-z0-9-]{1,38}$/;
+// 2..40 محرفاً — مطابقٌ لعقد الخادم `z.string().min(2).max(40)`. كان `{1,38}` (أي 2..39)
+// فيرفض المحرّر رمزاً من 40 يقبله الخادم، برسالةٍ تعد بـ 40 — شاشةٌ تحجب ما يملكه الخادم.
+const CODE_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 
 const STATUS_LABEL: Record<string, string> = {
   PENDING: "قيد الانتظار",
@@ -102,9 +113,11 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 function StatusBadge({ status }: { status: string }) {
+  // حالةُ توفيرٍ لا مبلغ: الأخضر هنا يقول «اكتمل» لا «مبلغ موجب» ⇒ صنف الحالة الجاهز
+  // `badge-status-active` بدل توكن المال `money-positive` الذي كان مستعمَلاً هنا.
   const cls =
     status === "DONE"
-      ? "bg-money-positive/15 text-money-positive"
+      ? "badge-status-active"
       : status === "FAILED"
       ? "bg-destructive/15 text-destructive"
       : "bg-muted text-muted-foreground";
@@ -124,9 +137,10 @@ function TempPasswordReveal({
 }) {
   const [copied, setCopied] = useState(false);
   const text = `البريد: ${adminEmail}\nاسم المستخدم: ${adminUsername}\nكلمة المرور المؤقّتة: ${tempPassword}`;
+  // نجاحُ إجراءٍ لا مبلغ ⇒ تِنت `--sem-pos` الدلاليّ بدل `money-positive`.
   return (
-    <div className="rounded-lg border border-money-positive/40 bg-money-positive/5 p-3 space-y-2">
-      <p className="text-sm font-semibold text-money-positive inline-flex items-center gap-1">
+    <div className="rounded-lg border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] p-3 space-y-2">
+      <p className="text-sm font-semibold text-[var(--sem-pos)] inline-flex items-center gap-1">
         <CheckCircle2 aria-hidden className="size-4" /> طُلِب التوفير — احفظ كلمة المرور الآن
       </p>
       <div className="font-mono text-sm space-y-1" dir="ltr">
@@ -192,7 +206,7 @@ function NewCompanyForm() {
   function submit() {
     setError("");
     if (!CODE_RE.test(code.trim())) {
-      setError("رمز الشركة بحروف صغيرة/أرقام/شُرَط فقط (kebab-case)، بين حرفين و٤٠ حرفاً.");
+      setError("رمز الشركة بحروف صغيرة/أرقام/شُرَط فقط (kebab-case)، بين حرفين و40 حرفاً.");
       return;
     }
     if (!name.trim()) return setError("أدخل اسم الشركة.");
@@ -232,7 +246,7 @@ function NewCompanyForm() {
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         <Button onClick={submit} disabled={requestCreate.isPending}>
-          {requestCreate.isPending ? "…" : "طلب توفير الشركة"}
+          {requestCreate.isPending ? ACTION_LABELS.sending : "طلب توفير الشركة"}
         </Button>
 
         {reveal && (
@@ -240,7 +254,16 @@ function NewCompanyForm() {
             <TempPasswordReveal adminEmail={reveal.adminEmail} adminUsername={reveal.adminUsername} tempPassword={reveal.tempPassword} />
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground">حالة التوفير:</span>
-              {status.data ? <StatusBadge status={status.data.status} /> : <span className="text-muted-foreground">…</span>}
+              {status.data ? (
+                <StatusBadge status={status.data.status} />
+              ) : status.isError ? (
+                // لا نَعِد بتحميلٍ جارٍ بينما الاستعلام ساقط: المؤشّر الأبديّ يخفي خطأً يملكه الخادم.
+                <span className="inline-flex items-center gap-1 text-destructive text-xs">
+                  <XCircle aria-hidden className="size-3.5" /> {status.error?.message ?? "خطأ غير معروف"}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">{ACTION_LABELS.loading}</span>
+              )}
               {status.data?.status === "FAILED" && (
                 <span className="inline-flex items-center gap-1 text-destructive text-xs">
                   <XCircle aria-hidden className="size-3.5" /> {status.data.errorMessage ?? "خطأ غير معروف"}
@@ -262,8 +285,9 @@ function PlatformAuditTable() {
     {
       accessorKey: "success",
       header: "النتيجة",
+      // عمودُ نتيجةٍ (meta.kind = "status") لا عمودُ مال ⇒ `--sem-pos` لا `money-positive`.
       cell: ({ row }) => (
-        <span className={row.original.success ? "font-medium text-money-positive" : "font-medium text-destructive"}>
+        <span className={row.original.success ? "font-medium text-[var(--sem-pos)]" : "font-medium text-destructive"}>
           {row.original.success ? "نجحت" : "فشلت"}
         </span>
       ),
@@ -339,6 +363,50 @@ function CompaniesDashboard() {
     onSuccess: () => companies.refetch(),
   });
 
+  // أعمدة الشركات — داخل المكوّن لأنّ مفتاح التفعيل يستدعي الطفرة `setActive`.
+  const companyColumns = useMemo<ColumnDef<CompanyRow, unknown>[]>(() => [
+    { id: "code", header: "الرمز", accessorFn: (c) => c.code, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
+    { id: "name", header: "الاسم", accessorFn: (c) => c.name, meta: { width: "wide" }, cell: ({ row }) => row.original.name },
+    { id: "dbName", header: "القاعدة", accessorFn: (c) => c.dbName, meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.dbName}</span> },
+    { id: "createdAt", header: "أُنشئت", accessorFn: (c) => fmtDate(c.createdAt), meta: { kind: "date" }, sortingFn: (a, b) => cmpTime(a.original.createdAt, b.original.createdAt), cell: ({ row }) => <span className="text-xs text-muted-foreground">{fmtDate(row.original.createdAt)}</span> },
+    {
+      id: "isActive",
+      header: "مفعّلة",
+      accessorFn: (c) => (c.isActive ? "مفعّلة" : "معطّلة"),
+      enableSorting: false,
+      meta: { align: "center", width: "status" },
+      cell: ({ row }) => (
+        <Switch
+          checked={row.original.isActive}
+          onCheckedChange={(v) => setActive.mutate({ id: row.original.id, isActive: v })}
+          disabled={setActive.isPending}
+          aria-label={`تفعيل/تعطيل ${row.original.name}`}
+        />
+      ),
+    },
+  ], [setActive]);
+
+  const provisionRequestColumns = useMemo<ColumnDef<ProvisionRequestRow, unknown>[]>(() => [
+    { id: "code", header: "الرمز", accessorFn: (r) => r.code, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
+    { id: "name", header: "الاسم", accessorFn: (r) => r.name, meta: { width: "wide" }, cell: ({ row }) => row.original.name },
+    {
+      id: "status",
+      header: "الحالة",
+      // التسمية العربية لا الرمز الخامّ — «نسخ القيمة» يطابق ما يقرأه المستعمِل.
+      accessorFn: (r) => STATUS_LABEL[r.status] ?? r.status,
+      meta: { kind: "status", wrap: true },
+      cell: ({ row }) => (
+        <div className="flex flex-col items-center gap-1">
+          <StatusBadge status={row.original.status} />
+          {row.original.status === "FAILED" && row.original.errorMessage && (
+            <p className="text-xs text-destructive max-w-xs truncate" title={row.original.errorMessage}>{row.original.errorMessage}</p>
+          )}
+        </div>
+      ),
+    },
+    { id: "createdAt", header: "وقت الطلب", accessorFn: (r) => fmtDateTime(r.createdAt), meta: { kind: "datetime" }, sortDescFirst: true, sortingFn: (a, b) => cmpTime(a.original.createdAt, b.original.createdAt), cell: ({ row }) => <span className="text-xs text-muted-foreground">{fmtDateTime(row.original.createdAt)}</span> },
+  ], []);
+
   return (
     <div dir="rtl" className="min-h-screen bg-background p-6">
       <div className="mx-auto max-w-4xl space-y-4">
@@ -354,50 +422,22 @@ function CompaniesDashboard() {
             <CardTitle className="text-base">الشركات المسجَّلة</CardTitle>
           </CardHeader>
           <CardContent>
-            {companies.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
-            {companies.error && (
-              <ErrorState message={`تعذّر تحميل الشركات: ${companies.error.message}`} onRetry={() => companies.refetch()} />
-            )}
-            {companies.data && companies.data.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                لا شركات بعد — أضف شركة عبر النموذج أدناه، أو من الطرفية: <code dir="ltr">pnpm company:new &lt;رمز&gt; "&lt;اسم&gt;" --admin-email ... --admin-password ...</code>
-              </p>
-            )}
-            {companies.data && companies.data.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b text-right text-xs font-bold text-muted-foreground">
-                      <th className="px-2 py-2">الرمز</th>
-                      <th className="px-2 py-2">الاسم</th>
-                      <th className="px-2 py-2">القاعدة</th>
-                      <th className="px-2 py-2">أُنشئت</th>
-                      <th className="px-2 py-2">مفعّلة</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {companies.data.map((c) => (
-                      <tr key={c.id} className="border-b">
-                        <td className="px-2 py-2 font-mono" dir="ltr">{c.code}</td>
-                        <td className="px-2 py-2">{c.name}</td>
-                        <td className="px-2 py-2 font-mono text-xs text-muted-foreground" dir="ltr">{c.dbName}</td>
-                        <td className="px-2 py-2 text-xs text-muted-foreground" dir="ltr">
-                          {fmtDate(c.createdAt)}
-                        </td>
-                        <td className="px-2 py-2">
-                          <Switch
-                            checked={c.isActive}
-                            onCheckedChange={(v) => setActive.mutate({ id: c.id, isActive: v })}
-                            disabled={setActive.isPending}
-                            aria-label={`تفعيل/تعطيل ${c.name}`}
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            {/* مُضمَّن: العنوان في رأس البطاقة، والقائمة قصيرة بطبيعتها (شركات المنصّة) فلا ترقيم. */}
+            <DataTable<CompanyRow>
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+              columns={companyColumns}
+              data={companies.data ?? []}
+              loading={companies.isLoading}
+              errorState={{ isError: companies.isError, message: companies.error ? `تعذّر تحميل الشركات: ${companies.error.message}` : undefined, onRetry: () => companies.refetch() }}
+              emptyState={
+                <span>
+                  لا شركات بعد — أضف شركة عبر النموذج أدناه، أو من الطرفية: <code dir="ltr">pnpm company:new &lt;رمز&gt; "&lt;اسم&gt;" --admin-email ... --admin-password ...</code>
+                </span>
+              }
+            />
           </CardContent>
         </Card>
 
@@ -408,42 +448,18 @@ function CompaniesDashboard() {
             <CardTitle className="text-base">آخر طلبات التوفير</CardTitle>
           </CardHeader>
           <CardContent>
-            {provisionRequests.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
-            {provisionRequests.error && (
-              <ErrorState message={`تعذّر تحميل طلبات التوفير: ${provisionRequests.error.message}`} onRetry={() => provisionRequests.refetch()} />
-            )}
-            {provisionRequests.data && provisionRequests.data.length === 0 && (
-              <p className="text-sm text-muted-foreground">لا طلبات بعد.</p>
-            )}
-            {provisionRequests.data && provisionRequests.data.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b text-right text-xs font-bold text-muted-foreground">
-                      <th className="px-2 py-2">الرمز</th>
-                      <th className="px-2 py-2">الاسم</th>
-                      <th className="px-2 py-2">الحالة</th>
-                      <th className="px-2 py-2">وقت الطلب</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {provisionRequests.data.map((r) => (
-                      <tr key={r.id} className="border-b align-top">
-                        <td className="px-2 py-2 font-mono" dir="ltr">{r.code}</td>
-                        <td className="px-2 py-2">{r.name}</td>
-                        <td className="px-2 py-2">
-                          <StatusBadge status={r.status} />
-                          {r.status === "FAILED" && r.errorMessage && (
-                            <p className="text-xs text-destructive mt-1 max-w-xs truncate" title={r.errorMessage}>{r.errorMessage}</p>
-                          )}
-                        </td>
-                        <td className="px-2 py-2 text-xs text-muted-foreground" dir="ltr">{fmtDateTime(r.createdAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            {/* مُضمَّن: العنوان في رأس البطاقة، والقائمة «آخر الطلبات» محدودة خادمياً. */}
+            <DataTable<ProvisionRequestRow>
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+              columns={provisionRequestColumns}
+              data={provisionRequests.data ?? []}
+              loading={provisionRequests.isLoading}
+              errorState={{ isError: provisionRequests.isError, message: provisionRequests.error ? `تعذّر تحميل طلبات التوفير: ${provisionRequests.error.message}` : undefined, onRetry: () => provisionRequests.refetch() }}
+              emptyText="لا طلبات بعد."
+            />
           </CardContent>
         </Card>
 

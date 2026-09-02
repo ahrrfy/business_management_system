@@ -442,30 +442,28 @@ export async function shiftCloseToCanvas(
   ctx.fillStyle = "#000";
   y += vH + 16;
 
-  if (d.cashHandover) {
-    y = sectionHdr(ctx, y, "عقد تسليم النقد");
+  if (d.treasuryReturn) {
+    y = sectionHdr(ctx, y, "ترحيل النقد إلى الخزينة");
     ctx.font = "800 22px Cairo, sans-serif";
     const handoverMaxWidth = W - (PAD + 12) * 2;
-    const recipientLines = wrapMeasuredText(ctx, `سلّم إلى: ${d.cashHandover.recipientName}`, handoverMaxWidth);
-    const referenceLines = wrapMeasuredText(ctx, `رقم العهدة: ${d.cashHandover.referenceNumber}`, handoverMaxWidth);
+    const referenceLines = wrapMeasuredText(ctx, `رقم سند الترحيل: ${d.treasuryReturn.referenceNumber}`, handoverMaxWidth);
+    const statusLines = wrapMeasuredText(ctx, "تم الترحيل إلى الخزينة تلقائياً عند إغلاق الوردية", handoverMaxWidth);
     const lineHeight = 30;
-    const h = 34 + lineHeight * (1 + recipientLines.length + referenceLines.length) + 38;
+    const h = 34 + lineHeight * (1 + referenceLines.length + statusLines.length) + 38;
     strokeBox(ctx, y, h, 2);
     ctx.fillStyle = "#000";
     ctx.textAlign = "right";
     ctx.font = "800 22px Cairo, sans-serif";
     let handoverY = y + 34;
-    ctx.fillText(`المبلغ: ${fmt(d.cashHandover.amount)} د.ع`, W - PAD - 12, handoverY);
-    for (const line of recipientLines) {
-      handoverY += lineHeight;
-      ctx.fillText(line, W - PAD - 12, handoverY);
-    }
+    ctx.fillText(`المبلغ: ${fmt(d.treasuryReturn.amount)} د.ع`, W - PAD - 12, handoverY);
     for (const line of referenceLines) {
       handoverY += lineHeight;
       ctx.fillText(line, W - PAD - 12, handoverY);
     }
-    ctx.font = "700 18px Cairo, sans-serif";
-    ctx.fillText("بانتظار العدّ والقبول في الخزينة", W - PAD - 12, handoverY + 30);
+    for (const line of statusLines) {
+      handoverY += lineHeight;
+      ctx.fillText(line, W - PAD - 12, handoverY);
+    }
     y += h + 16;
   }
 

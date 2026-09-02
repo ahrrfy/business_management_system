@@ -1,12 +1,12 @@
 // محافظ المزوّدين مسبقي الدفع: رصيد الشركة لدى جهاز/حساب المزوّد لكل فرع.
 // الإيداع والسحب والتسوية ليست هنا (شريحة لاحقة) — هذه الشاشة تُعرّف المحفظة وتعرض رصيدها.
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ListToolbar, RowActions } from "@/components/list";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import {
   Dialog,
   DialogContent,
@@ -18,7 +18,9 @@ import {
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { D, fmtAr } from "@/lib/money";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { AlertTriangle, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
@@ -26,8 +28,6 @@ import {
 } from "./WalletOpsDialogs";
 
 type WalletRow = RouterOutputs["digitalCards"]["wallets"]["list"][number];
-
-const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 export default function DigitalWallets() {
   const utils = trpc.useUtils();
@@ -117,6 +117,45 @@ export default function DigitalWallets() {
     toggleMut.mutate({ id: w.id, isActive: !w.isActive });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بشريط الأدوات والقائمة الجانبية).
+  // نفس صفوف الجدول المعروضة بعد البحث (visibleRows) ونفس أعمدته وتسمياتها وتنسيق أموالها
+  // (fmtAr) — بلا استعلامٍ جديد ولا حسابٍ مغاير: «متاح للبيع» يُشتقّ هنا كما يُشتقّ في الخليّة.
+  function printWallets() {
+    printReportDoc({
+      title: "أرصدة أجهزة المزوّدين",
+      headerExtra: [
+        { label: "عدد المحافظ", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "name", label: "المحفظة" },
+        { key: "code", label: "الرمز" },
+        { key: "provider", label: "المزوّد" },
+        { key: "branch", label: "الفرع" },
+        // ⚠️ مفاتيح الأعمدة المالية الثلاثة يجب أن تطابق كاشف المال في `docTableV2`
+        // (/price|total|tax|amount|debit|credit|balance|remaining|paid/i) — هو ما يمنح الخليّة
+        // عزلَ الاتّجاه (direction:ltr) وأرقاماً جدولية وثِخَناً. «reserved»/«available» لا
+        // يطابقانه ⇒ عمودان من ثلاثة يفقدان معاملة المال على الورق بينما الشاشة تُعطي
+        // meta:{kind:"money"} للثلاثة. اللاحقة «Balance» تُوائمهما مع الشاشة.
+        { key: "balance", label: "الرصيد", align: "left" },
+        { key: "reservedBalance", label: "معلّق لعمليات بيع", align: "left" },
+        { key: "availableBalance", label: "متاح للبيع", align: "left" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: visibleRows.map((w) => ({
+        name: w.name,
+        code: w.code,
+        provider: w.providerName,
+        branch: w.branchName,
+        balance: fmtAr(w.currentBalance),
+        reservedBalance: fmtAr(w.reservedBalance),
+        availableBalance: fmtAr(D(w.currentBalance).minus(D(w.reservedBalance)).toFixed(2)),
+        status: w.isActive ? "مفعّلة" : "معطّلة",
+      })),
+      emptyText: "لا محافظ مطابقة.",
+    });
+  }
+
   const saving = createMut.isPending || updateMut.isPending;
   const editing = editId != null;
 
@@ -167,7 +206,7 @@ export default function DigitalWallets() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => { void list.refetch(); void lowBalance.refetch(); }}
             refreshing={list.isFetching || lowBalance.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printWallets}
             exportSpec={{
               filename: "محافظ-المزودين",
               rows: visibleRows,
@@ -183,115 +222,130 @@ export default function DigitalWallets() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">المحفظة</th>
-                  <th className="p-2 text-start">الرمز</th>
-                  <th className="p-2 text-start">المزوّد</th>
-                  <th className="p-2 text-start">الفرع</th>
-                  <th className="p-2 text-start">الرصيد</th>
-                  <th className="p-2 text-start">معلّق لعمليات بيع</th>
-                  <th className="p-2 text-start">متاح للبيع</th>
-                  <th className="p-2 text-center">الحالة</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((w) => (
-                  <tr key={w.id} className={`border-t ${w.isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">{w.name}</td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">{w.code}</td>
-                    <td className="p-2">{w.providerName}</td>
-                    <td className="p-2 text-muted-foreground">{w.branchName}</td>
-                    <td className="p-2 tabular-nums">{fmtAr(w.currentBalance)}</td>
-                    <td className="p-2 tabular-nums text-muted-foreground">{fmtAr(w.reservedBalance)}</td>
-                    <td className="p-2 tabular-nums font-medium">
-                      {fmtAr(D(w.currentBalance).minus(D(w.reservedBalance)).toFixed(2))}
-                    </td>
-                    <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${w.isActive ? "badge-status-active" : "badge-stock-out"}`}>
-                        {w.isActive ? "مفعّلة" : "معطّلة"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        actions={[
-                          {
-                            key: "deposit",
-                            kind: "pay",
-                            label: "تسجيل شحن رصيد",
-                            disabled: !w.isActive,
-                            disabledReason: "المحفظة معطّلة",
-                            onSelect: () => setMoving({ wallet: w, mode: "deposit" }),
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                          },
-                          {
-                            key: "withdraw",
-                            kind: "pay",
-                            label: "تسجيل سحب رصيد",
-                            disabled: !w.isActive,
-                            disabledReason: "المحفظة معطّلة",
-                            onSelect: () => setMoving({ wallet: w, mode: "withdraw" }),
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                          },
-                          {
-                            key: "statement",
-                            kind: "view",
-                            label: "كشف الحساب",
-                            onSelect: () => setViewing(w),
-                            gate: { roles: ["manager", "accountant", "auditor"], module: "digital_cards", level: "READ" },
-                          },
-                          {
-                            key: "reconcile",
-                            kind: "approve",
-                            label: "مطابقة مع الجهاز",
-                            disabled: !w.isActive,
-                            disabledReason: "المحفظة معطّلة؛ كشف الحساب متاح للقراءة",
-                            onSelect: () => setReconciling(w),
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                          },
-                          {
-                            key: "adjust",
-                            kind: "approve",
-                            label: "طلب تصحيح الرصيد",
-                            disabled: !w.isActive,
-                            disabledReason: "المحفظة معطّلة",
-                            onSelect: () => setAdjusting(w),
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                          },
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل البيانات",
-                            onSelect: () => openEdit(w),
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                          },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: w.isActive ? "تعطيل" : "تفعيل",
-                            variant: w.isActive ? "destructive" : "default",
-                            disabled: toggleMut.isPending || (w.isActive && (!D(w.currentBalance).isZero() || !D(w.reservedBalance).isZero())),
-                            disabledReason: toggleMut.isPending
-                              ? "توجد عملية تحديث قيد التنفيذ"
-                              : "صفّر الرصيد وأنهِ الحجوزات أولاً",
-                            onSelect: () => void toggle(w),
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-                {list.isLoading && <tr><td colSpan={9}><LoadingState /></td></tr>}
-                {!list.isLoading && visibleRows.length === 0 && (
-                  <TableEmptyRow colSpan={9} message="لا محافظ بعد — أضِف محفظة لكل جهاز مزوّد في كل فرع." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable<WalletRow>
+            data={visibleRows}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            /* البحث في ListToolbar أعلاه (يغذّي visibleRows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={query.trim() !== ""}
+            getRowClassName={(w) => (w.isActive ? undefined : "opacity-60")}
+            emptyText="لا محافظ بعد — أضِف محفظة لكل جهاز مزوّد في كل فرع."
+            emptyFilteredState="لا محفظة تطابق البحث."
+            columns={[
+              { id: "name", header: "المحفظة", accessorFn: (w) => w.name, cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
+              // kind: "code" يتكفّل بالخطّ الأحاديّ وعزل الاتّجاه ⇒ لا dir="ltr" ولا font-mono يدويّين.
+              { id: "code", header: "الرمز", accessorFn: (w) => w.code, meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs">{row.original.code}</span> },
+              { id: "provider", header: "المزوّد", accessorFn: (w) => w.providerName, cell: ({ row }) => row.original.providerName },
+              { id: "branch", header: "الفرع", accessorFn: (w) => w.branchName, cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName}</span> },
+              { id: "balance", header: "الرصيد", accessorFn: (w) => fmtAr(w.currentBalance), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.currentBalance) },
+              {
+                id: "reserved",
+                header: "معلّق لعمليات بيع",
+                accessorFn: (w) => fmtAr(w.reservedBalance),
+                meta: { kind: "money" },
+                cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.reservedBalance)}</span>,
+              },
+              {
+                id: "available",
+                header: "متاح للبيع",
+                accessorFn: (w) => fmtAr(D(w.currentBalance).minus(D(w.reservedBalance)).toFixed(2)),
+                meta: { kind: "money" },
+                cell: ({ row }) => (
+                  <span className="font-medium">{fmtAr(D(row.original.currentBalance).minus(D(row.original.reservedBalance)).toFixed(2))}</span>
+                ),
+              },
+              {
+                id: "status",
+                header: "الحالة",
+                // التسمية المعروضة لا العلم الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+                accessorFn: (w) => (w.isActive ? "مفعّلة" : "معطّلة"),
+                meta: { kind: "status" },
+                cell: ({ row }) => (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "badge-stock-out"}`}>
+                    {row.original.isActive ? "مفعّلة" : "معطّلة"}
+                  </span>
+                ),
+              },
+              {
+                id: "actions",
+                header: "إجراء",
+                enableSorting: false,
+                meta: { kind: "actions" },
+                cell: ({ row }) => {
+                  const w = row.original;
+                  return (
+                    <RowActions
+                      actions={[
+                        {
+                          key: "deposit",
+                          kind: "pay",
+                          label: "تسجيل شحن رصيد",
+                          disabled: !w.isActive,
+                          disabledReason: "المحفظة معطّلة",
+                          onSelect: () => setMoving({ wallet: w, mode: "deposit" }),
+                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                        },
+                        {
+                          key: "withdraw",
+                          kind: "pay",
+                          label: "تسجيل سحب رصيد",
+                          disabled: !w.isActive,
+                          disabledReason: "المحفظة معطّلة",
+                          onSelect: () => setMoving({ wallet: w, mode: "withdraw" }),
+                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                        },
+                        {
+                          key: "statement",
+                          kind: "view",
+                          label: "كشف الحساب",
+                          onSelect: () => setViewing(w),
+                          gate: { roles: ["manager", "accountant", "auditor"], module: "digital_cards", level: "READ" },
+                        },
+                        {
+                          key: "reconcile",
+                          kind: "approve",
+                          label: "مطابقة مع الجهاز",
+                          disabled: !w.isActive,
+                          disabledReason: "المحفظة معطّلة؛ كشف الحساب متاح للقراءة",
+                          onSelect: () => setReconciling(w),
+                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                        },
+                        {
+                          key: "adjust",
+                          kind: "approve",
+                          label: "طلب تصحيح الرصيد",
+                          disabled: !w.isActive,
+                          disabledReason: "المحفظة معطّلة",
+                          onSelect: () => setAdjusting(w),
+                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                        },
+                        {
+                          key: "edit",
+                          kind: "edit",
+                          label: "تعديل البيانات",
+                          onSelect: () => openEdit(w),
+                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                        },
+                        {
+                          key: "toggle",
+                          kind: "approve",
+                          label: w.isActive ? "تعطيل" : "تفعيل",
+                          variant: w.isActive ? "destructive" : "default",
+                          disabled: toggleMut.isPending || (w.isActive && (!D(w.currentBalance).isZero() || !D(w.reservedBalance).isZero())),
+                          disabledReason: toggleMut.isPending
+                            ? "توجد عملية تحديث قيد التنفيذ"
+                            : "صفّر الرصيد وأنهِ الحجوزات أولاً",
+                          onSelect: () => void toggle(w),
+                          gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                        },
+                      ]}
+                    />
+                  );
+                },
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -307,33 +361,31 @@ export default function DigitalWallets() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dw-provider">المزوّد</label>
-                <select
+                <AppSelect
                   id="dw-provider"
-                  className={selectCls}
                   value={fProviderId}
                   disabled={editing}
-                  onChange={(e) => setFProviderId(e.target.value)}
+                  onValueChange={setFProviderId}
                 >
                   <option value="">— اختر المزوّد —</option>
                   {prepaidProviders.map((p) => (
-                    <option key={p.id} value={p.id}>{p.supplierName}</option>
+                    <option key={p.id} value={String(p.id)}>{p.supplierName}</option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="dw-branch">الفرع</label>
-                <select
+                <AppSelect
                   id="dw-branch"
-                  className={selectCls}
                   value={fBranchId}
                   disabled={editing}
-                  onChange={(e) => setFBranchId(e.target.value)}
+                  onValueChange={setFBranchId}
                 >
                   <option value="">— اختر الفرع —</option>
                   {(branches.data ?? []).map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
+                    <option key={b.id} value={String(b.id)}>{b.name}</option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             </div>
 
@@ -358,7 +410,7 @@ export default function DigitalWallets() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={saving}>
-              {saving ? "جارٍ الحفظ…" : "حفظ"}
+              {saving ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

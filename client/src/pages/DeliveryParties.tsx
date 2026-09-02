@@ -15,11 +15,13 @@ import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { ListToolbar, RowActions } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import DeliveryPartyDetail from "@/pages/DeliveryPartyDetail";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
@@ -34,6 +36,37 @@ function ageBadge(days: number | null) {
   const cls = days <= 7 ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : days <= 14 ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : days <= 30 ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]";
   return <span className={cn("rounded px-2 py-0.5 text-xs font-bold", cls)}>{days} يوم</span>;
 }
+
+/**
+ * عمود مبلغٍ في قائمة الجهات. الفرز رقميّ صريح: الفرز الافتراضيّ يقارن النصّ المنسّق
+ * («1,234» قبل «999» بسبب فاصلة الآلاف) فيقلب ترتيب الذمم.
+ *
+ * `label` هو **المُعرِّف والتسمية معاً**: `DataTable` يشتقّ اسمَ العمود في منتقي الأعمدة
+ * وفي «نسخ العمود كـTSV» من الترويسة حين تكون نصّاً، وإلّا رجع إلى `id`. ورؤوس هذه الأعمدة
+ * الأربعة مركَّبة (تحمل شرحَ `title` الذي يُميّز «بذمته» عن «سلم لم يحصل» — Slice DFP1)
+ * ⇒ لولا تعريب المُعرِّف لقرأ الموظّف «parcelsInTransit» وسط أعمدةٍ عربية.
+ */
+function partyMoneyCol(
+  label: string,
+  tip: string,
+  get: (p: Party) => number,
+  tone: (v: number) => string,
+): ColumnDef<Party, unknown> {
+  return {
+    id: label,
+    header: () => <span title={tip}>{label}</span>,
+    accessorFn: (p) => fmt(get(p)),
+    meta: { kind: "money" },
+    sortDescFirst: true,
+    sortingFn: (a, b) => get(a.original) - get(b.original),
+    cell: ({ row }) => <span className={cn("font-bold", tone(get(row.original)))}>{fmt(get(row.original))}</span>,
+  };
+}
+
+/** القيم الأربع المنفصلة (Slice DFP1) — قراءةٌ متسامحة لأنّ العقد يوسّعها تدريجياً. */
+const inTransitOf = (p: Party) => Number((p as { parcelsInTransitAmount?: string }).parcelsInTransitAmount ?? 0);
+const uncollectedOf = (p: Party) => Number((p as { deliveredUncollectedAmount?: string }).deliveredUncollectedAmount ?? 0);
+const feesOwedOf = (p: Party) => Number((p as { feesOwedAmount?: string }).feesOwedAmount ?? 0);
 
 export default function DeliveryParties() {
   const me = trpc.auth.me.useQuery();
@@ -74,6 +107,144 @@ export default function DeliveryParties() {
   const allRows = list.data ?? [];
   const rows = f.outstandingOnly === "1" ? allRows.filter((p) => !D(p.currentBalance).isZero()) : allRows;
   const activeFilterCount = f.outstandingOnly === "1" ? 1 : 0;
+
+  /*
+   * Slice DFP1 (٣٠/٨/٢٦، P1 #2+#7): أربعة أعمدة منفصلة (partyExposure) بدل عمود واحد ملتبس.
+   * الشروح على الرؤوس (title) تبقى — هي التي تُميّز «بذمته» عن «سلم لم يحصل».
+   * الأعمدة ليست داخل useMemo لأنّها تُغلِق على مُحدِّثات الحالة (setF/setSettleFor/…)،
+   * وتجميدُها بمصفوفة تبعيّاتٍ ناقصة يُنتج إجراءات تعمل على حالةٍ قديمة.
+   */
+  const columns: ColumnDef<Party, unknown>[] = [
+    {
+      id: "name",
+      header: "الجهة",
+      accessorFn: (p) => p.name,
+      meta: { width: "wide" },
+      cell: ({ row }) => (
+        <>
+          <button type="button" className="font-bold text-primary hover:underline" onClick={() => setF({ detail: String(row.original.id) })}>
+            {row.original.name}
+          </button>
+          {row.original.phone && <span className="ms-2 text-xs text-muted-foreground" dir="ltr">{row.original.phone}</span>}
+        </>
+      ),
+    },
+    {
+      id: "partyType",
+      header: "النوع",
+      accessorFn: (p) => (p.partyType === "COMPANY" ? "شركة" : "مندوب"),
+      cell: ({ row }) => (row.original.partyType === "COMPANY" ? "شركة" : "مندوب"),
+    },
+    partyMoneyCol(
+      "بذمته",
+      "مسؤولية الدفتر على المندوب: نقد قبضه + عجز قبله ذمّةً (SHORTFALL_ASSIGNED). قد تحوي جزءا غير نقدي.",
+      (p) => Number(p.currentBalance ?? 0),
+      (v) => (v > 0 ? "text-foreground" : "text-muted-foreground"),
+    ),
+    partyMoneyCol(
+      "طرود بالطريق",
+      "بضاعة سُلِّمت للمندوب لم تصل الزبون",
+      inTransitOf,
+      (v) => (v > 0 ? "text-[var(--sem-warn)]" : "text-muted-foreground"),
+    ),
+    partyMoneyCol(
+      "سلم لم يحصل",
+      "طرد سُلِّم للزبون بلا قبضٍ كامل — خطر أعلى",
+      uncollectedOf,
+      // `PARTY_EXPOSURE_COLOR_TOKEN.deliveredUncollected = "danger"` والأعمدة الثلاثة الشقيقة
+      // تشتقّ من `--sem-*`، فكان هذا وحده على `destructive`: أحمرٌ أعلى تشبّعاً (C 0.245
+      // مقابل 0.170)، وتباينُه على بطاقة الوضع الداكن 4.11:1 دون عتبة AA (4.5) مقابل 7.29:1.
+      (v) => (v > 0 ? "text-[var(--sem-neg)]" : "text-muted-foreground"),
+    ),
+    partyMoneyCol(
+      "أجور له",
+      "أجور توصيل نحن مدينون بها للمندوب",
+      feesOwedOf,
+      (v) => (v > 0 ? "text-[var(--sem-pos)]" : "text-muted-foreground"),
+    ),
+    {
+      id: "openConsignments",
+      header: "شحنات مفتوحة",
+      accessorFn: (p) => p.openConsignments,
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => row.original.openConsignments,
+    },
+    {
+      id: "oldestOutstanding",
+      header: "أقدم مستحق",
+      accessorFn: (p) => {
+        const d = ageDays(p.oldestOutstanding);
+        return d == null ? "—" : d + " يوم";
+      },
+      meta: { align: "center" },
+      sortingFn: (a, b) => (ageDays(a.original.oldestOutstanding) ?? -1) - (ageDays(b.original.oldestOutstanding) ?? -1),
+      cell: ({ row }) => ageBadge(ageDays(row.original.oldestOutstanding)),
+    },
+    {
+      id: "isActive",
+      header: "الحالة",
+      accessorFn: (p) => (p.isActive ? "نشط" : "معطل"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (row.original.isActive ? <Badge variant="secondary">نشط</Badge> : <Badge variant="outline">معطل</Badge>),
+    },
+    {
+      id: "actions",
+      header: "إجراءات",
+      meta: { kind: "actions" },
+      enableSorting: false,
+      cell: ({ row }) => {
+        const p = row.original;
+        const bal = Number(p.currentBalance ?? 0);
+        return (
+          <RowActions
+            mode="menu"
+            contact={{
+              phone: p.phone,
+              alternativePhones: [(p as { phone2?: string | null }).phone2],
+              label: "واتساب " + p.name,
+              message: buildOperationalContactMessage({
+                partyName: p.name,
+                entityLabel: p.partyType === "COMPANY" ? "شركة التوصيل" : "المندوب",
+                status: p.openConsignments > 0 ? p.openConsignments + " شحنة مفتوحة" : "لا شحنات مفتوحة",
+                nextAction: bal > 0 ? "توجد عهدة قيد التسوية بقيمة " + fmt(p.currentBalance) + " د.ع." : null,
+              }),
+              gate: { module: "store", level: "READ" },
+            }}
+            actions={[
+              {
+                key: "detail",
+                kind: "view",
+                label: "تفاصيل وكشف",
+                onSelect: () => setF({ detail: String(p.id) }),
+                gate: { module: "store", level: "READ" },
+              },
+              {
+                key: "settle",
+                kind: "pay",
+                label: "تسوية",
+                hidden: !canSettle,
+                disabled: bal <= 0,
+                disabledReason: "لا يوجد رصيد قابل للتسوية",
+                onSelect: () => setSettleFor(p),
+                gate: { roles: ["cashier", "manager"] },
+              },
+              {
+                key: "write-off",
+                kind: "reverse",
+                label: "شطب",
+                variant: "destructive",
+                hidden: !canRequestWriteOff,
+                disabled: bal <= 0,
+                disabledReason: "لا يوجد عجز قابل للشطب",
+                onSelect: () => setWriteOffFor(p),
+                gate: { roles: ["admin"] },
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ];
 
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
@@ -141,107 +312,30 @@ export default function DeliveryParties() {
       />
 
       <div className="rounded-xl border bg-card">
-        {list.isLoading ? (
-          <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
-        ) : allRows.length === 0 ? (
-          <EmptyState icon={Truck} title="لا جهات توصيل" description="أضِف مندوباً أو شركة توصيل للبدء." actionLabel={isManager ? "+ جهة جديدة" : undefined} onAction={() => setShowCreate(true)} />
-        ) : rows.length === 0 ? (
-          <EmptyState icon={Truck} title="لا نتائج" description="لا جهات مطابقة لفلترك الحالي." />
-        ) : (
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              {/* Slice DFP1 (٣٠/٨/٢٦، P1 #2+#7): ٤ أعمدة منفصلة (partyExposure) بدل عمود واحد ملتبس.
-                  التسميات والألوان من shared/partyExposure.ts (المصدر الوحيد). */}
-              <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
-                <tr>
-                  <th className="p-3 text-right">الجهة</th>
-                  <th className="p-3 text-right">النوع</th>
-                  <th className="p-3 text-left" title="مسؤولية الدفتر على المندوب: نقد قبضه + عجز قبله ذمّةً (SHORTFALL_ASSIGNED). قد تحوي جزءا غير نقدي.">بذمته</th>
-                  <th className="p-3 text-left" title="بضاعة سُلِّمت للمندوب لم تصل الزبون">طرود بالطريق</th>
-                  <th className="p-3 text-left" title="طرد سُلِّم للزبون بلا قبضٍ كامل — خطر أعلى">سلم لم يحصل</th>
-                  <th className="p-3 text-left" title="أجور توصيل نحن مدينون بها للمندوب">أجور له</th>
-                  <th className="p-3 text-center">شحنات مفتوحة</th>
-                  <th className="p-3 text-center">أقدم مستحق</th>
-                  <th className="p-3 text-center">الحالة</th>
-                  <th className="p-3 text-center">إجراءات</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((p) => {
-                  const bal = Number(p.currentBalance ?? 0);
-                  const inTransit = Number((p as { parcelsInTransitAmount?: string }).parcelsInTransitAmount ?? 0);
-                  const uncollected = Number((p as { deliveredUncollectedAmount?: string }).deliveredUncollectedAmount ?? 0);
-                  const feesOwed = Number((p as { feesOwedAmount?: string }).feesOwedAmount ?? 0);
-                  return (
-                    <tr key={p.id} className="border-b last:border-0 hover:bg-muted/30">
-                      <td className="p-3 font-medium">
-                        <button type="button" className="font-bold text-primary hover:underline" onClick={() => setF({ detail: String(p.id) })}>
-                          {p.name}
-                        </button>
-                        {p.phone && <span className="ms-2 text-xs text-muted-foreground" dir="ltr">{p.phone}</span>}
-                      </td>
-                      <td className="p-3">{p.partyType === "COMPANY" ? "شركة" : "مندوب"}</td>
-                      <td className={cn("p-3 text-left tabular-nums font-bold", bal > 0 ? "text-foreground" : "text-muted-foreground")} dir="ltr">{fmt(p.currentBalance)}</td>
-                      <td className={cn("p-3 text-left tabular-nums font-bold", inTransit > 0 ? "text-[var(--sem-warn)]" : "text-muted-foreground")} dir="ltr">{fmt(String(inTransit))}</td>
-                      <td className={cn("p-3 text-left tabular-nums font-bold", uncollected > 0 ? "text-destructive" : "text-muted-foreground")} dir="ltr">{fmt(String(uncollected))}</td>
-                      <td className={cn("p-3 text-left tabular-nums font-bold", feesOwed > 0 ? "text-[var(--sem-pos)]" : "text-muted-foreground")} dir="ltr">{fmt(String(feesOwed))}</td>
-                      <td className="p-3 text-center tabular-nums">{p.openConsignments}</td>
-                      <td className="p-3 text-center">{ageBadge(ageDays(p.oldestOutstanding))}</td>
-                      <td className="p-3 text-center">{p.isActive ? <Badge variant="secondary">نشط</Badge> : <Badge variant="outline">معطل</Badge>}</td>
-                      <td className="p-3 text-center">
-                        <RowActions
-                          mode="menu"
-                          contact={{
-                            phone: p.phone,
-                            alternativePhones: [(p as { phone2?: string | null }).phone2],
-                            label: `واتساب ${p.name}`,
-                            message: buildOperationalContactMessage({
-                              partyName: p.name,
-                              entityLabel: p.partyType === "COMPANY" ? "شركة التوصيل" : "المندوب",
-                              status: p.openConsignments > 0 ? `${p.openConsignments} شحنة مفتوحة` : "لا شحنات مفتوحة",
-                              nextAction: Number(p.currentBalance ?? 0) > 0 ? `توجد عهدة قيد التسوية بقيمة ${fmt(p.currentBalance)} د.ع.` : null,
-                            }),
-                            gate: { module: "store", level: "READ" },
-                          }}
-                          actions={[
-                            {
-                              key: "detail",
-                              kind: "view",
-                              label: "تفاصيل وكشف",
-                              onSelect: () => setF({ detail: String(p.id) }),
-                              gate: { module: "store", level: "READ" },
-                            },
-                            {
-                              key: "settle",
-                              kind: "pay",
-                              label: "تسوية",
-                              hidden: !canSettle,
-                              disabled: bal <= 0,
-                              disabledReason: "لا يوجد رصيد قابل للتسوية",
-                              onSelect: () => setSettleFor(p),
-                              gate: { roles: ["cashier", "manager"] },
-                            },
-                            {
-                              key: "write-off",
-                              kind: "reverse",
-                              label: "شطب",
-                              variant: "destructive",
-                              hidden: !canRequestWriteOff,
-                              disabled: bal <= 0,
-                              disabledReason: "لا يوجد عجز قابل للشطب",
-                              onSelect: () => setWriteOffFor(p),
-                              gate: { roles: ["admin"] },
-                            },
-                          ]}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </ScrollTableShell>
-        )}
+        <DataTable<Party>
+          columns={columns}
+          data={rows}
+          /* الفلترة في ListToolbar أعلاه (تغذّي rows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+          searchable={false}
+          externalFiltersActive={activeFilterCount > 0}
+          loading={list.isLoading}
+          /* صدق الخطأ: رفضُ ٤٠٣ أو انقطاعُ الشبكة ليس «لا جهات توصيل» — والدعوة لإضافة
+             جهةٍ جديدة فوق فشلِ جلبٍ تدفع الموظّف لتكرار بياناتٍ موجودة. */
+          /* ⚠️ بلا `message`: `list.error` هنا نوعُه `never` (تحلُّلُ استنتاجٍ في مخرَج
+             `delivery.listParties` العميق، حالةٌ قائمة في المستودع) — و`DataTable` يعرض
+             نصَّه الافتراضيّ العربيّ حين يغيب، فلا يضيع صدقُ الخطأ. */
+          errorState={{ isError: list.isError, onRetry: () => void list.refetch() }}
+          emptyState={
+            <EmptyState
+              icon={Truck}
+              title="لا جهات توصيل"
+              description="أضِف مندوباً أو شركة توصيل للبدء."
+              actionLabel={isManager ? "+ جهة جديدة" : undefined}
+              onAction={() => setShowCreate(true)}
+            />
+          }
+          emptyFilteredState={<EmptyState icon={Truck} title="لا نتائج" description="لا جهات مطابقة لفلترك الحالي." />}
+        />
       </div>
 
       {showCreate && <CreatePartyDialog onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); utils.delivery.listParties.invalidate(); }} />}
@@ -306,7 +400,7 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
       </p>
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1" disabled={m.isPending || !name.trim()} onClick={() => m.mutate({ partyType, name: name.trim(), phone: phone || null, userId: userId ?? undefined, defaultFee: /^\d+(\.\d{1,2})?$/.test(defaultFee) ? defaultFee : "0" })}>{m.isPending ? "جارٍ…" : "إضافة"}</Button>
+        <Button className="flex-1" disabled={m.isPending || !name.trim()} onClick={() => m.mutate({ partyType, name: name.trim(), phone: phone || null, userId: userId ?? undefined, defaultFee: /^\d+(\.\d{1,2})?$/.test(defaultFee) ? defaultFee : "0" })}>{m.isPending ? ACTION_LABELS.saving : "إضافة"}</Button>
       </div>
     </Modal>
   );
@@ -332,7 +426,7 @@ function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () =>
       <MoneyInput value={amount} onChange={setAmount} className="mb-4 h-11 text-end text-lg font-bold tabular-nums" ariaLabel="مبلغ التسديد" />
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0} onClick={() => m.mutate({ partyId: party.id, amount, clientRequestId: reqId })}>{m.isPending ? "جارٍ…" : "تسجيل التسوية"}</Button>
+        <Button className="flex-1" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0} onClick={() => m.mutate({ partyId: party.id, amount, clientRequestId: reqId })}>{m.isPending ? ACTION_LABELS.saving : "تسجيل التسوية"}</Button>
       </div>
     </Modal>
   );
@@ -414,14 +508,14 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
         <p className="mb-2 text-xs text-muted-foreground">شطب الإرسالية يكون بكامل متبقّيها — تُقفل وتُقيَّد فاتورتها مسدَّدة وتُبرَّأ ذمّة العميل.</p>
       )}
       <label className="mb-1.5 block text-sm font-bold">السبب</label>
-      <Input value={reason} onChange={(e) => setReason(e.target.value)} className="mb-3 h-11" placeholder="سبب الشطب (٣ أحرف فأكثر)" />
+      <Input value={reason} onChange={(e) => setReason(e.target.value)} className="mb-3 h-11" placeholder="سبب الشطب (3 أحرف فأكثر)" />
       <label className="mb-1.5 block text-sm font-bold">وصف الإثبات</label>
       <Input value={evidenceNote} onChange={(e) => setEvidenceNote(e.target.value)} className="mb-3 h-11" placeholder="محضر فقد/مطابقة أو مرجع المراجعة" />
       <label className="mb-1.5 block text-sm font-bold">رابط المرفق (بديل عن الوصف)</label>
       <Input value={attachmentUrl} onChange={(e) => setAttachmentUrl(e.target.value)} className="mb-4 h-11" placeholder="https://..." dir="ltr" />
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(effAmount) || Number(effAmount) <= 0 || reason.trim().length < 3 || (!evidenceNote.trim() && !attachmentUrl.trim())} onClick={submit}>{m.isPending ? "جارٍ…" : "إرسال طلب الشطب"}</Button>
+        <Button className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(effAmount) || Number(effAmount) <= 0 || reason.trim().length < 3 || (!evidenceNote.trim() && !attachmentUrl.trim())} onClick={submit}>{m.isPending ? ACTION_LABELS.sending : "إرسال طلب الشطب"}</Button>
       </div>
     </Modal>
   );
@@ -449,7 +543,7 @@ function WriteOffApprovalQueue({ userId, onChanged }: { userId: number; onChange
         {!pending.isError ? <Badge variant="outline">{rows.length} معلق</Badge> : null}
       </div>
       {pending.isLoading ? (
-          <p className="text-sm text-muted-foreground">جاري تحميل الطلبات…</p>
+          <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>
       ) : pending.isError ? (
         <ErrorState onRetry={() => void pending.refetch()} />
       ) : rows.length === 0 ? (

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { FILTER_LABELS } from "@shared/uiContracts";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Plus, Search, X } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -55,7 +56,7 @@ export default function Campaigns() {
         {Object.entries(LABEL).map(([k,l])=><option key={k} value={k}>{l}</option>)}
       </AppSelect>
       {filtersActive && <Button variant="ghost" size="sm" onClick={resetF} className="text-muted-foreground"><X aria-hidden className="size-4"/> {FILTER_LABELS.reset}</Button>}
-      <span className="text-xs text-muted-foreground ms-auto">{list.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} حملة`}</span>
+      <span className="text-xs text-muted-foreground ms-auto">{list.isLoading ? ACTION_LABELS.loading : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} حملة`}</span>
     </CardContent></Card>
 
     <div className="grid gap-3">{rows.map(c=><Card key={c.id}><CardContent className="p-4 flex flex-col md:flex-row md:items-center gap-3"><div className="flex-1"><div className="flex items-center gap-2"><b>{c.name}</b><Badge variant={c.status==="ACTIVE"?"default":"secondary"}>{LABEL[c.status]}</Badge></div>{c.objective&&<p className="text-sm text-muted-foreground mt-1">{c.objective}</p>}<div className="text-xs text-muted-foreground mt-2">{c.startsOn?String(c.startsOn).slice(0,10):"بلا بداية"} — {c.endsOn?String(c.endsOn).slice(0,10):"مستمرة"}</div></div><div className="flex flex-wrap gap-2">{(NEXT[c.status]??[]).map(status=><Button key={status} size="sm" variant={status==="ENDED"?"destructive":"outline"} disabled={transition.isPending} onClick={()=>transition.mutate({id:c.id,status:status as any})}>{LABEL[status]}</Button>)}</div></CardContent></Card>)}{rows.length===0&&<div className="text-center py-16 text-muted-foreground">{list.data?.length?"لا حملات مطابقة للفلاتر.":"لا حملات بعد."}</div>}</div>

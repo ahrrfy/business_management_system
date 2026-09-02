@@ -43,7 +43,6 @@ import {
   listUserSessions,
   revokeUserSessionRow,
 } from "../services/userService";
-import { notifyAdminsOfSessionEvent } from "../services/sessionEventNotifier";
 import { withTx } from "../services/tx";
 import { getCurrentCompanyId, runWithCompany } from "../tenancy/context";
 import { resolveCompanyByCode } from "../tenancy/registry";
@@ -416,19 +415,6 @@ export const authRouter = router({
           { action: "auth.login", entityType: "user", entityId: user.id }
         );
 
-        // ن-٢-د (٢٤/٨) — إفصاح إداريّ لكلّ دخولٍ ناجح: يُخطَر admin/owner + مديرو الفرع.
-        // fail-open: أيّ عطلٍ في الإشعار لا يوقف الدخول (المسار يلتقط ذاتياً).
-        void notifyAdminsOfSessionEvent({
-          userId: user.id,
-          userBranchId: user.branchId ?? null,
-          userDisplayName: user.name ?? user.username ?? user.email ?? "موظّف",
-          kind: "LOGIN",
-          ipAddress: ip,
-          deviceLabel: nativeDevice ? `تطبيق أصيل (${nativeDevice.keyThumbprint.slice(0, 8)})` : ctx.req.headers["user-agent"] ?? null,
-          sessionId,
-          occurredAt: new Date(),
-        });
-
         return {
           requiresTwoFactor: false as const,
           ticket: null,
@@ -574,19 +560,6 @@ export const authRouter = router({
           { action: "auth.login", entityType: "user", entityId: user.id, newValue: { via: "2fa" } }
         );
 
-        // ن-٢-د (٢٤/٨) — نفس إفصاح الدخول العادي لمسار 2FA. غياب هذا الاستدعاء يخلق فجوة
-        // «الحسّاسون فقط لا يُبلَّغ عن دخولهم» — أخطر ما يمكن أن يفوت المدير.
-        void notifyAdminsOfSessionEvent({
-          userId: user.id,
-          userBranchId: user.branchId ?? null,
-          userDisplayName: user.name ?? user.username ?? user.email ?? "موظّف",
-          kind: "LOGIN",
-          ipAddress: ip,
-          deviceLabel: nativeDevice ? `تطبيق أصيل (${nativeDevice.keyThumbprint.slice(0, 8)})` : ctx.req.headers["user-agent"] ?? null,
-          sessionId,
-          occurredAt: new Date(),
-        });
-
         return {
           id: user.id,
           name: user.name,
@@ -711,17 +684,6 @@ export const authRouter = router({
         await db.update(users).set({ sessionsValidFrom: new Date() }).where(eq(users.id, ctx.user.id));
       }
       await logAudit(ctx, { action: "auth.logout", entityType: "user", entityId: ctx.user.id });
-      // ن-٢-د (٢٤/٨) — إفصاح إداريّ للخروج. نستعمل بيانات ctx.user المتاحة بلا استعلام إضافيّ
-      // ⇒ لا يفشل logout إن كان الاستعلام محدود.
-      void notifyAdminsOfSessionEvent({
-        userId: ctx.user.id,
-        userBranchId: ctx.user.branchId ?? null,
-        userDisplayName: ctx.user.name ?? "موظّف",
-        kind: "LOGOUT",
-        ipAddress: getClientIp(ctx.req),
-        deviceLabel: ctx.req.headers["user-agent"] ?? null,
-        occurredAt: new Date(),
-      });
     }
     ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { success: true } as const;

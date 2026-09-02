@@ -98,7 +98,7 @@ describe("saleService — قفل صفّ الوردية يَسَلْسِل الب
       actor,
     );
     expect(r.status).toBe("PAID");
-    const close = await closeShift({ shiftId, countedCash: "10.00", handoverToUserId: 2 }, actor);
+    const close = await closeShift({ shiftId, countedCash: "10.00" }, actor);
     expect(close.expectedCash).toBe("10.00"); // البيع محسوب
     expect(close.variance).toBe("0.00");
   });

@@ -19,7 +19,9 @@ import { getDeviceCode } from "@/lib/offline/outbox";
 import { allocateLineTax } from "@/components/invoice";
 import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
-import { trpc } from "@/lib/trpc";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey,
 } from "@shared/permissions";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
@@ -27,6 +29,7 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -38,6 +41,37 @@ const STATUS: Record<string, string> = {
 };
 const TIER: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي",
 };
+
+/** صفُّ بند عرض السعر — مشتقٌّ من عقد `quotations.get`. */
+type QuotationItemRow = NonNullable<RouterOutputs["quotations"]["get"]>["items"][number];
+
+/**
+ * أعمدة بنود عرض السعر. دالّة لا ثابت لأنّ ذيل «مجموع البنود» يحمل مجموع المستند —
+ * ولأنّ الشاشة تخرج مبكّراً قبل توفّر البيانات فلا يصحّ بناؤها بـuseMemo بعد ذلك الخروج.
+ */
+function quotationItemColumns(subtotal: string): ColumnDef<QuotationItemRow, unknown>[] {
+  return [
+    {
+      id: "product",
+      header: "المنتج",
+      accessorFn: (it) => `${it.productName}${it.variantName ? ` — ${it.variantName}` : ""}`,
+      meta: { width: "wide", wrap: true },
+      footer: "مجموع البنود",
+      cell: ({ row }) => (
+        <span>
+          {row.original.productName}{row.original.variantName ? ` — ${row.original.variantName}` : ""}{" "}
+          {row.original.sku && <span className="text-xs text-muted-foreground font-mono" dir="ltr">{row.original.sku}</span>}
+        </span>
+      ),
+    },
+    { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName, cell: ({ row }) => <span className="text-muted-foreground">{row.original.unitName}</span> },
+    { id: "quantity", header: "الكمية", accessorFn: (it) => it.quantity, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.quantity },
+    // `accessorFn` نصُّ العرض (للنسخ) ⇒ `sortingFn` صريحٌ بـDecimal: الفرز الافتراضيّ نصّيّ
+    // فيقرأ «1,234» أصغر من «999» ويقلب ترتيب البنود.
+    { id: "unitPrice", header: "سعر الوحدة", accessorFn: (it) => fmt(it.unitPrice), meta: { kind: "money" }, sortingFn: (a, b) => D(a.original.unitPrice).cmp(D(b.original.unitPrice)), cell: ({ row }) => fmt(row.original.unitPrice) },
+    { id: "total", header: "الإجمالي", accessorFn: (it) => fmt(it.total), meta: { kind: "money" }, sortingFn: (a, b) => D(a.original.total).cmp(D(b.original.total)), footer: fmt(subtotal), cell: ({ row }) => fmt(row.original.total) },
+  ];
+}
 const STATUS_CLS: Record<string, string> = {
   DRAFT: "bg-muted text-foreground/70",
   SENT: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
@@ -127,7 +161,7 @@ export default function QuotationDetail() {
   });
 
   if (q.isLoading) return (
-      <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>
+      <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
     );
   if (!q.data) return (
       <div className="p-10 text-center text-muted-foreground">عرض السعر غير موجود.</div>
@@ -283,40 +317,17 @@ export default function QuotationDetail() {
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">البنود</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium text-start">المنتج</th>
-                  <th className="px-3 py-2 font-medium text-start">الوحدة</th>
-                  <th className="px-3 py-2 font-medium text-center">الكمية</th>
-                  <th className="px-3 py-2 font-medium text-right">سعر الوحدة</th>
-                  <th className="px-3 py-2 font-medium text-right">الإجمالي</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.items.map((it) => (
-                  <tr key={it.id} className="border-t hover:bg-muted/30">
-                    <td className="px-3 py-2">{it.productName}{it.variantName ? ` — ${it.variantName}` : ""}{" "}
-                      {it.sku && (
-                        <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-muted-foreground">{it.unitName}</td>
-                    <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{it.quantity}</td>
-                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(it.total)}</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 bg-muted/40 font-semibold">
-                  <td className="px-3 py-2" colSpan={4}>مجموع البنود</td>
-                  <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(data.subtotal)}</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
+          {/* بنود المستند: مُضمَّن (العنوان في رأس البطاقة) وبلا ترقيم — المستند يُقرأ كاملاً.
+              صفّ «مجموع البنود» صار `footer` على الأعمدة فيقع تحت عمود الإجمالي مباشرةً. */}
+          <DataTable<QuotationItemRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={quotationItemColumns(data.subtotal)}
+            data={data.items}
+            emptyText="لا بنود في عرض السعر."
+          />
         </CardContent>
       </Card>
 

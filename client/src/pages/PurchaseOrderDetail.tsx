@@ -6,11 +6,62 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
 import { Banknote, PackageCheck, Pencil } from "lucide-react";
 import { Link, useParams } from "wouter";
 import { PurchaseOrderGovernance } from "@/components/purchases/PurchaseOrderGovernance";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+
+/** بندُ أمر الشراء — مشتقٌّ من عقد `purchases.get` فلا ينجرف عن الخادم. */
+type PoItemRow = NonNullable<RouterOutputs["purchases"]["get"]>["items"][number];
+
+/**
+ * أعمدة البنود. تُبنى بدالّة لأنّ رؤوسها وقيمها تتبع عملة الأمر: أمرُ الدولار
+ * يعرض `usdUnitPrice`/`usdTotal` ورأسَه بعلامة `($)`.
+ */
+function poItemColumns(isUsd: boolean): ColumnDef<PoItemRow, unknown>[] {
+  return [
+    {
+      id: "product",
+      header: "الصنف",
+      accessorFn: (it) => (it.productName ?? "—") + (it.variantName ? " — " + it.variantName : ""),
+      meta: { width: "wide" },
+      cell: ({ row }) => (
+        <>
+          {row.original.productName ?? "—"}
+          {row.original.variantName ? <span className="text-muted-foreground"> — {row.original.variantName}</span> : null}
+        </>
+      ),
+    },
+    { id: "unit", header: "الوحدة", accessorFn: (it) => it.unitName ?? "—", cell: ({ row }) => row.original.unitName ?? "—" },
+    { id: "quantity", header: "الكمية", accessorFn: (it) => fmtAr(it.quantity), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.quantity) },
+    {
+      // الطرفان بوحدة الأساس: `quantity` بوحدة الشراء و`receivedBaseQuantity` بالأساس،
+      // فمقارنتهما مباشرةً تُظهر «٢ مطلوب / ٢٤ مستلَم» لكرتونٍ من ١٢.
+      id: "received",
+      header: "المستلَم / المطلوب (أساس)",
+      accessorFn: (it) => fmtAr(it.receivedBaseQuantity) + " / " + fmtAr(it.baseQuantity),
+      meta: { kind: "number" },
+      cell: ({ row }) => fmtAr(row.original.receivedBaseQuantity) + " / " + fmtAr(row.original.baseQuantity),
+    },
+    {
+      id: "unitPrice",
+      header: isUsd ? "سعر الوحدة ($)" : "سعر الوحدة",
+      accessorFn: (it) => fmtAr(isUsd ? it.usdUnitPrice : it.unitPrice),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmtAr(isUsd ? row.original.usdUnitPrice : row.original.unitPrice),
+    },
+    {
+      id: "total",
+      header: isUsd ? "الإجمالي ($)" : "الإجمالي",
+      accessorFn: (it) => fmtAr(isUsd ? it.usdTotal : it.total),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmtAr(isUsd ? row.original.usdTotal : row.original.total),
+    },
+  ];
+}
 
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -223,67 +274,16 @@ export default function PurchaseOrderDetail() {
           <CardTitle className="text-base">البنود</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-muted-foreground">
-                <tr>
-                  <th className="p-2.5 text-end font-medium">الصنف</th>
-                  <th className="p-2.5 text-end font-medium">الوحدة</th>
-                  <th className="p-2.5 text-end font-medium">الكمية</th>
-                  <th className="p-2.5 text-end font-medium">
-                    المستلَم / المطلوب (أساس)
-                  </th>
-                  <th className="p-2.5 text-end font-medium">
-                    سعر الوحدة{isUsd ? " ($)" : ""}
-                  </th>
-                  <th className="p-2.5 text-end font-medium">
-                    الإجمالي{isUsd ? " ($)" : ""}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.items.map((it) => (
-                  <tr key={it.id} className="border-b last:border-0">
-                    <td className="p-2.5 text-end">
-                      {it.productName ?? "—"}
-                      {it.variantName ? (
-                        <span className="text-muted-foreground">
-                          {" "}
-                          — {it.variantName}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="p-2.5 text-end">{it.unitName ?? "—"}</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                      {fmtAr(it.quantity)}
-                    </td>
-                    {/* الطرفان بوحدة الأساس: `quantity` بوحدة الشراء و`receivedBaseQuantity` بالأساس،
-                        فمقارنتهما مباشرةً تُظهر «٢ مطلوب / ٢٤ مستلَم» لكرتونٍ من ١٢. */}
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                      {fmtAr(it.receivedBaseQuantity)} /{" "}
-                      {fmtAr(it.baseQuantity)}
-                    </td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                      {fmtAr(isUsd ? it.usdUnitPrice : it.unitPrice)}
-                    </td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                      {fmtAr(isUsd ? it.usdTotal : it.total)}
-                    </td>
-                  </tr>
-                ))}
-                {d.items.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={6}
-                      className="p-4 text-center text-muted-foreground"
-                    >
-                      لا بنود في هذا الأمر.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+          {/* مُضمَّن: البطاقة تحمل عنوان «البنود»، والإجماليات في بطاقةٍ مستقلّة أدناه. */}
+          <DataTable<PoItemRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            data={d.items}
+            columns={poItemColumns(isUsd)}
+            emptyText="لا بنود في هذا الأمر."
+          />
         </CardContent>
       </Card>
 

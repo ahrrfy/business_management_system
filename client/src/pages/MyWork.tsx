@@ -22,6 +22,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 export default function MyWork() {
   const me = trpc.auth.me.useQuery();
@@ -77,7 +78,7 @@ export default function MyWork() {
           </h2>
 
           {approvals.isLoading && (
-            <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</CardContent></Card>
+            <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">{ACTION_LABELS.loading}</CardContent></Card>
           )}
           {approvals.isError && (
             <Card><CardContent className="py-8 text-center text-sm text-[var(--sem-danger)]">
