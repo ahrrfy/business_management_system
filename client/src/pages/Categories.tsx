@@ -352,6 +352,7 @@ export default function Categories() {
             pageSize={Infinity}
             selection={sel}
             getRowId={(c) => c.id}
+            getRowSelectionLabel={(c) => `تحديد ${c.name}`}
             loading={list.isLoading}
             errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
             getRowClassName={(c) => [c.isActive ? "" : "opacity-60", c.parentId != null ? "bg-muted/20" : ""].filter(Boolean).join(" ") || undefined}

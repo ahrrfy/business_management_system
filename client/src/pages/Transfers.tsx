@@ -18,6 +18,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { ArrowRightLeft, Inbox, PackagePlus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -283,7 +284,7 @@ export default function Transfers() {
             {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
             {done && <p className="text-sm text-money-positive">{done}</p>}
             <Button className="w-full" onClick={submit} disabled={transfer.isPending || !valid}>
-              {transfer.isPending ? "جارٍ الإرسال…" : "إرسال السند (بالطريق)"}
+              {transfer.isPending ? ACTION_LABELS.sending : "إرسال السند (بالطريق)"}
             </Button>
             <Button variant="ghost" className="w-full" onClick={() => { setCart([]); setNotes(""); setError(""); setDone(""); }}>تفريغ السند</Button>
           </CardContent>

@@ -17,6 +17,7 @@ import {
   Send,
   WifiOff,
 } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
@@ -1233,7 +1234,7 @@ function QtyEditor({
         </Button>
         <Button disabled={saving || !valid} onClick={handleSave}>
           {saving
-            ? "جارٍ الحفظ…"
+            ? ACTION_LABELS.saving
             : isVerify
               ? "تسجيل العدّ التحقّقي"
               : isRecount

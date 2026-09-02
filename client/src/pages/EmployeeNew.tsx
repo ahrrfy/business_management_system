@@ -13,10 +13,12 @@ import {
 } from "@/components/form/AccountFields";
 import { SmartUserInput, type SmartUserValue } from "@/components/form/SmartUserInput";
 import { CredentialsShare } from "@/components/form/CredentialsShare";
+import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   DAY_RATES_DEFAULT, DEGREES, GENDERS, HR_DEPARTMENTS, MARITAL_STATUSES, PAY_TYPES,
   type EmployeeEducation,
@@ -324,7 +326,7 @@ export default function EmployeeNew() {
       <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="text-lg font-semibold text-muted-foreground">{isEdit ? "تعديل موظف" : "إضافة موظف"}</div>
         <div className="flex items-center gap-2">
-          <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+          <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
           <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
         </div>
       </div>
@@ -473,7 +475,18 @@ export default function EmployeeNew() {
                 <Button
                   variant="ghost" size="sm" className="text-destructive shrink-0"
                   disabled={unlinkAccountM.isPending}
-                  onClick={() => { if (window.confirm("هل تريد إلغاء ربط هذا الحساب بالموظف؟ سيبقى الحساب فعّالاً لكن غير مرتبط.")) unlinkAccountM.mutate({ employeeId: editId! }); }}
+                  /* حوار التأكيد الموحّد **غير متزامن** ⇒ المعالج نفسه صار async، وفكّ الربط
+                   * لا يقع إلّا بعد `await` صريح (الحوار المتزامن السابق كان يحجب الخيط). */
+                  onClick={async () => {
+                    const ok = await confirm({
+                      variant: "warning",
+                      title: "إلغاء ربط الحساب",
+                      description: "سيبقى الحساب فعّالاً لكن غير مرتبط بهذا الموظف. هل تتابع؟",
+                      confirmText: "إلغاء الربط",
+                    });
+                    if (!ok) return;
+                    unlinkAccountM.mutate({ employeeId: editId! });
+                  }}
                 >إلغاء الربط</Button>
               </div>
             ) : (
@@ -542,7 +555,7 @@ export default function EmployeeNew() {
         </div>
       )}
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+        <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
         <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

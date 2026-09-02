@@ -14,6 +14,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { buildOnlineOrderFollowupMessage } from "@/lib/whatsapp";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   ONLINE_ORDER_STATUSES,
   ORDER_NEXT_STEP,
@@ -448,7 +449,7 @@ export default function OrderFulfillment() {
             disabled={listQ.isFetchingNextPage}
             className="shrink-0 rounded-lg border border-[var(--sem-warn)]/60 bg-transparent px-3 py-1.5 text-xs font-bold text-[var(--sem-warn)] transition hover:bg-[var(--sem-warn-bg)] disabled:opacity-50"
           >
-            {listQ.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+            {listQ.isFetchingNextPage ? ACTION_LABELS.loading : "تحميل المزيد"}
           </button>
         </div>
       )}

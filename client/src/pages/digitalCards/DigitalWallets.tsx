@@ -18,7 +18,9 @@ import {
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { D, fmtAr } from "@/lib/money";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { AlertTriangle, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
@@ -115,6 +117,45 @@ export default function DigitalWallets() {
     toggleMut.mutate({ id: w.id, isActive: !w.isActive });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بشريط الأدوات والقائمة الجانبية).
+  // نفس صفوف الجدول المعروضة بعد البحث (visibleRows) ونفس أعمدته وتسمياتها وتنسيق أموالها
+  // (fmtAr) — بلا استعلامٍ جديد ولا حسابٍ مغاير: «متاح للبيع» يُشتقّ هنا كما يُشتقّ في الخليّة.
+  function printWallets() {
+    printReportDoc({
+      title: "أرصدة أجهزة المزوّدين",
+      headerExtra: [
+        { label: "عدد المحافظ", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "name", label: "المحفظة" },
+        { key: "code", label: "الرمز" },
+        { key: "provider", label: "المزوّد" },
+        { key: "branch", label: "الفرع" },
+        // ⚠️ مفاتيح الأعمدة المالية الثلاثة يجب أن تطابق كاشف المال في `docTableV2`
+        // (/price|total|tax|amount|debit|credit|balance|remaining|paid/i) — هو ما يمنح الخليّة
+        // عزلَ الاتّجاه (direction:ltr) وأرقاماً جدولية وثِخَناً. «reserved»/«available» لا
+        // يطابقانه ⇒ عمودان من ثلاثة يفقدان معاملة المال على الورق بينما الشاشة تُعطي
+        // meta:{kind:"money"} للثلاثة. اللاحقة «Balance» تُوائمهما مع الشاشة.
+        { key: "balance", label: "الرصيد", align: "left" },
+        { key: "reservedBalance", label: "معلّق لعمليات بيع", align: "left" },
+        { key: "availableBalance", label: "متاح للبيع", align: "left" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: visibleRows.map((w) => ({
+        name: w.name,
+        code: w.code,
+        provider: w.providerName,
+        branch: w.branchName,
+        balance: fmtAr(w.currentBalance),
+        reservedBalance: fmtAr(w.reservedBalance),
+        availableBalance: fmtAr(D(w.currentBalance).minus(D(w.reservedBalance)).toFixed(2)),
+        status: w.isActive ? "مفعّلة" : "معطّلة",
+      })),
+      emptyText: "لا محافظ مطابقة.",
+    });
+  }
+
   const saving = createMut.isPending || updateMut.isPending;
   const editing = editId != null;
 
@@ -165,7 +206,7 @@ export default function DigitalWallets() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => { void list.refetch(); void lowBalance.refetch(); }}
             refreshing={list.isFetching || lowBalance.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printWallets}
             exportSpec={{
               filename: "محافظ-المزودين",
               rows: visibleRows,
@@ -369,7 +410,7 @@ export default function DigitalWallets() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={saving}>
-              {saving ? "جارٍ الحفظ…" : "حفظ"}
+              {saving ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

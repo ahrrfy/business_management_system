@@ -32,6 +32,8 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, fmtInt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
+import { ACTION_LABELS } from "@shared/actionLabels";
+import { ErrorState } from "@/components/PageState";
 import { STOCKTAKE_REASON_LABEL } from "@/lib/printing/stocktakeTemplates";
 import { useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
@@ -347,8 +349,19 @@ export default function StocktakeReview() {
   if (me.isLoading)
     return (
       <div className="p-10 text-center text-muted-foreground">
-        جارٍ التحميل…
+        {ACTION_LABELS.loading}
       </div>
+    );
+  /* هويّةٌ لم تصل ⇒ `me.data` غائبة فيسقط حاجزُ الصلاحية أدناه ويُعرَض ملفُّ المراجعة كاملاً
+   * كأنّ الدور مشرف (الخادم يحمي البيانات، لكنّ الشاشة تكذب). نُعلن الفشل بدل السقوط المفتوح.
+   * الشرط `!me.data` يُبقي البيانات المخزَّنة عاملةً حين يفشل تحديثٌ خلفيّ فقط. */
+  if (me.isError && !me.data)
+    return (
+      <ErrorState
+        className="p-10"
+        message={me.error?.message ?? "تعذّر التحقّق من صلاحيتك."}
+        onRetry={() => void me.refetch()}
+      />
     );
   if (me.data && !isManager)
     return (
@@ -2108,7 +2121,7 @@ export default function StocktakeReview() {
             </Button>
             <Button onClick={submitRecount} disabled={requestRecount.isPending}>
               {requestRecount.isPending
-                ? "جارٍ الإرسال…"
+                ? ACTION_LABELS.sending
                 : "إرسال الطلب للعامل"}
             </Button>
           </DialogFooter>

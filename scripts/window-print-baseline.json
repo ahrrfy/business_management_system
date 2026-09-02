@@ -1,10 +1,6 @@
 {
   "client/src/pages/ConsignmentSettlements.tsx": 1,
   "client/src/pages/ContractPrices.tsx": 1,
-  "client/src/pages/digitalCards/DigitalOfferings.tsx": 1,
-  "client/src/pages/digitalCards/DigitalWallets.tsx": 1,
-  "client/src/pages/PurchaseEdit.tsx": 2,
   "client/src/pages/PurchaseNew.tsx": 2,
-  "client/src/pages/Users.tsx": 1,
   "client/src/pages/WorkOrderNew.tsx": 1
 }

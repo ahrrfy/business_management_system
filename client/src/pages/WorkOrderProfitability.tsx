@@ -14,10 +14,12 @@ import { DateRangeFilter, type DateRange } from "@/components/table/DateRangeFil
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ErrorState } from "@/components/PageState";
 import { Label } from "@/components/ui/label";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type Row = RouterOutputs["reports"]["workOrderProfitability"]["rows"][number];
 
@@ -277,7 +279,12 @@ export default function WorkOrderProfitability() {
           {!rangeReady ? (
             <p className="p-8 text-center text-sm text-muted-foreground">حدّد مدى التاريخ (من/إلى) لعرض التقرير.</p>
           ) : q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <p className="p-8 text-center text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>
+          ) : q.isError && !rows.length ? (
+            /* استعلامٌ ساقط كان يُعرَض «لا أوامر مُسلَّمة في هذا النطاق» — ادّعاءُ حقيقةِ عملٍ
+             * مكانَ عطبٍ خادميّ. بلا صفوفٍ يُعرَض الخطأ برسالته وبمخرج إعادة محاولة؛ ومع صفوفٍ
+             * مخزَّنة يتكفّل `errorState` بشريط تحذيرٍ فوق الجدول بدل حجبه. */
+            <ErrorState message={q.error?.message} onRetry={() => void q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا أوامر مُسلَّمة في هذا النطاق.</p>
           ) : (
@@ -285,6 +292,7 @@ export default function WorkOrderProfitability() {
               columns={profitColumns}
               data={rows}
               loading={q.isLoading}
+              errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
               searchable={false}
               emptyText="لا أوامر مُسلَّمة في هذا النطاق."
               /* ترقيمٌ خادميّ ⇒ يُعطَّل الفرزُ تلقائياً فلا يفرز صفحةً واحدة ويبدو شاملاً. */

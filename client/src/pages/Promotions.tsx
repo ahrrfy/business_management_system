@@ -36,6 +36,7 @@ import {
 import { printTerminationSettlement } from "@/lib/printing/printTerminationSettlement";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { WagePackageFields, wageValueFromEmployee, type WagePackageValue } from "@/components/form/WagePackageFields";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { TERMINATION_TYPES } from "@shared/hr";
 import { describeWageDiff, type WageProfileShape } from "@shared/wageDiff";
 import { CheckCircle2, Printer, RotateCcw, TrendingUp, UserMinus, Wallet } from "lucide-react";
@@ -1053,8 +1054,19 @@ export default function Promotions() {
                 <div className="space-y-1">
                   <Label htmlFor="t-advance-recovery">استرداد السلفة من الأجر (د.ع)</Label>
                   <MoneyInput id="t-advance-recovery" value={tBreakdown.advanceRecovery} onChange={(value) => setTBreakdown((current) => ({ ...current, advanceRecovery: value }))} decimals={2} placeholder="0" />
+                  {/* استعلامٌ ساقط كان يُعرَض «0 د.ع» — رقمٌ ملفَّق يوحي بلا سلفةٍ قائمة على
+                    * موظفٍ تُنهى خدمته، وحارسُ التجاوز (`advanceBalance.data &&`) معطَّلٌ معه
+                    * أصلاً ⇒ سلفةٌ لا تُسترَدّ. الفشل يُعلَن بدل أن يُلفَّق صفر. */}
                   <div className="text-[11px] text-muted-foreground">
-                    الرصيد النشط: {advanceBalance.isLoading ? "جارٍ التحميل…" : iqd(advanceBalance.data?.balance ?? "0")} د.ع؛ يبقى غير المسترد ذمةً على الموظف.
+                    الرصيد النشط:{" "}
+                    {advanceBalance.isLoading ? (
+                      ACTION_LABELS.loading
+                    ) : advanceBalance.isError ? (
+                      <span className="text-destructive">تعذّر جلب رصيد السلفة — أعد فتح النافذة قبل اعتماد أيّ استرداد.</span>
+                    ) : (
+                      `${iqd(advanceBalance.data?.balance ?? "0")} د.ع`
+                    )}
+                    ؛ يبقى غير المسترد ذمةً على الموظف.
                   </div>
                 </div>
                 <div className="space-y-1">

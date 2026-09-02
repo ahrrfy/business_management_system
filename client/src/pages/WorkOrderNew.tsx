@@ -17,6 +17,7 @@ import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { esc } from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { cn } from "@/lib/utils";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -1033,7 +1034,7 @@ export default function WorkOrderNew() {
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex flex-wrap gap-2">
         <Button onClick={() => handleSave({ print: false })} disabled={!effectiveBranch || createWO.isPending || createSale.isPending || createCustomer.isPending}>
-          {!effectiveBranch ? "اختر الفرع أولاً" : createWO.isPending || createSale.isPending ? "جارٍ الحفظ…" : "حفظ"}
+          {!effectiveBranch ? "اختر الفرع أولاً" : createWO.isPending || createSale.isPending ? ACTION_LABELS.saving : "حفظ"}
         </Button>
         <Button variant="default" onClick={() => handleSave({ print: true })} disabled={!effectiveBranch || createWO.isPending || createSale.isPending}>
           <Printer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> حفظ وطباعة

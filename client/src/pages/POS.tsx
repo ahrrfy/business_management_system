@@ -48,6 +48,7 @@ import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { normalizeNumberInput } from "@shared/numberNormalize";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { createPortal } from "react-dom";
 
@@ -1652,7 +1653,7 @@ export default function POS() {
   if (shiftQ.isLoading) {
     return (
       <div style={{ minHeight: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.mutedFg, fontFamily: "'Cairo', system-ui, sans-serif", direction: "rtl" }}>
-        جارٍ التحميل…
+        {ACTION_LABELS.loading}
       </div>
     );
   }
@@ -3250,7 +3251,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             title={
               // ٢٣/٨ (بلاغ Codex P2): كان يذكر «مرجع البطاقة» على دفعةٍ نقديّةٍ جزئيّةٍ بلا عميل —
               // لا حقلَ كذلك أصلاً. صار يميّز الحالات الثلاثة.
-              isPending ? "جارٍ الحفظ…" :
+              isPending ? ACTION_LABELS.saving :
               !cartLen ? "أضف منتجاً أوّلاً" :
               isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
               method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
@@ -3276,7 +3277,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
           disabled={!canPay || isPending}
           onClick={() => onPay()}
           title={
-            isPending ? "جارٍ الحفظ…" :
+            isPending ? ACTION_LABELS.saving :
             !cartLen ? "أضف منتجاً أوّلاً" :
             isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
             method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :

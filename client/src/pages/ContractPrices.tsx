@@ -19,7 +19,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
-import { fmtDateTime, toDate, type DateInput } from "@/lib/date";
+import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { esc } from "@/lib/printing/brand";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -227,7 +227,7 @@ export default function ContractPrices() {
       </style>
       </head><body>
       <h1>ملحق الأسعار التعاقدية</h1>
-      <p class="muted">العميل: ${esc(customer.data?.name ?? "")} · تاريخ الطباعة: ${esc(new Date().toLocaleDateString("ar-IQ"))}</p>
+      <p class="muted">العميل: ${esc(customer.data?.name ?? "")} · تاريخ الطباعة: ${esc(fmtDate(new Date()))}</p>
       <table><thead><tr><th>المنتج</th><th>SKU</th><th>الوحدة</th><th>السعر التعاقدي (د.ع)</th><th>ملاحظة</th></tr></thead>
       <tbody>${trRows}</tbody></table>
       <div class="sign"><div>توقيع العميل / الجهة</div><div>توقيع المخوَّل بالمكتبة</div></div>

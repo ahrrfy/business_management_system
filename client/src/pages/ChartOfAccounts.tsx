@@ -24,9 +24,10 @@ const TYPE_TONE: Record<string, string> = {
 type AccountRow = RouterOutputs["accounts"]["tree"][number]["rows"][number];
 
 const accountColumns: ColumnDef<AccountRow, unknown>[] = [
-  { id: "code", header: "الرمز", accessorFn: (r) => r.code, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
+  { id: "code", header: "الرمز", accessorFn: (r) => r.code, enableSorting: false, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
   {
     id: "name",
+    enableSorting: false,
     header: "اسم الحساب",
     accessorFn: (r) => r.name,
     meta: { width: "wide" },
@@ -35,6 +36,7 @@ const accountColumns: ColumnDef<AccountRow, unknown>[] = [
   },
   {
     id: "systemRole",
+    enableSorting: false,
     header: "الدور النظاميّ (الربط)",
     accessorFn: (r) => r.systemRole ?? "",
     cell: ({ row }) =>

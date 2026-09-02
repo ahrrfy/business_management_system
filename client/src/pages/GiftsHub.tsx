@@ -5,6 +5,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { confirm as confirmDialog } from "@/lib/confirm";
 import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Megaphone, MessageCircle, Plus, Printer, Trash2, X } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { RowActions } from "@/components/list/RowActions";
@@ -591,11 +592,17 @@ export default function GiftsHub() {
               <DialogHeader>
                 <DialogTitle>مراجعة السند قبل الاعتماد</DialogTitle>
                 <DialogDescription>
-                  {approvePreviewQ.data ? `سند ${approvePreviewQ.data.giftNumber} — ${approvePreviewQ.data.partyName ?? "بلا طرف"}` : "جارٍ التحميل…"}
+                  {/* عند فشل المعاينة كان الوصف يبقى «جارٍ التحميل…» بينما الجسد يقول «تعذّر
+                    * تحميل السند» — رأسٌ يناقض جسده. الانتظارُ يُشتقّ من `isLoading` لا من غياب البيانات. */}
+                  {approvePreviewQ.data
+                    ? `سند ${approvePreviewQ.data.giftNumber} — ${approvePreviewQ.data.partyName ?? "بلا طرف"}`
+                    : approvePreviewQ.isLoading
+                      ? ACTION_LABELS.loading
+                      : "تعذّر تحميل السند."}
                 </DialogDescription>
               </DialogHeader>
               {approvePreviewQ.isLoading ? (
-                <div className="py-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>
+                <div className="py-6 text-center text-sm text-muted-foreground">{ACTION_LABELS.loading}</div>
               ) : approvePreviewQ.data ? (
                 <div className="space-y-3">
                   {approvePreviewQ.data.reason && (
@@ -641,7 +648,7 @@ export default function GiftsHub() {
             </div>
           </div>
           {report.isLoading ? (
-            <div className="py-6 text-center text-muted-foreground">جارٍ التحميل…</div>
+            <div className="py-6 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
           ) : report.data ? (
             <div className="grid gap-4 md:grid-cols-2">
               {reportTable("الملخّص (مُنجَز)", ["الاتجاه", "عدد", "التكلفة"], report.data.summary.map((x) => [x.direction === "IN" ? "وارد" : "صادر", String(x.count), String(x.totalCost)]))}
@@ -905,7 +912,7 @@ export default function GiftsHub() {
             </Button>
             <Button onClick={mode === "in" ? submitInbound : submitOutbound} disabled={!canSubmit}>
               <Plus aria-hidden className="me-1 size-4" />
-              {busy ? "جارٍ الحفظ…" : mode === "in" ? "استلام" : "منح الهدية"}
+              {busy ? ACTION_LABELS.saving : mode === "in" ? "استلام" : "منح الهدية"}
             </Button>
           </div>
         </div>

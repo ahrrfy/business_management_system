@@ -10,6 +10,7 @@ import { UsagePanel } from "@/components/UsagePanel";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { fmtDateTime } from "@/lib/date";
@@ -502,7 +503,7 @@ export default function UserEdit() {
         {/* type="submit" وبلا onClick مباشر — يعتمد على onSubmit في <form> وحده كمصدرٍ واحد
             (تفادياً لاستدعاء submit() مرّتين لو حمل الزرّ onClick أيضاً). */}
         <Button type="submit" disabled={update.isPending}>
-          {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}
+          {update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}
         </Button>
         {isActive ? (
           <Button
@@ -616,7 +617,7 @@ export default function UserEdit() {
           <p className="text-xs text-muted-foreground">
             أجهزة هذا المستخدم المسجَّل دخولها حالياً — يمكن إنهاء جهازٍ واحدٍ بعينه بدل كل الأجهزة.
           </p>
-          {userSessions.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+          {userSessions.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
           {!userSessions.isLoading && (userSessions.data?.length ?? 0) === 0 && (
             <p className="text-sm text-muted-foreground">لا جلسات مسجَّلة (ربما دخل قبل تفعيل هذه الميزة).</p>
           )}
@@ -670,7 +671,7 @@ export default function UserEdit() {
             disabled={usage.isLoading || !usage.data?.clean || del.isPending}
             onClick={() => void handleDelete()}
           >
-            {del.isPending ? "جارٍ الحذف…" : "حذف نهائياً"}
+            {del.isPending ? ACTION_LABELS.deleting : "حذف نهائياً"}
           </Button>
         </CardContent>
       </Card>

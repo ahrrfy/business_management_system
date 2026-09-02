@@ -1582,9 +1582,13 @@ export default function InvoiceDetail() {
                 correctInvoice.isPending || requestDueDateChange.isPending || correctionReason.trim().length < 3
               }
             >
-              {correctInvoice.isPending || requestDueDateChange.isPending
-                ? "جارٍ الحفظ والإرسال…"
-                : "حفظ الملاحظات / إرسال طلب التاريخ"}
+              {/* الطلبان يتعاقبان لا يتزامنان (submitCorrection: حفظ الملاحظات ثمّ إرسال طلب التاريخ)
+                  ⇒ لكلّ طورٍ نصُّه الدقيق من القاموس بدل نصٍّ مركّب واحد. */}
+              {correctInvoice.isPending
+                ? ACTION_LABELS.saving
+                : requestDueDateChange.isPending
+                  ? ACTION_LABELS.sending
+                  : "حفظ الملاحظات / إرسال طلب التاريخ"}
             </Button>
           </DialogFooter>
         </DialogContent>

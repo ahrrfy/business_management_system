@@ -24,6 +24,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { Plus } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
@@ -363,7 +364,7 @@ export default function Branches() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => void requestFormClose()}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={createMut.isPending || updateMut.isPending}>
-              {createMut.isPending || updateMut.isPending ? "جارٍ الحفظ…" : "حفظ"}
+              {createMut.isPending || updateMut.isPending ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

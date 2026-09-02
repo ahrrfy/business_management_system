@@ -18,6 +18,7 @@ import {
   Wallet,
   XCircle,
 } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
@@ -1895,7 +1896,7 @@ function SettleTab() {
       </div>
 
       {!partyId ? null : cons.isLoading ? (
-        <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
+        <div className="p-8 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
       ) : list.length === 0 ? (
         <EmptyState icon={Truck} title="لا التزامات مفتوحة" description="لا توجد مبالغ للتوريد أو أجور للدفع أو إرساليات قابلة للإرجاع لهذه الجهة." />
       ) : (

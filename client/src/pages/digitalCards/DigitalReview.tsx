@@ -1,3 +1,4 @@
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -672,7 +673,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
           <Button variant="outline" size="sm" onClick={onClose}>إغلاق</Button>
           {data && !pending && (
             <Button size="sm" disabled={requestMut.isPending || !decision} onClick={submitRequest}>
-              {requestMut.isPending ? "جارٍ الإرسال…" : "إرسال لمدير آخر"}
+              {requestMut.isPending ? ACTION_LABELS.sending : "إرسال لمدير آخر"}
             </Button>
           )}
         </DialogFooter>
@@ -853,7 +854,7 @@ function ResolveVarianceDialog({
                 <label className="text-sm font-medium" htmlFor="variance-reason">سبب الاختلاف بعد مراجعة تقرير الجهاز</label>
                 <Textarea id="variance-reason" value={reason} onChange={(event) => setReason(event.target.value)} rows={3} placeholder="مثال: حركة شحن ظهرت في جهاز المزوّد ولم تكن مسجلة في النظام…" />
                 <Button size="sm" disabled={requestMut.isPending} onClick={requestCorrection}>
-                  {requestMut.isPending ? "جارٍ الإرسال…" : "إرسال طلب تصحيح"}
+                  {requestMut.isPending ? ACTION_LABELS.sending : "إرسال طلب تصحيح"}
                 </Button>
                 <p className="text-xs text-muted-foreground">إرسال الطلب لا يغير الرصيد.</p>
               </div>

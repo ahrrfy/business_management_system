@@ -1,5 +1,6 @@
 // مزوّدو البطاقات الرقمية والاشتراكات — كل مزوّد يرثُ مورّداً قائماً في المنظومة (ذمّته وكشفه).
 // نمط التسوية هو القرار المالي الحاكم: PREPAID (محفظة رصيد لدى المزوّد) أو POSTPAID (ذمّة دائنة).
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { RowActions } from "@/components/list";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -309,7 +310,7 @@ export default function DigitalProviders() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={saving}>
-              {saving ? "جارٍ الحفظ…" : "حفظ"}
+              {saving ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

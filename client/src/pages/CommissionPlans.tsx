@@ -31,6 +31,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { iqd } from "@/lib/hr/ui";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { employmentStatusLabel } from "@shared/hr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -518,7 +519,7 @@ export default function CommissionPlans() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={createMut.isPending || updateMut.isPending}>
-              {createMut.isPending || updateMut.isPending ? "جارٍ الحفظ…" : "حفظ"}
+              {createMut.isPending || updateMut.isPending ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -748,7 +748,7 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
           </DialogDescription>
         </DialogHeader>
         {!d || !form ? (
-          <div className="py-8 text-center text-sm text-muted-foreground">{detail.isLoading ? "جارٍ التحميل…" : "تعذّر العثور على الطلب."}</div>
+          <div className="py-8 text-center text-sm text-muted-foreground">{detail.isLoading ? ACTION_LABELS.loading : "تعذّر العثور على الطلب."}</div>
         ) : locked ? (
           <DialogFooter><button className="wob-btn wob-btn-ghost" onClick={onClose}>إغلاق</button></DialogFooter>
         ) : (
@@ -812,7 +812,7 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
             <DialogFooter>
               <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={update.isPending || requestControl.isPending}>إلغاء</button>
               <button className="wob-btn wob-btn-primary" disabled={update.isPending || requestControl.isPending || reason.trim().length < 3} onClick={submit}>
-                {update.isPending || requestControl.isPending ? "جارٍ الحفظ…" : canDirect ? "حفظ التعديل" : "إرسال طلب التعديل"}
+                {update.isPending || requestControl.isPending ? ACTION_LABELS.saving : canDirect ? "حفظ التعديل" : "إرسال طلب التعديل"}
               </button>
             </DialogFooter>
           </>

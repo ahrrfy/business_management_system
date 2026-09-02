@@ -14,6 +14,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -518,7 +519,7 @@ export default function CustomerEdit() {
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <Button onClick={submit} disabled={update.isPending} title="Ctrl+S">
-          {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}
+          {update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}
         </Button>
         {isActive ? (
           <Button

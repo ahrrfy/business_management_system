@@ -16,9 +16,11 @@ import { Link, useLocation, useParams } from "wouter";
 import { Landmark, Truck } from "lucide-react";
 import {
   isWithinPriceDecimals,
+  priceDecimalsFor,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
 import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -32,6 +34,7 @@ import {
   hasInvoiceTransfer,
   takeInvoiceItems,
 } from "@/lib/invoiceTransfer";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import {
   ActionButtons,
   BulkPicker,
@@ -42,6 +45,7 @@ import {
   SupplierInvoiceMatch,
   TermsAndNotes,
   TotalsPanel,
+  calcLineTotal,
   calcTotals,
   createInitialState,
   deriveDocumentTotal,
@@ -509,13 +513,176 @@ export default function PurchaseEdit() {
     });
   }
 
+  /**
+   * طباعة أمر الشراء بمستند A4 بهوية النظام بدل `window.print()` الخام.
+   *
+   * الخام كان يطبع الصفحة كما هي: أزرار الأدوات وحقول الإدخال وشريط الاختصارات مع البنود،
+   * وبلا رسالةٍ حين يحجب المتصفّح النافذة المنبثقة. `printReportDoc` يوحّد الثلاثة.
+   *
+   * المحتوى **هو المعروض نفسه** لا أكثر: أعمدة `ProductTable` في وضع الشراء (باركود · منتج ·
+   * وحدة · سعر الشراء · الكمية · الإجمالي · المعادل د.ع للأمر الدولاريّ)، ثمّ لوحة المبالغ،
+   * ثمّ بطاقة الشحن/الكمرك وتنويهها بنفس شرط ظهورها على الشاشة.
+   *
+   * عمود «المخزون» وحده مُقصىً عمداً: `stateFromOrder` يضع `stockBase: 0` لكلّ سطر لأنّ لقطة
+   * الأمر لا تحمل الرصيد (تعليقُه في مكانه) ⇒ طباعتُه تُثبِّت صفراً كاذباً في ورقةٍ تُسلَّم.
+   */
+  function printOrder() {
+    const data = po.data;
+    if (!data) return;
+    if (state.items.length === 0) {
+      notify.warn("لا توجد بنود لطباعتها.");
+      return;
+    }
+    const usd = state.currency === "USD";
+    const priceSym = usd ? "$" : "د.ع";
+    const rate = safeMoney(state.agreedRate);
+    // نفس شرط عمود «المعادل د.ع» في ProductTable — لا يظهر إلا حيث يظهر على الشاشة.
+    const showIqdEquivalent = usd && rate.gt(0);
+
+    // ⚠️ `fmtAr` يقصّ إلى منزلتين، وسعر الوحدة الدولاريّ أربع (§دقّة سعر الوحدة = دقّة العملة)
+    // ⇒ تنسيقٌ يجمع الآلاف بأرقامٍ لاتينية مع الاحتفاظ بدقّة العملة. القيمة مقرَّبةٌ سلفاً
+    // بـ`toUnitPriceStr` فالتحويل هنا عرضٌ محض لا حساب.
+    // و`safeMoney` **إلزاميّ** لا احتياط: `InlineNumberInput` يمرّر «» و«.» أثناء الكتابة
+    // (سطر 97 في ProductTable) ⇒ `D()` الخام يرمي، وطباعةٌ ترمي أثناء تحرير سعرٍ تُسقط
+    // المحرّر وتُضيّع تعديلاً غير محفوظ — و`window.print()` التي نستبدلها لم تكن تفعل ذلك.
+    const priceDp = priceDecimalsFor(state.currency);
+    const fmtPrice = (v: string) =>
+      Number(
+        toUnitPriceStr(safeMoney(v).toString(), state.currency),
+      ).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: priceDp });
+
+    const rows = state.items.map((l) => {
+      const lineTotal = calcLineTotal(l);
+      return {
+        barcode: l.barcode ?? "—",
+        name: l.name,
+        unit: l.unit || "—",
+        // السعر المعروض في الخليّة هو `costBase || price` بدقّة عملة الأمر (مرآة ProductTable).
+        price: fmtPrice(l.costBase || l.price),
+        qty: fmtAr(safeMoney(String(l.qty)).toString()),
+        total: fmtAr(lineTotal),
+        iqd: showIqdEquivalent
+          ? fmtAr(round2(D(lineTotal).times(rate)).toFixed(2))
+          : "",
+      };
+    });
+
+    // ملخّص المبالغ = لوحة `TotalsPanel` المعروضة سطراً بسطر (بعملة الأمر)، يليها بطاقة
+    // الدولار حين تظهر. شريط الإجمالي الأخضر في `docSummary` يكتب «د.ع» ثابتاً ⇒ آخر عنصرٍ
+    // يجب أن يكون ديناريّاً دائماً: للأمر الدولاريّ هو «التكلفة بالدينار» من بطاقة الدولار.
+    const summary = [
+      { label: `المجموع الفرعي (${priceSym})`, value: fmtAr(totals.subtotal) },
+      ...(invoiceDiscountAmount.gt(0)
+        ? [
+            {
+              label: `خصم فاتورة المورّد (${priceSym})`,
+              value: `− ${fmtAr(invoiceDiscountAmount.toFixed(2))}`,
+            },
+          ]
+        : []),
+      ...(D(totals.totalTax).gt(0)
+        ? [
+            {
+              label: `الضريبة (${fmtAr(state.taxRatePercent || "0")}%) (${priceSym})`,
+              value: fmtAr(totals.totalTax),
+            },
+          ]
+        : []),
+      ...(usd
+        ? [
+            { label: "الإجمالي النهائي ($)", value: `${fmtAr(docTotals.total)} $` },
+            ...(rate.gt(0)
+              ? [{ label: "سعر التثبيت", value: `${fmtAr(state.agreedRate)} د.ع/$` }]
+              : []),
+          ]
+        : []),
+      {
+        label: usd ? "التكلفة بالدينار" : "الإجمالي النهائي",
+        value: fmtAr(landed.grand.toFixed(2)),
+        bold: true,
+        large: true,
+      },
+    ];
+
+    const orderFields = [
+      { label: "رقم الأمر", value: state.invoiceNumber || "—" },
+      { label: "الحالة", value: PO_STATUS[data.status] ?? data.status },
+      { label: "العملة", value: usd ? "دولار أمريكي" : "دينار عراقي" },
+      ...(usd && rate.gt(0)
+        ? [{ label: "سعر التثبيت", value: `${fmtAr(state.agreedRate)} د.ع/$` }]
+        : []),
+      ...(safeMoney(shippingCost).gt(0)
+        ? [{ label: "الشحن (خارج الإجمالي)", value: `${fmtAr(shippingCost)} د.ع` }]
+        : []),
+      ...(safeMoney(customsCost).gt(0)
+        ? [{ label: "الكمرك (خارج الإجمالي)", value: `${fmtAr(customsCost)} د.ع` }]
+        : []),
+      ...(state.notes.trim()
+        ? [{ label: "ملاحظات", value: state.notes.trim() }]
+        : []),
+      ...((state.terms ?? "").trim()
+        ? [{ label: "الشروط والأحكام", value: (state.terms ?? "").trim() }]
+        : []),
+    ];
+
+    printReportDoc({
+      title: "أمر شراء",
+      docNum: state.invoiceNumber || null,
+      docDate: fmtDate(data.orderDate),
+      // نفس تنويه بطاقة الشحن/الكمرك وبنفس شرط ظهوره على الشاشة بالضبط.
+      note:
+        landed.hasLanded && landed.hasBase
+          ? "الشحن والكمرك لا يُضافان إلى ذمّة المورّد ولا إلى تكلفة الصنف — يُسجَّلان مصروف نقلٍ على الشركة لحظة الاستلام."
+          : undefined,
+      meta: [
+        {
+          title: "معلومات المورد",
+          fields: [{ label: "الاسم", value: data.supplierName ?? "—" }],
+        },
+        { title: "تفاصيل الأمر", fields: orderFields },
+      ],
+      columns: [
+        { key: "barcode", label: "الباركود", width: "24mm", align: "center" },
+        { key: "name", label: "المنتج" },
+        { key: "unit", label: "الوحدة", width: "16mm", align: "center" },
+        {
+          key: "price",
+          label: `سعر الشراء ${priceSym}`,
+          width: "24mm",
+          align: "left",
+        },
+        { key: "qty", label: "الكمية", width: "16mm", align: "center" },
+        {
+          key: "total",
+          label: `الإجمالي ${priceSym}`,
+          width: "26mm",
+          align: "left",
+          bold: true,
+        },
+        ...(showIqdEquivalent
+          ? [
+              {
+                key: "iqd",
+                label: "المعادل د.ع",
+                width: "26mm",
+                align: "left" as const,
+              },
+            ]
+          : []),
+      ],
+      rows,
+      summary,
+      orientation: showIqdEquivalent ? "landscape" : "portrait",
+    });
+  }
+
   function handleAction(kind: InvoiceActionKind) {
     switch (kind) {
       case "save":
         handleSubmit();
         return;
       case "print":
-        window.print();
+        printOrder();
         return;
       case "duplicate":
         if (!state.items.length) return notify.warn("لا توجد محتويات لنسخها.");
@@ -559,7 +726,7 @@ export default function PurchaseEdit() {
       }
       if (e.key === "F9") {
         e.preventDefault();
-        window.print();
+        printOrder();
         return;
       }
       if (e.key === "Escape" && bulkOpen) setBulkOpen(false);

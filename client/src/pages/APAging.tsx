@@ -359,6 +359,7 @@ export default function APAging() {
             pageSize={PAGE}
             selection={sel}
             getRowId={(r) => r.supplierId}
+            getRowSelectionLabel={(r) => `تحديد ${r.supplierName}`}
             loading={aging.isLoading}
             errorState={{ isError: aging.isError, message: aging.error?.message, onRetry: () => void aging.refetch() }}
             emptyState="لا ذمم دائنة مستحقّة."

@@ -6,6 +6,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -156,6 +157,52 @@ export default function Users() {
       }))) return;
     }
     setActive.mutate({ userId: id, isActive: !isActive });
+  }
+
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بشريط الأدوات والقائمة الجانبية).
+  // نفس صفوف الجدول المعروضة (صفحة الترقيم الحالية) ونفس أعمدته وتسمياتها — بلا استعلامٍ جديد،
+  // فما يُطبع هو ما يراه المستعمِل حرفياً. والفلاتر النشطة تُذكر في الرأس كي لا تُقرأ الورقة
+  // على أنّها كامل المستخدمين.
+  function printUsers() {
+    printReportDoc({
+      title: "قائمة المستخدمين",
+      headerExtra: [
+        {
+          label: "المعروض",
+          value: `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${total.toLocaleString("ar-IQ-u-nu-latn")}`,
+        },
+        { label: "البحث", value: q.trim() || "بلا بحث" },
+        { label: "الدور", value: role ? (ROLE_OPTIONS.find((r) => r.value === role)?.label ?? role) : "كل الأدوار" },
+        // فلترُ الدور المخصّص يعيش في الرابط ويُضيّق القائمة فعلياً (يُحسب في activeFilterCount)
+        // لكنّه لا يمرّ بمنسدلة «الدور» ⇒ إغفالُه هنا يجعل الورقة تقول «كل الأدوار» وهي مقصورةٌ
+        // على دورٍ واحد. الشاشة تُصرّح به بشريطٍ فوق الجدول، فالورقة تُصرّح به كذلك.
+        ...(customRoleId != null
+          ? [{ label: "دور مخصّص", value: `مقصورة على الدور المخصّص #${customRoleId}` }]
+          : []),
+        { label: "الفرع", value: branchId ? (branchName.get(Number(branchId)) ?? `#${branchId}`) : "كل الفروع" },
+        { label: "المعطّلون", value: includeInactive ? "مشمولون" : "مستبعَدون" },
+      ],
+      columns: [
+        { key: "name", label: "الاسم" },
+        { key: "login", label: "معرّف الدخول" },
+        { key: "role", label: "الدور" },
+        { key: "station", label: "القسم الفعليّ" },
+        { key: "branch", label: "الفرع" },
+        { key: "lastSignedIn", label: "آخر دخول" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: rows.map((u) => ({
+        name: u.name ?? "—",
+        login: (u as { username?: string | null }).username || u.email || "—",
+        // نفس اشتقاق عمود «الدور» على الشاشة: المالك يسبق الدور المخصّص ثمّ الدور الأساس.
+        role: (u as any).isOwner ? "مالك النظام" : (u.customRoleLabel ?? ROLE_LABEL[u.role] ?? u.role),
+        station: stationExportLabel((u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation),
+        branch: u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—",
+        lastSignedIn: fmtDate(u.lastSignedIn),
+        status: u.isActive ? "مفعّل" : "معطّل",
+      })),
+      emptyText: "لا مستخدمين مطابقين.",
+    });
   }
 
   /*
@@ -356,7 +403,7 @@ export default function Users() {
             onResetFilters={() => resetF()}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printUsers}
             exportSpec={{
               filename: "المستخدمون",
               rows,

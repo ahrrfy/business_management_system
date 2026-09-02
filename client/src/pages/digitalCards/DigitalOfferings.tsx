@@ -30,7 +30,9 @@ import {
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Columns3, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -420,6 +422,49 @@ export default function DigitalOfferings() {
   const editing = editId != null;
 
   /*
+   * طباعة A4 بهوية المستند بدل `window.print()` (كان يطبع الشاشة بشريط الأدوات ومنتقي
+   * الأعمدة والأزرار). الأعمدة تتبع **منتقي أعمدة الشاشة نفسه** (`columnVisible`) كما كانت
+   * طباعة الشاشة تتبعه، والصفوف هي `visibleRows` المعروضة بعد البحث ⇒ توحيد ناقلٍ لا تغيير
+   * لما يُطبَع. أفقيّ لأنّ الأعمدة تبلغ عشرة بنصوص إسنادٍ طويلة.
+   */
+  function printOfferings() {
+    const columns = [
+      { key: "productName", label: "البطاقة" },
+      ...(columnVisible("provider") ? [{ key: "supplierName", label: "المزوّد" }] : []),
+      ...(columnVisible("device") ? [{ key: "device", label: "الجهاز المسند" }] : []),
+      ...(columnVisible("wallet") ? [{ key: "wallet", label: "المحفظة المسندة" }] : []),
+      ...(columnVisible("type") ? [{ key: "offeringType", label: "النوع" }] : []),
+      ...(columnVisible("faceValue") ? [{ key: "faceValue", label: "القيمة الاسمية", align: "left" as const }] : []),
+      ...(columnVisible("pricingMode") ? [{ key: "pricingMode", label: "طريقة حساب السعر" }] : []),
+      ...(columnVisible("minimumMargin") ? [{ key: "minimumMargin", label: "أقل ربح مسموح", align: "left" as const }] : []),
+      ...(columnVisible("studentData") ? [{ key: "requiresStudentData", label: "بيانات الطالب مطلوبة", align: "center" as const }] : []),
+      ...(columnVisible("status") ? [{ key: "isActive", label: "الحالة", align: "center" as const }] : []),
+    ];
+    printReportDoc({
+      title: "البطاقات والاشتراكات",
+      orientation: "landscape",
+      headerExtra: [
+        { label: "عدد البطاقات", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns,
+      rows: visibleRows.map((o) => ({
+        productName: o.productName,
+        supplierName: o.supplierName,
+        device: assignmentExport(o.assignments, o.settlementMode, "deviceCode"),
+        wallet: assignmentExport(o.assignments, o.settlementMode, "walletName"),
+        offeringType: OFFERING_TYPE[o.offeringType] ?? o.offeringType,
+        faceValue: o.faceValue ? fmtAr(o.faceValue) : "—",
+        pricingMode: PRICING_MODE[o.pricingMode] ?? o.pricingMode,
+        minimumMargin: fmtAr(o.minimumMargin),
+        requiresStudentData: o.requiresStudentData ? "نعم" : "لا",
+        isActive: o.isActive ? "مفعّلة" : "معطّلة",
+      })),
+      emptyText: "لا بطاقات مطابقة.",
+    });
+  }
+
+  /*
    * أعمدة قائمة البطاقات — الإظهار/الإخفاء يبقى بيد منتقي الأعمدة الخاصّ بالشاشة
    * (`columnVisible`)، فالعمود المخفيّ لا يُبنى أصلاً كما كان في الجدول الخامّ.
    */
@@ -598,7 +643,7 @@ export default function DigitalOfferings() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printOfferings}
             exportSpec={{
               filename: "البطاقات-والاشتراكات",
               rows: visibleRows,
@@ -876,7 +921,7 @@ export default function DigitalOfferings() {
               إلغاء
             </Button>
             <Button size="sm" onClick={submitForm} disabled={saving}>
-              {saving ? "جارٍ الحفظ…" : "حفظ"}
+              {saving ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

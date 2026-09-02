@@ -14,6 +14,7 @@ import { fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { D, fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { inboundPaymentRejectionMessage, isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
 import { useEffect, useMemo, useState } from "react";
 
@@ -208,7 +209,7 @@ export function WalletAdjustDialog({ wallet, onClose }: { wallet: WalletRow | nu
               req.mutate({ walletId: wallet.id, amount, direction, reason: reason.trim(), clientRequestId: crypto.randomUUID() });
             }}
           >
-            {req.isPending ? "جارٍ الإرسال…" : "إرسال للاعتماد"}
+            {req.isPending ? ACTION_LABELS.sending : "إرسال للاعتماد"}
           </Button>
         </DialogFooter>
       </DialogContent>

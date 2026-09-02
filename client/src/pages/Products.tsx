@@ -517,6 +517,7 @@ export default function Products() {
             serverPagination={{ page, onPageChange: setPage, pageSize: limit, total, isFetching: list.isFetching }}
             selection={sel}
             getRowId={rowKey}
+            getRowSelectionLabel={(r) => `تحديد ${r.productName}`}
             getRowClassName={(r) => {
               const dimmed = !r.productIsActive || r.variantIsActive === false || r.unitIsActive === false;
               const focus = rowProps(r.productId).className;

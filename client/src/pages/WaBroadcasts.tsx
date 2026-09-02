@@ -35,6 +35,7 @@ import { fmtDateTime } from "@/lib/date";
 import { formatIqd } from "@/lib/money";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -529,7 +530,7 @@ function NewBroadcastDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>إلغاء</Button>
           <Button onClick={submit} disabled={!canSubmit}>
-            {create.isPending ? "جارٍ الحفظ…" : "حفظ كمسوّدة"}
+            {create.isPending ? ACTION_LABELS.saving : "حفظ كمسوّدة"}
           </Button>
         </DialogFooter>
       </DialogContent>
