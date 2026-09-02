@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
 import { TablePager } from "@/components/table/TablePager";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -53,6 +54,9 @@ function variantLabel(r: { variantName: string | null; color: string | null; siz
   const parts = [r.variantName, r.color, r.size].filter(Boolean);
   return parts.length ? parts.join(" / ") : r.sku;
 }
+
+/** جداولُ هذه الشاشة كلٌّ داخل بطاقةٍ تحمل عنوانَه وعدَّه — بلا شريطِ حالةٍ لكلّ جدول. */
+const PANEL_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
 
 export default function Inventory() {
   const utils = trpc.useUtils();
@@ -543,62 +547,83 @@ export default function Inventory() {
         <Card>
           <CardHeader><CardTitle className="text-base">طلبات تسوية معلَّقة ({fmtInt(pendingRows.length)})</CardTitle></CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">المنتج</th>
-                    <th className="p-2 text-center">التغيير</th>
-                    <th className="p-2 text-start">السبب</th>
-                    <th className="p-2 text-start">ملاحظات + إثبات</th>
-                    <th className="p-2 text-start">طلبها</th>
-                    <th className="p-2 text-center">إجراء</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pendingRows.map((r) => {
+            <DataTable
+              {...PANEL_TABLE}
+              data={pendingRows}
+              columns={[
+                {
+                  id: "product",
+                  header: "المنتج",
+                  meta: { width: "wide" },
+                  cell: ({ row }) => `${row.original.productName} — ${row.original.variantName ?? row.original.sku}`,
+                },
+                {
+                  id: "change",
+                  header: "التغيير",
+                  meta: { align: "center" },
+                  cell: ({ row }) =>
+                    `من ${fmtInt(Number(row.original.currentQuantity ?? 0))} إلى ${fmtInt(row.original.targetQuantity)}`,
+                },
+                {
+                  id: "reason",
+                  header: "السبب",
+                  cell: ({ row }) => {
+                    const label = ADJUSTMENT_REASONS.find((x) => x.key === row.original.reason)?.label;
+                    return label ? <span className="text-xs">{label}</span> : <span className="text-muted-foreground">—</span>;
+                  },
+                },
+                {
+                  id: "notes",
+                  header: "ملاحظات + إثبات",
+                  meta: { wrap: true },
+                  cell: ({ row }) => (
+                    <span className="text-muted-foreground text-xs">
+                      {row.original.notes || <span>—</span>}
+                      {row.original.hasAttachment && (
+                        <button
+                          type="button"
+                          className="ms-2 text-primary underline underline-offset-2"
+                          onClick={() => setAttachmentPreviewId(row.original.id)}
+                        >
+                          عرض الإثبات
+                        </button>
+                      )}
+                    </span>
+                  ),
+                },
+                { id: "requestedBy", header: "طلبها", meta: { width: "actor" }, cell: ({ row }) => row.original.createdByName ?? "—" },
+                {
+                  id: "action",
+                  header: "إجراء",
+                  meta: { kind: "actions", width: "wide" },
+                  cell: ({ row }) => {
+                    const r = row.original;
                     const mine = r.createdBy != null && Number(r.createdBy) === Number(me.data?.id);
-                    const reasonLabel = ADJUSTMENT_REASONS.find((x) => x.key === r.reason)?.label;
+                    if (r.status !== "PENDING_APPROVAL") {
+                      return (
+                        <span className="text-xs text-muted-foreground">
+                          {r.status === "APPROVED" ? "اعتُمد" : "رُفض"}
+                          {r.approvedAt ? ` — ${fmtDate(r.approvedAt)}` : ""}
+                          {r.rejectionReason ? ` (${r.rejectionReason})` : ""}
+                        </span>
+                      );
+                    }
+                    // فصلُ المهام: المُنشئ لا يعتمد طلبَه — نصٌّ لا زرٌّ معطَّل.
+                    if (mine) return <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>;
                     return (
-                      <tr key={r.id} className="border-t">
-                        <td className="p-2">{r.productName} — {r.variantName ?? r.sku}</td>
-                        <td className="p-2 text-center">من {fmtInt(Number(r.currentQuantity ?? 0))} إلى {fmtInt(r.targetQuantity)}</td>
-                        <td className="p-2 text-xs">{reasonLabel ?? <span className="text-muted-foreground">—</span>}</td>
-                        <td className="p-2 text-muted-foreground text-xs">
-                          {r.notes || <span>—</span>}
-                          {r.hasAttachment && (
-                            <button
-                              type="button"
-                              className="ms-2 text-primary underline underline-offset-2"
-                              onClick={() => setAttachmentPreviewId(r.id)}
-                            >
-                              عرض الإثبات
-                            </button>
-                          )}
-                        </td>
-                        <td className="p-2">{r.createdByName ?? "—"}</td>
-                        <td className="p-2 text-center">
-                          {r.status !== "PENDING_APPROVAL" ? (
-                            <span className="text-xs text-muted-foreground">
-                              {r.status === "APPROVED" ? "اعتُمد" : "رُفض"}
-                              {r.approvedAt ? ` — ${fmtDate(r.approvedAt)}` : ""}
-                              {r.rejectionReason ? ` (${r.rejectionReason})` : ""}
-                            </span>
-                          ) : mine ? (
-                            <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>
-                          ) : (
-                            <div className="flex items-center justify-center gap-2">
-                              <Button size="sm" onClick={() => approveFlow(r.id)} disabled={approveAdj.isPending}><CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد</Button>
-                              <Button size="sm" variant="outline" onClick={() => rejectFlow(r.id)} disabled={rejectAdj.isPending}><XCircle aria-hidden className="size-4 ml-1" /> رفض</Button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
+                      <div className="flex items-center justify-center gap-2">
+                        <Button size="sm" onClick={() => approveFlow(r.id)} disabled={approveAdj.isPending}>
+                          <CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => rejectFlow(r.id)} disabled={rejectAdj.isPending}>
+                          <XCircle aria-hidden className="size-4 ml-1" /> رفض
+                        </Button>
+                      </div>
                     );
-                  })}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+                  },
+                },
+              ]}
+            />
           </CardContent>
         </Card>
       )}
@@ -650,63 +675,74 @@ export default function Inventory() {
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">المنتج</th>
-                    <th className="p-2 text-center">التكلفة</th>
-                    <th className="p-2 text-center">الكمية</th>
-                    <th className="p-2 text-center">أثر القيمة</th>
-                    <th className="p-2 text-start">الغرض والسبب</th>
-                    <th className="p-2 text-start">طلبها</th>
-                    <th className="p-2 text-center">{revalTab === "PENDING_APPROVAL" ? "إجراء" : "الحسم"}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {revalRows.length === 0 && (
-                    <TableEmptyRow colSpan={7} message="لا طلبات في هذه الحالة." />
-                  )}
-                  {revalRows.map((r) => {
-                    const mine = Number(r.createdBy) === Number(me.data?.id);
-                    const negative = D(r.expectedValueDelta).isNegative();
+            <DataTable
+              {...PANEL_TABLE}
+              data={revalRows}
+              emptyText="لا طلبات في هذه الحالة."
+              columns={[
+                {
+                  id: "product",
+                  header: "المنتج",
+                  meta: { width: "wide" },
+                  cell: ({ row }) => `${row.original.productName} — ${row.original.variantLabel}`,
+                },
+                {
+                  id: "cost",
+                  header: "التكلفة",
+                  meta: { kind: "number", align: "center" },
+                  cell: ({ row }) => `${fmt(row.original.oldCost)} ← ${fmt(row.original.newCost)}`,
+                },
+                { id: "qty", header: "الكمية", meta: { kind: "number", align: "center" }, cell: ({ row }) => fmtInt(row.original.expectedQuantity) },
+                {
+                  id: "delta",
+                  header: "أثر القيمة",
+                  meta: { kind: "number", align: "center" },
+                  cell: ({ row }) => (
+                    <span className={D(row.original.expectedValueDelta).isNegative() ? "text-money-negative" : "text-money-positive"}>
+                      {fmt(row.original.expectedValueDelta)}
+                    </span>
+                  ),
+                },
+                {
+                  id: "purpose",
+                  header: "الغرض والسبب",
+                  meta: { wrap: true },
+                  cell: ({ row }) => (
+                    <span className="text-muted-foreground">
+                      {row.original.purpose === "IMPAIRMENT" ? "هبوط قيمة" : "تصحيح تكلفة"} — {row.original.reason}
+                    </span>
+                  ),
+                },
+                { id: "requestedBy", header: "طلبها", meta: { width: "actor" }, cell: ({ row }) => row.original.createdByName ?? "—" },
+                {
+                  id: "action",
+                  header: revalTab === "PENDING_APPROVAL" ? "إجراء" : "الحسم",
+                  meta: { kind: "actions", width: "wide" },
+                  cell: ({ row }) => {
+                    const r = row.original;
+                    // فصلُ المهام كما في طلبات التسوية أعلاه.
+                    if (Number(r.createdBy) === Number(me.data?.id)) {
+                      return <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>;
+                    }
                     return (
-                      <tr key={r.id} className="border-t">
-                        <td className="p-2">{r.productName} — {r.variantLabel}</td>
-                        <td className="p-2 text-center tabular-nums">{fmt(r.oldCost)} ← {fmt(r.newCost)}</td>
-                        <td className="p-2 text-center tabular-nums">{fmtInt(r.expectedQuantity)}</td>
-                        <td className={`p-2 text-center tabular-nums ${negative ? "text-money-negative" : "text-money-positive"}`}>
-                          {fmt(r.expectedValueDelta)}
-                        </td>
-                        <td className="p-2 text-muted-foreground">
-                          {r.purpose === "IMPAIRMENT" ? "هبوط قيمة" : "تصحيح تكلفة"} — {r.reason}
-                        </td>
-                        <td className="p-2">{r.createdByName ?? "—"}</td>
-                        <td className="p-2 text-center">
-                          {mine ? (
-                            <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>
-                          ) : (
-                            <div className="flex items-center justify-center gap-2">
-                              <Button size="sm" onClick={() => approveRevalFlow(r.id, r.expectedValueDelta)} disabled={approveReval.isPending}>
-                                <CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => { setRevalRejectReason(""); setRevalRejectTarget(r.id); }}
-                                disabled={rejectReval.isPending}
-                              >
-                                <XCircle aria-hidden className="size-4 ml-1" /> رفض
-                              </Button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
+                      <div className="flex items-center justify-center gap-2">
+                        <Button size="sm" onClick={() => approveRevalFlow(r.id, r.expectedValueDelta)} disabled={approveReval.isPending}>
+                          <CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => { setRevalRejectReason(""); setRevalRejectTarget(r.id); }}
+                          disabled={rejectReval.isPending}
+                        >
+                          <XCircle aria-hidden className="size-4 ml-1" /> رفض
+                        </Button>
+                      </div>
                     );
-                  })}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+                  },
+                },
+              ]}
+            />
           </CardContent>
         </Card>
       )}
@@ -912,36 +948,37 @@ export default function Inventory() {
           </Link>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 text-start">التاريخ</th>
-                <th className="p-2 text-start">المنتج</th>
-                <th className="p-2 text-start">النوع</th>
-                <th className="p-2 text-center">الكمية (أساس)</th>
-                <th className="p-2 text-start">المرجع</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(movements.data?.rows ?? []).map((m) => (
-                <tr key={m.id} className="border-t">
-                  <td className="p-2 text-xs">{fmtDateTime(m.createdAt)}</td>
-                  <td className="p-2 text-xs">
-                    {m.productName}
-                    <span className="text-muted-foreground"> — {variantLabel(m)}</span>
-                  </td>
-                  <td className="p-2 text-xs">{MTYPE[m.movementType] ?? m.movementType}</td>
-                  <td className="p-2 text-center tabular-nums">{fmtInt(m.quantity)}</td>
-                  <td className="p-2 text-muted-foreground text-xs">{m.referenceType ?? "—"}{m.referenceId ? ` #${m.referenceId}` : ""}</td>
-                </tr>
-              ))}
-              {movements.data && movements.data.rows.length === 0 && (
-                <TableEmptyRow colSpan={5} message="لا حركات مخزون بعد." />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          <DataTable
+            {...PANEL_TABLE}
+            data={movements.data?.rows ?? []}
+            loading={movements.isLoading}
+            emptyText="لا حركات مخزون بعد."
+            columns={[
+              { id: "date", header: "التاريخ", meta: { kind: "datetime" }, cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.createdAt)}</span> },
+              {
+                id: "product",
+                header: "المنتج",
+                meta: { width: "wide" },
+                cell: ({ row }) => (
+                  <span className="text-xs">
+                    {row.original.productName}
+                    <span className="text-muted-foreground"> — {variantLabel(row.original)}</span>
+                  </span>
+                ),
+              },
+              { id: "type", header: "النوع", cell: ({ row }) => <span className="text-xs">{MTYPE[row.original.movementType] ?? row.original.movementType}</span> },
+              { id: "qty", header: "الكمية (أساس)", meta: { kind: "number", align: "center" }, cell: ({ row }) => fmtInt(row.original.quantity) },
+              {
+                id: "ref",
+                header: "المرجع",
+                cell: ({ row }) => (
+                  <span className="text-muted-foreground text-xs">
+                    {row.original.referenceType ?? "—"}{row.original.referenceId ? ` #${row.original.referenceId}` : ""}
+                  </span>
+                ),
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 

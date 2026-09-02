@@ -45,7 +45,7 @@
   "client/src/pages/HrChangesReport.tsx": 2,
   "client/src/pages/HrDevices.tsx": 3,
   "client/src/pages/IntegrationsSettings.tsx": 1,
-  "client/src/pages/Inventory.tsx": 4,
+  "client/src/pages/Inventory.tsx": 1,
   "client/src/pages/InventoryMovements.tsx": 1,
   "client/src/pages/InventoryOpsReport.tsx": 1,
   "client/src/pages/InvoiceDetail.tsx": 3,
