@@ -261,6 +261,8 @@ jobs:
         run: pnpm check:row-attribution
       - name: حارِس ازدواج حقل البحث (DataTable + ListToolbar معاً)
         run: pnpm check:duplicate-search
+      - name: ESLint (قواعد الخطّافات — يمنع خطّافاً بعد رجوعٍ مبكّر)
+        run: pnpm check:lint
       - name: حارِس تسجيل الحرّاس في CI (يمنع حارساً في aggregate بلا خطوة)
         run: pnpm check:guards-registered
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)

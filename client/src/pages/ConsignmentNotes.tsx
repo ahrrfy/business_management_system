@@ -447,7 +447,9 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
               ))}
               {(products.data?.length ?? 0) === 0 && <p className="text-xs text-muted-foreground">لا منتجات لهذا المودِع بعد — أضِف منتج أمانة من المنتجات باسمه.</p>}
             </div>
-            {/* أسطر السند */}
+            {/* أسطر السند — شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل حقلَ
+                الكمية وزرَّ حذف السطر يكتبان في حالة `lines` المحلّية قبل الحفظ؛ `DataTable`
+                أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. */}
             {lines.length > 0 && (
               <table className="w-full text-sm">
                 <thead className="bg-muted/50"><tr><th className="p-2">الاتجاه</th><th className="p-2">المنتج</th><th className="p-2">الكمية</th><th className="p-2"></th></tr></thead>

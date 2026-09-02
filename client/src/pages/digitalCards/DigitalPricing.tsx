@@ -743,6 +743,10 @@ export default function DigitalPricing() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل `MoneyInput`ين — تكلفة
+              الشراء وسعر البيع — يكتبان في `costs`/`sellPrices` المحلّيتين اللتين تُبنى منهما
+              المسوّدة والنشر؛ `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. (جدولا «التغيير
+              الكبير» و«بلاغات تغيّر السعر» أعلاه محوَّلان أصلاً — كلاهما عرضٌ خالص.) */}
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">

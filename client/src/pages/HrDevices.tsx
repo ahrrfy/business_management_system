@@ -1326,6 +1326,9 @@ export default function HrDevices() {
               className="h-8 w-full pr-8"
             />
           </div>
+          {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل `AppSelect` يربط رقمَ
+              الجهاز بموظّف ويُطلق `mapUser.mutate` مباشرةً — `DataTable` أداةُ عرضٍ فتبقى هذه
+              خامّةً عن قصد. جدولا الأجهزة والبصمات في الشاشة نفسها محوَّلان أصلاً. */}
           <div className="max-h-[50vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 sticky top-0">

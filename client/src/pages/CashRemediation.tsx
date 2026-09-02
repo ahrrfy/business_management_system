@@ -379,6 +379,9 @@ export default function CashRemediation() {
                   </div>
                 </div>
 
+                {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل `AppSelect` لتصنيف
+                    المحاكاة يكتب في حالة `selections` المحلّية (و`disabled` مشتقٌّ من الصفّ نفسه)
+                    — `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. */}
                 <div className="overflow-x-auto rounded-md border">
                   <table className="w-full min-w-[1200px] text-sm">
                     <thead className="bg-muted/60 text-right">

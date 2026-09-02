@@ -815,7 +815,6 @@ export default function Inventory() {
             {attachmentPreview.isLoading ? (
               <span className="text-sm text-muted-foreground">جارٍ تحميل الصورة…</span>
             ) : attachmentPreview.data?.attachmentUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={attachmentPreview.data.attachmentUrl}
                 alt="مرفق إثبات التسوية"
