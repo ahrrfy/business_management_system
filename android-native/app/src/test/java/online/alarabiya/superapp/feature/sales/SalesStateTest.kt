@@ -82,7 +82,7 @@ class SalesStateTest {
             returnRequestId = "return-fixed",
         )
         val committed = requireNotNull(initial.start(SalesBusy.RETURN_SUBMIT))
-            .returnCommitted(ReturnCreation(9, "4", false, false), "return-next")
+            .returnCommitted(ReturnCreation.Executed(9, "4", false, false), "return-next")
             .followUpFailed("refresh unavailable")
 
         assertNull(committed.returnInvoice)

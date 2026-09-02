@@ -79,7 +79,28 @@ export interface OfflineReceptionPayload {
   clientRequestId: string;
 }
 
-export type OfflinePayload = OfflineSalePayload | OfflinePrintSalePayload | OfflineReceptionPayload;
+/**
+ * مرتجعُ بيعٍ نقديّ التُقط دون اتصال (١/٩/٢٦). **الحمولةُ الوحيدة التي تُخرج نقداً** من
+ * الطابور، ولذلك تحمل سبباً إلزامياً ومصيرَ البضاعة صريحاً — لا يقع ديناران بلا مستند.
+ * ⚠️ سقفُ الاسترداد لا يُقيَّم على الجهاز (يحتاج تاريخ قبضِ الفاتورة كاملاً)؛ يُقيَّمه الخادم
+ * عند الترحيل، والرفضُ يُعلَّق في طابور الاسترداد بقناة RETURN لمراجعة المدير.
+ */
+export interface OfflineReturnPayload {
+  branchId: number;
+  shiftId: number | null;
+  invoiceId: number;
+  lines: Array<{ invoiceItemId: number; baseQuantity: number }>;
+  refund: { amount: string; method: "CASH"; shiftId?: number | null };
+  restock: boolean;
+  reason: string;
+  clientRequestId: string;
+}
+
+export type OfflinePayload =
+  | OfflineSalePayload
+  | OfflinePrintSalePayload
+  | OfflineReceptionPayload
+  | OfflineReturnPayload;
 
 // ── البيع الأوفلايني: **مفعَّل تلقائياً** على كل جهاز (قرار مالك ١٦/٨/٢٦) ──
 //
@@ -209,6 +230,16 @@ export async function enqueueOfflineItem(args: {
     // حصة ممتلئة/وضع خاص — الواجهة تمنع تسليم البضاعة بدل الانفجار.
     return false;
   }
+}
+
+/** التقاطُ مرتجعٍ نقديّ (kind = RETURN) — النقدُ خرج فعلاً، فالالتقاط أصدق من الرفض. */
+export async function enqueueOfflineReturn(args: {
+  payload: OfflineReturnPayload;
+  offlineReceiptNumber: string;
+  total: string;
+  capturedByUserId?: number;
+}): Promise<boolean> {
+  return enqueueOfflineItem({ kind: "RETURN", ...args });
 }
 
 /** غلاف توافقٍ رجعيّ لكاشير التجزئة (kind = SALE) — المستدعي الأقدم يبقى بلا تعديل. */

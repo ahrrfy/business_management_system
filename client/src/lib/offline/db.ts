@@ -26,9 +26,11 @@ export interface OfflineMetaRow {
  *  ترقية نسخة Dexie لاحقاً. الحمولة بشكل CreateSaleInput (عقد الخادم) + بيانات العرض. */
 /** نوع العمليّة الملتقَطة — يحدّد **مسار الترحيل** الخادميّ عند عودة الاتصال.
  *  SALE = كاشير التجزئة (offline.replaySale) · PRINT_SALE = كاشير الطباعة
- *  (offline.replayPrintSale) · RECEPTION = سلّة خدمات الزبائن (offline.replayReception).
+ *  (offline.replayPrintSale) · RECEPTION = سلّة خدمات الزبائن (offline.replayReception) ·
+ *  RETURN = مرتجع بيع نقديّ (offline.replayReturn، ١/٩/٢٦) — **الوحيد الذي يُخرج نقداً**،
+ *  ولذلك يُلتقَط بحساب المالك وحده (سلطةُ التنفيذ الفوريّ) ويُعاد تقييم سقفه عند الترحيل.
  *  عناصر ما قبل التعميم بلا حقل صريح تُقرأ SALE (توافق رجعيّ — لا تُفقَد نقودٌ في الطابور). */
-export type OfflineOutboxKind = "SALE" | "PRINT_SALE" | "RECEPTION";
+export type OfflineOutboxKind = "SALE" | "PRINT_SALE" | "RECEPTION" | "RETURN";
 
 export interface OfflineOutboxItem {
   clientRequestId: string;
