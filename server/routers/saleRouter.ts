@@ -10,6 +10,7 @@ import { normalizeSearchText } from "@shared/searchNormalize";
 import { stripDocPrefix } from "@shared/documentNumber";
 import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus,
 } from "@shared/invoiceStatus";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { z } from "zod";
 import {
@@ -67,6 +68,22 @@ const unifiedConsignmentStatus = sql<string | null>`COALESCE(${deliveryConsignme
       WHEN 'CANCELLED' THEN CASE WHEN ${onlineOrders.cancelReason} IS NOT NULL THEN 'RETURNED' END
     END
   END)`;
+
+/**
+ * مسند «الرصيد المفتوح» على `invoices` بوضع `COLLECTIBLE` (المقصوص) — مصدرٌ واحدٌ لفروع
+ * `balanceState` الأربعة بدل إعادة كتابة `total − paidAmount − returnedTotal` في كلٍّ منها.
+ * كانت مكتوبةً بيدٍ أربع مرّاتٍ في دالّةٍ واحدة، ثلاثٌ متطابقةٌ والرابع ناقصُ طرفٍ — وهو
+ * بالضبط نوعُ الاختلاف الذي لا يراه أحدٌ حتى ينحرف.
+ * (كائنُ `SQL` غيرُ قابلٍ للتغيير فيصحّ تشاركُه بين الاستعلامات — نظير `unifiedConsignmentStatus`.)
+ */
+const INVOICE_OPEN_BALANCE = openBalanceExpr(
+  {
+    total: invoices.total,
+    paidAmount: invoices.paidAmount,
+    returnedTotal: invoices.returnedTotal,
+  },
+  "COLLECTIBLE",
+);
 
 // تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
 // (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
@@ -362,23 +379,35 @@ export function buildSalesListConds(
         ? isNull(invoices.paymentMethod)
         : eq(invoices.paymentMethod, input.paymentMethod),
     );
+  // أربعةُ فروعٍ كانت تكتب المسند بيدها؛ صارت تستهلك `INVOICE_OPEN_BALANCE` (وضع `COLLECTIBLE`)
+  // لأنّ سؤال الفروع الأربعة واحد: «كم يصحّ أن نطالب به الآن؟».
+  // ⚠️ القصُّ لا يغيّر أيّ صفٍّ هنا لأنّ المقارنة تليه مباشرةً: `GREATEST(x,0) > 0 ≡ x > 0`
+  // و`GREATEST(x,0) <= 0 ≡ x <= 0` — التوحيد شكليٌّ لا سلوكيّ، مقصودٌ أن يبقى كذلك.
   if (input?.balanceState === "DEPOSIT_DUE") {
     conds.push(inArray(invoices.sourceType, ["ORDER", "WORKORDER"]));
     conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) > 0`);
-    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`,
-    );
+    // ⚠️ هذا الفرعُ وحدَه **بلا** `notInArray(status, DEAD_INVOICE_STATUSES)` بينما إخوته
+    // الثلاثة يحملونه. لم يُضَف هنا عمداً: إضافتُه تغييرُ سلوكٍ (صفوفٌ تختفي من فلتر «عربونٌ
+    // مستحقّ تكملته») يقرّره المالك لا توحيدُ مسند.
+    // والفجوةُ **أضيقُ ممّا تبدو**: الشرطان أعلاه (`paidAmount > 0` و«المسند > 0») يُسقطان
+    // `SUPERSEDED` حتماً (`sale/correct.ts` يُصفّر `paidAmount` و`returnedTotal` معاً)
+    // ويُسقطان `RETURNED` (المسند يصير سالبَ المقبوض). و`sale/cancel.ts` يرفع `returnedTotal`
+    // إلى ما تبقّى من قيمة البيع فيصير المسند سالباً أيضاً — فما يعبر فعلاً حالاتٌ حافّة
+    // لا مسارٌ شائع. راجع جرد الانحراف (ب) في `openBalance.ts`.
+    conds.push(sql`${INVOICE_OPEN_BALANCE} > 0`);
   } else if (input?.balanceState === "OUTSTANDING") {
-    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`,
-    );
+    conds.push(sql`${INVOICE_OPEN_BALANCE} > 0`);
     conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   } else if (input?.balanceState === "UNPAID") {
+    // كان المسند هنا ناقصَ طرفٍ (`total − returnedTotal` بلا `− paidAmount`) ومكافئاً حسابياً
+    // **فقط** لاقترانه بشرط `paidAmount = 0` في السطر الذي قبله. المكافأةُ هشّة: من يحذف الشرط
+    // أو يعيد ترتيب السطرين يكسر المعنى بلا أن يلمس المسند. المسندُ الكامل يُغني عن الاقتران —
+    // وبما أنّ `CAST(paidAmount) = 0` مضمونٌ في نفس الـ`AND`، الرقمُ الناتج لم يتغيّر.
     conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) = 0`);
-    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`,
-    );
+    conds.push(sql`${INVOICE_OPEN_BALANCE} > 0`);
     conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   } else if (input?.balanceState === "SETTLED") {
-    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) <= 0`,
-    );
+    conds.push(sql`${INVOICE_OPEN_BALANCE} <= 0`);
     conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
@@ -1153,6 +1182,15 @@ export const saleRouter = router({
             paidAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} != 'SUPERSEDED' THEN ${invoices.paidAmount} ELSE 0 END), 0)`,
             // المتبقي (AR الحقيقي): total − paidAmount − returnedTotal لغير الملغاة
             // (الملغاة لا ذمة عليها؛ المرتجع جزئياً يُخصم منه ما أُرجع).
+            //
+            // ⛔ **تُرِك مكتوباً بيدٍ عن قصد — لا يُوحَّد بـ`openBalanceExpr` بلا قرار المالك.**
+            // هذا الرأسُ **موقَّعٌ** (بلا `GREATEST`) ويستبعد `('CANCELLED','SUPERSEDED')`، بينما
+            // صفوفُ نفس الشاشة تُفلتَر بمسندٍ مقصوصٍ (`> 0`) وباستبعاد `DEAD_INVOICE_STATUSES`
+            // ⇒ **الرأس لا يساوي مجموع صفوفه** على عميلٍ دُفِع له زائداً أو أُرجِعت فاتورتُه
+            // بعد قبضها: السالبُ يُنقص هنا ذمّةَ فاتورةٍ أخرى مستحقّة، ولا يظهر صفّاً هناك.
+            // سؤالُ الموضع تحصيليّ ⇒ الصحيحُ `COLLECTIBLE` (المقصوص + `DEAD`) كما في الصفوف؛
+            // لكنّ تطبيقه **يرفع رقماً يراه المالك** في رأس قائمة المبيعات، فهو قرارُ سياسةٍ
+            // لا توحيدُ مسند. الجرد الكامل في `@shared/predicates/openBalance` (بند أ).
             dueAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} NOT IN ('CANCELLED', 'SUPERSEDED')
               THEN CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
           })

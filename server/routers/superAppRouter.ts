@@ -83,6 +83,7 @@ import {
 import { detectAll as detectCatalogAnomalies } from "../services/catalogAnomalies/detectors";
 import { getTodayNetSales } from "../services/reports/todaySales";
 import { getAPAging } from "../services/reports/apAging";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 
 const leaveTypeKeys = LEAVE_TYPES.map((item) => item.key) as [
   string,
@@ -222,7 +223,10 @@ export async function getScopedCustomerPulse(scopedBranchId: number | null) {
       .then((rows) => rows[0]),
     db
       .select({
-        balance: sql<string>`coalesce(sum(greatest(${invoices.total} - ${invoices.paidAmount} - ${invoices.returnedTotal}, 0)), 0)`,
+        // ذمّةُ الفرع سؤالٌ تحصيليّ ⇒ `COLLECTIBLE` (مقصوص) — نفسُ شكل `greatest(…,0)` القائم.
+        // ⚠️ القائمةُ البيضاء أدناه (`PENDING`/`PARTIALLY_PAID`) تُسقِط `CONFIRMED` وتبقى كما
+        // هي: توسيعُها يرفع رقمَ نبض العملاء في التطبيق ⇒ قرارُ سياسة لا توحيدُ مسند (بند د).
+        balance: sql<string>`coalesce(sum(${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")}), 0)`,
       })
       .from(invoices)
       .innerJoin(customers, eq(invoices.customerId, customers.id))

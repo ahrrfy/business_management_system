@@ -3,6 +3,7 @@ import { arReminders, customerNotes, customers, invoices, tasks, users } from ".
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "../../shared/searchNormalize";
+import { openBalanceExpr } from "../../shared/predicates/openBalance";
 import { phoneSuffix10 } from "../lib/phone";
 import type { CustomerType, PriceTier } from "./customerService";
 import { money, toDbMoney } from "./money";
@@ -160,6 +161,17 @@ function baseConditions(input: CustomerOperationsInput): SQL[] {
   return conditions;
 }
 
+/**
+ * أعمدةُ مسند «الرصيد المفتوح» بالاسم المستعار `i` المستعمَل في الاستعلامات الفرعية أدناه —
+ * `openBalanceExpr` لا تستورد المخطّط عمداً فتقبل أيّ جزءِ SQL، وهذا ما يجعلها صالحةً هنا
+ * حيث الاستعلام مكتوبٌ خامّاً على `invoices i` لا على جدول drizzle مباشرةً.
+ */
+const INVOICE_ALIAS_OPEN_BALANCE_COLS = {
+  total: sql`i.total`,
+  paidAmount: sql`i.paidAmount`,
+  returnedTotal: sql`i.returnedTotal`,
+};
+
 function derivedCustomers(input: CustomerOperationsInput): SQL {
   const base = baseConditions(input);
   return sql`
@@ -177,8 +189,12 @@ function derivedCustomers(input: CustomerOperationsInput): SQL {
       ${customers.legacyCode} AS legacyCode,
       ${customers.isActive} AS isActive,
       ${customers.createdAt} AS createdAt,
+      /* ⚠️ فلترُ الحالة أدناه **قائمةٌ بيضاء** (PENDING/PARTIALLY_PAID) أضيقُ من «غير ميتة»:
+         تُسقِط CONFIRMED وهي حالةٌ في الـenum قد تحمل رصيداً مفتوحاً كاملاً. تُرِكت كما هي —
+         توسيعُها يُدخل فواتيرَ جديدةً في «المتأخّر» ويرفع رقماً يراه المالك ⇒ قرارُ سياسة لا
+         توحيدُ مسند. المُوحَّد هنا **الحسابُ وحده**. (جرد الانحراف، بند د.) */
       COALESCE((
-        SELECT SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0))
+        SELECT SUM(${openBalanceExpr(INVOICE_ALIAS_OPEN_BALANCE_COLS, "COLLECTIBLE")})
         FROM ${invoices} i
         WHERE i.customerId = ${customers.id}
           AND i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
@@ -189,7 +205,7 @@ function derivedCustomers(input: CustomerOperationsInput): SQL {
         FROM ${invoices} i
         WHERE i.customerId = ${customers.id}
           AND i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
-          AND GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) > 0
+          AND ${openBalanceExpr(INVOICE_ALIAS_OPEN_BALANCE_COLS, "COLLECTIBLE")} > 0
       ) AS oldestDueDate,
       (
         SELECT DATE_FORMAT(MAX(DATE(i.invoiceDate)), '%Y-%m-%d')
