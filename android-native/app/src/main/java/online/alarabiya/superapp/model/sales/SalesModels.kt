@@ -25,12 +25,16 @@ data class SalesCapabilities(
     val role: String,
     val branchId: Long?,
     val allBranches: Boolean,
+    /** المالك ينفّذ مرتجعه فوراً؛ غيرُه يُرسل طلباً — الشاشة يجب أن تعرف أيَّهما **قبل** التأكيد. */
+    val isOwner: Boolean,
 ) {
     val canCreateSale: Boolean get() = sales.canWrite && products.canRead && branchId != null
     val canReadSales: Boolean get() = sales.canRead
     val canSearchCustomers: Boolean get() = customers.canRead
     val canReadShifts: Boolean get() = treasury.canRead && branchId != null
     val canCreateReturn: Boolean get() = sales.canWrite && (role == "admin" || role == "manager")
+    /** المرتجعُ يُنفَّذ فوراً للمالك، ويُصبح طلباً بانتظار مراجعٍ مستقلّ لغيره (قرار المالك ١/٩/٢٦). */
+    val returnExecutesImmediately: Boolean get() = isOwner
 
     companion object {
         fun fromBootstrap(bootstrap: AppBootstrap): SalesCapabilities {
@@ -44,6 +48,7 @@ data class SalesCapabilities(
                 role = bootstrap.user.role,
                 branchId = bootstrap.branchId,
                 allBranches = bootstrap.allBranches,
+                isOwner = bootstrap.isOwner || bootstrap.user.isOwner,
             )
         }
     }
@@ -225,12 +230,31 @@ data class ReturnSubmission(
     val clientRequestId: String,
 )
 
-data class ReturnCreation(
-    val invoiceId: Long,
-    val returnedTotal: String,
-    val fullyReturned: Boolean,
-    val idempotentReplay: Boolean,
-)
+/**
+ * نتيجةُ `returns.create` — **نوعٌ مُميَّز** (تدقيق ١/٩/٢٦).
+ *
+ * كان هذا النموذج يقرأ `invoiceId/returnedTotal/fullyReturned/idempotentReplay` بينما صار
+ * الخادمُ يُرجع `{mode:"REQUESTED", requestId, status}` لغير المالك ⇒ **كلّ الحقول تسقط لقيمها
+ * الافتراضية**، فتعرض الشاشة «تم تسجيل المرتجع بقيمة 0» إقراراً بالنجاح، ويُعيد `fullyReturned=false`
+ * تحميلَ الفاتورة بنفس الكمّيات فيُعيد الموظّف الإدخال وترتدّ المحاولة الثانية. حلقةٌ مغلقة
+ * على الجوّال بلا شاشة اعتماد. الآن `mode` صريحٌ ومجهولُه يُرمى بخطأٍ لا يُبتلَع.
+ */
+sealed interface ReturnCreation {
+    /** المالك نفّذ المرتجع فوراً: المخزون والمال تحرّكا فعلاً. */
+    data class Executed(
+        val invoiceId: Long,
+        val returnedTotal: String,
+        val fullyReturned: Boolean,
+        val idempotentReplay: Boolean,
+    ) : ReturnCreation
+
+    /** طلبٌ صفريّ الأثر بانتظار مراجعٍ مستقل — لا تسلّم بضاعةً ولا نقداً عليه. */
+    data class Requested(
+        val requestId: Long,
+        val status: String,
+        val replayed: Boolean,
+    ) : ReturnCreation
+}
 
 object SalesValidation {
     private val quantity = Regex("^\\d+(\\.\\d{1,3})?$")

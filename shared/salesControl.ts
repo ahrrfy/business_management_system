@@ -16,7 +16,7 @@ export const SALES_CONTROL_TYPE_LABELS: Record<SalesControlType, string> = {
   SALES_DUE_DATE_CHANGE: "تغيير تاريخ الاستحقاق",
 };
 
-export const SALES_CONTROL_STATUSES = ["PENDING", "APPROVED", "REJECTED", "STALE"] as const;
+export const SALES_CONTROL_STATUSES = ["PENDING", "APPROVED", "REJECTED", "STALE", "WITHDRAWN"] as const;
 export type SalesControlStatus = (typeof SALES_CONTROL_STATUSES)[number];
 
 export const SALES_CONTROL_STATUS_LABELS: Record<SalesControlStatus, string> = {
@@ -24,4 +24,5 @@ export const SALES_CONTROL_STATUS_LABELS: Record<SalesControlStatus, string> = {
   APPROVED: "معتمد ومنفّذ",
   REJECTED: "مرفوض",
   STALE: "قديم بسبب تغيّر الفاتورة",
+  WITHDRAWN: "مسحوب من الطالب",
 };

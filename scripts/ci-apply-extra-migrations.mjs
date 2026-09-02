@@ -202,6 +202,13 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/extras/0315_supplier_invoice_draft_revision_triggers.sql",
   // قيود الحجم/MIME وحرّاس append-only لمستندات دليل فرق النقد لا يمثلها db:push بالكامل.
   "drizzle/migrations/0317_cash_variance_evidence.sql",
+  // ١/٩/٢٦: تُعدّل CHECKين قائمَين على `salesControlRequests` (شكل القرار + Maker-Checker)
+  // لتمثيل حالة WITHDRAWN. `db:push` يبني الصيغة القديمة من المخطّط فتسقط اختبارات السحب
+  // على قاعدة CI بينما الإنتاج (migrator) سليم — نفس فخّ #675.
+  "drizzle/migrations/0326_returns_withdraw_and_owner_override.sql",
+  // ١/٩/٢٦: يوسّع enum قناة طابور الاسترداد بـRETURN. `db:push` يبنيه من المخطّط فتنشأ
+  // الصيغة الجديدة على قاعدة الاختبار، لكن المرآة تُبقي المسارين متطابقين.
+  "drizzle/migrations/0327_offline_recovery_return_channel.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

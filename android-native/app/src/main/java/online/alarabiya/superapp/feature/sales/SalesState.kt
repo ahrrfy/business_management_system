@@ -104,15 +104,27 @@ data class SalesUiState(
     /** A committed mutation remains committed even when its read-after-write refresh fails. */
     fun followUpFailed(message: String): SalesUiState = copy(busy = null, error = message)
 
+    /**
+     * نصّان لا نصّ واحد (تدقيق ١/٩/٢٦): المرتجعُ المنفَّذ يُعلَن بقيمته، والطلبُ المعلَّق
+     * يُعلَن **بصفريّة أثره** صراحةً — وإلّا سلّم الموظّف البضاعة والنقد على إقرارٍ كاذب.
+     */
     fun returnCommitted(result: ReturnCreation, nextRequestId: String): SalesUiState = copy(
-        busy = if (result.fullyReturned) null else SalesBusy.RETURN_LOAD,
+        busy = when (result) {
+            is ReturnCreation.Executed -> if (result.fullyReturned) null else SalesBusy.RETURN_LOAD
+            is ReturnCreation.Requested -> null
+        },
         returnInvoice = null,
         returnQuantities = emptyMap(),
         returnRefundAmount = "",
         returnShiftId = null,
         returnRequestId = nextRequestId,
         error = null,
-        notice = "تم تسجيل المرتجع بقيمة ${result.returnedTotal}",
+        notice = when (result) {
+            is ReturnCreation.Executed -> "تم تسجيل المرتجع بقيمة ${result.returnedTotal}"
+            is ReturnCreation.Requested ->
+                "أُرسل طلب المرتجع #${result.requestId} للاعتماد — لم يتغيّر المخزون ولا المال بعد. " +
+                    "لا تسلّم الزبون نقوداً ولا تستلم البضاعة حتى يعتمده مديرٌ مستقل."
+        },
     )
 
     fun returnInvoiceReloaded(invoice: ReturnableInvoice): SalesUiState = copy(

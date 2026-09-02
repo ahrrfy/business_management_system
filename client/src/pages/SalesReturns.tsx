@@ -7,6 +7,7 @@ import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
+import { AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -85,6 +86,18 @@ export default function SalesReturns() {
     limit: PAGE,
     offset: page * PAGE,
   });
+  /**
+   * ⭐ الطلبات المعلّقة تُعلَن هنا (تدقيق ١/٩/٢٦ — بلاغ «المرتجع وهميّ ولا أثر له»).
+   *
+   * هذا السجلّ يقرأ قيود `RETURN` **المنفَّذة** وحدها، فكان يقول «لا مرتجعات بيع بعد» بينما
+   * عشرةُ طلباتٍ معلّقة لم تُنفَّذ — وهي الشاشة التي يفتحها الموظّف ليتأكّد. فيستنتج أنّ
+   * النظام ابتلع مرتجعه، فيكرّر الفعل الماديّ (نقدٌ من الدرج وبضاعةٌ على الرفّ) ثانيةً.
+   */
+  const pendingControls = trpc.salesControl.list.useQuery(
+    { status: "PENDING" },
+    { refetchInterval: 60_000, retry: false },
+  );
+  const pendingReturns = (pendingControls.data ?? []).filter((r) => r.requestType === "SALES_RETURN");
 
   const branchName = useMemo(() => {
     const m = new Map((branches.data ?? []).map((b) => [Number(b.id), b.name]));
@@ -186,6 +199,23 @@ export default function SalesReturns() {
           </Link>
         }
       />
+
+      {pendingReturns.length > 0 && (
+        <Card className="border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)]/30">
+          <CardContent className="flex flex-wrap items-center gap-2 p-3 text-sm">
+            <AlertTriangle aria-hidden className="size-4 shrink-0 text-[var(--sem-warn)]" />
+            <span className="font-bold text-[var(--sem-warn)]">
+              {pendingReturns.length} طلب مرتجع معلّق لم يُنفَّذ بعد
+            </span>
+            <span className="text-muted-foreground">
+              — لا يظهر في هذا السجلّ لأنّه لم يمسّ المخزون ولا المال بعد؛ ينتظر اعتماد مراجعٍ مستقل.
+            </span>
+            <Link href="/invoices?tab=controls">
+              <Button variant="outline" size="sm">افتح طلبات العمليات</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
