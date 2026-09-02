@@ -129,6 +129,7 @@ export default defineConfig({
       "shared/deliveryTerminology.test.ts",
       "shared/deliveryOpenParcel.test.ts",
       "shared/rolloutFlags.test.ts",
+      "shared/approvalPolicy.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "server/lib/__tests__/opaqueFailure.test.ts",
       "server/lib/__tests__/paymentModeCod.test.ts",
