@@ -845,6 +845,7 @@ export default function Customers() {
             externalFiltersActive={hasAnyFilter}
             selection={sel}
             getRowId={(c) => Number(c.id)}
+            getRowSelectionLabel={(c) => `تحديد ${c.name}`}
             loading={list.isLoading}
             errorState={{
               isError: list.isError,

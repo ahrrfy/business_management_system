@@ -383,6 +383,7 @@ export default function ARAging() {
             errorState={{ isError: aging.isError, message: aging.error?.message, onRetry: () => void aging.refetch() }}
             selection={sel}
             getRowId={(r) => r.customerId}
+            getRowSelectionLabel={(r) => `تحديد ${r.customerName}`}
             emptyState="لا ذمم مستحقّة. ممتاز."
             emptyFilteredState="لا نتائج مطابقة للفلاتر."
           />

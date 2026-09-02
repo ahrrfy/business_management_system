@@ -21,6 +21,7 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import DeliveryPartyDetail from "@/pages/DeliveryPartyDetail";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
@@ -150,7 +151,10 @@ export default function DeliveryParties() {
       "سلم لم يحصل",
       "طرد سُلِّم للزبون بلا قبضٍ كامل — خطر أعلى",
       uncollectedOf,
-      (v) => (v > 0 ? "text-destructive" : "text-muted-foreground"),
+      // `PARTY_EXPOSURE_COLOR_TOKEN.deliveredUncollected = "danger"` والأعمدة الثلاثة الشقيقة
+      // تشتقّ من `--sem-*`، فكان هذا وحده على `destructive`: أحمرٌ أعلى تشبّعاً (C 0.245
+      // مقابل 0.170)، وتباينُه على بطاقة الوضع الداكن 4.11:1 دون عتبة AA (4.5) مقابل 7.29:1.
+      (v) => (v > 0 ? "text-[var(--sem-neg)]" : "text-muted-foreground"),
     ),
     partyMoneyCol(
       "أجور له",
@@ -396,7 +400,7 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
       </p>
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1" disabled={m.isPending || !name.trim()} onClick={() => m.mutate({ partyType, name: name.trim(), phone: phone || null, userId: userId ?? undefined, defaultFee: /^\d+(\.\d{1,2})?$/.test(defaultFee) ? defaultFee : "0" })}>{m.isPending ? "جارٍ…" : "إضافة"}</Button>
+        <Button className="flex-1" disabled={m.isPending || !name.trim()} onClick={() => m.mutate({ partyType, name: name.trim(), phone: phone || null, userId: userId ?? undefined, defaultFee: /^\d+(\.\d{1,2})?$/.test(defaultFee) ? defaultFee : "0" })}>{m.isPending ? ACTION_LABELS.saving : "إضافة"}</Button>
       </div>
     </Modal>
   );
@@ -422,7 +426,7 @@ function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () =>
       <MoneyInput value={amount} onChange={setAmount} className="mb-4 h-11 text-end text-lg font-bold tabular-nums" ariaLabel="مبلغ التسديد" />
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0} onClick={() => m.mutate({ partyId: party.id, amount, clientRequestId: reqId })}>{m.isPending ? "جارٍ…" : "تسجيل التسوية"}</Button>
+        <Button className="flex-1" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0} onClick={() => m.mutate({ partyId: party.id, amount, clientRequestId: reqId })}>{m.isPending ? ACTION_LABELS.saving : "تسجيل التسوية"}</Button>
       </div>
     </Modal>
   );
@@ -504,14 +508,14 @@ function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () 
         <p className="mb-2 text-xs text-muted-foreground">شطب الإرسالية يكون بكامل متبقّيها — تُقفل وتُقيَّد فاتورتها مسدَّدة وتُبرَّأ ذمّة العميل.</p>
       )}
       <label className="mb-1.5 block text-sm font-bold">السبب</label>
-      <Input value={reason} onChange={(e) => setReason(e.target.value)} className="mb-3 h-11" placeholder="سبب الشطب (٣ أحرف فأكثر)" />
+      <Input value={reason} onChange={(e) => setReason(e.target.value)} className="mb-3 h-11" placeholder="سبب الشطب (3 أحرف فأكثر)" />
       <label className="mb-1.5 block text-sm font-bold">وصف الإثبات</label>
       <Input value={evidenceNote} onChange={(e) => setEvidenceNote(e.target.value)} className="mb-3 h-11" placeholder="محضر فقد/مطابقة أو مرجع المراجعة" />
       <label className="mb-1.5 block text-sm font-bold">رابط المرفق (بديل عن الوصف)</label>
       <Input value={attachmentUrl} onChange={(e) => setAttachmentUrl(e.target.value)} className="mb-4 h-11" placeholder="https://..." dir="ltr" />
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(effAmount) || Number(effAmount) <= 0 || reason.trim().length < 3 || (!evidenceNote.trim() && !attachmentUrl.trim())} onClick={submit}>{m.isPending ? "جارٍ…" : "إرسال طلب الشطب"}</Button>
+        <Button className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(effAmount) || Number(effAmount) <= 0 || reason.trim().length < 3 || (!evidenceNote.trim() && !attachmentUrl.trim())} onClick={submit}>{m.isPending ? ACTION_LABELS.sending : "إرسال طلب الشطب"}</Button>
       </div>
     </Modal>
   );
@@ -539,7 +543,7 @@ function WriteOffApprovalQueue({ userId, onChanged }: { userId: number; onChange
         {!pending.isError ? <Badge variant="outline">{rows.length} معلق</Badge> : null}
       </div>
       {pending.isLoading ? (
-          <p className="text-sm text-muted-foreground">جاري تحميل الطلبات…</p>
+          <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>
       ) : pending.isError ? (
         <ErrorState onRetry={() => void pending.refetch()} />
       ) : rows.length === 0 ? (

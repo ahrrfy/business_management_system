@@ -17,6 +17,7 @@ import { screenAttributionHeaders } from "@/lib/screenAttribution";
 import { getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
 import { saveFileAs } from "@/lib/export";
 import { fmtDateTime } from "@/lib/date";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Download, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -336,6 +337,7 @@ export default function Settings() {
                               variant: "destructive",
                               gate: { adminOnly: true },
                               disabled: deleteBackup.isPending,
+                              // سببٌ مخصّص كشقيقه restore أعلاه — يُصيَّر في title على العنصر المعطَّل (RowActions).
                               disabledReason: "جارٍ حذف النسخة",
                               onSelect: async () => {
                                 if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
@@ -460,7 +462,7 @@ export default function Settings() {
           )}
           {isAdmin ? (
             <Button onClick={saveTaxSettings} disabled={updateTax.isPending || taxSettings.isLoading}>
-              {updateTax.isPending ? "جارٍ الحفظ…" : "حفظ إعدادات الضريبة"}
+              {updateTax.isPending ? ACTION_LABELS.saving : "حفظ إعدادات الضريبة"}
             </Button>
           ) : (
             <p className="text-xs text-muted-foreground">هذه الإعدادات للمدير فقط — للاطّلاع لديك صلاحية عرض فقط.</p>
@@ -570,7 +572,7 @@ export default function Settings() {
           )}
           {isAdmin ? (
             <Button onClick={saveOpeningMode} disabled={updateOpeningMode.isPending || openingMode.isLoading}>
-              {updateOpeningMode.isPending ? "جارٍ الحفظ…" : "حفظ وضع الافتتاح"}
+              {updateOpeningMode.isPending ? ACTION_LABELS.saving : "حفظ وضع الافتتاح"}
             </Button>
           ) : (
             <p className="text-xs text-muted-foreground">هذه الإعدادات للمدير فقط — للاطّلاع لديك صلاحية عرض فقط.</p>

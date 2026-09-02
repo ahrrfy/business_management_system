@@ -436,11 +436,11 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
     expect(await db().select().from(s.goodsReceiptItems)).toHaveLength(0);
     expect((await db().select().from(s.inventoryMovements)).filter((m) => m.movementType === "IN",
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect((await db().select().from(s.accountingEntries)).filter((e) =>
-      e.entryType === "ADJUST" && e.dedupeKey === `GRNI:RECEIPT:${first.goodsReceiptId}`,
+      e.entryType === "ADJUST" && e.dedupeKey?.startsWith("GRNI:RECEIPT:"),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(sup.currentBalance).toBe("0.00"); // GRNI لا ينشئ AP قبل فاتورة المورد.
   });

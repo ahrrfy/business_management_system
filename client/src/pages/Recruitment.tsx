@@ -63,6 +63,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { selectClsSm } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 const STAGE_COLOR: Record<string, string> = {
@@ -645,7 +646,7 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>إلغاء</Button>
           <Button onClick={submit} disabled={create.isPending}>
-            {create.isPending ? "جارٍ الحفظ…" : "حفظ في مسار التوظيف"}
+            {create.isPending ? ACTION_LABELS.saving : "حفظ في مسار التوظيف"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -962,7 +963,7 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>إلغاء</Button>
           <Button onClick={submit} disabled={pending}>
-            {pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "إنشاء الوظيفة"}
+            {pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "إنشاء الوظيفة"}
           </Button>
         </DialogFooter>
       </DialogContent>

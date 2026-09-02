@@ -141,6 +141,16 @@ type DataTableProps<T, K = string> = {
   // === التَحديد المُتَعَدِّد (اختِياري) ===
   selection?: DataTableSelection<K>;
   getRowId?: (row: T) => K; // مُلزِم لو selection مُعَطاة
+  /**
+   * تسميةٌ وصوليّة **خاصّة بالصفّ** لمربّع تحديده.
+   *
+   * بلا هذه يحمل كلُّ مربّعٍ الاسمَ العامّ «تَحديد الصَفّ»، فمستعمِلُ قارئ الشاشة يسمع
+   * الجملةَ نفسها على كلّ صفٍّ ولا يعرف **ما الذي يُحدّده**. الجداولُ الخامّة كانت
+   * تكتبها لكل صفّ (`تحديد ${r.productName}`) فضاعت بالتحويل — أمسكته مراجعة Codex
+   * على PR #946، وسبق أن رصده مراجعٌ داخليّ وأحاله إلى القائد لأنّه يلزمه توسيعُ
+   * هذا العقد المشترك.
+   */
+  getRowSelectionLabel?: (row: T) => string;
   /** عرض مخصص ككروت للهاتف (<md) بدلاً من الجدول العريض. */
   mobileCardRenderer?: (row: T, index: number) => React.ReactNode;
   // نَقرة الصَفّ تُغَيِّر التَحديد (افتِراضياً: false — فقط Shift+Click أَو الـcheckbox)
@@ -281,6 +291,7 @@ export function DataTable<T, K = string>({
   statusSummary,
   selection,
   getRowId,
+  getRowSelectionLabel,
   mobileCardRenderer,
   rowClickSelects = false,
   onRowClick,
@@ -772,7 +783,7 @@ export function DataTable<T, K = string>({
                           <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
                             <input
                               type="checkbox"
-                              aria-label="تَحديد الصَفّ"
+                              aria-label={getRowSelectionLabel?.(row.original) ?? "تَحديد الصَفّ"}
                               className="size-4 cursor-pointer accent-primary"
                               checked={isSelected}
                               onClick={(e) => {
@@ -909,7 +920,7 @@ export function DataTable<T, K = string>({
                       <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
-                          aria-label="تَحديد الصَفّ"
+                          aria-label={getRowSelectionLabel?.(row.original) ?? "تَحديد الصَفّ"}
                           className="size-4 cursor-pointer accent-primary"
                           checked={isSelected}
                           onClick={(e) => {

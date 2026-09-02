@@ -30,6 +30,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, Flame } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { normalizeNumberInput } from "@shared/numberNormalize";
 import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
@@ -727,7 +728,7 @@ export default function PrintPOS() {
 
   // ── شاشة فتح الوردية ──
   if (shiftQ.isLoading) {
-    return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.mutedFg, fontFamily: "'Cairo', system-ui, sans-serif", direction: "rtl" }}>جارٍ التحميل…</div>;
+    return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.mutedFg, fontFamily: "'Cairo', system-ui, sans-serif", direction: "rtl" }}>{ACTION_LABELS.loading}</div>;
   }
   if (!shift) {
     return (
@@ -1460,7 +1461,7 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
           <button disabled={!canQuickPay || isPending} onClick={onQuickPay}
             title={
               // ٢٤/٨ (نمط Odoo — بلاغ فحص UX): `title` يعلن سبب التعطيل بدل الحيرة.
-              isPending ? "جارٍ الحفظ…" :
+              isPending ? ACTION_LABELS.saving :
               !cartLen ? "أضف خدمة أوّلاً" :
               hasZeroLine ? "أدخل سعراً للخدمات ذات السعر اليدوي" :
               !externalFullPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
@@ -1471,7 +1472,7 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
           </button>
           <button disabled={!canPay || isPending} onClick={onPay}
             title={
-              isPending ? "جارٍ الحفظ…" :
+              isPending ? ACTION_LABELS.saving :
               !cartLen ? "أضف خدمة أوّلاً" :
               hasZeroLine ? "أدخل سعراً للخدمات ذات السعر اليدوي" :
               isOwing && customerId == null ? "الآجل يحتاج عميلاً مرتبطاً — أو اكمل المبلغ" :

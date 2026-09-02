@@ -106,8 +106,16 @@ export function withColumnPresentation<T>(
 function numericFromDisplay(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value !== "string") return null;
+  /*
+   * ⚠️ **تطبيعُ إشارة السالب أوّلاً** (مراجعة Codex على PR #946): شاشاتٌ تعرض السالب
+   * بالمحرف الطباعيّ «−» (U+2212) لا بالشرطة اللاتينية — مثل `CommissionRuns` و
+   * `StocktakeReport`. والتنقيةُ أدناه تُسقط ما ليس رقماً ولا نقطةً ولا شرطةً لاتينية،
+   * فكان «−1,000» يصير «1000» ⇒ **يُفرَز موجباً** فيقع في الجهة الخاطئة تماماً من
+   * الترتيب، صعوداً وهبوطاً. تحويلُه قبل التنقية يُبقي الإشارة.
+   */
+  const normalized = value.replace(/−/g, "-");
   // نُبقي الأرقام والفاصلة العشرية والسالب فقط — الفواصل والرموز والوحدات تُطرَح.
-  const cleaned = value.replace(/[^\d.\-]/g, "");
+  const cleaned = normalized.replace(/[^\d.\-]/g, "");
   if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
@@ -123,13 +131,37 @@ export function compareNumericDisplay(a: unknown, b: unknown): number {
   return x - y;
 }
 
-/** مقارنةُ تواريخ: تُحاول التحليل الزمنيّ، وتسقط إلى مقارنةٍ نصّية مستقرّة. */
+/**
+ * مقارنةُ تواريخ.
+ *
+ * ⚠️ **لا يُعتمد `Date.parse` على النصّ المعروض** (مراجعة Codex على PR #946): تنسيقُ
+ * العرض في المشروع `DD/MM/YYYY` (انظر `fmtDate` في `client/src/lib/date.ts`)، و
+ * `Date.parse` يقرأه **أمريكياً**: «02/09/2026» تصير ٩ فبراير، و«25/09/2026» تصير
+ * `Invalid Date` فتسقط إلى مقارنةٍ نصّية. فالنتيجة ترتيبٌ غيرُ زمنيّ في كلّ عمود تاريخٍ
+ * يُغذّى بـ`fmtDate`/`fmtDateTime` — وهو نقضٌ لغرض هذا الملفّ نفسه.
+ * لذلك يُحلَّل التنسيقُ المعروض **صراحةً** أوّلاً، ثمّ يمرّ الباقي على `Date.parse`
+ * (وهو يفهم ISO بدقّة)، ويبقى تحتهما السقوطُ إلى المقارنة النصّية.
+ */
 export function compareDateDisplay(a: unknown, b: unknown): number {
   const parse = (v: unknown): number | null => {
     if (v instanceof Date) return v.getTime();
     if (typeof v === "number") return v;
     if (typeof v !== "string" || v.trim() === "") return null;
-    const t = Date.parse(v);
+    const text = v.trim();
+    // تنسيقُ العرض: DD/MM/YYYY ويتبعه اختياراً «، HH:mm» (فاصلة عربية أو لاتينية).
+    const shown = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s*[،,]\s*(\d{1,2}):(\d{2}))?/);
+    if (shown) {
+      const [, dd, mm, yyyy, hh, mi] = shown;
+      const ms = new Date(
+        Number(yyyy),
+        Number(mm) - 1,
+        Number(dd),
+        hh ? Number(hh) : 0,
+        mi ? Number(mi) : 0,
+      ).getTime();
+      return Number.isNaN(ms) ? null : ms;
+    }
+    const t = Date.parse(text);
     return Number.isNaN(t) ? null : t;
   };
   const x = parse(a);

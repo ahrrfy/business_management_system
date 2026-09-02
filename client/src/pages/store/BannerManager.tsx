@@ -8,6 +8,7 @@ import { ImagePlus, Loader2, Pencil, Plus, Save, Trash2, X } from "lucide-react"
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 
 type Placement = "HERO" | "SIDE" | "INLINE";
@@ -17,21 +18,21 @@ type RenderMode = "SMART_CROP" | "PRESERVE_FULL" | "LAYERED";
 const PLACEMENTS: Record<Placement, { label: string; hint: string; mobileHint?: string; badge: string; ratio: number }> = {
   HERO: {
     label: "رئيسي — كاروسيل أعلى المتجر",
-    hint: "مساحة العرض الفعلية: ١٦٠٠×٨٠٠ بكسل (نسبة ٢:١) — صمّم عليها لكي يملأ البنر كاملاً بلا قص أو تمويه",
-    mobileHint: "١٢٠٠×٦٠٠ للهاتف (٢:١) — نفس نسبة سطح المكتب",
+    hint: "مساحة العرض الفعلية: 1600×800 بكسل (نسبة 2:1) — صمّم عليها لكي يملأ البنر كاملاً بلا قص أو تمويه",
+    mobileHint: "1200×600 للهاتف (2:1) — نفس نسبة سطح المكتب",
     badge: "رئيسي",
     ratio: 2,
   },
   SIDE: {
     label: "جانبي طولي — جوانب الشاشات العريضة",
-    hint: "مساحة العرض الفعلية: ٦٠٠×١٢٠٠ بكسل (نسبة ١:٢ طولية) — يظهر كبيراً على الشاشات العريضة فقط",
+    hint: "مساحة العرض الفعلية: 600×1200 بكسل (نسبة 1:2 طولية) — يظهر كبيراً على الشاشات العريضة فقط",
     badge: "جانبي",
     ratio: 1 / 2,
   },
   INLINE: {
     label: "فاصل تسويقي — شريط عرضي بين صفوف المنتجات",
-    hint: "مساحة العرض الفعلية: ١٥٠٠×٥٠٠ بكسل (نسبة ٣:١) — يظهر بين صفوف المنتجات بلا ضغط أو أشرطة جانبية",
-    mobileHint: "١٢٠٠×٤٠٠ للهاتف (٣:١) — نفس نسبة سطح المكتب",
+    hint: "مساحة العرض الفعلية: 1500×500 بكسل (نسبة 3:1) — يظهر بين صفوف المنتجات بلا ضغط أو أشرطة جانبية",
+    mobileHint: "1200×400 للهاتف (3:1) — نفس نسبة سطح المكتب",
     badge: "فاصل",
     ratio: 3,
   },
@@ -178,19 +179,19 @@ export default function BannerManager() {
           <div className="grid gap-3 md:grid-cols-2">
             <label className="text-sm md:col-span-2">
               <span className="mb-1 block font-medium text-muted-foreground">موضع البنر في المتجر</span>
-              <select value={form.placement} onChange={(e) => setForm({ ...form, placement: e.target.value as Placement })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30">
+              <AppSelect value={form.placement} onValueChange={(value) => setForm({ ...form, placement: value as Placement })}>
                 {(Object.keys(PLACEMENTS) as Placement[]).map((p) => (
                   <option key={p} value={p}>{PLACEMENTS[p].label}</option>
                 ))}
-              </select>
+              </AppSelect>
             </label>
             <label className="text-sm md:col-span-2">
               <span className="mb-1 block font-medium text-muted-foreground">معالجة الصورة تلقائياً</span>
-              <select value={form.renderMode} onChange={(e) => setForm({ ...form, renderMode: e.target.value as RenderMode })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30">
+              <AppSelect value={form.renderMode} onValueChange={(value) => setForm({ ...form, renderMode: value as RenderMode })}>
                 <option value="PRESERVE_FULL">حفظ التصميم كاملاً — خلفية ممتدة، بلا قص للنص أو الشعار</option>
                 <option value="SMART_CROP">ملء ذكي — للصور التي لا تحتوي نصاً داخلها</option>
                 <option value="LAYERED">تصميم طبقات — الصورة خلفية والنص والزر من حقول المتجر</option>
-              </select>
+              </AppSelect>
               <span className="mt-1 block text-xs text-muted-foreground">الوضع الآمن الافتراضي يحافظ على الصورة كاملة ويملأ الفراغ من الخلفية نفسها.</span>
             </label>
             {form.renderMode !== "PRESERVE_FULL" && <div className="grid gap-3 md:col-span-2 md:grid-cols-2">
@@ -243,10 +244,12 @@ export default function BannerManager() {
                 </div>;
               })}
             </div>}
+            {/* عدم مطابقة النسبة تحذيرٌ (كهرمانيّ) ومطابقتها تأكيدٌ (أخضر) — توكنز دلالية بلا سوابق
+                `dark:`: `--sem-*` تنقلب بنفسها في الوضع الليليّ (tokens.css) فالسابقة تكرارٌ يَنجرف. */}
             {imageDimensions && selectedPlacement && (
-              <div className={`mt-2 rounded-xl border px-3 py-2 text-xs ${hasRatioMismatch ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200" : "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200"}`}>
-                الصورة المرفوعة: {imageDimensions.width}×{imageDimensions.height} ({sourceRatio!.toFixed(2)}:١). {hasRatioMismatch
-                  ? <>لا تطابق مساحة «{selectedPlacement.badge}» ({selectedPlacement.ratio === 0.5 ? "١:٢" : `${selectedPlacement.ratio}:١`})؛ سيُحفظ التصميم كاملاً لكن قد تظهر خلفية ممتدة. لأفضل نتيجة ارفع صورة بالمقاس المقترح أو غيّر الموضع.</>
+              <div className={`mt-2 rounded-xl border px-3 py-2 text-xs ${hasRatioMismatch ? "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"}`}>
+                الصورة المرفوعة: {imageDimensions.width}×{imageDimensions.height} ({sourceRatio!.toFixed(2)}:1). {hasRatioMismatch
+                  ? <>لا تطابق مساحة «{selectedPlacement.badge}» ({selectedPlacement.ratio === 0.5 ? "1:2" : `${selectedPlacement.ratio}:1`})؛ سيُحفظ التصميم كاملاً لكن قد تظهر خلفية ممتدة. لأفضل نتيجة ارفع صورة بالمقاس المقترح أو غيّر الموضع.</>
                   : <>مطابقة لمساحة «{selectedPlacement.badge}»؛ ستملأ الإطار كاملاً بلا قص أو تمويه.</>}
               </div>
             )}
@@ -285,7 +288,7 @@ export default function BannerManager() {
                 <p className="mt-0.5 text-[11px] text-muted-foreground">ترتيب: {b.sortOrder}{b.ctaLabel ? ` · زرّ: ${b.ctaLabel}` : ""}</p>
                 <div className="mt-1.5 flex gap-1.5">
                   <button onClick={() => edit(b)} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium hover:bg-accent"><Pencil aria-hidden className="size-3" /> تعديل</button>
-                  <button onClick={() => del(b.id, b.title)} className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10"><Trash2 aria-hidden className="size-3" /> حذف</button>
+                  <button onClick={() => del(b.id, b.title)} className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"><Trash2 aria-hidden className="size-3" /> حذف</button>
                 </div>
               </div>
             </div>

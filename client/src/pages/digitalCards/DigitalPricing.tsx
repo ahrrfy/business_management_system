@@ -9,6 +9,8 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
@@ -23,9 +25,6 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
-
-const selectCls =
-  "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 type PriceLine = {
   offeringId: number;
@@ -538,48 +537,41 @@ export default function DigitalPricing() {
             <label className="text-sm font-medium" htmlFor="dp-branch">
               الفرع
             </label>
-            <select
+            <AppSelect
               id="dp-branch"
-              className={selectCls}
-              value={branchId ?? ""}
-              onChange={(e) =>
-                setBranchId(e.target.value ? Number(e.target.value) : null)
-              }
+              value={branchId == null ? "" : String(branchId)}
+              onValueChange={(next) => setBranchId(next ? Number(next) : null)}
             >
               {(branches.data ?? []).map((b) => (
-                <option key={b.id} value={b.id}>
+                <option key={b.id} value={String(b.id)}>
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium" htmlFor="dp-provider">
               المزوّد
             </label>
-            <select
+            <AppSelect
               id="dp-provider"
-              className={selectCls}
-              value={providerId ?? ""}
-              onChange={(e) =>
-                setProviderId(e.target.value ? Number(e.target.value) : null)
-              }
+              value={providerId == null ? "" : String(providerId)}
+              onValueChange={(next) => setProviderId(next ? Number(next) : null)}
             >
               {activeProviders.map((p) => (
-                <option key={p.id} value={p.id}>
+                <option key={p.id} value={String(p.id)}>
                   {p.supplierName}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium" htmlFor="dp-date">
               تاريخ يوم العمل
             </label>
-            <input
+            <Input
               id="dp-date"
               type="date"
-              className={selectCls}
               value={businessDate}
               onChange={(e) => setBusinessDate(e.target.value)}
               dir="ltr"
@@ -633,11 +625,18 @@ export default function DigitalPricing() {
             )}
           </CardHeader>
           <CardContent className="space-y-3 p-0">
-            {/* مُضمَّن: البطاقة تحمل العنوان والعدّ؛ pageSize=Infinity لازمٌ معه (شريط الترقيم مكتوم). */}
+            {/* مُضمَّن: البطاقة تحمل العنوان والعدّ؛ pageSize=Infinity لازمٌ معه (شريط الترقيم مكتوم).
+                و`maxHeightClass` (مع `bounded` الافتراضيّة) استعادةٌ لِـ`ScrollTableShell` الذي
+                كان يلفّ الجدول قبل التحويل: كان `bounded={false}` يعطي حاويةً بلا سقفِ ارتفاعٍ
+                ولا ترويسةٍ لاصقة، فعلى موجةٍ فيها عشراتُ البطاقات يختفي رأسُ الأعمدة عند
+                التمرير — والمديرُ يقرأ عمودَي «التكلفة النافذة/الجديدة» متجاورَين بلا عنوان،
+                وهما رقمان متشابهان لا يفرّقهما إلّا الرأس. والقيمةُ هي افتراضُ `ScrollTableShell`
+                نفسه قبل التحويل. وفائدةٌ ثانية: زرّ «اعتماد التغيير الكبير» أسفلَه يبقى
+                مرئياً بدل أن يدفعه الجدولُ الطويل خارج الشاشة. */}
             <DataTable<BigChangeRow>
               embedded
               searchable={false}
-              bounded={false}
+              maxHeightClass="max-h-[calc(100dvh-15rem)]"
               pageSize={Infinity}
               data={bigChanges}
               columns={bigChangeColumns}
@@ -686,10 +685,14 @@ export default function DigitalPricing() {
             بلاغات تغيّر السعر ({openReports.length})
           </CardHeader>
           <CardContent className="p-0">
+            {/* نفس السبب: سقفُ ارتفاعٍ + ترويسةٌ لاصقة كما كان `ScrollTableShell` قبل التحويل.
+                وهذا الجدولُ أشدُّ حاجةً إليها — سبعةُ أعمدةٍ منها ثلاثةُ مبالغَ متشابهة
+                («في النظام» · «التي أبلغ بها الكاشير» · «الذي سيبقى»)، وقرارُ الاعتماد
+                يُتّخذ من موضعِ العمود. رأسٌ يغيب عند التمرير = اعتمادُ الرقم الخطأ. */}
             <DataTable<MismatchReport>
               embedded
               searchable={false}
-              bounded={false}
+              maxHeightClass="max-h-[calc(100dvh-15rem)]"
               pageSize={Infinity}
               data={openReports}
               columns={reportColumns}

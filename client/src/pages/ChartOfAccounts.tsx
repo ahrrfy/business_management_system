@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /**
  * شجرة الحسابات (P0، الدفتر المزدوج) — عرضٌ للقراءة فقط في هذه المرحلة. الحسابات بياناتٌ مرجعية تُبذَر
@@ -23,9 +24,10 @@ const TYPE_TONE: Record<string, string> = {
 type AccountRow = RouterOutputs["accounts"]["tree"][number]["rows"][number];
 
 const accountColumns: ColumnDef<AccountRow, unknown>[] = [
-  { id: "code", header: "الرمز", accessorFn: (r) => r.code, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
+  { id: "code", header: "الرمز", accessorFn: (r) => r.code, enableSorting: false, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
   {
     id: "name",
+    enableSorting: false,
     header: "اسم الحساب",
     accessorFn: (r) => r.name,
     meta: { width: "wide" },
@@ -34,6 +36,7 @@ const accountColumns: ColumnDef<AccountRow, unknown>[] = [
   },
   {
     id: "systemRole",
+    enableSorting: false,
     header: "الدور النظاميّ (الربط)",
     accessorFn: (r) => r.systemRole ?? "",
     cell: ({ row }) =>
@@ -57,7 +60,7 @@ export default function ChartOfAccounts() {
         title="شجرة الحسابات"
         description="أساس الدفتر المزدوج — كل حساب مربوطٌ بالمفهوم القائم في النظام عبر «الدور النظاميّ». عرضٌ للقراءة (المرحلة الأولى)."
       />
-      {tree.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+      {tree.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
       {!tree.isLoading && groups.length === 0 && (
         <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">لا حسابات بعد.</CardContent></Card>
       )}

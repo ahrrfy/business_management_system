@@ -47,6 +47,7 @@ import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { normalizeNumberInput } from "@shared/numberNormalize";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { createPortal } from "react-dom";
 
@@ -1651,7 +1652,7 @@ export default function POS() {
   if (shiftQ.isLoading) {
     return (
       <div style={{ minHeight: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.mutedFg, fontFamily: "'Cairo', system-ui, sans-serif", direction: "rtl" }}>
-        جارٍ التحميل…
+        {ACTION_LABELS.loading}
       </div>
     );
   }
@@ -2177,11 +2178,15 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 13.5, color: C.fg }}>
                     {p.productName}
+                    {/* شارتا نوع السطر: «خِدمة» معلومة و«أمانة» تنبيهٌ محاسبيّ ⇒ توكنا
+                        `--sem-info`/`--sem-warn` مع خلفيّتيهما: زوجٌ مُعايَرٌ على ≥٤.٥:١ نصّاً في
+                        الوضعين، بينما زوج الكاشير `C.amber` على `C.amberSoft` يبلغ ~٣.٢:١ في
+                        الفاتح فلا يصلح نصّاً هنا. دلالةٌ لا هويّةَ سطحٍ ⇒ لا تكسران لوحة الكاشير. */}
                     {p.isService && (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#0891b2", background: "#cffafe", padding: "1px 6px", borderRadius: 4, marginRight: 6, verticalAlign: "middle" }}>خِدمة</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--sem-info)", background: "var(--sem-info-bg)", padding: "1px 6px", borderRadius: 4, marginRight: 6, verticalAlign: "middle" }}>خِدمة</span>
                     )}
                     {p.isConsignment && (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#b45309", background: "#fef3c7", padding: "1px 6px", borderRadius: 4, marginRight: 6, verticalAlign: "middle" }}>أمانة</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--sem-warn)", background: "var(--sem-warn-bg)", padding: "1px 6px", borderRadius: 4, marginRight: 6, verticalAlign: "middle" }}>أمانة</span>
                     )}
                   </div>
                   <div style={{ fontSize: 11.5, color: C.mutedFg, marginTop: 2 }}>
@@ -2471,9 +2476,12 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
         </div>
       </div>
 
-      {/* «وضع الافتتاح» — لافتة دائمة ما دامت النافذة فعّالة */}
+      {/* «وضع الافتتاح» — لافتة دائمة ما دامت النافذة فعّالة.
+          حبر اللافتة `C.modeFg` (حبر الكهرمان في لوحة الكاشير) لا `C.amber`: الأخير سطحٌ
+          متوسّط اللمعان في الوضعين فيهبط تباينُه على `C.amberSoft` دون ٤.٥:١، بينما
+          `--pos-mode-fg` يُظلم فاتحاً ويُفتِح داكناً فيصمد في الحالتين. */}
       {openingActive && (
-        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: C.amberSoft, borderBottom: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, color: "#7a5200", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: C.amberSoft, borderBottom: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, color: C.modeFg, flexShrink: 0 }}>
           <AlertTriangle aria-hidden size={13} />
           وضع الافتتاح فعّال{openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — المنتج غير المجرود يُباع حتى لو نفد رصيده (ينزل بالسالب حتى جرده الافتتاحي): نقداً/بطاقةً بسدادٍ كامل، أو آجلاً لعميلٍ محدَّد (يُسجَّل ذمّةً كاملة). البيع بلا عميلٍ محدَّد يبقى صارماً.
         </div>
@@ -2565,7 +2573,7 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
                         {allocations.map((allocation) => (
                           <span
                             key={allocation.reservationId}
-                            style={{ border: `1px solid ${C.amber}`, background: C.amberSoft, color: "#7a5200", borderRadius: 5, padding: "2px 7px", fontSize: 11.5, fontWeight: 800 }}
+                            style={{ border: `1px solid ${C.amber}`, background: C.amberSoft, color: C.modeFg, borderRadius: 5, padding: "2px 7px", fontSize: 11.5, fontWeight: 800 }}
                           >
                             حجز باسم {allocation.customerName} · {fmt(allocation.remainingBase)} وحدة أساس
                           </span>
@@ -2804,7 +2812,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
     borderRadius: 9, cursor: disabled ? "not-allowed" : "pointer", fontFamily: "inherit",
     background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg,
     transition: "background .1s, color .1s, border-color .1s, box-shadow .1s", userSelect: "none" as const,
-    boxShadow: active ? `0 3px 10px oklch(0.488 0.243 264.376 / .28)` : "none",
+    boxShadow: active ? `0 3px 10px color-mix(in oklch, ${C.primary} 28%, transparent)` : "none",
     opacity: disabled ? 0.55 : 1,
   });
 
@@ -2852,7 +2860,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
           role="group"
           aria-label="خصم على الفاتورة"
           title={invoiceDiscountAllowed
-            ? `اكتب نسبة الخصم (٠ إلى ${Number.isInteger(effectiveHeaderCapPct) ? effectiveHeaderCapPct : effectiveHeaderCapPct.toFixed(2).replace(/\.?0+$/, "")}٪) — فوق السقف يلزم اعتماد مدير`
+            ? `اكتب نسبة الخصم (0 إلى ${Number.isInteger(effectiveHeaderCapPct) ? effectiveHeaderCapPct : effectiveHeaderCapPct.toFixed(2).replace(/\.?0+$/, "")}٪) — فوق السقف يلزم اعتماد مدير`
             : "خصم رأس الفاتورة غير متاح لسلّة الكروت الرقمية"}
           style={{
             display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -2860,7 +2868,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             padding: "6px 10px",
             borderRadius: 8,
             border: `${invoiceDiscountAmount > 0 ? 2 : 1.5}px ${invoiceDiscountAmount > 0 ? "solid" : "dashed"} ${invoiceDiscountAmount > 0 ? C.amber : C.border}`,
-            background: invoiceDiscountAmount > 0 ? `oklch(0.94 0.10 85 / .35)` : C.card,
+            background: invoiceDiscountAmount > 0 ? C.amberSoft : C.card,
             transition: "border-color .12s, background .12s",
           }}
         >
@@ -2869,7 +2877,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             خصم على الفاتورة
             {invoiceDiscountAllowed ? (
               <span style={{ color: C.mutedFg, fontWeight: 600, fontSize: 11 }}>
-                (٠–{Number.isInteger(effectiveHeaderCapPct) ? effectiveHeaderCapPct : effectiveHeaderCapPct.toFixed(2).replace(/\.?0+$/, "")}٪)
+                (0–{Number.isInteger(effectiveHeaderCapPct) ? effectiveHeaderCapPct : effectiveHeaderCapPct.toFixed(2).replace(/\.?0+$/, "")}٪)
               </span>
             ) : (
               <span style={{ color: C.mutedFg, fontWeight: 500, fontSize: 11 }}>(غير متاحٍ للكروت)</span>
@@ -2892,7 +2900,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
                 </button>
               </>
             )}
-            <div style={{ display: "flex", alignItems: "center", gap: 2, border: `2px solid ${invoiceDiscountAmount > 0 ? C.amber : C.primary}`, borderRadius: 8, background: C.card, height: 32, padding: "0 6px", boxShadow: invoiceDiscountAmount > 0 ? `0 0 0 3px oklch(0.94 0.10 85 / .35)` : "none" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 2, border: `2px solid ${invoiceDiscountAmount > 0 ? C.amber : C.primary}`, borderRadius: 8, background: C.card, height: 32, padding: "0 6px", boxShadow: invoiceDiscountAmount > 0 ? `0 0 0 3px color-mix(in oklch, ${C.amber} 35%, transparent)` : "none" }}>
               <input
                 type="text"
                 inputMode="decimal"
@@ -3242,7 +3250,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             title={
               // ٢٣/٨ (بلاغ Codex P2): كان يذكر «مرجع البطاقة» على دفعةٍ نقديّةٍ جزئيّةٍ بلا عميل —
               // لا حقلَ كذلك أصلاً. صار يميّز الحالات الثلاثة.
-              isPending ? "جارٍ الحفظ…" :
+              isPending ? ACTION_LABELS.saving :
               !cartLen ? "أضف منتجاً أوّلاً" :
               isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
               method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
@@ -3268,7 +3276,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
           disabled={!canPay || isPending}
           onClick={() => onPay()}
           title={
-            isPending ? "جارٍ الحفظ…" :
+            isPending ? ACTION_LABELS.saving :
             !cartLen ? "أضف منتجاً أوّلاً" :
             isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
             method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
@@ -3283,7 +3291,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 15, fontWeight: 900,
             cursor: canPay && !isPending ? "pointer" : "not-allowed",
             display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-            boxShadow: canPay && !isPending ? `0 3px 12px oklch(0.50 0.13 155 / .30)` : "none",
+            boxShadow: canPay && !isPending ? `0 3px 12px color-mix(in oklch, ${C.success} 30%, transparent)` : "none",
             transition: "background .1s, color .1s, box-shadow .1s",
           }}>
           {isPending
@@ -3375,7 +3383,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
         </div>
 
         {receipt.change > 0 && (
-          <div style={{ background: "oklch(0.50 0.13 155 / .1)", border: "1.5px solid oklch(0.50 0.13 155 / .28)", borderRadius: 10, padding: "12px 18px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ background: `color-mix(in oklch, ${C.success} 10%, transparent)`, border: `1.5px solid color-mix(in oklch, ${C.success} 28%, transparent)`, borderRadius: 10, padding: "12px 18px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 14, fontWeight: 700, color: C.success }}>الباقي للعميل</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 26, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(receipt.change)} <span style={{ fontSize: 12 }}>د.ع</span></span>
@@ -3385,7 +3393,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
         )}
 
         {receipt.isCredit && receipt.credit > 0 && (
-          <div style={{ background: "oklch(0.65 0.15 75 / .1)", border: "1.5px solid oklch(0.65 0.15 75 / .3)", borderRadius: 10, padding: "12px 18px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ background: `color-mix(in oklch, ${C.amber} 10%, transparent)`, border: `1.5px solid color-mix(in oklch, ${C.amber} 30%, transparent)`, borderRadius: 10, padding: "12px 18px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 14, fontWeight: 700, color: C.amber }}>آجل على {receipt.customerName ?? "العميل"}</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 26, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(receipt.credit)} <span style={{ fontSize: 12 }}>د.ع</span></span>
@@ -3420,7 +3428,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
       <style>{`
         @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
         @keyframes popIn  { from { opacity:0; transform:scale(.88); } to { opacity:1; transform:scale(1); } }
-        @keyframes pulse  { 0%,100%{ box-shadow:0 0 0 0 oklch(0.50 0.13 155/.4); } 60%{ box-shadow:0 0 0 14px oklch(0.50 0.13 155/0); } }
+        @keyframes pulse  { 0%,100%{ box-shadow:0 0 0 0 color-mix(in oklch, ${C.success} 40%, transparent); } 60%{ box-shadow:0 0 0 14px color-mix(in oklch, ${C.success} 0%, transparent); } }
       `}</style>
     </div>
   );
@@ -3583,7 +3591,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
             ))}
             {/* تلميح تعليميّ للكاشير: يظهر فقط عند وجود مبيعات غير نقدية — يزيل حَيرة «العجز الوهميّ». */}
             {(report?.payments ?? []).some((p) => p.direction === "IN" && p.method !== "CASH" && Number(p.total) > 0) && (
-              <div style={{ marginTop: 8, padding: "8px 10px", background: "oklch(0.65 0.15 240 / .08)", border: "1px solid oklch(0.65 0.15 240 / .25)", borderRadius: 7, fontSize: 11.5, color: C.mutedFg, lineHeight: 1.55 }}>
+              <div style={{ marginTop: 8, padding: "8px 10px", background: "color-mix(in oklch, var(--sem-info) 8%, transparent)", border: "1px solid color-mix(in oklch, var(--sem-info) 25%, transparent)", borderRadius: 7, fontSize: 11.5, color: C.mutedFg, lineHeight: 1.55 }}>
                 <strong style={{ color: C.fg }}>ملاحظة:</strong> مبيعات البطاقة/التحويل/المحفظة لا تدخل عدّ نقد الدرج. عدّ النقد الفعليّ فقط — النظام يعلم بها ولن يُظهر عجزاً بسببها.
               </div>
             )}

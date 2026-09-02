@@ -11,6 +11,7 @@
  *   conflicts: [{ variantId, variantLabel, qty1, by1, qty2, by2 }]
  */
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1036,7 +1037,7 @@ export default function StocktakeMonitor() {
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRecountFor(null)}>إلغاء</Button>
             <Button onClick={submitRecount} disabled={requestRecount.isPending}>
-              {requestRecount.isPending ? "جارٍ الإرسال…" : "إرسال الطلب للعامل"}
+              {requestRecount.isPending ? ACTION_LABELS.sending : "إرسال الطلب للعامل"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -459,7 +460,7 @@ export default function CustomerNew() {
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <Button onClick={submit} disabled={create.isPending} title="Ctrl+S">
-          {create.isPending ? "جارٍ الحفظ…" : "حفظ العميل"}
+          {create.isPending ? ACTION_LABELS.saving : "حفظ العميل"}
         </Button>
         <Link href="/customers">
           <Button variant="outline" title="Esc">إلغاء</Button>

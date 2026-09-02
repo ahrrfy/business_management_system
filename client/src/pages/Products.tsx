@@ -4,6 +4,7 @@
 import { AlertTriangle } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
@@ -516,6 +517,7 @@ export default function Products() {
             serverPagination={{ page, onPageChange: setPage, pageSize: limit, total, isFetching: list.isFetching }}
             selection={sel}
             getRowId={rowKey}
+            getRowSelectionLabel={(r) => `تحديد ${r.productName}`}
             getRowClassName={(r) => {
               const dimmed = !r.productIsActive || r.variantIsActive === false || r.unitIsActive === false;
               const focus = rowProps(r.productId).className;
@@ -841,7 +843,7 @@ function DeleteProductDialog({
             disabled={usage.isLoading || !usage.data?.clean || del.isPending}
             onClick={() => target && del.mutate({ productId: target.productId })}
           >
-            {del.isPending ? "جارٍ الحذف…" : "حذف نهائياً"}
+            {del.isPending ? ACTION_LABELS.deleting : "حذف نهائياً"}
           </Button>
         </DialogFooter>
       </DialogContent>

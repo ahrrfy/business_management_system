@@ -22,6 +22,7 @@ import { D, fmt } from "@/lib/money";
 import { getDeviceCode } from "@/lib/offline/outbox";
 import { POS_METHODS, type PosPaymentMethod } from "@/lib/paymentMethod";
 import { fmtDateTime } from "@/lib/date";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { exportRows } from "@/lib/export";
 import { PageHeader } from "@/components/PageHeader";
@@ -956,7 +957,7 @@ function CreatePlanDialog({
         <DialogFooter>
           <Button variant="outline" onClick={() => { resetForm(); onClose(); }}>إلغاء</Button>
           <Button onClick={submit} disabled={!canSubmit}>
-            {create.isPending ? "جارٍ الحفظ…" : "إنشاء الخطة"}
+            {create.isPending ? ACTION_LABELS.saving : "إنشاء الخطة"}
           </Button>
         </DialogFooter>
       </DialogContent>

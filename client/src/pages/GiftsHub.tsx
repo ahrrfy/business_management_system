@@ -5,6 +5,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { confirm as confirmDialog } from "@/lib/confirm";
 import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Megaphone, MessageCircle, Plus, Printer, Trash2, X } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { RowActions } from "@/components/list/RowActions";
@@ -34,6 +35,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
 import { printGiftVoucherA4 } from "@/lib/printing/giftVoucher";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { buildGiftMessage, openWhatsApp } from "@/lib/whatsapp";
 
 type Mode = "list" | "in" | "out" | "report" | "campaigns";
@@ -347,6 +349,43 @@ export default function GiftsHub() {
     });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بأشرطتها وأزرار الإجراءات).
+  // الصفوف هي المعروضة نفسها (صفحة الخادم الحالية) بلا استعلامٍ جديد — والنطاق مُعلَنٌ في الرأس
+  // لأنّ الترقيم خادميّ: الورقة تحمل الصفحة لا كلّ المطابقات.
+  function printGiftsList() {
+    const branchName = (branches.data ?? []).find((b) => String(b.id) === String(listBranchId))?.name;
+    printReportDoc({
+      title: "سندات الهدايا",
+      headerExtra: [
+        { label: "النطاق", value: `الصفحة المعروضة — ${listRows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${listTotal.toLocaleString("ar-IQ-u-nu-latn")}` },
+        { label: "الفترة", value: listFrom || listTo ? `${listFrom || "البداية"} — ${listTo || "اليوم"}` : "كل الفترات" },
+        { label: "الاتجاه", value: dirFilter === "ALL" ? "الكل" : dirFilter === "IN" ? "واردة" : "صادرة" },
+        { label: "الحالة", value: statusFilter === "ALL" ? "كل الحالات" : (STATUS_AR[statusFilter] ?? statusFilter) },
+        // البحث يُضيّق الصفوف **خادمياً** (`q` في filterInput) ⇒ إسقاطه من الرأس يُنتج ورقةً
+        // تدّعي أنّ التضييق كان بالفلاتر المذكورة وحدها. بقيّةُ شاشات الموجة تذكره — وهذه مثلها.
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+        ...(elevated ? [{ label: "الفرع", value: branchName ?? "كل الفروع" }] : []),
+      ],
+      columns: [
+        { key: "giftNumber", label: "رقم السند" },
+        { key: "direction", label: "الاتجاه" },
+        { key: "date", label: "التاريخ" },
+        { key: "party", label: "الطرف" },
+        { key: "status", label: "الحالة", align: "center" },
+        { key: "value", label: "القيمة التقديرية", align: "left" },
+      ],
+      rows: listRows.map((r) => ({
+        giftNumber: r.giftNumber,
+        direction: r.direction === "IN" ? "وارد" : "صادر",
+        date: r.createdAt ? new Date(r.createdAt as unknown as string).toISOString().slice(0, 10) : "",
+        party: r.supplierName ?? r.customerName ?? "—",
+        status: STATUS_AR[r.status] ?? r.status,
+        value: r.estimatedValue ?? "—",
+      })),
+      emptyText: "لا توجد سندات هدايا مطابقة.",
+    });
+  }
+
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4">
       <PageHeader
@@ -399,7 +438,7 @@ export default function GiftsHub() {
             onResetFilters={resetListFilters}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printGiftsList}
             exportSpec={{
               filename: "سندات-الهدايا",
               rows: listRows,
@@ -553,11 +592,17 @@ export default function GiftsHub() {
               <DialogHeader>
                 <DialogTitle>مراجعة السند قبل الاعتماد</DialogTitle>
                 <DialogDescription>
-                  {approvePreviewQ.data ? `سند ${approvePreviewQ.data.giftNumber} — ${approvePreviewQ.data.partyName ?? "بلا طرف"}` : "جارٍ التحميل…"}
+                  {/* عند فشل المعاينة كان الوصف يبقى «جارٍ التحميل…» بينما الجسد يقول «تعذّر
+                    * تحميل السند» — رأسٌ يناقض جسده. الانتظارُ يُشتقّ من `isLoading` لا من غياب البيانات. */}
+                  {approvePreviewQ.data
+                    ? `سند ${approvePreviewQ.data.giftNumber} — ${approvePreviewQ.data.partyName ?? "بلا طرف"}`
+                    : approvePreviewQ.isLoading
+                      ? ACTION_LABELS.loading
+                      : "تعذّر تحميل السند."}
                 </DialogDescription>
               </DialogHeader>
               {approvePreviewQ.isLoading ? (
-                <div className="py-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>
+                <div className="py-6 text-center text-sm text-muted-foreground">{ACTION_LABELS.loading}</div>
               ) : approvePreviewQ.data ? (
                 <div className="space-y-3">
                   {approvePreviewQ.data.reason && (
@@ -603,7 +648,7 @@ export default function GiftsHub() {
             </div>
           </div>
           {report.isLoading ? (
-            <div className="py-6 text-center text-muted-foreground">جارٍ التحميل…</div>
+            <div className="py-6 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
           ) : report.data ? (
             <div className="grid gap-4 md:grid-cols-2">
               {reportTable("الملخّص (مُنجَز)", ["الاتجاه", "عدد", "التكلفة"], report.data.summary.map((x) => [x.direction === "IN" ? "وارد" : "صادر", String(x.count), String(x.totalCost)]))}
@@ -867,7 +912,7 @@ export default function GiftsHub() {
             </Button>
             <Button onClick={mode === "in" ? submitInbound : submitOutbound} disabled={!canSubmit}>
               <Plus aria-hidden className="me-1 size-4" />
-              {busy ? "جارٍ الحفظ…" : mode === "in" ? "استلام" : "منح الهدية"}
+              {busy ? ACTION_LABELS.saving : mode === "in" ? "استلام" : "منح الهدية"}
             </Button>
           </div>
         </div>

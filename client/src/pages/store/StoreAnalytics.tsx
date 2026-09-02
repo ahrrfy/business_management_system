@@ -185,7 +185,8 @@ function ConversionFunnel({ funnel, pct }: { funnel: { productViews: number; car
 }
 
 function Kpi({ icon: Icon, label, value, unit, hint, tone = "muted" }: { icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>; label: string; value: string; unit?: string; hint?: string; tone?: "primary" | "positive" | "danger" | "muted" }) {
-  const toneCls = tone === "primary" ? "text-primary" : tone === "positive" ? "text-emerald-600" : tone === "danger" ? "text-rose-600" : "text-foreground";
+  // ألوان الحالة من التوكنز الدلالية (تتنفّس مع الوضع الداكن) بدل emerald/rose الخام.
+  const toneCls = tone === "primary" ? "text-primary" : tone === "positive" ? "text-[var(--sem-pos)]" : tone === "danger" ? "text-[var(--sem-neg)]" : "text-foreground";
   return (
     <div className="rounded-2xl border border-border bg-card p-3">
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">

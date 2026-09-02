@@ -8,6 +8,7 @@ import { ListToolbar } from "@/components/list/ListToolbar";
 import { FilterField } from "@/components/list/FilterField";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDateTime } from "@/lib/date";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -517,6 +518,69 @@ export default function AuditLogs() {
   const total = list.data?.total ?? 0;
   const activeFilterCount = [f.action, f.entityType, f.entityId, f.screenPath, f.userId, f.branchId, f.from, f.to].filter(Boolean).length;
 
+  // طباعة A4 بهوية المستند بدل window.print() الذي كان يطبع الشاشة كما تُرى (شريط الأدوات
+  // والفلاتر والقائمة الجانبية) بلا ترويسةٍ ولا فلاترَ موثَّقة. الصفوف هي المعروضة نفسها
+  // (صفحة الخادم الحالية) بلا استعلامٍ جديد — والنطاق مُعلَنٌ في الرأس كي لا يظنّ القارئ أنّ
+  // الورقة تحمل كل المطابقات.
+  function printAuditLog() {
+    const branchName = (branches.data ?? []).find((b) => String(b.id) === f.branchId)?.name;
+    const userName = (facets.data?.users ?? []).find((u) => String(u.id) === f.userId)?.name;
+    printReportDoc({
+      title: "سجلّ التدقيق",
+      orientation: "landscape",
+      headerExtra: [
+        { label: "النطاق", value: `الصفحة المعروضة — ${rows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${total.toLocaleString("ar-IQ-u-nu-latn")}` },
+        { label: "الفترة", value: f.from || f.to ? `${f.from || "البداية"} — ${f.to || "اليوم"}` : "كل الفترات" },
+        { label: "الفرع", value: branchName ?? (f.branchId ? `فرع #${f.branchId}` : "كل الفروع") },
+        { label: "المستخدم", value: userName ?? (f.userId ? `#${f.userId}` : "كل المستخدمين") },
+        { label: "الفعل", value: f.action ? actionLabel(f.action) : "كل الأفعال" },
+        { label: "الكيان", value: f.entityType ? entityLabel(f.entityType) : "كل الكيانات" },
+        // فلترا النصّ الحرّ يُذكَران **حين يكونان مضبوطَين فقط**: سطرٌ غائبٌ = بلا تضييق.
+        // إسقاطُهما دائماً كان يُنتج ورقةً تقول «كل الكيانات» بينما الصفوف مقصورةٌ على مستندٍ
+        // واحدٍ أو شاشةٍ واحدة — وهي أخطرُ ما يكون في مستندٍ يُقرأ دليلاً.
+        ...(f.entityId.trim() ? [{ label: "معرّف الكيان", value: f.entityId.trim() }] : []),
+        ...(f.screenPath.trim() ? [{ label: "مسار الشاشة", value: f.screenPath.trim() }] : []),
+      ],
+      columns: [
+        { key: "at", label: "متى" },
+        { key: "actor", label: "من قام" },
+        { key: "action", label: "ماذا فعل" },
+        { key: "subject", label: "على ماذا" },
+        // عمودُ الشاشة الأوّل — وهو جوهرُ سجلّ التدقيق: ماذا كانت القيمة وماذا صارت.
+        // إسقاطُه يُنتج ورقةً تقول «من فعل ماذا» ولا تقول **ما الذي تغيّر** ⇒ مستندٌ لا يصلح
+        // دليلاً. النصّ هو نصُّ الخليّة حرفياً (`shortValue` نفسها، بلا اقتطاعٍ إضافي).
+        { key: "change", label: "تفاصيل التغيير" },
+        { key: "branch", label: "الفرع" },
+        { key: "outcome", label: "النتيجة", align: "center" },
+        { key: "screenPath", label: "الشاشة المبلّغ عنها" },
+        { key: "ip", label: "عنوان الجهاز IP" },
+      ],
+      rows: rows.map((r) => {
+        const meta = auditOperationMeta(r);
+        return {
+          at: dt(r.createdAt as unknown as string),
+          actor: r.userName ?? (r.userId ? `#${r.userId}` : (meta.actor?.label ?? "هوية غير مؤكدة")),
+          action: `${meta.outcome === "FAILURE" ? "محاولة فاشلة — " : ""}${actionLabel(r.action)}`,
+          subject: `${entityLabel(r.entityType)}${r.entityId ? ` #${r.entityId}` : ""}`,
+          // نفسُ اشتقاق خليّة «تفاصيل التغيير» على الشاشة حرفياً (سطر بسطر) — لا صياغةٌ ثانية تنجرف.
+          change:
+            r.oldValue && r.newValue
+              ? `قديم: ${shortValue(r.oldValue)} ← جديد: ${shortValue(r.newValue)}`
+              : r.newValue
+                ? shortValue(r.newValue)
+                : r.oldValue
+                  ? `قديم: ${shortValue(r.oldValue)}`
+                  : "لا تفاصيل إضافية",
+          branch: r.branchName ?? (r.branchId ? `فرع #${r.branchId}` : "غير محدد"),
+          outcome: meta.outcome === "FAILURE" ? "فشلت" : meta.outcome === "SUCCESS" ? "نجحت" : "غير موثّقة",
+          screenPath: r.screenPath ?? meta.screenPath ?? "غير موثّقة",
+          ip: r.ipAddress ?? "غير متاح",
+        };
+      }),
+      emptyText: "لا سجلّات مطابقة.",
+    });
+  }
+
   const columns = useMemo<ColumnDef<AuditRow, unknown>[]>(() => [
     {
       id: "change", header: "تفاصيل التغيير", accessorFn: (row) => shortValue(row.newValue ?? row.oldValue),
@@ -692,7 +756,7 @@ export default function AuditLogs() {
             onResetFilters={() => { resetF(); setPage(0); }}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printAuditLog}
             exportSpec={{
               filename: `سجلّ-التدقيق${f.from ? `-${f.from}` : ""}${f.to ? `-${f.to}` : ""}`,
               rows,
