@@ -2,8 +2,10 @@
 //   المتوقَّع (من الدفتر) مقابل المعدود (نقد الإغلاق) مقابل الفرق (drift = variance الوردية).
 // عهد الإغلاق الخارجة من الدرج تُعرَض منفصلةً؛ قبولها الفعلي يظهر في قسم جرد الخزينة.
 import { shiftTypeLabel } from "@/lib/labels";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, AlertTriangle, Wallet, Building2, Clock, ArrowLeftRight, ChevronLeft, ChevronRight, Vault, LockKeyhole, RotateCcw } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -14,7 +16,7 @@ import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+
 import { selectCls } from "@/lib/ui/formStyles";
 import { CashCounter } from "@/components/CashCounter";
 import { Textarea } from "@/components/ui/textarea";
@@ -508,95 +510,116 @@ function ReconciliationHero({ dc }: { dc: DC }) {
   );
 }
 
+/**
+ * أعمدة تفصيل الورديات + ذيل الإجماليات.
+ * ⚠️ «الإجمالي (…)» كان `colSpan={2}`؛ الذيلُ لكل عمود فالتسمية على العمود الأوّل.
+ */
+function useShiftColumns(dc: DC) {
+  return useMemo<ColumnDef<DC["shifts"][number], unknown>[]>(() => [
+    {
+      id: "shift", header: "الوردية",
+      accessorFn: (sh) => sh.shiftId,
+      cell: ({ row }) => {
+        const sh = row.original;
+        return (
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-xs" dir="ltr">#{sh.shiftId}</span>
+              {sh.shiftType !== "RETAIL" && (
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{shiftTypeLabel(sh.shiftType)}</span>
+              )}
+              {sh.status === "OPEN" ? (
+                <span className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] badge-status-pending">
+                  <Clock aria-hidden className="size-2.5" />مفتوحة
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+              <Building2 aria-hidden className="size-2.5" />
+              {sh.branchName ?? "—"}
+            </div>
+          </div>
+        );
+      },
+      footer: () => `الإجمالي (${dc.totals.shiftCount} وردية · ${dc.balancedCount} مطابقة · ${dc.driftCount} بفرق)`,
+      meta: { kind: "text", wrap: true },
+    },
+    { id: "user", header: "الكاشير", accessorFn: (sh) => sh.userName ?? "—", meta: { kind: "actor" } },
+    {
+      id: "opening", header: "افتتاحي", accessorFn: (sh) => Number(sh.opening),
+      cell: ({ row }) => fmtAr(row.original.opening),
+      footer: () => fmtAr(dc.totals.opening), meta: { kind: "money" },
+    },
+    {
+      id: "cashIn", header: "داخل نقدي", accessorFn: (sh) => Number(sh.cashIn),
+      cell: ({ row }) => (
+        <span className="text-money-positive" title={`مبيعات ${fmtAr(row.original.salesCash)} · تحصيلات ${fmtAr(row.original.collectionsCash)} · أخرى ${fmtAr(row.original.otherIn)}`}>
+          {fmtAr(row.original.cashIn)}
+        </span>
+      ),
+      footer: () => <span className="text-money-positive">{fmtAr(dc.totals.cashIn)}</span>, meta: { kind: "money" },
+    },
+    {
+      id: "operatingOut", header: "خارج تشغيلي", accessorFn: (sh) => Number(sh.operatingOut),
+      cell: ({ row }) => (
+        <span className="text-money-negative" title={`مرتجعات ${fmtAr(row.original.returnsCash)} · مصروفات ${fmtAr(row.original.expensesCash)} · سحب أثناء الوردية ${fmtAr(row.original.cashDrops)} · أخرى ${fmtAr(row.original.otherOut)}`}>
+          {fmtAr(row.original.operatingOut)}
+        </span>
+      ),
+      footer: () => <span className="text-money-negative">{fmtAr(dc.totals.operatingOut)}</span>, meta: { kind: "money" },
+    },
+    {
+      id: "expected", header: "المتوقَّع", accessorFn: (sh) => Number(sh.expected),
+      cell: ({ row }) => <span className="font-semibold text-[var(--sem-info)]">{fmtAr(row.original.expected)}</span>,
+      footer: () => <span className="text-[var(--sem-info)]">{fmtAr(dc.totals.expected)}</span>, meta: { kind: "money" },
+    },
+    {
+      id: "counted", header: "المعدود", accessorFn: (sh) => (sh.counted == null ? -1 : Number(sh.counted)),
+      cell: ({ row }) => row.original.counted == null ? "—" : fmtAr(row.original.counted),
+      footer: () => fmtAr(dc.totals.counted), meta: { kind: "money" },
+    },
+    {
+      id: "drift", header: "الفرق", accessorFn: (sh) => (sh.drift == null ? 0 : Number(sh.drift)),
+      cell: ({ row }) => {
+        const sh = row.original;
+        const drift = sh.drift == null ? null : Number(sh.drift);
+        const cls = drift == null ? "text-muted-foreground" : drift === 0 ? "text-money-positive" : drift > 0 ? "text-stock-low" : "text-money-negative";
+        return sh.drift == null ? (
+          <span className="text-[10px] text-muted-foreground">مفتوحة</span>
+        ) : (
+          <span className={`inline-flex items-center justify-end gap-1 font-semibold ${cls}`}>
+            {drift === 0 ? <CheckCircle2 aria-hidden className="size-3.5" /> : <AlertTriangle aria-hidden className="size-3.5" />}
+            {fmtAr(sh.drift)}
+          </span>
+        );
+      },
+      footer: () => {
+        const t = Number(dc.totals.drift);
+        const cls = t === 0 ? "text-money-positive" : t > 0 ? "text-stock-low" : "text-money-negative";
+        return <span className={cls}>{fmtAr(dc.totals.drift)}</span>;
+      },
+      meta: { kind: "money" },
+    },
+    {
+      id: "handoversCash", header: "خرج إلى العهدة", accessorFn: (sh) => Number(sh.handoversCash),
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.handoversCash === "0.00" ? "—" : fmtAr(row.original.handoversCash)}</span>,
+      footer: () => <span className="text-muted-foreground">{fmtAr(dc.totals.handoversCash)}</span>, meta: { kind: "money" },
+    },
+  ], [dc]);
+}
+
 /** جدول تفصيل الورديات. */
 function ShiftTable({ dc }: { dc: DC }) {
+  const shiftColumns = useShiftColumns(dc);
   return (
     <Card>
       <CardContent className="p-0">
-        <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b bg-muted/30 text-xs text-muted-foreground">
-                <th className="p-3 text-right font-medium">الوردية</th>
-                <th className="p-3 text-right font-medium">الكاشير</th>
-                <th className="p-3 text-right font-medium">افتتاحي</th>
-                <th className="p-3 text-right font-medium">داخل نقدي</th>
-                <th className="p-3 text-right font-medium">خارج تشغيلي</th>
-                <th className="p-3 text-right font-medium">المتوقَّع</th>
-                <th className="p-3 text-right font-medium">المعدود</th>
-                <th className="p-3 text-right font-medium">الفرق</th>
-                <th className="p-3 text-right font-medium">خرج إلى العهدة</th>
-              </tr>
-            </thead>
-            <tbody>
-              {dc.shifts.map((sh) => {
-                const drift = sh.drift == null ? null : Number(sh.drift);
-                const driftCls =
-                  drift == null ? "text-muted-foreground" : drift === 0 ? "text-money-positive" : drift > 0 ? "text-stock-low" : "text-money-negative";
-                return (
-                  <tr key={sh.shiftId} className="border-b last:border-0">
-                    <td className="p-3 text-right">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-mono text-xs" dir="ltr">#{sh.shiftId}</span>
-                        {sh.shiftType !== "RETAIL" && (
-                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{shiftTypeLabel(sh.shiftType)}</span>
-                        )}
-                        {sh.status === "OPEN" ? (
-                          <span className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] badge-status-pending">
-                            <Clock aria-hidden className="size-2.5" />مفتوحة
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
-                        <Building2 aria-hidden className="size-2.5" />
-                        {sh.branchName ?? "—"}
-                      </div>
-                    </td>
-                    <td className="p-3 text-right text-xs">{sh.userName ?? "—"}</td>
-                    <td className="p-3 text-right tabular-nums text-xs" dir="ltr">{fmtAr(sh.opening)}</td>
-                    <td className="p-3 text-right tabular-nums text-xs text-money-positive" dir="ltr" title={`مبيعات ${fmtAr(sh.salesCash)} · تحصيلات ${fmtAr(sh.collectionsCash)} · أخرى ${fmtAr(sh.otherIn)}`}>
-                      {fmtAr(sh.cashIn)}
-                    </td>
-                    <td className="p-3 text-right tabular-nums text-xs text-money-negative" dir="ltr" title={`مرتجعات ${fmtAr(sh.returnsCash)} · مصروفات ${fmtAr(sh.expensesCash)} · سحب أثناء الوردية ${fmtAr(sh.cashDrops)} · أخرى ${fmtAr(sh.otherOut)}`}>
-                      {fmtAr(sh.operatingOut)}
-                    </td>
-                    <td className="p-3 text-right font-semibold tabular-nums text-[var(--sem-info)]" dir="ltr">{fmtAr(sh.expected)}</td>
-                    <td className="p-3 text-right tabular-nums" dir="ltr">{sh.counted == null ? "—" : fmtAr(sh.counted)}</td>
-                    <td className={`p-3 text-right font-semibold tabular-nums ${driftCls}`} dir="ltr">
-                      {sh.drift == null ? (
-                        <span className="text-[10px] text-muted-foreground">مفتوحة</span>
-                      ) : (
-                        <span className="inline-flex items-center justify-end gap-1">
-                          {drift === 0 ? <CheckCircle2 aria-hidden className="size-3.5" /> : <AlertTriangle aria-hidden className="size-3.5" />}
-                          {fmtAr(sh.drift)}
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-3 text-right tabular-nums text-xs text-muted-foreground" dir="ltr">
-                      {sh.handoversCash === "0.00" ? "—" : fmtAr(sh.handoversCash)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="border-t-2 bg-muted/30 font-bold">
-                <td className="p-3 text-right" colSpan={2}>
-                  الإجمالي ({dc.totals.shiftCount} وردية · {dc.balancedCount} مطابقة · {dc.driftCount} بفرق)
-                </td>
-                <td className="p-3 text-right tabular-nums text-xs" dir="ltr">{fmtAr(dc.totals.opening)}</td>
-                <td className="p-3 text-right tabular-nums text-xs text-money-positive" dir="ltr">{fmtAr(dc.totals.cashIn)}</td>
-                <td className="p-3 text-right tabular-nums text-xs text-money-negative" dir="ltr">{fmtAr(dc.totals.operatingOut)}</td>
-                <td className="p-3 text-right tabular-nums text-[var(--sem-info)]" dir="ltr">{fmtAr(dc.totals.expected)}</td>
-                <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(dc.totals.counted)}</td>
-                <td className={`p-3 text-right tabular-nums ${Number(dc.totals.drift) === 0 ? "text-money-positive" : Number(dc.totals.drift) > 0 ? "text-stock-low" : "text-money-negative"}`} dir="ltr">
-                  {fmtAr(dc.totals.drift)}
-                </td>
-                <td className="p-3 text-right tabular-nums text-xs text-muted-foreground" dir="ltr">{fmtAr(dc.totals.handoversCash)}</td>
-              </tr>
-            </tfoot>
-          </table>
-        </ScrollTableShell>
+        <DataTable
+          columns={shiftColumns}
+          data={dc.shifts}
+          searchable={false}
+          emptyText="لا ورديات في هذا اليوم."
+        />
       </CardContent>
     </Card>
   );

@@ -2,6 +2,8 @@
 // عرض + تصدير Excel + طباعة A4 (ReportShell + PeriodFilter + printReportDoc).
 // ⚠️ أساس نقدي: من المقبوضات/المدفوعات المكتملة (receipts COMPLETED) لا الاستحقاق.
 import { useMemo, useState } from "react";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -12,7 +14,7 @@ import { fmtAr, D } from "@/lib/money";
 import { exportSheets, type SheetSpec } from "@/lib/export";
 import { printTreasuryReportA4 } from "@/lib/printing/printTreasuryReportA4";
 import { CopyButton, CopyInline } from "@/components/CopyButton";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtDateTime } from "@/lib/date";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -156,6 +158,52 @@ export default function TreasuryReport() {
     t.setDate(t.getDate() + deltaDays);
     setPeriod({ from: ymd(f), to: ymd(t), preset: "custom" });
   }
+  /** أعمدة ملخّص الخزينة + ذيل الإجماليات (مقبوضات/مدفوعات/صافي). */
+  const treasuryColumns = useMemo<ColumnDef<(typeof rows)[number], unknown>[]>(() => [
+    {
+      id: "label", header: "طريقة الدفع",
+      accessorFn: (r) => r.label,
+      cell: ({ row }) => <span className="font-medium">{row.original.label}</span>,
+      footer: () => (ts ? "الإجمالي" : null),
+      meta: { kind: "text" },
+    },
+    {
+      id: "settlement", header: "مكان التسوية",
+      accessorFn: (r) => r.settlementLabel,
+      cell: ({ row }) => (
+        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${row.original.settlement === "DRAWER" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]"}`}>
+          {row.original.settlementLabel}
+        </span>
+      ),
+      footer: () => (ts ? <span className="text-muted-foreground">—</span> : null),
+      meta: { kind: "status" },
+    },
+    {
+      id: "in", header: "مقبوضات",
+      accessorFn: (r) => Number(r.in),
+      cell: ({ row }) => <span className="text-money-positive"><CopyInline value={String(row.original.in)} display={fmtAr(row.original.in)} mono={false} /></span>,
+      footer: () => (ts ? <CopyInline value={String(ts.totalIn)} display={fmtAr(ts.totalIn)} mono={false} /> : null),
+      meta: { kind: "money" },
+    },
+    {
+      id: "out", header: "مدفوعات",
+      accessorFn: (r) => Number(r.out),
+      cell: ({ row }) => <span className="text-money-negative"><CopyInline value={String(row.original.out)} display={fmtAr(row.original.out)} mono={false} /></span>,
+      footer: () => (ts ? <CopyInline value={String(ts.totalOut)} display={fmtAr(ts.totalOut)} mono={false} /> : null),
+      meta: { kind: "money" },
+    },
+    {
+      id: "net", header: "الصافي",
+      accessorFn: (r) => Number(r.net),
+      cell: ({ row }) => (
+        <span className={D(row.original.net).lt(0) ? "font-semibold text-money-negative" : "font-semibold text-money-positive"}>
+          <CopyInline value={String(row.original.net)} display={fmtAr(row.original.net)} mono={false} />
+        </span>
+      ),
+      footer: () => (ts ? <CopyInline value={String(ts.net)} display={fmtAr(ts.net)} mono={false} /> : null),
+      meta: { kind: "money" },
+    },
+  ], [ts]);
 
   return (
     <ReportShell
@@ -196,67 +244,14 @@ export default function TreasuryReport() {
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !ts ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-3 text-right font-medium">طريقة الدفع</th>
-                  <th className="p-3 text-right font-medium">مكان التسوية</th>
-                  <th className="p-3 text-right font-medium">مقبوضات</th>
-                  <th className="p-3 text-right font-medium">مدفوعات</th>
-                  <th className="p-3 text-right font-medium">الصافي</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.length === 0 ? (
-                  <TableEmptyRow colSpan={5} message="لا حركات في الفترة." />
-                ) : (
-                  rows.map((r, i) => (
-                    <tr key={i} className="border-b last:border-0">
-                      <td className="p-3 text-right font-medium">{r.label}</td>
-                      <td className="p-3 text-right text-xs text-muted-foreground">
-                        <span className={`inline-flex rounded-full px-2 py-0.5 ${r.settlement === "DRAWER" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]"}`}>
-                          {r.settlementLabel}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right tabular-nums text-money-positive" dir="ltr">
-                        <CopyInline value={String(r.in)} display={fmtAr(r.in)} mono={false} />
-                      </td>
-                      <td className="p-3 text-right tabular-nums text-money-negative" dir="ltr">
-                        <CopyInline value={String(r.out)} display={fmtAr(r.out)} mono={false} />
-                      </td>
-                      <td className={`p-3 text-right tabular-nums font-semibold ${D(r.net).lt(0) ? "text-money-negative" : "text-money-positive"}`} dir="ltr">
-                        <CopyInline value={String(r.net)} display={fmtAr(r.net)} mono={false} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-              <tfoot>
-                <tr className="border-t font-bold bg-muted/30">
-                  <td className="p-3 text-right">الإجمالي</td>
-                  <td className="p-3 text-right text-muted-foreground">—</td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">
-                    <CopyInline value={String(ts.totalIn)} display={fmtAr(ts.totalIn)} mono={false} />
-                  </td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">
-                    <CopyInline value={String(ts.totalOut)} display={fmtAr(ts.totalOut)} mono={false} />
-                  </td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">
-                    <CopyInline value={String(ts.net)} display={fmtAr(ts.net)} mono={false} />
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-            </ScrollTableShell>
-          )}
+          <DataTable
+            columns={treasuryColumns}
+            data={rows}
+            loading={q.isLoading}
+            searchable={false}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
+            emptyText="لا حركات في الفترة."
+          />
         </CardContent>
       </Card>
 

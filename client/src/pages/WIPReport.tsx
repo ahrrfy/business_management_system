@@ -3,14 +3,17 @@
  * managerBranchScopedProcedure.
  */
 import { workOrderStatusLabel } from "@shared/workOrderStatus";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { useMemo } from "react";
+
 import { trpc } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField } from "@/components/list";
-import { ErrorState, TableEmptyRow } from "@/components/PageState";
+
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { useState } from "react";
@@ -71,6 +74,28 @@ export default function WIPReportPage() {
         : undefined,
     });
   }
+  /** أعمدة أوامر الشغل قيد التنفيذ. */
+  const wipColumns = useMemo<ColumnDef<(typeof rows)[number], unknown>[]>(() => [
+    { id: "orderNumber", header: "رقم الأمر", accessorFn: (r) => r.orderNumber, meta: { kind: "code" } },
+    { id: "customerName", header: "العميل", accessorFn: (r) => r.customerName ?? "—", meta: { kind: "text", wrap: true } },
+    {
+      id: "status", header: "الحالة",
+      accessorFn: (r) => workOrderStatusLabel(r.status),
+      meta: { kind: "status" },
+    },
+    {
+      id: "materialsCost", header: "قيمة المواد",
+      accessorFn: (r) => Number(r.materialsCost),
+      cell: ({ row }) => <span className="font-semibold">{formatIqd(row.original.materialsCost)}</span>,
+      meta: { kind: "money" },
+    },
+    {
+      id: "createdAt", header: "تاريخ الإنشاء",
+      accessorFn: (r) => String(r.createdAt ?? ""),
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtDate(row.original.createdAt)}</span>,
+      meta: { kind: "date" },
+    },
+  ], []);
 
   return (
     <ReportShell
@@ -95,40 +120,14 @@ export default function WIPReportPage() {
         </FilterField>
       }
     >
-      {wip.isError ? (
-        <ErrorState message={wip.error.message} onRetry={() => wip.refetch()} />
-      ) : (
-        <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm border-collapse">
-            <thead className="bg-muted">
-              <tr>
-                <th className="text-right p-2 border">رقم الأمر</th>
-                <th className="text-right p-2 border">العميل</th>
-                <th className="text-right p-2 border">الحالة</th>
-                <th className="text-right p-2 border">قيمة المواد</th>
-                <th className="text-right p-2 border">تاريخ الإنشاء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {wip.isLoading ? (
-                <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td></tr>
-              ) : rows.length === 0 ? (
-                <TableEmptyRow colSpan={5} message="لا طلبات خدمة قيد التنفيذ" />
-              ) : (
-                rows.map((r) => (
-                  <tr key={r.workOrderId} className="hover:bg-accent/40">
-                    <td className="p-2 border font-mono">{r.orderNumber}</td>
-                    <td className="p-2 border">{r.customerName ?? "—"}</td>
-                    <td className="p-2 border">{workOrderStatusLabel(r.status)}</td>
-                    <td className="p-2 border font-semibold">{formatIqd(r.materialsCost)}</td>
-                    <td className="p-2 border text-muted-foreground">{fmtDate(r.createdAt)}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </ScrollTableShell>
-      )}
+      <DataTable
+        columns={wipColumns}
+        data={rows}
+        loading={wip.isLoading}
+        searchable={false}
+        errorState={{ isError: wip.isError, message: wip.error?.message, onRetry: () => void wip.refetch() }}
+        emptyText="لا طلبات خدمة قيد التنفيذ"
+      />
     </ReportShell>
   );
 }
