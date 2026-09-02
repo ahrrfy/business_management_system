@@ -4,7 +4,8 @@
  * تبويب «السجلّ»: كل الموافقات (كل العملاء/الحالات) — عرض + إلغاء موافقة لم تُستهلَك بعد.
  */
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list/RowActions";
 import { Button } from "@/components/ui/button";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -23,7 +24,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { Check, History, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -37,6 +38,17 @@ const STATUS_LABEL: Record<Exclude<ApprovalStatus, "">, { label: string; cls: st
   CONSUMED: { label: "مُستهلَكة (فاتورة)", cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
   CANCELLED: { label: "مُلغاة", cls: "bg-destructive/15 text-destructive" },
 };
+
+/** صفوف الجدولين — مشتقّةٌ من عقد الراوتر فلا تنجرف عن الخادم (كانت `any`). */
+type ActiveApprovalRow = RouterOutputs["creditApproval"]["listForCustomer"]["rows"][number];
+type ApprovalLogRow = RouterOutputs["creditApproval"]["list"]["rows"][number];
+
+/** أعمدة «الموافقات النشِطة لهذا العميل» — جدولٌ مُضمَّن في بطاقةٍ تحمل عنوانه. */
+const activeApprovalColumns: ColumnDef<ActiveApprovalRow, unknown>[] = [
+  { id: "id", header: "#", accessorFn: (r) => r.id, meta: { kind: "number", width: "id" }, cell: ({ row }) => row.original.id },
+  { id: "maxAmount", header: "السقف", accessorFn: (r) => fmtAr(r.maxAmount), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.maxAmount) },
+  { id: "expiresAt", header: "ينتهي", accessorFn: (r) => fmtDateTime(r.expiresAt), meta: { kind: "datetime" }, cell: ({ row }) => fmtDateTime(row.original.expiresAt) },
+];
 
 /** حالة مُشتقّة من نفس أعمدة الراوتر (لا حقل status في الردّ — نشتقّه هنا للعرض فقط). */
 function deriveStatus(r: { expiresAt: string | Date; consumedAt: string | Date | null; consumedByInvoiceId: number | null }): Exclude<ApprovalStatus, ""> {
@@ -242,33 +254,19 @@ export default function CreditApprovalsPage() {
           {customerId && (
             <Card>
               <CardHeader className="font-semibold">الموافقات النشِطة لهذا العميل</CardHeader>
-              <CardContent>
-                {active.isLoading ? (
-                  <LoadingState />
-                ) : (active.data?.rows.length ?? 0) === 0 ? (
-                  <p className="text-muted-foreground text-sm">لا موافقات نشِطة</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm border-collapse">
-                      <thead>
-                        <tr className="border-b text-muted-foreground text-end">
-                          <th className="p-2 font-medium text-end">#</th>
-                          <th className="p-2 font-medium text-end">السقف</th>
-                          <th className="p-2 font-medium text-end">ينتهي</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {active.data!.rows.map((r: any) => (
-                          <tr key={r.id} className="border-b last:border-0">
-                            <td className="p-2 text-end">{r.id}</td>
-                            <td className="p-2 text-end tabular-nums" dir="ltr">{fmtAr(r.maxAmount)}</td>
-                            <td className="p-2 text-end">{fmtDateTime(r.expiresAt)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+              <CardContent className="p-0">
+                {/* مُضمَّن في بطاقةٍ تحمل عنوانه ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+                <DataTable<ActiveApprovalRow>
+                  embedded
+                  searchable={false}
+                  bounded={false}
+                  pageSize={Infinity}
+                  columns={activeApprovalColumns}
+                  data={active.data?.rows ?? []}
+                  loading={active.isLoading}
+                  errorState={{ isError: active.isError, message: active.error?.message, onRetry: () => void active.refetch() }}
+                  emptyText="لا موافقات نشِطة"
+                />
               </CardContent>
             </Card>
           )}
@@ -315,7 +313,100 @@ function ApprovalsLog() {
 
   const rows = log.data?.rows ?? [];
   const total = log.data?.total ?? 0;
-  const pages = Math.max(1, Math.ceil(total / LIMIT));
+
+  // أعمدة السجلّ — تقرأ الحالة المشتقّة وحالة طفرة الإلغاء، فتُبنى في جسم المكوّن.
+  const columns: ColumnDef<ApprovalLogRow, unknown>[] = [
+    { id: "id", header: "#", accessorFn: (r) => r.id, meta: { kind: "number", width: "id" }, cell: ({ row }) => row.original.id },
+    {
+      id: "customerName",
+      header: "العميل",
+      accessorFn: (r) => r.customerName,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => <span className="font-medium">{row.original.customerName}</span>,
+    },
+    { id: "maxAmount", header: "السقف", accessorFn: (r) => fmtAr(r.maxAmount), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.maxAmount) },
+    {
+      id: "approvedBy",
+      header: "أنشأها",
+      accessorFn: (r) => r.approvedByName ?? "—",
+      meta: { kind: "actor" },
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.approvedByName ?? "—"}</span>,
+    },
+    {
+      id: "expiresAt",
+      header: "ينتهي",
+      accessorFn: (r) => fmtDateTime(r.expiresAt),
+      meta: { kind: "datetime" },
+      cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.expiresAt)}</span>,
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      // التسمية العربية المعروضة لا الرمز — الحالة مشتقّة (لا عمود status في الردّ).
+      accessorFn: (r) => STATUS_LABEL[deriveStatus(r)].label,
+      meta: { kind: "status" },
+      cell: ({ row }) => {
+        const st = deriveStatus(row.original);
+        return (
+          <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${STATUS_LABEL[st].cls}`}>
+            {STATUS_LABEL[st].label}
+          </span>
+        );
+      },
+    },
+    {
+      id: "notes",
+      header: "ملاحظات",
+      accessorFn: (r) => r.notes ?? "—",
+      cell: ({ row }) => (
+        <span className="block max-w-56 truncate text-xs text-muted-foreground" title={row.original.notes ?? undefined}>
+          {row.original.notes ?? "—"}
+        </span>
+      ),
+    },
+    {
+      id: "actions",
+      header: "الإجراءات والتواصل",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const r = row.original;
+        const st = deriveStatus(r);
+        return (
+          <RowActions
+            actions={[
+              {
+                key: "cancel",
+                kind: "cancel",
+                label: "إلغاء الموافقة",
+                onSelect: () => setCancelTarget({ id: Number(r.id), customerName: r.customerName }),
+                variant: "destructive",
+                disabled: st !== "ACTIVE" || cancelMut.isPending,
+                disabledReason: st !== "ACTIVE"
+                  ? "لا يمكن إلغاء موافقة غير نشطة"
+                  : "توجد عملية إلغاء قيد التنفيذ",
+                gate: { managerOnly: true },
+              },
+            ]}
+            contact={{
+              phone: r.customerPhone,
+              label: `التواصل مع ${r.customerName}`,
+              message: buildOperationalContactMessage({
+                entityLabel: "موافقة ائتمان",
+                reference: String(r.id),
+                partyName: r.customerName,
+                status: STATUS_LABEL[st].label,
+                dueAt: r.expiresAt,
+                title: `سقف الموافقة: ${fmtAr(r.maxAmount)} د.ع`,
+                nextAction: st === "ACTIVE" ? "يرجى تأكيد استلام تفاصيل الموافقة." : undefined,
+              }),
+              gate: { managerOnly: true },
+            }}
+          />
+        );
+      },
+    },
+  ];
 
   return (
     <Card>
@@ -364,91 +455,26 @@ function ApprovalsLog() {
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        {log.isLoading ? (
-          <LoadingState />
-        ) : rows.length === 0 ? (
-          <p className="p-6 text-center text-sm text-muted-foreground">لا موافقات مطابقة للفلاتر.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="border-b bg-muted/50 text-end">
-                  <th className="p-2 font-medium text-end">#</th>
-                  <th className="p-2 font-medium text-end">العميل</th>
-                  <th className="p-2 font-medium text-end">السقف</th>
-                  <th className="p-2 font-medium text-end">أنشأها</th>
-                  <th className="p-2 font-medium text-end">ينتهي</th>
-                  <th className="p-2 font-medium text-center">الحالة</th>
-                  <th className="p-2 font-medium text-end">ملاحظات</th>
-                  <th className="p-2 font-medium text-center">الإجراءات والتواصل</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const st = deriveStatus(r);
-                  return (
-                    <tr key={r.id} className="border-b last:border-0">
-                      <td className="p-2 text-end tabular-nums">{r.id}</td>
-                      <td className="p-2 text-end font-medium">{r.customerName}</td>
-                      <td className="p-2 text-end tabular-nums" dir="ltr">{fmtAr(r.maxAmount)}</td>
-                      <td className="p-2 text-end text-xs text-muted-foreground">{r.approvedByName ?? "—"}</td>
-                      <td className="p-2 text-end text-xs tabular-nums" dir="ltr">{fmtDateTime(r.expiresAt)}</td>
-                      <td className="p-2 text-center">
-                        <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${STATUS_LABEL[st].cls}`}>
-                          {STATUS_LABEL[st].label}
-                        </span>
-                      </td>
-                      <td className="p-2 text-end text-xs text-muted-foreground max-w-56 truncate" title={r.notes ?? undefined}>{r.notes ?? "—"}</td>
-                      <td className="p-2 text-center">
-                        <RowActions
-                          actions={[
-                            {
-                              key: "cancel",
-                              kind: "cancel",
-                              label: "إلغاء الموافقة",
-                              onSelect: () => setCancelTarget({ id: Number(r.id), customerName: r.customerName }),
-                              variant: "destructive",
-                              disabled: st !== "ACTIVE" || cancelMut.isPending,
-                              disabledReason: st !== "ACTIVE"
-                                ? "لا يمكن إلغاء موافقة غير نشطة"
-                                : "توجد عملية إلغاء قيد التنفيذ",
-                              gate: { managerOnly: true },
-                            },
-                          ]}
-                          contact={{
-                            phone: r.customerPhone,
-                            label: `التواصل مع ${r.customerName}`,
-                            message: buildOperationalContactMessage({
-                              entityLabel: "موافقة ائتمان",
-                              reference: String(r.id),
-                              partyName: r.customerName,
-                              status: STATUS_LABEL[st].label,
-                              dueAt: r.expiresAt,
-                              title: `سقف الموافقة: ${fmtAr(r.maxAmount)} د.ع`,
-                              nextAction: st === "ACTIVE" ? "يرجى تأكيد استلام تفاصيل الموافقة." : undefined,
-                            }),
-                            gate: { managerOnly: true },
-                          }}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {pages > 1 && (
-          <div className="flex items-center justify-between border-t p-3 text-xs text-muted-foreground">
-            <Button variant="outline" size="sm" disabled={offset <= 0} onClick={() => setOffset((o) => Math.max(0, o - LIMIT))}>
-              ← السابق
-            </Button>
-            <span>صفحة {Math.floor(offset / LIMIT) + 1} من {pages} ({total} موافقة)</span>
-            <Button variant="outline" size="sm" disabled={offset + LIMIT >= total} onClick={() => setOffset((o) => o + LIMIT)}>
-              التالي →
-            </Button>
-          </div>
-        )}
+        {/* الفلاتر (الحالة/العميل) في ترويسة البطاقة أعلاه وتغذّي الاستعلام الخادميّ ⇒
+            `searchable={false}`، و`externalFiltersActive` كي لا يُعلن الجدول «لا صفوف بعد»
+            على فلترٍ حاجب. والترقيم صار موحّداً عبر serverPagination بدل زرَّي «السابق/التالي»
+            اليدويَّين (سهماهما كانا معكوسَين في RTL). */}
+        <DataTable<ApprovalLogRow>
+          columns={columns}
+          data={rows}
+          searchable={false}
+          externalFiltersActive={status !== "" || customerId != null}
+          loading={log.isLoading}
+          errorState={{ isError: log.isError, message: log.error?.message, onRetry: () => void log.refetch() }}
+          serverPagination={{
+            page: Math.floor(offset / LIMIT),
+            onPageChange: (next) => setOffset(next * LIMIT),
+            pageSize: LIMIT,
+            total,
+            isFetching: log.isFetching,
+          }}
+          emptyText="لا موافقات مطابقة للفلاتر."
+        />
       </CardContent>
 
       {/* حوار الإلغاء — سبب اختياري + تأكيد صريح (بدل window.prompt/confirm). */}

@@ -35,6 +35,8 @@ import {
   barcodeSearchInputClass,
 } from "@/components/scan/BarcodeSearchCue";
 import { cn } from "@/lib/utils";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
 import type { PrintOpenResult } from "@shared/printAudit";
 import { AlertTriangle, Building2, Hourglass, Info, Plus, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
@@ -59,6 +61,15 @@ import { VoucherCategoryQuickCreate } from "@/components/vouchers/VoucherCategor
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** صفُّ معاينة قَيد الدفتر (مَدين/دائن + الحساب + المبلغ) — معاينةٌ ساكنة، بلا فرز. */
+type LedgerPreviewRow = { side: string; account: string; amount: string };
+
+const ledgerPreviewColumns: ColumnDef<LedgerPreviewRow, unknown>[] = [
+  { id: "side", header: "المُحَدِّد", accessorFn: (r) => r.side, enableSorting: false, meta: { width: "status" }, cell: ({ row }) => <span className="font-bold">{row.original.side}</span> },
+  { id: "account", header: "الحساب", accessorFn: (r) => r.account, enableSorting: false, meta: { width: "wide", wrap: true }, cell: ({ row }) => row.original.account },
+  { id: "amount", header: "المبلغ", accessorFn: (r) => r.amount, enableSorting: false, meta: { kind: "money" }, cell: ({ row }) => row.original.amount },
+];
 
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء (يبقى بالمخطط للسجلات التاريخية).
 const METHODS = [
@@ -1053,30 +1064,17 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             {ledgerPreview && (
               <div className="space-y-1">
                 <Label>مَعاينة قَيد الدفتر</Label>
-                <div className="rounded-md border bg-muted/20 overflow-hidden">
-                  <table className="w-full text-xs">
-                    <thead className="bg-muted">
-                      <tr>
-                        <th className="p-1.5 text-right">المُحَدِّد</th>
-                        <th className="p-1.5 text-right">الحساب</th>
-                        <th className="p-1.5 text-left">المبلغ</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ledgerPreview.map((row, i) => (
-                        <tr key={i} className="border-t">
-                          <td className="p-1.5 font-bold">{row.side}</td>
-                          <td className="p-1.5">{row.account}</td>
-                          <td
-                            className="p-1.5 text-left tabular-nums"
-                            dir="ltr"
-                          >
-                            {row.amount}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                {/* مَعاينةٌ ساكنة داخل حقلٍ في نموذج: مُضمَّنة بلا بحثٍ ولا ترقيمٍ ولا فرز. */}
+                <div className="rounded-md border bg-muted/20 overflow-hidden text-xs">
+                  <DataTable<LedgerPreviewRow>
+                    embedded
+                    searchable={false}
+                    bounded={false}
+                    pageSize={Infinity}
+                    columns={ledgerPreviewColumns}
+                    data={ledgerPreview}
+                    emptyText="لا قَيد للمعاينة."
+                  />
                 </div>
                 <p className="text-[11px] text-muted-foreground">
                   {isReceipt

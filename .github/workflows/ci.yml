@@ -249,6 +249,22 @@ jobs:
         run: pnpm check:loading-strings
       - name: حارِس تغطية useSaveShortcuts (Ctrl+S في نماذج New/Edit)
         run: pnpm check:save-shortcut-coverage
+      - name: حارِس UNIQUE_AR (كلّ قيد UNIQUE له مدخلٌ تشخيصيّ عربيّ)
+        run: pnpm check:unique-ar
+      - name: حارِس التشكيل في الشارات ورؤوس الجداول
+        run: pnpm check:tashkeel
+      - name: حارِس تغطية إسناد العمليات
+        run: pnpm check:operation-attribution
+      - name: حارِس اعتماد FilterShell (توحيد مساحة الفلاتر)
+        run: pnpm check:filter-shell
+      - name: حارِس إسناد الصفّ (نفّذها/المستفيد/الطرف الآخر من العقد)
+        run: pnpm check:row-attribution
+      - name: حارِس ازدواج حقل البحث (DataTable + ListToolbar معاً)
+        run: pnpm check:duplicate-search
+      - name: ESLint (قواعد الخطّافات — يمنع خطّافاً بعد رجوعٍ مبكّر)
+        run: pnpm check:lint
+      - name: حارِس تسجيل الحرّاس في CI (يمنع حارساً في aggregate بلا خطوة)
+        run: pnpm check:guards-registered
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: اختبار عقود النشر والبناء الآمنة

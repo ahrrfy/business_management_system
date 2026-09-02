@@ -5,7 +5,8 @@ import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { D, fmt, round2 } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -50,6 +51,16 @@ type OpeningAllocation = NonNullable<
   RouterInputs["reports"]["prepareDoubleEntryShadow"]["allocations"]
 >[number];
 type OpeningAllocationRole = OpeningAllocation["role"];
+
+/** صفوفٌ مشتقّة من عقد الخادم فلا تنجرف عنه. */
+type OperationalMismatchRow = NonNullable<
+  ActivationData["operationalReconciliation"]
+>["mismatches"][number];
+type OpeningRoleTotalRow = OpeningPreparation["preview"]["roleTotals"][number];
+type DoubleEntryRoleRow = DoubleEntryData["roles"][number];
+
+/** جداول هذه الشاشة كلّها مُضمَّنة في بطاقاتٍ/أقسامٍ تحمل عناوينها وعدَّها ⇒ بلا شريط حالة. */
+const PANEL_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
 
 const OPENING_ALLOCATION_ROLES: OpeningAllocationRole[] = [
   "CAPITAL",
@@ -1020,47 +1031,47 @@ function DoubleEntryStatus({
                 </p>
               </div>
               {activation.operationalReconciliation.mismatches.length > 0 && (
-                <ScrollTableShell bordered={false}>
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr>
-                        <th className="px-3 py-2 text-start">النطاق</th>
-                        <th className="px-3 py-2 text-start">الدور المحاسبي</th>
-                        <th className="px-3 py-2 text-end">المصدر التشغيلي</th>
-                        <th className="px-3 py-2 text-end">اليومية</th>
-                        <th className="px-3 py-2 text-end">الفرق</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activation.operationalReconciliation.mismatches.map(
-                        (row) => (
-                          <tr
-                            key={`${row.scope}:${row.branchId ?? "GLOBAL"}:${row.role}`}
-                            className="border-t"
-                          >
-                            <td className="px-3 py-2">
-                              {row.scope === "GLOBAL"
-                                ? "الشركة"
-                                : `الفرع ${row.branchId}`}
-                            </td>
-                            <td className="px-3 py-2">
-                              {ROLE_LABELS[row.role] ?? row.role}
-                            </td>
-                            <td className="px-3 py-2 text-end tabular-nums">
-                              {fmt(row.operationalNetDebit)}
-                            </td>
-                            <td className="px-3 py-2 text-end tabular-nums">
-                              {fmt(row.journalNetDebit)}
-                            </td>
-                            <td className="px-3 py-2 text-end tabular-nums text-destructive">
-                              {fmt(row.difference)}
-                            </td>
-                          </tr>
-                        ),
-                      )}
-                    </tbody>
-                  </table>
-                </ScrollTableShell>
+                <DataTable<OperationalMismatchRow>
+                  {...PANEL_TABLE}
+                  data={activation.operationalReconciliation.mismatches}
+                  emptyText="لا فروق مطابقة تشغيلية."
+                  columns={[
+                    {
+                      id: "scope",
+                      header: "النطاق",
+                      accessorFn: (row) => (row.scope === "GLOBAL" ? "الشركة" : `الفرع ${row.branchId}`),
+                      cell: ({ row }) => (row.original.scope === "GLOBAL" ? "الشركة" : `الفرع ${row.original.branchId}`),
+                    },
+                    {
+                      id: "role",
+                      header: "الدور المحاسبي",
+                      // التسمية المعروضة لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+                      accessorFn: (row) => ROLE_LABELS[row.role] ?? row.role,
+                      cell: ({ row }) => ROLE_LABELS[row.original.role] ?? row.original.role,
+                    },
+                    {
+                      id: "operationalNetDebit",
+                      header: "المصدر التشغيلي",
+                      accessorFn: (row) => fmt(row.operationalNetDebit),
+                      meta: { kind: "money" },
+                      cell: ({ row }) => fmt(row.original.operationalNetDebit),
+                    },
+                    {
+                      id: "journalNetDebit",
+                      header: "اليومية",
+                      accessorFn: (row) => fmt(row.journalNetDebit),
+                      meta: { kind: "money" },
+                      cell: ({ row }) => fmt(row.original.journalNetDebit),
+                    },
+                    {
+                      id: "difference",
+                      header: "الفرق",
+                      accessorFn: (row) => fmt(row.difference),
+                      meta: { kind: "money" },
+                      cell: ({ row }) => <span className="text-destructive">{fmt(row.original.difference)}</span>,
+                    },
+                  ]}
+                />
               )}
               {activation.operationalReconciliation.blockers.map((item) => (
                 <div
@@ -1282,32 +1293,22 @@ function DoubleEntryStatus({
                   />
                 </div>
 
-                <ScrollTableShell bordered={false}>
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/50">
-                      <tr>
-                        <th className="p-2">الدور المحاسبي</th>
-                        <th className="p-2 text-right">مدين</th>
-                        <th className="p-2 text-right">دائن</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {openingPreparation.preview.roleTotals.map((row) => (
-                        <tr key={row.role} className="border-t">
-                          <td className="p-2 font-medium">
-                            {ROLE_LABELS[row.role] ?? row.role}
-                          </td>
-                          <td className="p-2 text-right tabular-nums" dir="ltr">
-                            {fmt(row.debit)}
-                          </td>
-                          <td className="p-2 text-right tabular-nums" dir="ltr">
-                            {fmt(row.credit)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </ScrollTableShell>
+                <DataTable<OpeningRoleTotalRow>
+                  {...PANEL_TABLE}
+                  data={openingPreparation.preview.roleTotals}
+                  emptyText="لا مجاميع أدوار في المعاينة."
+                  columns={[
+                    {
+                      id: "role",
+                      header: "الدور المحاسبي",
+                      accessorFn: (row) => ROLE_LABELS[row.role] ?? row.role,
+                      cell: ({ row }) => <span className="font-medium">{ROLE_LABELS[row.original.role] ?? row.original.role}</span>,
+                    },
+                    // kind: "money" يتكفّل بالمحاذاة وtabular-nums وعزل الاتّجاه ⇒ لا dir="ltr" يدويّ.
+                    { id: "debit", header: "مدين", accessorFn: (row) => fmt(row.debit), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.debit) },
+                    { id: "credit", header: "دائن", accessorFn: (row) => fmt(row.credit), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.credit) },
+                  ]}
+                />
 
                 {openingPreparation.preview.unallocatedOpeningBalance.scopes
                   .length > 0 && (
@@ -1481,49 +1482,40 @@ function DoubleEntryStatus({
           </div>
 
           {reconciliation.roles.length > 0 ? (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">الدور المحاسبي</th>
-                    <th className="p-2 text-right">المتوقّع</th>
-                    <th className="p-2 text-right">الفعلي</th>
-                    <th className="p-2 text-right">الانحراف</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {reconciliation.roles.map((row) => (
-                    <tr key={row.role} className="border-t">
-                      <td className="p-2 font-medium">
-                        {ROLE_LABELS[row.role] ?? row.role}
-                        <div
-                          className="text-[11px] font-normal text-muted-foreground"
-                          dir="ltr"
-                        >
-                          {row.role}
-                        </div>
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {fmt(row.expected)}
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {fmt(row.actual)}
-                      </td>
-                      <td
-                        className={
-                          row.drift === "0.00"
-                            ? "p-2 text-right tabular-nums"
-                            : "p-2 text-right tabular-nums font-semibold text-money-negative"
-                        }
-                        dir="ltr"
-                      >
-                        {fmt(row.drift)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            <DataTable<DoubleEntryRoleRow>
+              {...PANEL_TABLE}
+              data={reconciliation.roles}
+              emptyText="لا أحداث مالية في هذا النطاق."
+              columns={[
+                {
+                  id: "role",
+                  header: "الدور المحاسبي",
+                  accessorFn: (row) => ROLE_LABELS[row.role] ?? row.role,
+                  meta: { width: "wide" },
+                  cell: ({ row }) => (
+                    <span className="font-medium">
+                      {ROLE_LABELS[row.original.role] ?? row.original.role}
+                      <div className="text-[11px] font-normal text-muted-foreground" dir="ltr">
+                        {row.original.role}
+                      </div>
+                    </span>
+                  ),
+                },
+                { id: "expected", header: "المتوقّع", accessorFn: (row) => fmt(row.expected), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.expected) },
+                { id: "actual", header: "الفعلي", accessorFn: (row) => fmt(row.actual), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.actual) },
+                {
+                  id: "drift",
+                  header: "الانحراف",
+                  accessorFn: (row) => fmt(row.drift),
+                  meta: { kind: "money" },
+                  cell: ({ row }) => (
+                    <span className={row.original.drift === "0.00" ? undefined : "font-semibold text-money-negative"}>
+                      {fmt(row.original.drift)}
+                    </span>
+                  ),
+                },
+              ]}
+            />
           ) : (
             <p className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">
               لا أحداث مالية في هذا النطاق.
@@ -1625,53 +1617,62 @@ function DriftSection({
           </div>
         </div>
         {rows.length > 0 && (
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">{idLabel}</th>
-                  <th className="p-2 text-right">المتوقّع</th>
-                  <th className="p-2 text-right">الفعلي</th>
-                  <th className="p-2 text-right">الانحراف</th>
-                  {link && <th className="p-2 text-center">إجراء</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  // المخزون: متغيّر سالب في فرعين يُنتج id مكرّراً (reconcileInventory يُسقط branchId) ⇒ مفتاح مركّب بالـindex.
-                  <tr key={`${title}-${r.id}-${i}`} className="border-t">
-                    <td className="p-2 font-medium">
-                      <div className="tabular-nums" dir="ltr">
-                        {r.id}
+          <DataTable<Row>
+            {...PANEL_TABLE}
+            data={rows}
+            emptyText="لا انحراف."
+            columns={[
+              {
+                id: "id",
+                header: idLabel,
+                accessorFn: (r) => (names ? `${r.id} — ${names.get(r.id) ?? "—"}` : String(r.id)),
+                /* ⛔ لا `kind: "code"` هنا: الخليّة تحمل **اسم الطرف بالعربية** تحت الرقم،
+                   وkind الرمز يفرض `font-mono` + `whitespace-nowrap` + عزلَ اتّجاهٍ LTR على
+                   الخليّة كلّها ⇒ اسمٌ عربيّ بخطٍّ أحاديّ لا يلتفّ. الرقم وحده يُعزَل بـdir. */
+                meta: { width: "wide", wrap: true },
+                cell: ({ row }) => (
+                  <span className="font-medium">
+                    <div className="tabular-nums" dir="ltr">
+                      {row.original.id}
+                    </div>
+                    {names && (
+                      <div className="text-xs font-normal text-muted-foreground">
+                        {names.get(row.original.id) ?? "—"}
                       </div>
-                      {names && (
-                        <div className="text-xs font-normal text-muted-foreground">
-                          {names.get(r.id) ?? "—"}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">
-                      {val(r.expected)}
-                    </td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">
-                      {val(r.actual)}
-                    </td>
-                    <td
-                      className="p-2 text-right font-semibold tabular-nums text-money-negative"
-                      dir="ltr"
-                    >
-                      {val(r.drift)}
-                      {r.note && (
-                        <span
-                          dir="rtl"
-                          className="mr-2 inline-block rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]"
-                        >
-                          {r.note}
-                        </span>
-                      )}
-                    </td>
-                    {link && (
-                      <td className="p-2 text-center">
+                    )}
+                  </span>
+                ),
+              },
+              { id: "expected", header: "المتوقّع", accessorFn: (r) => val(r.expected), meta: { kind: "money" }, cell: ({ row }) => val(row.original.expected) },
+              { id: "actual", header: "الفعلي", accessorFn: (r) => val(r.actual), meta: { kind: "money" }, cell: ({ row }) => val(row.original.actual) },
+              {
+                id: "drift",
+                header: "الانحراف",
+                accessorFn: (r) => `${val(r.drift)}${r.note ? ` — ${r.note}` : ""}`,
+                meta: { kind: "money" },
+                cell: ({ row }) => (
+                  <span className="font-semibold text-money-negative">
+                    {val(row.original.drift)}
+                    {row.original.note && (
+                      <span
+                        dir="rtl"
+                        className="mr-2 inline-block rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]"
+                      >
+                        {row.original.note}
+                      </span>
+                    )}
+                  </span>
+                ),
+              },
+              // عمود الإجراء يظهر فقط حين يوجد رابطٌ للسجل — كما كان بالضبط.
+              ...(link
+                ? ([
+                    {
+                      id: "actions",
+                      header: "إجراء",
+                      enableSorting: false,
+                      meta: { kind: "actions" },
+                      cell: ({ row }) => (
                         <RowActions
                           mode="inline"
                           actions={[
@@ -1679,18 +1680,17 @@ function DriftSection({
                               key: "open",
                               kind: "view",
                               label: linkLabel,
-                              href: link(r.id),
+                              href: link(row.original.id),
                               gate: { adminOnly: true },
                             },
                           ]}
                         />
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+                      ),
+                    },
+                  ] as ColumnDef<Row, unknown>[])
+                : []),
+            ]}
+          />
         )}
       </CardContent>
     </Card>

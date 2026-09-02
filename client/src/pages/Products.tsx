@@ -30,8 +30,8 @@ import { PRODUCT_FIELDS } from "@/lib/importFields";
 import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -87,6 +87,13 @@ const yesNo = (v: boolean | null | undefined) => (v == null ? "" : v ? "نعم" 
 function rowKey(r: Row): string {
   return `${r.productId}-${r.variantId ?? 0}-${r.productUnitId ?? 0}`;
 }
+
+/**
+ * مرساةُ الصفّ المُبرَز من ميل البحث الشامل (Ctrl+K). `DataTable` لا يقبل `ref` لكلّ صفّ،
+ * فيمرّ الإبراز عبر `getRowClassName` ويُمرَّر الصفّ إلى وسط الشاشة بأثرٍ يبحث عن هذه
+ * المرساة بعد الرسم — نفس سلوك ref السابق بلا تعديل المكوّن المشترك.
+ */
+const FOCUS_ANCHOR_CLASS = "product-focus-anchor";
 
 export default function Products() {
   const utils = trpc.useUtils();
@@ -165,7 +172,14 @@ export default function Products() {
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
   const effectiveBranchId = list.data?.branchId ?? branchId;
-  const pages = Math.max(1, Math.ceil(total / limit));
+
+  // تمريرُ الصفّ المُبرَز إلى وسط الشاشة بعد رسم الصفوف (بديل ref الذي كان على <tr>).
+  useEffect(() => {
+    if (rows.length === 0) return;
+    document
+      .querySelector(`.${FOCUS_ANCHOR_CLASS}`)
+      ?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [rows, rowProps]);
 
   // توزيع البدائل: نستعلم فقط لمنتجات **الصفحة المرئية** (لا الكتالوج كلّه) لتزيين إجراء الصفّ — Codex P2.
   const visibleProductIds = useMemo(
@@ -491,188 +505,231 @@ export default function Products() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 w-8">
-                  <input
-                    type="checkbox"
-                    className="size-4"
-                    aria-label="تحديد كل الصفوف"
-                    checked={rows.length > 0 && rows.every((r) => sel.isSelected(rowKey(r)))}
-                    onChange={(e) => sel.setMany(rows.map(rowKey), e.target.checked)}
-                  />
-                </th>
-                <th className="p-2">المنتج</th>
-                <th className="p-2">الفئة</th>
-                <th className="p-2">المتغيّر</th>
-                <th className="p-2">الوحدة</th>
-                <th className="p-2">الباركود</th>
-                <th className="p-2 text-right">السعر (مفرد)</th>
-                {isElevated && <th className="p-2 text-right">التكلفة</th>}
-                {isElevated && <th className="p-2 text-right">سعر الجملة</th>}
-                <th className="p-2 text-right">الرصيد الفعلي</th>
-                <th className="p-2 text-right">المحجوز والمخصص</th>
-                <th className="p-2 text-right">المتاح للبيع</th>
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r: Row) => {
-                const dimmed = !r.productIsActive || r.variantIsActive === false || r.unitIsActive === false;
-                const key = rowKey(r);
-                const fr = rowProps(r.productId);
-                return (
-                  <tr
-                    key={key}
-                    ref={fr.ref}
-                    className={`border-t ${dimmed ? "opacity-60" : ""} ${fr.className}`}
-                  >
-                    <td className="p-2">
-                      <input
-                        type="checkbox"
-                        className="size-4"
-                        aria-label={`تحديد ${r.productName}`}
-                        checked={sel.isSelected(key)}
-                        onChange={() => sel.toggle(key)}
-                      />
-                    </td>
-                    <td className="p-2 font-medium">
-                      {/* ٢٤/٨ (تدقيق + Codex P2 على PR #746): البوّابة على `products:FULL` صراحةً —
-                          مديرٌ بpermissionsOverride إلى READ لا يجب أن يرى رابط تحرير سيرفضه المسار. */}
-                      {canEditProduct ? (
-                        <Link href={`/products/${r.productId}/edit`} className="text-primary hover:underline" title="تعديل المنتج">
-                          {r.productName}
-                        </Link>
-                      ) : (
-                        r.productName
-                      )}
-                    </td>
-                    <td className="p-2 text-muted-foreground">{r.categoryName ?? "—"}</td>
-                    <td className="p-2 text-muted-foreground">{r.variantName ?? r.color ?? r.sku ?? "—"}</td>
-                    <td className="p-2">{r.unitName ?? "—"}</td>
-                    <td className="p-2">
-                      <CopyInline value={r.barcode ?? ""} />
-                      {(r.barcodeAliases?.length ?? 0) > 0 && (
-                        <span
-                          className="ms-1 text-xs text-muted-foreground whitespace-nowrap"
-                          title={`بدائل: ${r.barcodeAliases.join("، ")}`}
-                        >
-                          +{r.barcodeAliases.length} بديل
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">
-                      {fmtAr(r.price)}
-                    </td>
-                    {isElevated && (
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {fmtAr(r.costPrice)}
-                      </td>
-                    )}
-                    {isElevated && (
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {fmtAr(r.wholesalePrice)}
-                      </td>
-                    )}
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{r.stockBase}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{r.reservedBase}</td>
-                    <td className="p-2 text-right tabular-nums font-medium" dir="ltr">
-                      {r.availableBase}
-                      {r.bundleCapacity && <BundleCapacityNote capacity={r.bundleCapacity} />}
-                    </td>
-                    <td className="p-2 text-center">
-                      {/* ٢٤/٨ (تدقيق): `title` يوضّح سبب العتم الفعليّ حين الصفّ خاملٌ (`dimmed`) —
-                          كانت الشارة تقول «مفعّل» بينما الصفّ خافت لأنّ المتغيّر أو الوحدة معطّلان. */}
+          <DataTable<Row, string>
+            data={rows}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            /* البحث والفلاتر في ListToolbar أعلاه (تغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0 || q.trim() !== ""}
+            /* الترقيم خادميّ (limit/offset + total) ⇒ شريطٌ واحد بدل شريطٍ يدويّ تحت البطاقة. */
+            serverPagination={{ page, onPageChange: setPage, pageSize: limit, total, isFetching: list.isFetching }}
+            selection={sel}
+            getRowId={rowKey}
+            getRowClassName={(r) => {
+              const dimmed = !r.productIsActive || r.variantIsActive === false || r.unitIsActive === false;
+              const focus = rowProps(r.productId).className;
+              return [dimmed ? "opacity-60" : "", focus, focus ? FOCUS_ANCHOR_CLASS : ""].filter(Boolean).join(" ") || undefined;
+            }}
+            emptyText="لا منتجات مطابقة. غيّر البحث أو أضف منتجاً."
+            columns={[
+              {
+                id: "product",
+                header: "المنتج",
+                accessorFn: (r) => r.productName,
+                meta: { width: "wide" },
+                cell: ({ row }) =>
+                  /* ٢٤/٨ (تدقيق + Codex P2 على PR #746): البوّابة على `products:FULL` صراحةً —
+                     مديرٌ بpermissionsOverride إلى READ لا يجب أن يرى رابط تحرير سيرفضه المسار. */
+                  canEditProduct ? (
+                    <Link href={`/products/${row.original.productId}/edit`} className="font-medium text-primary hover:underline" title="تعديل المنتج">
+                      {row.original.productName}
+                    </Link>
+                  ) : (
+                    <span className="font-medium">{row.original.productName}</span>
+                  ),
+              },
+              {
+                id: "category",
+                header: "الفئة",
+                accessorFn: (r) => r.categoryName ?? "—",
+                cell: ({ row }) => <span className="text-muted-foreground">{row.original.categoryName ?? "—"}</span>,
+              },
+              {
+                id: "variant",
+                header: "المتغيّر",
+                accessorFn: (r) => r.variantName ?? r.color ?? r.sku ?? "—",
+                cell: ({ row }) => (
+                  <span className="text-muted-foreground">
+                    {row.original.variantName ?? row.original.color ?? row.original.sku ?? "—"}
+                  </span>
+                ),
+              },
+              {
+                id: "unit",
+                header: "الوحدة",
+                accessorFn: (r) => r.unitName ?? "—",
+                cell: ({ row }) => row.original.unitName ?? "—",
+              },
+              {
+                id: "barcode",
+                header: "الباركود",
+                accessorFn: (r) => r.barcode ?? "",
+                enableSorting: false,
+                cell: ({ row }) => (
+                  <>
+                    <CopyInline value={row.original.barcode ?? ""} />
+                    {(row.original.barcodeAliases?.length ?? 0) > 0 && (
                       <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "badge-status-active" : "badge-stock-out"}`}
-                        title={
-                          !r.productIsActive ? "المنتج معطَّل" :
-                          r.variantIsActive === false ? "المنتج مفعَّل لكن هذا المتغيّر معطَّل" :
-                          r.unitIsActive === false ? "المنتج مفعَّل لكن هذه الوحدة معطَّلة" :
-                          "المنتج مفعَّل"
-                        }
+                        className="ms-1 text-xs text-muted-foreground whitespace-nowrap"
+                        title={`بدائل: ${row.original.barcodeAliases.join("، ")}`}
                       >
-                        {r.productIsActive ? "مفعّل" : "معطّل"}
+                        +{row.original.barcodeAliases.length} بديل
                       </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      {/* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً */}
-                      <RowActions
-                        actions={[
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل",
-                            href: `/products/${r.productId}/edit`,
-                            gate: { roles: ["manager"], module: "products", level: "FULL" },
-                          },
-                          {
-                            key: "label",
-                            kind: "print",
-                            label: "طباعة ملصق باركود",
-                            hidden: !r.barcode, // بلا باركود = لا ملصق (Code128 يحتاج قيمة)
-                            onSelect: () =>
-                              void printLabel([
-                                {
-                                  name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
-                                  sku: r.sku ?? "",
-                                  price: r.price,
-                                  barcode: r.barcode ?? "",
-                                },
-                              ]),
-                            gate: { module: "products", level: "READ" },
-                          },
-                          {
-                            key: "moves",
-                            kind: "view",
-                            label: "حركات المنتج",
-                            hidden: !r.sku,
-                            // شاشة الحركات تقرأ ?q= من URL (نمط CustomerStatement) فتفتح مفلترة على SKU.
-                            href: `/inventory-movements?q=${encodeURIComponent(r.sku ?? "")}`,
-                            gate: { module: "inventory", level: "READ" },
-                          },
-                          {
-                            key: "altBreakdown",
-                            kind: "view",
-                            label: "توزيع البدائل",
-                            // يظهر فقط للمنتجات التي لها بدائل حقيقية (من خريطة التوزيع).
-                            hidden: !altByProduct.has(r.productId),
-                            onSelect: () => setBreakdownProduct(altByProduct.get(r.productId) ?? null),
-                            gate: { module: "inventory", level: "READ" },
-                          },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: r.productIsActive ? "تعطيل" : "تفعيل",
-                            variant: r.productIsActive ? "destructive" : "default",
-                            disabled: setActive.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                            onSelect: () => void toggle(r.productId, r.productIsActive, r.productName),
-                            gate: { roles: ["manager"], module: "products", level: "FULL" },
-                          },
-                          {
-                            key: "delete",
-                            kind: "delete",
-                            label: "حذف نهائي",
-                            variant: "destructive",
-                            onSelect: () => setDeleteFor({ productId: r.productId, name: r.productName }),
-                            gate: { roles: ["manager"], module: "products", level: "FULL" },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-              {!list.isLoading && rows.length === 0 && (
-                <TableEmptyRow colSpan={isElevated ? 12 : 10} message="لا منتجات مطابقة. غيّر البحث أو أضف منتجاً." />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+                    )}
+                  </>
+                ),
+              },
+              {
+                id: "price",
+                header: "السعر (مفرد)",
+                accessorFn: (r) => fmtAr(r.price),
+                meta: { kind: "money" },
+                cell: ({ row }) => fmtAr(row.original.price),
+              },
+              // أعمدة التكلفة والجملة للمخوَّلين وحدهم — كما كانت (لا تُصيَّر لغيرهم أصلاً).
+              ...(isElevated
+                ? ([
+                    {
+                      id: "costPrice",
+                      header: "التكلفة",
+                      accessorFn: (r) => fmtAr(r.costPrice),
+                      meta: { kind: "money" },
+                      cell: ({ row }) => fmtAr(row.original.costPrice),
+                    },
+                    {
+                      id: "wholesalePrice",
+                      header: "سعر الجملة",
+                      accessorFn: (r) => fmtAr(r.wholesalePrice),
+                      meta: { kind: "money" },
+                      cell: ({ row }) => fmtAr(row.original.wholesalePrice),
+                    },
+                  ] as ColumnDef<Row, unknown>[])
+                : []),
+              {
+                id: "stockBase",
+                header: "الرصيد الفعلي",
+                accessorFn: (r) => r.stockBase,
+                meta: { kind: "number" },
+                cell: ({ row }) => row.original.stockBase,
+              },
+              {
+                id: "reservedBase",
+                header: "المحجوز والمخصص",
+                accessorFn: (r) => r.reservedBase,
+                meta: { kind: "number" },
+                cell: ({ row }) => row.original.reservedBase,
+              },
+              {
+                id: "availableBase",
+                header: "المتاح للبيع",
+                accessorFn: (r) => r.availableBase,
+                meta: { kind: "number" },
+                cell: ({ row }) => (
+                  <span className="font-medium">
+                    {row.original.availableBase}
+                    {row.original.bundleCapacity && <BundleCapacityNote capacity={row.original.bundleCapacity} />}
+                  </span>
+                ),
+              },
+              {
+                id: "status",
+                header: "الحالة",
+                accessorFn: (r) => (r.productIsActive ? "مفعّل" : "معطّل"),
+                meta: { kind: "status" },
+                cell: ({ row }) => (
+                  /* ٢٤/٨ (تدقيق): `title` يوضّح سبب العتم الفعليّ حين الصفّ خاملٌ —
+                     كانت الشارة تقول «مفعّل» بينما الصفّ خافت لأنّ المتغيّر أو الوحدة معطّلان. */
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.productIsActive ? "badge-status-active" : "badge-stock-out"}`}
+                    title={
+                      !row.original.productIsActive ? "المنتج معطَّل" :
+                      row.original.variantIsActive === false ? "المنتج مفعَّل لكن هذا المتغيّر معطَّل" :
+                      row.original.unitIsActive === false ? "المنتج مفعَّل لكن هذه الوحدة معطَّلة" :
+                      "المنتج مفعَّل"
+                    }
+                  >
+                    {row.original.productIsActive ? "مفعّل" : "معطّل"}
+                  </span>
+                ),
+              },
+              {
+                id: "actions",
+                header: "إجراء",
+                enableSorting: false,
+                meta: { kind: "actions" },
+                cell: ({ row }) => {
+                  const r = row.original;
+                  return (
+                    /* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً */
+                    <RowActions
+                      actions={[
+                        {
+                          key: "edit",
+                          kind: "edit",
+                          label: "تعديل",
+                          href: `/products/${r.productId}/edit`,
+                          gate: { roles: ["manager"], module: "products", level: "FULL" },
+                        },
+                        {
+                          key: "label",
+                          kind: "print",
+                          label: "طباعة ملصق باركود",
+                          hidden: !r.barcode, // بلا باركود = لا ملصق (Code128 يحتاج قيمة)
+                          onSelect: () =>
+                            void printLabel([
+                              {
+                                name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+                                sku: r.sku ?? "",
+                                price: r.price,
+                                barcode: r.barcode ?? "",
+                              },
+                            ]),
+                          gate: { module: "products", level: "READ" },
+                        },
+                        {
+                          key: "moves",
+                          kind: "view",
+                          label: "حركات المنتج",
+                          hidden: !r.sku,
+                          // شاشة الحركات تقرأ ?q= من URL (نمط CustomerStatement) فتفتح مفلترة على SKU.
+                          href: `/inventory-movements?q=${encodeURIComponent(r.sku ?? "")}`,
+                          gate: { module: "inventory", level: "READ" },
+                        },
+                        {
+                          key: "altBreakdown",
+                          kind: "view",
+                          label: "توزيع البدائل",
+                          // يظهر فقط للمنتجات التي لها بدائل حقيقية (من خريطة التوزيع).
+                          hidden: !altByProduct.has(r.productId),
+                          onSelect: () => setBreakdownProduct(altByProduct.get(r.productId) ?? null),
+                          gate: { module: "inventory", level: "READ" },
+                        },
+                        {
+                          key: "toggle",
+                          kind: "approve",
+                          label: r.productIsActive ? "تعطيل" : "تفعيل",
+                          variant: r.productIsActive ? "destructive" : "default",
+                          disabled: setActive.isPending,
+                          disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                          onSelect: () => void toggle(r.productId, r.productIsActive, r.productName),
+                          gate: { roles: ["manager"], module: "products", level: "FULL" },
+                        },
+                        {
+                          key: "delete",
+                          kind: "delete",
+                          label: "حذف نهائي",
+                          variant: "destructive",
+                          onSelect: () => setDeleteFor({ productId: r.productId, name: r.productName }),
+                          gate: { roles: ["manager"], module: "products", level: "FULL" },
+                        },
+                      ]}
+                    />
+                  );
+                },
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -730,18 +787,6 @@ export default function Products() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {pages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-            ← السابق
-          </Button>
-          <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
-          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>
-            التالي →
-          </Button>
-        </div>
-      )}
 
       <DeleteProductDialog
         target={deleteFor}

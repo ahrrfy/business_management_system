@@ -1,24 +1,36 @@
 // حوارات عمليات المحفظة (ش٩): إيداع/سحب، طلب تعديل، كشف حساب، مطابقة يومية.
 // مفصولةٌ عن شاشة المحافظ كي تبقى الأخيرة قائمةً بسيطة.
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list/RowActions";
 import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { fmtDateTime } from "@/lib/date";
-import { fmtAr } from "@/lib/money";
+import { fmtDateTime, toDate, type DateInput } from "@/lib/date";
+import { D, fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { inboundPaymentRejectionMessage, isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 export type WalletRow = RouterOutputs["digitalCards"]["wallets"]["list"][number];
+/** صفُّ كشف حساب المحفظة — مشتقٌّ من عقد `digitalCards.wallets.statement`. */
+type WalletTxRow = RouterOutputs["digitalCards"]["wallets"]["statement"][number];
 
 const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
+
+/** مبلغ الحركة موقَّعاً باتّجاهها — أساسُ فرزٍ رقميّ صادق بدل نصّ «+1,234». */
+const signedAmount = (r: WalletTxRow) => (r.direction === "IN" ? D(r.amount) : D(r.amount).neg());
+/** الطلب المعلّق بلا رصيدٍ بعده — يُرتَّب أدنى الجميع بدل أن يُقرأ صفراً. */
+const balanceOrder = (r: WalletTxRow) => (r.status === "PENDING_APPROVAL" ? D(-Infinity) : D(r.balanceAfter ?? 0));
+const cmpTime = (a: DateInput, b: DateInput) => {
+  const ta = toDate(a)?.getTime() ?? -Infinity;
+  const tb = toDate(b)?.getTime() ?? -Infinity;
+  return ta === tb ? 0 : ta < tb ? -1 : 1;
+};
 
 const TX_TYPE: Record<string, string> = {
   OPENING: "رصيد افتتاحي",
@@ -292,6 +304,103 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
 
   const rows = q.data ?? [];
 
+  // أعمدة كشف الحساب — داخل المكوّن لأنّ عمود الإجراء يستدعي الطفرات وحالة المستخدم الحالي.
+  const statementColumns = useMemo<ColumnDef<WalletTxRow, unknown>[]>(() => [
+    { id: "type", header: "النوع", accessorFn: (r) => TX_TYPE[r.type] ?? r.type, cell: ({ row }) => TX_TYPE[row.original.type] ?? row.original.type },
+    {
+      id: "amount",
+      header: "المبلغ",
+      // نصُّ العرض للنسخ، والفرز على القيمة الخامّ موقَّعةً بالاتّجاه: الفرز النصّيّ يقرأ
+      // «+1,234» أصغر من «+999» ويخلط الوارد بالصادر.
+      accessorFn: (r) => `${r.direction === "IN" ? "+" : "−"}${fmtAr(r.amount)}`,
+      meta: { kind: "money" },
+      sortingFn: (a, b) => signedAmount(a.original).cmp(signedAmount(b.original)),
+      cell: ({ row }) => (
+        <span className={row.original.direction === "IN" ? undefined : "text-muted-foreground"}>
+          {row.original.direction === "IN" ? "+" : "−"}{fmtAr(row.original.amount)}
+        </span>
+      ),
+    },
+    {
+      id: "balanceAfter",
+      header: "الرصيد بعدها",
+      // الطلب المعلّق لم ينفذ بعد ⇒ لا رصيد بعده (شرطة لا صفر يُقرأ رصيداً).
+      accessorFn: (r) => (r.status === "PENDING_APPROVAL" ? "—" : fmtAr(r.balanceAfter)),
+      meta: { kind: "money" },
+      sortingFn: (a, b) => balanceOrder(a.original).cmp(balanceOrder(b.original)),
+      cell: ({ row }) => <span className="font-medium">{row.original.status === "PENDING_APPROVAL" ? "—" : fmtAr(row.original.balanceAfter)}</span>,
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (r) => TX_STATUS[r.status] ?? r.status,
+      meta: { kind: "status" },
+      cell: ({ row }) => <span className="text-muted-foreground">{TX_STATUS[row.original.status] ?? row.original.status}</span>,
+    },
+    {
+      id: "createdBy",
+      header: "من قام بها",
+      accessorFn: (r) => r.createdByName || `حساب #${r.createdBy}`,
+      meta: { kind: "actor", wrap: true },
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <div className="text-start">
+            <p className="font-medium">{r.createdByName || `حساب #${r.createdBy}`}</p>
+            {r.createdByUsername && <p className="text-xs text-muted-foreground" dir="ltr">@{r.createdByUsername}</p>}
+            {r.approvedBy && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                اعتمدها {r.approvedByName || `حساب #${r.approvedBy}`}
+                {r.approvedByUsername ? <span dir="ltr"> {`@${r.approvedByUsername}`}</span> : null}
+              </p>
+            )}
+          </div>
+        );
+      },
+    },
+    // التاريخ يُعرض «21/06/2026، 14:30» — والفرز النصّيّ عليه يفرز باليوم لا بالزمن، وكشف
+    // الحساب ترتيبُه الزمنيّ هو معناه؛ فالفرز على الطابع الخامّ.
+    { id: "createdAt", header: "التاريخ والوقت", accessorFn: (r) => fmtDateTime(r.createdAt), meta: { kind: "datetime" }, sortingFn: (a, b) => cmpTime(a.original.createdAt, b.original.createdAt), cell: ({ row }) => <span className="text-muted-foreground">{fmtDateTime(row.original.createdAt)}</span> },
+    { id: "notes", header: "ملاحظة", accessorFn: (r) => r.notes || "—", meta: { wrap: true, width: "wide" }, cell: ({ row }) => <span className="text-muted-foreground">{row.original.notes || "—"}</span> },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const r = row.original;
+        if (r.status !== "PENDING_APPROVAL") return "—";
+        const selfRequest = !me.data?.isOwner && Number(r.createdBy) === Number(me.data?.id);
+        return (
+          <RowActions
+            mode="inline"
+            actions={[
+              {
+                key: "approve",
+                kind: "approve",
+                label: "اعتماد",
+                gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                disabled: approve.isPending || selfRequest,
+                disabledReason: selfRequest ? "طلبك يحتاج مديراً آخر؛ مالك النظام وحده مستثنى" : "جارٍ اعتماد الحركة",
+                onSelect: () => approve.mutate({ transactionId: r.id }),
+              },
+              {
+                key: "reject",
+                kind: "reverse",
+                label: "رفض",
+                variant: "destructive",
+                gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+                disabled: reject.isPending,
+                disabledReason: "جارٍ رفض الحركة",
+                onSelect: () => reject.mutate({ transactionId: r.id }),
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ], [approve, reject, me.data?.isOwner, me.data?.id]);
+
   return (
     <Dialog open={wallet != null} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
@@ -301,80 +410,22 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
             كل حركة تحمل الرصيد بعدها؛ الرصيد الحاليّ هو حاصل جمع الحركات النافذة.
           </DialogDescription>
         </DialogHeader>
-        <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 text-start">النوع</th>
-                <th className="p-2 text-start">المبلغ</th>
-                <th className="p-2 text-start">الرصيد بعدها</th>
-                <th className="p-2 text-start">الحالة</th>
-                <th className="p-2 text-start">من قام بها</th>
-                <th className="p-2 text-start">التاريخ والوقت</th>
-                <th className="p-2 text-start">ملاحظة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-t">
-                  <td className="p-2">{TX_TYPE[r.type] ?? r.type}</td>
-                  <td className={`p-2 tabular-nums ${r.direction === "IN" ? "" : "text-muted-foreground"}`}>
-                    {r.direction === "IN" ? "+" : "−"}{fmtAr(r.amount)}
-                  </td>
-                  <td className="p-2 tabular-nums font-medium">
-                    {r.status === "PENDING_APPROVAL" ? "—" : fmtAr(r.balanceAfter)}
-                  </td>
-                  <td className="p-2 text-muted-foreground">{TX_STATUS[r.status] ?? r.status}</td>
-                  <td className="p-2">
-                    <p className="font-medium">{r.createdByName || `حساب #${r.createdBy}`}</p>
-                    {r.createdByUsername && <p className="text-xs text-muted-foreground" dir="ltr">@{r.createdByUsername}</p>}
-                    {r.approvedBy && (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        اعتمدها {r.approvedByName || `حساب #${r.approvedBy}`}
-                        {r.approvedByUsername ? <span dir="ltr"> {`@${r.approvedByUsername}`}</span> : null}
-                      </p>
-                    )}
-                  </td>
-                  <td className="p-2 whitespace-nowrap text-muted-foreground" dir="ltr">{fmtDateTime(r.createdAt)}</td>
-                  <td className="p-2 text-muted-foreground">{r.notes || "—"}</td>
-                  <td className="p-2 text-center">
-                    {r.status === "PENDING_APPROVAL" ? (
-                      <RowActions
-                        mode="inline"
-                        actions={[
-                          {
-                            key: "approve",
-                            kind: "approve",
-                            label: "اعتماد",
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                            disabled: approve.isPending || (!me.data?.isOwner && Number(r.createdBy) === Number(me.data?.id)),
-                            disabledReason: !me.data?.isOwner && Number(r.createdBy) === Number(me.data?.id)
-                              ? "طلبك يحتاج مديراً آخر؛ مالك النظام وحده مستثنى"
-                              : "جارٍ اعتماد الحركة",
-                            onSelect: () => approve.mutate({ transactionId: r.id }),
-                          },
-                          {
-                            key: "reject",
-                            kind: "reverse",
-                            label: "رفض",
-                            variant: "destructive",
-                            gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                            disabled: reject.isPending,
-                            disabledReason: "جارٍ رفض الحركة",
-                            onSelect: () => reject.mutate({ transactionId: r.id }),
-                          },
-                        ]}
-                      />
-                    ) : "—"}
-                  </td>
-                </tr>
-              ))}
-              {q.isLoading && <tr><td colSpan={8}><LoadingState /></td></tr>}
-              {!q.isLoading && rows.length === 0 && <TableEmptyRow colSpan={8} message="لا حركات بعد." />}
-            </tbody>
-          </table>
-        </ScrollTableShell>
+        {/*
+          * مُضمَّن داخل حوار: العنوان في رأس الحوار، والحوار نفسه يمرّر عمودياً
+          * (`max-h-[85vh] overflow-y-auto`) ⇒ `bounded={false}` بلا حاويتَي تمرير متداخلتين،
+          * و`pageSize={Infinity}` لأنّ `embedded` يكتم شريط الترقيم (ترقيمٌ بلا أزرار يُخفي حركات).
+          */}
+        <DataTable<WalletTxRow>
+          embedded
+          searchable={false}
+          bounded={false}
+          pageSize={Infinity}
+          columns={statementColumns}
+          data={rows}
+          loading={q.isLoading}
+          errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => q.refetch() }}
+          emptyText="لا حركات بعد."
+        />
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={onClose}>إغلاق</Button>
         </DialogFooter>

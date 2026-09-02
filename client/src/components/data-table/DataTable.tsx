@@ -51,8 +51,25 @@ import {
   operationTimeLabel,
   type OperationAttribution,
 } from "@/components/data-table/OperationAttribution";
-import { columnPresentationClass, columnUsesLtrIsolate } from "@/components/data-table/columnContract";
+import { columnPresentationClass, columnUsesLtrIsolate, sortingFnForKind } from "@/components/data-table/columnContract";
 import { TABLE_TFOOT_CLS } from "@/components/data-table/tableStyles";
+
+/**
+ * صنفُ الصفّ: الزخرفة الشريطية **تُكتَم** حين يقدّم `getRowClassName` خلفيةً خاصّة.
+ *
+ * السبب: Tailwind هنا يُصدِّر `odd:bg-background` كصنفٍ عارٍ `.odd\:bg-background`
+ * — أي **بنفس نوعيّة** (specificity) صنفِ الخلفية القادم من الشاشة. فالفائزُ بينهما
+ * يتحدّد بترتيب المصدر في ملفّ الأنماط، وهو ترتيبٌ لا تضبطه الشاشة ولا هذا المكوّن.
+ * إبقاءُ صنفَين متنازعَين على نفس الخاصّية رهانٌ على ترتيبٍ عرَضيّ؛ وكتمُ الزخرفة عند
+ * وجود خلفيةٍ صريحة يجعل النتيجة **حتميّة**: ما تطلبه الشاشة هو ما يُرسَم.
+ *
+ * الصفوفُ بلا خلفيةٍ مخصّصة تبقى مخطّطةً كما كانت.
+ */
+function rowShellClass(custom: string | undefined): string {
+  const hasCustomBg = !!custom && /(^|\s)(bg-|dark:bg-)/.test(custom);
+  const zebra = hasCustomBg ? "" : "odd:bg-background even:bg-muted/20";
+  return `border-t ${zebra} hover:bg-accent/35 data-[selected=true]:bg-accent/60`;
+}
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
 function columnHeaderText(col: { columnDef: { header?: unknown }; id: string }): string {
@@ -103,6 +120,13 @@ type DataTableProps<T, K = string> = {
   emptyState?: React.ReactNode;
   /** تجاوز يدويّ للفراغ بعد فلتر — يعرض عادةً «امسح الفلاتر» كـCTA. */
   emptyFilteredState?: React.ReactNode;
+  /**
+   * فلاترُ الشاشة **خارج** الجدول نشطة (شريط أدواتٍ ببحثٍ أو فلاتر تُغذّي الاستعلام).
+   * بلا هذا يقيس المكوّن نشاطَ الفلترة ببحثه الداخليّ وحدَه، فشاشةٌ بـ`searchable={false}`
+   * وفلترٍ خارجيّ تُفرغ نتائجَها تُعلن **«لا صفوف بعد»** وتدعو لإضافة أوّل سجلّ — بينما
+   * السجلّات موجودةٌ ومحجوبةٌ بالفلتر فقط. كذبةٌ صامتة (Codex P2 على PR #939).
+   */
+  externalFiltersActive?: boolean;
   /** أثناء التحميل: تُعرض صفوف هيكلية (skeleton) بدل النصّ الفارغ — إحساس سرعة أفضل بلا قفزة تخطيط. */
   loading?: boolean;
   /**
@@ -121,6 +145,23 @@ type DataTableProps<T, K = string> = {
   mobileCardRenderer?: (row: T, index: number) => React.ReactNode;
   // نَقرة الصَفّ تُغَيِّر التَحديد (افتِراضياً: false — فقط Shift+Click أَو الـcheckbox)
   rowClickSelects?: boolean;
+  /**
+   * نقرُ الصفّ يفتح سجلّه. أُضيف ١/٩/٢٦: القوائم التي تفتح تفاصيلَها بنقرة صفّ كانت
+   * ستفقد ذلك بالتحويل (Employees) — والمكوّنُ الذي ينقصه ما تحتاجه الشاشة يُتجاوَز.
+   * يُتجاهَل النقرُ على عنصرٍ تفاعليّ داخل الصفّ (زرّ/رابط/حقل) فلا يبتلع إجراءاته،
+   * ولا يعمل مع التحديد المتعدّد (هناك النقرُ للتحديد).
+   */
+  onRowClick?: (row: T) => void;
+  /**
+   * جدولٌ **مُضمَّن** داخل بطاقةٍ تحمل عنوانَه وعدَّه أصلاً (لوحات ذات أقسامٍ متعدّدة:
+   * رقيب الشذوذ ١٦ جدولاً · لوحة البطاقات ٦ · مركز الهدايا ٥). يكتم شريطَ الحالة
+   * ومنتقيَ الأعمدة — لأنّ ستّة عشر شريطَ «س من ص صفّ» فوق بعضها ضجيجٌ لا معلومة،
+   * والعدُّ معروضٌ في رأس البطاقة. أُضيف ٢/٩/٢٦ ضمن موجة الجداول ٧.
+   *
+   * ⛔ ليس بديلاً عن القائمة الكاملة: القائمةُ التي يبحث فيها المستعمِل ويُرقّمها
+   * تحتاج شريطَها. استعمله للجدول المُضمَّن الصغير وحده.
+   */
+  embedded?: boolean;
   /** صنف بصري اختياري للصف مشتق من بياناته (تمييز حالات تشغيلية مهمة). */
   getRowClassName?: (row: T) => string | undefined;
   /**
@@ -149,6 +190,14 @@ type DataTableProps<T, K = string> = {
     total?: number;
     /** بديل الإجمالي في وضع keyset (بلا COUNT). */
     hasMore?: boolean;
+    /**
+     * جلبُ صفحةٍ جارٍ. **مطلوبٌ مع `placeholderData: keepPreviousData`** حيث يبقى
+     * `isLoading` كاذباً أثناء الانتقال بينما `hasMore` ما زال من الصفحة السابقة:
+     * بلا هذا يبقى زرّ «التالي» مُفعَّلاً فتقفز نقرةٌ ثانية صفحةً أو تتجاوز آخر صفحةٍ
+     * فعلية (Codex P2 على PR #939). يُعطّل أزرارَ الترقيم وحدَها — و`loading` يبقى
+     * للهياكل العظمية كي لا تومض الصفوف في كل انتقال.
+     */
+    isFetching?: boolean;
   };
   /** البحث الخادميّ — **إلزاميّ عملياً مع serverPagination** (انظر رأس الملف). */
   serverSearch?: {
@@ -225,6 +274,7 @@ export function DataTable<T, K = string>({
   resourceKey,
   emptyState,
   emptyFilteredState,
+  externalFiltersActive = false,
   loading = false,
   errorState,
   toolbar,
@@ -233,6 +283,8 @@ export function DataTable<T, K = string>({
   getRowId,
   mobileCardRenderer,
   rowClickSelects = false,
+  onRowClick,
+  embedded = false,
   getRowClassName,
   operation,
   pageSize = 50,
@@ -302,6 +354,23 @@ export function DataTable<T, K = string>({
     }
     return columns;
   }, [columns, operation]);
+
+  /*
+   * فرزٌ مشتقٌّ من `meta.kind` (٢/٩/٢٦): `accessorFn` يحمل **القيمة المعروضة** كي يصحّ
+   * نسخُها، فالفرزُ الافتراضيّ عليها نصّيٌّ ⇒ «1,234» قبل «999» و«2/9» قبل «10/9».
+   * هنا نُلحق مقارنةً تناسب نوعَ العمود، و`sortingFn` الصريح على العمود يتقدّم دائماً.
+   */
+  const sortAwareColumns = useMemo<ColumnDef<T, unknown>[]>(
+    () =>
+      effectiveColumns.map((column) => {
+        if ((column as { sortingFn?: unknown }).sortingFn) return column;
+        const kind = column.meta?.kind;
+        if (!kind) return column;
+        const fn = sortingFnForKind(kind);
+        return fn === "auto" ? column : ({ ...column, sortingFn: fn } as ColumnDef<T, unknown>);
+      }),
+    [effectiveColumns],
+  );
   const storageKey = useMemo(() => {
     const scope = viewKey || (typeof window !== "undefined" ? window.location.pathname : "table");
     const ids = effectiveColumns.map((column, index) => columnIdentity(column as ColumnDef<unknown, unknown>, index)).join("|");
@@ -328,7 +397,7 @@ export function DataTable<T, K = string>({
   const effectiveSorting = serverMode ? (serverSorting?.value ?? []) : sorting;
   const table = useReactTable({
     data,
-    columns: effectiveColumns,
+    columns: sortAwareColumns,
     state: serverMode ? { sorting: effectiveSorting, columnVisibility } : { sorting, globalFilter, columnVisibility },
     onSortingChange: serverMode && serverSorting ? (updater) => serverSorting.onChange(typeof updater === "function" ? updater(serverSorting.value) : updater) : setSorting,
     onColumnVisibilityChange: setColumnVisibility,
@@ -367,7 +436,10 @@ export function DataTable<T, K = string>({
   // تمييز صريح: بحث/فلتر نشط ⇒ NO_MATCH_FILTER، وإلا NO_ROWS_YET. البحث المحلّيّ يقاس بـglobalFilter،
   // والخادميّ بـserverSearch.value. حالة الفلاتر الأخرى (شارة/تاريخ/…) تُمرَّر يدوياً عبر
   // emptyFilteredState (المستدعي يعلم متى تكون فلاتره نشطة).
-  const anySearchActive = (serverSearch?.value?.trim() ?? "") !== "" || (globalFilter?.trim() ?? "") !== "";
+  const anySearchActive =
+    externalFiltersActive ||
+    (serverSearch?.value?.trim() ?? "") !== "" ||
+    (globalFilter?.trim() ?? "") !== "";
   const emptyOrError = errorState?.isError ? (
     <div className="flex flex-col items-center gap-2 text-sm">
       <span className="inline-flex items-center gap-1.5 font-bold text-[var(--sem-danger)]">
@@ -446,7 +518,7 @@ export function DataTable<T, K = string>({
   };
 
   const columnControls =
-    table.getAllLeafColumns().length > 5 ? (
+    !embedded && table.getAllLeafColumns().length > 5 ? (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button type="button" variant="outline" size="sm" className="h-8 gap-2">
@@ -496,9 +568,15 @@ export function DataTable<T, K = string>({
    *
    * النمط من `TABLE_TFOOT_CLS` نفسه الذي يستعمله `TableTotalsRow` — مصدرٌ بصريّ واحد.
    */
-  const hasFooter = effectiveColumns.some(
-    (c) => (c as { footer?: unknown }).footer != null,
-  );
+  /*
+   * ⚠️ ولا ذيلَ على جدولٍ فارغ: إجماليٌّ فوق صفر صفوفٍ لا معنى له، وكان يُصيَّر صفَّ
+   * ذيلٍ **فارغاً** يشغل مساحةً تحت رسالة «لا بيانات» (أمسكته جولةٌ بصرية على تسويات
+   * الأمانة: الشاشةُ الأصل كانت تشترط صفوفاً قبل رسم صفّ الإجماليات، والتحويلُ أسقط
+   * الشرط لأنّ `footer` مُعرَّفٌ على العمود لا مشروطاً بالبيانات).
+   */
+  const hasFooter =
+    data.length > 0 &&
+    effectiveColumns.some((c) => (c as { footer?: unknown }).footer != null);
 
   const footerRows = hasFooter
     ? table.getFooterGroups().map((fg) => (
@@ -540,6 +618,30 @@ export function DataTable<T, K = string>({
           )}
           {toolbar && <div className="flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">{toolbar}</div>}
         </WorkspaceBar>
+      )}
+      {/*
+       * شريطُ خطأٍ فوق **بياناتٍ قائمة** (Codex P2 على PR #936).
+       * كتلةُ الخطأ في جسم الجدول لا تُصيَّر إلّا حين `visibleRows.length === 0`؛ فإذا فشل
+       * إعادةُ الجلب بعد تحميلٍ ناجح بقيت الصفوف المخبَّأة معروضة **بلا أيّ إشارة** —
+       * والقارئ يظنّ الأرقامَ حيّة. على تقرير مالٍ هذا كذبٌ صامت لا مجرّد إزعاج.
+       * الصفوفُ تبقى (قد يحتاجها) لكن مع وسمٍ صريح أنّها قديمة وزرِّ إعادة محاولة.
+       */}
+      {errorState?.isError && data.length > 0 && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-2 rounded-md border border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] px-3 py-2 text-sm"
+        >
+          <AlertTriangle aria-hidden className="size-4 shrink-0 text-[var(--sem-danger)]" />
+          <span className="font-medium text-[var(--sem-danger)]">
+            {errorState.message?.trim() || "تعذّر تحديث البيانات"}
+          </span>
+          <span className="text-muted-foreground">— المعروض أدناه من آخر تحميلٍ ناجح وقد يكون قديماً.</span>
+          {errorState.onRetry && (
+            <Button size="sm" variant="outline" className="ms-auto" onClick={errorState.onRetry}>
+              <RotateCcw aria-hidden className="size-3.5" /> إعادة المحاولة
+            </Button>
+          )}
+        </div>
       )}
       {mobileCardRenderer ? (
         <>
@@ -643,11 +745,24 @@ export function DataTable<T, K = string>({
                       <tr
                         key={row.id}
                         data-selected={isSelected || undefined}
-                        className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                        className={`${rowShellClass(getRowClassName?.(row.original))} ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                         onClick={(e) => {
-                          if (!selectionEnabled) return;
                           const target = e.target as HTMLElement;
+                          /*
+                           * ⚠️ **حاجزُ البوّابة (portal) أوّلاً** (Codex P2 على PR #939):
+                           * React يُصعّد الحدثَ عبر شجرته لا شجرة DOM، فمحتوى Radix المُبوَّب
+                           * (Popover/DropdownMenu/قائمة النسخ) يُصعّد نقرتَه إلى هذا الصفّ رغم
+                           * أنّ عقدتَه **خارج** `<tr>` في DOM — و`closest` يمشي في DOM فلا يراه.
+                           * فنقرُ شرح التسوية في سجلّ الأصول كان يفتح تفاصيلَ الأصل ويُبعد
+                           * المستعمِلَ عمّا يقرأ. الاحتواءُ في DOM هو الفحص الصحيح.
+                           */
+                          if (!e.currentTarget.contains(target)) return;
+                          // ولا يبتلع النقرَ على عنصرٍ تفاعليّ داخل الصفّ (إجراءات/روابط/حقول).
                           if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                          if (!selectionEnabled) {
+                            onRowClick?.(row.original);
+                            return;
+                          }
                           if (e.shiftKey || rowClickSelects) {
                             handleRowToggle(rowIndex, e);
                           }
@@ -774,11 +889,17 @@ export function DataTable<T, K = string>({
                   <tr
                     key={row.id}
                     data-selected={isSelected || undefined}
-                    className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                    className={`${rowShellClass(getRowClassName?.(row.original))} ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                     onClick={(e) => {
-                      if (!selectionEnabled) return;
                       const target = e.target as HTMLElement;
+                      // حاجزُ البوّابة أوّلاً — انظر شرحَ المسار الآخر أعلاه (Codex P2، PR #939).
+                      if (!e.currentTarget.contains(target)) return;
+                      // ولا يبتلع النقرَ على عنصرٍ تفاعليّ داخل الصفّ (إجراءات/روابط/حقول).
                       if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                      if (!selectionEnabled) {
+                        onRowClick?.(row.original);
+                        return;
+                      }
                       if (e.shiftKey || rowClickSelects) {
                         handleRowToggle(rowIndex, e);
                       }
@@ -843,7 +964,7 @@ export function DataTable<T, K = string>({
           rowsOnPage={data.length}
           total={serverPagination!.total}
           hasMore={serverPagination!.hasMore}
-          isLoading={loading}
+          isLoading={loading || (serverPagination!.isFetching ?? false)}
           status={
             statusSummary || (selectionEnabled && selection!.count > 0) ? (
               <span className="inline-flex min-w-max items-center gap-3">
@@ -855,7 +976,7 @@ export function DataTable<T, K = string>({
           actions={columnControls}
         />
       ) : (
-        (data.length > 0 || columnControls || statusSummary) && (
+        !embedded && (data.length > 0 || columnControls || statusSummary) && (
           <WorkspaceStatusBar
             role={paginated && table.getPageCount() > 1 ? "navigation" : "group"}
             aria-label={paginated && table.getPageCount() > 1 ? "ترقيم صفحات الجدول" : "أدوات الجدول"}

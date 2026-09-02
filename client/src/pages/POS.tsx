@@ -2479,7 +2479,9 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
         </div>
       )}
 
-      {/* Table */}
+      {/* سلّة الكاشير: شبكةُ تحرير (‎−/+‎ وحذفٌ لكل سطر) بتصميمٍ مخصّصٍ بأنماطٍ سطرية
+          (لا Tailwind) لأنّ سطحَ الكاشير مضبوطٌ لشاشة اللمس وحجم الخطّ الكبير.
+          `DataTable` أداةُ عرضٍ فلا تُطبَّق هنا. */}
       <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
         <table style={{ width: "100%", minWidth: 540, borderCollapse: "collapse" }}>
           <thead>

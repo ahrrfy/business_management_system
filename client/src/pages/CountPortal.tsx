@@ -162,7 +162,6 @@ export default function CountPortal() {
     if (account.data && code) navigate(`/my-stocktake/${encodeURIComponent(code)}`, { replace: true });
   }, [account.data, code, navigate]);
 
-  if (account.data) return null;
 
   /* ── الدخول الصامت: كوكي سارٍ ⇒ مباشرة، وإلا auth بلا PIN (مستخدم نظام بتكليف USER)، وإلا شاشة PIN ── */
   const boot = useCallback(async () => {
@@ -645,6 +644,15 @@ export default function CountPortal() {
   }, [st, code, finishMut, utils]);
 
   /* ═══════════════════════ العرض ═══════════════════════ */
+
+  /*
+   * ⚠️ **بعد كلّ الخطّافات** (٢/٩/٢٦): كان هذا الحارس فوقها بسبعةٍ وعشرين خطّافاً، فحين
+   * يصل `account.data` يخرج المكوّن مبكّراً ⇒ عددُ الخطّافات ينهار من ٢٧ إلى صفر بين
+   * تصييرَين وReact يسقط. كان يستتر خلف `useEffect` أعلاه ينقل المستعمِل في نفس اللحظة،
+   * فالسباقُ وحدَه ما كان يخفيه. أمسكه `react-hooks/rules-of-hooks` أوّلَ تشغيلٍ للمُدقّق.
+   * الخروجُ هنا يبقى بنفس الأثر (لا يُصيَّر شيء) بلا كسر ترتيب الخطّافات.
+   */
+  if (account.data) return null;
 
   const frame = (body: ReactNode) => (
     <div dir="rtl" className="fixed inset-0 z-0 flex justify-center overflow-hidden bg-muted/40 font-sans">

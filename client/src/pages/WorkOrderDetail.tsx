@@ -11,6 +11,8 @@ import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrder
 import { ChannelBadge } from "@/components/ChannelBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
@@ -465,6 +467,48 @@ export default function WorkOrderDetail() {
     ? durableRefundStatusNotice(cancellationRefundStatus.data.status, fmt(cancellationRefundStatus.data.amount))
     : null;
 
+  /* أعمدة جدول المواد — تُشتقّ من عقد `workOrders.get` نفسه (لا نوعٌ يدويّ ينجرف عن الخادم).
+     تُبنى هنا لا في `useMemo` لأنّ الشاشة ترجع مبكّراً قبل هذه النقطة (تحميل/خطأ)، وخطّافٌ
+     بعد رجوعٍ مشروط ممنوع. أعمدة الكلفة مشروطةٌ بـ`showCost` كما كانت في الجدول الخامّ. */
+  type MaterialRow = (typeof data)["materials"][number];
+  // مشروطٌ بـ`showCost` كما كان `<tfoot>` الأصليّ: لا حسابَ كلفةٍ لمن حُجبت عنه (قد تصل
+  // `unitCost` محجوبةً فيرمي `D()` على قيمةٍ غير رقمية).
+  const materialsCostTotal = showCost
+    ? data.materials.reduce((s, m) => s.plus(D(m.unitCost).times(m.baseQuantity)), D(0)).toFixed(2)
+    : "0";
+  const materialColumns: ColumnDef<MaterialRow, unknown>[] = [
+    {
+      id: "material",
+      header: "المادة",
+      accessorFn: (m) => `${m.productName}${m.variantName ? ` — ${m.variantName}` : ""}`,
+      meta: { width: "wide" },
+      cell: ({ row }) => <>{row.original.productName}{row.original.variantName ? ` — ${row.original.variantName}` : ""}</>,
+      // تسمية الذيل تظهر فقط مع أعمدة الكلفة — بلا كلفةٍ لا إجماليَّ يُذيَّل به الجدول.
+      footer: showCost ? () => "إجمالي كلفة المواد" : undefined,
+    },
+    { id: "sku", header: "SKU", accessorFn: (m) => m.sku ?? "", meta: { kind: "code" }, cell: ({ row }) => row.original.sku },
+    {
+      id: "baseQuantity",
+      header: "كمية (أساس)",
+      accessorFn: (m) => String(m.baseQuantity),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => row.original.baseQuantity,
+    },
+    ...(showCost
+      ? ([
+          { id: "unitCost", header: "كلفة الوحدة", accessorFn: (m) => fmt(m.unitCost), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.unitCost) },
+          {
+            id: "lineCost",
+            header: "كلفة السطر",
+            accessorFn: (m) => fmt(D(m.unitCost).times(m.baseQuantity).toFixed(2)),
+            meta: { kind: "money" },
+            cell: ({ row }) => fmt(D(row.original.unitCost).times(row.original.baseQuantity).toFixed(2)),
+            footer: () => fmt(materialsCostTotal),
+          },
+        ] as ColumnDef<MaterialRow, unknown>[])
+      : []),
+  ];
+
   return (
     <div className="space-y-4 max-w-4xl">
       <PageHeader
@@ -737,43 +781,17 @@ export default function WorkOrderDetail() {
           )}
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium text-start">المادة</th>
-                  <th className="px-3 py-2 font-medium text-start">SKU</th>
-                  <th className="px-3 py-2 font-medium text-center">كمية (أساس)</th>
-                  {showCost && <th className="px-3 py-2 font-medium text-right">كلفة الوحدة</th>}
-                  {showCost && <th className="px-3 py-2 font-medium text-right">كلفة السطر</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {data.materials.map((m) => (
-                  <tr key={m.id} className="border-t hover:bg-muted/30">
-                    <td className="px-3 py-2">{m.productName}{m.variantName ? ` — ${m.variantName}` : ""}</td>
-                    <td className="px-3 py-2 font-mono text-xs" dir="ltr">{m.sku}</td>
-                    <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{m.baseQuantity}</td>
-                    {showCost && <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(m.unitCost)}</td>}
-                    {showCost && <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(D(m.unitCost).times(m.baseQuantity).toFixed(2))}</td>}
-                  </tr>
-                ))}
-                {data.materials.length === 0 && (
-                  <tr><td colSpan={showCost ? 5 : 3} className="p-6 text-center text-muted-foreground">لا مواد مرفقة (أمر طباعة/خدمة صرفة).</td></tr>
-                )}
-              </tbody>
-              {data.materials.length > 0 && showCost && (
-                <tfoot>
-                  <tr className="border-t-2 bg-muted/40 font-semibold">
-                    <td className="px-3 py-2" colSpan={4}>إجمالي كلفة المواد</td>
-                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">
-                      {fmt(data.materials.reduce((s, m) => s.plus(D(m.unitCost).times(m.baseQuantity)), D(0)).toFixed(2))}
-                    </td>
-                  </tr>
-                </tfoot>
-              )}
-            </table>
-          </div>
+          {/* مُضمَّن: العنوان في رأس البطاقة، وبنود المواد تُقرأ كاملةً بلا بحثٍ ولا ترقيم.
+              صفّ «إجمالي كلفة المواد» صار `footer` على العمودَين فيقع المبلغ تحت عموده. */}
+          <DataTable<MaterialRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={materialColumns}
+            data={data.materials}
+            emptyText="لا مواد مرفقة (أمر طباعة/خدمة صرفة)."
+          />
         </CardContent>
       </Card>
       )}

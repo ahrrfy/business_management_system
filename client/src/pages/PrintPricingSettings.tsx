@@ -10,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list/RowActions";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { confirm } from "@/lib/confirm";
@@ -142,11 +144,14 @@ function GeneralSettings({
 }
 
 // ─── أسعار الوجه (المقاس × النمط) ────────────────────────────────────────────
+/** صفّ سعر وجهٍ مطبوع (مقاس × نمط). */
+type FacePriceRow = { id: number; paperSize: PaperSizeCode; colorMode: ColorMode; pricePerFace: string };
+
 function FacePricesSection({
   rows,
   onChanged,
 }: {
-  rows: { id: number; paperSize: PaperSizeCode; colorMode: ColorMode; pricePerFace: string }[];
+  rows: FacePriceRow[];
   onChanged: () => Promise<unknown>;
 }) {
   const [size, setSize] = useState<PaperSizeCode>("A4");
@@ -182,6 +187,38 @@ function FacePricesSection({
     del.mutate({ id });
   }
 
+  const faceColumns: ColumnDef<FacePriceRow, unknown>[] = [
+    { id: "paperSize", header: "المقاس", accessorFn: (r) => sizeLabel(r.paperSize), cell: ({ row }) => sizeLabel(row.original.paperSize) },
+    { id: "colorMode", header: "النمط", accessorFn: (r) => COLOR_MODE_AR[r.colorMode], cell: ({ row }) => COLOR_MODE_AR[row.original.colorMode] },
+    {
+      id: "pricePerFace",
+      header: "سعر الوجه",
+      accessorFn: (r) => formatIqd(r.pricePerFace),
+      meta: { kind: "money" },
+      cell: ({ row }) => formatIqd(row.original.pricePerFace),
+    },
+    {
+      id: "actions",
+      header: "حذف",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <RowActions
+          mode="inline"
+          actions={[{
+            key: "delete",
+            kind: "delete",
+            label: "حذف",
+            icon: Trash2,
+            variant: "destructive",
+            gate: { managerOnly: true },
+            onSelect: () => void remove(row.original.id, `${sizeLabel(row.original.paperSize)} / ${COLOR_MODE_AR[row.original.colorMode]}`),
+          }]}
+        />
+      ),
+    },
+  ];
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -201,45 +238,16 @@ function FacePricesSection({
           </Button>
         </div>
 
-        {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">لا أسعار وجه مضبوطة بعد — أضِف المقاسات التي تستعملها.</p>
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">المقاس</th>
-                  <th className="p-2 text-start">النمط</th>
-                  <th className="p-2 text-start">سعر الوجه</th>
-                  <th className="p-2 text-center">حذف</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className="border-t border-border">
-                    <td className="p-2">{sizeLabel(r.paperSize)}</td>
-                    <td className="p-2">{COLOR_MODE_AR[r.colorMode]}</td>
-                    <td className="p-2 tabular-nums">{formatIqd(r.pricePerFace)}</td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        mode="inline"
-                        actions={[{
-                          key: "delete",
-                          kind: "delete",
-                          label: "حذف",
-                          icon: Trash2,
-                          variant: "destructive",
-                          gate: { managerOnly: true },
-                          onSelect: () => void remove(r.id, `${sizeLabel(r.paperSize)} / ${COLOR_MODE_AR[r.colorMode]}`),
-                        }]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {/* مُضمَّن في بطاقةٍ تحمل عنوان القسم ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+        <DataTable<FacePriceRow>
+          embedded
+          searchable={false}
+          bounded={false}
+          pageSize={Infinity}
+          columns={faceColumns}
+          data={rows}
+          emptyText="لا أسعار وجه مضبوطة بعد — أضِف المقاسات التي تستعملها."
+        />
       </CardContent>
     </Card>
   );
@@ -309,6 +317,62 @@ function ManagedListSection({
     reset();
   }
 
+  // عمود الوحدة مشروطٌ بوجود خيارات وحدة — كما كان الجدول الخامّ.
+  const managedColumns: ColumnDef<ManagedRow, unknown>[] = [
+    {
+      id: "name",
+      header: "الاسم",
+      accessorFn: (r) => r.name,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+    },
+    ...(unitOptions
+      ? [{
+          id: "unit",
+          header: unitLabel ?? "الوحدة",
+          accessorFn: (r: ManagedRow) => unitOptions.find((u) => u.value === r.unit)?.label ?? r.unit ?? "",
+          cell: ({ row }) => unitOptions.find((u) => u.value === row.original.unit)?.label ?? row.original.unit,
+        } as ColumnDef<ManagedRow, unknown>]
+      : []),
+    {
+      id: "money",
+      header: moneyLabel,
+      accessorFn: (r) => formatIqd(r.money),
+      meta: { kind: "money" },
+      cell: ({ row }) => formatIqd(row.original.money),
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (r) => (r.isActive ? "فعّال" : "معطّل"),
+      meta: { kind: "status" },
+      cell: ({ row }) => <span className="text-xs">{row.original.isActive ? "فعّال" : "معطّل"}</span>,
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <RowActions
+          mode="inline"
+          actions={[
+            { key: "edit", kind: "edit", label: "تعديل", icon: Edit3, gate: { managerOnly: true }, onSelect: () => startEdit(row.original) },
+            {
+              key: "toggle",
+              kind: "approve",
+              label: row.original.isActive ? "تعطيل" : "تفعيل",
+              gate: { managerOnly: true },
+              disabled: busy,
+              disabledReason: "جارٍ تحديث الإعداد",
+              onSelect: () => onUpdate({ id: row.original.id, isActive: !row.original.isActive }),
+            },
+          ]}
+        />
+      ),
+    },
+  ];
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -334,50 +398,17 @@ function ManagedListSection({
           </div>
         </div>
 
-        {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">لا عناصر بعد.</p>
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">الاسم</th>
-                  {unitOptions && <th className="p-2 text-start">{unitLabel}</th>}
-                  <th className="p-2 text-start">{moneyLabel}</th>
-                  <th className="p-2 text-center">الحالة</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className={`border-t border-border ${r.isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">{r.name}</td>
-                    {unitOptions && <td className="p-2">{unitOptions.find((u) => u.value === r.unit)?.label ?? r.unit}</td>}
-                    <td className="p-2 tabular-nums">{formatIqd(r.money)}</td>
-                    <td className="p-2 text-center text-xs">{r.isActive ? "فعّال" : "معطّل"}</td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        mode="inline"
-                        actions={[
-                          { key: "edit", kind: "edit", label: "تعديل", icon: Edit3, gate: { managerOnly: true }, onSelect: () => startEdit(r) },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: r.isActive ? "تعطيل" : "تفعيل",
-                            gate: { managerOnly: true },
-                            disabled: busy,
-                            disabledReason: "جارٍ تحديث الإعداد",
-                            onSelect: () => onUpdate({ id: r.id, isActive: !r.isActive }),
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {/* مُضمَّن في بطاقةٍ تحمل عنوان القسم ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+        <DataTable<ManagedRow>
+          embedded
+          searchable={false}
+          bounded={false}
+          pageSize={Infinity}
+          columns={managedColumns}
+          data={rows}
+          getRowClassName={(r) => (r.isActive ? undefined : "opacity-60")}
+          emptyText="لا عناصر بعد."
+        />
       </CardContent>
     </Card>
   );

@@ -13,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
@@ -400,6 +402,73 @@ export default function StocktakeReview() {
   const hasMissingBaseCost = valuationIntegrity.rows.some(
     (row) => row.reason === "ZERO_BASE_COST",
   );
+
+  type ValuationIntegrityRow = (typeof valuationIntegrity.rows)[number];
+  type CountIntegrityRow = (typeof countIntegrity.rows)[number];
+
+  /* جدولا الحارسين مُضمَّنان في بطاقتَي تحذيرٍ تحملان عنوانيهما وعدَّهما. */
+  const INTEGRITY_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
+
+  /** اسم المنتج مع بديله ورمزه — نصٌّ واحد للنسخ وعرضٌ مركّب للقراءة. */
+  const integrityNameCell = (row: { productName: string; variantName?: string | null; sku: string }) => (
+    <>
+      {row.productName}
+      {row.variantName ? " — " + row.variantName : ""}
+      <span className="ms-1 font-mono text-[10px] text-muted-foreground" dir="ltr">
+        {row.sku}
+      </span>
+    </>
+  );
+
+  const valuationIntegrityColumns: ColumnDef<ValuationIntegrityRow, unknown>[] = [
+    {
+      id: "product",
+      header: "المنتج",
+      accessorFn: (r) => r.productName + (r.variantName ? " — " + r.variantName : "") + " · " + r.sku,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => <span className="font-semibold">{integrityNameCell(row.original)}</span>,
+    },
+    { id: "diff", header: "الفرق", accessorFn: (r) => nf(r.diff), meta: { kind: "number" }, cell: ({ row }) => nf(row.original.diff) },
+    { id: "snapshotUnitCost", header: "تكلفة اللقطة", accessorFn: (r) => money(r.snapshotUnitCost), meta: { kind: "money" }, cell: ({ row }) => money(row.original.snapshotUnitCost) },
+    { id: "currentBaseUnitCost", header: "تكلفة الأساس الحالية", accessorFn: (r) => money(r.currentBaseUnitCost), meta: { kind: "money" }, cell: ({ row }) => money(row.original.currentBaseUnitCost) },
+    { id: "snapshotValue", header: "القيمة المسجلة", accessorFn: (r) => money(r.snapshotValue), meta: { kind: "money" }, cell: ({ row }) => money(row.original.snapshotValue) },
+    { id: "currentBaseValue", header: "القيمة الحالية", accessorFn: (r) => money(r.currentBaseValue), meta: { kind: "money" }, cell: ({ row }) => money(row.original.currentBaseValue) },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (r) => (r.blocking ? "حاجب" : "يحتاج مراجعة"),
+      meta: { kind: "status" },
+      cell: ({ row }) => <Pill tone={row.original.blocking ? "rose" : "amber"}>{row.original.blocking ? "حاجب" : "يحتاج مراجعة"}</Pill>,
+    },
+  ];
+
+  const countIntegrityColumns: ColumnDef<CountIntegrityRow, unknown>[] = [
+    {
+      id: "product",
+      header: "المنتج",
+      accessorFn: (r) => r.productName + (r.variantName ? " — " + r.variantName : "") + " · " + r.sku,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => <span className="font-semibold">{integrityNameCell(row.original)}</span>,
+    },
+    {
+      id: "rawCount",
+      header: "الكمية المشبوهة",
+      accessorFn: (r) => nf(r.rawCount),
+      meta: { kind: "number" },
+      cell: ({ row }) => <span className="font-mono">{nf(row.original.rawCount)}</span>,
+    },
+    {
+      id: "matchedCodeKind",
+      header: "مصدر المطابقة",
+      accessorFn: (r) => (r.matchedCodeKind === "ALIAS" ? "باركود بديل" : r.matchedCodeKind === "SKU" ? "رمز SKU" : "باركود وحدة"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <Pill tone="rose">
+          {row.original.matchedCodeKind === "ALIAS" ? "باركود بديل" : row.original.matchedCodeKind === "SKU" ? "رمز SKU" : "باركود وحدة"}
+        </Pill>
+      ),
+    },
+  ];
   const effectiveDirectUnderThreshold = isOpening || s.directUnderThreshold;
   const isReview = s.status === "REVIEW";
   const isOperational = s.status === "COUNTING" || s.status === "REVIEW";
@@ -852,57 +921,13 @@ export default function StocktakeReview() {
               </Button>
             )}
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-xs">
-              <thead className="border-b bg-muted/50 text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-start">المنتج</th>
-                  <th className="px-3 py-2 text-end">الفرق</th>
-                  <th className="px-3 py-2 text-end">تكلفة اللقطة</th>
-                  <th className="px-3 py-2 text-end">تكلفة الأساس الحالية</th>
-                  <th className="px-3 py-2 text-end">القيمة المسجلة</th>
-                  <th className="px-3 py-2 text-end">القيمة الحالية</th>
-                  <th className="px-3 py-2 text-center">الحالة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {valuationIntegrity.rows.slice(0, 12).map((row) => (
-                  <tr key={row.variantId} className="border-b last:border-0">
-                    <td className="px-3 py-2 font-semibold">
-                      {row.productName}
-                      {row.variantName ? ` — ${row.variantName}` : ""}
-                      <span
-                        className="ms-1 font-mono text-[10px] text-muted-foreground"
-                        dir="ltr"
-                      >
-                        {row.sku}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-end tabular-nums" dir="ltr">
-                      {nf(row.diff)}
-                    </td>
-                    <td className="px-3 py-2 text-end tabular-nums" dir="ltr">
-                      {money(row.snapshotUnitCost)}
-                    </td>
-                    <td className="px-3 py-2 text-end tabular-nums" dir="ltr">
-                      {money(row.currentBaseUnitCost)}
-                    </td>
-                    <td className="px-3 py-2 text-end tabular-nums" dir="ltr">
-                      {money(row.snapshotValue)}
-                    </td>
-                    <td className="px-3 py-2 text-end tabular-nums" dir="ltr">
-                      {money(row.currentBaseValue)}
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      <Pill tone={row.blocking ? "rose" : "amber"}>
-                        {row.blocking ? "حاجب" : "يحتاج مراجعة"}
-                      </Pill>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {/* أوّل ١٢ صفّاً وحدها: البطاقة تحذيرٌ لا تقرير — والتقرير الكامل في التصدير. */}
+          <DataTable<ValuationIntegrityRow>
+            {...INTEGRITY_TABLE}
+            data={valuationIntegrity.rows.slice(0, 12)}
+            columns={valuationIntegrityColumns}
+            emptyText="لا صفوف تقييم تحتاج مراجعة."
+          />
           {hasMissingBaseCost && (
             <p className="border-t border-money-negative/40 bg-money-negative/10 px-4 py-2 text-xs font-semibold text-money-negative">
               الإنقاذ معطّل: توجد تكلفة أساس صفرية. صحح الكتالوج أولاً؛ لن يحوّل
@@ -924,48 +949,12 @@ export default function StocktakeReview() {
               مستقلاً أو اعتماد العدّ التحققي الصحيح؛ لا تُصحّح تلقائياً.
             </p>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-xs">
-              <thead className="border-b bg-muted/50 text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-start">المنتج</th>
-                  <th className="px-3 py-2 text-end">الكمية المشبوهة</th>
-                  <th className="px-3 py-2 text-center">مصدر المطابقة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {countIntegrity.rows.map((row) => (
-                  <tr key={row.variantId} className="border-b last:border-0">
-                    <td className="px-3 py-2 font-semibold">
-                      {row.productName}
-                      {row.variantName ? ` — ${row.variantName}` : ""}
-                      <span
-                        className="ms-1 font-mono text-[10px] text-muted-foreground"
-                        dir="ltr"
-                      >
-                        {row.sku}
-                      </span>
-                    </td>
-                    <td
-                      className="px-3 py-2 text-end font-mono tabular-nums"
-                      dir="ltr"
-                    >
-                      {nf(row.rawCount)}
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      <Pill tone="rose">
-                        {row.matchedCodeKind === "ALIAS"
-                          ? "باركود بديل"
-                          : row.matchedCodeKind === "SKU"
-                            ? "رمز SKU"
-                            : "باركود وحدة"}
-                      </Pill>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable<CountIntegrityRow>
+            {...INTEGRITY_TABLE}
+            data={countIntegrity.rows}
+            columns={countIntegrityColumns}
+            emptyText="لا كميات مشبوهة."
+          />
         </Card>
       )}
       {s.status === "COUNTING" && (
@@ -1379,6 +1368,8 @@ export default function StocktakeReview() {
           </span>
         </div>
 
+        {/* شبكةُ قرارٍ لا عرض: كل صفٍّ يحمل مربّع اعتمادٍ ومنتقي سببٍ وأزرار تسوية/إبقاء
+            خاصّة به — `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. */}
         <ScrollTableShell bordered={false}>
           <table className="w-full min-w-[1100px] text-sm">
             <thead className="bg-muted/60">

@@ -9,8 +9,8 @@ import { trpc } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtAr, formatIqd, fmtInt, D } from "@/lib/money";
@@ -86,6 +86,58 @@ export default function ProfitabilityReport() {
 
   const subLabel =
     dim === "product" ? "الكمية" : dim === "category" ? "المنتجات" : "الفواتير";
+
+  // أعمدة التقرير — رأسا العمودَين الأوّلَين يتبعان البُعد المختار، فتُعاد بناؤها معه.
+  // ⚠️ `accessorFn` يُرجع النصّ المعروض (للنسخ) ⇒ كل عمودٍ رقميّ يلزمه `sortingFn` صريحٌ
+  // بـDecimal: الفرز الافتراضيّ نصّيّ فيقرأ «1,234» أصغر من «999» ويقلب ترتيب الربحية
+  // (نفس علاج `moneyCol` في ARAging و`stmtMoneyCol` في CustomerStatement).
+  const profitColumns = useMemo<ColumnDef<UniRow, unknown>[]>(() => [
+    {
+      id: "label",
+      header: DIM_LABEL[dim],
+      accessorFn: (r) => r.label,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => {
+        const r = row.original;
+        const low = Number(r.revenue) > 0 && Number(r.marginPct) < LOW_MARGIN;
+        return (
+          <span className="flex items-center gap-1.5 font-medium">
+            {r.label}
+            {low && (
+              <span className="inline-flex items-center gap-0.5 rounded-full badge-stock-low px-1.5 py-0.5 text-[10px]" title="هامش ضعيف — تآكل ربح">
+                <AlertTriangle className="size-3" aria-hidden /> هامش ضعيف
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    { id: "sub", header: subLabel, accessorFn: (r) => r.sub, meta: { kind: "number" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.sub || 0).cmp(D(b.original.sub || 0)), cell: ({ row }) => <span className="text-muted-foreground">{row.original.sub}</span> },
+    { id: "revenue", header: "الإيراد", accessorFn: (r) => fmtAr(r.revenue), meta: { kind: "money" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.revenue || 0).cmp(D(b.original.revenue || 0)), cell: ({ row }) => fmtAr(row.original.revenue) },
+    { id: "cost", header: "التكلفة", accessorFn: (r) => fmtAr(r.cost), meta: { kind: "money" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.cost || 0).cmp(D(b.original.cost || 0)), cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.cost)}</span> },
+    {
+      id: "profit",
+      header: "الربح",
+      accessorFn: (r) => fmtAr(r.profit),
+      meta: { kind: "money" },
+      sortDescFirst: true,
+      sortingFn: (a, b) => D(a.original.profit || 0).cmp(D(b.original.profit || 0)),
+      cell: ({ row }) => <span className={Number(row.original.profit) < 0 ? "text-money-negative" : "text-money-positive"}>{fmtAr(row.original.profit)}</span>,
+    },
+    {
+      id: "marginPct",
+      header: "الهامش %",
+      accessorFn: (r) => `${fmtAr(r.marginPct)}%`,
+      meta: { kind: "number" },
+      sortDescFirst: true,
+      sortingFn: (a, b) => D(a.original.marginPct || 0).cmp(D(b.original.marginPct || 0)),
+      cell: ({ row }) => {
+        const r = row.original;
+        const low = Number(r.revenue) > 0 && Number(r.marginPct) < LOW_MARGIN;
+        return <span className={low ? "text-stock-low" : undefined}>{fmtAr(r.marginPct)}%</span>;
+      },
+    },
+  ], [dim, subLabel]);
 
   const rows: UniRow[] = useMemo(() => {
     if (dim === "product") {
@@ -207,52 +259,17 @@ export default function ProfitabilityReport() {
     >
       <Card>
         <CardContent className="p-0">
-          {loading ? (
-            <LoadingState />
-          ) : error ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void refetchActive()} />
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">{DIM_LABEL[dim]}</th>
-                    <th className="p-2.5 text-right font-medium">{subLabel}</th>
-                    <th className="p-2.5 text-right font-medium">الإيراد</th>
-                    <th className="p-2.5 text-right font-medium">التكلفة</th>
-                    <th className="p-2.5 text-right font-medium">الربح</th>
-                    <th className="p-2.5 text-right font-medium">الهامش %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!rows.length ? (
-                    <TableEmptyRow colSpan={6} message="لا مبيعات في هذا النطاق." />
-                  ) : rows.map((r, i) => {
-                    const low = Number(r.revenue) > 0 && Number(r.marginPct) < LOW_MARGIN;
-                    return (
-                      <tr key={i} className="border-b last:border-0 hover:bg-accent/40">
-                        <td className="p-2.5 text-right font-medium">
-                          <span className="flex items-center gap-1.5">
-                            {r.label}
-                            {low && (
-                              <span className="inline-flex items-center gap-0.5 rounded-full badge-stock-low px-1.5 py-0.5 text-[10px]" title="هامش ضعيف — تآكل ربح">
-                                <AlertTriangle className="size-3" aria-hidden /> هامش ضعيف
-                              </span>
-                            )}
-                          </span>
-                        </td>
-                        <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{r.sub}</td>
-                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                        <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.cost)}</td>
-                        <td className={`p-2.5 text-right tabular-nums ${Number(r.profit) < 0 ? "text-money-negative" : "text-money-positive"}`} dir="ltr">{fmtAr(r.profit)}</td>
-                        <td className={`p-2.5 text-right tabular-nums ${low ? "text-stock-low" : ""}`} dir="ltr">{fmtAr(r.marginPct)}%</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          {/* فلاتر البُعد/الفرع/الفترة في `ReportShell` أعلاه — فأيّ فراغٍ هنا سببه نطاقُها. */}
+          <DataTable<UniRow>
+            columns={profitColumns}
+            data={rows}
+            searchPlaceholder={`بحث في ${DIM_LABEL[dim]}…`}
+            externalFiltersActive
+            loading={loading}
+            errorState={{ isError: error, message: "تعذّر تحميل التقرير.", onRetry: () => void refetchActive() }}
+            emptyText="لا مبيعات في هذا النطاق."
+            viewKey="profitability-report"
+          />
         </CardContent>
       </Card>
     </ReportShell>

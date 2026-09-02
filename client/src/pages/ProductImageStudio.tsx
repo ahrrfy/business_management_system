@@ -1362,6 +1362,9 @@ export default function ProductImageStudio() {
               اترك الخانة فارغة لرفع الحدّ الفرعيّ (يبقى السقف الشركيّ وحده)، أو اكتب صفراً لإيقاف المزوّد المدفوع لهذا الفرع.
               الاستهلاك يُصفَّر يومياً بتوقيت بغداد.
             </p>
+            {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل حقلَ «الحصّة اليومية»
+                يُطلق `setBranchBudget.mutate` عند `onBlur` — `DataTable` أداةُ عرضٍ فتبقى هذه
+                خامّةً عن قصد. */}
             <div className="overflow-x-auto">
               <table className="w-full min-w-[32rem] text-sm">
                 <thead>

@@ -10,6 +10,8 @@ import { MonthPicker } from "@/components/form/MonthPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr, D } from "@/lib/money";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { notify } from "@/lib/notify";
@@ -228,6 +230,47 @@ const COMPARE_METRICS: {
     pick: (d) => d.treasury.net,
   },
 ];
+
+type CompareMetric = (typeof COMPARE_METRICS)[number];
+
+/**
+ * أعمدة جدول المقارنة — دالّةٌ لا ثابت: تُغلِق على لقطتَي الشهرين وعلى تسميتَي العمودين
+ * (اسم الشهر هو ترويسة العمود). تُستدعى في الفرع الذي ثبت فيه توفّر لقطة الشهر السابق.
+ */
+function compareColumns(d: ClosePack, dPrev: ClosePack, month: string, prevMonth: string): ColumnDef<CompareMetric, unknown>[] {
+  const deltaText = (m: CompareMetric) => {
+    const pct = deltaPct(m.pick(d), m.pick(dPrev));
+    if (pct == null) return "—";
+    return `${Number(pct) > 0 ? "+" : ""}${pct}%`;
+  };
+  return [
+    { id: "label", header: "البند", accessorFn: (m) => m.label, cell: ({ row }) => row.original.label },
+    { id: "curr", header: month, accessorFn: (m) => fmtAr(m.pick(d)), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.pick(d)) },
+    {
+      id: "prev",
+      header: prevMonth,
+      accessorFn: (m) => fmtAr(m.pick(dPrev)),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.pick(dPrev))}</span>,
+    },
+    {
+      id: "delta",
+      header: "التغيّر %",
+      accessorFn: (m) => deltaText(m),
+      meta: { kind: "number" },
+      cell: ({ row }) => {
+        const pct = deltaPct(row.original.pick(d), row.original.pick(dPrev));
+        const up = pct != null && Number(pct) > 0;
+        const down = pct != null && Number(pct) < 0;
+        return (
+          <span className={`font-medium ${up ? "text-money-positive" : down ? "text-money-negative" : ""}`}>
+            {deltaText(row.original)}
+          </span>
+        );
+      },
+    },
+  ];
+}
 
 export default function MonthlyClosePack() {
   const [month, setMonth] = useState<string>(currentBaghdadMonth());
@@ -803,52 +846,15 @@ export default function MonthlyClosePack() {
                   تعذّر تحميل بيانات الشهر السابق للمقارنة.
                 </p>
               ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-xs text-muted-foreground">
-                      <th className="p-2.5 text-end font-medium">البند</th>
-                      <th className="p-2.5 text-right font-medium">{month}</th>
-                      <th className="p-2.5 text-right font-medium">
-                        {prevMonth}
-                      </th>
-                      <th className="p-2.5 text-right font-medium">
-                        التغيّر %
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {COMPARE_METRICS.map((m) => {
-                      const curr = m.pick(d);
-                      const prev = m.pick(dPrev);
-                      const pct = deltaPct(curr, prev);
-                      const up = pct != null && Number(pct) > 0;
-                      const down = pct != null && Number(pct) < 0;
-                      return (
-                        <tr key={m.key} className="border-b last:border-0">
-                          <td className="p-2.5 text-end">{m.label}</td>
-                          <td
-                            className="p-2.5 text-right tabular-nums"
-                            dir="ltr"
-                          >
-                            {fmtAr(curr)}
-                          </td>
-                          <td
-                            className="p-2.5 text-right tabular-nums text-muted-foreground"
-                            dir="ltr"
-                          >
-                            {fmtAr(prev)}
-                          </td>
-                          <td
-                            className={`p-2.5 text-right tabular-nums font-medium ${up ? "text-money-positive" : down ? "text-money-negative" : ""}`}
-                            dir="ltr"
-                          >
-                            {pct == null ? "—" : `${up ? "+" : ""}${pct}%`}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                /* مُضمَّن: البطاقة تحمل عنوان المقارنة، وستّةُ بنودٍ ثابتة لا تحتاج بحثاً ولا ترقيماً. */
+                <DataTable<CompareMetric>
+                  embedded
+                  searchable={false}
+                  bounded={false}
+                  pageSize={Infinity}
+                  data={COMPARE_METRICS}
+                  columns={compareColumns(d, dPrev, month, prevMonth)}
+                />
               )}
             </CardContent>
           </Card>
