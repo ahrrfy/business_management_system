@@ -12,8 +12,19 @@ import {
 import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift, openShift as openShiftSvc } from "../shiftService";
-import { assignBarcode, createProduct, getProductForEdit, lookupByBarcode, updateProduct } from "../catalogService";
-import { convertQuotation, createQuotation, setQuotationStatus, updateQuotation } from "../quotationService";
+import {
+  assignBarcode,
+  createProduct,
+  getProductForEdit,
+  lookupByBarcode,
+  updateProduct,
+} from "../catalogService";
+import {
+  convertQuotation,
+  createQuotation,
+  setQuotationStatus,
+  updateQuotation,
+} from "../quotationService";
 import {
   createWorkOrder,
   deliverWorkOrder,
@@ -35,16 +46,51 @@ const actor = { userId: 1, branchId: 1 };
 const owner = { userId: 2, branchId: 1, role: "manager" as const };
 
 const TABLES = [
-  "accountingEntries", "receipts", "inventoryMovements", "quotationItems", "quotations",
-  "invoiceItems", "invoices", "idempotencyKeys",
-  "branchStock", "productPrices", "productUnits", "productVariants", "productImages", "products",
-  "shifts", "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations",
-  "purchaseOrderRevisionItems", "purchaseOrderRevisions", "purchaseOrderItems", "purchaseOrders",
-  "workOrderEvents", "workOrderControlRequests", "workOrderDesignApprovals", "workOrderDesignRevisions",
-  "taskEvents", "tasks", "workOrderMaterials", "workOrderItems", "workOrderImages", "workOrders", "serviceTypes",
-  "onlineOrderItems", "onlineOrders", "attendance", "employees", "importBatches",
-  "printJobs", "auditLogs", "customers", "suppliers", "categories",
-  "users", "branches", // users.branchId → branches.id ⇒ users must be truncated before branches
+  "accountingEntries",
+  "receipts",
+  "inventoryMovements",
+  "quotationItems",
+  "quotations",
+  "invoiceItems",
+  "invoices",
+  "idempotencyKeys",
+  "branchStock",
+  "productPrices",
+  "productUnits",
+  "productVariants",
+  "productImages",
+  "products",
+  "shifts",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
+  "purchaseOrderItems",
+  "purchaseOrders",
+  "workOrderEvents",
+  "workOrderControlRequests",
+  "workOrderDesignApprovals",
+  "workOrderDesignRevisions",
+  "taskEvents",
+  "tasks",
+  "workOrderMaterials",
+  "workOrderItems",
+  "workOrderImages",
+  "workOrders",
+  "serviceTypes",
+  "onlineOrderItems",
+  "onlineOrders",
+  "attendance",
+  "employees",
+  "importBatches",
+  "printJobs",
+  "auditLogs",
+  "customers",
+  "suppliers",
+  "categories",
+  "users",
+  "branches", // users.branchId → branches.id ⇒ users must be truncated before branches
 ];
 
 function db() {
@@ -52,7 +98,8 @@ function db() {
   if (!d) throw new Error("DATABASE_URL not set for tests");
   return d;
 }
-const insertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.insertId);
+const insertId = (res: any): number =>
+  Number(res?.[0]?.insertId ?? res?.insertId);
 
 async function reset() {
   // DELETE بَدل TRUNCATE: TRUNCATE هو DDL يُغيّر table_id ⇒ ER_TABLE_DEF_CHANGED على pool connections.
@@ -67,8 +114,23 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
-    { id: 2, openId: "local_owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+    {
+      id: 1,
+      openId: "local_test",
+      name: "admin",
+      role: "admin",
+      loginMethod: "local",
+      isOwner: false,
+    },
+    {
+      id: 2,
+      openId: "local_owner",
+      name: "owner",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+      isOwner: true,
+    },
   ]);
   await d.insert(s.serviceTypes).values({
     name: "موافقة تصميم",
@@ -79,10 +141,24 @@ async function seedBase() {
     isActive: true,
   });
   await d.insert(s.products).values({ id: 1, name: "قلم" });
-  await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
+  await d
+    .insert(s.productVariants)
+    .values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
-    { id: 2, variantId: 1, unitName: "درزن", conversionFactor: "12", isBaseUnit: false },
+    {
+      id: 1,
+      variantId: 1,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 2,
+      variantId: 1,
+      unitName: "درزن",
+      conversionFactor: "12",
+      isBaseUnit: false,
+    },
   ]);
   await d.insert(s.productPrices).values([
     { productUnitId: 1, priceTier: "RETAIL", price: "10.00" },
@@ -91,38 +167,58 @@ async function seedBase() {
 }
 
 async function setStock(variantId: number, branchId: number, qty: number) {
-  await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
+  await db()
+    .insert(s.branchStock)
+    .values({ variantId, branchId, quantity: qty });
 }
 async function openShift(branchId = 1): Promise<number> {
-  const r = await db().insert(s.shifts).values({ branchId, userId: 1, openingBalance: "0", status: "OPEN", shiftType: "RECEPTION" });
+  const r = await db()
+    .insert(s.shifts)
+    .values({
+      branchId,
+      userId: 1,
+      openingBalance: "0",
+      status: "OPEN",
+      shiftType: "RECEPTION",
+    });
   return insertId(r);
 }
 async function stockOf(variantId: number, branchId: number): Promise<number> {
   const rows = await db()
     .select({ q: s.branchStock.quantity })
     .from(s.branchStock)
-    .where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, branchId)));
+    .where(
+      and(
+        eq(s.branchStock.variantId, variantId),
+        eq(s.branchStock.branchId, branchId),
+      ),
+    );
   return rows[0]?.q ?? 0;
 }
 async function entries(type: string) {
-  return db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, type as any));
+  return db()
+    .select()
+    .from(s.accountingEntries)
+    .where(eq(s.accountingEntries.entryType, type as any));
 }
 async function moves() {
   return db().select().from(s.inventoryMovements);
 }
 
 async function fundTreasury(amount = "1000000.00") {
-  await db().insert(s.receipts).values({
-    branchId: 1,
-    direction: "IN",
-    amount,
-    paymentMethod: "CASH",
-    cashBucket: "TREASURY",
-    status: "COMPLETED",
-    approvalStatus: "APPROVED",
-    referenceNumber: `TEST-TREASURY-BACKBONE-${crypto.randomUUID()}`,
-    createdBy: 2,
-  });
+  await db()
+    .insert(s.receipts)
+    .values({
+      branchId: 1,
+      direction: "IN",
+      amount,
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: `TEST-TREASURY-BACKBONE-${crypto.randomUUID()}`,
+      createdBy: 2,
+    });
 }
 
 async function createApprovedPurchaseOrder(input: {
@@ -130,49 +226,67 @@ async function createApprovedPurchaseOrder(input: {
   unitPrice: string;
   productUnitId?: number;
 }) {
-  const po = await createPurchaseOrder({
-    supplierId: 1,
-    branchId: 1,
-    taxRatePercent: "0",
-    status: "DRAFT",
-    items: [{
-      variantId: 1,
-      productUnitId: input.productUnitId ?? 1,
-      quantity: input.quantity,
-      unitPrice: input.unitPrice,
-    }],
-  }, actor);
-  const submitted = await submitPurchaseOrderForApproval({
-    purchaseOrderId: po.purchaseOrderId,
-    expectedVersion: po.version,
-    reason: "إرسال أمر اختبار العمود الفقري للمراجعة المستقلة",
-    requestKey: `backbone-po-submit:${crypto.randomUUID()}`,
-  }, actor);
-  await decidePurchaseOrderControl({
-    requestId: submitted.requestId,
-    decisionKey: `backbone-po-approve:${crypto.randomUUID()}`,
-    approve: true,
-    reason: "راجعت المورد والكميات والأسعار واعتمدت أمر الاختبار",
-  }, owner);
+  const po = await createPurchaseOrder(
+    {
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
+      status: "DRAFT",
+      items: [
+        {
+          variantId: 1,
+          productUnitId: input.productUnitId ?? 1,
+          quantity: input.quantity,
+          unitPrice: input.unitPrice,
+        },
+      ],
+    },
+    actor,
+  );
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار العمود الفقري للمراجعة المستقلة",
+      requestKey: `backbone-po-submit:${crypto.randomUUID()}`,
+    },
+    actor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `backbone-po-approve:${crypto.randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار واعتمدت أمر الاختبار",
+    },
+    owner,
+    { legacyConfirmOnly: true },
+  );
   return po;
 }
 
 async function approveCurrentDesign(workOrderId: number) {
-  const requested = await requestWorkOrderDesignApproval({
-    workOrderId,
-    requestKey: `backbone-design-request:${crypto.randomUUID()}`,
-    note: "اعتماد التصميم قبل بدء التنفيذ",
-  }, { ...actor, role: "admin" });
-  await decideWorkOrderDesignApproval({
-    approvalId: Number(requested.approval.id),
-    decisionKey: `backbone-design-approve:${crypto.randomUUID()}`,
-    decision: "APPROVED",
-    reason: "وافق العميل على التصميم النهائي",
-    evidence: {
-      type: "WHATSAPP_MESSAGE",
-      reference: `wamid.backbone.${crypto.randomUUID()}`,
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId,
+      requestKey: `backbone-design-request:${crypto.randomUUID()}`,
+      note: "اعتماد التصميم قبل بدء التنفيذ",
     },
-  }, owner);
+    { ...actor, role: "admin" },
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `backbone-design-approve:${crypto.randomUUID()}`,
+      decision: "APPROVED",
+      reason: "وافق العميل على التصميم النهائي",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.backbone.${crypto.randomUUID()}`,
+      },
+    },
+    owner,
+  );
 }
 
 beforeEach(async () => {
@@ -185,8 +299,15 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     await setStock(1, 1, 24);
     const shiftId = await openShift(1);
     const r = await createSale(
-      { branchId: 1, shiftId, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" } },
-      actor
+      {
+        branchId: 1,
+        shiftId,
+        priceTier: "RETAIL",
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        payment: { amount: "120.00", method: "CASH" },
+      },
+      actor,
     );
     expect(r.status).toBe("PAID");
     expect(await stockOf(1, 1)).toBe(12);
@@ -197,7 +318,10 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     expect(mv[0].quantity).toBe(12);
     expect(mv[0].referenceType).toBe("INVOICE");
 
-    const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, r.invoiceId));
+    const items = await db()
+      .select()
+      .from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, r.invoiceId));
     expect(items[0].baseQuantity).toBe(12);
     expect(items[0].unitCost).toBe("4.00");
     expect(items[0].total).toBe("120.00");
@@ -217,56 +341,118 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
 
   it("بيع آجل ثم دفعتان: PENDING → PARTIALLY_PAID → PAID والذمة تتناقص", async () => {
     await setStock(1, 1, 50);
-    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    await db()
+      .insert(s.customers)
+      .values({
+        id: 1,
+        name: "عميل",
+        defaultPriceTier: "RETAIL",
+        currentBalance: "0",
+      });
     const shiftId = await openShift(1);
     const sale = await createSale(
-      { branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }] },
-      actor
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }],
+      },
+      actor,
     );
     expect(sale.status).toBe("PENDING");
     expect(sale.total).toBe("240.00");
-    let cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    let cust = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(cust.currentBalance).toBe("240.00");
     expect(await entries("PAYMENT_IN")).toHaveLength(0);
 
-    const p1 = await processPayment({ invoiceId: sale.invoiceId, amount: "100.00", method: "CASH", shiftId }, actor);
+    const p1 = await processPayment(
+      { invoiceId: sale.invoiceId, amount: "100.00", method: "CASH", shiftId },
+      actor,
+    );
     expect(p1.status).toBe("PARTIALLY_PAID");
-    cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    cust = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(cust.currentBalance).toBe("140.00");
 
-    const p2 = await processPayment({ invoiceId: sale.invoiceId, amount: "140.00", method: "CASH", shiftId }, actor);
+    const p2 = await processPayment(
+      { invoiceId: sale.invoiceId, amount: "140.00", method: "CASH", shiftId },
+      actor,
+    );
     expect(p2.status).toBe("PAID");
-    cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    cust = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(cust.currentBalance).toBe("0.00");
     expect(await entries("PAYMENT_IN")).toHaveLength(2);
   });
 
   it("استلام شراء: المخزون يزيد + قيد PURCHASE + ذمة المورد (AP) + تكلفة WAVG", async () => {
     await setStock(1, 1, 5);
-    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
-    const po = await createApprovedPurchaseOrder({ quantity: "100", unitPrice: "5.00" });
-    const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
-    await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 100 }] }, actor);
+    await db()
+      .insert(s.suppliers)
+      .values({ id: 1, name: "مورد", currentBalance: "0" });
+    const po = await createApprovedPurchaseOrder({
+      quantity: "100",
+      unitPrice: "5.00",
+    });
+    const poItem = (
+      await db()
+        .select()
+        .from(s.purchaseOrderItems)
+        .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
+    )[0];
+    await receivePurchase(
+      {
+        purchaseOrderId: po.purchaseOrderId,
+        lines: [
+          { purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 100 },
+        ],
+      },
+      actor,
+    );
 
     expect(await stockOf(1, 1)).toBe(105);
     const mv = await moves();
     expect(mv[0].movementType).toBe("IN");
     expect(mv[0].quantity).toBe(100);
-    const poRow = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
+    const poRow = (
+      await db()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, po.purchaseOrderId))
+    )[0];
     expect(poRow.status).toBe("RECEIVED");
     const pe = (await entries("PURCHASE"))[0];
     expect(pe.cost).toBe("500.00");
     expect(pe.amount).toBe("500.00");
-    const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    const sup = (
+      await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
+    )[0];
     expect(sup.currentBalance).toBe("500.00");
     // WAVG (المتوسّط المرجّح): مخزون قائم ٥ @ ٤.٠٠ + مستلَم ١٠٠ @ ٥.٠٠ ⇒ (٢٠+٥٠٠)/١٠٥ = ٤.٩٥
-    const variant = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
+    const variant = (
+      await db()
+        .select()
+        .from(s.productVariants)
+        .where(eq(s.productVariants.id, 1))
+    )[0];
     expect(variant.costPrice).toBe("4.95");
   });
 
   it("تحويل بين فرعين: ينقل الرصيد بحركتين دون فقد ولا قيد", async () => {
     await setStock(1, 1, 20);
-    await withTx((tx) => transferBetweenBranches(tx, { variantId: 1, fromBranchId: 1, toBranchId: 2, baseQuantity: 8, createdBy: 1 }));
+    await withTx((tx) =>
+      transferBetweenBranches(tx, {
+        variantId: 1,
+        fromBranchId: 1,
+        toBranchId: 2,
+        baseQuantity: 8,
+        createdBy: 1,
+      }),
+    );
     expect(await stockOf(1, 1)).toBe(12);
     expect(await stockOf(1, 2)).toBe(8);
     const mv = await moves();
@@ -283,23 +469,37 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     await setStock(1, 1, 12);
     const shiftId = await openShift(1);
     const sale = await createSale(
-      { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" } },
-      actor
+      {
+        branchId: 1,
+        shiftId,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        payment: { amount: "120.00", method: "CASH" },
+      },
+      actor,
     );
     expect(await stockOf(1, 1)).toBe(0);
-    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
-    await returnSale({
-      invoiceId: sale.invoiceId,
-      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }],
-      resolution: {
-        kind: "IMMEDIATE_REFUND",
-        amount: "120.00",
-        method: "CASH",
-        shiftId,
-        reason: "إرجاع كامل للفاتورة النقدية",
-        disposition: "RESTOCK",
+    const item = (
+      await db()
+        .select()
+        .from(s.invoiceItems)
+        .where(eq(s.invoiceItems.invoiceId, sale.invoiceId))
+    )[0];
+    await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }],
+        resolution: {
+          kind: "IMMEDIATE_REFUND",
+          amount: "120.00",
+          method: "CASH",
+          shiftId,
+          reason: "إرجاع كامل للفاتورة النقدية",
+          disposition: "RESTOCK",
+        },
       },
-    }, actor);
+      actor,
+    );
 
     expect(await stockOf(1, 1)).toBe(12);
     const ret = (await entries("RETURN"))[0];
@@ -307,9 +507,17 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     expect(ret.cost).toBe("-48.00");
     expect(ret.profit).toBe("-72.00");
     expect(ret.amount).toBe("-120.00");
-    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    const inv = (
+      await db()
+        .select()
+        .from(s.invoices)
+        .where(eq(s.invoices.id, sale.invoiceId))
+    )[0];
     expect(inv.status).toBe("RETURNED");
-    const out = (await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT")));
+    const out = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.direction, "OUT"));
     expect(out).toHaveLength(1);
     expect(out[0].amount).toBe("120.00");
   });
@@ -318,17 +526,38 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     await setStock(1, 1, 50);
     // متغيّر ثانٍ بمخزون صفر
     await db().insert(s.products).values({ id: 2, name: "دفتر" });
-    await db().insert(s.productVariants).values({ id: 2, productId: 2, sku: "NB-1", costPrice: "4.00" });
-    await db().insert(s.productUnits).values({ id: 3, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
-    await db().insert(s.productPrices).values({ productUnitId: 3, priceTier: "RETAIL", price: "10.00" });
+    await db()
+      .insert(s.productVariants)
+      .values({ id: 2, productId: 2, sku: "NB-1", costPrice: "4.00" });
+    await db()
+      .insert(s.productUnits)
+      .values({
+        id: 3,
+        variantId: 2,
+        unitName: "قطعة",
+        conversionFactor: "1",
+        isBaseUnit: true,
+      });
+    await db()
+      .insert(s.productPrices)
+      .values({ productUnitId: 3, priceTier: "RETAIL", price: "10.00" });
     await setStock(2, 1, 0);
     const shiftId = await openShift(1);
 
     await expect(
       createSale(
-        { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }, { variantId: 2, productUnitId: 3, quantity: "1" }], payment: { amount: "20.00", method: "CASH" } },
-        actor
-      )
+        {
+          branchId: 1,
+          shiftId,
+          sourceType: "POS",
+          lines: [
+            { variantId: 1, productUnitId: 1, quantity: "1" },
+            { variantId: 2, productUnitId: 3, quantity: "1" },
+          ],
+          payment: { amount: "20.00", method: "CASH" },
+        },
+        actor,
+      ),
     ).rejects.toThrow();
 
     expect(await db().select().from(s.invoices)).toHaveLength(0);
@@ -344,8 +573,15 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     const shiftId = await openShift(1);
     const mk = (rid: string) =>
       createSale(
-        { branchId: 1, shiftId, sourceType: "POS", clientRequestId: rid, lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
-        actor
+        {
+          branchId: 1,
+          shiftId,
+          sourceType: "POS",
+          clientRequestId: rid,
+          lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+          payment: { amount: "20.00", method: "CASH" },
+        },
+        actor,
       );
     const res = await Promise.allSettled([mk("c1"), mk("c2")]);
     const ok = res.filter((r) => r.status === "fulfilled");
@@ -358,7 +594,14 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
   it("idempotency: نفس clientRequestId لا يُنشئ فاتورة مكررة", async () => {
     await setStock(1, 1, 24);
     const shiftId = await openShift(1);
-    const input = { branchId: 1, shiftId, sourceType: "POS" as const, clientRequestId: "abc", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" as const } };
+    const input = {
+      branchId: 1,
+      shiftId,
+      sourceType: "POS" as const,
+      clientRequestId: "abc",
+      lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+      payment: { amount: "120.00", method: "CASH" as const },
+    };
     const r1 = await createSale(input, actor);
     const r2 = await createSale(input, actor);
     expect(r2.invoiceId).toBe(r1.invoiceId);
@@ -371,7 +614,16 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     await setStock(1, 1, 24);
     const shiftId = await openShift(1);
     await expect(
-      createSale({ branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "0.5" }], payment: { amount: "5.00", method: "CASH" } }, actor)
+      createSale(
+        {
+          branchId: 1,
+          shiftId,
+          sourceType: "POS",
+          lines: [{ variantId: 1, productUnitId: 1, quantity: "0.5" }],
+          payment: { amount: "5.00", method: "CASH" },
+        },
+        actor,
+      ),
     ).rejects.toThrow();
     expect(await db().select().from(s.invoices)).toHaveLength(0);
   });
@@ -379,7 +631,14 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
   it("بيع آجل بلا عميل يُرفض", async () => {
     await setStock(1, 1, 24);
     await expect(
-      createSale({ branchId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor)
+      createSale(
+        {
+          branchId: 1,
+          sourceType: "ORDER",
+          lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        },
+        actor,
+      ),
     ).rejects.toThrow();
     expect(await db().select().from(s.invoices)).toHaveLength(0);
   });
@@ -388,58 +647,141 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
 describe("إصلاحات المراجعة العدائية", () => {
   it("مرتجع فاتورة آجلة: يُرفض استرداد نقدي يتجاوز المدفوع، والذمة تنخفض بلا نقد", async () => {
     await setStock(1, 1, 12);
-    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
-    const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
-    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    await db()
+      .insert(s.customers)
+      .values({
+        id: 1,
+        name: "عميل",
+        defaultPriceTier: "RETAIL",
+        currentBalance: "0",
+      });
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+      },
+      actor,
+    );
+    const item = (
+      await db()
+        .select()
+        .from(s.invoiceItems)
+        .where(eq(s.invoiceItems.invoiceId, sale.invoiceId))
+    )[0];
     // فاتورة آجلة (paid=0): سقف الاسترداد = min(120, 0) = 0 → استرداد نقدي مرفوض
     await expect(
-      returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }], refund: { amount: "120.00", method: "CASH" } }, actor)
+      returnSale(
+        {
+          invoiceId: sale.invoiceId,
+          lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }],
+          refund: { amount: "120.00", method: "CASH" },
+        },
+        actor,
+      ),
     ).rejects.toThrow();
     // إرجاع بلا استرداد نقدي → الذمة تنخفض إلى 0 بلا إيصال OUT
-    await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }] }, actor);
-    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }],
+      },
+      actor,
+    );
+    const cust = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(cust.currentBalance).toBe("0.00");
-    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.direction, "OUT")),
+    ).toHaveLength(0);
     expect(await stockOf(1, 1)).toBe(12);
   });
 
   it("مرتجع نقدي: يُنشئ قيد PAYMENT_OUT ويُخفّض paidAmount", async () => {
     await setStock(1, 1, 12);
     const shiftId = await openShift(1);
-    const sale = await createSale({ branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" } }, actor);
-    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
-    await returnSale({
-      invoiceId: sale.invoiceId,
-      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }],
-      resolution: {
-        kind: "IMMEDIATE_REFUND",
-        amount: "120.00",
-        method: "CASH",
+    const sale = await createSale(
+      {
+        branchId: 1,
         shiftId,
-        reason: "إرجاع نقدي كامل للفاتورة",
-        disposition: "RESTOCK",
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        payment: { amount: "120.00", method: "CASH" },
       },
-    }, actor);
+      actor,
+    );
+    const item = (
+      await db()
+        .select()
+        .from(s.invoiceItems)
+        .where(eq(s.invoiceItems.invoiceId, sale.invoiceId))
+    )[0];
+    await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }],
+        resolution: {
+          kind: "IMMEDIATE_REFUND",
+          amount: "120.00",
+          method: "CASH",
+          shiftId,
+          reason: "إرجاع نقدي كامل للفاتورة",
+          disposition: "RESTOCK",
+        },
+      },
+      actor,
+    );
     const po = await entries("PAYMENT_OUT");
     expect(po).toHaveLength(1);
     expect(po[0].amount).toBe("120.00");
-    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    const inv = (
+      await db()
+        .select()
+        .from(s.invoices)
+        .where(eq(s.invoices.id, sale.invoiceId))
+    )[0];
     expect(inv.paidAmount).toBe("0.00");
     expect(inv.status).toBe("RETURNED");
   });
 
   it("استلام شراء بالدرزن: قيد PURCHASE وAP يطابقان إجمالي أمر الشراء بالضبط (لا انجراف تقريب)", async () => {
     await setStock(1, 1, 0);
-    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
-    const po = await createApprovedPurchaseOrder({ quantity: "1", unitPrice: "5.00", productUnitId: 2 });
+    await db()
+      .insert(s.suppliers)
+      .values({ id: 1, name: "مورد", currentBalance: "0" });
+    const po = await createApprovedPurchaseOrder({
+      quantity: "1",
+      unitPrice: "5.00",
+      productUnitId: 2,
+    });
     expect(po.total).toBe("5.00");
-    const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
-    await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 12 }] }, actor);
+    const poItem = (
+      await db()
+        .select()
+        .from(s.purchaseOrderItems)
+        .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
+    )[0];
+    await receivePurchase(
+      {
+        purchaseOrderId: po.purchaseOrderId,
+        lines: [
+          { purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 12 },
+        ],
+      },
+      actor,
+    );
     expect(await stockOf(1, 1)).toBe(12);
     const pe = (await entries("PURCHASE"))[0];
     expect(pe.cost).toBe("5.00");
     expect(pe.amount).toBe("5.00");
-    const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    const sup = (
+      await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
+    )[0];
     expect(sup.currentBalance).toBe("5.00");
   });
 
@@ -447,11 +789,17 @@ describe("إصلاحات المراجعة العدائية", () => {
     await setStock(1, 1, 24);
     const shiftId = await openShift(1);
     const input = {
-      branchId: 1, shiftId, sourceType: "POS" as const, clientRequestId: "dup",
+      branchId: 1,
+      shiftId,
+      sourceType: "POS" as const,
+      clientRequestId: "dup",
       lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
       payment: { amount: "120.00", method: "CASH" as const },
     };
-    await Promise.allSettled([createSale(input, actor), createSale(input, actor)]);
+    await Promise.allSettled([
+      createSale(input, actor),
+      createSale(input, actor),
+    ]);
     expect(await db().select().from(s.invoices)).toHaveLength(1);
     expect(await stockOf(1, 1)).toBe(12);
   });
@@ -460,44 +808,93 @@ describe("إصلاحات المراجعة العدائية", () => {
 describe("شراء: استلام جزئي ثم استلام تكميلي مع دفعة", () => {
   it("الجزئي يُبقي الحالة CONFIRMED + يقيّد ما استُلم فقط؛ التكميلي يُكمل ويسجّل دفعة OUT", async () => {
     await setStock(1, 1, 0);
-    await db().insert(s.suppliers).values({ id: 1, name: "مورد جزئي", currentBalance: "0" });
+    await db()
+      .insert(s.suppliers)
+      .values({ id: 1, name: "مورد جزئي", currentBalance: "0" });
     // أمر بـ100 قطعة بسعر 5 — إجمالي 500
-    const po = await createApprovedPurchaseOrder({ quantity: "100", unitPrice: "5.00" });
-    const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+    const po = await createApprovedPurchaseOrder({
+      quantity: "100",
+      unitPrice: "5.00",
+    });
+    const poItem = (
+      await db()
+        .select()
+        .from(s.purchaseOrderItems)
+        .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
+    )[0];
 
     // استلام جزئي 30 — لا دفعة
     await fundTreasury();
-    await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 30 }] }, actor);
+    await receivePurchase(
+      {
+        purchaseOrderId: po.purchaseOrderId,
+        lines: [
+          { purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 30 },
+        ],
+      },
+      actor,
+    );
     expect(await stockOf(1, 1)).toBe(30);
-    let poRow = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
+    let poRow = (
+      await db()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, po.purchaseOrderId))
+    )[0];
     expect(poRow.status).toBe("CONFIRMED"); // ليس مُستلَماً بعد
-    let sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    let sup = (
+      await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
+    )[0];
     expect(sup.currentBalance).toBe("150.00"); // 30 × 5
 
     // استلام تكميلي 70 + دفعة 200 نقد
     const completed = await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 70 }],
+        lines: [
+          { purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 70 },
+        ],
         payment: { amount: "200.00", method: "CASH" },
       },
-      actor
+      actor,
     );
     expect(await stockOf(1, 1)).toBe(100);
-    poRow = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
+    poRow = (
+      await db()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, po.purchaseOrderId))
+    )[0];
     expect(poRow.status).toBe("RECEIVED");
     expect(poRow.paidAmount).toBe("0.00");
     const paymentRequestId = Number(completed.supplierPaymentRequestReceiptId);
     expect(paymentRequestId).toBeGreaterThan(0);
-    const [pendingPayment] = await db().select().from(s.receipts).where(eq(s.receipts.id, paymentRequestId));
-    expect(pendingPayment).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL" });
+    const [pendingPayment] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, paymentRequestId));
+    expect(pendingPayment).toMatchObject({
+      status: "PENDING",
+      approvalStatus: "PENDING_APPROVAL",
+    });
 
-    await approveVoucher(paymentRequestId, { userId: 2, branchId: 1, role: "manager" });
-    poRow = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
+    await approveVoucher(paymentRequestId, {
+      userId: 2,
+      branchId: 1,
+      role: "manager",
+    });
+    poRow = (
+      await db()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, po.purchaseOrderId))
+    )[0];
     expect(poRow.paidAmount).toBe("200.00");
 
     // ذمة المورد = 500 (شراء) − 200 (دفعة) = 300
-    sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    sup = (
+      await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
+    )[0];
     expect(sup.currentBalance).toBe("300.00");
 
     // قيدا PURCHASE (150 + 350) + قيد PAYMENT_OUT (200)
@@ -509,18 +906,42 @@ describe("شراء: استلام جزئي ثم استلام تكميلي مع د
     expect(pout[0].amount).toBe("200.00");
 
     // إيصال OUT للدفعة
-    const out = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+    const out = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.direction, "OUT"));
     expect(out).toHaveLength(1);
     expect(out[0].amount).toBe("200.00");
   });
 
   it("لا يُسمح بتجاوز الكمية المطلوبة في الاستلام", async () => {
     await setStock(1, 1, 0);
-    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
-    const po = await createApprovedPurchaseOrder({ quantity: "10", unitPrice: "5.00" });
-    const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+    await db()
+      .insert(s.suppliers)
+      .values({ id: 1, name: "مورد", currentBalance: "0" });
+    const po = await createApprovedPurchaseOrder({
+      quantity: "10",
+      unitPrice: "5.00",
+    });
+    const poItem = (
+      await db()
+        .select()
+        .from(s.purchaseOrderItems)
+        .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
+    )[0];
     await expect(
-      receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 11 }] }, actor)
+      receivePurchase(
+        {
+          purchaseOrderId: po.purchaseOrderId,
+          lines: [
+            {
+              purchaseOrderItemId: Number(poItem.id),
+              receivedBaseQuantity: 11,
+            },
+          ],
+        },
+        actor,
+      ),
     ).rejects.toThrow();
     expect(await stockOf(1, 1)).toBe(0);
   });
@@ -531,9 +952,21 @@ describe("أوامر الشغل/المطبعة", () => {
     await setStock(1, 1, 10); // مخزون الأساس (قلم — يُستخدم كمنتج أساس بسيط)
     // مادة إضافية: متغيّر آخر
     await db().insert(s.products).values({ id: 99, name: "حبر طباعة" });
-    await db().insert(s.productVariants).values({ id: 99, productId: 99, sku: "INK-BL", costPrice: "20.00" });
-    await db().insert(s.productUnits).values({ id: 99, variantId: 99, unitName: "علبة", conversionFactor: "1", isBaseUnit: true });
-    await db().insert(s.branchStock).values({ variantId: 99, branchId: 1, quantity: 5 });
+    await db()
+      .insert(s.productVariants)
+      .values({ id: 99, productId: 99, sku: "INK-BL", costPrice: "20.00" });
+    await db()
+      .insert(s.productUnits)
+      .values({
+        id: 99,
+        variantId: 99,
+        unitName: "علبة",
+        conversionFactor: "1",
+        isBaseUnit: true,
+      });
+    await db()
+      .insert(s.branchStock)
+      .values({ variantId: 99, branchId: 1, quantity: 5 });
 
     const r = await createWorkOrder(
       {
@@ -545,7 +978,7 @@ describe("أوامر الشغل/المطبعة", () => {
         salePrice: "500.00",
         materials: [{ variantId: 99, baseQuantity: 1 }],
       },
-      actor
+      actor,
     );
     // ١٨/٨: رقمٌ تسلسليّ قصير (عدّاد ذرّيّ، أرضيّته ٥٠٠٠) بدل `WO-{فرع}-{تاريخ}-{تسلسل}`.
     expect(r.orderNumber).toMatch(/^\d+$/);
@@ -555,18 +988,31 @@ describe("أوامر الشغل/المطبعة", () => {
     await approveCurrentDesign(r.workOrderId);
     await startWorkOrder(r.workOrderId, actor);
     expect(await stockOf(99, 1)).toBe(4);
-    let wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
+    let wo = (
+      await db()
+        .select()
+        .from(s.workOrders)
+        .where(eq(s.workOrders.id, r.workOrderId))
+    )[0];
     expect(wo.status).toBe("IN_PROGRESS");
     expect(wo.materialsCost).toBe("20.00"); // 1 × 20.00
     // شَريحة #4: ختم بدء التَنفيذ من DB clock + workSeconds يُصفَّر عند البدء (لو سَبق إعادة).
     expect(wo.workStartedAt).not.toBeNull();
     expect(wo.workSeconds).toBeNull();
-    const mats = await db().select().from(s.workOrderMaterials).where(eq(s.workOrderMaterials.workOrderId, r.workOrderId));
+    const mats = await db()
+      .select()
+      .from(s.workOrderMaterials)
+      .where(eq(s.workOrderMaterials.workOrderId, r.workOrderId));
     expect(mats[0].unitCost).toBe("20.00"); // snapshot
 
     // IN_PROGRESS → READY
     await markWorkOrderReady(r.workOrderId);
-    wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
+    wo = (
+      await db()
+        .select()
+        .from(s.workOrders)
+        .where(eq(s.workOrders.id, r.workOrderId))
+    )[0];
     expect(wo.status).toBe("READY");
     // شَريحة #4: workSeconds يُحسَب من TIMESTAMPDIFF(SECOND, workStartedAt, NOW()) ≥ 0.
     expect(wo.workSeconds).not.toBeNull();
@@ -574,13 +1020,26 @@ describe("أوامر الشغل/المطبعة", () => {
 
     // READY → DELIVERED مع دفعة نقدية كاملة 500
     await openShift(1);
-    const d = await deliverWorkOrder({ workOrderId: r.workOrderId, payment: { amount: "500.00", method: "CASH" } }, actor);
-    wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
+    const d = await deliverWorkOrder(
+      {
+        workOrderId: r.workOrderId,
+        payment: { amount: "500.00", method: "CASH" },
+      },
+      actor,
+    );
+    wo = (
+      await db()
+        .select()
+        .from(s.workOrders)
+        .where(eq(s.workOrders.id, r.workOrderId))
+    )[0];
     expect(wo.status).toBe("DELIVERED");
     expect(wo.invoiceId).toBe(d.invoiceId);
     expect(wo.deliveredAt).not.toBeNull();
 
-    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, d.invoiceId)))[0];
+    const inv = (
+      await db().select().from(s.invoices).where(eq(s.invoices.id, d.invoiceId))
+    )[0];
     expect(inv.sourceType).toBe("WORKORDER");
     expect(inv.total).toBe("500.00");
     expect(inv.costTotal).toBe("120.00"); // مواد 20 + عمالة 100
@@ -598,7 +1057,10 @@ describe("أوامر الشغل/المطبعة", () => {
     expect(pin).toHaveLength(1);
     expect(pin[0].amount).toBe("500.00");
 
-    const inn = await db().select().from(s.receipts).where(eq(s.receipts.direction, "IN"));
+    const inn = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.direction, "IN"));
     expect(inn).toHaveLength(1);
     expect(inn[0].amount).toBe("500.00");
 
@@ -608,34 +1070,63 @@ describe("أوامر الشغل/المطبعة", () => {
 
   it("إلغاء بعد البدء: المواد تعود للمخزون والحالة CANCELLED", async () => {
     await db().insert(s.products).values({ id: 99, name: "حبر" });
-    await db().insert(s.productVariants).values({ id: 99, productId: 99, sku: "INK-X", costPrice: "10.00" });
-    await db().insert(s.productUnits).values({ id: 99, variantId: 99, unitName: "علبة", conversionFactor: "1", isBaseUnit: true });
-    await db().insert(s.branchStock).values({ variantId: 99, branchId: 1, quantity: 3 });
+    await db()
+      .insert(s.productVariants)
+      .values({ id: 99, productId: 99, sku: "INK-X", costPrice: "10.00" });
+    await db()
+      .insert(s.productUnits)
+      .values({
+        id: 99,
+        variantId: 99,
+        unitName: "علبة",
+        conversionFactor: "1",
+        isBaseUnit: true,
+      });
+    await db()
+      .insert(s.branchStock)
+      .values({ variantId: 99, branchId: 1, quantity: 3 });
 
     const r = await createWorkOrder(
-      { branchId: 1, baseVariantId: 1, title: "بنر إعلاني", quantity: 1, salePrice: "200.00", materials: [{ variantId: 99, baseQuantity: 2 }] },
-      actor
+      {
+        branchId: 1,
+        baseVariantId: 1,
+        title: "بنر إعلاني",
+        quantity: 1,
+        salePrice: "200.00",
+        materials: [{ variantId: 99, baseQuantity: 2 }],
+      },
+      actor,
     );
     await approveCurrentDesign(r.workOrderId);
     await startWorkOrder(r.workOrderId, actor);
     expect(await stockOf(99, 1)).toBe(1);
-    const [current] = await db().select({ version: s.workOrders.version })
-      .from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId));
-    const request = await requestWorkOrderControl({
-      requestKey: `backbone-wo-cancel:${crypto.randomUUID()}`,
-      workOrderId: r.workOrderId,
-      requestType: "CANCEL",
-      baseVersion: Number(current.version),
-      reason: "إلغاء أمر الاختبار بعد بدء التنفيذ وإرجاع مواده",
-      payload: { refundShiftId: null, materials: null },
-    }, { ...actor, role: "admin" });
+    const [current] = await db()
+      .select({ version: s.workOrders.version })
+      .from(s.workOrders)
+      .where(eq(s.workOrders.id, r.workOrderId));
+    const request = await requestWorkOrderControl(
+      {
+        requestKey: `backbone-wo-cancel:${crypto.randomUUID()}`,
+        workOrderId: r.workOrderId,
+        requestType: "CANCEL",
+        baseVersion: Number(current.version),
+        reason: "إلغاء أمر الاختبار بعد بدء التنفيذ وإرجاع مواده",
+        payload: { refundShiftId: null, materials: null },
+      },
+      { ...actor, role: "admin" },
+    );
     await approveWorkOrderControlRequest(
       Number(request.id),
       owner,
       "راجعت سبب الإلغاء وإرجاع المواد للمخزون",
     );
     expect(await stockOf(99, 1)).toBe(3); // عادت
-    const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
+    const wo = (
+      await db()
+        .select()
+        .from(s.workOrders)
+        .where(eq(s.workOrders.id, r.workOrderId))
+    )[0];
     expect(wo.status).toBe("CANCELLED");
     // لا فاتورة، لا قيد SALE
     expect(await db().select().from(s.invoices)).toHaveLength(0);
@@ -644,15 +1135,27 @@ describe("أوامر الشغل/المطبعة", () => {
 
   it("رفض البيع الآجل بلا عميل", async () => {
     const r = await createWorkOrder(
-      { branchId: 1, baseVariantId: 1, title: "أمر بسيط", quantity: 1, salePrice: "300.00" },
-      actor
+      {
+        branchId: 1,
+        baseVariantId: 1,
+        title: "أمر بسيط",
+        quantity: 1,
+        salePrice: "300.00",
+      },
+      actor,
     );
     await approveCurrentDesign(r.workOrderId);
     await startWorkOrder(r.workOrderId, actor);
     await markWorkOrderReady(r.workOrderId);
     await openShift(1);
     await expect(
-      deliverWorkOrder({ workOrderId: r.workOrderId, payment: { amount: "100.00", method: "CASH" } }, actor)
+      deliverWorkOrder(
+        {
+          workOrderId: r.workOrderId,
+          payment: { amount: "100.00", method: "CASH" },
+        },
+        actor,
+      ),
     ).rejects.toThrow();
   });
 });
@@ -660,20 +1163,28 @@ describe("أوامر الشغل/المطبعة", () => {
 describe("إدارة الورديات (Z-report)", () => {
   it("بيع البطاقة يخصم المخزون ولا يدخل درج النقد (النقد المتوقع صفر)", async () => {
     await setStock(1, 1, 24);
-    const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "0.00" }, actor);
+    const { shiftId } = await openShiftSvc(
+      { branchId: 1, openingBalance: "0.00" },
+      actor,
+    );
 
     const sale = await createSale(
       {
-        branchId: 1, shiftId, sourceType: "POS",
+        branchId: 1,
+        shiftId,
+        sourceType: "POS",
         lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
         payment: { amount: "120.00", method: "CARD", reference: "CARD-Z-1001" },
       },
-      actor
+      actor,
     );
     expect(sale.status).toBe("PAID");
     // درزن = ١٢ ⇒ ٢٤ − ١٢.
     expect(await stockOf(1, 1)).toBe(12);
-    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId));
+    const [receipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.invoiceId, sale.invoiceId));
     expect(receipt.paymentMethod).toBe("CARD");
     // §٥: غير النقد لا دلوَ نقديّ له ⇒ لا يَمسّ درج الكاشير ولا النقد المتوقّع.
     expect(receipt.cashBucket).toBeNull();
@@ -685,25 +1196,47 @@ describe("إدارة الورديات (Z-report)", () => {
   it("المرتجع النقدي يطرح من النقد المتوقع للوردية", async () => {
     await setStock(1, 1, 24);
     await fundTreasury();
-    const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "50.00" }, actor);
-    const sale = await createSale(
-      { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" } },
-      actor
+    const { shiftId } = await openShiftSvc(
+      { branchId: 1, openingBalance: "50.00" },
+      actor,
     );
-    const [item] = await db().select({ id: s.invoiceItems.id, baseQuantity: s.invoiceItems.baseQuantity })
-      .from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
-    await returnSale({
-      invoiceId: sale.invoiceId,
-      lines: [{ invoiceItemId: Number(item.id), baseQuantity: Number(item.baseQuantity) }],
-      resolution: {
-        kind: "IMMEDIATE_REFUND",
-        amount: "120.00",
-        method: "CASH",
+    const sale = await createSale(
+      {
+        branchId: 1,
         shiftId,
-        reason: "إرجاع نقدي كامل ضمن الوردية",
-        disposition: "RESTOCK",
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        payment: { amount: "120.00", method: "CASH" },
       },
-    }, actor);
+      actor,
+    );
+    const [item] = await db()
+      .select({
+        id: s.invoiceItems.id,
+        baseQuantity: s.invoiceItems.baseQuantity,
+      })
+      .from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+    await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [
+          {
+            invoiceItemId: Number(item.id),
+            baseQuantity: Number(item.baseQuantity),
+          },
+        ],
+        resolution: {
+          kind: "IMMEDIATE_REFUND",
+          amount: "120.00",
+          method: "CASH",
+          shiftId,
+          reason: "إرجاع نقدي كامل ضمن الوردية",
+          disposition: "RESTOCK",
+        },
+      },
+      actor,
+    );
 
     const closed = await closeShift({ shiftId, countedCash: "50.00" }, actor);
     expect(closed.expectedCash).toBe("50.00");
@@ -713,10 +1246,19 @@ describe("إدارة الورديات (Z-report)", () => {
   it("فتح برصيد افتتاحي → بيع نقدي → إغلاق: المتوقع والفروقات صحيحة", async () => {
     await setStock(1, 1, 24);
     await fundTreasury();
-    const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "50.00" }, actor);
+    const { shiftId } = await openShiftSvc(
+      { branchId: 1, openingBalance: "50.00" },
+      actor,
+    );
     await createSale(
-      { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" } },
-      actor
+      {
+        branchId: 1,
+        shiftId,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        payment: { amount: "120.00", method: "CASH" },
+      },
+      actor,
     );
     // النقد المتوقع = 50 (افتتاحي) + 120 (بيع نقدي) = 170
     const closed = await closeShift({ shiftId, countedCash: "165.00" }, actor);
@@ -727,7 +1269,9 @@ describe("إدارة الورديات (Z-report)", () => {
 
   it("لا يُسمح بوردية مفتوحة ثانية لنفس المستخدم/الفرع", async () => {
     await openShiftSvc({ branchId: 1, openingBalance: "0" }, actor);
-    await expect(openShiftSvc({ branchId: 1, openingBalance: "0" }, actor)).rejects.toThrow();
+    await expect(
+      openShiftSvc({ branchId: 1, openingBalance: "0" }, actor),
+    ).rejects.toThrow();
   });
 });
 
@@ -742,15 +1286,30 @@ describe("الكتالوج: تعديل المنتج", () => {
             sku: "PAPER-A4",
             costPrice: "50.00",
             units: [
-              { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "100.00" }] },
+              {
+                unitName: "قطعة",
+                conversionFactor: "1",
+                isBaseUnit: true,
+                prices: [{ priceTier: "RETAIL", price: "100.00" }],
+              },
             ],
           },
         ],
       },
-      actor
+      actor,
     );
-    const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "PAPER-A4")))[0];
-    const baseUnit = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id))))[0];
+    const v = (
+      await db()
+        .select()
+        .from(s.productVariants)
+        .where(eq(s.productVariants.sku, "PAPER-A4"))
+    )[0];
+    const baseUnit = (
+      await db()
+        .select()
+        .from(s.productUnits)
+        .where(eq(s.productUnits.variantId, Number(v.id)))
+    )[0];
 
     // عدّل: اسم جديد + سعر RETAIL جديد + أضف وحدة "رزمة" بمعامل 100 وسعر مفرد
     await updateProduct(
@@ -763,13 +1322,24 @@ describe("الكتالوج: تعديل المنتج", () => {
             sku: "PAPER-A4",
             costPrice: "55.00",
             units: [
-              { id: Number(baseUnit.id), unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "120.00" }] },
-              { unitName: "رزمة", conversionFactor: "100", isBaseUnit: false, prices: [{ priceTier: "RETAIL", price: "10000.00" }] },
+              {
+                id: Number(baseUnit.id),
+                unitName: "قطعة",
+                conversionFactor: "1",
+                isBaseUnit: true,
+                prices: [{ priceTier: "RETAIL", price: "120.00" }],
+              },
+              {
+                unitName: "رزمة",
+                conversionFactor: "100",
+                isBaseUnit: false,
+                prices: [{ priceTier: "RETAIL", price: "10000.00" }],
+              },
             ],
           },
         ],
       },
-      actor
+      actor,
     );
 
     const updated = await getProductForEdit(c.productId);
@@ -778,7 +1348,9 @@ describe("الكتالوج: تعديل المنتج", () => {
     expect(updated!.variants[0].costPrice).toBe("55.00");
     expect(updated!.variants[0].units).toHaveLength(2);
     const baseAfter = updated!.variants[0].units.find((u) => u.isBaseUnit)!;
-    expect(baseAfter.prices.find((p) => p.priceTier === "RETAIL")!.price).toBe("120.00");
+    expect(baseAfter.prices.find((p) => p.priceTier === "RETAIL")!.price).toBe(
+      "120.00",
+    );
     const newUnit = updated!.variants[0].units.find((u) => !u.isBaseUnit)!;
     expect(newUnit.unitName).toBe("رزمة");
     expect(newUnit.prices[0].price).toBe("10000.00");
@@ -793,37 +1365,81 @@ describe("الكتالوج: تعديل المنتج", () => {
             id: Number(v.id),
             sku: "PAPER-A4",
             costPrice: "55.00",
-            units: [{ id: Number(baseUnit.id), unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "120.00" }] }],
+            units: [
+              {
+                id: Number(baseUnit.id),
+                unitName: "قطعة",
+                conversionFactor: "1",
+                isBaseUnit: true,
+                prices: [{ priceTier: "RETAIL", price: "120.00" }],
+              },
+            ],
           },
         ],
       },
-      actor
+      actor,
     );
     const after = await getProductForEdit(c.productId);
     expect(after!.variants[0].units).toHaveLength(1); // getProductForEdit يُرجع النشط فقط
-    const allUnits = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id)));
+    const allUnits = await db()
+      .select()
+      .from(s.productUnits)
+      .where(eq(s.productUnits.variantId, Number(v.id)));
     expect(allUnits).toHaveLength(2); // ما زالت في DB
     expect(allUnits.find((u) => !u.isBaseUnit)!.isActive).toBe(false);
   });
 
   it("updateProduct يرفض غياب وحدة الأساس", async () => {
     const c = await createProduct(
-      { name: "تجربة", variants: [{ sku: "T-1", costPrice: "1.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }] }] },
-      actor
+      {
+        name: "تجربة",
+        variants: [
+          {
+            sku: "T-1",
+            costPrice: "1.00",
+            units: [
+              { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+            ],
+          },
+        ],
+      },
+      actor,
     );
-    const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "T-1")))[0];
-    const u = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id))))[0];
+    const v = (
+      await db()
+        .select()
+        .from(s.productVariants)
+        .where(eq(s.productVariants.sku, "T-1"))
+    )[0];
+    const u = (
+      await db()
+        .select()
+        .from(s.productUnits)
+        .where(eq(s.productUnits.variantId, Number(v.id)))
+    )[0];
     await expect(
       updateProduct(
         {
           productId: c.productId,
           name: "تجربة",
           variants: [
-            { id: Number(v.id), sku: "T-1", costPrice: "1.00", units: [{ id: Number(u.id), unitName: "قطعة", conversionFactor: "1", isBaseUnit: false }] },
+            {
+              id: Number(v.id),
+              sku: "T-1",
+              costPrice: "1.00",
+              units: [
+                {
+                  id: Number(u.id),
+                  unitName: "قطعة",
+                  conversionFactor: "1",
+                  isBaseUnit: false,
+                },
+              ],
+            },
           ],
         },
-        actor
-      )
+        actor,
+      ),
     ).rejects.toThrow();
   });
 });
@@ -839,36 +1455,91 @@ describe("الكتالوج: إنشاء منتج بمخزون افتتاحي", ()
             costPrice: "100.00",
             openingStock: 50,
             units: [
-              { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "TSTBC1", prices: [{ priceTier: "RETAIL", price: "150.00" }, { priceTier: "WHOLESALE", price: "130.00" }] },
-              { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL", price: "1700.00" }] },
+              {
+                unitName: "قطعة",
+                conversionFactor: "1",
+                isBaseUnit: true,
+                barcode: "TSTBC1",
+                prices: [
+                  { priceTier: "RETAIL", price: "150.00" },
+                  { priceTier: "WHOLESALE", price: "130.00" },
+                ],
+              },
+              {
+                unitName: "درزن",
+                conversionFactor: "12",
+                isBaseUnit: false,
+                prices: [{ priceTier: "RETAIL", price: "1700.00" }],
+              },
             ],
           },
         ],
       },
-      actor
+      actor,
     );
     expect(r.productId).toBeGreaterThan(0);
-    const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "TST-1")))[0];
+    const v = (
+      await db()
+        .select()
+        .from(s.productVariants)
+        .where(eq(s.productVariants.sku, "TST-1"))
+    )[0];
     expect(v).toBeTruthy();
     expect(await stockOf(Number(v.id), 1)).toBe(50); // المخزون الافتتاحي
-    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id)));
+    const units = await db()
+      .select()
+      .from(s.productUnits)
+      .where(eq(s.productUnits.variantId, Number(v.id)));
     expect(units).toHaveLength(2);
     const baseUnit = units.find((u) => u.isBaseUnit)!;
-    const prices = await db().select().from(s.productPrices).where(eq(s.productPrices.productUnitId, Number(baseUnit.id)));
-    expect(prices.map((p) => p.priceTier).sort()).toEqual(["RETAIL", "WHOLESALE"]);
+    const prices = await db()
+      .select()
+      .from(s.productPrices)
+      .where(eq(s.productPrices.productUnitId, Number(baseUnit.id)));
+    expect(prices.map((p) => p.priceTier).sort()).toEqual([
+      "RETAIL",
+      "WHOLESALE",
+    ]);
   });
 
   it("createProduct يسمح بنفس SKU في منتجين مختلفين", async () => {
     await createProduct(
-      { name: "منتج أزرق أول", variants: [{ sku: "PR-BLU", color: "أزرق", costPrice: "1.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }] }] },
-      actor
+      {
+        name: "منتج أزرق أول",
+        variants: [
+          {
+            sku: "PR-BLU",
+            color: "أزرق",
+            costPrice: "1.00",
+            units: [
+              { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+            ],
+          },
+        ],
+      },
+      actor,
     );
     await createProduct(
-      { name: "منتج أزرق ثانٍ", variants: [{ sku: "PR-BLU", color: "أزرق", costPrice: "2.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }] }] },
-      actor
+      {
+        name: "منتج أزرق ثانٍ",
+        variants: [
+          {
+            sku: "PR-BLU",
+            color: "أزرق",
+            costPrice: "2.00",
+            units: [
+              { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+            ],
+          },
+        ],
+      },
+      actor,
     );
 
-    const rows = await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "PR-BLU"));
+    const rows = await db()
+      .select()
+      .from(s.productVariants)
+      .where(eq(s.productVariants.sku, "PR-BLU"));
     expect(rows).toHaveLength(2);
   });
 });
@@ -876,17 +1547,48 @@ describe("الكتالوج: إنشاء منتج بمخزون افتتاحي", ()
 describe("الكتالوج: إسناد الباركود (ملصقات)", () => {
   it("assignBarcode يحفظ باركوداً داخلياً لوحدة بلا باركود ويصبح قابلاً للمسح", async () => {
     const r = await createProduct(
-      { name: "صنف بلا باركود", variants: [{ sku: "NOBC-1", costPrice: "10.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "20.00" }] }] }] },
-      actor
+      {
+        name: "صنف بلا باركود",
+        variants: [
+          {
+            sku: "NOBC-1",
+            costPrice: "10.00",
+            units: [
+              {
+                unitName: "قطعة",
+                conversionFactor: "1",
+                isBaseUnit: true,
+                prices: [{ priceTier: "RETAIL", price: "20.00" }],
+              },
+            ],
+          },
+        ],
+      },
+      actor,
     );
-    const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "NOBC-1")))[0];
-    const unit = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id))))[0];
+    const v = (
+      await db()
+        .select()
+        .from(s.productVariants)
+        .where(eq(s.productVariants.sku, "NOBC-1"))
+    )[0];
+    const unit = (
+      await db()
+        .select()
+        .from(s.productUnits)
+        .where(eq(s.productUnits.variantId, Number(v.id)))
+    )[0];
     expect(unit.barcode).toBeNull();
 
     const code = "ALR0000999";
     await assignBarcode(Number(unit.id), code);
 
-    const after = (await db().select().from(s.productUnits).where(eq(s.productUnits.id, Number(unit.id))))[0];
+    const after = (
+      await db()
+        .select()
+        .from(s.productUnits)
+        .where(eq(s.productUnits.id, Number(unit.id)))
+    )[0];
     expect(after.barcode).toBe(code);
 
     // قابل للمسح عبر lookupByBarcode
@@ -897,16 +1599,53 @@ describe("الكتالوج: إسناد الباركود (ملصقات)", () => {
 
   it("assignBarcode يرفض باركوداً مُستخدَماً لوحدة أخرى", async () => {
     const r1 = await createProduct(
-      { name: "أول", variants: [{ sku: "A-1", costPrice: "1.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "DUP-100" }] }] },
-      actor
+      {
+        name: "أول",
+        variants: [
+          {
+            sku: "A-1",
+            costPrice: "1.00",
+            units: [
+              {
+                unitName: "قطعة",
+                conversionFactor: "1",
+                isBaseUnit: true,
+                barcode: "DUP-100",
+              },
+            ],
+          },
+        ],
+      },
+      actor,
     );
     const r2 = await createProduct(
-      { name: "ثانٍ", variants: [{ sku: "B-1", costPrice: "1.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }] }] },
-      actor
+      {
+        name: "ثانٍ",
+        variants: [
+          {
+            sku: "B-1",
+            costPrice: "1.00",
+            units: [
+              { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+            ],
+          },
+        ],
+      },
+      actor,
     );
     void r1;
-    const v2 = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "B-1")))[0];
-    const u2 = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v2.id))))[0];
+    const v2 = (
+      await db()
+        .select()
+        .from(s.productVariants)
+        .where(eq(s.productVariants.sku, "B-1"))
+    )[0];
+    const u2 = (
+      await db()
+        .select()
+        .from(s.productUnits)
+        .where(eq(s.productUnits.variantId, Number(v2.id)))
+    )[0];
     await expect(assignBarcode(Number(u2.id), "DUP-100")).rejects.toThrow();
   });
 });
@@ -914,18 +1653,34 @@ describe("الكتالوج: إسناد الباركود (ملصقات)", () => {
 describe("عروض الأسعار (Quotations)", () => {
   it("تعديل المسودة ذرّي ويحفظ نسبة الضريبة، ثم يُقفل بعد الإرسال", async () => {
     await setStock(1, 1, 24);
-    await db().insert(s.customers).values({ id: 1, name: "عميل تعديل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    await db()
+      .insert(s.customers)
+      .values({
+        id: 1,
+        name: "عميل تعديل",
+        defaultPriceTier: "RETAIL",
+        currentBalance: "0",
+      });
     const quote = await createQuotation(
       {
         branchId: 1,
         customerId: 1,
         taxRatePercent: "0",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "1", unitPriceOverride: "100.00" }],
+        lines: [
+          {
+            variantId: 1,
+            productUnitId: 2,
+            quantity: "1",
+            unitPriceOverride: "100.00",
+          },
+        ],
       },
       actor,
     );
 
-    await expect(convertQuotation({ quotationId: quote.quotationId }, actor)).rejects.toThrow("قبل قبوله");
+    await expect(
+      convertQuotation({ quotationId: quote.quotationId }, actor),
+    ).rejects.toThrow("قبل قبوله");
 
     const updated = await updateQuotation(
       {
@@ -933,17 +1688,37 @@ describe("عروض الأسعار (Quotations)", () => {
         customerId: 1,
         taxRatePercent: "10",
         invoiceDiscount: "10",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "2", unitPriceOverride: "100.00" }],
+        lines: [
+          {
+            variantId: 1,
+            productUnitId: 2,
+            quantity: "2",
+            unitPriceOverride: "100.00",
+          },
+        ],
       },
       { ...actor, role: "admin" },
     );
     expect(updated.total).toBe("209.00");
-    const row = (await db().select().from(s.quotations).where(eq(s.quotations.id, quote.quotationId)))[0];
+    const row = (
+      await db()
+        .select()
+        .from(s.quotations)
+        .where(eq(s.quotations.id, quote.quotationId))
+    )[0];
     expect(row.taxRatePercent).toBe("10.00");
     expect(row.taxAmount).toBe("19.00");
-    expect(await db().select().from(s.quotationItems).where(eq(s.quotationItems.quotationId, quote.quotationId))).toHaveLength(1);
+    expect(
+      await db()
+        .select()
+        .from(s.quotationItems)
+        .where(eq(s.quotationItems.quotationId, quote.quotationId)),
+    ).toHaveLength(1);
 
-    await setQuotationStatus(quote.quotationId, "SENT", { ...actor, role: "admin" });
+    await setQuotationStatus(quote.quotationId, "SENT", {
+      ...actor,
+      role: "admin",
+    });
     await expect(
       updateQuotation(
         {
@@ -959,7 +1734,14 @@ describe("عروض الأسعار (Quotations)", () => {
 
   it("إنشاء عرض لا يمسّ المخزون ولا الدفتر؛ التحويل يُنشئ فاتورة بالأسعار المعروضة ويخصم المخزون", async () => {
     await setStock(1, 1, 24);
-    await db().insert(s.customers).values({ id: 1, name: "عميل عرض", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    await db()
+      .insert(s.customers)
+      .values({
+        id: 1,
+        name: "عميل عرض",
+        defaultPriceTier: "RETAIL",
+        currentBalance: "0",
+      });
 
     // عرض سعر: 1 درزن قلم بسعر مخصّص 100 (بدل سعر الكتالوج 2800)
     const q = await createQuotation(
@@ -967,9 +1749,16 @@ describe("عروض الأسعار (Quotations)", () => {
         branchId: 1,
         customerId: 1,
         taxRatePercent: "0",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "1", unitPriceOverride: "100.00" }],
+        lines: [
+          {
+            variantId: 1,
+            productUnitId: 2,
+            quantity: "1",
+            unitPriceOverride: "100.00",
+          },
+        ],
       },
-      actor
+      actor,
     );
     expect(q.quoteNumber).toMatch(/^QUO-1-\d{8}-00001$/);
     expect(q.total).toBe("100.00");
@@ -978,26 +1767,58 @@ describe("عروض الأسعار (Quotations)", () => {
     expect(await stockOf(1, 1)).toBe(24);
     expect(await db().select().from(s.invoices)).toHaveLength(0);
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
-    const qRow = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
+    const qRow = (
+      await db()
+        .select()
+        .from(s.quotations)
+        .where(eq(s.quotations.id, q.quotationId))
+    )[0];
     expect(qRow.status).toBe("DRAFT");
 
     // اقبل ثم أثبت أن التحويل بلا مرجعٍ قابلٍ للمطابقة يفشل بلا أيّ أثر قبل التحويل النقدي.
-    await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
+    await setQuotationStatus(q.quotationId, "ACCEPTED", {
+      ...actor,
+      role: "admin",
+    });
     await expect(
-      convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "TRANSFER" } }, actor),
+      convertQuotation(
+        {
+          quotationId: q.quotationId,
+          payment: { amount: "100.00", method: "TRANSFER" },
+        },
+        actor,
+      ),
     ).rejects.toThrow();
     expect(await stockOf(1, 1)).toBe(24);
     expect(await db().select().from(s.invoices)).toHaveLength(0);
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
-    expect((await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0].status).toBe("ACCEPTED");
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.quotations)
+          .where(eq(s.quotations.id, q.quotationId))
+      )[0].status,
+    ).toBe("ACCEPTED");
 
     await openShiftSvc({ branchId: 1, openingBalance: "0.00" }, actor);
-    const conv = await convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "CASH" } }, actor);
+    const conv = await convertQuotation(
+      {
+        quotationId: q.quotationId,
+        payment: { amount: "100.00", method: "CASH" },
+      },
+      actor,
+    );
     expect(conv.alreadyConverted).toBe(false);
 
     // الآن المخزون يُخصم (درزن = 12) والفاتورة بالأسعار المعروضة.
     expect(await stockOf(1, 1)).toBe(12);
-    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, conv.invoiceId!)))[0];
+    const inv = (
+      await db()
+        .select()
+        .from(s.invoices)
+        .where(eq(s.invoices.id, conv.invoiceId!))
+    )[0];
     expect(inv.total).toBe("100.00");
     expect(inv.status).toBe("PAID");
     expect(inv.sourceType).toBe("ORDER");
@@ -1005,14 +1826,26 @@ describe("عروض الأسعار (Quotations)", () => {
     expect(sale.revenue).toBe("100.00");
 
     // الحالة CONVERTED + ربط الفاتورة.
-    const after = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
+    const after = (
+      await db()
+        .select()
+        .from(s.quotations)
+        .where(eq(s.quotations.id, q.quotationId))
+    )[0];
     expect(after.status).toBe("CONVERTED");
     expect(Number(after.convertedInvoiceId)).toBe(conv.invoiceId);
   });
 
   it("التحويل يحمل خصم الأسطر وخصم الفاتورة ⇒ إجمالي الفاتورة = إجمالي العرض (tie-out، تدقيق ١٧/٧)", async () => {
     await setStock(1, 1, 24);
-    await db().insert(s.customers).values({ id: 1, name: "عميل خصم", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    await db()
+      .insert(s.customers)
+      .values({
+        id: 1,
+        name: "عميل خصم",
+        defaultPriceTier: "RETAIL",
+        currentBalance: "0",
+      });
     // درزن بسعر 1000، خصم سطر 100، خصم فاتورة 50 ⇒ (1000−100)−50 = 850.
     const q = await createQuotation(
       {
@@ -1020,23 +1853,57 @@ describe("عروض الأسعار (Quotations)", () => {
         customerId: 1,
         taxRatePercent: "0",
         invoiceDiscount: "50.00",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "1", unitPriceOverride: "1000.00", discountAmount: "100.00" }],
+        lines: [
+          {
+            variantId: 1,
+            productUnitId: 2,
+            quantity: "1",
+            unitPriceOverride: "1000.00",
+            discountAmount: "100.00",
+          },
+        ],
       },
       actor,
     );
     expect(q.total).toBe("850.00");
-    await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
+    await setQuotationStatus(q.quotationId, "ACCEPTED", {
+      ...actor,
+      role: "admin",
+    });
     const conv = await convertQuotation({ quotationId: q.quotationId }, actor);
-    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, conv.invoiceId!)))[0];
+    const inv = (
+      await db()
+        .select()
+        .from(s.invoices)
+        .where(eq(s.invoices.id, conv.invoiceId!))
+    )[0];
     // الثابت: الفاتورة = العرض الملتزَم به. قبل الإصلاح كان يُسقط الخصمين ⇒ 1000.
     expect(inv.total).toBe("850.00");
   });
 
   it("التحويل idempotent: لا فاتورة مكررة عند التحويل مرتين", async () => {
     await setStock(1, 1, 24);
-    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
-    const q = await createQuotation({ branchId: 1, customerId: 1, taxRatePercent: "0", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
-    await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
+    await db()
+      .insert(s.customers)
+      .values({
+        id: 1,
+        name: "عميل",
+        defaultPriceTier: "RETAIL",
+        currentBalance: "0",
+      });
+    const q = await createQuotation(
+      {
+        branchId: 1,
+        customerId: 1,
+        taxRatePercent: "0",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+      },
+      actor,
+    );
+    await setQuotationStatus(q.quotationId, "ACCEPTED", {
+      ...actor,
+      role: "admin",
+    });
     const c1 = await convertQuotation({ quotationId: q.quotationId }, actor);
     const c2 = await convertQuotation({ quotationId: q.quotationId }, actor);
     expect(c2).toEqual({ ...c1, alreadyConverted: true });
@@ -1047,28 +1914,55 @@ describe("عروض الأسعار (Quotations)", () => {
   for (const terminalStatus of ["REJECTED", "EXPIRED"] as const) {
     it(`سباق التحويل مع ${terminalStatus}: يفوز انتقال واحد ولا تنشأ فاتورة لحالة طرفية`, async () => {
       await setStock(1, 1, 24);
-      await db().insert(s.customers).values({ id: 1, name: "عميل سباق العرض", defaultPriceTier: "RETAIL", currentBalance: "0" });
-      const q = await createQuotation({
-        branchId: 1,
-        customerId: 1,
-        taxRatePercent: "0",
-        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
-      }, actor);
-      await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
+      await db()
+        .insert(s.customers)
+        .values({
+          id: 1,
+          name: "عميل سباق العرض",
+          defaultPriceTier: "RETAIL",
+          currentBalance: "0",
+        });
+      const q = await createQuotation(
+        {
+          branchId: 1,
+          customerId: 1,
+          taxRatePercent: "0",
+          lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        },
+        actor,
+      );
+      await setQuotationStatus(q.quotationId, "ACCEPTED", {
+        ...actor,
+        role: "admin",
+      });
 
       const results = await Promise.allSettled([
         convertQuotation({ quotationId: q.quotationId }, actor),
-        setQuotationStatus(q.quotationId, terminalStatus, { ...actor, role: "admin" }),
+        setQuotationStatus(q.quotationId, terminalStatus, {
+          ...actor,
+          role: "admin",
+        }),
       ]);
-      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-      expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+      expect(
+        results.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+      expect(
+        results.filter((result) => result.status === "rejected"),
+      ).toHaveLength(1);
 
-      const after = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
+      const after = (
+        await db()
+          .select()
+          .from(s.quotations)
+          .where(eq(s.quotations.id, q.quotationId))
+      )[0];
       const createdInvoices = await db().select().from(s.invoices);
       if (after.status === "CONVERTED") {
         expect(after.convertedInvoiceId).not.toBeNull();
         expect(createdInvoices).toHaveLength(1);
-        expect(Number(after.convertedInvoiceId)).toBe(Number(createdInvoices[0].id));
+        expect(Number(after.convertedInvoiceId)).toBe(
+          Number(createdInvoices[0].id),
+        );
         expect(await stockOf(1, 1)).toBe(12);
       } else {
         expect(after.status).toBe(terminalStatus);
@@ -1081,29 +1975,51 @@ describe("عروض الأسعار (Quotations)", () => {
 
   it("فشل ربط العرض بعد إنشاء البيع يرجع الفاتورة والمخزون والإيصال والدفتر معاً", async () => {
     await setStock(1, 1, 24);
-    await db().insert(s.customers).values({ id: 1, name: "عميل rollback", defaultPriceTier: "RETAIL", currentBalance: "0" });
-    const q = await createQuotation({
-      branchId: 1,
-      customerId: 1,
-      taxRatePercent: "0",
-      lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
-    }, actor);
-    await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
+    await db()
+      .insert(s.customers)
+      .values({
+        id: 1,
+        name: "عميل rollback",
+        defaultPriceTier: "RETAIL",
+        currentBalance: "0",
+      });
+    const q = await createQuotation(
+      {
+        branchId: 1,
+        customerId: 1,
+        taxRatePercent: "0",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+      },
+      actor,
+    );
+    await setQuotationStatus(q.quotationId, "ACCEPTED", {
+      ...actor,
+      role: "admin",
+    });
 
     const triggerName = "test_quotation_conversion_link_failure";
     await db().execute(sql.raw(`DROP TRIGGER IF EXISTS \`${triggerName}\``));
-    await db().execute(sql.raw(`
+    await db().execute(
+      sql.raw(`
       CREATE TRIGGER \`${triggerName}\`
       BEFORE UPDATE ON quotations
       FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'forced quotation link failure'
-    `));
+    `),
+    );
     try {
-      await expect(convertQuotation({ quotationId: q.quotationId }, actor)).rejects.toThrow();
+      await expect(
+        convertQuotation({ quotationId: q.quotationId }, actor),
+      ).rejects.toThrow();
     } finally {
       await db().execute(sql.raw(`DROP TRIGGER IF EXISTS \`${triggerName}\``));
     }
 
-    const after = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
+    const after = (
+      await db()
+        .select()
+        .from(s.quotations)
+        .where(eq(s.quotations.id, q.quotationId))
+    )[0];
     expect(after.status).toBe("ACCEPTED");
     expect(after.convertedInvoiceId).toBeNull();
     expect(await db().select().from(s.invoices)).toHaveLength(0);
@@ -1117,8 +2033,26 @@ describe("عروض الأسعار (Quotations)", () => {
 
   it("لا يمكن تحويل عرض مرفوض", async () => {
     await setStock(1, 1, 24);
-    const q = await createQuotation({ branchId: 1, taxRatePercent: "0", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
-    await setQuotationStatus(q.quotationId, "REJECTED", { ...actor, role: "admin" });
-    await expect(convertQuotation({ quotationId: q.quotationId, payment: { amount: "2800.00", method: "CASH" } }, actor)).rejects.toThrow();
+    const q = await createQuotation(
+      {
+        branchId: 1,
+        taxRatePercent: "0",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+      },
+      actor,
+    );
+    await setQuotationStatus(q.quotationId, "REJECTED", {
+      ...actor,
+      role: "admin",
+    });
+    await expect(
+      convertQuotation(
+        {
+          quotationId: q.quotationId,
+          payment: { amount: "2800.00", method: "CASH" },
+        },
+        actor,
+      ),
+    ).rejects.toThrow();
   });
 });

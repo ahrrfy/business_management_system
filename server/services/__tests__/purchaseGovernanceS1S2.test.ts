@@ -293,6 +293,7 @@ describe("S1 — مراجعات وقرارات أمر الشراء", () => {
           decisionKey: "po-emergency-same-approver",
           approve: true,
           reason: "اعتماد نهائي",
+          confirmedFullReceipt: true,
         },
         firstApprover,
       ),

@@ -65,24 +65,26 @@ async function seed(): Promise<void> {
     code: "MAIN",
     type: "MAIN",
   });
-  await db().insert(s.users).values([
-    {
-      id: 1,
-      openId: "cost-requester",
-      name: "مدير الطالب",
-      role: "manager",
-      loginMethod: "local",
-      branchId: 1,
-    },
-    {
-      id: 2,
-      openId: "cost-approver",
-      name: "مدير المعتمد",
-      role: "manager",
-      loginMethod: "local",
-      branchId: 1,
-    },
-  ]);
+  await db()
+    .insert(s.users)
+    .values([
+      {
+        id: 1,
+        openId: "cost-requester",
+        name: "مدير الطالب",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+      },
+      {
+        id: 2,
+        openId: "cost-approver",
+        name: "مدير المعتمد",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+      },
+    ]);
   await db().insert(s.products).values({ id: 1, name: "دفتر" });
   await db().insert(s.productVariants).values({
     id: 1,
@@ -183,6 +185,7 @@ async function preparePurchase(unitPrice = "120.00"): Promise<{
       reason: "راجعت المورد والكميات والأسعار قبل اختبار أثر التكلفة",
     },
     approver,
+    { legacyConfirmOnly: true },
   );
   const line = (
     await db()
@@ -203,7 +206,12 @@ async function receivePreparedPurchase(purchase: {
   await receivePurchase(
     {
       purchaseOrderId: purchase.purchaseOrderId,
-      lines: [{ purchaseOrderItemId: purchase.purchaseOrderItemId, receivedBaseQuantity: 10 }],
+      lines: [
+        {
+          purchaseOrderItemId: purchase.purchaseOrderItemId,
+          receivedBaseQuantity: 10,
+        },
+      ],
     },
     approver,
   );
@@ -285,10 +293,7 @@ describe("إعادة تقييم costPrice — أثر المخزون وCOGS وWAV
         .select({ quantity: s.branchStock.quantity })
         .from(s.branchStock)
         .where(
-          and(
-            eq(s.branchStock.variantId, 1),
-            eq(s.branchStock.branchId, 1),
-          ),
+          and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)),
         )
     )[0];
     // ١٠ @ ٨٠ بعد إعادة التقييم + ١٠ @ ١٢٠ من المورد = ١٠٠ WAVG.
@@ -325,7 +330,9 @@ describe("إعادة تقييم costPrice — أثر المخزون وCOGS وWAV
       await db()
         .select({ quantity: s.branchStock.quantity })
         .from(s.branchStock)
-        .where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)))
+        .where(
+          and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)),
+        )
     )[0];
     // أول استلام لا يخلط تكلفةً بلا كمية: ١٠ @ ١٢٠ ⇒ WAVG = ١٢٠ في الترتيبين الممكنين.
     expect(stock.quantity).toBe(10);
