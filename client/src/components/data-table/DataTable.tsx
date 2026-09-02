@@ -128,6 +128,16 @@ type DataTableProps<T, K = string> = {
    * ولا يعمل مع التحديد المتعدّد (هناك النقرُ للتحديد).
    */
   onRowClick?: (row: T) => void;
+  /**
+   * جدولٌ **مُضمَّن** داخل بطاقةٍ تحمل عنوانَه وعدَّه أصلاً (لوحات ذات أقسامٍ متعدّدة:
+   * رقيب الشذوذ ١٦ جدولاً · لوحة البطاقات ٦ · مركز الهدايا ٥). يكتم شريطَ الحالة
+   * ومنتقيَ الأعمدة — لأنّ ستّة عشر شريطَ «س من ص صفّ» فوق بعضها ضجيجٌ لا معلومة،
+   * والعدُّ معروضٌ في رأس البطاقة. أُضيف ٢/٩/٢٦ ضمن موجة الجداول ٧.
+   *
+   * ⛔ ليس بديلاً عن القائمة الكاملة: القائمةُ التي يبحث فيها المستعمِل ويُرقّمها
+   * تحتاج شريطَها. استعمله للجدول المُضمَّن الصغير وحده.
+   */
+  embedded?: boolean;
   /** صنف بصري اختياري للصف مشتق من بياناته (تمييز حالات تشغيلية مهمة). */
   getRowClassName?: (row: T) => string | undefined;
   /**
@@ -241,6 +251,7 @@ export function DataTable<T, K = string>({
   mobileCardRenderer,
   rowClickSelects = false,
   onRowClick,
+  embedded = false,
   getRowClassName,
   operation,
   pageSize = 50,
@@ -454,7 +465,7 @@ export function DataTable<T, K = string>({
   };
 
   const columnControls =
-    table.getAllLeafColumns().length > 5 ? (
+    !embedded && table.getAllLeafColumns().length > 5 ? (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button type="button" variant="outline" size="sm" className="h-8 gap-2">
@@ -871,7 +882,7 @@ export function DataTable<T, K = string>({
           actions={columnControls}
         />
       ) : (
-        (data.length > 0 || columnControls || statusSummary) && (
+        !embedded && (data.length > 0 || columnControls || statusSummary) && (
           <WorkspaceStatusBar
             role={paginated && table.getPageCount() > 1 ? "navigation" : "group"}
             aria-label={paginated && table.getPageCount() > 1 ? "ترقيم صفحات الجدول" : "أدوات الجدول"}

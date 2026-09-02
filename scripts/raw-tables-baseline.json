@@ -1,6 +1,5 @@
 {
   "client/src/pages/_VoucherFormShared.tsx": 1,
-  "client/src/pages/AnomalyWatch.tsx": 16,
   "client/src/pages/APAging.tsx": 1,
   "client/src/pages/ARAging.tsx": 1,
   "client/src/pages/ArApAgingDetail.tsx": 1,
@@ -30,7 +29,6 @@
   "client/src/pages/DeliveryHub.tsx": 5,
   "client/src/pages/DeliveryParties.tsx": 1,
   "client/src/pages/DeliveryPartyDetail.tsx": 3,
-  "client/src/pages/digitalCards/DigitalDashboard.tsx": 6,
   "client/src/pages/digitalCards/DigitalOfferings.tsx": 1,
   "client/src/pages/digitalCards/DigitalPricing.tsx": 3,
   "client/src/pages/digitalCards/DigitalProviders.tsx": 1,
