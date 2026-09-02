@@ -59,7 +59,7 @@ async function receiveAt(qty: number, unitPrice: string) {
     decisionKey: `wavg-approve:${randomUUID()}`,
     approve: true,
     reason: "راجعت المورد والكميات والأسعار واعتمدت الاستلام",
-  }, approver);
+  }, approver, { legacyConfirmOnly: true });
   const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
   await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: qty }] }, actor);
 }

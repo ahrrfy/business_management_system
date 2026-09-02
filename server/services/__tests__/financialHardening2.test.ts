@@ -140,7 +140,7 @@ async function createApprovedPurchaseOrder(unitPrice: string) {
     decisionKey: `hardening2-po-approve:${randomUUID()}`,
     approve: true,
     reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
-  }, owner);
+  }, owner, { legacyConfirmOnly: true });
   return po;
 }
 
