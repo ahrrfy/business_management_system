@@ -43,6 +43,7 @@ beforeEach(async () => {
 });
 
 const cash2 = { id: 12, role: "cashier", branchId: 2 };
+const adminScope = { branchId: 1, canCrossBranches: true };
 
 describe("announcementService", () => {
   it("recipientCount لجمهور ALL = النشطون فقط (يستبعد المعطّل)", async () => {
@@ -133,7 +134,7 @@ describe("announcementService", () => {
   it("الإقرار يتطلّب requiresAck ويُسجَّل في تفاصيل الإدارة", async () => {
     const a = await createAnnouncement({ title: "إلزاميّ", body: "..", audienceType: "ALL", requiresAck: true }, 10);
     await acknowledgeAnnouncement(cash2, a.id);
-    const detail = await getAnnouncementWithReaders(a.id);
+    const detail = await getAnnouncementWithReaders(a.id, adminScope);
     expect(detail?.readers).toHaveLength(1);
     expect(detail?.readers[0]).toMatchObject({ userId: 12 });
     expect(detail?.readers[0].acknowledgedAt).not.toBeNull();
@@ -156,13 +157,13 @@ describe("announcementService", () => {
     const a = await createAnnouncement({ title: "x", body: "..", audienceType: "ALL", requiresAck: true }, 10);
     await markAnnouncementRead({ id: 11, role: "cashier", branchId: 1 }, a.id);
     await acknowledgeAnnouncement(cash2, a.id);
-    const list = await listAnnouncements();
+    const list = await listAnnouncements(adminScope);
     expect(list[0]).toMatchObject({ id: a.id, readCount: 2, ackCount: 1 });
   });
 
   it("setAnnouncementActive يعيد false لمعرّفٍ غير موجود", async () => {
-    expect(await setAnnouncementActive(999999, false)).toBe(false);
+    expect(await setAnnouncementActive(999999, false, adminScope)).toBe(false);
     const a = await createAnnouncement({ title: "x", body: "..", audienceType: "ALL" }, 10);
-    expect(await setAnnouncementActive(a.id, false)).toBe(true);
+    expect(await setAnnouncementActive(a.id, false, adminScope)).toBe(true);
   });
 });
