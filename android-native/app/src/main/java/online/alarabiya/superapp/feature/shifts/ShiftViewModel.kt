@@ -132,17 +132,11 @@ class ShiftViewModel(
     fun requestClose() {
         val report = (state.detail as? ShiftDetailState.Content)?.report ?: return
         if (!ShiftStatePolicy.canRequestClose(state, report.shift)) return
-        val needsRecipient = report.expectedCash.isPositive()
         state = state.copy(
             closeDraft = ShiftCloseDraft(report.shift.id),
-            handoverRecipients = emptyList(),
-            handoverRecipientsLoading = needsRecipient,
-            handoverRecipientsLoaded = !needsRecipient,
-            handoverRecipientsError = null,
             error = null,
             notice = null,
         )
-        if (needsRecipient) viewModelScope.launch { loadHandoverRecipients(report.shift.id) }
     }
 
     fun updateCloseCounted(value: String) {
@@ -162,37 +156,10 @@ class ShiftViewModel(
         state.closeDraft?.let { state = state.copy(closeDraft = it.copy(acknowledged = value), error = null) }
     }
 
-    fun selectHandoverRecipient(userId: Long?) {
-        if (state.closing) return
-        val selected = userId?.takeIf { id -> state.handoverRecipients.any { it.id == id } }
-        state.closeDraft?.let {
-            state = state.copy(
-                closeDraft = it.copy(handoverRecipientUserId = selected),
-                error = null,
-            )
-        }
-    }
-
-    fun retryHandoverRecipients() {
-        if (state.closing || state.handoverRecipientsLoading) return
-        val shiftId = state.closeDraft?.shiftId ?: return
-        state = state.copy(
-            handoverRecipients = emptyList(),
-            handoverRecipientsLoading = true,
-            handoverRecipientsLoaded = false,
-            handoverRecipientsError = null,
-        )
-        viewModelScope.launch { loadHandoverRecipients(shiftId) }
-    }
-
     fun dismissClose() {
         if (!state.closing) {
             state = state.copy(
                 closeDraft = null,
-                handoverRecipients = emptyList(),
-                handoverRecipientsLoading = false,
-                handoverRecipientsLoaded = false,
-                handoverRecipientsError = null,
                 error = null,
             )
         }
@@ -207,27 +174,19 @@ class ShiftViewModel(
         }
         val draft = requireNotNull(state.closeDraft)
         val counted = requireNotNull(ShiftMoney.parseUnsigned(draft.countedCash))
-        val recipientUserId = draft.handoverRecipientUserId.takeIf { counted.isPositive() }
         state = state.copy(closing = true, error = null, notice = null)
         viewModelScope.launch {
-            runCatching { source.close(ShiftCloseCommand(draft.shiftId, counted, recipientUserId)) }
+            runCatching { source.close(ShiftCloseCommand(draft.shiftId, counted)) }
                 .onSuccess { result ->
                     state = state.copy(
                         closing = false,
                         loading = true,
                         closeDraft = null,
-                        handoverRecipients = emptyList(),
-                        handoverRecipientsLoading = false,
-                        handoverRecipientsLoaded = false,
-                        handoverRecipientsError = null,
                         selectedShiftId = null,
                         detail = ShiftDetailState.None,
                         notice = when {
                             result.alreadyClosed -> "كانت الوردية مغلقة وتم تحديث التقرير"
-                            counted.isPositive() -> {
-                                val recipient = result.treasuryRecipientName ?: "المستلم المحدد"
-                                "تم إغلاق الوردية وتحويل النقد إلى عهدة $recipient بانتظار عدّه وقبوله في الخزينة"
-                            }
+                            counted.isPositive() -> "تم إغلاق الوردية وترحيل كامل النقد إلى الخزينة تلقائياً"
                             else -> "تم إغلاق الوردية وتثبيت المطابقة"
                         },
                     )
@@ -311,36 +270,6 @@ class ShiftViewModel(
             }
     }
 
-    private suspend fun loadHandoverRecipients(shiftId: Long) {
-        val report = (state.detail as? ShiftDetailState.Content)?.report
-            ?.takeIf { it.shift.id == shiftId }
-            ?: return
-        runCatching { source.handoverRecipients() }
-            .onSuccess { recipients ->
-                if (state.closeDraft?.shiftId == shiftId) {
-                    state = state.copy(
-                        handoverRecipients = ShiftStatePolicy.eligibleHandoverRecipients(
-                            report = report,
-                            actorUserId = state.policy.actorId,
-                            recipients = recipients,
-                        ),
-                        handoverRecipientsLoading = false,
-                        handoverRecipientsLoaded = true,
-                        handoverRecipientsError = null,
-                    )
-                }
-            }
-            .onFailure { error ->
-                if (state.closeDraft?.shiftId == shiftId) {
-                    state = state.copy(
-                        handoverRecipients = emptyList(),
-                        handoverRecipientsLoading = false,
-                        handoverRecipientsLoaded = false,
-                        handoverRecipientsError = error.userMessage(),
-                    )
-                }
-            }
-    }
 }
 
 private fun Throwable.userMessage(): String =

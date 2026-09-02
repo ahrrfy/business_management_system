@@ -24,6 +24,7 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
 import { CommissionGuide } from "@/components/commissions/CommissionGuide";
 import { TierPlayground } from "@/components/commissions/TierPlayground";
 import { confirm } from "@/lib/confirm";
@@ -278,76 +279,94 @@ export default function CommissionPlans() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">اسم الخطة</th>
-                  <th className="p-2">طريقة الاحتساب</th>
-                  <th className="p-2">المستويات</th>
-                  <th className="p-2 text-center whitespace-nowrap">عدد الموظفين</th>
-                  <th className="p-2 text-center">الحالة</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((p) => (
-                  <tr key={p.id} className={`border-t ${p.isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">
-                      {p.name}
-                      {p.notes ? <div className="text-xs text-muted-foreground">{p.notes}</div> : null}
-                    </td>
-                    <td className="p-2 whitespace-nowrap">{MODE_LABEL[p.tierMode]}</td>
-                    <td className="p-2 text-xs text-muted-foreground">{tierSummary(p)}</td>
-                    <td className="p-2 text-center tabular-nums">{p.openAssignments}</td>
-                    <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${p.isActive ? "badge-status-active" : "badge-stock-out"}`}>
-                        {p.isActive ? "فعّالة" : "معطّلة"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      {canManagePlans && (
-                        <RowActions
-                          actions={[
-                            {
-                              key: "edit",
-                              kind: "edit",
-                              label: "تعديل",
-                              onSelect: () => openEdit(p),
-                              gate: { roles: ["admin", "manager"], module: "commissions", level: "FULL" },
-                            },
-                            {
-                              key: "toggle",
-                              kind: "approve",
-                              label: p.isActive ? "تعطيل" : "تفعيل",
-                              variant: p.isActive ? "destructive" : "default",
-                              disabled: setActiveMut.isPending,
-                              disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                              onSelect: () => void toggleActive(p),
-                              gate: { roles: ["admin", "manager"], module: "commissions", level: "FULL" },
-                            },
-                          ]}
-                        />
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {list.isLoading && (
-                  <tr><td colSpan={6}><LoadingState /></td></tr>
-                )}
-                {!list.isLoading && visibleRows.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={6}
-                    message={
-                      rows.length === 0
-                        ? "لا خطط عمولات بعد — أنشئ أول خطة ثم اربط بها الموظفين."
-                        : "لا خطة تطابق بحثك."
-                    }
-                  />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable<PlanRow>
+            data={visibleRows}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            /* البحث في ListToolbar أعلاه (يغذّي visibleRows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={query.trim() !== ""}
+            getRowClassName={(p) => (p.isActive ? undefined : "opacity-60")}
+            emptyState="لا خطط عمولات بعد — أنشئ أول خطة ثم اربط بها الموظفين."
+            emptyFilteredState="لا خطة تطابق بحثك."
+            columns={[
+              {
+                id: "name",
+                header: "اسم الخطة",
+                accessorFn: (p) => p.name,
+                meta: { width: "wide" },
+                cell: ({ row }) => (
+                  <span className="font-medium">
+                    {row.original.name}
+                    {row.original.notes ? <div className="text-xs font-normal text-muted-foreground">{row.original.notes}</div> : null}
+                  </span>
+                ),
+              },
+              {
+                id: "tierMode",
+                header: "طريقة الاحتساب",
+                // التسمية المعروضة لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+                accessorFn: (p) => MODE_LABEL[p.tierMode],
+                cell: ({ row }) => MODE_LABEL[row.original.tierMode],
+              },
+              {
+                id: "tiers",
+                header: "المستويات",
+                accessorFn: (p) => tierSummary(p),
+                meta: { width: "wide", wrap: true },
+                cell: ({ row }) => <span className="text-xs text-muted-foreground">{tierSummary(row.original)}</span>,
+              },
+              {
+                id: "openAssignments",
+                header: "عدد الموظفين",
+                accessorFn: (p) => p.openAssignments,
+                meta: { kind: "number", align: "center" },
+                cell: ({ row }) => row.original.openAssignments,
+              },
+              {
+                id: "isActive",
+                header: "الحالة",
+                accessorFn: (p) => (p.isActive ? "فعّالة" : "معطّلة"),
+                meta: { kind: "status" },
+                cell: ({ row }) => (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "badge-stock-out"}`}>
+                    {row.original.isActive ? "فعّالة" : "معطّلة"}
+                  </span>
+                ),
+              },
+              {
+                id: "actions",
+                header: "إجراء",
+                enableSorting: false,
+                meta: { kind: "actions" },
+                // الإجراءات تبقى محكومةً بالصلاحية كما كانت — لا تُصيَّر لغير المخوَّل.
+                cell: ({ row }) =>
+                  canManagePlans ? (
+                    <RowActions
+                      actions={[
+                        {
+                          key: "edit",
+                          kind: "edit",
+                          label: "تعديل",
+                          onSelect: () => openEdit(row.original),
+                          gate: { roles: ["admin", "manager"], module: "commissions", level: "FULL" },
+                        },
+                        {
+                          key: "toggle",
+                          kind: "approve",
+                          label: row.original.isActive ? "تعطيل" : "تفعيل",
+                          variant: row.original.isActive ? "destructive" : "default",
+                          disabled: setActiveMut.isPending,
+                          disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                          onSelect: () => void toggleActive(row.original),
+                          gate: { roles: ["admin", "manager"], module: "commissions", level: "FULL" },
+                        },
+                      ]}
+                    />
+                  ) : null,
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 

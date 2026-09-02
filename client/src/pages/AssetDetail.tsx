@@ -11,14 +11,16 @@ import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AssetStatusBadge, categoryIcon, iqd } from "@/lib/assets/ui";
 import { assetSettlementPresentation } from "@/lib/assetAccrualStatus";
 import { printAssetLabel } from "@/lib/assets/print";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { assetCategoryLabel, depreciationMethodLabel } from "@shared/assets";
 import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
 import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
@@ -28,6 +30,52 @@ import { Link, useParams } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+/** صفوفُ التبويبات — مشتقّة من عقد `assets.get` فلا تنجرف عن الخادم. */
+type AssetDetailData = RouterOutputs["assets"]["get"];
+type ScheduleRow = AssetDetailData["schedule"][number];
+type MaintenanceRow = AssetDetailData["maintenance"][number];
+
+/** جدولان مُضمَّنان في بطاقتَي تبويبٍ تحملان عنوانَيهما — بلا بحثٍ ولا ترقيمٍ ولا شريطِ حالة. */
+const EMBEDDED_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
+
+const scheduleColumns: ColumnDef<ScheduleRow, unknown>[] = [
+  {
+    id: "year",
+    header: "السنة",
+    accessorFn: (r) => r.year,
+    // kind: "number" يعزل اتّجاه الرقم؛ align: "start" يحفظ محاذاة العمود كما كانت.
+    meta: { kind: "number", align: "start", width: "id" },
+    cell: ({ row }) => (
+      <span className="inline-flex items-center gap-1">
+        {row.original.year}
+        {row.original.isCurrent ? <PlayCircle aria-hidden className="size-3" /> : null}
+      </span>
+    ),
+  },
+  { id: "opening", header: "القيمة أول المدة", accessorFn: (r) => iqd(r.opening), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.opening) },
+  { id: "dep", header: "إهلاك السنة", accessorFn: (r) => iqd(r.dep), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.dep) },
+  { id: "closing", header: "القيمة آخر المدة", accessorFn: (r) => iqd(r.closing), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.closing) },
+];
+
+const maintenanceColumns: ColumnDef<MaintenanceRow, unknown>[] = [
+  { id: "maintDate", header: "التاريخ", accessorFn: (m) => fmtDate(m.maintDate), meta: { kind: "date" }, cell: ({ row }) => fmtDate(row.original.maintDate) },
+  { id: "type", header: "النوع", accessorFn: (m) => m.type, cell: ({ row }) => row.original.type },
+  {
+    id: "vendor",
+    header: "المزوّد",
+    accessorFn: (m) => m.vendor ?? "—",
+    cell: ({ row }) => <span className="text-xs">{row.original.vendor ?? "—"}</span>,
+  },
+  {
+    id: "note",
+    header: "ملاحظات",
+    accessorFn: (m) => m.note ?? "—",
+    meta: { width: "wide", wrap: true },
+    cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.note ?? "—"}</span>,
+  },
+  { id: "cost", header: "التكلفة", accessorFn: (m) => iqd(m.cost), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.cost) },
+];
 
 function Field({ label, value, dir }: { label: string; value: React.ReactNode; dir?: "ltr" | "rtl" }) {
   return (
@@ -298,24 +346,14 @@ export default function AssetDetail() {
           <Card>
             <CardHeader><CardTitle className="text-base">جدول الإهلاك السنوي — {depreciationMethodLabel(a.depreciationMethod)}</CardTitle></CardHeader>
             <CardContent className="p-0">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr>
-                  <th className="p-2">السنة</th>
-                  <th className="p-2 text-right">القيمة أول المدة</th>
-                  <th className="p-2 text-right">إهلاك السنة</th>
-                  <th className="p-2 text-right">القيمة آخر المدة</th>
-                </tr></thead>
-                <tbody>
-                  {a.schedule.map((r) => (
-                    <tr key={r.year} className={`border-t ${r.isCurrent ? "bg-primary/5 font-medium" : ""}`}>
-                      <td className="p-2" dir="ltr"><span className="inline-flex items-center gap-1">{r.year}{r.isCurrent ? <PlayCircle aria-hidden className="size-3" /> : null}</span></td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.opening)}</td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.dep)}</td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.closing)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <DataTable<ScheduleRow>
+                {...EMBEDDED_TABLE}
+                columns={scheduleColumns}
+                data={a.schedule}
+                /* `!` مقصود: `odd:bg-background` على الصفّ أعلى خصوصيّةً من صنفٍ مجرّد. */
+                getRowClassName={(r) => (r.isCurrent ? "!bg-primary/5 font-medium" : undefined)}
+                emptyText="لا جدول إهلاك لهذا الأصل."
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -327,23 +365,12 @@ export default function AssetDetail() {
               {isLive && <Button size="sm" variant="outline" onClick={() => setOpenMaint(true)}>+ تسجيل صيانة</Button>}
             </CardHeader>
             <CardContent className="p-0">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr>
-                  <th className="p-2">التاريخ</th><th className="p-2">النوع</th><th className="p-2">المزوّد</th><th className="p-2">ملاحظات</th><th className="p-2 text-right">التكلفة</th>
-                </tr></thead>
-                <tbody>
-                  {a.maintenance.map((m) => (
-                    <tr key={m.id} className="border-t">
-                      <td className="p-2 text-xs" dir="ltr">{fmtDate(m.maintDate)}</td>
-                      <td className="p-2">{m.type}</td>
-                      <td className="p-2 text-xs">{m.vendor ?? "—"}</td>
-                      <td className="p-2 text-xs text-muted-foreground">{m.note ?? "—"}</td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(m.cost)}</td>
-                    </tr>
-                  ))}
-                  {a.maintenance.length === 0 && <TableEmptyRow colSpan={5} message="لا عمليات صيانة مسجّلة." />}
-                </tbody>
-              </table>
+              <DataTable<MaintenanceRow>
+                {...EMBEDDED_TABLE}
+                columns={maintenanceColumns}
+                data={a.maintenance}
+                emptyText="لا عمليات صيانة مسجّلة."
+              />
             </CardContent>
           </Card>
         </TabsContent>

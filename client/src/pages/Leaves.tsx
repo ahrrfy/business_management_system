@@ -7,8 +7,6 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
@@ -98,6 +96,43 @@ export default function Leaves() {
     return q ? rows.filter((l) => [l.employeeName, l.leaveType, l.reason, leaveStatusLabel(l.status)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
   }, [rows, query]);
   type LeaveRow = (typeof visibleRows)[number];
+  type BalanceRow = NonNullable<(typeof balances)["data"]>[number];
+
+  /** أعمدة أرصدة الإجازات — جدولٌ مُضمَّن في بطاقةٍ تحمل عنوانه وعدَّه. */
+  const balanceColumns: ColumnDef<BalanceRow, unknown>[] = [
+    {
+      id: "name",
+      header: "الموظف",
+      accessorFn: (b) => b.name,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => (
+        <div className="flex items-center gap-2">
+          <EmpAvatar name={row.original.name} color={row.original.colorTag} photoUrl={row.original.photoUrl} sizePx={28} />
+          <span className="font-medium">{row.original.name}</span>
+        </div>
+      ),
+    },
+    {
+      id: "department",
+      header: "القسم",
+      accessorFn: (b) => b.department ?? "—",
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.department ?? "—"}</span>,
+    },
+    {
+      id: "annual",
+      header: "سنوية",
+      accessorFn: (b) => b.annualLeaveBalance,
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => row.original.annualLeaveBalance,
+    },
+    {
+      id: "sick",
+      header: "مرضية",
+      accessorFn: (b) => b.sickLeaveBalance,
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => row.original.sickLeaveBalance,
+    },
+  ];
 
   // مؤشّرات: قيد الموافقة، موافق عليها، أيام إجازة هذا الشهر — تُحسب خادمياً على كامل المجموعة
   // المفلترة (لا على الصفحة المعروضة وحدها) كي تبقى صحيحة عبر كل الصفحات.
@@ -358,39 +393,17 @@ export default function Leaves() {
           <Card>
             <CardHeader><CardTitle className="text-base">أرصدة الإجازات <span className="text-muted-foreground font-normal">({balances.data?.length ?? 0})</span></CardTitle></CardHeader>
             <CardContent className="p-0">
-              <ScrollTableShell bordered={false}>
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="p-2">الموظف</th>
-                      <th className="p-2">القسم</th>
-                      <th className="p-2 text-center">سنوية</th>
-                      <th className="p-2 text-center">مرضية</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(balances.data ?? []).map((b) => (
-                      <tr key={b.id} className="border-t hover:bg-accent/40">
-                        <td className="p-2">
-                          <div className="flex items-center gap-2">
-                            <EmpAvatar name={b.name} color={b.colorTag} photoUrl={b.photoUrl} sizePx={28} />
-                            <span className="font-medium">{b.name}</span>
-                          </div>
-                        </td>
-                        <td className="p-2 text-xs text-muted-foreground">{b.department ?? "—"}</td>
-                        <td className="p-2 text-center tabular-nums" dir="ltr">{b.annualLeaveBalance}</td>
-                        <td className="p-2 text-center tabular-nums" dir="ltr">{b.sickLeaveBalance}</td>
-                      </tr>
-                    ))}
-                    {balances.isError && (
-                      <tr><td colSpan={4}><ErrorState message="تعذّر تحميل الأرصدة." onRetry={() => balances.refetch()} /></td></tr>
-                    )}
-                    {!balances.isLoading && !balances.isError && (balances.data?.length ?? 0) === 0 && (
-                      <TableEmptyRow colSpan={4} message="لا موظفين على رأس العمل." />
-                    )}
-                  </tbody>
-                </table>
-              </ScrollTableShell>
+              {/* مُضمَّن: البطاقة تحمل العنوان والعدّ ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+              <DataTable<BalanceRow>
+                embedded
+                searchable={false}
+                pageSize={Infinity}
+                columns={balanceColumns}
+                data={balances.data ?? []}
+                loading={balances.isLoading}
+                errorState={{ isError: balances.isError, message: "تعذّر تحميل الأرصدة.", onRetry: () => void balances.refetch() }}
+                emptyText="لا موظفين على رأس العمل."
+              />
             </CardContent>
           </Card>
         </TabsContent>

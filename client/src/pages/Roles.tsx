@@ -1,6 +1,6 @@
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list/RowActions";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { FilterField } from "@/components/list/FilterField";
@@ -9,12 +9,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
 import { ROLES } from "@/lib/permissionsModel";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { Link } from "wouter";
 import { useMemo } from "react";
 
 const roleLabel = (key: string) => ROLES.find((r) => r.key === key)?.label ?? key;
+
+/** صفُّ الدور المخصّص — مشتقٌّ من عقد `roles.list` فلا ينجرف عن الخادم. */
+type CustomRoleRow = RouterOutputs["roles"]["list"]["custom"][number];
 
 export default function Roles() {
   const utils = trpc.useUtils();
@@ -48,6 +51,115 @@ export default function Roles() {
     if (!(await confirm({ variant: "danger", title: "حذف الدور", description: `حذف الدور «${label}» نهائياً؟`, confirmText: "حذف" }))) return;
     remove.mutate({ id });
   }
+
+  // الأعمدة داخل المكوّن: تعتمد على `counts` وعلى حالة الطفرتين (تعطيل الإجراء أثناء التنفيذ).
+  const columns = useMemo<ColumnDef<CustomRoleRow, unknown>[]>(
+    () => [
+      {
+        id: "label",
+        header: "الاسم",
+        accessorFn: (r) => r.label,
+        meta: { width: "wide" },
+        cell: ({ row }) => (
+          <div>
+            <div className="font-medium">{row.original.label}</div>
+            {row.original.description ? <div className="text-[11px] text-muted-foreground">{row.original.description}</div> : null}
+          </div>
+        ),
+      },
+      {
+        id: "baseRole",
+        header: "الفئة الأساسية",
+        accessorFn: (r) => roleLabel(r.baseRole) + (r.canSeeCost ? " · يرى التكلفة" : ""),
+        cell: ({ row }) => (
+          <span className="text-xs">
+            {roleLabel(row.original.baseRole)}
+            {row.original.canSeeCost ? " · يرى التكلفة" : ""}
+          </span>
+        ),
+      },
+      {
+        id: "users",
+        header: "مستخدمون",
+        accessorFn: (r) => counts[Number(r.id)] ?? 0,
+        meta: { kind: "number", align: "center" },
+        cell: ({ row }) => {
+          const id = Number(row.original.id);
+          const count = counts[id] ?? 0;
+          return count > 0 ? (
+            <Link
+              href={"/users?customRoleId=" + id}
+              className="underline decoration-dotted underline-offset-2 hover:text-primary"
+              title="عرض المستخدمين المُسنَد لهم هذا الدور"
+            >
+              {count}
+            </Link>
+          ) : (
+            count
+          );
+        },
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        // التسمية المعروضة لا العلَم الخامّ: «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+        accessorFn: (r) => (r.isActive ? "مفعّل" : "معطّل"),
+        meta: { kind: "status" },
+        cell: ({ row }) => {
+          const active = !!row.original.isActive;
+          return (
+            <span className={"inline-block rounded-full px-2 py-0.5 text-xs " + (active ? "badge-status-active" : "badge-stock-out")}>
+              {active ? "مفعّل" : "معطّل"}
+            </span>
+          );
+        },
+      },
+      {
+        id: "actions",
+        header: "إجراء",
+        meta: { kind: "actions" },
+        enableSorting: false,
+        cell: ({ row }) => {
+          const r = row.original;
+          const id = Number(r.id);
+          const count = counts[id] ?? 0;
+          const active = !!r.isActive;
+          return (
+            <RowActions
+              mode="menu"
+              actions={[
+                { key: "edit", kind: "edit", label: "تعديل", href: "/roles/" + id + "/edit", gate: { adminOnly: true } },
+                {
+                  key: "toggle",
+                  kind: "approve",
+                  label: active ? "تعطيل" : "تفعيل",
+                  gate: { adminOnly: true },
+                  disabled: setActive.isPending,
+                  disabledReason: "جارٍ تحديث الدور",
+                  onSelect: async () => {
+                    if (!(await confirm({ variant: "warning", title: active ? "تعطيل الدور" : "تفعيل الدور", description: active ? "الأدوار المعطَّلة لا يمكن إسنادها لمستخدمين جدد. متابعة؟" : "تفعيل هذا الدور لإتاحته للإسناد. متابعة؟", confirmText: active ? "تعطيل" : "تفعيل" }))) return;
+                    setActive.mutate({ id, isActive: !active });
+                  },
+                },
+                {
+                  key: "delete",
+                  kind: "delete",
+                  label: "حذف",
+                  variant: "destructive",
+                  gate: { adminOnly: true },
+                  disabled: count > 0 || remove.isPending,
+                  disabledReason: count > 0 ? "مُسنَد لمستخدمين — غيّر أدوارهم أولاً" : "جارٍ حذف الدور",
+                  onSelect: () => void doDelete(id, r.label, count),
+                },
+              ]}
+            />
+          );
+        },
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [counts, setActive.isPending, remove.isPending],
+  );
 
   return (
     <div className="space-y-4 max-w-5xl">
@@ -99,84 +211,22 @@ export default function Roles() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40">
-              <tr>
-                <th className="p-2 px-3 text-start">الاسم</th>
-                <th className="p-2 text-start">الفئة الأساسية</th>
-                <th className="p-2 text-center">مستخدمون</th>
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-start">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleCustom.map((r) => {
-                const id = Number(r.id);
-                const count = counts[id] ?? 0;
-                const active = !!r.isActive;
-                return (
-                  <tr key={id} className={`border-t ${active ? "" : "opacity-60"}`}>
-                    <td className="p-2 px-3">
-                      <div className="font-medium">{r.label}</div>
-                      {r.description ? <div className="text-[11px] text-muted-foreground">{r.description}</div> : null}
-                    </td>
-                    <td className="p-2 text-xs">{roleLabel(r.baseRole)}{r.canSeeCost ? " · يرى التكلفة" : ""}</td>
-                    <td className="p-2 text-center">
-                      {count > 0 ? (
-                        <Link
-                          href={`/users?customRoleId=${id}`}
-                          className="underline decoration-dotted underline-offset-2 hover:text-primary"
-                          title="عرض المستخدمين المُسنَد لهم هذا الدور"
-                        >
-                          {count}
-                        </Link>
-                      ) : count}
-                    </td>
-                    <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${active ? "badge-status-active" : "badge-stock-out"}`}>
-                        {active ? "مفعّل" : "معطّل"}
-                      </span>
-                    </td>
-                    <td className="p-2">
-                      <RowActions
-                        mode="menu"
-                        actions={[
-                          { key: "edit", kind: "edit", label: "تعديل", href: `/roles/${id}/edit`, gate: { adminOnly: true } },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: active ? "تعطيل" : "تفعيل",
-                            gate: { adminOnly: true },
-                            disabled: setActive.isPending,
-                            disabledReason: "جارٍ تحديث الدور",
-                            onSelect: async () => {
-                              if (!(await confirm({ variant: "warning", title: active ? "تعطيل الدور" : "تفعيل الدور", description: active ? "الأدوار المعطَّلة لا يمكن إسنادها لمستخدمين جدد. متابعة؟" : "تفعيل هذا الدور لإتاحته للإسناد. متابعة؟", confirmText: active ? "تعطيل" : "تفعيل" }))) return;
-                              setActive.mutate({ id, isActive: !active });
-                            },
-                          },
-                          {
-                            key: "delete",
-                            kind: "delete",
-                            label: "حذف",
-                            variant: "destructive",
-                            gate: { adminOnly: true },
-                            disabled: count > 0 || remove.isPending,
-                            disabledReason: count > 0 ? "مُسنَد لمستخدمين — غيّر أدوارهم أولاً" : "جارٍ حذف الدور",
-                            onSelect: () => void doDelete(id, r.label, count),
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-              {!list.isLoading && visibleCustom.length === 0 && (
-                <TableEmptyRow colSpan={5} message="لا أدوار مخصّصة بعد — أضِف دوراً جديداً بصلاحيات حسب حاجتك." />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          <DataTable<CustomRoleRow>
+            columns={columns}
+            data={visibleCustom}
+            /* البحث في ListToolbar أعلاه (يغذّي visibleCustom) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            /* بلا ترقيم: الشاشة تعرض زرَّ «طباعة» (window.print) و**الصفوف بعد الصفحة الأولى
+               غير موجودةٍ في DOM أصلاً** ⇒ ترقيمُ ٥٠ يطبع أوّل ٥٠ دوراً صامتاً. القائمة
+               بياناتٌ مرجعية محدودة، والحاويةُ المحبوسة تُمرِّرها بترويسةٍ لاصقة كما كانت. */
+            pageSize={Infinity}
+            externalFiltersActive={query.trim() !== "" || status !== ""}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            getRowClassName={(r) => (r.isActive ? undefined : "opacity-60")}
+            emptyText="لا أدوار مخصّصة بعد — أضِف دوراً جديداً بصلاحيات حسب حاجتك."
+            emptyFilteredState="لا أدوار مطابقة للبحث أو الفلتر."
+          />
         </CardContent>
       </Card>
 

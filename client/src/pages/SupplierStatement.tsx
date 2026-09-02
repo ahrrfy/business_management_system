@@ -14,13 +14,15 @@ import { notify } from "@/lib/notify";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { D, fmt, positiveDiff } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { selectClsFull } from "@/lib/ui/formStyles";
 
 
@@ -50,6 +52,13 @@ const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string }
   { label: "الكل", range: () => ({ from: "", to: "" }) },
 ];
 
+/** صفوف كشف حساب المورّد — مشتقّةٌ من عقد `reports.supplierStatement` فلا تنجرف عن الخادم.
+ *  ⚠️ `NonNullable` إلزاميّ: الراوتر يُرجع `res && {…}` و`getSupplierStatement` تُرجع `null`
+ *  حين لا مورّد/لا قاعدة ⇒ نوع المخرَج اتحادٌ مع `null`، والفهرسةُ عليه مباشرةً خطأ ترجمة. */
+type SupplierStatementData = NonNullable<RouterOutputs["reports"]["supplierStatement"]>;
+type PoRow = SupplierStatementData["purchaseOrders"][number];
+type PaymentRow = SupplierStatementData["payments"][number];
+
 const PO_STATUS_LABEL: Record<string, string> = {
   DRAFT: "مسوّدة",
   SENT: "مُرسَل",
@@ -64,6 +73,127 @@ const PO_STATUS_CLS: Record<string, string> = {
   RECEIVED: "badge-status-active",
   CANCELLED: "badge-stock-out",
 };
+
+/** أعمدة أوامر الشراء في كشف الحساب — بلا حالة مكوّن، فهي ثابتة على مستوى الوحدة. */
+const poColumns: ColumnDef<PoRow, unknown>[] = [
+  {
+    id: "poNumber",
+    header: "السند / المرجع",
+    accessorFn: (p) => p.poNumber,
+    meta: { kind: "code" },
+    cell: ({ row }) => <CopyInline value={row.original.poNumber} />,
+  },
+  {
+    id: "orderDate",
+    header: "التاريخ",
+    accessorFn: (p) => fmtDate(p.orderDate),
+    meta: { kind: "date" },
+    cell: ({ row }) => <span className="text-xs">{fmtDate(row.original.orderDate)}</span>,
+  },
+  {
+    id: "dueDate",
+    header: "الاستحقاق",
+    accessorFn: (p) => (p.expectedDeliveryDate ? String(p.expectedDeliveryDate).slice(0, 10) : "—"),
+    meta: { kind: "date" },
+    cell: ({ row }) => (
+      <span className="text-xs">{row.original.expectedDeliveryDate ? String(row.original.expectedDeliveryDate).slice(0, 10) : "—"}</span>
+    ),
+  },
+  { id: "total", header: "الإجمالي", accessorFn: (p) => fmt(p.total), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.total) },
+  { id: "paid", header: "المدفوع", accessorFn: (p) => fmt(p.paidAmount), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.paidAmount) },
+  {
+    id: "remaining",
+    header: "المتبقّي",
+    // §٥: نستعمل Decimal للطرح (positiveDiff) لا Number() float.
+    accessorFn: (p) => fmt(positiveDiff(p.total, p.paidAmount).toFixed(2)),
+    meta: { kind: "money" },
+    cell: ({ row }) => <span className="font-semibold">{fmt(positiveDiff(row.original.total, row.original.paidAmount).toFixed(2))}</span>,
+  },
+  {
+    id: "status",
+    header: "الحالة",
+    accessorFn: (p) => PO_STATUS_LABEL[p.status] ?? p.status,
+    meta: { kind: "status" },
+    cell: ({ row }) => (
+      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLS[row.original.status] ?? "bg-muted"}`}>
+        {PO_STATUS_LABEL[row.original.status] ?? row.original.status}
+      </span>
+    ),
+  },
+  {
+    id: "createdBy",
+    header: "المنفذ",
+    accessorFn: (p) => p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
+    meta: { kind: "actor" },
+    cell: ({ row }) => (
+      <span className="text-xs">{row.original.createdByName ?? (row.original.createdBy ? `مستخدم #${row.original.createdBy}` : "غير موثق")}</span>
+    ),
+  },
+  {
+    id: "open",
+    header: "فتح",
+    enableSorting: false,
+    meta: { kind: "actions" },
+    cell: ({ row }) => (
+      <Link href={`/purchases/${row.original.id}`}>
+        <Button variant="outline" size="sm">فتح</Button>
+      </Link>
+    ),
+  },
+];
+
+/** أعمدة الدفعات المسجّلة في كشف الحساب. */
+const paymentColumns: ColumnDef<PaymentRow, unknown>[] = [
+  {
+    id: "entryDate",
+    header: "التاريخ",
+    accessorFn: (p) => fmtDate(p.entryDate),
+    meta: { kind: "date" },
+    cell: ({ row }) => <span className="text-xs">{fmtDate(row.original.entryDate)}</span>,
+  },
+  {
+    id: "reference",
+    header: "أمر الشراء",
+    accessorFn: (p) => p.voucherNumber ?? (p.purchaseOrderId ? String(p.purchaseOrderId) : "دفعة مستقلة"),
+    meta: { kind: "code" },
+    cell: ({ row }) => {
+      const p = row.original;
+      if (p.voucherNumber) {
+        return (
+          <div>
+            <CopyInline value={p.voucherNumber} />
+            {p.paymentMethod === "EXCHANGE" && (
+              <div className="text-[10px] text-muted-foreground">
+                صيرفة{p.exchangeHouseName ? `: ${p.exchangeHouseName}` : ""}
+                {p.referenceNumber ? ` · ${p.referenceNumber}` : ""}
+              </div>
+            )}
+          </div>
+        );
+      }
+      if (p.purchaseOrderId) return <CopyInline value={p.purchaseOrderId} />;
+      // دفعة بلا أمر شراء (سند صرف مستقل للمورد) — وسمها يمنع الالتباس.
+      return <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">دفعة مستقلة</span>;
+    },
+  },
+  { id: "amount", header: "المبلغ", accessorFn: (p) => fmt(p.amount), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.amount) },
+  {
+    id: "notes",
+    header: "ملاحظات",
+    accessorFn: (p) => p.notes ?? "—",
+    meta: { width: "wide", wrap: true },
+    cell: ({ row }) => <span className="text-xs">{row.original.notes ?? "—"}</span>,
+  },
+  {
+    id: "createdBy",
+    header: "المنفذ",
+    accessorFn: (p) => p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
+    meta: { kind: "actor" },
+    cell: ({ row }) => (
+      <span className="text-xs">{row.original.createdByName ?? (row.original.createdBy ? `مستخدم #${row.original.createdBy}` : "غير موثق")}</span>
+    ),
+  },
+];
 
 export default function SupplierStatement() {
   // الـURL مصدر الحقيقة لهوية المورد ⇒ رابط مستقلّ قابل للمشاركة + يتحدّث فوراً عند تغيّر ?id=
@@ -362,109 +492,42 @@ export default function SupplierStatement() {
           <Card>
             <CardContent className="p-0">
               <div className="p-3 border-b bg-muted/30 text-sm font-medium">أوامر الشراء</div>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">السند / المرجع</th>
-                    <th className="p-2">التاريخ</th>
-                    <th className="p-2">الاستحقاق</th>
-                    <th className="p-2 text-right">الإجمالي</th>
-                    <th className="p-2 text-right">المدفوع</th>
-                    <th className="p-2 text-right">المتبقّي</th>
-                    <th className="p-2">الحالة</th>
-                    <th className="p-2">المنفذ</th>
-                    <th className="p-2 text-center">فتح</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* الرصيد المُرحَّل = افتتاحي مستورد + مشتريات ملتزمة − دفعات قبل from — صف أول يجعل رصيد الفترة قابلاً للتتبّع. */}
-                  {from && (
-                    <tr className="border-t bg-[var(--sem-warn-bg)]/60 font-medium">
-                      <td className="p-2 text-xs">رصيد مُرحَّل</td>
-                      <td className="p-2 text-xs" dir="ltr">{fmtDate(from)}</td>
-                      <td className="p-2 text-xs text-muted-foreground" colSpan={3}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
-                      <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
-                      <td className="p-2" colSpan={3} />
-                    </tr>
-                  )}
-                  {stmt.data.purchaseOrders.map((p) => {
-                    // §٥: نستعمل Decimal للطرح (positiveDiff) لا Number() float.
-                    const remaining = positiveDiff(p.total, p.paidAmount).toFixed(2);
-                    return (
-                      <tr key={p.id} className="border-t">
-                        <td className="p-2"><CopyInline value={p.poNumber} /></td>
-                        <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.orderDate)}</td>
-                        <td className="p-2 text-xs" dir="ltr">{p.expectedDeliveryDate ? String(p.expectedDeliveryDate).slice(0, 10) : "—"}</td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.total)}</td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
-                        <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
-                        <td className="p-2">
-                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLS[p.status] ?? "bg-muted"}`}>
-                            {PO_STATUS_LABEL[p.status] ?? p.status}
-                          </span>
-                        </td>
-                        <td className="p-2 text-xs">{p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق")}</td>
-                        <td className="p-2 text-center">
-                          <Link href={`/purchases/${p.id}`}>
-                            <Button variant="outline" size="sm">فتح</Button>
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {stmt.data.purchaseOrders.length === 0 && (
-                    <TableEmptyRow colSpan={9} message="لا أوامر شراء لهذا المورد." />
-                  )}
-                </tbody>
-              </table>
+              {/* الرصيد المُرحَّل = افتتاحي مستورد + مشتريات ملتزمة − دفعات قبل from — يجعل رصيد
+                  الفترة قابلاً للتتبّع. كان صفّاً أوّل في الجدول الخامّ بخلايا مدموجة؛ وهو ليس
+                  أمر شراء، فصار شريطاً فوق الجدول (نفس المعلومة بلا صفٍّ كاذبِ النوع). */}
+              {from && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-[var(--sem-warn-bg)]/60 px-3 py-2 text-xs font-medium">
+                  <span>رصيد مُرحَّل</span>
+                  <span dir="ltr">{fmtDate(from)}</span>
+                  <span className="text-muted-foreground">ما قبل الفترة (افتتاحي + نشاط سابق)</span>
+                  <span className="ms-auto tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</span>
+                </div>
+              )}
+              {/* مُضمَّن في بطاقةٍ تحمل عنوان القسم ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+              <DataTable<PoRow>
+                embedded
+                searchable={false}
+                bounded={false}
+                pageSize={Infinity}
+                columns={poColumns}
+                data={stmt.data.purchaseOrders}
+                emptyText="لا أوامر شراء لهذا المورد."
+              />
             </CardContent>
           </Card>
 
           <Card>
             <CardContent className="p-0">
               <div className="p-3 border-b bg-muted/30 text-sm font-medium">الدفعات المسجّلة</div>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">التاريخ</th>
-                    <th className="p-2">أمر الشراء</th>
-                    <th className="p-2 text-right">المبلغ</th>
-                    <th className="p-2">ملاحظات</th>
-                    <th className="p-2">المنفذ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stmt.data.payments.map((p) => (
-                    <tr key={p.id} className="border-t">
-                      <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.entryDate)}</td>
-                      <td className="p-2">
-                        {p.voucherNumber ? (
-                          <div>
-                            <CopyInline value={p.voucherNumber} />
-                            {p.paymentMethod === "EXCHANGE" && (
-                              <div className="text-[10px] text-muted-foreground">
-                                صيرفة{p.exchangeHouseName ? `: ${p.exchangeHouseName}` : ""}
-                                {p.referenceNumber ? ` · ${p.referenceNumber}` : ""}
-                              </div>
-                            )}
-                          </div>
-                        ) : p.purchaseOrderId ? (
-                          <CopyInline value={p.purchaseOrderId} />
-                        ) : (
-                          // دفعة بلا أمر شراء (سند صرف مستقل للمورد) — وسمها يمنع الالتباس.
-                          <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">دفعة مستقلة</span>
-                        )}
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.amount)}</td>
-                      <td className="p-2 text-xs">{p.notes ?? "—"}</td>
-                      <td className="p-2 text-xs">{p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق")}</td>
-                    </tr>
-                  ))}
-                  {stmt.data.payments.length === 0 && (
-                    <TableEmptyRow colSpan={5} message="لا دفعات مسجّلة لهذا المورد." />
-                  )}
-                </tbody>
-              </table>
+              <DataTable<PaymentRow>
+                embedded
+                searchable={false}
+                bounded={false}
+                pageSize={Infinity}
+                columns={paymentColumns}
+                data={stmt.data.payments}
+                emptyText="لا دفعات مسجّلة لهذا المورد."
+              />
             </CardContent>
           </Card>
         </>

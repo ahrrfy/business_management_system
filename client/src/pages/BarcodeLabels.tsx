@@ -899,6 +899,8 @@ export default function BarcodeLabels() {
             )}
           </div>
 
+          {/* شبكةُ تحرير لا عرض: كل صفٍّ يحمل عدّاد ملصقاتٍ ومنتقي باركودٍ وزرَّ حذف —
+              `DataTable` أداةُ عرضٍ فيبقى طابور الطباعة خامّاً عن قصد. */}
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">

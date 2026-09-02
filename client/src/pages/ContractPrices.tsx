@@ -19,7 +19,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
-import { fmtDateTime } from "@/lib/date";
+import { fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { esc } from "@/lib/printing/brand";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -31,6 +31,18 @@ const TIER_LABEL: Record<PriceTier, string> = { RETAIL: "مفرد", WHOLESALE: "
 
 const fmtMoney = (v: string) =>
   Number(v).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
+
+/**
+ * فرزُ عمود «آخر تحديث» يلزمه مقارِنٌ صريح: `accessorFn` يُرجع **نصّ العرض**
+ * (`fmtDateTime` ⇒ «21/06/2026، 14:30») وهو ما يُنسَخ، لكنّ `Date.parse` لا يقرأه
+ * فيسقط مقارِنُ `meta.kind: "datetime"` إلى مقارنةٍ نصّية ⇒ **فرزٌ باليوم لا بالتاريخ**
+ * («01/12/2025» قبل «05/01/2026»). المقارنة هنا على القيمة الخام. نفس علاج InvoiceDetail.
+ */
+const cmpTime = (a: DateInput, b: DateInput) => {
+  const ta = toDate(a)?.getTime() ?? -Infinity;
+  const tb = toDate(b)?.getTime() ?? -Infinity;
+  return ta === tb ? 0 : ta < tb ? -1 : 1;
+};
 
 function variantLabel(r: ContractRow): string {
   const extras = [r.variantName, r.color, r.size].filter(Boolean).join(" / ");
@@ -122,25 +134,33 @@ export default function ContractPrices() {
 
   // أعمدة الجدول التعاقديّ — تُعرَّف داخل المكوّن لأنّها تلتقط setActive/onRemove.
   // useMemo لتفادي إعادة البناء مع كل رسم (يُبطئ تحديد الأعمدة الظاهرة في DataTable).
+  // ⚠️ `accessorFn` على كل عمودٍ ذي قيمة: هو مصدر «نسخ القيمة/الصفّ/العمود» ومصدرُ الفرز معاً —
+  // وعمودُ العرض بلا accessor يُعيد `undefined` فتخرج خليّتُه فارغةً في TSV ويصير فرزُه بلا أثر.
+  // و`meta.kind` يتكفّل بالمحاذاة و`tabular-nums` وعزل اتّجاه الأرقام بدل `dir`/`text-*` يدويّة.
   const columns = useMemo<ColumnDef<ContractRow>[]>(() => [
-    { id: "product", header: "المنتج", accessorFn: (r) => variantLabel(r), cell: ({ row }) => variantLabel(row.original) },
-    { id: "sku", header: "SKU", accessorKey: "sku", cell: ({ row }) => <span dir="ltr" className="text-muted-foreground">{row.original.sku}</span> },
-    { id: "unit", header: "الوحدة", accessorKey: "unitName" },
-    { id: "price", header: "السعر التعاقدي", cell: ({ row }) => <span dir="ltr" className="font-bold tabular-nums">{fmtMoney(row.original.price)}</span> },
+    { id: "product", header: "المنتج", accessorFn: (r) => variantLabel(r), meta: { width: "wide" }, cell: ({ row }) => variantLabel(row.original) },
+    { id: "sku", header: "SKU", accessorFn: (r) => r.sku, meta: { kind: "code" }, cell: ({ row }) => <span className="text-muted-foreground">{row.original.sku}</span> },
+    { id: "unit", header: "الوحدة", accessorFn: (r) => r.unitName, cell: ({ row }) => row.original.unitName },
+    { id: "price", header: "السعر التعاقدي", accessorFn: (r) => fmtMoney(r.price), meta: { kind: "money" }, cell: ({ row }) => <span className="font-bold">{fmtMoney(row.original.price)}</span> },
     {
       id: "status",
       header: "الحالة",
+      // التسمية العربية لا العَلَم المنطقيّ: «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+      accessorFn: (r) => (r.isActive ? "نشط" : "معطَّل"),
+      meta: { kind: "status" },
       cell: ({ row }) => (
         <span className={`rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}>
           {row.original.isActive ? "نشط" : "معطَّل"}
         </span>
       ),
     },
-    { id: "note", header: "ملاحظة", cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.note ?? "—"}</span> },
-    { id: "updatedAt", header: "آخر تحديث", cell: ({ row }) => <span dir="ltr" className="text-xs text-muted-foreground">{fmtDateTime(row.original.updatedAt)}</span> },
+    { id: "note", header: "ملاحظة", accessorFn: (r) => r.note ?? "—", meta: { wrap: true }, cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.note ?? "—"}</span> },
+    { id: "updatedAt", header: "آخر تحديث", accessorFn: (r) => fmtDateTime(r.updatedAt), meta: { kind: "datetime" }, sortingFn: (a, b) => cmpTime(a.original.updatedAt, b.original.updatedAt), cell: ({ row }) => <span className="text-xs text-muted-foreground">{fmtDateTime(row.original.updatedAt)}</span> },
     {
       id: "actions",
       header: "إجراءات",
+      enableSorting: false,
+      meta: { kind: "actions" },
       cell: ({ row }) => (
         <RowActions
           actions={[
@@ -339,7 +359,12 @@ export default function ContractPrices() {
               data={filteredRows}
               searchable={false}
               loading={list.isLoading}
+              errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
               resourceKey="contractPrices"
+              // ⚠️ البحث الخارجيّ في `q` هو الفلتر الوحيد هنا، والجدول لا يراه — بلا هذا العَلَم
+              // يقيس DataTable نشاطَ الفلترة ببحثه الداخليّ (المعطَّل) فيسقط دائماً على فرع
+              // «لا صفوف بعد» ويتجاهل `emptyFilteredState` أدناه كلّياً.
+              externalFiltersActive={q.trim() !== ""}
               // البحث الخارجيّ في `q` نشط ⇒ نمرّر emptyFilteredState صراحةً حتى يعرف DataTable
               // أنّ الفراغ سببه الفلتر لا القائمة الأصلية (لا سبيل له معرفة ذلك من `q` الخارجيّ).
               emptyFilteredState={q.trim() !== "" ? (

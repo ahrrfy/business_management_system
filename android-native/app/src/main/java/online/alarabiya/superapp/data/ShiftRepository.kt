@@ -5,7 +5,6 @@ import online.alarabiya.superapp.model.shifts.CurrentShift
 import online.alarabiya.superapp.model.shifts.ShiftCloseCommand
 import online.alarabiya.superapp.model.shifts.ShiftCloseResult
 import online.alarabiya.superapp.model.shifts.ShiftFilters
-import online.alarabiya.superapp.model.shifts.ShiftHandoverRecipient
 import online.alarabiya.superapp.model.shifts.ShiftMappers
 import online.alarabiya.superapp.model.shifts.ShiftPage
 import online.alarabiya.superapp.model.shifts.ShiftReport
@@ -17,7 +16,6 @@ interface ShiftDataSource {
     suspend fun list(filters: ShiftFilters, cursor: Long? = null, limit: Int = 50): ShiftPage
     suspend fun report(shiftId: Long): ShiftReport
     suspend fun current(branchId: Long, type: ShiftType): CurrentShift?
-    suspend fun handoverRecipients(): List<ShiftHandoverRecipient>
     suspend fun close(command: ShiftCloseCommand): ShiftCloseResult
 }
 
@@ -85,21 +83,13 @@ class ShiftRepository internal constructor(private val api: ShiftApi) : ShiftDat
             ?: throw IllegalStateException("استجابة الوردية الحالية غير صالحة")
     }
 
-    override suspend fun handoverRecipients(): List<ShiftHandoverRecipient> =
-        ShiftMappers.handoverRecipients(api.queryArray("shifts.handoverRecipients").wireList())
-
     override suspend fun close(command: ShiftCloseCommand): ShiftCloseResult {
         require(command.shiftId > 0) { "معرّف الوردية غير صالح" }
-        require(command.handoverToUserId == null || command.handoverToUserId > 0) { "مستلِم النقد غير صالح" }
-        require(!command.countedCash.isPositive() || command.handoverToUserId != null) {
-            "حدد مديراً مستقلاً لاستلام نقد الوردية"
-        }
         val response = api.mutateObject(
             "shifts.close",
             JSONObject()
                 .put("shiftId", command.shiftId)
-                .put("countedCash", command.countedCash.value)
-                .putOptional("handoverToUserId", command.handoverToUserId),
+                .put("countedCash", command.countedCash.value),
         )
         return ShiftMappers.closeResult(response.wireMap())
             ?: throw IllegalStateException("لم يصل تأكيد صالح لإغلاق الوردية")

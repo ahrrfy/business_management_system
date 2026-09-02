@@ -806,6 +806,19 @@ async function startServer() {
       });
     }
 
+    // قرار المالك ١/٩/٢٦: إغلاق الوردية يرحّل النقد مباشرةً إلى الخزينة. نطوي مرةً واحدة
+    // عقود CH القديمة المعلّقة كي تختفي خطوة «عدّ واستلام» من الواقع لا من الواجهة فقط.
+    if (process.env.NODE_ENV !== "test") {
+      const { settlePendingShiftCloseHandovers } = await import("./services/cashHandoverService");
+      const { runAcrossActiveTenants } = await import("./tenancy/backgroundTenants");
+      void runAcrossActiveTenants(
+        "shift_close_auto_settlement",
+        settlePendingShiftCloseHandovers,
+      ).catch((err) => {
+        logger.error({ err }, "shift.close_auto_settlement.failed");
+      });
+    }
+
     // كنّاس الحجوزات المنتهية (١٢/٨) — كلّ ٥ دقائق UTC. الفحص الكسول في list/get لا يكفي:
     // لو لم يفتح أحدٌ شاشة الحجوزات لأيّام، تبقى المنتهية ACTIVE وتحبس مخزوناً بلا داعٍ.
     // شكوى المالك «الحجز يبقى نشطاً بعد الانقضاء» تُغلَق فقط بالكنس المستقلّ عن المستخدم.

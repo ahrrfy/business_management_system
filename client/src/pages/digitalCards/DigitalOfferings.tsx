@@ -2,9 +2,9 @@
 // وتُربط بفرع أو أكثر. قواعد الهامش هنا تُستعمل لاحقاً لاشتقاق سعر اليوم — البطاقة لا تظهر
 // في الكاشير قبل نشر سعر لها في شاشة أسعار اليوم.
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ListToolbar, RowActions } from "@/components/list";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -421,6 +421,146 @@ export default function DigitalOfferings() {
     createMut.isPending || updateMut.isPending || initialPriceMut.isPending;
   const editing = editId != null;
 
+  /*
+   * أعمدة قائمة البطاقات — الإظهار/الإخفاء يبقى بيد منتقي الأعمدة الخاصّ بالشاشة
+   * (`columnVisible`)، فالعمود المخفيّ لا يُبنى أصلاً كما كان في الجدول الخامّ.
+   */
+  const offeringColumns: ColumnDef<OfferingRow, unknown>[] = [
+    {
+      id: "productName",
+      header: "البطاقة",
+      accessorFn: (o) => o.productName,
+      meta: { width: "wide" },
+      cell: ({ row }) => <span className="font-medium">{row.original.productName}</span>,
+    },
+    ...(columnVisible("provider")
+      ? ([{ id: "supplierName", header: "المزوّد", accessorFn: (o) => o.supplierName, cell: ({ row }) => row.original.supplierName }] as ColumnDef<OfferingRow, unknown>[])
+      : []),
+    ...(columnVisible("device")
+      ? ([
+          {
+            id: "device",
+            header: "الجهاز المسند",
+            accessorFn: (o) => assignmentExport(o.assignments, o.settlementMode, "deviceCode"),
+            meta: { wrap: true },
+            cell: ({ row }) => (
+              <OfferingAssignmentsCell assignments={row.original.assignments} settlementMode={row.original.settlementMode} field="deviceCode" />
+            ),
+          },
+        ] as ColumnDef<OfferingRow, unknown>[])
+      : []),
+    ...(columnVisible("wallet")
+      ? ([
+          {
+            id: "wallet",
+            header: "المحفظة المسندة",
+            accessorFn: (o) => assignmentExport(o.assignments, o.settlementMode, "walletName"),
+            meta: { wrap: true },
+            cell: ({ row }) => (
+              <OfferingAssignmentsCell assignments={row.original.assignments} settlementMode={row.original.settlementMode} field="walletName" />
+            ),
+          },
+        ] as ColumnDef<OfferingRow, unknown>[])
+      : []),
+    ...(columnVisible("type")
+      ? ([
+          {
+            id: "offeringType",
+            header: "النوع",
+            accessorFn: (o) => OFFERING_TYPE[o.offeringType] ?? o.offeringType,
+            cell: ({ row }) => <span className="text-muted-foreground">{OFFERING_TYPE[row.original.offeringType] ?? row.original.offeringType}</span>,
+          },
+        ] as ColumnDef<OfferingRow, unknown>[])
+      : []),
+    ...(columnVisible("faceValue")
+      ? ([
+          {
+            id: "faceValue",
+            header: "القيمة الاسمية",
+            accessorFn: (o) => (o.faceValue ? fmtAr(o.faceValue) : "—"),
+            meta: { kind: "money" },
+            cell: ({ row }) => (row.original.faceValue ? fmtAr(row.original.faceValue) : "—"),
+          },
+        ] as ColumnDef<OfferingRow, unknown>[])
+      : []),
+    ...(columnVisible("pricingMode")
+      ? ([
+          {
+            id: "pricingMode",
+            header: "طريقة حساب السعر",
+            accessorFn: (o) => PRICING_MODE[o.pricingMode] ?? o.pricingMode,
+            cell: ({ row }) => <span className="text-muted-foreground">{PRICING_MODE[row.original.pricingMode] ?? row.original.pricingMode}</span>,
+          },
+        ] as ColumnDef<OfferingRow, unknown>[])
+      : []),
+    ...(columnVisible("minimumMargin")
+      ? ([
+          {
+            id: "minimumMargin",
+            header: "أقل ربح مسموح",
+            accessorFn: (o) => fmtAr(o.minimumMargin),
+            meta: { kind: "money" },
+            cell: ({ row }) => fmtAr(row.original.minimumMargin),
+          },
+        ] as ColumnDef<OfferingRow, unknown>[])
+      : []),
+    ...(columnVisible("studentData")
+      ? ([
+          {
+            id: "requiresStudentData",
+            header: "بيانات الطالب مطلوبة",
+            accessorFn: (o) => (o.requiresStudentData ? "نعم" : "لا"),
+            meta: { align: "center" },
+            cell: ({ row }) => (row.original.requiresStudentData ? "نعم" : "لا"),
+          },
+        ] as ColumnDef<OfferingRow, unknown>[])
+      : []),
+    ...(columnVisible("status")
+      ? ([
+          {
+            id: "isActive",
+            header: "الحالة",
+            accessorFn: (o) => (o.isActive ? "مفعّلة" : "معطّلة"),
+            meta: { kind: "status" },
+            cell: ({ row }) => (
+              <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "badge-stock-out"}`}>
+                {row.original.isActive ? "مفعّلة" : "معطّلة"}
+              </span>
+            ),
+          },
+        ] as ColumnDef<OfferingRow, unknown>[])
+      : []),
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <RowActions
+          actions={[
+            {
+              key: "edit",
+              kind: "edit",
+              label: "تعديل",
+              onSelect: () => openEdit(row.original),
+              gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+            },
+            {
+              key: "toggle",
+              kind: "approve",
+              label: row.original.isActive ? "تعطيل" : "تفعيل",
+              variant: row.original.isActive ? "destructive" : "default",
+              disabled: toggleMut.isPending,
+              disabledReason: "توجد عملية تحديث قيد التنفيذ",
+              onSelect: () => void toggle(row.original),
+              gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
+            },
+          ]}
+        />
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -529,135 +669,28 @@ export default function DigitalOfferings() {
           </ListToolbar>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false} showColumnVisibility={false}>
-            <table
-              className="w-full text-sm"
-              style={{ minWidth: `${Math.max(980, visibleColumnCount * 130)}px` }}
-            >
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">البطاقة</th>
-                  {columnVisible("provider") && <th className="p-2 text-start">المزوّد</th>}
-                  {columnVisible("device") && <th className="p-2 text-start">الجهاز المسند</th>}
-                  {columnVisible("wallet") && <th className="p-2 text-start">المحفظة المسندة</th>}
-                  {columnVisible("type") && <th className="p-2 text-start">النوع</th>}
-                  {columnVisible("faceValue") && <th className="p-2 text-start">القيمة الاسمية</th>}
-                  {columnVisible("pricingMode") && <th className="p-2 text-start">طريقة حساب السعر</th>}
-                  {columnVisible("minimumMargin") && <th className="p-2 text-start">أقل ربح مسموح</th>}
-                  {columnVisible("studentData") && <th className="p-2 text-center">بيانات الطالب مطلوبة</th>}
-                  {columnVisible("status") && <th className="p-2 text-center">الحالة</th>}
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleRows.map((o) => (
-                  <tr
-                    key={o.id}
-                    className={`border-t ${o.isActive ? "" : "opacity-60"}`}
-                  >
-                    <td className="p-2 font-medium">{o.productName}</td>
-                    {columnVisible("provider") && <td className="p-2">{o.supplierName}</td>}
-                    {columnVisible("device") && (
-                      <td className="p-2 align-top">
-                        <OfferingAssignmentsCell
-                          assignments={o.assignments}
-                          settlementMode={o.settlementMode}
-                          field="deviceCode"
-                        />
-                      </td>
-                    )}
-                    {columnVisible("wallet") && (
-                      <td className="p-2 align-top">
-                        <OfferingAssignmentsCell
-                          assignments={o.assignments}
-                          settlementMode={o.settlementMode}
-                          field="walletName"
-                        />
-                      </td>
-                    )}
-                    {columnVisible("type") && (
-                      <td className="p-2 text-muted-foreground">
-                        {OFFERING_TYPE[o.offeringType] ?? o.offeringType}
-                      </td>
-                    )}
-                    {columnVisible("faceValue") && (
-                      <td className="p-2 tabular-nums">
-                        {o.faceValue ? fmtAr(o.faceValue) : "—"}
-                      </td>
-                    )}
-                    {columnVisible("pricingMode") && (
-                      <td className="p-2 text-muted-foreground">
-                        {PRICING_MODE[o.pricingMode] ?? o.pricingMode}
-                      </td>
-                    )}
-                    {columnVisible("minimumMargin") && (
-                      <td className="p-2 tabular-nums">
-                        {fmtAr(o.minimumMargin)}
-                      </td>
-                    )}
-                    {columnVisible("studentData") && (
-                      <td className="p-2 text-center">
-                        {o.requiresStudentData ? "نعم" : "لا"}
-                      </td>
-                    )}
-                    {columnVisible("status") && (
-                      <td className="p-2 text-center">
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs ${o.isActive ? "badge-status-active" : "badge-stock-out"}`}
-                        >
-                          {o.isActive ? "مفعّلة" : "معطّلة"}
-                        </span>
-                      </td>
-                    )}
-                    <td className="p-2 text-center">
-                      <RowActions
-                        actions={[
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل",
-                            onSelect: () => openEdit(o),
-                            gate: {
-                              roles: ["manager"],
-                              module: "digital_cards",
-                              level: "FULL",
-                            },
-                          },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: o.isActive ? "تعطيل" : "تفعيل",
-                            variant: o.isActive ? "destructive" : "default",
-                            disabled: toggleMut.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                            onSelect: () => void toggle(o),
-                            gate: {
-                              roles: ["manager"],
-                              module: "digital_cards",
-                              level: "FULL",
-                            },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-                {list.isLoading && (
-                  <tr>
-                    <td colSpan={visibleColumnCount}>
-                      <LoadingState />
-                    </td>
-                  </tr>
-                )}
-                {!list.isLoading && visibleRows.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={visibleColumnCount}
-                    message="لا بطاقات بعد — عرّف أوّل بطاقة لمزوّد مفعّل."
-                  />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/*
+           * `embedded` هنا مقصودٌ لسببٍ إضافيّ فوق كتم شريط الحالة: هذه الشاشة تملك
+           * **منتقيَ أعمدةٍ خاصاً بها** في شريط الأدوات أعلاه (بأعمدةٍ مقفلة وحفظٍ في
+           * localStorage) — ومنتقي DataTable المدمج كان سيظهر بجانبه فيصير منتقيان
+           * متنازعان على نفس الجدول. و`pageSize=Infinity` لازمٌ مع `embedded` وإلّا
+           * حُبست الصفوف بعد الخمسين بلا شريط ترقيم.
+           */}
+          <DataTable<OfferingRow>
+            embedded
+            searchable={false}
+            pageSize={Infinity}
+            data={visibleRows}
+            columns={offeringColumns}
+            externalFiltersActive={query.trim() !== ""}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            getRowClassName={(o) => (o.isActive ? undefined : "opacity-60")}
+            emptyText="لا بطاقات بعد — عرّف أوّل بطاقة لمزوّد مفعّل."
+            /* بلا هذه يبقى `externalFiltersActive` بلا أثر، فيُقال «عرّف أوّل بطاقة» بينما
+               البطاقات موجودةٌ ومحجوبةٌ بالبحث وحده. */
+            emptyFilteredState="لا بطاقات مطابقة للبحث."
+          />
         </CardContent>
       </Card>
 

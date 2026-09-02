@@ -9,14 +9,13 @@
 import { CopyInline } from "@/components/CopyButton";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ReturnComposer } from "@/components/returns/ReturnComposer";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TablePager } from "@/components/table/TablePager";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmt } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { INVOICE_STATUSES, invoiceStatusLabel, type InvoiceStatus } from "@shared/invoiceStatus";
@@ -34,6 +33,9 @@ const isInvoiceStatus = (v: string): v is InvoiceStatus =>
 
 /** حجم صفحة قائمة الفواتير — الترقيم خادميّ (نمط Invoices). */
 const PAGE_SIZE = 50;
+
+/** صفُّ قائمة الفواتير — مشتقٌّ من عقد `sales.listPage` فلا ينجرف عن الخادم. */
+type InvoicePickRow = RouterOutputs["sales"]["listPage"]["rows"][number];
 
 export default function Returns() {
   const utils = trpc.useUtils();
@@ -85,12 +87,71 @@ export default function Returns() {
     status: (statusFilter || undefined) as StatusFilter,
   });
   const invoiceRows = invoicesQuery.data?.rows ?? [];
-  // إجمالي المطابق للفلتر (نفس buildSalesListConds خادمياً) — يغذّي TablePager بعدّاد «من N»
+  // إجمالي المطابق للفلتر (نفس buildSalesListConds خادمياً) — يغذّي شريط الترقيم بعدّاد «من N»
   // كنمط شاشة المبيعات؛ عند تأخّره يعمل الترقيم بوضع hasMore (keyset) بلا انتظار.
   const summaryQ = trpc.sales.listSummary.useQuery({
     q: qDebounced || undefined,
     status: (statusFilter || undefined) as StatusFilter,
   });
+
+  // أعمدة منتقي الفاتورة — تقرأ الفاتورة المحدَّدة، فتُبنى في جسم المكوّن.
+  const invoiceColumns: ColumnDef<InvoicePickRow, unknown>[] = [
+    {
+      id: "invoiceNumber",
+      header: "رقم الفاتورة",
+      accessorFn: (r) => r.invoiceNumber,
+      meta: { kind: "code" },
+      cell: ({ row }) => <CopyInline value={row.original.invoiceNumber} />,
+    },
+    {
+      id: "total",
+      header: "الإجمالي",
+      accessorFn: (r) => fmt(r.total),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmt(row.original.total),
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      // التسمية العربية من القاموس الموحّد لا الرمز الخامّ (`@shared/invoiceStatus`).
+      accessorFn: (r) => invoiceStatusLabel(r.status),
+      meta: { kind: "status" },
+      cell: ({ row }) => invoiceStatusLabel(row.original.status),
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const id = Number(row.original.id);
+        const isPicked = selectedId === id;
+        return (
+          <RowActions
+            mode="inline"
+            actions={[
+              {
+                key: "pick",
+                kind: "reverse",
+                label: isPicked ? "محدّدة" : "اختيار",
+                disabled: isPicked, // منع مسح الكميات المُدخَلة بنقرة سهو
+                disabledReason: "الفاتورة محددة بالفعل",
+                onSelect: () => setSelectedId(id),
+                gate: { roles: ["manager"], module: "sales", level: "FULL" },
+              },
+              {
+                key: "view",
+                kind: "view",
+                label: "عرض الفاتورة",
+                href: `/invoices/${id}`,
+                gate: { module: "sales", level: "READ" },
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ];
 
   return (
     <div className="space-y-4">
@@ -150,73 +211,28 @@ export default function Returns() {
             />
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">رقم الفاتورة</th>
-                    <th className="p-2 text-right">الإجمالي</th>
-                    <th className="p-2 text-start">الحالة</th>
-                    <th className="p-2 text-center">إجراء</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invoiceRows.map((inv) => {
-                    const id = Number(inv.id);
-                    const isPicked = selectedId === id;
-                    return (
-                      <tr key={inv.id} className={`border-t ${isPicked ? "bg-muted/40" : ""}`}>
-                        <td className="p-2"><CopyInline value={inv.invoiceNumber} /></td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(inv.total)}</td>
-                        <td className="p-2">{invoiceStatusLabel(inv.status)}</td>
-                        <td className="p-2 text-center">
-                          <RowActions
-                            mode="inline"
-                            actions={[
-                              {
-                                key: "pick",
-                                kind: "reverse",
-                                label: isPicked ? "محدّدة" : "اختيار",
-                                disabled: isPicked, // منع مسح الكميات المُدخَلة بنقرة سهو
-                                disabledReason: "الفاتورة محددة بالفعل",
-                                onSelect: () => setSelectedId(id),
-                                gate: { roles: ["manager"], module: "sales", level: "FULL" },
-                              },
-                              {
-                                key: "view",
-                                kind: "view",
-                                label: "عرض الفاتورة",
-                                href: `/invoices/${id}`,
-                                gate: { module: "sales", level: "READ" },
-                              },
-                            ]}
-                          />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {!invoicesQuery.isLoading && invoiceRows.length === 0 && (
-                    <TableEmptyRow
-                      colSpan={4}
-                      // صفر نتائج بلا أي بحث/فلتر وعلى الصفحة الأولى = لا فواتير في النظام أصلاً؛
-                      // غير ذلك فالمجموعة مفلترة خادمياً والرسالة تُوجّه لتغيير الفلتر.
-                      message={!qDebounced && !statusFilter && page === 0 ? "لا فواتير بعد." : "لا فواتير مطابقة. غيّر البحث أو الفلتر."}
-                    />
-                  )}
-                  {invoicesQuery.isLoading && (
-                    <tr><td colSpan={4} className="p-0"><LoadingState /></td></tr>
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-            <TablePager
-              page={page}
-              onPageChange={setPage}
-              pageSize={PAGE_SIZE}
-              rowsOnPage={invoiceRows.length}
-              total={summaryQ.data?.count}
-              hasMore={invoicesQuery.data?.hasMore}
-              isLoading={invoicesQuery.isLoading || invoicesQuery.isFetching}
+            {/* البحث والفلتر في ListToolbar أعلاه (يغذّيان الاستعلام الخادميّ) ⇒ `searchable={false}`
+                وإلّا ظهر حقلا بحثٍ متجاوران. و`externalFiltersActive` يشمل `page > 0` كي تبقى
+                رسالةُ «لا فواتير بعد» محصورةً بالصفحة الأولى بلا فلتر — كما كان الجدول الخامّ.
+                والترقيم يُصيّره DataTable عبر serverPagination (لا TablePager منفصل). */}
+            <DataTable<InvoicePickRow>
+              columns={invoiceColumns}
+              data={invoiceRows}
+              searchable={false}
+              externalFiltersActive={!!qDebounced || !!statusFilter || page > 0}
+              loading={invoicesQuery.isLoading}
+              errorState={{ isError: invoicesQuery.isError, message: invoicesQuery.error?.message, onRetry: () => void invoicesQuery.refetch() }}
+              getRowClassName={(inv) => (selectedId === Number(inv.id) ? "bg-muted/40" : undefined)}
+              serverPagination={{
+                page,
+                onPageChange: setPage,
+                pageSize: PAGE_SIZE,
+                total: summaryQ.data?.count,
+                hasMore: invoicesQuery.data?.hasMore,
+                isFetching: invoicesQuery.isFetching,
+              }}
+              emptyState="لا فواتير بعد."
+              emptyFilteredState="لا فواتير مطابقة. غيّر البحث أو الفلتر."
             />
           </CardContent>
         </Card>

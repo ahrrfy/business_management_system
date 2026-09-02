@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { asc, eq } from "drizzle-orm";
 import { branches, monthCloseSequence } from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
+import { retryOnDeadlock } from "../../lib/retryDeadlock";
 
 const MISSING_GATE = "MONTH_CLOSE_GATE_MISSING";
 
@@ -9,12 +10,23 @@ export function isMonthCloseGateMissing(error: unknown): boolean {
   return error instanceof Error && error.message === MISSING_GATE;
 }
 
-/** يُستدعى خارج معاملة الأعمال فقط؛ INSERT المتزامن يُحسم بلا gap locks متبادلة. */
+/**
+ * يُستدعى خارج معاملة الأعمال فقط (auto-commit) فلا gap locks متبادلة مع فحص البوّابة.
+ *
+ * لكنّ عدّة بادئين يتسابقون على bootstrap البوّابة يُدرجون نفس المفتاح الأساسيّ (id=1)
+ * معاً، وInnoDB يقفل التكرار بقفلٍ مشترك (S) ثمّ يرقّيه إلى حصريّ (X) للتحديث ⇒
+ * ER_LOCK_DEADLOCK بين البادئين المتزامنين. العملية idempotent تماماً (تُدرج الصفّ
+ * المفرد أو no-op على تحديثٍ لا يغيّر شيئاً) فإعادتها آمنة حتماً — نفس نمط بقيّة كتّاب
+ * النظام. وبعد أوّل فوزٍ يوجد الصفّ، فتتسلسل الإعادات على قفل X للمفتاح الأساسيّ بلا
+ * deadlock جديد.
+ */
 export async function ensureFinancialPostingGate(db: DB): Promise<void> {
-  await db
-    .insert(monthCloseSequence)
-    .values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
-    .onDuplicateKeyUpdate({ set: { id: 1 } });
+  await retryOnDeadlock(async () => {
+    await db
+      .insert(monthCloseSequence)
+      .values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
+      .onDuplicateKeyUpdate({ set: { id: 1 } });
+  });
 }
 
 /**

@@ -6,11 +6,9 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
-import {
-  LoadingState,
-  ErrorState,
-  TableEmptyRow,
-} from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { exportRows } from "@/lib/export";
 import { fmtDate, fmtDateTime } from "@/lib/date";
@@ -95,6 +93,43 @@ const signedMoney = (v: string | number | null | undefined): string => {
   return dv.isNegative() ? `−${s}` : dv.gt(0) ? `+${s}` : s;
 };
 
+/*
+ * مشتقّاتُ الصفّ — نقيّةٌ ومرفوعةٌ إلى نطاق الوحدة كي تستعملها تعريفاتُ الأعمدة داخل
+ * `useMemo` **فوق** الرجوع المبكّر (قاعدة الخطّافات)، لا داخل `calc` الذي قد يكون `null` هناك.
+ * `calc` يُعيد تصديرها كما كانت فلا يتغيّر أيُّ مستدعٍ.
+ */
+const diffOf = (r: ReportRow): number => r.decision?.diffQty ?? r.diff ?? 0;
+
+const finalOf = (r: ReportRow): number =>
+  r.decision?.finalQty ?? r.adjustedCount ?? r.rawCount ?? 0;
+
+const valueOf = (r: ReportRow): string | number =>
+  r.decision?.value ?? r.value ?? 0;
+
+const bookOf = (r: ReportRow): number =>
+  r.decision?.finalQty != null && r.decision?.diffQty != null
+    ? r.decision.finalQty - r.decision.diffQty
+    : (r.bookNow ?? 0);
+
+const reasonLabelOfRow = (row: ReportRow, isOpening: boolean): string =>
+  isOpening && (!row.decision || row.decision.reason === "UNSPECIFIED")
+    ? "تأسيس رصيد افتتاحي"
+    : (STOCKTAKE_REASON_LABEL[row.decision?.reason ?? "UNSPECIFIED"] ??
+      "غير محدد");
+
+/** صفّ تحليل الفروقات حسب السبب — مُشتقٌّ محلياً من صفوف المحضر. */
+type ReasonRow = {
+  reason: string;
+  label: string;
+  n: number;
+  qty: number;
+  value: string;
+};
+
+/** اسم المنتج مع متغيّره — نصٌّ واحد يصلح للفرز وللنسخ. */
+const productLabel = (r: ReportRow): string =>
+  `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`;
+
 const decisionLabelOf = (r: ReportRow, isOpening = false): string => {
   const dn = r.decision;
   if (!dn) return "—";
@@ -121,15 +156,6 @@ export default function StocktakeReport() {
   const calc = useMemo(() => {
     if (!data) return null;
     const isOpening = data.session.sessionType === "OPENING";
-    const diffOf = (r: ReportRow): number => r.decision?.diffQty ?? r.diff ?? 0;
-    const finalOf = (r: ReportRow): number =>
-      r.decision?.finalQty ?? r.adjustedCount ?? r.rawCount ?? 0;
-    const valueOf = (r: ReportRow): string | number =>
-      r.decision?.value ?? r.value ?? 0;
-    const bookOf = (r: ReportRow): number =>
-      r.decision?.finalQty != null && r.decision?.diffQty != null
-        ? r.decision.finalQty - r.decision.diffQty
-        : (r.bookNow ?? 0);
 
     const counted = data.rows.filter(
       (r) => r.rawCount != null || r.decision != null,
@@ -214,6 +240,183 @@ export default function StocktakeReport() {
     };
   }, [data]);
 
+  const isOpening = data?.session.sessionType === "OPENING";
+
+  /*
+   * أعمدة أقسام المحضر — `useMemo` **فوق** كلّ رجوعٍ مبكّر (قاعدة الخطّافات).
+   * فرزٌ صريحٌ على أعمدة الكمّيات والقيم: العرض يستعمل «−» (U+2212) لا «-» اللاتينية،
+   * والمقارنةُ المشتقّة من `meta.kind` تُسقط ذلك الرمز فيرتفع السالبُ كأنّه موجب.
+   * العمود وحده يعرف رقمَه الأصليّ، فالاستثناء هنا في موضعه.
+   */
+  const adjustedColumns = useMemo<ColumnDef<ReportRow, unknown>[]>(
+    () => [
+      {
+        id: "product",
+        header: "المنتج",
+        accessorFn: (r) => productLabel(r),
+        meta: { width: "wide", wrap: true },
+        footer: () =>
+          isOpening
+            ? "صافي قيمة التغيير الافتتاحي (بالتكلفة)"
+            : "صافي قيمة التسوية (بالتكلفة)",
+        cell: ({ row }) => {
+          const r = row.original;
+          return (
+            <>
+              {r.productName}
+              {r.variantName ? ` — ${r.variantName}` : ""}
+              {r.baseUnit ? (
+                <span className="text-xs text-muted-foreground">
+                  {" "}
+                  ({r.baseUnit})
+                </span>
+              ) : null}{" "}
+              <span className="font-mono text-[10px] text-muted-foreground" dir="ltr">
+                {r.sku ?? ""}
+              </span>
+            </>
+          );
+        },
+      },
+      {
+        id: "book",
+        header: isOpening ? "الرصيد السابق" : "الدفتري",
+        accessorFn: (r) => fmtInt(bookOf(r)),
+        meta: { kind: "number" },
+        sortingFn: (a, b) => bookOf(a.original) - bookOf(b.original),
+        cell: ({ row }) => fmtInt(bookOf(row.original)),
+      },
+      {
+        id: "final",
+        header: isOpening ? "الرصيد المعتمد" : "المعدود المصحَّح",
+        accessorFn: (r) => fmtInt(finalOf(r)),
+        meta: { kind: "number" },
+        sortingFn: (a, b) => finalOf(a.original) - finalOf(b.original),
+        cell: ({ row }) => fmtInt(finalOf(row.original)),
+      },
+      {
+        id: "diff",
+        header: "الفرق",
+        accessorFn: (r) => signedInt(diffOf(r)),
+        meta: { kind: "number" },
+        sortingFn: (a, b) => diffOf(a.original) - diffOf(b.original),
+        /* عزلُ اتجاه الرقم يدويّاً في الذيل: `DataTable` يلفّ خلايا الجسم بـ`<bdi dir="ltr">`
+           تلقائياً حسب `meta.kind` ولا يلفّ خلايا `tfoot` — والأصل كان `dir="ltr"` صريحاً. */
+        footer: () => <bdi dir="ltr">{signedInt(calc?.adjNetQty ?? 0)}</bdi>,
+        cell: ({ row }) => {
+          const diff = diffOf(row.original);
+          return (
+            <span
+              className={`font-bold ${diff < 0 ? "text-money-negative" : "text-money-positive"}`}
+            >
+              {signedInt(diff)}
+            </span>
+          );
+        },
+      },
+      {
+        id: "value",
+        header: isOpening ? "قيمة التغيير" : "قيمة الفرق",
+        accessorFn: (r) => signedMoney(valueOf(r)),
+        meta: { kind: "money" },
+        sortingFn: (a, b) =>
+          D(valueOf(a.original)).cmp(D(valueOf(b.original))),
+        footer: () => <bdi dir="ltr">{signedMoney(calc?.adjNetValue ?? 0)}</bdi>,
+        cell: ({ row }) => signedMoney(valueOf(row.original)),
+      },
+      {
+        id: "reason",
+        header: "السبب",
+        accessorFn: (r) => reasonLabelOfRow(r, isOpening),
+        meta: { wrap: true },
+        cell: ({ row }) => (
+          <span className="text-xs">{reasonLabelOfRow(row.original, isOpening)}</span>
+        ),
+      },
+      {
+        id: "decision",
+        header: "القرار",
+        accessorFn: (r) => decisionLabelOf(r, isOpening),
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => (
+          <span className="text-xs">{decisionLabelOf(row.original, isOpening)}</span>
+        ),
+      },
+    ],
+    [isOpening, calc],
+  );
+
+  const keptColumns = useMemo<ColumnDef<ReportRow, unknown>[]>(
+    () => [
+      {
+        id: "product",
+        header: "المنتج",
+        accessorFn: (r) => productLabel(r),
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => productLabel(row.original),
+      },
+      {
+        id: "diff",
+        header: "الفرق",
+        accessorFn: (r) => signedInt(diffOf(r)),
+        meta: { kind: "number" },
+        sortingFn: (a, b) => diffOf(a.original) - diffOf(b.original),
+        cell: ({ row }) => signedInt(diffOf(row.original)),
+      },
+      {
+        id: "decision",
+        header: "القرار",
+        accessorFn: (r) =>
+          `قرار: ${r.decision?.decidedByName ?? "—"}${r.decision?.note ? ` — ${r.decision.note}` : ""}`,
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => (
+          <span className="text-xs text-muted-foreground">
+            قرار: {row.original.decision?.decidedByName ?? "—"}
+            {row.original.decision?.note ? ` — ${row.original.decision.note}` : ""}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
+
+  const reasonColumns = useMemo<ColumnDef<ReasonRow, unknown>[]>(
+    () => [
+      {
+        id: "label",
+        header: "السبب",
+        accessorFn: (r) => r.label,
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => row.original.label,
+      },
+      {
+        id: "items",
+        header: "منتجات",
+        accessorFn: (r) => fmtInt(r.n),
+        meta: { kind: "number" },
+        sortingFn: (a, b) => a.original.n - b.original.n,
+        cell: ({ row }) => fmtInt(row.original.n),
+      },
+      {
+        id: "qty",
+        header: "صافي الكمية",
+        accessorFn: (r) => signedInt(r.qty),
+        meta: { kind: "number" },
+        sortingFn: (a, b) => a.original.qty - b.original.qty,
+        cell: ({ row }) => signedInt(row.original.qty),
+      },
+      {
+        id: "value",
+        header: "صافي القيمة",
+        accessorFn: (r) => signedMoney(r.value),
+        meta: { kind: "money" },
+        sortingFn: (a, b) => D(a.original.value).cmp(D(b.original.value)),
+        cell: ({ row }) => signedMoney(row.original.value),
+      },
+    ],
+    [],
+  );
+
   if (!Number.isFinite(sessionId))
     return (
       <div className="p-10 text-center text-muted-foreground">
@@ -236,12 +439,7 @@ export default function StocktakeReport() {
     );
 
   const s = data.session;
-  const isOpening = s.sessionType === "OPENING";
-  const reasonLabelOf = (row: ReportRow) =>
-    isOpening && (!row.decision || row.decision.reason === "UNSPECIFIED")
-      ? "تأسيس رصيد افتتاحي"
-      : (STOCKTAKE_REASON_LABEL[row.decision?.reason ?? "UNSPECIFIED"] ??
-        "غير محدد");
+  const reasonLabelOf = (row: ReportRow) => reasonLabelOfRow(row, isOpening);
   const scopeLabel =
     s.scopeLabel ??
     STOCKTAKE_SCOPE_LABEL[s.scopeType ?? ""] ??
@@ -509,114 +707,30 @@ export default function StocktakeReport() {
           {isOpening ? "التغييرات الافتتاحية المثبتة" : "الفروقات المُسوّاة"} (
           {fmtInt(calc.adjusted.length)})
         </h3>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] border-collapse text-sm">
-            <thead>
-              <tr className="border-y-2 border-foreground text-right text-xs">
-                <th className="py-1.5 pl-2 font-bold">المنتج</th>
-                <th className="px-2 py-1.5 text-center font-bold">
-                  {isOpening ? "الرصيد السابق" : "الدفتري"}
-                </th>
-                <th className="px-2 py-1.5 text-center font-bold">
-                  {isOpening ? "الرصيد المعتمد" : "المعدود المصحَّح"}
-                </th>
-                <th className="px-2 py-1.5 text-center font-bold">الفرق</th>
-                <th className="px-2 py-1.5 text-center font-bold">
-                  {isOpening ? "قيمة التغيير" : "قيمة الفرق"}
-                </th>
-                <th className="px-2 py-1.5 font-bold">السبب</th>
-                <th className="py-1.5 pr-2 font-bold">القرار</th>
-              </tr>
-            </thead>
-            <tbody>
-              {calc.adjusted.map((r) => {
-                const diff = calc.diffOf(r);
-                return (
-                  <tr key={r.variantId} className="border-b">
-                    <td className="py-1.5 pl-2">
-                      {r.productName}
-                      {r.variantName ? ` — ${r.variantName}` : ""}
-                      {r.baseUnit ? (
-                        <span className="text-xs text-muted-foreground">
-                          {" "}
-                          ({r.baseUnit})
-                        </span>
-                      ) : null}{" "}
-                      <span
-                        className="font-mono text-[10px] text-muted-foreground"
-                        dir="ltr"
-                      >
-                        {r.sku ?? ""}
-                      </span>
-                    </td>
-                    <td
-                      className="px-2 py-1.5 text-center font-mono tabular-nums"
-                      dir="ltr"
-                    >
-                      {fmtInt(calc.bookOf(r))}
-                    </td>
-                    <td
-                      className="px-2 py-1.5 text-center font-mono tabular-nums"
-                      dir="ltr"
-                    >
-                      {fmtInt(calc.finalOf(r))}
-                    </td>
-                    <td
-                      className={`px-2 py-1.5 text-center font-mono font-bold tabular-nums ${diff < 0 ? "text-money-negative" : "text-money-positive"}`}
-                      dir="ltr"
-                    >
-                      {signedInt(diff)}
-                    </td>
-                    <td
-                      className="px-2 py-1.5 text-center font-mono tabular-nums"
-                      dir="ltr"
-                    >
-                      {signedMoney(calc.valueOf(r))}
-                    </td>
-                    <td className="px-2 py-1.5 text-xs">{reasonLabelOf(r)}</td>
-                    <td className="py-1.5 pr-2 text-xs">
-                      {decisionLabelOf(r, isOpening)}
-                    </td>
-                  </tr>
-                );
-              })}
-              {calc.adjusted.length === 0 && (
-                <TableEmptyRow
-                  colSpan={7}
-                  message={
-                    isOpening
-                      ? "لا تغييرات افتتاحية مثبتة — الرصيد المعتمد يساوي الرصيد السابق."
-                      : "لا تسويات — الجرد مطابق."
-                  }
-                />
-              )}
-            </tbody>
-            {calc.adjusted.length > 0 && (
-              <tfoot>
-                <tr className="border-t-2 border-foreground font-bold">
-                  <td className="py-2 pl-2" colSpan={3}>
-                    {isOpening
-                      ? "صافي قيمة التغيير الافتتاحي (بالتكلفة)"
-                      : "صافي قيمة التسوية (بالتكلفة)"}
-                  </td>
-                  <td
-                    className="px-2 py-2 text-center font-mono tabular-nums"
-                    dir="ltr"
-                  >
-                    {signedInt(calc.adjNetQty)}
-                  </td>
-                  <td
-                    className="px-2 py-2 text-center font-mono tabular-nums"
-                    dir="ltr"
-                  >
-                    {signedMoney(calc.adjNetValue)}
-                  </td>
-                  <td colSpan={2}></td>
-                </tr>
-              </tfoot>
-            )}
-          </table>
-        </div>
+        {/*
+          * قسمٌ مُضمَّنٌ في وثيقة المحضر: عنوانُه وعدُّه في الترويسة أعلاه، والوثيقة تُقرأ
+          * كاملةً ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. صفُّ الإجماليات من footer الأعمدة.
+          *
+          * `viewKey` ثابتٌ على الجداول الثلاثة: بدونه يشتقّ `DataTable` مفتاحَ التخزين من
+          * `window.location.pathname` — وهو هنا `/stocktakes/:id/report` **بمعرّف الجلسة
+          * داخله** ⇒ كلّ محضرٍ يُفتَح يكتب ثلاثة مفاتيح localStorage جديدة لا تُقرأ أبداً
+          * (`embedded` يكتم منتقيَ الأعمدة فلا تفضيلَ يُحفَظ فيها أصلاً). المفتاح الثابت
+          * يجعلها ثلاثةً للشاشة كلّها بدل ثلاثةٍ لكلّ جلسة جرد.
+          */}
+        <DataTable<ReportRow>
+          columns={adjustedColumns}
+          viewKey="stocktake-report-adjusted"
+          data={calc.adjusted}
+          embedded
+          searchable={false}
+          bounded={false}
+          pageSize={Infinity}
+          emptyText={
+            isOpening
+              ? "لا تغييرات افتتاحية مثبتة — الرصيد المعتمد يساوي الرصيد السابق."
+              : "لا تسويات — الجرد مطابق."
+          }
+        />
 
         {/* ثانياً — فروقات أُبقي رصيدها */}
         {calc.kept.length > 0 && (
@@ -624,30 +738,15 @@ export default function StocktakeReport() {
             <h3 className="mb-2 mt-5 text-sm font-bold">
               ثانياً — فروقات أُبقي رصيدها الدفتري ({fmtInt(calc.kept.length)})
             </h3>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[480px] border-collapse text-sm">
-                <tbody>
-                  {calc.kept.map((r) => (
-                    <tr key={r.variantId} className="border-b">
-                      <td className="py-1.5 pl-2">
-                        {r.productName}
-                        {r.variantName ? ` — ${r.variantName}` : ""}
-                      </td>
-                      <td
-                        className="px-2 py-1.5 text-center font-mono tabular-nums"
-                        dir="ltr"
-                      >
-                        {signedInt(calc.diffOf(r))}
-                      </td>
-                      <td className="py-1.5 pr-2 text-xs text-muted-foreground">
-                        قرار: {r.decision?.decidedByName ?? "—"}
-                        {r.decision?.note ? ` — ${r.decision.note}` : ""}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable<ReportRow>
+              columns={keptColumns}
+              viewKey="stocktake-report-kept"
+              data={calc.kept}
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+            />
           </>
         )}
 
@@ -674,45 +773,17 @@ export default function StocktakeReport() {
             <h3 className="mb-2 mt-6 text-sm font-bold">
               تحليل الفروقات حسب السبب (الانكماش)
             </h3>
-            <div className="overflow-x-auto">
-              <table className="w-full max-w-lg min-w-[420px] border-collapse text-sm">
-                <thead>
-                  <tr className="border-y-2 border-foreground text-right text-xs">
-                    <th className="py-1.5 pl-2 font-bold">السبب</th>
-                    <th className="px-2 py-1.5 text-center font-bold">
-                      منتجات
-                    </th>
-                    <th className="px-2 py-1.5 text-center font-bold">
-                      صافي الكمية
-                    </th>
-                    <th className="px-2 py-1.5 text-center font-bold">
-                      صافي القيمة
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {calc.byReason.map((r) => (
-                    <tr key={r.reason} className="border-b">
-                      <td className="py-1.5 pl-2">{r.label}</td>
-                      <td className="px-2 py-1.5 text-center tabular-nums">
-                        {fmtInt(r.n)}
-                      </td>
-                      <td
-                        className="px-2 py-1.5 text-center font-mono tabular-nums"
-                        dir="ltr"
-                      >
-                        {signedInt(r.qty)}
-                      </td>
-                      <td
-                        className="px-2 py-1.5 text-center font-mono tabular-nums"
-                        dir="ltr"
-                      >
-                        {signedMoney(r.value)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            {/* max-w-lg يُبقي الجدول بعرضه الأصليّ داخل الوثيقة. */}
+            <div className="max-w-lg">
+              <DataTable<ReasonRow>
+                columns={reasonColumns}
+                viewKey="stocktake-report-by-reason"
+                data={calc.byReason}
+                embedded
+                searchable={false}
+                bounded={false}
+                pageSize={Infinity}
+              />
             </div>
           </>
         )}
