@@ -151,4 +151,33 @@ describe("audited public UX contracts", () => {
     expect(dataTableSource).toContain("mobileCardRenderer?: (row: T, index: number) => React.ReactNode");
     expect(dataTableSource).toContain("md:hidden space-y-2.5");
   });
+
+  it("keeps report catalog navigation consolidated around the canonical hubs", () => {
+    const reportsCenter = readPage("ReportsCenter.tsx");
+
+    expect(reportsCenter).toContain('href: "/reports/sales-hub"');
+    expect(reportsCenter).toContain('href: "/reports/profitability"');
+    expect(reportsCenter).not.toContain('href: "/sales-report"');
+    expect(reportsCenter).not.toContain('href: "/reports/sales-register"');
+    expect(reportsCenter).not.toContain('href: "/reports/sales-by-dimension"');
+
+    expect(reportsCenter).toContain('href: "/reports/aging-hub"');
+    expect(reportsCenter).not.toContain('href: "/ar-aging"');
+    expect(reportsCenter).not.toContain('href: "/ap-aging"');
+    expect(reportsCenter).not.toContain('href: "/reports/aging-detail"');
+  });
+
+  it("keeps report tabs aligned with reportViewerProcedure", () => {
+    for (const page of ["SalesHub.tsx", "SuppliersHub.tsx", "CrmHub.tsx", "ReportsHub.tsx"]) {
+      const source = readPage(page);
+      const gate = source.slice(
+        source.indexOf("const REPORT_VIEWER_GATE"),
+        source.indexOf("const TABS"),
+      );
+      expect(gate, page).toContain('roles: ["manager", "accountant", "auditor"]');
+      expect(gate, page).toContain('module: "reports"');
+      expect(gate, page).toContain('level: "READ"');
+      expect(source, page).toContain("gate: REPORT_VIEWER_GATE");
+    }
+  });
 });

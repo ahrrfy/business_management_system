@@ -17,6 +17,13 @@ const ARAging=lazy(()=>import("@/pages/ARAging"));
 const InstallmentPlans=lazy(()=>import("@/pages/InstallmentPlans"));
 const ContractPrices=lazy(()=>import("@/pages/ContractPrices"));
 
+// مرآة reportViewerProcedure: الدور خارج القائمة يحتاج منح reports صريحاً، لا قالباً افتراضياً.
+const REPORT_VIEWER_GATE: NonNullable<HubTab["gate"]> = {
+  roles: ["manager", "accountant", "auditor"],
+  module: "reports",
+  level: "READ",
+};
+
 const TABS:HubTab[]=[
   {value:"overview",label:"نظرة عامة",gate:{module:"campaigns",level:"READ"},Component:CrmOverview},
   {value:"customers",label:"العملاء",gate:{module:"crm",level:"READ"},Component:Customers},
@@ -31,7 +38,7 @@ const TABS:HubTab[]=[
   {value:"collections",label:"التحصيل والمتأخرات",gate:{module:"collections",level:"FULL"},Component:ARReminders},
   {value:"installments",label:"الأقساط",gate:{module:"treasury",level:"READ"},Component:InstallmentPlans},
   {value:"contracts",label:"التسعير التعاقدي",gate:{managerOnly:true},Component:ContractPrices},
-  {value:"statement",label:"كشف العميل",gate:{module:"reports",level:"READ"},Component:CustomerStatement},
-  {value:"aging",label:"أعمار الذمم",gate:{module:"reports",level:"READ"},Component:ARAging},
+  {value:"statement",label:"كشف العميل",gate: REPORT_VIEWER_GATE,Component:CustomerStatement},
+  {value:"aging",label:"أعمار الذمم",gate: REPORT_VIEWER_GATE,Component:ARAging},
 ];
 export default function CrmHub(){return <PageTabs tabs={TABS} ariaLabel="أقسام إدارة علاقات العملاء"/>}
