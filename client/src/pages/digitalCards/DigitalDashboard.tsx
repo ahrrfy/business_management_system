@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { fmtAr } from "@/lib/money";
 import { RowActions } from "@/components/list/RowActions";
 import { trpc } from "@/lib/trpc";
+import { digitalSaleIntentStatusLabel } from "@shared/digitalSaleIntentStatus";
 import { AlertTriangle, CreditCard, TrendingUp, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
@@ -39,6 +40,15 @@ const RANGES = [
 ] as const;
 type RangeKey = (typeof RANGES)[number]["key"];
 
+// موجة D6 (٢/٩/٢٦) — قاموسان يبقيان محلّيَّين **بقياسٍ لا بإهمال**، لأنّ توحيدهما يمسّ
+// شاشاتٍ تملكها موجاتٌ أخرى الآن:
+//   · `MODE_LABEL` (نمط تسوية المزوّد) مكرَّرٌ حرفياً في
+//     `client/src/components/digitalCards/InvoiceDigitalCards.tsx` (SETTLEMENT)، وبصيغةٍ
+//     شارحةٍ أطول في `DigitalProviders.tsx` (SETTLEMENT_MODE).
+//   · `AVAIL_LABEL` (جاهزيّة البيع) **منحرفٌ فعلاً** عن منتقي الكاشير: هناك «لا سعر منشور»
+//     و«السعر يحتاج تحديثاً» ([DigitalCardsPickerDialog.tsx:593])، وهنا الصيغتان الأطول.
+//     ونوعا الخادم مختلفا السعة: `DigitalSaleReadiness` (٧ قيم) مقابل `CardAvailability` (٣).
+// ⇒ المصدرُ المشترك لهذين قرارُ مالك شريحة البطاقات الرقميّة، لا قرارُ موجةٍ لا تملك شاشتيهما.
 const MODE_LABEL: Record<string, string> = { PREPAID: "مسبق الدفع", POSTPAID: "آجل" };
 const AVAIL_LABEL: Record<string, string> = {
   NO_PRICE: "لم يُنشر سعر البيع",
@@ -47,9 +57,6 @@ const AVAIL_LABEL: Record<string, string> = {
   WALLET_MISMATCH: "المحفظة مرتبطة بمزوّد أو فرع آخر",
   WALLET_INACTIVE: "محفظة المزوّد معطّلة",
   INSUFFICIENT_BALANCE: "رصيد المزوّد لا يكفي لبيع كرت واحد",
-};
-const INTENT_LABEL: Record<string, string> = {
-  PREPARED: "بانتظار الإصدار", EXECUTING: "يجري إصدار الكرت", EXECUTED: "صدر الكرت ولم تُنشأ الفاتورة", NEEDS_REVIEW: "تحتاج معالجة",
 };
 
 export default function DigitalDashboard() {
@@ -314,7 +321,7 @@ export default function DigitalDashboard() {
                   <tr key={p.id} className={`border-t ${p.status === "NEEDS_REVIEW" ? "bg-destructive/5" : ""}`}>
                     <td className="p-2 tabular-nums">{p.id}</td>
                     <td className="p-2 text-muted-foreground">{p.branchName}</td>
-                    <td className="p-2">{INTENT_LABEL[p.status] ?? p.status}</td>
+                    <td className="p-2">{digitalSaleIntentStatusLabel(p.status)}</td>
                     <td className="p-2 tabular-nums">{fmtAr(p.expectedTotal)}</td>
                   </tr>
                 ))}

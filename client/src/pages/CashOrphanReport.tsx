@@ -16,26 +16,35 @@ import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { selectCls } from "@/lib/ui/formStyles";
+import { CASH_RECEIPT_SOURCE_LABEL_AR } from "@shared/cashReceiptSourceDocument";
+import { ROLE_LABEL } from "@/lib/roles";
 
 type CO = RouterOutputs["reports"]["cashOrphans"];
 type Tab = "all" | "TREASURY" | "TRUE_ORPHAN";
 
-const SOURCE_LABEL: Record<string, string> = {
-  EXPENSE: "مصروف",
-  VOUCHER: "سند",
-  OTHER: "أخرى",
-};
+// ⚠️ `DIR_LABEL` و`PARTY_LABEL` يبقيان محلّيَّين عن **قياسٍ لا عن إهمال**: القاموسان نفسُهما
+// مكرّران حرفياً في [Vouchers.tsx:81](Vouchers.tsx#L81) و[:83](Vouchers.tsx#L83) باسمَي
+// `TYPE_LABEL` و`PARTY_LABEL`، وفيهما انحرافٌ قائم (`OTHER` هناك «أخرى» وهنا «متفرّق»).
+// ⇒ توحيدُهما قرارُ لفظٍ يمسّ شاشةً لا تملكها هذه الشريحة؛ رفعُه إلى `shared/` بلا كنس
+// مستهلكيه يُنتج مصدرَين اثنين بدل واحد — وهو العطبُ عينُه بثوبٍ أنظف.
 const DIR_LABEL: Record<string, string> = { IN: "قبض", OUT: "صرف" };
 const PARTY_LABEL: Record<string, string> = {
   CUSTOMER: "عميل",
   SUPPLIER: "مورّد",
   OTHER: "متفرّق",
 };
-const ROLE_LABEL: Record<string, { label: string; cls: string }> = {
-  admin: { label: "مدير عام", cls: "badge-status-done" },
-  manager: { label: "مدير", cls: "badge-status-pending" },
-  cashier: { label: "كاشير", cls: "badge-stock-low" },
-  warehouse: { label: "مخزن", cls: "badge-stock-low" },
+
+/**
+ * لونُ شارة الدور — **عرضٌ لا مصطلح**، ولذلك يبقى هنا بينما التسميةُ تأتي من
+ * [`@/lib/roles`](../lib/roles.ts) المصدرِ الذي تقرأ منه بقيّةُ النظام (الشريط الجانبي
+ * والمستخدمون والحساب). الدورُ الذي لا لونَ له يأخذ المحايد بدل أن يختفي: هذه شاشةُ
+ * ملاحقةِ دينارٍ ضائع، ونسبةُ الحركة إلى فاعلها أحدُ خمسة يلزمها كلُّ مبلغ.
+ */
+const ROLE_BADGE_CLASS: Record<string, string> = {
+  admin: "badge-status-done",
+  manager: "badge-status-pending",
+  cashier: "badge-stock-low",
+  warehouse: "badge-stock-low",
 };
 
 const NOTE =
@@ -85,7 +94,7 @@ export default function CashOrphanReport() {
         { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
         { key: "category", header: "الفئة", map: (r) => (r.category === "TREASURY" ? "خزينة إدارية" : "يتيم حقيقي") },
         { key: "cashBucket", header: "مكان النقد", map: (r) => (r.cashBucket === "DRAWER" ? "درج" : r.cashBucket === "TREASURY" ? "خزينة" : "") },
-        { key: "source", header: "النوع", map: (r) => SOURCE_LABEL[r.source] ?? r.source },
+        { key: "source", header: "النوع", map: (r) => CASH_RECEIPT_SOURCE_LABEL_AR[r.source] ?? r.source },
         { key: "sourceId", header: "رقم المستند", map: (r) => r.sourceId ?? r.receiptId },
         { key: "voucherNumber", header: "رقم السند", map: (r) => r.voucherNumber ?? "" },
         { key: "direction", header: "الاتجاه", map: (r) => DIR_LABEL[r.direction] ?? r.direction },
@@ -93,7 +102,7 @@ export default function CashOrphanReport() {
         { key: "partyType", header: "نوع الطرف", map: (r) => (r.partyType ? PARTY_LABEL[r.partyType] ?? r.partyType : "") },
         { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
         { key: "createdByName", header: "أنشأها", map: (r) => r.createdByName ?? "" },
-        { key: "createdByRole", header: "الدور", map: (r) => (r.createdByRole ? ROLE_LABEL[r.createdByRole]?.label ?? r.createdByRole : "") },
+        { key: "createdByRole", header: "الدور", map: (r) => (r.createdByRole ? ROLE_LABEL[r.createdByRole] ?? r.createdByRole : "") },
       ],
     });
   }
@@ -123,12 +132,12 @@ export default function CashOrphanReport() {
         createdAt: fmtDate(r.createdAt),
         branch: r.branchName ?? "—",
         category: r.category === "TREASURY" ? "خزينة" : "يتيم",
-        source: SOURCE_LABEL[r.source] ?? r.source,
+        source: CASH_RECEIPT_SOURCE_LABEL_AR[r.source] ?? r.source,
         doc: r.voucherNumber ?? (r.sourceId != null ? `#${r.sourceId}` : `R#${r.receiptId}`),
         direction: DIR_LABEL[r.direction] ?? r.direction,
         amount: fmtAr(r.amount),
         description: r.description ?? "",
-        createdBy: r.createdByName ? `${r.createdByName}${r.createdByRole ? ` (${ROLE_LABEL[r.createdByRole]?.label ?? r.createdByRole})` : ""}` : "—",
+        createdBy: r.createdByName ? `${r.createdByName}${r.createdByRole ? ` (${ROLE_LABEL[r.createdByRole] ?? r.createdByRole})` : ""}` : "—",
       })),
       showIndex: true,
       summary: [
@@ -228,7 +237,7 @@ export default function CashOrphanReport() {
               <tbody>
                 {co.rows.map((r) => {
                   const rowBg = r.category === "TREASURY" ? "bg-[var(--sem-info-bg)]" : "bg-[var(--sem-warn-bg)]/40";
-                  const roleInfo = r.createdByRole ? ROLE_LABEL[r.createdByRole] : null;
+                  const roleLabel = r.createdByRole ? ROLE_LABEL[r.createdByRole] ?? r.createdByRole : null;
                   return (
                     <tr key={r.receiptId} className={`border-b last:border-0 ${rowBg}`}>
                       <td className="p-3 text-right text-xs" dir="ltr">
@@ -242,7 +251,7 @@ export default function CashOrphanReport() {
                       </td>
                       <td className="p-3 text-right">
                         <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-cancelled">
-                          {SOURCE_LABEL[r.source] ?? r.source}
+                          {CASH_RECEIPT_SOURCE_LABEL_AR[r.source] ?? r.source}
                         </span>
                       </td>
                       <td className="p-3 text-right font-mono text-xs" dir="ltr">
@@ -270,9 +279,13 @@ export default function CashOrphanReport() {
                       </td>
                       <td className="p-3 text-right text-xs">{r.createdByName ?? "—"}</td>
                       <td className="p-3 text-right">
-                        {roleInfo ? (
-                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${roleInfo.cls}`}>
-                            {roleInfo.label}
+                        {roleLabel ? (
+                          <span
+                            className={`inline-block rounded-full px-2 py-0.5 text-xs ${
+                              ROLE_BADGE_CLASS[r.createdByRole ?? ""] ?? "badge-status-neutral"
+                            }`}
+                          >
+                            {roleLabel}
                           </span>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>

@@ -11,7 +11,7 @@ import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
-import { fmtAr as fmt } from "@/lib/money";
+import { D, fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
@@ -19,7 +19,6 @@ import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
-import { selectClsFull } from "@/lib/ui/formStyles";
 
 /**
  * تعديل عميل — موحَّد على نمط شاشة الإضافة (CustomerNew v3).
@@ -35,6 +34,9 @@ import { selectClsFull } from "@/lib/ui/formStyles";
  *  - الحفظ: unlimited ⇒ null، none ⇒ "0"، limit ⇒ النص المُدخل. لا انقلاب صامت.
  *  - غير المدير: الحقل محجوب (get يحجب creditLimit أصلاً) ⇒ نرسل undefined
  *    فلا تُطمَس القيمة المخزّنة بقيمة محجوبة.
+ *
+ * تماثلها مع `CustomerNew` مقيسٌ نصّاً في `__tests__/customerFormParity.test.ts`: نفس الحقول،
+ * ونفس صيغة عرض المال (`fmtAr`)، ونفس مسار المغادرة المحروس بتأكيد.
  *
  * تصحيح الرصيد الافتتاحي (٢٥/٧): بطاقةٌ للأدمن/المدير وحدهما تُعدّل قيد OPENING المرجعيّ وتُطبّق
  * الفارق على الرصيد الجاري (تصون النشاط اللاحق) — لتصحيح أخطاء الإدخال الأوّليّ. غير المرتفعين
@@ -114,14 +116,15 @@ export default function CustomerEdit() {
       setDistrict(c.district ?? "");
       setAddress(c.address ?? "");
       // دلالة سقف الائتمان: null=بلا حدّ، "0"=نقدي فقط، >0=سقف محدّد — نشتقّ الوضع للحفاظ عليها عند الحفظ.
+      // ⛔ لا `Number()` على مبلغ: المقارنة بـDecimal (نفس نواة العرض والإرسال).
       if (c.creditLimit == null) { setCreditMode("unlimited"); setCreditLimit(""); }
-      else if (Number(c.creditLimit) === 0) { setCreditMode("none"); setCreditLimit(""); }
+      else if (D(c.creditLimit).isZero()) { setCreditMode("none"); setCreditLimit(""); }
       else { setCreditMode("limit"); setCreditLimit(String(c.creditLimit)); }
       setNotes(c.notes ?? "");
       // الرصيد الافتتاحي الموقَّع (من قيد OPENING): موجب = «لنا عليه»، سالب = «له علينا».
-      const signedOpen = Number((c as { openingBalance?: string }).openingBalance ?? 0);
-      setOpeningAmount(signedOpen !== 0 ? String(Math.abs(signedOpen)) : "");
-      setOpeningDir(signedOpen < 0 ? "OWED_BY_US" : "OWED_TO_US");
+      const signedOpen = D((c as { openingBalance?: string }).openingBalance ?? 0);
+      setOpeningAmount(signedOpen.isZero() ? "" : signedOpen.abs().toString());
+      setOpeningDir(signedOpen.isNegative() ? "OWED_BY_US" : "OWED_TO_US");
       setLoaded(true);
     }
   }, [detail.data, loaded]);
@@ -282,8 +285,11 @@ export default function CustomerEdit() {
         <CardHeader><CardTitle className="text-base">بطاقة العميل</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">المعرّف</div><div className="font-mono" dir="ltr">#{Number(c.id)}</div></div>
-          <div><div className="text-muted-foreground text-xs">الرصيد الحالي</div><div dir="ltr">{fmt(c.currentBalance)}</div></div>
-          <div><div className="text-muted-foreground text-xs">سقف الائتمان</div><div dir="ltr">{c.creditLimit == null ? "بلا حدّ" : fmt(c.creditLimit)}</div></div>
+          {/* الحقلان المحجوبان لغير المدير (maskCustomerSensitive: creditLimit=null و currentBalance="0")
+              يُعرضان «—» لا قيمةً مُختلَقة. كانت البطاقة تقرأ الحجب فتكتب «بلا حدّ» — أي تُعلن ائتماناً
+              مفتوحاً لعميلٍ سقفُه «نقدي فقط»، و«0» رصيداً لمن عليه ملايين. نفس حارس شاشة العملاء. */}
+          <div><div className="text-muted-foreground text-xs">الرصيد الحالي</div><div dir="ltr">{isElevated ? fmt(c.currentBalance) : "—"}</div></div>
+          <div><div className="text-muted-foreground text-xs">سقف الائتمان</div><div dir="ltr">{isElevated && c.creditLimit == null ? "بلا حدّ" : isElevated ? fmt(c.creditLimit) : "—"}</div></div>
           <div>
             <div className="text-muted-foreground text-xs">الحالة</div>
             <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
