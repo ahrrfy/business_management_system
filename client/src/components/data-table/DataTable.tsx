@@ -121,6 +121,13 @@ type DataTableProps<T, K = string> = {
   mobileCardRenderer?: (row: T, index: number) => React.ReactNode;
   // نَقرة الصَفّ تُغَيِّر التَحديد (افتِراضياً: false — فقط Shift+Click أَو الـcheckbox)
   rowClickSelects?: boolean;
+  /**
+   * نقرُ الصفّ يفتح سجلّه. أُضيف ١/٩/٢٦: القوائم التي تفتح تفاصيلَها بنقرة صفّ كانت
+   * ستفقد ذلك بالتحويل (Employees) — والمكوّنُ الذي ينقصه ما تحتاجه الشاشة يُتجاوَز.
+   * يُتجاهَل النقرُ على عنصرٍ تفاعليّ داخل الصفّ (زرّ/رابط/حقل) فلا يبتلع إجراءاته،
+   * ولا يعمل مع التحديد المتعدّد (هناك النقرُ للتحديد).
+   */
+  onRowClick?: (row: T) => void;
   /** صنف بصري اختياري للصف مشتق من بياناته (تمييز حالات تشغيلية مهمة). */
   getRowClassName?: (row: T) => string | undefined;
   /**
@@ -233,6 +240,7 @@ export function DataTable<T, K = string>({
   getRowId,
   mobileCardRenderer,
   rowClickSelects = false,
+  onRowClick,
   getRowClassName,
   operation,
   pageSize = 50,
@@ -643,11 +651,15 @@ export function DataTable<T, K = string>({
                       <tr
                         key={row.id}
                         data-selected={isSelected || undefined}
-                        className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                        className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                         onClick={(e) => {
-                          if (!selectionEnabled) return;
                           const target = e.target as HTMLElement;
+                          // لا يبتلع النقرَ على عنصرٍ تفاعليّ داخل الصفّ (إجراءات/روابط/نسخ).
                           if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                          if (!selectionEnabled) {
+                            onRowClick?.(row.original);
+                            return;
+                          }
                           if (e.shiftKey || rowClickSelects) {
                             handleRowToggle(rowIndex, e);
                           }
@@ -774,11 +786,15 @@ export function DataTable<T, K = string>({
                   <tr
                     key={row.id}
                     data-selected={isSelected || undefined}
-                    className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                    className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                     onClick={(e) => {
-                      if (!selectionEnabled) return;
                       const target = e.target as HTMLElement;
+                      // لا يبتلع النقرَ على عنصرٍ تفاعليّ داخل الصفّ (إجراءات/روابط/نسخ).
                       if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                      if (!selectionEnabled) {
+                        onRowClick?.(row.original);
+                        return;
+                      }
                       if (e.shiftKey || rowClickSelects) {
                         handleRowToggle(rowIndex, e);
                       }

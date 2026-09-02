@@ -2,7 +2,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import type { RouterOutputs } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { trpc } from "@/lib/trpc";
@@ -24,6 +27,30 @@ function previousMonthYm(): string {
   const pm = m === 0 ? 12 : m; // 1..12
   return `${py}-${String(pm).padStart(2, "0")}`;
 }
+
+/** صفٌّ من `assets.dashboard.recentMaintenance` — يُشتقّ من عقد الخادم فلا ينجرف. */
+type MaintenanceRow = RouterOutputs["assets"]["dashboard"]["recentMaintenance"][number];
+
+const maintenanceColumns: ColumnDef<MaintenanceRow, unknown>[] = [
+  {
+    id: "asset",
+    header: "الأصل",
+    // الرابط يبقى مع وجود onRowClick: النقرُ الأوسط/«فتح في تبويب» يحتاج <a> حقيقياً،
+    // وDataTable يتجاهل نقرَ الروابط فلا يُفعَّل المساران معاً.
+    cell: ({ row }) => (
+      <span>
+        <Link href={`/assets/${row.original.assetId}`} className="text-primary hover:underline">
+          {row.original.assetName ?? "—"}
+        </Link>{" "}
+        <span className="text-xs text-muted-foreground" dir="ltr">{row.original.assetCode ?? ""}</span>
+      </span>
+    ),
+  },
+  { id: "type", header: "النوع", cell: ({ row }) => <span className="text-xs">{row.original.type}</span> },
+  // kind يتكفّل بالمحاذاة وعزل الاتّجاه وtabular-nums — لا dir="ltr" يدوياً بعده.
+  { id: "maintDate", header: "التاريخ", meta: { kind: "date" }, cell: ({ row }) => row.original.maintDate },
+  { id: "cost", header: "التكلفة", meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.cost) },
+];
 
 export default function Assets() {
   const [, navigate] = useLocation();
@@ -172,39 +199,17 @@ export default function Assets() {
         <Card className="lg:col-span-2">
           <CardHeader><CardTitle className="text-base">أحدث عمليات الصيانة</CardTitle></CardHeader>
           <CardContent className="p-0">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">الأصل</th>
-                  <th className="p-2">النوع</th>
-                  <th className="p-2">التاريخ</th>
-                  <th className="p-2 text-right">التكلفة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.recentMaintenance.map((m) => (
-                  <tr
-                    key={m.id}
-                    className="border-t hover:bg-accent/50 cursor-pointer transition"
-                    onClick={() => navigate(`/assets/${m.assetId}`)}
-                  >
-                    <td className="p-2">
-                      <Link href={`/assets/${m.assetId}`} className="text-primary hover:underline" onClick={(ev) => ev.stopPropagation()}>
-                        {m.assetName ?? "—"}
-                      </Link>
-                      {" "}
-                      <span className="text-xs text-muted-foreground" dir="ltr">{m.assetCode ?? ""}</span>
-                    </td>
-                    <td className="p-2 text-xs">{m.type}</td>
-                    <td className="p-2 text-xs" dir="ltr">{m.maintDate}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(m.cost)}</td>
-                  </tr>
-                ))}
-                {d.recentMaintenance.length === 0 && (
-                  <TableEmptyRow colSpan={4} message="لا عمليات صيانة بعد." />
-                )}
-              </tbody>
-            </table>
+            <DataTable
+              columns={maintenanceColumns}
+              data={d.recentMaintenance}
+              searchable={false}
+              /* معاينةُ لوحةٍ لا قائمةً كاملة: بلا بحثٍ ولا ترقيمٍ ولا حبسِ ارتفاع —
+                 «عرض كل الأصول» أسفلها هو المسار إلى القائمة المرقَّمة. */
+              pageSize={Infinity}
+              bounded={false}
+              onRowClick={(m) => navigate(`/assets/${m.assetId}`)}
+              emptyText="لا عمليات صيانة بعد."
+            />
           </CardContent>
         </Card>
 

@@ -1,11 +1,13 @@
 import { Button } from "@/components/ui/button";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField } from "@/components/list/FilterField";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow, TableSkeleton } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+
+
 import { RowActions } from "@/components/list/RowActions";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
@@ -17,7 +19,7 @@ import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { Plus } from "lucide-react";
 
@@ -117,6 +119,60 @@ export default function Production() {
     });
     if (!ok) notify.err("اسمح بالنوافذ المنبثقة لإتمام الطباعة");
   }
+  /** أعمدة مستندات الإنتاج. */
+  const productionColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
+    { id: "docNumber", header: "رقم المستند", accessorFn: (r) => r.docNumber, meta: { kind: "code" } },
+    {
+      id: "branchName", header: "الفرع",
+      accessorFn: (r) => r.branchName,
+      cell: ({ row }) => <span className="text-xs">{row.original.branchName}</span>,
+      meta: { kind: "text" },
+    },
+    {
+      id: "outputQty", header: "كمية المخرجات",
+      accessorFn: (r) => Number(r.outputQty),
+      cell: ({ row }) => fmtInt(row.original.outputQty),
+      meta: { kind: "number" },
+    },
+    {
+      id: "totalCost", header: "الكلفة الكلية",
+      accessorFn: (r) => Number(r.totalCost),
+      cell: ({ row }) => fmt(row.original.totalCost),
+      meta: { kind: "money" },
+    },
+    {
+      id: "status", header: "الحالة",
+      accessorFn: (r) => statusLabel(r.status),
+      cell: ({ row }) => (
+        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.status === "CANCELLED" ? "badge-status-cancelled" : "badge-status-active"}`}>
+          {statusLabel(row.original.status)}
+        </span>
+      ),
+      meta: { kind: "status" },
+    },
+    {
+      id: "createdAt", header: "التاريخ",
+      accessorFn: (r) => String(r.createdAt ?? ""),
+      cell: ({ row }) => <span className="whitespace-nowrap text-xs">{fmtDateTime(row.original.createdAt)}</span>,
+      meta: { kind: "datetime" },
+    },
+    {
+      id: "actions", header: "إجراء",
+      cell: ({ row }) => (
+        <RowActions
+          mode="inline"
+          actions={[
+            {
+              key: "view", kind: "view", label: "فتح",
+              href: `/production/${Number(row.original.id)}`,
+              gate: { roles: ["manager"], module: "inventory", level: "FULL" },
+            },
+          ]}
+        />
+      ),
+      meta: { kind: "actions" },
+    },
+  ], []);
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -185,82 +241,17 @@ export default function Production() {
             }
           />
 
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">رقم المستند</th>
-                  <th className="p-2">الفرع</th>
-                  <th className="p-2 text-center">كمية المخرجات</th>
-                  <th className="p-2 text-right">الكلفة الكلية</th>
-                  <th className="p-2 text-center">الحالة</th>
-                  <th className="p-2">التاريخ</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {list.isLoading && <TableSkeleton rows={6} cols={7} />}
-                {!list.isLoading &&
-                  rows.map((r) => (
-                    <tr key={Number(r.id)} className="border-t">
-                      <td className="p-2 font-mono" dir="ltr">
-                        {r.docNumber}
-                      </td>
-                      <td className="p-2 text-xs">{r.branchName}</td>
-                      <td className="p-2 text-center tabular-nums" dir="ltr">
-                        {fmtInt(r.outputQty)}
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">
-                        {fmt(r.totalCost)}
-                      </td>
-                      <td className="p-2 text-center">
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.status === "CANCELLED" ? "badge-status-cancelled" : "badge-status-active"}`}
-                        >
-                          {statusLabel(r.status)}
-                        </span>
-                      </td>
-                      <td className="p-2 text-xs whitespace-nowrap">{fmtDateTime(r.createdAt)}</td>
-                      <td className="p-2 text-center">
-                        <RowActions
-                          mode="inline"
-                          actions={[
-                            {
-                              key: "view",
-                              kind: "view",
-                              label: "فتح",
-                              href: `/production/${Number(r.id)}`,
-                              gate: { roles: ["manager"], module: "inventory", level: "FULL" },
-                            },
-                          ]}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                {!list.isLoading && rows.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={7}
-                    message={activeFilterCount > 0 || f.q ? "لا مستندات مطابقة للفلاتر." : "لا مستندات إنتاج بعد."}
-                  />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable
+            columns={productionColumns}
+            data={rows}
+            loading={list.isLoading}
+            searchable={false}
+            emptyText={activeFilterCount > 0 || f.q ? "لا مستندات مطابقة للفلاتر." : "لا مستندات إنتاج بعد."}
+            /* ترقيمٌ خادميّ (limit/offset) ⇒ يُعطّل DataTable الفرزَ فلا يرتّب صفحةً واحدة ويبدو شاملاً. */
+            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, hasMore }}
+          />
 
-          {/* ترقيم صفحات فعلي بدل اقتطاع 300 الصامت السابق. */}
-          {(page > 0 || hasMore) && (
-            <div className="flex items-center justify-between border-t pt-3 text-xs text-muted-foreground">
-              <span>الصفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")}</span>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" disabled={page === 0 || list.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-                  السابق
-                </Button>
-                <Button variant="outline" size="sm" disabled={!hasMore || list.isFetching} onClick={() => setPage((p) => p + 1)}>
-                  التالي
-                </Button>
-              </div>
-            </div>
-          )}
+          {/* الترقيم يُصيّره DataTable عبر serverPagination — شريطٌ واحد لا اثنان. */}
         </CardContent>
       </Card>
     </div>
