@@ -17,6 +17,7 @@ import { confirm } from "@/lib/confirm";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { canSeeGate } from "@/lib/navVisibility";
 import { D, fmtAr, formatIqd } from "@/lib/money";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /** صفُّ العرض — مشتقٌّ من عقد `salesPromotions.list` فلا ينجرف عن الخادم. */
 type OfferRow = RouterOutputs["salesPromotions"]["list"][number];
@@ -587,7 +588,7 @@ export default function Offers() {
             <div className="md:col-span-3 flex justify-end gap-2">
               <Button variant="outline" onClick={() => { setShowForm(false); resetForm(); }}>إلغاء</Button>
               <Button onClick={submit} disabled={createM.isPending || updateM.isPending}>
-                {createM.isPending || updateM.isPending ? "جارٍ الحفظ…" : editingId != null ? "حفظ التعديلات" : "حفظ العرض"}
+                {createM.isPending || updateM.isPending ? ACTION_LABELS.saving : editingId != null ? "حفظ التعديلات" : "حفظ العرض"}
               </Button>
             </div>
           </CardContent>

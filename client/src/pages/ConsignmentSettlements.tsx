@@ -13,6 +13,7 @@ import { notify } from "@/lib/notify";
 import { esc } from "@/lib/printing/brand";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Printer } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
@@ -340,7 +341,7 @@ export default function ConsignmentSettlements() {
           <DialogHeader>
             <DialogTitle>كشف تسوية مودِع{statement.data ? ` — ${statement.data.consignorName}` : ""}</DialogTitle>
           </DialogHeader>
-          {statement.isLoading && <p className="text-sm text-muted-foreground py-6 text-center">جارٍ التحميل…</p>}
+          {statement.isLoading && <p className="text-sm text-muted-foreground py-6 text-center">{ACTION_LABELS.loading}</p>}
           {statement.data && (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-2">

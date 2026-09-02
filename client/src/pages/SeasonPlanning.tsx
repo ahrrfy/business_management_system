@@ -1,6 +1,7 @@
 // تخطيط موسم المدارس (بند 7): جدول المنتجات الموسمية بمخزونها الكلّيّ عبر **كل الفروع** مقابل هدف الموسم
 // + الفجوة (كمية الشراء المقترحة لتجهيز ذروة أيلول). تحرير الهدف مباشرةً، إضافة منتج موسميّ بالبحث،
 // تصفية «تحت الهدف فقط»، وتصدير قائمة الشراء إلى Excel. محصورة بالمدير/المخزن (البوّابة خادمية).
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -284,7 +285,7 @@ export default function SeasonPlanning() {
               تحت الهدف فقط
             </label>
             <span className="text-xs text-muted-foreground">
-              {plan.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} صنف`}
+              {plan.isLoading ? ACTION_LABELS.loading : `${fmtInt(rows.length)} صنف`}
             </span>
           </div>
         </CardHeader>

@@ -108,12 +108,13 @@ export default function StoreCategories() {
                 </div>
                 <p className="text-[11px] text-muted-foreground">{c.productCount} منتج{c.description ? ` · ${c.description}` : ""}</p>
               </div>
-              <button onClick={() => visM.mutate({ id: c.id, showInStore: !c.showInStore })} title={c.showInStore ? "إخفاء من المتجر" : "إظهار في المتجر"} aria-label="إظهار/إخفاء" className={`flex size-8 items-center justify-center rounded-lg border border-border transition hover:bg-accent ${c.showInStore ? "text-emerald-600" : "text-muted-foreground"}`}>
+              <button onClick={() => visM.mutate({ id: c.id, showInStore: !c.showInStore })} title={c.showInStore ? "إخفاء من المتجر" : "إظهار في المتجر"} aria-label="إظهار/إخفاء" className={`flex size-8 items-center justify-center rounded-lg border border-border transition hover:bg-accent ${c.showInStore ? "text-[var(--sem-pos)]" : "text-muted-foreground"}`}>
                 {c.showInStore ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />}
               </button>
               <button onClick={() => setAssignFor({ id: c.id, name: c.name })} className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs font-medium hover:bg-accent"><Plus aria-hidden className="size-3" /> منتجات</button>
               <button onClick={() => setForm({ id: c.id, name: c.name, description: c.description ?? "" })} aria-label="تعديل" className="flex size-8 items-center justify-center rounded-lg border border-border hover:bg-accent"><Pencil aria-hidden className="size-3.5" /></button>
-              <button onClick={() => del(c.id, c.name)} aria-label="حذف" className="flex size-8 items-center justify-center rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10"><Trash2 aria-hidden className="size-3.5" /></button>
+              {/* توكن الخطر يحمل الوضعين ⇒ سقط `dark:hover:` اليدويّ بلا تغيير سلوك. */}
+              <button onClick={() => del(c.id, c.name)} aria-label="حذف" className="flex size-8 items-center justify-center rounded-lg text-[var(--sem-neg)] hover:bg-[var(--sem-neg-bg)]"><Trash2 aria-hidden className="size-3.5" /></button>
             </div>
           ))}
         </div>

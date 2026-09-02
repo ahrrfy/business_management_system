@@ -9,6 +9,7 @@ import { AlertTriangle, Boxes, Eye, EyeOff, ImagePlus, Images, Loader2, PackageS
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { fmt, fmtInt } from "@/lib/money";
 
 type Filter = "all" | "featured" | "hidden" | "noImage";
@@ -88,11 +89,11 @@ export default function StoreCatalog() {
             <Search aria-hidden className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <input value={q} onChange={(e) => { setQ(e.target.value); setLimit(PAGE); }} placeholder="ابحث عن منتج بالاسم…" className="w-full rounded-lg border border-border bg-background py-2 pr-10 pl-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
-          <select value={categoryId} onChange={(e) => { setCategoryId(e.target.value === "" ? "" : Number(e.target.value)); setLimit(PAGE); }} className="rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/30 sm:w-52">
+          <AppSelect value={String(categoryId)} onValueChange={(value) => { setCategoryId(value === "" ? "" : Number(value)); setLimit(PAGE); }} className="sm:w-52">
             <option value="">كل الأقسام</option>
             <option value="0">بلا قسم</option>
             {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          </AppSelect>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {chips.map((ch) => (
@@ -131,7 +132,9 @@ export default function StoreCatalog() {
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <p className="truncate text-sm font-bold">{p.name}</p>
-                      {p.isFeatured && <span className="flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"><Star aria-hidden className="size-2.5" /> مميّز</span>}
+                      {/* نجمة «مميّز» كهرمانيّةٌ هويّةً لا تحذيراً؛ توكنها في هذا المستودع `--sem-warn`
+                          (سابقة ReportsCenter وContact360Panel) فلا يبقى لون نجمةٍ خامّاً ينجرف وحده. */}
+                      {p.isFeatured && <span className="flex items-center gap-0.5 rounded-full bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]"><Star aria-hidden className="size-2.5" /> مميّز</span>}
                       <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${p.inStock ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : p.publishable ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"}`}>
                         {p.inStock ? "قابل للشراء" : p.publishable ? "منشور — غير متاح" : "غير جاهز للنشر"}
                       </span>
@@ -149,10 +152,10 @@ export default function StoreCatalog() {
 
                   {/* أزرار */}
                   {isAdmin && <div className="flex shrink-0 items-center gap-1.5">
-                    <button onClick={() => featM.mutate({ productId: p.productId, isFeatured: !p.isFeatured })} disabled={featM.isPending} title={p.isFeatured ? "إلغاء التمييز" : "تمييز (يتصدّر العرض)"} aria-label="تمييز" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.isFeatured ? "text-amber-500" : "text-muted-foreground"}`}>
-                      <Star aria-hidden className={`size-4 ${p.isFeatured ? "fill-amber-400" : ""}`} />
+                    <button onClick={() => featM.mutate({ productId: p.productId, isFeatured: !p.isFeatured })} disabled={featM.isPending} title={p.isFeatured ? "إلغاء التمييز" : "تمييز (يتصدّر العرض)"} aria-label="تمييز" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.isFeatured ? "text-[var(--sem-warn)]" : "text-muted-foreground"}`}>
+                      <Star aria-hidden className={`size-4 ${p.isFeatured ? "fill-[var(--sem-warn)]" : ""}`} />
                     </button>
-                    <button onClick={() => visM.mutate({ productId: p.productId, showInStore: !p.showInStore })} disabled={visM.isPending} title={p.showInStore ? "إخفاء من المتجر" : "إظهار في المتجر"} aria-label="إظهار/إخفاء" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.showInStore ? "text-emerald-600" : "text-muted-foreground"}`}>
+                    <button onClick={() => visM.mutate({ productId: p.productId, showInStore: !p.showInStore })} disabled={visM.isPending} title={p.showInStore ? "إخفاء من المتجر" : "إظهار في المتجر"} aria-label="إظهار/إخفاء" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.showInStore ? "text-[var(--sem-pos)]" : "text-muted-foreground"}`}>
                       {p.showInStore ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />}
                     </button>
                   </div>}

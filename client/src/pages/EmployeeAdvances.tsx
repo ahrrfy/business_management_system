@@ -313,6 +313,14 @@ export default function EmployeeAdvances() {
             data={filtered}
             searchable={false}
             externalFiltersActive={rows.length > 0}
+            /* ٢/٩ — استعادةُ سلوك الجدول الخامّ: كان يعرض **كلّ** صفوف `filtered` داخل
+               `ScrollTableShell` (تمريرٌ داخليّ بترويسةٍ لاصقة) بلا ترقيمٍ إطلاقاً. وبالتحويل
+               وَرِث افتراضَ `DataTable` (٥٠ صفّاً/صفحة) فصارت السلفُ بعد الخمسين خلف صفحةٍ
+               ثانية — ترقيمٌ لم تطلبه الشاشة ويُربك قارئها: العدُّ والمجاميع في الترويسة
+               محسوبان على `filtered` كاملةً، فصفحةٌ جزئيّة تحت مجموعٍ كلّيّ تُوحي أنّ المعروض
+               هو المحسوب. و`bounded` الافتراضيّة تُبقي التمرير الداخليّ نفسه، فلا تنمو الصفحة.
+               نفس اختيار أشقّائها في هذه الموجة (`Leaves` و`Payroll`). */
+            pageSize={Infinity}
             loading={listQ.isLoading}
             errorState={{ isError: listQ.isError, message: listQ.error?.message, onRetry: () => void listQ.refetch() }}
             emptyState="لا سلف بعد. امنح سلفة للبدء — تُخصم تلقائياً من الرواتب."

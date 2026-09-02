@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
 import { ROLES } from "@/lib/permissionsModel";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { Link } from "wouter";
@@ -50,6 +51,45 @@ export default function Roles() {
     if (count > 0) return;
     if (!(await confirm({ variant: "danger", title: "حذف الدور", description: `حذف الدور «${label}» نهائياً؟`, confirmText: "حذف" }))) return;
     remove.mutate({ id });
+  }
+
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بشريط الأدوات وقوائم الإجراءات).
+  // الصفوف هي المعروضة نفسها (visibleCustom بعد البحث والفلتر) بلا استعلامٍ جديد، وبطاقة
+  // «الأدوار المبنية» تبقى في المستند (كانت تُطبَع مع الصفحة) بوصفها مرجعاً لا جدولاً ثانياً.
+  function printRoles() {
+    printReportDoc({
+      title: "الأدوار المخصّصة",
+      headerExtra: [
+        { label: "عدد الأدوار", value: visibleCustom.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "الحالة", value: status === "active" ? "نشط" : status === "inactive" ? "معطَّل" : "الكل" },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "label", label: "الاسم" },
+        { key: "baseRole", label: "الفئة الأساسية" },
+        { key: "users", label: "مستخدمون", align: "center" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: visibleCustom.map((r) => ({
+        // الوصف يظهر سطراً ثانياً تحت الاسم في خليّة الشاشة — يبقى ملازماً له على الورق.
+        label: `${r.label}${r.description ? ` — ${r.description}` : ""}`,
+        baseRole: `${roleLabel(r.baseRole)}${r.canSeeCost ? " · يرى التكلفة" : ""}`,
+        users: String(counts[Number(r.id)] ?? 0),
+        status: r.isActive ? "مفعّل" : "معطّل",
+      })),
+      meta: builtin.length
+        ? [
+            {
+              title: "الأدوار المبنية في النظام (للقراءة)",
+              fields: builtin.map((r) => ({
+                label: `${r.label}${r.canSeeCost ? " · يرى التكلفة" : ""}`,
+                value: r.description ?? "—",
+              })),
+            },
+          ]
+        : undefined,
+      emptyText: "لا أدوار مطابقة للبحث أو الفلتر.",
+    });
   }
 
   // الأعمدة داخل المكوّن: تعتمد على `counts` وعلى حالة الطفرتين (تعطيل الإجراء أثناء التنفيذ).
@@ -196,7 +236,7 @@ export default function Roles() {
             onResetFilters={() => resetF()}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printRoles}
             exportSpec={{
               filename: "الأدوار-المخصصة",
               rows: visibleCustom,
@@ -216,9 +256,10 @@ export default function Roles() {
             data={visibleCustom}
             /* البحث في ListToolbar أعلاه (يغذّي visibleCustom) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
             searchable={false}
-            /* بلا ترقيم: الشاشة تعرض زرَّ «طباعة» (window.print) و**الصفوف بعد الصفحة الأولى
-               غير موجودةٍ في DOM أصلاً** ⇒ ترقيمُ ٥٠ يطبع أوّل ٥٠ دوراً صامتاً. القائمة
-               بياناتٌ مرجعية محدودة، والحاويةُ المحبوسة تُمرِّرها بترويسةٍ لاصقة كما كانت. */
+            /* بلا ترقيم: القائمة بياناتٌ مرجعية محدودة، والحاويةُ المحبوسة تُمرِّرها بترويسةٍ
+               لاصقة. (الطباعة لم تعُد تقرأ DOM بعد التحوّل إلى `printReportDoc` — تبني
+               المستند من `visibleCustom` كاملةً ⇒ لا اقتطاع صامت أياً كان الترقيم. يبقى
+               `Infinity` قراراً عرضياً قائماً بذاته، ولم يُمَسّ.) */
             pageSize={Infinity}
             externalFiltersActive={query.trim() !== "" || status !== ""}
             loading={list.isLoading}

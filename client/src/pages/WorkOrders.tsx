@@ -438,10 +438,14 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
       {/* شَريط إسناد inline لعَمود «طابور وارد» فَقط — مَدير فَقط، per README §5.2. */}
       {inboxAssign && staff && !ghost && (
         <div className="wob-inbox-assign" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-          <select
-            className="wob-sel wob-inbox-sel"
+          {/* flex-1/min-w-0 يعوّضان تخطيط `.wob-inbox-sel` (الصنف نفسه زال مع الـ<select>).
+              الارتفاع يتبع مقياس الراحة الآن: size="sm" = 40px بدل ٣٢px البَعديّة — وهو ما
+              يراه الجهاز اللمسيّ أصلاً اليوم (min-height: 44px على pointer: coarse). */}
+          <AppSelect
+            className="min-w-0 flex-1 text-xs"
+            size="sm"
             value={pickedStaff}
-            onChange={(e) => setPickedStaff(e.target.value)}
+            onValueChange={setPickedStaff}
             disabled={assignPending}
             aria-label={`إسناد ${o.orderNumber} لفنّي`}
           >
@@ -457,7 +461,7 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
                 {s.onShift === false ? " · خارج الوردية" : s.onShift ? " · على رأس العمل" : ""}
               </option>
             ))}
-          </select>
+          </AppSelect>
           <button
             type="button"
             className="wob-btn wob-btn-primary wob-inbox-btn"
@@ -593,13 +597,14 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
             </div>
           )}
           <div className="space-y-1">
-            <label className="text-sm font-medium">طريقة الدفع</label>
-            <select className={dlgInput} value={methodV} onChange={(e) => setMethodV(e.target.value as typeof methodV)}>
+            <label htmlFor="wo-deliver-method" className="text-sm font-medium">طريقة الدفع</label>
+            {/* تعطيلُ الخيار محفوظ كما هو — سياسة القبض (isPosPaymentMethodEnabled) تبقى مُنفَّذة. */}
+            <AppSelect id="wo-deliver-method" value={methodV} onValueChange={(value) => setMethodV(value as typeof methodV)}>
               <option value="CASH">نقدي</option>
               <option value="CARD" disabled={!isPosPaymentMethodEnabled("CARD")}>بطاقة</option>
               <option value="TRANSFER" disabled={!isPosPaymentMethodEnabled("TRANSFER")}>تحويل</option>
               <option value="WALLET" disabled={!isPosPaymentMethodEnabled("WALLET")}>محفظة</option>
-            </select>
+            </AppSelect>
           </div>
         </div>
         <DialogFooter>
@@ -743,7 +748,7 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
           </DialogDescription>
         </DialogHeader>
         {!d || !form ? (
-          <div className="py-8 text-center text-sm text-muted-foreground">{detail.isLoading ? "جارٍ التحميل…" : "تعذّر العثور على الطلب."}</div>
+          <div className="py-8 text-center text-sm text-muted-foreground">{detail.isLoading ? ACTION_LABELS.loading : "تعذّر العثور على الطلب."}</div>
         ) : locked ? (
           <DialogFooter><button className="wob-btn wob-btn-ghost" onClick={onClose}>إغلاق</button></DialogFooter>
         ) : (
@@ -770,16 +775,16 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <Label>الأولوية</Label>
-                  <select className={dlgInput} value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as EditForm["priority"] })}>
+                  <Label htmlFor="wo-edit-priority">الأولوية</Label>
+                  <AppSelect id="wo-edit-priority" value={form.priority} onValueChange={(value) => setForm({ ...form, priority: value as EditForm["priority"] })}>
                     {Object.entries(PRIORITIES).map(([k, p]) => <option key={k} value={k}>{p.label}</option>)}
-                  </select>
+                  </AppSelect>
                 </div>
                 <div className="space-y-1">
-                  <Label>قناة الاستلام</Label>
-                  <select className={dlgInput} value={form.receptionChannel} onChange={(e) => setForm({ ...form, receptionChannel: e.target.value as EditForm["receptionChannel"] })}>
+                  <Label htmlFor="wo-edit-channel">قناة الاستلام</Label>
+                  <AppSelect id="wo-edit-channel" value={form.receptionChannel} onValueChange={(value) => setForm({ ...form, receptionChannel: value as EditForm["receptionChannel"] })}>
                     {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-                  </select>
+                  </AppSelect>
                 </div>
               </div>
               {form.receptionChannel !== "WALK_IN" && (
@@ -807,7 +812,7 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
             <DialogFooter>
               <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={update.isPending || requestControl.isPending}>إلغاء</button>
               <button className="wob-btn wob-btn-primary" disabled={update.isPending || requestControl.isPending || reason.trim().length < 3} onClick={submit}>
-                {update.isPending || requestControl.isPending ? "جارٍ الحفظ…" : canDirect ? "حفظ التعديل" : "إرسال طلب التعديل"}
+                {update.isPending || requestControl.isPending ? ACTION_LABELS.saving : canDirect ? "حفظ التعديل" : "إرسال طلب التعديل"}
               </button>
             </DialogFooter>
           </>
@@ -917,11 +922,24 @@ function Drawer({
                   <div style={{ gridColumn: "1 / -1" }}>
                     <div className="wob-k">الموظف المسؤول</div>
                     {isManager ? (
-                      <select className="wob-sel" style={{ width: "100%", marginTop: 4, height: 34 }} value={d.assignedTo ?? ""}
-                        onChange={(e) => onAssign(d.id, e.target.value ? Number(e.target.value) : null)} disabled={busy}>
+                      /* contentClassName="z-[60]" إلزاميّ هنا لا تجميل: `.wob-drawer` لوحةٌ يدويّة
+                         بـ`z-index: 51` (WorkOrders.board.css)، وpopup الـRadix يُبوَّب إلى body
+                         بغلافٍ يرث z-index المحتوى — أي **50** — فيُدفَن تحت الدرج. والـ<select>
+                         الأصليّ الذي كان هنا كان محصَّناً (popup على مستوى المتصفّح لا CSS)، فالعطب
+                         يولد مع التحويل وحده. وRadix يقفل المؤشّر خارج القائمة وهي مفتوحة ⇒ الدرج
+                         يبدو متجمّداً لا «بلا قائمة». ٦٠ يحترم قانون الطبقات: 50 عاديّ < 60 هنا
+                         < 100 النوافذ اليدويّة < 200 حوار التأكيد. راجع [[modal-zindex-layering-law]]. */
+                      <AppSelect
+                        className="mt-1"
+                        contentClassName="z-[60]"
+                        aria-label="الموظف المسؤول"
+                        value={d.assignedTo != null ? String(d.assignedTo) : ""}
+                        onValueChange={(value) => onAssign(d.id, value ? Number(value) : null)}
+                        disabled={busy}
+                      >
                         <option value="">— غير مُسنَد —</option>
                         {(staff.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name} — {s.role}</option>)}
-                      </select>
+                      </AppSelect>
                     ) : (
                       <div className="wob-v">{d.assigneeName ?? "غير مُسنَد"}</div>
                     )}

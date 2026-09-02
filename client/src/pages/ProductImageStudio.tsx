@@ -29,6 +29,7 @@ import { STUDIO_CAMPAIGN_STATUS_AR, STUDIO_CAMPAIGN_STATUS_VARIANT, STUDIO_CAMPA
 import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, PauseCircle, PlayCircle, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, Wallet, XCircle } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
 
@@ -1336,7 +1337,7 @@ export default function ProductImageStudio() {
                 <Input id="studio-offline-pin-confirm" type="password" inputMode="numeric" autoComplete="new-password" value={setupPinConfirm} onChange={(event) => setSetupPinConfirm(event.target.value)} placeholder="أعد إدخال الرمز" maxLength={8} />
               </div>
               <Button className="min-h-11" disabled={settingPin || !setupPin || !setupPinConfirm} onClick={() => void configureOfflinePin()}>
-                {settingPin ? "جارٍ الحفظ…" : "تعيين PIN للجهاز"}
+                {settingPin ? ACTION_LABELS.saving : "تعيين PIN للجهاز"}
               </Button>
               {setupPinError && (
                 <p role="alert" className="w-full text-sm text-destructive">

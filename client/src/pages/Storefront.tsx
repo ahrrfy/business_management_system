@@ -168,6 +168,10 @@ function CustomizationFieldControl({
 }) {
   const common = "mt-1.5 w-full rounded-xl border border-[#ead8c8] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none transition focus:border-[#e65f4a]";
   if (field.fieldType === "SELECT") {
+    // ⛔ يبقى `<select>` خامّاً عمداً (لا AppSelect): حقول التخصيص كلّها تتقاسم `common` نفسه —
+    // input/textarea/select بارتفاعٍ واحد (~٣٢px) وهويّة المتجر (rounded-xl + لوحة #ead8c8).
+    // وارتفاعُ AppSelect مربوطٌ بمقياس الراحة (`--ui-control` = 44px) بأولويّةٍ لا يهزمها صنفٌ
+    // من الخارج ⇒ سيصير المنتقي جزيرةً أطول من جيرانه داخل النموذج نفسه. راجع تبرير الموجة.
     return (
       <select id={controlId} value={value} onChange={(event) => onChange(event.target.value)} required={field.isRequired} aria-invalid={invalid || undefined} aria-describedby={describedBy} className={common}>
         <option value="">اختر {field.label}</option>
@@ -1278,6 +1282,10 @@ function RelatedProductStrip({
           <span className="text-[10px] font-bold text-slate-400">{filteredProducts.length} اقتراح</span>
         </div>
         <div className="flex items-center gap-1">
+          {/* لا يُحوَّل إلى AppSelect عمداً: حبّةُ فلترٍ دقيقة (نصّ 10px · ارتفاع ~٢٤px · سهمٌ
+              خاصّ) بجوار زرَّي تنقّل size-7 (٢٨px). أقلّ ارتفاعٍ يبلغه AppSelect هو
+              `--ui-control-sm` = 40px بأولويّةٍ لا يهزمها صنفُ ارتفاعٍ خارجيّ ⇒ التحويل
+              يُضخّم الحبّة ٦٦٪ ويكسر صفّ الشريط. راجع تبرير الموجة. */}
           <label className="relative shrink-0">
             <span className="sr-only">تصفية التوصيات حسب السعر</span>
             <select value={priceFilter} onChange={(event) => setPriceFilter(event.target.value as PriceFilter)} className="appearance-none rounded-full border border-slate-200 bg-white py-1.5 pr-2.5 pl-6 text-[10px] font-bold text-slate-600 outline-none focus:border-emerald-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
@@ -1465,6 +1473,17 @@ function hasStorefrontAnalyticsConsent(): boolean {
   }
 }
 
+// نغمةُ شريط المشاركة تُرافق الرسالة ولا تُثبَّت: القناةُ واحدةٌ تحمل النجاح والفشل معاً
+// (تحميلُ سلةٍ مشتركة · نسخُ رابط · تعذّرُ المشاركة · تعذّرُ إنشاء الرابط)، فصندوقٌ أخضر ثابت
+// كان يؤكّد على «تعذّرت المشاركة» نجاحاً لم يقع — وهو نفسه سببُ إبقائها خارج توحيد الألوان.
+type ShareFeedbackTone = "ok" | "info" | "warn" | "err";
+const SHARE_FEEDBACK_TONE_CLASS: Record<ShareFeedbackTone, string> = {
+  ok: "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+  info: "border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
+  warn: "border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
+  err: "border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]",
+};
+
 function StorefrontContent() {
   const [rawSearch, setRawSearch] = useState("");
   const [search, setSearch] = useState("");
@@ -1494,7 +1513,7 @@ function StorefrontContent() {
   const [panel, setPanel] = useState<Panel>(null);
   const [wishlistIds, setWishlistIds] = useState<Set<number>>(loadStorefrontWishlist);
   const [showWishlist, setShowWishlist] = useState(false);
-  const [shareFeedback, setShareFeedback] = useState<string | null>(null);
+  const [shareFeedback, setShareFeedback] = useState<{ text: string; tone: ShareFeedbackTone } | null>(null);
   const [couponDraft, setCouponDraft] = useState("");
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
   const [couponFeedback, setCouponFeedback] = useState<string | null>(null);
@@ -1728,11 +1747,11 @@ function StorefrontContent() {
           return next;
         });
         setShareFeedback(shared.skippedCount > 0
-          ? `تم تحميل ${incoming.size} من المنتجات؛ أزيل ${shared.skippedCount} لم يعد متاحاً. راجع الأسعار قبل التأكيد`
-          : "تم تحميل السلة المشتركة؛ راجع الأسعار قبل التأكيد");
+          ? { text: `تم تحميل ${incoming.size} من المنتجات؛ أزيل ${shared.skippedCount} لم يعد متاحاً. راجع الأسعار قبل التأكيد`, tone: "warn" }
+          : { text: "تم تحميل السلة المشتركة؛ راجع الأسعار قبل التأكيد", tone: "ok" });
       }
     }).catch(() => {
-      if (!cancelled) setShareFeedback("تعذّر فتح رابط السلة أو انتهت صلاحيته؛ يمكنك متابعة التصفح بشكل طبيعي");
+      if (!cancelled) setShareFeedback({ text: "تعذّر فتح رابط السلة أو انتهت صلاحيته؛ يمكنك متابعة التصفح بشكل طبيعي", tone: "err" });
     });
     return () => { cancelled = true; };
   }, [utils]);
@@ -2108,13 +2127,13 @@ function StorefrontContent() {
         await navigator.share(input);
       } else if (typeof navigator !== "undefined" && navigator.clipboard) {
         await navigator.clipboard.writeText(`${input.text}\\n${input.url}`);
-        setShareFeedback("تم نسخ رابط المشاركة — أرسله لمن تحب");
+        setShareFeedback({ text: "تم نسخ رابط المشاركة — أرسله لمن تحب", tone: "ok" });
       } else {
-        setShareFeedback("انسخ الرابط من شريط العنوان لمشاركته");
+        setShareFeedback({ text: "انسخ الرابط من شريط العنوان لمشاركته", tone: "info" });
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      setShareFeedback("تعذّرت المشاركة حالياً؛ يمكنك نسخ الرابط من شريط العنوان");
+      setShareFeedback({ text: "تعذّرت المشاركة حالياً؛ يمكنك نسخ الرابط من شريط العنوان", tone: "err" });
     }
     window.setTimeout(() => setShareFeedback(null), 3600);
   }
@@ -2143,7 +2162,7 @@ function StorefrontContent() {
         url: storefrontShareUrl({ cartToken: shared.token }),
       });
     } catch {
-      setShareFeedback("تعذّر إنشاء رابط السلة حالياً؛ يمكنك متابعة التصفح بشكل طبيعي");
+      setShareFeedback({ text: "تعذّر إنشاء رابط السلة حالياً؛ يمكنك متابعة التصفح بشكل طبيعي", tone: "err" });
     }
   }
   function retrySupportingSources() {
@@ -2650,8 +2669,16 @@ function StorefrontContent() {
           </section>
         )}
         {announcement && <div className="mb-5 flex items-center gap-2 border border-[#ead8c8] bg-[#fff8f2] px-4 py-3 text-sm font-bold text-[#754f2c]"><BadgePercent aria-hidden className="size-4 shrink-0" /><span>{announcement}</span></div>}
-        {shareFeedback && <div role="status" className="animate__animated animate__fadeIn mb-5 border border-emerald-200 bg-emerald-50 px-4 py-3 text-center text-xs font-bold text-emerald-800">{shareFeedback}</div>}
-        {settingsQ.isSuccess && !storeOpen && <div className="mb-5 border border-rose-200 bg-rose-50 px-4 py-3 text-center text-sm font-bold text-rose-700">المتجر مغلق مؤقتاً — يمكنك تصفح المنتجات والعودة لاحقاً لإتمام الطلب.</div>}
+        {shareFeedback && <div role={shareFeedback.tone === "err" ? "alert" : "status"} className={`animate__animated animate__fadeIn mb-5 border px-4 py-3 text-center text-xs font-bold ${SHARE_FEEDBACK_TONE_CLASS[shareFeedback.tone]}`}>{shareFeedback.text}</div>}
+        {/* تنبيه — قاعدة الألوان في هذه الصفحة تختلف عن شاشات النظام: أصناف emerald/amber هنا
+            **ليست** ألواناً خضراء/كهرمانية — تُعيد قشرةُ المتجر تعريفها في `index.css`
+            (نصُّ emerald بدرجاته ⇐ `--store-brand` كحليّ، وخلفيّةُ amber ⇐ `--store-accent`
+            طوبيّ…) فهي **مقابضُ هويّةٍ** لا دلالةَ حالة. تحويلُها إلى `--sem-*`
+            يُلغي التخصيص فيقلب الهويّة إلى ألوان النظام. لذلك لا يُحوَّل هنا إلا **سطحُ حالةٍ
+            صريح** (`role="alert"` أو فعلٌ مُتلِف) — على سابقة `--sem-danger`/`--sem-warn`
+            القائمتين أصلاً في لوحَي الدفع والتأكيد. ويبقى هويّةً كلُّ ما عداه: السعرُ والإجماليُّ
+            وخصمُ الكوبون وزرُّ الإضافة وشارةُ العرض وبطاقاتُ الأقسام وأخضرُ واتساب. */}
+        {settingsQ.isSuccess && !storeOpen && <div className="mb-5 border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-3 text-center text-sm font-bold text-[var(--sem-neg)]">المتجر مغلق مؤقتاً — يمكنك تصفح المنتجات والعودة لاحقاً لإتمام الطلب.</div>}
 
         {!search && categoryId == null && !showWishlist && (
           <>
@@ -2705,7 +2732,7 @@ function StorefrontContent() {
           </div>
           {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} className={`store-product-card group relative flex h-full flex-col overflow-hidden border border-[#ddd8d1] bg-white transition ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button type="button" onClick={() => openProduct(p.productId)} aria-label={`فتح تفاصيل ${p.productName}`} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls ?? p.imageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="absolute left-3 top-12 z-10 flex gap-1.5"><button type="button" onClick={() => toggleWishlist(p.productId)} aria-label={wishlistIds.has(p.productId) ? `إزالة ${p.productName} من أعجبتني` : `إضافة ${p.productName} إلى أعجبتني`} aria-pressed={wishlistIds.has(p.productId)} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${wishlistIds.has(p.productId) ? "text-[#e65f4a]" : "text-[#5c6870]"} ${heartPulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Heart key={`wishlist-${p.productId}-${heartPulseNonce}`} aria-hidden className={`size-4 ${wishlistIds.has(p.productId) ? "fill-current" : ""} ${heartPulseTarget === `product-${p.productId}` ? "animate__animated animate__heartBeat animate__faster" : ""}`} /></button><button type="button" onClick={() => shareProduct(p.productId, p.productName)} aria-label={`مشاركة ${p.productName}`} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 text-[#1e4a63] shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${sharePulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Share2 key={`share-${p.productId}-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === `product-${p.productId}` ? "animate__animated animate__pulse animate__faster" : ""}`} /></button></div><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => openProduct(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}{onSale && <span className="basis-full text-[10px] font-bold text-[#a4513f]">وفّر {money(Number(p.price) - Number(p.salePrice))} د.ع</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={(event) => addCatalogProduct(p, event)} disabled={!storefrontProductCanBeOrdered(p)} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]">{p.isCustomizable ? <AlertTriangle aria-hidden className="size-4" /> : <Plus aria-hidden className="size-4" />}{recommendationActionLabel(p)}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
           {catalogQ.hasNextPage && <div ref={catalogLoadMoreRef} className="mt-8 flex min-h-12 items-center justify-center" aria-live="polite">{catalogQ.isFetchingNextPage ? <span className="flex items-center gap-2 text-xs font-bold text-[#1e4a63]"><Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ تحميل منتجات إضافية…</span> : <span className="text-[11px] font-bold text-[#8b9395]">نحمّل المزيد تلقائياً عند الاقتراب</span>}</div>}
-          {catalogQ.isError && <div className="mt-3 flex flex-col items-center gap-2 text-center" role="alert"><p className="text-xs font-bold text-rose-700">تعذّر تحميل المنتجات الإضافية تلقائياً.</p><button type="button" onClick={() => void catalogQ.fetchNextPage()} disabled={catalogQ.isFetchingNextPage} className="text-xs font-black text-[#1e4a63] underline disabled:opacity-50">إعادة المحاولة</button></div>}
+          {catalogQ.isError && <div className="mt-3 flex flex-col items-center gap-2 text-center" role="alert"><p className="text-xs font-bold text-[var(--sem-neg)]">تعذّر تحميل المنتجات الإضافية تلقائياً.</p><button type="button" onClick={() => void catalogQ.fetchNextPage()} disabled={catalogQ.isFetchingNextPage} className="text-xs font-black text-[#1e4a63] underline disabled:opacity-50">إعادة المحاولة</button></div>}
         </section>
       </main>
 
@@ -3066,7 +3093,7 @@ function StorefrontContent() {
                           <Plus aria-hidden className="size-3.5" />
                         </button>
                       </div>
-                      <button type="button" onClick={() => setQty(l.cartKey, 0)} aria-label={`حذف ${l.name} من السلة`} className="flex min-h-11 items-center gap-1 text-xs font-medium text-rose-700 hover:underline">
+                      <button type="button" onClick={() => setQty(l.cartKey, 0)} aria-label={`حذف ${l.name} من السلة`} className="flex min-h-11 items-center gap-1 text-xs font-medium text-[var(--sem-neg)] hover:underline">
                         <Trash2 aria-hidden className="size-3" />
                         حذف
                       </button>
@@ -3241,13 +3268,15 @@ function StorefrontContent() {
                 onTokenChange={setTurnstileToken}
               />
             ) : (
-              <p role="alert" className="rounded-xl bg-[var(--sem-danger)]/5 px-3 py-2 text-xs font-medium text-[var(--sem-danger)]">
+              <p role="alert" className="rounded-xl bg-[var(--sem-neg)]/5 px-3 py-2 text-xs font-medium text-[var(--sem-neg)]">
                 استقبال الطلبات متوقف مؤقتاً؛ يمكنك متابعة التصفح والتواصل عبر واتساب.
               </p>
             )}
 
+            {/* نفس دور تنبيه «استقبال الطلبات متوقف» أعلاه — صارا على `--sem-neg` نفسه
+                (كان الأوّل على مرادفه `--sem-danger` والثاني صبغةً خامّة). */}
             {(createOrder.isError || checkoutSafetyError) && (
-              <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600 dark:bg-rose-500/10">
+              <p role="alert" className="rounded-xl bg-[var(--sem-neg)]/5 px-3 py-2 text-xs font-medium text-[var(--sem-neg)]">
                 {checkoutSafetyError ?? createOrder.error?.message ?? "تعذّر إرسال الطلب — أعد المحاولة"}
               </p>
             )}
@@ -3370,7 +3399,7 @@ function StorefrontContent() {
                   className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 />
                 {trackError
-                  ? <p id="storefront-track-token-error" role="alert" className="text-xs font-bold text-rose-700">{trackError}</p>
+                  ? <p id="storefront-track-token-error" role="alert" className="text-xs font-bold text-[var(--sem-neg)]">{trackError}</p>
                   : <p id="storefront-track-token-help" className="text-xs text-slate-600 dark:text-slate-300">لا نطلب رقم الهاتف ولا نخزّن بياناتك الشخصية للتتبّع.</p>}
               </div>
               <button
@@ -3394,12 +3423,12 @@ function StorefrontContent() {
             </form>
 
             {trackState === "notfound" && (
-              <div role="alert" className="rounded-xl bg-amber-50 p-4 text-center text-sm font-bold text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20">
+              <div role="alert" className="rounded-xl bg-[var(--sem-warn-bg)] p-4 text-center text-sm font-bold text-[var(--sem-warn)] ring-1 ring-[var(--sem-warn)]/40">
                 رمز التتبّع غير صالح أو انتهت صلاحيته. استخدم الرمز من تأكيد الطلب أو تواصل مع الدعم.
               </div>
             )}
             {trackState === "error" && (
-              <div role="alert" className="rounded-xl bg-rose-50 p-4 text-center text-sm font-bold text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/20">
+              <div role="alert" className="rounded-xl bg-[var(--sem-neg-bg)] p-4 text-center text-sm font-bold text-[var(--sem-neg)] ring-1 ring-[var(--sem-neg)]/40">
                 تعذّر جلب الحالة الآن — حاول مرّةً أخرى.
               </div>
             )}
@@ -3579,7 +3608,7 @@ function Field({ icon, label, htmlFor, required = false, error, tone = "plain", 
         {required && <><span aria-hidden="true" className="text-[var(--store-accent)]">*</span><span className="sr-only"> — مطلوب</span></>}
       </label>
       {children}
-      {error && <p id={errorId} role="alert" className="mt-1.5 text-xs font-bold text-rose-700">{error}</p>}
+      {error && <p id={errorId} role="alert" className="mt-1.5 text-xs font-bold text-[var(--sem-neg)]">{error}</p>}
     </div>
   );
 }

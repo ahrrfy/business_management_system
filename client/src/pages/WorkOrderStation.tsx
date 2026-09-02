@@ -18,7 +18,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "wouter";
+import { PageHeader } from "@/components/PageHeader";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 /**
@@ -655,10 +655,11 @@ export default function WorkOrderStation() {
     <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-7rem)]">
       {/* القائمة الجانبية */}
       <div className="lg:w-[300px] lg:flex-none flex flex-col gap-3 overflow-y-auto">
-        <div className="flex items-center justify-between">
-          <h1 className="text-lg font-bold">محطة التنفيذ</h1>
-          <Link href="/work-orders" className="text-xs text-muted-foreground">اللوحة ←</Link>
-        </div>
+        {/* رأسٌ يدويّ (h1 + رابط «اللوحة ←» بمحرفٍ خامّ) ⇐ PageHeader بصيغة `workspace`:
+            شريط 44px بنفس مقاس العنوان الحاليّ (text-lg font-bold) كي لا يقضم عمودَ القوائم
+            في تخطيط `h-[calc(100vh-7rem)]`، والوجهة `/work-orders` كما هي (هذه الشاشة تبويبٌ
+            داخل PrintHub، فالرجوع إلى تبويب اللوحة). */}
+        <PageHeader variant="workspace" title="محطة التنفيذ" backHref="/work-orders" backLabel="اللوحة" />
 
         <Input
           value={search}

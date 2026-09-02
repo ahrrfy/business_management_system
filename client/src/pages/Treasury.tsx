@@ -10,6 +10,7 @@ import { moduleAccessAllowed } from "@shared/permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PageHeader } from "@/components/PageHeader";
 import { CashCounter } from "@/components/CashCounter";
 import {
   Dialog,
@@ -707,62 +708,69 @@ export default function Treasury() {
   return (
     <div className="mx-auto max-w-[1600px] space-y-4" dir="rtl">
       {/* ═══ Header / Toolbar ═══ */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Vault className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold leading-tight">لوحة الخزينة</h1>
-            <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-              {dashboard.data?.generatedAt && (
-                <span className="tabular-nums" dir="ltr">
-                  آخر تحديث: {fmtRelativeShort(dashboard.data.generatedAt)}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="mr-auto flex flex-wrap items-center gap-2">
-          {canChooseBranch && (branches.data?.length ?? 0) > 1 && (
+      {/* رأسٌ يدويّ (أيقونة + h1 + آخر تحديث + شريط أدوات بـ`mr-auto`) ⇐ PageHeader الموحّد.
+          هذه الصفحة تبويبُ «لوحة الخزينة» داخل TreasuryHub، وPageTabs لا يرسم h1 بنفسه
+          (كل صفحة مُضمَّنة تحمل رأسها) — فالرأس هنا رأسُ الشاشة لا عنوانَ قسم.
+          حاوية `actions` في PageHeader هي نفسها `flex flex-wrap items-center gap-2`، فسقط
+          الغلاف و`mr-auto` معاً (المحاذاة صارت بـ`justify-between` من الرأس). */}
+      {/* الأيقونة رمزٌ عارٍ `h-5 w-5 text-primary` — لا رقاقة ٤٠px كما كان الرأس اليدويّ.
+          `icon` يُصيَّر **داخل `<h1>`**، فرقاقةٌ بخلفيةٍ ترفع سطر العنوان إلى ٤٠px بينما
+          أشقّاء التبويب في TreasuryHub بين بلا أيقونة (المصروفات/السندات/الورديات/الفئتين)
+          وبين رمزٍ عارٍ بنفس المقاس (TreasuryTransfers: `<Send className="h-5 w-5 text-primary" />`)
+          ⇒ التنقّل بين تبويبات الوحدة نفسها كان يُقفز المحتوى رأسياً. ولا نظيرَ للرقاقة في
+          أيّ استعمالٍ آخر لـ`PageHeader` في المستودع — وإبقاؤها يُبقي زخرفةَ الرأس اليدويّ
+          داخل المكوّن الموحّد، وهو عين ما يُلغيه العقد. */}
+      <PageHeader
+        icon={<Vault aria-hidden className="h-5 w-5 text-primary" />}
+        title="لوحة الخزينة"
+        description={
+          dashboard.data?.generatedAt ? (
+            <span className="tabular-nums" dir="ltr">
+              آخر تحديث: {fmtRelativeShort(dashboard.data.generatedAt)}
+            </span>
+          ) : undefined
+        }
+        actions={
+          <>
+            {canChooseBranch && (branches.data?.length ?? 0) > 1 && (
+              <AppSelect
+                className="h-9"
+                value={String(branchId)}
+                onValueChange={(value) =>
+                  setBranchId(value ? Number(value) : "")
+                }
+              >
+                <option value="">كل الفروع</option>
+                {branches.data?.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </AppSelect>
+            )}
             <AppSelect
               className="h-9"
-              value={String(branchId)}
-              onValueChange={(value) =>
-                setBranchId(value ? Number(value) : "")
-              }
+              value={period}
+              onValueChange={(value) => setPeriod(value as Period)}
             >
-              <option value="">كل الفروع</option>
-              {branches.data?.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
+              {(["today", "yesterday", "week", "month"] as const).map((p) => (
+                <option key={p} value={p}>
+                  {PERIOD_AR[p]}
                 </option>
               ))}
             </AppSelect>
-          )}
-          <AppSelect
-            className="h-9"
-            value={period}
-            onValueChange={(value) => setPeriod(value as Period)}
-          >
-            {(["today", "yesterday", "week", "month"] as const).map((p) => (
-              <option key={p} value={p}>
-                {PERIOD_AR[p]}
-              </option>
-            ))}
-          </AppSelect>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={refreshAll}
-            title="تحديث"
-          >
-            <RefreshCcw className="h-3.5 w-3.5 me-1" />
-            تحديث
-          </Button>
-        </div>
-      </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={refreshAll}
+              title="تحديث"
+            >
+              <RefreshCcw className="h-3.5 w-3.5 me-1" />
+              تحديث
+            </Button>
+          </>
+        }
+      />
 
       {/* ═══ شريط أزرار سريعة ═══ */}
       <div className="flex flex-wrap gap-2">

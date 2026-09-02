@@ -13,6 +13,7 @@ import { EmpAvatar, EmploymentStatusBadge, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { type EmployeeEducation, payTypeLabel, WEEK_DAYS } from "@shared/hr";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { PageHeader } from "@/components/PageHeader";
@@ -65,7 +66,7 @@ export default function EmployeeDetail() {
     onError: (e) => notify.err(e),
   });
 
-  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
   if (q.error) return <div className="p-10 text-center text-destructive">تعذّر تحميل الموظف: {q.error.message}</div>;
   const e = q.data;
   if (!e) return <div className="p-10 text-center text-muted-foreground">الموظف غير موجود. <Link href="/hr/employees" className="text-primary">رجوع للقائمة</Link></div>;
@@ -294,7 +295,7 @@ export default function EmployeeDetail() {
               del.mutate({ id });
             })()}
           >
-            {del.isPending ? "جارٍ الحذف…" : "حذف نهائياً"}
+            {del.isPending ? ACTION_LABELS.deleting : "حذف نهائياً"}
           </Button>
         </CardContent>
       </Card>

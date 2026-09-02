@@ -106,7 +106,22 @@ export default function APAging() {
     });
   }, [aging.data, f.q, f.bucket]);
 
-  const activeCount = [f.q.trim(), f.bucket].filter(Boolean).length;
+  /**
+   * ٢/٩ — «كم فلتراً نشطاً الآن؟» مفهومٌ واحدٌ لهذه الشاشة، وله **مستهلكان**: زرّ «مسح
+   * الفلاتر» أدناه، ورسالةُ الفراغ في الجدول (`externalFiltersActive` — عقدها في
+   * `DataTable`: «هل فلترٌ نشطٌ الآن؟»). كانت الشاشة تُجيب السؤالَ نفسه بجوابين مختلفين:
+   * العدّاد يحصي البحث والشريحة وحدهما، والجدول يُمرَّر إليه `(aging.data?.length ?? 0) > 0`
+   * وهي جوابُ سؤالٍ ثالث بالكلّية: «هل للقائمة الأصل صفوف؟».
+   *
+   * والفرع هو ما يكشف الانحراف لأنّ فلترَه **خادميّ** (يدخل في `apAging` نفسها) ⇒ فرعٌ
+   * بلا ذمم يُفرِغ `aging.data` كلَّها:
+   *   • الجدول كان يُعلن «لا ذمم دائنة مستحقّة» بينما الذمم قائمةٌ في فرعٍ آخر ومحجوبةٌ
+   *     بالفلتر وحده — كذبةٌ صامتة على من يقرأ الشاشة.
+   *   • وزرُّ المسح كان يختفي (`activeCount === 0`) فيبقى القارئ أمام شاشةٍ فارغةٍ بلا
+   *     مخرجٍ ظاهر من الفلتر الذي أفرغها.
+   * ⇒ الفرع يُحصى مع أخويه في عدّادٍ واحد، ويشتقّ منه المستهلكان معاً فلا ينحرفان ثانيةً.
+   */
+  const activeCount = [f.q.trim(), f.bucket, f.branch].filter(Boolean).length;
 
   // الصفوف المحدَّدة فقط — للتصدير الجزئي ولنسخ ملخّص واتساب (التحديد يعبر الصفحات).
   const selectedRows = useMemo(
@@ -332,18 +347,19 @@ export default function APAging() {
       <Card>
         <CardContent className="p-0">
           {/* الفلاتر (البحث/الشريحة) في بطاقة الفلاتر أعلاه وتغذّي `filtered` ⇒ `searchable={false}`
-              وإلّا ظهر حقلا بحثٍ متجاوران. و`externalFiltersActive` = «للقائمة الأصل صفوفٌ لكن
-              المعروض فارغ» ⇒ نفس تمييز الرسالتين في الجدول الخامّ.
+              وإلّا ظهر حقلا بحثٍ متجاوران. و`externalFiltersActive` يُشتقّ من `activeCount`
+              نفسِه الذي يحكم زرّ «مسح الفلاتر» (انظر تعليقه أعلاه) لا من حجم القائمة الأصل.
               الترقيم العميليّ صار داخل الجدول بحجم صفحة PAGE (شريطٌ واحد لا اثنان)،
               والتحديد المتعدّد يُصيّره DataTable نفسه (عمود اختيار + «تحديد كل المرئي»). */}
           <DataTable<Row, number>
             columns={columns}
             data={filtered}
             searchable={false}
-            externalFiltersActive={(aging.data?.length ?? 0) > 0}
+            externalFiltersActive={activeCount > 0}
             pageSize={PAGE}
             selection={sel}
             getRowId={(r) => r.supplierId}
+            getRowSelectionLabel={(r) => `تحديد ${r.supplierName}`}
             loading={aging.isLoading}
             errorState={{ isError: aging.isError, message: aging.error?.message, onRetry: () => void aging.refetch() }}
             emptyState="لا ذمم دائنة مستحقّة."

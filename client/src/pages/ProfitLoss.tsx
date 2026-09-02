@@ -86,6 +86,7 @@ export default function ProfitLoss() {
   const columns = useMemo<ColumnDef<PLLine, unknown>[]>(() => {
     const prevColumn: ColumnDef<PLLine, unknown> = {
       id: "prev",
+      enableSorting: false,
       header: "الفترة السابقة",
       accessorFn: (r) => (r.prev != null ? plAmount(r.prev, r.neg) : "—"),
       meta: { kind: "money" },
@@ -96,6 +97,7 @@ export default function ProfitLoss() {
     return [
       {
         id: "label",
+        enableSorting: false,
         header: "البند",
         accessorFn: (r) => r.label,
         meta: { width: "wide", wrap: true },
@@ -103,6 +105,7 @@ export default function ProfitLoss() {
       },
       {
         id: "cur",
+        enableSorting: false,
         header: "الفترة",
         accessorFn: (r) => plAmount(r.cur, r.neg),
         meta: { kind: "money" },

@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { PASSWORD_POLICY_MSG, isStrongPassword } from "@shared/const";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc } from "@/lib/trpc";
 import { confirm as confirmDialog } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
@@ -250,7 +251,7 @@ export default function Account() {
           <p className="text-xs text-muted-foreground">
             الأجهزة المسجَّل دخولها حالياً بحسابك. جلسات ما قبل آخر تسجيل خروج جماعي لا تظهر هنا.
           </p>
-          {sessions.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+          {sessions.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
           {!sessions.isLoading && (sessions.data?.length ?? 0) === 0 && (
             <p className="text-sm text-muted-foreground">لا جلسات مسجَّلة (ربما دخلتَ قبل تفعيل هذه الميزة).</p>
           )}
@@ -422,7 +423,7 @@ function TwoFactorCard() {
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         {status.isLoading ? (
-          <p className="text-muted-foreground">جارٍ التحميل…</p>
+          <p className="text-muted-foreground">{ACTION_LABELS.loading}</p>
         ) : enabled ? (
           <>
             <div className="flex items-center gap-2 flex-wrap">

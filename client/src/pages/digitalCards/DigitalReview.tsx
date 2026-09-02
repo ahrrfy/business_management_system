@@ -1,3 +1,4 @@
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -8,6 +9,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
@@ -23,8 +25,6 @@ type QueueRow = RouterOutputs["digitalCards"]["sales"]["needsReview"][number];
 type ReviewDetails = RouterOutputs["digitalCards"]["sales"]["reviewDetails"];
 type Decision = "CANCEL_NO_ISSUE" | "FINALIZE_SALE" | "WRITEOFF_LOSS";
 type ItemOutcome = "ISSUED" | "NOT_ISSUED";
-
-const selectCls = "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 const DECISION_COPY: Record<Decision, { title: string; detail: string; effect: string }> = {
   CANCEL_NO_ISSUE: {
@@ -157,7 +157,10 @@ export default function DigitalReview() {
       id: "createdBy",
       header: "الموظف والوردية",
       accessorFn: (row) => row.createdByName || `حساب #${row.createdBy}`,
-      meta: { width: "actor" },
+      // `wrap` لازمٌ مع `width: actor`: بدونه يفرض العقدُ `whitespace-nowrap` فيبقى سطرُ
+      // «@اسم · وردية #١٢ · مفتوحة» سطراً واحداً طويلاً، فيتمدّد العمود متجاوزاً عرضَه
+      // المُعلَن (w-40) ويضغط بقيّةَ الأعمدة. الجدولُ الخامّ قبل التحويل كان يسمح باللفّ.
+      meta: { width: "actor", wrap: true },
       cell: ({ row }) => (
         <>
           <p className="font-medium">{row.original.createdByName || `حساب #${row.original.createdBy}`}</p>
@@ -198,8 +201,12 @@ export default function DigitalReview() {
       cell: ({ row }) => (
         <>
           <span className="font-bold">{fmtAr(row.original.reservedAmount)}</span>
-          {/* dir="auto" لأنّ خليّة المال معزولة LTR — والجملة العربية تحتاج اتّجاهها. */}
-          <p className="mt-1 text-xs text-muted-foreground" dir="auto">محمي ولا يعود للمتاح قبل اعتماد القرار</p>
+          {/* dir="auto" لأنّ خليّة المال معزولة LTR — والجملة العربية تحتاج اتّجاهها.
+              و`whitespace-normal` يُلغي `nowrap` الآتي من `kind: money` عن هذه الجملة وحدها:
+              بدونه تبقى الجملة (٣٣ محرفاً) سطراً واحداً فيتضاعف عرضُ عمود المال. ولا نستعمل
+              `wrap: true` على العمود كلّه لأنّه يجرّ `[overflow-wrap:anywhere]` فيكسر الرقمَ
+              نفسه على سطرين في الشاشات الضيّقة — والمبلغُ المقطوع أسوأ من عمودٍ عريض. */}
+          <p className="mt-1 whitespace-normal text-xs text-muted-foreground" dir="auto">محمي ولا يعود للمتاح قبل اعتماد القرار</p>
         </>
       ),
     },
@@ -356,6 +363,20 @@ export default function DigitalReview() {
             maxHeightClass="max-h-[calc(100dvh-15rem)]"
             data={queue}
             columns={queueColumns}
+            /*
+             * محاذاةٌ علوية للخلايا — استعادةُ ما أسقطه التحويل.
+             * كان الصفّ الخامّ `<tr className="border-t align-top">`، و`<td>` يرث المحاذاة
+             * عن الصفّ بحكم `vertical-align: inherit` في ورقة المتصفّح. أمّا `DataTable`
+             * فيكتب `align-middle` على كلّ خليّة صراحةً، فينقطع التوريث: ثلاثُ خلايا هنا
+             * متعدّدةُ الأسطر (الموظف+الوردية · السبب+تفصيله · المبلغ+تحذيره) وبقيّتُها سطرٌ
+             * واحد، فتتوسّط القصيرةُ عمودياً وينفكّ ارتباطُ السطر الأوّل في كلّ عمودٍ بنظيره
+             * — يقرأ المديرُ اسمَ موظّفٍ بإزاء سببِ صفٍّ يبدو غيرَه.
+             * `align-top` على `<tr>` وحدَه **لا يكفي** (الخليّة تحمل `align-middle` صريحاً
+             * فلا ترث)، فالإصلاح متغيّرٌ يستهدف الخلايا: خصوصيّتُه (0,1,1) تعلو صنفَ
+             * المكوّن (0,1,0). ولا يمسّ الزخرفةَ الشريطية: `rowShellClass` لا يكتمها إلّا
+             * على صنفِ خلفية (`bg-`).
+             */
+            getRowClassName={() => "[&>td]:align-top"}
             loading={needsReview.isLoading}
             errorState={{ isError: needsReview.isError, message: needsReview.error?.message, onRetry: () => void needsReview.refetch() }}
             emptyText="لا توجد عمليات تحتاج معالجة — كل مبيعات الكروت مكتملة."
@@ -593,15 +614,15 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
                           </div>
                           <div>
                             <label className="mb-1 block text-xs text-muted-foreground">نتيجة الجهاز</label>
-                            <select
-                              className={selectCls}
+                            <AppSelect
+                              aria-label="نتيجة الجهاز"
                               value={outcome}
                               disabled={fixed}
-                              onChange={(event) => setOutcomes((current) => ({ ...current, [id]: event.target.value as ItemOutcome }))}
+                              onValueChange={(next) => setOutcomes((current) => ({ ...current, [id]: next as ItemOutcome }))}
                             >
                               <option value="ISSUED">صدر الكرت</option>
                               <option value="NOT_ISSUED">لم يصدر</option>
-                            </select>
+                            </AppSelect>
                           </div>
                           <div>
                             <label className="mb-1 block text-xs text-muted-foreground">رقم العملية أو ID الكرت {outcome === "ISSUED" ? "(إلزامي)" : ""}</label>
@@ -652,7 +673,7 @@ function ReviewResolutionDialog({ row, onClose }: { row: QueueRow | null; onClos
           <Button variant="outline" size="sm" onClick={onClose}>إغلاق</Button>
           {data && !pending && (
             <Button size="sm" disabled={requestMut.isPending || !decision} onClick={submitRequest}>
-              {requestMut.isPending ? "جارٍ الإرسال…" : "إرسال لمدير آخر"}
+              {requestMut.isPending ? ACTION_LABELS.sending : "إرسال لمدير آخر"}
             </Button>
           )}
         </DialogFooter>
@@ -833,7 +854,7 @@ function ResolveVarianceDialog({
                 <label className="text-sm font-medium" htmlFor="variance-reason">سبب الاختلاف بعد مراجعة تقرير الجهاز</label>
                 <Textarea id="variance-reason" value={reason} onChange={(event) => setReason(event.target.value)} rows={3} placeholder="مثال: حركة شحن ظهرت في جهاز المزوّد ولم تكن مسجلة في النظام…" />
                 <Button size="sm" disabled={requestMut.isPending} onClick={requestCorrection}>
-                  {requestMut.isPending ? "جارٍ الإرسال…" : "إرسال طلب تصحيح"}
+                  {requestMut.isPending ? ACTION_LABELS.sending : "إرسال طلب تصحيح"}
                 </Button>
                 <p className="text-xs text-muted-foreground">إرسال الطلب لا يغير الرصيد.</p>
               </div>

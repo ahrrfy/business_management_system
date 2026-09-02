@@ -1319,7 +1319,7 @@ export default function Vouchers() {
         </CardContent>
       </Card>
 
-      {/* حوار سبب الرفض — بديل window.prompt (سجل تَدقيقي إلزامي). */}
+      {/* حوار سبب الرفض — بديل window.prompt: السبب سجلّ تدقيقي إلزامي. */}
       <Dialog
         open={rejectTarget != null}
         onOpenChange={(open) => {

@@ -17,6 +17,7 @@ import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { WEEK_DAYS } from "@shared/hr";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Clock, Fingerprint, Moon, PenLine, RefreshCw, TriangleAlert, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -577,7 +578,8 @@ export default function Attendance() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-            <Button disabled={record.isPending} onClick={submit}>{record.isPending ? "جارٍ…" : "حفظ الحضور"}</Button>
+            {/* نصّ الانتظار المجرّد هنا كان يخصّ فعلَ حفظ الحضور ⇒ مفتاح الحفظ الموحّد. */}
+            <Button disabled={record.isPending} onClick={submit}>{record.isPending ? ACTION_LABELS.saving : "حفظ الحضور"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -721,7 +723,7 @@ function AttendanceSettingsCard() {
               nightShiftEnabled: nightOn,
               nightShiftCutoffHour: nightCutoff,
             })}>
-              {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
+              {save.isPending ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

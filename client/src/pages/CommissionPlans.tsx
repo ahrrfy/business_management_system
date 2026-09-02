@@ -29,7 +29,9 @@ import { CommissionGuide } from "@/components/commissions/CommissionGuide";
 import { TierPlayground } from "@/components/commissions/TierPlayground";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { iqd } from "@/lib/hr/ui";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { employmentStatusLabel } from "@shared/hr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -229,6 +231,36 @@ export default function CommissionPlans() {
 
   const activePlans = rows.filter((p) => p.isActive);
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بأشرطتها وأزرارها).
+  // نفس صفوف الجدول المعروضة وأعمدته — عرضيّة لأنّ عمود «المستويات» نصٌّ طويل.
+  function printPlans() {
+    printReportDoc({
+      title: "خطط العمولات",
+      orientation: "landscape",
+      headerExtra: [
+        { label: "عدد الخطط", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "name", label: "اسم الخطة" },
+        { key: "tierMode", label: "طريقة الاحتساب" },
+        { key: "tiers", label: "المستويات" },
+        { key: "openAssignments", label: "عدد الموظفين", align: "center" },
+        { key: "notes", label: "الملاحظات" },
+        { key: "isActive", label: "الحالة", align: "center" },
+      ],
+      rows: visibleRows.map((p) => ({
+        name: p.name,
+        tierMode: MODE_LABEL[p.tierMode],
+        tiers: tierSummary(p),
+        openAssignments: p.openAssignments.toLocaleString("ar-IQ-u-nu-latn"),
+        notes: p.notes ?? "—",
+        isActive: p.isActive ? "فعّالة" : "معطّلة",
+      })),
+      emptyText: "لا خطط عمولات مطابقة.",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -262,7 +294,7 @@ export default function CommissionPlans() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printPlans}
             exportSpec={{
               filename: "خطط-العمولات",
               rows: visibleRows,
@@ -487,7 +519,7 @@ export default function CommissionPlans() {
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setFormOpen(false)}>إلغاء</Button>
             <Button size="sm" onClick={submitForm} disabled={createMut.isPending || updateMut.isPending}>
-              {createMut.isPending || updateMut.isPending ? "جارٍ الحفظ…" : "حفظ"}
+              {createMut.isPending || updateMut.isPending ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -6,6 +6,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -19,6 +20,8 @@ type Row = RouterOutputs["users"]["list"]["rows"][number];
 /** شارة «القسم الفعليّ» — ما سيفتحه الحساب فعلاً في نقطة البيع (طبقة الشفافية ش١، محسوب خادمياً). */
 function StationBadge({ station }: { station?: PosStation | "MULTI" | "NONE" }) {
   if (!station || station === "NONE") return <span className="text-muted-foreground text-xs">—</span>;
+  // لوحةُ هويّةٍ تصنيفية (قسمٌ لا حالة): كلّ قسمٍ صِبغةٌ مستقلّة تُميّزه عن جاره. لا تُترجَم إلى
+  // توكنز sem-* لأنّ «التجزئة» ليست موجباً و«الاستقبال» ليست معلومة — والترجمة تُوحّد لونَ قسمين.
   const cls: Record<string, string> = {
     RETAIL: "bg-emerald-100 text-emerald-700",
     PRINT_SERVICES: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
@@ -41,12 +44,19 @@ function stationExportLabel(station?: PosStation | "MULTI" | "NONE"): string {
  *  تتكرر حرفياً لو حُصر الحساب بالمصفوفة اليدوية بدل دور مخصّص وظلّت شارته «كاشير» مجرّدة. */
 export function RoleBadge({ role, customRoleLabel, hasOverride, isOwner }: { role: string; customRoleLabel?: string | null; hasOverride?: boolean; isOwner?: boolean }) {
   if (isOwner) {
+    // كان `bg-amber-200 text-amber-900`: طبقةُ التوافق الداكن في tokens.css تُترجم النصّ (amber-900)
+    // إلى --sem-warn ولا تملك مقابلاً لخلفية amber-200 ⇒ نصٌّ فاتحٌ على خلفيةٍ فاتحة في الوضع الداكن.
+    // التوكن يُصلح ذلك ويحفظ الهيو. لكنّ --sem-warn-bg أخفّ من amber-200: بعد التحويل قِيست الشارة
+    // (خلفية #ffefd5 ونصّ #8a6000) فصارت شبهَ توأمٍ لشارة «مخزن» (#fef3c7 / #b45309)، وحدٌّ بشفافية ٤٠٪
+    // لا يعوّض فارقَ التشبُّع. فالحدُّ كاملُ القوّة و font-bold يُعيدان بروزَ أعلى شارةِ صلاحيةٍ في الشاشة.
     return (
-      <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-amber-200 text-amber-900">
+      <span className="inline-block rounded-full border border-[var(--sem-warn)] px-2 py-0.5 text-xs font-bold bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
         مالك النظام
       </span>
     );
   }
+  // لوحةُ هويّةٍ تصنيفية أيضاً (١١ دوراً بصِبغٍ متمايز): «admin» أحمرُ تمييزٍ لا خطر، و«cashier»
+  // أخضرُ تمييزٍ لا موجب. ترجمتُها إلى أربعة توكنز دلالية تُلوّن دورين بلونٍ واحد فتُلغي التمييز.
   const colors: Record<string, string> = {
     admin:          "bg-red-100 text-red-700",
     manager:        "bg-purple-100 text-purple-700",
@@ -149,6 +159,52 @@ export default function Users() {
     setActive.mutate({ userId: id, isActive: !isActive });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بشريط الأدوات والقائمة الجانبية).
+  // نفس صفوف الجدول المعروضة (صفحة الترقيم الحالية) ونفس أعمدته وتسمياتها — بلا استعلامٍ جديد،
+  // فما يُطبع هو ما يراه المستعمِل حرفياً. والفلاتر النشطة تُذكر في الرأس كي لا تُقرأ الورقة
+  // على أنّها كامل المستخدمين.
+  function printUsers() {
+    printReportDoc({
+      title: "قائمة المستخدمين",
+      headerExtra: [
+        {
+          label: "المعروض",
+          value: `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${total.toLocaleString("ar-IQ-u-nu-latn")}`,
+        },
+        { label: "البحث", value: q.trim() || "بلا بحث" },
+        { label: "الدور", value: role ? (ROLE_OPTIONS.find((r) => r.value === role)?.label ?? role) : "كل الأدوار" },
+        // فلترُ الدور المخصّص يعيش في الرابط ويُضيّق القائمة فعلياً (يُحسب في activeFilterCount)
+        // لكنّه لا يمرّ بمنسدلة «الدور» ⇒ إغفالُه هنا يجعل الورقة تقول «كل الأدوار» وهي مقصورةٌ
+        // على دورٍ واحد. الشاشة تُصرّح به بشريطٍ فوق الجدول، فالورقة تُصرّح به كذلك.
+        ...(customRoleId != null
+          ? [{ label: "دور مخصّص", value: `مقصورة على الدور المخصّص #${customRoleId}` }]
+          : []),
+        { label: "الفرع", value: branchId ? (branchName.get(Number(branchId)) ?? `#${branchId}`) : "كل الفروع" },
+        { label: "المعطّلون", value: includeInactive ? "مشمولون" : "مستبعَدون" },
+      ],
+      columns: [
+        { key: "name", label: "الاسم" },
+        { key: "login", label: "معرّف الدخول" },
+        { key: "role", label: "الدور" },
+        { key: "station", label: "القسم الفعليّ" },
+        { key: "branch", label: "الفرع" },
+        { key: "lastSignedIn", label: "آخر دخول" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: rows.map((u) => ({
+        name: u.name ?? "—",
+        login: (u as { username?: string | null }).username || u.email || "—",
+        // نفس اشتقاق عمود «الدور» على الشاشة: المالك يسبق الدور المخصّص ثمّ الدور الأساس.
+        role: (u as any).isOwner ? "مالك النظام" : (u.customRoleLabel ?? ROLE_LABEL[u.role] ?? u.role),
+        station: stationExportLabel((u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation),
+        branch: u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—",
+        lastSignedIn: fmtDate(u.lastSignedIn),
+        status: u.isActive ? "مفعّل" : "معطّل",
+      })),
+      emptyText: "لا مستخدمين مطابقين.",
+    });
+  }
+
   /*
    * أعمدة القائمة — تُبنى داخل المكوّن لأنّها تقرأ خريطة الفروع وحالة الطفرة ودالّة التبديل.
    * كلّ عمودٍ ذي قيمة يحمل `accessorFn` بالتسمية **المعروضة** (لا الرمز الخامّ) كي يَنسخ
@@ -165,7 +221,7 @@ export default function Users() {
             {row.original.name ?? "—"}
             {/* الحقلان mustChangePassword وisOwner خارج نوع الصفّ المُصدَّر — نفس الصبّ الذي كان. */}
             {!!(row.original as any).mustChangePassword && (
-              <span className="me-1 inline-flex text-amber-600" title="إلزام تغيير كلمة المرور">
+              <span className="me-1 inline-flex text-[var(--sem-warn)]" title="إلزام تغيير كلمة المرور">
                 <AlertTriangle aria-hidden className="size-3.5" />
               </span>
             )}
@@ -347,7 +403,7 @@ export default function Users() {
             onResetFilters={() => resetF()}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printUsers}
             exportSpec={{
               filename: "المستخدمون",
               rows,

@@ -326,7 +326,7 @@ export default function TransfersLog() {
         onReset={resetFilters}
         headerActions={
           <Button variant="outline" size="sm" disabled={rows.length === 0 || exporting} onClick={() => void exportAll()}>
-            {exporting ? ACTION_LABELS.printing : "تصدير Excel (الكل)"}
+            {exporting ? ACTION_LABELS.exporting : "تصدير Excel (الكل)"}
           </Button>
         }
       >
@@ -389,7 +389,7 @@ export default function TransfersLog() {
           {list.hasNextPage && (
             <div className="p-3 text-center border-t">
               <Button variant="outline" size="sm" onClick={() => list.fetchNextPage()} disabled={list.isFetchingNextPage}>
-                {list.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+                {list.isFetchingNextPage ? ACTION_LABELS.loading : "تحميل المزيد"}
               </Button>
             </div>
           )}
@@ -407,7 +407,7 @@ export default function TransfersLog() {
             <DialogDescription>
               {doc
                 ? `${doc.fromBranchName} ← ${doc.toBranchName}${doc.reason ? ` · ${REASON_LABELS[doc.reason] ?? doc.reason}` : ""} · أنشأه ${doc.createdByName ?? "—"} في ${fmtDateTime(doc.createdAt)}`
-                : "جارٍ التحميل…"}
+                : ACTION_LABELS.loading}
             </DialogDescription>
           </DialogHeader>
 

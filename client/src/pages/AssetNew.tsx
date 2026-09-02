@@ -10,6 +10,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { ASSET_CATEGORIES, DEPRECIATION_METHODS, categoryDefaultLife } from "@shared/assets";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { AlertCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -189,7 +190,7 @@ export default function AssetNew() {
         </div>
       )}
       <div className="flex gap-2">
-        <Button onClick={submit} disabled={create.isPending}>{create.isPending ? "جارٍ الحفظ…" : "حفظ الأصل"}</Button>
+        <Button onClick={submit} disabled={create.isPending}>{create.isPending ? ACTION_LABELS.saving : "حفظ الأصل"}</Button>
         <Link href="/assets/register"><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

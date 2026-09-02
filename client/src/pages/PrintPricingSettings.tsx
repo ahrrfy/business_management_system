@@ -35,6 +35,7 @@ import {
   type PricingMode,
 } from "@shared/printPricing";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 const sizeLabel = (c: string) => PAPER_SIZES.find((s) => s.code === c)?.label ?? c;
@@ -58,7 +59,7 @@ export default function PrintPricingSettings() {
       />
 
       {bundle.isLoading ? (
-        <Card><CardContent className="p-6 text-center text-muted-foreground">جارٍ التحميل…</CardContent></Card>
+        <Card><CardContent className="p-6 text-center text-muted-foreground">{ACTION_LABELS.loading}</CardContent></Card>
       ) : bundle.isError ? (
         <Card><CardContent className="p-6 text-center text-[var(--sem-warn)]">{bundle.error?.message}</CardContent></Card>
       ) : (
@@ -363,8 +364,9 @@ function ManagedListSection({
               kind: "approve",
               label: row.original.isActive ? "تعطيل" : "تفعيل",
               gate: { managerOnly: true },
+              // تبديلُ التفعيل يحفظ الإعداد على الخادم، فحالةُ الانتظار هنا حفظٌ لا تحميل.
               disabled: busy,
-              disabledReason: "جارٍ تحديث الإعداد",
+              disabledReason: ACTION_LABELS.saving,
               onSelect: () => onUpdate({ id: row.original.id, isActive: !row.original.isActive }),
             },
           ]}

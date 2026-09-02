@@ -18,6 +18,7 @@ import {
   Wallet,
   XCircle,
 } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
@@ -25,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { CashCounter } from "@/components/CashCounter";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -1851,14 +1853,20 @@ function SettleTab() {
 
       {/* ─── تسوية الجهة المختارة ─── */}
       <div className="rounded-xl border bg-card p-4">
-        <label className="mb-1.5 block text-sm font-bold">اختر جهة التوصيل</label>
+        <label htmlFor="delivery-settle-party" className="mb-1.5 block text-sm font-bold">اختر جهة التوصيل</label>
         <div className="flex flex-wrap items-center gap-2">
-          <select className="h-11 min-w-64 max-w-md rounded-md border bg-transparent px-3 text-sm" value={partyId} onChange={(e) => { setPartyId(e.target.value); setRows({}); setRemitReqId(crypto.randomUUID()); }}>
+          {/* w-auto يُبطل w-full المدمج في الـtrigger كي تبقى الأزرار على نفس السطر (السلوك القائم). */}
+          <AppSelect
+            id="delivery-settle-party"
+            className="w-auto min-w-64 max-w-md"
+            value={partyId}
+            onValueChange={(value) => { setPartyId(value); setRows({}); setRemitReqId(crypto.randomUUID()); }}
+          >
             <option value="">— اختر —</option>
             {(obligations.data ?? []).map((p) => (
               <option key={p.partyId} value={p.partyId}>{p.name} — نقد بيده {fmt(p.currentBalance)} د.ع</option>
             ))}
-          </select>
+          </AppSelect>
           {partyId && partyName && (
             <>
               <DeliveryManifestButton partyId={Number(partyId)} partyName={partyName} />
@@ -1888,7 +1896,7 @@ function SettleTab() {
       </div>
 
       {!partyId ? null : cons.isLoading ? (
-        <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
+        <div className="p-8 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
       ) : list.length === 0 ? (
         <EmptyState icon={Truck} title="لا التزامات مفتوحة" description="لا توجد مبالغ للتوريد أو أجور للدفع أو إرساليات قابلة للإرجاع لهذه الجهة." />
       ) : (

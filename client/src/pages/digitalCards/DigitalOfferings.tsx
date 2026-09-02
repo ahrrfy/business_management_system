@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -29,7 +30,9 @@ import {
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Columns3, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -88,9 +91,6 @@ function loadColumnVisibility(): OfferingColumnVisibility {
   }
   return defaults;
 }
-
-const selectCls =
-  "flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm";
 
 function todayYmd(): string {
   const d = new Date();
@@ -422,6 +422,49 @@ export default function DigitalOfferings() {
   const editing = editId != null;
 
   /*
+   * طباعة A4 بهوية المستند بدل `window.print()` (كان يطبع الشاشة بشريط الأدوات ومنتقي
+   * الأعمدة والأزرار). الأعمدة تتبع **منتقي أعمدة الشاشة نفسه** (`columnVisible`) كما كانت
+   * طباعة الشاشة تتبعه، والصفوف هي `visibleRows` المعروضة بعد البحث ⇒ توحيد ناقلٍ لا تغيير
+   * لما يُطبَع. أفقيّ لأنّ الأعمدة تبلغ عشرة بنصوص إسنادٍ طويلة.
+   */
+  function printOfferings() {
+    const columns = [
+      { key: "productName", label: "البطاقة" },
+      ...(columnVisible("provider") ? [{ key: "supplierName", label: "المزوّد" }] : []),
+      ...(columnVisible("device") ? [{ key: "device", label: "الجهاز المسند" }] : []),
+      ...(columnVisible("wallet") ? [{ key: "wallet", label: "المحفظة المسندة" }] : []),
+      ...(columnVisible("type") ? [{ key: "offeringType", label: "النوع" }] : []),
+      ...(columnVisible("faceValue") ? [{ key: "faceValue", label: "القيمة الاسمية", align: "left" as const }] : []),
+      ...(columnVisible("pricingMode") ? [{ key: "pricingMode", label: "طريقة حساب السعر" }] : []),
+      ...(columnVisible("minimumMargin") ? [{ key: "minimumMargin", label: "أقل ربح مسموح", align: "left" as const }] : []),
+      ...(columnVisible("studentData") ? [{ key: "requiresStudentData", label: "بيانات الطالب مطلوبة", align: "center" as const }] : []),
+      ...(columnVisible("status") ? [{ key: "isActive", label: "الحالة", align: "center" as const }] : []),
+    ];
+    printReportDoc({
+      title: "البطاقات والاشتراكات",
+      orientation: "landscape",
+      headerExtra: [
+        { label: "عدد البطاقات", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns,
+      rows: visibleRows.map((o) => ({
+        productName: o.productName,
+        supplierName: o.supplierName,
+        device: assignmentExport(o.assignments, o.settlementMode, "deviceCode"),
+        wallet: assignmentExport(o.assignments, o.settlementMode, "walletName"),
+        offeringType: OFFERING_TYPE[o.offeringType] ?? o.offeringType,
+        faceValue: o.faceValue ? fmtAr(o.faceValue) : "—",
+        pricingMode: PRICING_MODE[o.pricingMode] ?? o.pricingMode,
+        minimumMargin: fmtAr(o.minimumMargin),
+        requiresStudentData: o.requiresStudentData ? "نعم" : "لا",
+        isActive: o.isActive ? "مفعّلة" : "معطّلة",
+      })),
+      emptyText: "لا بطاقات مطابقة.",
+    });
+  }
+
+  /*
    * أعمدة قائمة البطاقات — الإظهار/الإخفاء يبقى بيد منتقي الأعمدة الخاصّ بالشاشة
    * (`columnVisible`)، فالعمود المخفيّ لا يُبنى أصلاً كما كان في الجدول الخامّ.
    */
@@ -600,7 +643,7 @@ export default function DigitalOfferings() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printOfferings}
             exportSpec={{
               filename: "البطاقات-والاشتراكات",
               rows: visibleRows,
@@ -710,31 +753,29 @@ export default function DigitalOfferings() {
                 <label className="text-sm font-medium" htmlFor="do-provider">
                   المزوّد
                 </label>
-                <select
+                <AppSelect
                   id="do-provider"
-                  className={selectCls}
                   value={fProviderId}
                   disabled={editing}
-                  onChange={(e) => { setFProviderId(e.target.value); setFWalletByBranch({}); }}
+                  onValueChange={(next) => { setFProviderId(next); setFWalletByBranch({}); }}
                 >
                   <option value="">— اختر المزوّد —</option>
                   {activeProviders.map((p) => (
-                    <option key={p.id} value={p.id}>
+                    <option key={p.id} value={String(p.id)}>
                       {p.supplierName}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium" htmlFor="do-type">
                   النوع
                 </label>
-                <select
+                <AppSelect
                   id="do-type"
-                  className={selectCls}
                   value={fType}
-                  onChange={(e) => {
-                    const type = e.target.value as OfferingType;
+                  onValueChange={(next) => {
+                    const type = next as OfferingType;
                     setFType(type);
                     if (type === "EDUCATIONAL_SUBSCRIPTION") {
                       setFRequiresStudent(true);
@@ -746,7 +787,7 @@ export default function DigitalOfferings() {
                       {v}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             </div>
 
@@ -851,17 +892,16 @@ export default function DigitalOfferings() {
                       {b.name}
                     </label>
                     {fBranchIds.includes(b.id) && (providers.data ?? []).find((p) => p.id === Number(fProviderId))?.settlementMode === "PREPAID" && (
-                      <select
-                        className={selectCls}
+                      <AppSelect
                         aria-label={`محفظة ${b.name}`}
                         value={fWalletByBranch[b.id] ?? ""}
-                        onChange={(e) => setFWalletByBranch((prev) => ({ ...prev, [b.id]: e.target.value }))}
+                        onValueChange={(next) => setFWalletByBranch((prev) => ({ ...prev, [b.id]: next }))}
                       >
                         <option value="">— اختر حساب رصيد الجهاز لهذا الفرع —</option>
                         {(wallets.data ?? [])
                           .filter((w) => w.providerId === Number(fProviderId) && w.branchId === b.id && w.isActive)
-                          .map((w) => <option key={w.id} value={w.id}>{w.name} — المتاح {fmtAr(String(Number(w.currentBalance) - Number(w.reservedBalance)))}</option>)}
-                      </select>
+                          .map((w) => <option key={w.id} value={String(w.id)}>{w.name} — المتاح {fmtAr(String(Number(w.currentBalance) - Number(w.reservedBalance)))}</option>)}
+                      </AppSelect>
                     )}
                   </div>
                 ))}
@@ -881,7 +921,7 @@ export default function DigitalOfferings() {
               إلغاء
             </Button>
             <Button size="sm" onClick={submitForm} disabled={saving}>
-              {saving ? "جارٍ الحفظ…" : "حفظ"}
+              {saving ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

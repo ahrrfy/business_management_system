@@ -31,6 +31,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { FILTER_LABELS } from "@shared/uiContracts";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
@@ -925,7 +926,7 @@ export default function Inventory() {
           <CardTitle className="text-base">الأرصدة الحالية</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {onHand.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} في الصفحة`}
+              {onHand.isLoading ? ACTION_LABELS.loading : `${fmtInt(rows.length)} في الصفحة`}
             </span>
             <Button
               variant="outline"

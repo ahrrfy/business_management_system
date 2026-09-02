@@ -14,6 +14,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { EmpAvatar } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
 import { LEAVE_STATUSES, LEAVE_TYPES, leaveStatusLabel } from "@shared/hr";
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
@@ -275,6 +276,54 @@ export default function Leaves() {
     },
   ], [decide.isPending, cancel.isPending]);
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة ببطاقات المؤشّرات والتبويبات
+  // وشريط الأدوات وأزرار الموافقة/الرفض). الصفوف هي المعروضة نفسها في تبويب «الطلبات»
+  // (صفحة الخادم بعد البحث المحلّي) بلا استعلامٍ جديد؛ والمؤشّرات الثلاثة تبقى على الورق
+  // كما كانت تظهر أعلى الصفحة — وهي محسوبة خادمياً على كامل المجموعة المفلترة لا على الصفحة.
+  function printLeaveRequests() {
+    const empName = (empOpts.data?.managers ?? []).find((m) => String(m.id) === empFilter)?.name;
+    printReportDoc({
+      title: "طلبات الإجازة",
+      headerExtra: [
+        { label: "النطاق", value: `الصفحة المعروضة — ${visibleRows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${(list.data?.total ?? visibleRows.length).toLocaleString("ar-IQ-u-nu-latn")}` },
+        { label: "الفترة", value: filterFrom || filterTo ? `${filterFrom || "البداية"} — ${filterTo || "اليوم"}` : "كل الفترات" },
+        { label: "النوع", value: type || "كل الأنواع" },
+        { label: "الحالة", value: status ? leaveStatusLabel(status) : "كل الحالات" },
+        { label: "الموظف", value: empName ?? "كل الموظفين" },
+      ],
+      meta: [
+        {
+          title: "مؤشّرات النطاق المفلتَر",
+          fields: [
+            { label: "طلبات قيد الموافقة", value: kpiPending.toLocaleString("ar-IQ-u-nu-latn") },
+            { label: "موافق عليها", value: kpiApproved.toLocaleString("ar-IQ-u-nu-latn") },
+            { label: "أيام إجازة هذا الشهر", value: kpiMonthDays.toLocaleString("ar-IQ-u-nu-latn") },
+          ],
+        },
+      ],
+      columns: [
+        { key: "employee", label: "الموظف" },
+        { key: "leaveType", label: "النوع" },
+        { key: "fromDate", label: "من" },
+        { key: "toDate", label: "إلى" },
+        { key: "days", label: "الأيام", align: "center" },
+        { key: "reason", label: "السبب" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: visibleRows.map((l) => ({
+        employee: l.employeeName || "—",
+        // «غير مدفوعة» لاحقةٌ معروضة في خليّة النوع على الشاشة — تبقى على الورق.
+        leaveType: `${l.leaveType}${l.paid ? "" : " · غير مدفوعة"}`,
+        fromDate: fmtDate(l.fromDate),
+        toDate: fmtDate(l.toDate),
+        days: String(l.days ?? 0),
+        reason: l.reason ?? "—",
+        status: leaveStatusLabel(l.status),
+      })),
+      emptyText: "لا طلبات إجازة مطابقة.",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -309,7 +358,7 @@ export default function Leaves() {
                 onResetFilters={() => { setQuery(""); setStatus(""); setType(""); setEmpFilter(""); setFilterFrom(""); setFilterTo(""); }}
                 onRefresh={() => void refresh()}
                 refreshing={list.isFetching || balances.isFetching}
-                onPrint={() => window.print()}
+                onPrint={printLeaveRequests}
                 exportSpec={{
                   filename: "طلبات-الإجازات",
                   rows: visibleRows,
