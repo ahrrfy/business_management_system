@@ -50,11 +50,13 @@ class PurchasingPolicyTest {
     fun `order transitions depend on server state`() {
         val policy = policy("manager", 1, "FULL", "FULL")
         val draft = order(PurchaseStatus.DRAFT)
+        val sent = order(PurchaseStatus.SENT)
         val confirmed = order(PurchaseStatus.CONFIRMED)
 
         assertTrue(policy.canConfirm(draft))
-        assertTrue(policy.canConfirm(confirmed))
-        assertTrue(policy.canCancel(confirmed))
+        assertFalse(policy.canConfirm(confirmed))
+        assertTrue(policy.canCancel(sent))
+        assertFalse(policy.canCancel(confirmed))
     }
 
     private fun policy(role: String, branch: Long?, purchases: String, suppliers: String) = PurchasingCapabilities.fromBootstrap(
