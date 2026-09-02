@@ -35,7 +35,14 @@ import { getCustomerStatement } from "../reports/arAging";
 import { getAnomalyWatch } from "../reports/anomalyWatch";
 import { returnSale } from "../returnService";
 import { deliverWorkOrder } from "../workOrder/deliver";
-import { cancelWorkOrder } from "../workOrder/cancel";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
+import {
+  approveWorkOrderControlRequest,
+  requestWorkOrderControl,
+} from "../workOrder/controlRequests";
 import {
   cancelDraft,
   collectDeposit,
@@ -48,6 +55,9 @@ import {
 } from "../reception";
 
 const TABLES = [
+  "workOrderEvents", "workOrderControlRequests",
+  "workOrderDesignApprovals", "workOrderDesignRevisions",
+  "taskEvents", "tasks", "serviceTypes", "auditLogs",
   "orderPayments", "receptionDraftLines", "receptionDrafts",
   "idempotencyKeys", "accountingEntries", "receipts",
   "workOrderMaterials", "workOrderImages", "workOrders",
@@ -80,6 +90,14 @@ async function seed() {
     { id: 2, openId: "rc", name: "موظف خدمة", email: "r@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 5, openId: "rc2", name: "موظف ثانٍ", email: "r2@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.customers).values([{ id: 1, name: "عميل", currentBalance: "0.00", creditLimit: "1000000.00" }]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "NB-1", costPrice: "500.00" }]);
@@ -109,6 +127,30 @@ async function promoteMixed(customerId: number | null = 1) {
 }
 
 const uuid = (tag: string) => `${tag}-0000-4000-8000-000000000000`.slice(0, 36);
+
+async function approveCurrentDesign(woId: number, tag: string) {
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId: woId,
+      requestKey: `reception-design-request-${tag}`,
+      note: "اعتماد التصميم قبل التسليم",
+    },
+    CASHIER,
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `reception-design-decision-${tag}`,
+      decision: "APPROVED",
+      reason: "وافق العميل على التصميم النهائي",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.reception.${tag}`,
+      },
+    },
+    MANAGER,
+  );
+}
 
 beforeEach(async () => {
   await reset();
@@ -195,6 +237,7 @@ describe("D2 — I6: عربونٌ يصل أمر الشغل فعلاً والتس
     expect(wo.depositReceiptId).toBeNull();
 
     // التسليم بالباقي 25,000 ⇒ الفاتورة مدفوعة كاملاً وإجمالي المدفوع = السعر بالضبط.
+    await approveCurrentDesign(woId, "d2");
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
     const delivered = await deliverWorkOrder(
       { workOrderId: woId, payment: { amount: "25000.00", method: "CASH" } }, CASHIER,
@@ -225,7 +268,26 @@ describe("D3 — إلغاء أمرٍ عربونُه مقبوض سلفاً يرد
     }, CASHIER);
     const woId = r.workOrders[0].workOrderId;
 
-    await cancelWorkOrder(woId, MANAGER);
+    const [current] = await db()
+      .select({ version: s.workOrders.version })
+      .from(s.workOrders)
+      .where(eq(s.workOrders.id, woId));
+    const request = await requestWorkOrderControl(
+      {
+        requestKey: `reception-cancel-${woId}`,
+        workOrderId: woId,
+        requestType: "CANCEL",
+        baseVersion: Number(current.version),
+        reason: "إلغاء بطلب العميل ورد العربون",
+        payload: { refundShiftId: shift.shiftId },
+      },
+      CASHIER,
+    );
+    await approveWorkOrderControlRequest(
+      Number(request.id),
+      MANAGER,
+      "تم التحقق من طلب العميل ومبلغ الرد",
+    );
 
     const outs = await db().select().from(s.receipts)
       .where(and(eq(s.receipts.workOrderId, woId), eq(s.receipts.direction, "OUT")));
@@ -458,6 +520,7 @@ describe("R1 — مراجعة: القبض المردود جزئياً لا يُ�
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];
     expect(wo.deposit).toBe("15000.00"); // الصافي بعد الردّ
 
+    await approveCurrentDesign(woId, "r1");
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
     const delivered = await deliverWorkOrder({ workOrderId: woId, payment: null }, CASHIER);
     // الإيصال المشوب بردٍّ جزئيّ (20,000 قُبضت، 15,000 صافياً) لا يُختم — مبلغه الكامل يكذب

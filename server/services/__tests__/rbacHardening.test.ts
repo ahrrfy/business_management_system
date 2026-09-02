@@ -5,7 +5,7 @@
 //  - workOrders.get: يخفي materialsCost/laborCost/unitCost عن غير المرتفعين.
 //  - shifts.report: branchScopedProcedure + يرفض ورديات فرع آخر للكاشير.
 //  - barcode.verify: يرفض payload > 1000 خانة.
-//  - inventory.transfer/adjust: warehouse مُجبَر على فرعه (M1 — تدقيق ١٤/٦/٢٦).
+//  - inventory.transferBatch/adjust: warehouse مُجبَر على فرعه (M1 — تدقيق ١٤/٦/٢٦).
 //  - voucher.list/get: branchScopedProcedure مع scopedBranchId (M2 — تدقيق ١٤/٦/٢٦).
 //  - branchScopedProcedure: غير-مرتفع بلا فرع ⇒ FORBIDDEN (F1 — تدقيق ١٤/٦/٢٦).
 //  - purchase.list/get: branchScopedProcedure (F3 — تدقيق ١٤/٦/٢٦).
@@ -69,20 +69,20 @@ describe("RBAC الجديد: شريحة precision-rbac", () => {
     );
   });
 
-  // M1 — تدقيق ١٤/٦/٢٦: inventory.transfer/adjust يجب أن يُجبرا warehouse على فرعه.
+  // M1 — تدقيق ١٤/٦/٢٦: inventory.transferBatch/adjust يجب أن يُجبرا warehouse على فرعه.
   // قبل الإصلاح: warehouse فرع SALES كان يستطيع نقل بضاعة من فرع MAIN عبر API مباشر.
-  describe("M1: inventory.transfer/adjust — عزل الفرع لـwarehouse", () => {
+  describe("M1: inventory.transferBatch/adjust — عزل الفرع لـwarehouse", () => {
     it("warehouse: transfer من فرع ليس فرعه ⇒ FORBIDDEN", () =>
       expectForbidden(
-        caller("warehouse", 2).inventory.transfer({
-          variantId: 1, fromBranchId: 1, toBranchId: 2, baseQuantity: 5,
+        caller("warehouse", 2).inventory.transferBatch({
+          fromBranchId: 1, toBranchId: 2, items: [{ variantId: 1, baseQuantity: 5 }],
         })
       )
     );
     it("warehouse بلا فرع: transfer ⇒ FORBIDDEN", () =>
       expectForbidden(
-        caller("warehouse", null).inventory.transfer({
-          variantId: 1, fromBranchId: 1, toBranchId: 2, baseQuantity: 5,
+        caller("warehouse", null).inventory.transferBatch({
+          fromBranchId: 1, toBranchId: 2, items: [{ variantId: 1, baseQuantity: 5 }],
         })
       )
     );

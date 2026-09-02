@@ -32,6 +32,7 @@ import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 import { ConsignmentTimelineDrawer } from "@/components/delivery/ConsignmentTimelineDrawer";
+import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
 import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestButton";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
@@ -175,7 +176,14 @@ function DispatchTab() {
   const ready = trpc.delivery.readyForDispatch.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { refetchInterval: 30_000, refetchOnWindowFocus: true });
   const me = trpc.auth.me.useQuery();
-  const canDispatch = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
+  const canDispatch = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["cashier", "manager"],
+    );
   const [target, setTarget] = useState<ReadyOrder | null>(null);
   const [query, setQuery] = useState("");
 
@@ -388,7 +396,7 @@ function DispatchTab() {
                             label: "تسليم لمندوب",
                             hidden: !canDispatch,
                             onSelect: () => setTarget(o),
-                            gate: { roles: ["cashier", "manager"] },
+                            gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
                           },
                         ]}
                       />
@@ -463,6 +471,8 @@ function InTransitTab() {
   const [manualProofTarget, setManualProofTarget] = useState<InTransitRow | null>(null);
   const [staffConfirmTarget, setStaffConfirmTarget] = useState<InTransitRow | null>(null);
   const [declareTarget, setDeclareTarget] = useState<InTransitRow | null>(null);
+  /** الطردُ المفتوحُ حوارُ إرجاعه — يحمل درجَ الردّ الذي كانت الشاشةُ عاجزةً عن تحديده. */
+  const [returnTarget, setReturnTarget] = useState<ReturnConsignmentTarget | null>(null);
 
   const canFulfil = !!me.data
     && moduleAccessAllowed(
@@ -485,7 +495,14 @@ function InTransitTab() {
       "FULL",
       ["manager", "cashier"],
     );
-  const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  const isManager = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["manager"],
+    );
 
   // ── Mutations ──
   const invalidateAll = () => {
@@ -620,15 +637,15 @@ function InTransitTab() {
   async function askDeclareReturn(r: InTransitRow) {
     setDeclareTarget(r);
   }
-  async function askReceiveReturn(r: InTransitRow) {
-    const ok = await confirm({
-      variant: "danger",
-      title: `استلام مرتجع الإرسالية ${r.consignmentNumber ?? r.id}`,
-      description: "يُعكَس البيع كاملاً: تعود البضاعة للمخزون، الفاتورة مرتجعة، ذمّة العميل تسقط. لا يُنفَّذ إلّا بعد استلام الطرد في الفرع فعلياً.",
-      confirmText: "استلمتُ الطرد",
+  /**
+   * الحوارُ بدل `confirm()` النصّية: القبولُ وحده لا يكفي — حين يتعدّد الدرج المفتوح يطلب
+   * الخادمُ `refundShiftId`، ولم يكن لهذه الشاشة حقلٌ يُعطيه ⇒ إرجاعُ طردٍ مدفوعٍ مستحيل.
+   */
+  function askReceiveReturn(r: InTransitRow) {
+    setReturnTarget({
+      consignmentId: r.id,
+      label: `الإرسالية ${r.consignmentNumber ?? r.id}`,
     });
-    if (!ok) return;
-    returnCn.mutate({ consignmentId: r.id, clientRequestId: crypto.randomUUID() });
   }
 
   if (rows.isError) return <ErrorState onRetry={() => void rows.refetch()} />;
@@ -913,6 +930,17 @@ function InTransitTab() {
           }}
         />
       )}
+
+      {/* ─── حوار إرجاع الطرد (يحمل منتقي درج الردّ) ─── */}
+      <ReturnConsignmentDialog
+        target={returnTarget}
+        pending={returnCn.isPending}
+        onClose={() => setReturnTarget(null)}
+        onConfirm={({ consignmentId, refundShiftId }) => {
+          returnCn.mutate({ consignmentId, clientRequestId: crypto.randomUUID(), refundShiftId });
+          setReturnTarget(null);
+        }}
+      />
 
       {/* ─── حوار «تم التسليم» (كاشير) ─── */}
       {staffConfirmTarget && (
@@ -1251,7 +1279,14 @@ function SettleTab() {
     { branchId, shiftType: "RECEPTION" },
     { enabled: branchId > 0 },
   );
-  const canRemit = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
+  const canRemit = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["cashier", "manager"],
+    );
   const canReturn = !!me.data
     && moduleAccessAllowed(
       me.data.role as RoleKey,
@@ -1266,6 +1301,8 @@ function SettleTab() {
    */
   const settleSearch = useSearch();
   const [partyId, setPartyId] = useState<string>(() => new URLSearchParams(settleSearch).get("party") ?? "");
+  /** الطردُ المفتوحُ حوارُ إرجاعه — نفسُ منتقي الدرج المستعمَل في «قيد التوصيل». */
+  const [returnTarget, setReturnTarget] = useState<ReturnConsignmentTarget | null>(null);
   const obligations = trpc.delivery.obligations.useQuery(undefined, { refetchInterval: 30_000 });
   /**
    * Slice DFP1 (٣٠/٨/٢٦) — الجهات المتأخّرة (SLA): قسم اطّلاعيّ يبرز الجهات التي راكمت طروداً
@@ -1696,10 +1733,10 @@ function SettleTab() {
                             <button
                               type="button"
                               className="rounded bg-[var(--sem-warn-bg)] px-2 py-1 text-xs font-bold text-[var(--sem-warn)]"
-                              onClick={async () => {
-                                const ok = await confirm({ variant: "danger", title: "إرجاع الإرسالية", description: `عكس بيع الإرسالية ${c.consignmentNumber} وإعادة البضاعة للمخزون. متابعة؟`, confirmText: "إرجاع" });
-                                if (ok) ret.mutate({ consignmentId: c.id, clientRequestId: crypto.randomUUID() });
-                              }}
+                              onClick={() => setReturnTarget({
+                                consignmentId: c.id,
+                                label: `الإرسالية ${c.consignmentNumber}`,
+                              })}
                             ><RotateCcw aria-hidden className="inline size-3" /> مُرتجَع</button>
                           )}
                           {!remittable && !returnable && feeDue > 0 && <span className="text-xs font-bold text-[var(--sem-warn)]">أجرة مستحقة</span>}
@@ -1891,6 +1928,17 @@ function SettleTab() {
           )}
         </>
       )}
+
+      {/* حوار إرجاع الطرد — يحمل منتقي درج الردّ الذي كان مفقوداً */}
+      <ReturnConsignmentDialog
+        target={returnTarget}
+        pending={ret.isPending}
+        onClose={() => setReturnTarget(null)}
+        onConfirm={({ consignmentId, refundShiftId }) => {
+          ret.mutate({ consignmentId, clientRequestId: crypto.randomUUID(), refundShiftId });
+          setReturnTarget(null);
+        }}
+      />
 
       {/* درج الخط الزمنيّ من صف التسوية */}
       <ConsignmentTimelineDrawer consignmentId={drawerId} onClose={() => setDrawerId(null)} />

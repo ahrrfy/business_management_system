@@ -4,13 +4,15 @@
 // التشغيلات قراءةً — رقم اللوحة = رقم التشغيلة لحظتها). العمولة «تقديرية» حتى الاعتماد.
 // البوّابة: تقرير قراءة (مدير/محاسب/مدقّق + منح صريح) — الخادم هو الحاكم.
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+
+
 import { exportRows } from "@/lib/export";
 import { iqd } from "@/lib/hr/ui";
 import { trpc } from "@/lib/trpc";
@@ -93,6 +95,69 @@ export default function CommissionLeaderboard() {
       ],
     });
   }
+  /** أعمدة لوحة صدارة العمولات — الترتيب من الخادم (rank)، فلا فرزَ يعيد ترتيب اللوحة. */
+  const leaderboardColumns = useMemo<ColumnDef<(typeof filteredRows)[number], unknown>[]>(() => [
+    {
+      id: "rank", header: "#", enableSorting: false,
+      accessorFn: (r) => r.rank,
+      cell: ({ row }) => (
+        <span className={`inline-flex size-6 items-center justify-center rounded-full text-xs font-bold ${row.original.rank === 1 ? "bg-[var(--money-positive,#059669)] text-white" : row.original.rank <= 3 ? "bg-primary/15 text-primary" : "text-muted-foreground"}`}>
+          {row.original.rank}
+        </span>
+      ),
+      meta: { kind: "number", width: "id" },
+    },
+    {
+      id: "employee", header: "الموظف", enableSorting: false,
+      accessorFn: (r) => r.employeeName,
+      cell: ({ row }) => (
+        <div>
+          <div className="font-medium whitespace-nowrap">{row.original.employeeName}</div>
+          <div className="max-w-[11rem] truncate text-[11px] text-muted-foreground" title={row.original.planName}>{row.original.planName}</div>
+        </div>
+      ),
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "branch", header: "الفرع", enableSorting: false,
+      accessorFn: (r) => r.branchName || "—",
+      cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{row.original.branchName || "—"}</span>,
+      meta: { kind: "text" },
+    },
+    { id: "sales", header: "المبيعات", enableSorting: false, accessorFn: (r) => Number(r.sales), cell: ({ row }) => iqd(row.original.sales), meta: { kind: "money" } },
+    {
+      id: "returns", header: "المرتجعات", enableSorting: false,
+      accessorFn: (r) => Number(r.returns),
+      cell: ({ row }) => <span className="text-money-negative">{Number(row.original.returns) > 0 ? `−${iqd(row.original.returns)}` : "—"}</span>,
+      meta: { kind: "money" },
+    },
+    {
+      id: "effectiveBase", header: "المبلغ المحتسَب عليه", enableSorting: false,
+      accessorFn: (r) => Number(r.effectiveBase),
+      cell: ({ row }) => <span className="font-medium">{iqd(row.original.effectiveBase)}</span>,
+      meta: { kind: "money" },
+    },
+    {
+      id: "target", header: "هدفه", enableSorting: false,
+      accessorFn: (r) => (r.target == null ? -1 : Number(r.target)),
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.target != null ? iqd(row.original.target) : "—"}</span>,
+      meta: { kind: "money" },
+    },
+    {
+      id: "achievementPct", header: "نسبة التحقيق", enableSorting: false,
+      accessorFn: (r) => (r.achievementPct == null ? -1 : Number(r.achievementPct)),
+      cell: ({ row }) => row.original.achievementPct != null
+        ? <Bar pct={Number(row.original.achievementPct)} />
+        : <span className="inline-block rounded-full px-2 py-0.5 text-[11px] badge-stock-low">بلا هدف</span>,
+      meta: { kind: "text" },
+    },
+    {
+      id: "projectedCommission", header: "العمولة المتوقّعة", enableSorting: false,
+      accessorFn: (r) => Number(r.projectedCommission),
+      cell: ({ row }) => <span className="font-bold">{iqd(row.original.projectedCommission)}</span>,
+      meta: { kind: "money" },
+    },
+  ], []);
 
   return (
     <div className="space-y-4">
@@ -159,58 +224,16 @@ export default function CommissionLeaderboard() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2.5 text-center w-10">#</th>
-                  <th className="p-2.5 text-start">الموظف</th>
-                  <th className="p-2.5 text-start">الفرع</th>
-                  <th className="p-2.5 text-right">المبيعات</th>
-                  <th className="p-2.5 text-right">المرتجعات</th>
-                  <th className="p-2.5 text-right">المبلغ المحتسَب عليه</th>
-                  <th className="p-2.5 text-right">هدفه</th>
-                  <th className="p-2.5">نسبة التحقيق</th>
-                  <th className="p-2.5 text-right">العمولة المتوقّعة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRows.map((r) => (
-                  <tr key={r.employeeId} className={`border-t ${r.rank <= 3 ? "bg-accent/30" : ""}`}>
-                    <td className="p-2.5 text-center">
-                      <span className={`inline-flex size-6 items-center justify-center rounded-full text-xs font-bold ${r.rank === 1 ? "bg-[var(--money-positive,#059669)] text-white" : r.rank <= 3 ? "bg-primary/15 text-primary" : "text-muted-foreground"}`}>
-                        {r.rank}
-                      </span>
-                    </td>
-                    <td className="p-2.5">
-                      <div className="font-medium whitespace-nowrap">{r.employeeName}</div>
-                      <div className="max-w-[11rem] truncate text-[11px] text-muted-foreground" title={r.planName}>{r.planName}</div>
-                    </td>
-                    <td className="p-2.5 text-muted-foreground whitespace-nowrap">{r.branchName || "—"}</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(r.sales)}</td>
-                    <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
-                      {Number(r.returns) > 0 ? `−${iqd(r.returns)}` : "—"}
-                    </td>
-                    <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{iqd(r.effectiveBase)}</td>
-                    <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{r.target != null ? iqd(r.target) : "—"}</td>
-                    <td className="p-2.5">
-                      {r.achievementPct != null ? <Bar pct={Number(r.achievementPct)} /> : <span className="inline-block rounded-full px-2 py-0.5 text-[11px] badge-stock-low">بلا هدف</span>}
-                    </td>
-                    <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">{iqd(r.projectedCommission)}</td>
-                  </tr>
-                ))}
-                {q.isLoading && (
-                  <tr><td colSpan={9}><LoadingState /></td></tr>
-                )}
-                {!q.isLoading && rows.length === 0 && (
-                  <TableEmptyRow colSpan={9} message="لا بائعين مرتبطين بخطة فعّالة لهذا الشهر — اربطهم بالخطط من: الموارد البشرية ← خطط العمولات." />
-                )}
-                {!q.isLoading && rows.length > 0 && filteredRows.length === 0 && (
-                  <TableEmptyRow colSpan={9} message="لا بائعين مطابقين للفلاتر." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable
+            columns={leaderboardColumns}
+            data={filteredRows}
+            loading={q.isLoading}
+            searchable={false}
+            getRowClassName={(r) => (r.rank <= 3 ? "bg-accent/30" : undefined)}
+            emptyText={rows.length === 0
+              ? "لا بائعين مرتبطين بخطة فعّالة لهذا الشهر — اربطهم بالخطط من: الموارد البشرية ← خطط العمولات."
+              : "لا بائعين مطابقين للفلاتر."}
+          />
         </CardContent>
       </Card>
     </div>

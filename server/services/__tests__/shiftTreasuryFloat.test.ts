@@ -3,8 +3,8 @@
  *
  * الثابت المُختبَر: **الخزينة + مجموع أدراج الورديات المفتوحة متّسقان دائماً** عبر تمويل→فتح→بيع→إغلاق→
  * إعادة فتح، بلا ازدواجٍ وهميّ (فشل Codex) ولا نقدٍ متبخّر. النموذج: عهدة الفتح تُسحَب من الخزينة
- * (TREASURY OUT + قيد SHIFT_FLOAT_OUT)، وكامل المعدود يعود للخزينة عند الإغلاق فوراً (TREASURY IN
- * مكتمل + قيد CASH_HANDOVER). التمويل (رأس المال) يضخّ نقداً خارجياً (TREASURY IN + قيد TREASURY_FUNDING).
+ * (TREASURY OUT + قيد SHIFT_FLOAT_OUT)، وكامل المعدود يمرّ إلى CASH_IN_TRANSIT ثم يدخل الخزينة
+ * بعد عدّ المستلم وقبوله. التمويل يضخّ نقداً خارجياً (TREASURY IN + قيد TREASURY_FUNDING).
  * كل قيود الحركة revenue=cost=profit=0 (لا تمسّ P&L).
  */
 import { and, eq } from "drizzle-orm";
@@ -14,9 +14,10 @@ import { getDb } from "../../db";
 import { closeShift, openShift } from "../shiftService";
 import { fundTreasury } from "../treasuryFundingService";
 import { getDashboard } from "../treasury/dashboard";
+import { acceptPendingTreasuryReceipt } from "../treasury/pendingReceipts";
 import { truncateTables } from "./__testUtils__";
 
-const TABLES = ["auditLogs", "accountingEntries", "idempotencyKeys", "expenses", "receipts", "shifts", "users", "branches"];
+const TABLES = ["auditLogs", "accountingEntries", "idempotencyKeys", "cashDailyReconciliations", "cashCustodyCounts", "expenses", "receipts", "shifts", "users", "branches"];
 
 function db() {
   const d = getDb();
@@ -72,6 +73,14 @@ async function sellCash(shiftId: number, branchId: number, amount: string, creat
 
 async function entriesOfType(entryType: string) {
   return db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, entryType as any));
+}
+
+async function acceptReturn(result: Awaited<ReturnType<typeof closeShift>>, managerId = MANAGER1, branchId = 1) {
+  if (!result.treasuryReturn) throw new Error("expected treasury return");
+  return acceptPendingTreasuryReceipt(
+    result.treasuryReturn.inReceiptId,
+    { userId: managerId, branchId, role: "manager" },
+  );
 }
 
 describe("imprest — التمويل (fundTreasury)", () => {
@@ -210,8 +219,8 @@ describe("imprest — فتح الوردية يسحب العهدة من الخز�
   });
 });
 
-describe("imprest — الإغلاق يعيد كامل المعدود فوراً", () => {
-  it("TREASURY IN مكتمل (=المعدود) + الدرج يُفرَّغ (closingDrawerCash=0)", async () => {
+describe("imprest — الإغلاق يسلّم كامل المعدود بعقد حيازة", () => {
+  it("الإغلاق يفرّغ الدرج إلى transit، والقبول وحده يرفع الخزينة", async () => {
     await fundTreasury({ branchId: 1, amount: "200000", description: "رأس مال", clientRequestId: "f" }, { userId: MANAGER1, branchId: 1, role: "manager" });
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "50000" }, { userId: CASHIER1, branchId: 1 });
     await sellCash(shiftId, 1, "30000.00"); // بيع نقديّ ⇒ الدرج 80000
@@ -228,25 +237,38 @@ describe("imprest — الإغلاق يعيد كامل المعدود فوراً
     const sh = (await db().select().from(s.shifts).where(eq(s.shifts.id, shiftId)))[0];
     expect(sh.closingDrawerCash).toBe("0.00");
 
-    // الخزينة = 200000 − 50000 (عهدة) + 80000 (إرجاع) = 230000 = 200000 مموَّل + 30000 مبيعات.
+    // قبل قبول المستلم: الخزينة لا تتضمن العهدة المعلّقة.
     const d = await dash(1);
-    expect(d.treasury).toBe("230000.00");
+    expect(d.treasury).toBe("150000.00");
     expect(d.drawer).toBe("0.00");
     expect(d.openShifts).toBe(0);
 
-    // إيصال الإرجاع IN مكتملٌ فوراً (لا PENDING) + قيد CASH_HANDOVER محايد.
+    // إيصال الخزينة معلّق، والمرحلة الأولى قيد إلى CASH_IN_TRANSIT.
     const inn = (await db().select().from(s.receipts).where(and(eq(s.receipts.referenceNumber, res.treasuryReturn!.handoverNumber), eq(s.receipts.direction, "IN"))))[0];
-    expect(inn).toMatchObject({ cashBucket: "TREASURY", status: "COMPLETED", amount: "80000.00" });
-    const ch = await entriesOfType("CASH_HANDOVER");
-    expect(ch).toHaveLength(1);
-    expect(ch[0]).toMatchObject({ amount: "80000.00", revenue: "0.00", cost: "0.00" });
+    expect(inn).toMatchObject({ cashBucket: "TREASURY", status: "PENDING", amount: "80000.00", createdBy: MANAGER1 });
+    const staged = await entriesOfType("CASH_TRANSFER_OUT");
+    expect(staged).toHaveLength(1);
+    expect(staged[0]).toMatchObject({ amount: "80000.00", revenue: "0.00", cost: "0.00" });
+
+    await acceptPendingTreasuryReceipt(
+      Number(inn.id),
+      { userId: MANAGER1, branchId: 1, role: "manager" },
+      undefined,
+      {
+        countedCash: "80000.00",
+        countedBreakdown: { "50000": 1, "25000": 1, "5000": 1 },
+        clientRequestId: "accept-close-80000",
+      },
+    );
+    expect((await dash(1)).treasury).toBe("230000.00");
+    expect(await entriesOfType("CASH_TRANSFER_IN")).toHaveLength(1);
   });
 
   it("إغلاق بمعدود صفر: لا إرجاع للخزينة", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, { userId: CASHIER1, branchId: 1 });
     const res = await closeShift({ shiftId, countedCash: "0", enforceCashGovernance: true }, { userId: CASHIER1, branchId: 1, role: "cashier" });
     expect(res.treasuryReturn).toBeNull();
-    expect(await entriesOfType("CASH_HANDOVER")).toHaveLength(0);
+    expect(await entriesOfType("CASH_TRANSFER_OUT")).toHaveLength(0);
   });
 });
 
@@ -257,7 +279,9 @@ describe("imprest — الثابت الجوهريّ (منع ازدواج Codex +
     // وردية A: عهدة 100000 (الخزينة ⇒ 0)، بلا بيع، إغلاق بمعدود 100000 ⇒ الإرجاع يعيد الخزينة 100000.
     const a = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     expect((await dash(1)).treasury).toBe("0.00");
-    await closeShift({ shiftId: a.shiftId, countedCash: "100000", enforceCashGovernance: true }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const returned = await closeShift({ shiftId: a.shiftId, countedCash: "100000", enforceCashGovernance: true }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    expect((await dash(1)).treasury).toBe("0.00");
+    await acceptReturn(returned);
     expect((await dash(1)).treasury).toBe("100000.00");
 
     // وردية B: عهدة جديدة 100000 (الخزينة ⇒ 0، الدرج ⇒ 100000).
@@ -288,6 +312,8 @@ describe("imprest — الثابت الجوهريّ (منع ازدواج Codex +
     const sh = (await db().select().from(s.shifts).where(eq(s.shifts.id, shiftId)))[0];
     expect(sh.closingDrawerCash).toBe("0.00");        // الدرج صفر
 
+    expect((await dash(1)).treasury).toBe("400000.00"); // خرج من الدرج لكنه ما زال قيد العهدة
+    await acceptReturn(res);
     const d = await dash(1);
     expect(d.treasury).toBe("851000.00");             // 500000 − 100000 + 451000
     expect(d.drawer).toBe("0.00");

@@ -23,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
+import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FilterAlt
@@ -39,6 +40,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -53,6 +56,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -60,6 +66,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import online.alarabiya.superapp.ui.ArabicDatePicker
@@ -100,6 +107,8 @@ fun ShiftScreen(viewModel: ShiftViewModel, modifier: Modifier = Modifier) {
             state = state,
             onCounted = viewModel::updateCloseCounted,
             onConfirmation = viewModel::updateCloseConfirmation,
+            onRecipient = viewModel::selectHandoverRecipient,
+            onRetryRecipients = viewModel::retryHandoverRecipients,
             onAcknowledged = viewModel::acknowledgeClose,
             onDismiss = viewModel::dismissClose,
             onConfirm = viewModel::confirmClose,
@@ -556,6 +565,8 @@ private fun ShiftCloseDialog(
     state: ShiftUiState,
     onCounted: (String) -> Unit,
     onConfirmation: (String) -> Unit,
+    onRecipient: (Long?) -> Unit,
+    onRetryRecipients: () -> Unit,
     onAcknowledged: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
@@ -597,6 +608,15 @@ private fun ShiftCloseDialog(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
+                if (ShiftMoney.parseUnsigned(draft.countedCash)?.isPositive() == true) {
+                    item {
+                        HandoverRecipientSelector(
+                            state = state,
+                            onSelected = onRecipient,
+                            onRetry = onRetryRecipients,
+                        )
+                    }
+                }
                 variance?.let { value -> item { DialogSummaryLine("الفرق", formatMoney(value), varianceColor(value)) } }
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -615,11 +635,78 @@ private fun ShiftCloseDialog(
         confirmButton = {
             Button(onClick = onConfirm, enabled = validation == null && !state.closing) {
                 if (state.closing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Text("إغلاق وتثبيت المطابقة")
+                else Text(if (ShiftMoney.parseUnsigned(draft.countedCash)?.isPositive() == true) "إغلاق وتحويل النقد للعهدة" else "إغلاق وتثبيت المطابقة")
             }
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !state.closing) { Text("رجوع") } },
     )
+}
+
+@Composable
+private fun HandoverRecipientSelector(
+    state: ShiftUiState,
+    onSelected: (Long?) -> Unit,
+    onRetry: () -> Unit,
+) {
+    val draft = state.closeDraft ?: return
+    var expanded by remember(draft.shiftId) { mutableStateOf(false) }
+    val selected = state.handoverRecipients.firstOrNull { it.id == draft.handoverRecipientUserId }
+    Surface(
+        Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 1.dp,
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("مستلم عهدة النقد", fontWeight = FontWeight.Bold)
+            Text(
+                "اختر مديراً نشطاً من فرع الوردية. سيبقى النقد في العهدة حتى يعدّه المستلم ويقبله في الخزينة.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            when {
+                state.handoverRecipientsLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("جارٍ تحميل المستلمين المؤهلين")
+                }
+                state.handoverRecipientsError != null -> {
+                    Text(state.handoverRecipientsError, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onRetry, enabled = !state.closing, modifier = Modifier.fillMaxWidth()) {
+                        Text("إعادة تحميل المستلمين")
+                    }
+                }
+                state.handoverRecipientsLoaded && state.handoverRecipients.isEmpty() -> Text(
+                    "لا يوجد مدير مستقل نشط في هذا الفرع. لا يمكن تسليم النقد قبل تعيين مستلم مؤهل.",
+                    color = MaterialTheme.colorScheme.error,
+                )
+                else -> Box(Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { expanded = true },
+                        enabled = !state.closing,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                    ) {
+                        Text(
+                            selected?.name ?: "اختر مستلم النقد",
+                            Modifier.weight(1f),
+                            textAlign = TextAlign.Start,
+                        )
+                        Icon(Icons.Rounded.ArrowDropDown, contentDescription = null)
+                    }
+                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        state.handoverRecipients.forEach { recipient ->
+                            DropdownMenuItem(
+                                text = { Text(recipient.name) },
+                                onClick = {
+                                    expanded = false
+                                    onSelected(recipient.id)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

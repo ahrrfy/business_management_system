@@ -3,6 +3,7 @@
 // كل مستندٍ مستحقّ منفرداً بعدد أيّام تأخّره وشريحته ومتبقّيه — مرتّباً من الأقدم تأخّراً.
 // عرض + KPIs بالشرائح + تصدير Excel + طباعة A4 (ReportShell + printReportDoc).
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -137,21 +138,21 @@ export default function ArApAgingDetail() {
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">النوع</label>
-            <select
-              className={selectCls}
+            <AppSelect
+              className="h-9"
               value={side}
-              onChange={(e) => setSide(e.target.value as Side)}
+              onValueChange={(value) => setSide(value as Side)}
             >
               <option value="AR">مدينة — لنا على العملاء</option>
               <option value="AP">دائنة — لهم علينا</option>
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select
-              className={selectCls}
-              value={branchId}
-              onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(value) => setBranchId(value ? Number(value) : "")}
             >
               <option value="">الكل</option>
               {branches.data?.map((b) => (
@@ -159,14 +160,14 @@ export default function ArApAgingDetail() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الشريحة العمرية</label>
-            <select className={selectCls} value={bucket} onChange={(e) => setBucket(e.target.value)}>
+            <AppSelect className="h-9" value={bucket} onValueChange={(value) => setBucket(value)}>
               <option value="">الكل</option>
               {BUCKET_OPTIONS.map((b) => (<option key={b} value={b}>{b}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث</label>

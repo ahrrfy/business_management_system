@@ -1,42 +1,66 @@
-// Load environment variables with proper priority (system > .env)
-import "./scripts/load-env.js";
-import type { ExpoConfig } from "expo/config";
+// CommonJS JavaScript — لا TypeScript ولا ESM.
+// السبب: EAS يقرأ هذا الملف **قبل** تثبيت التبعيات فلا يستطيع transpile الـTypeScript.
+// كان الملف سابقاً `app.config.ts` بـ`import type { ExpoConfig }` ⇒ SyntaxError على EAS
+// (راجع build 0324a9c0 + f8fd0cb8 fail logs).
 
-// Bundle ID format: space.manus.<project_name_dots>.<timestamp>
-// e.g., "my-app" created at 2024-01-15 10:30:45 -> "space.manus.my.app.t20240115103045"
-// Bundle ID can only contain letters, numbers, and dots
-// Android requires each dot-separated segment to start with a letter
+// ─── تحميل env vars بأولويّة: نظام > .env ──────────────────────────────────────
+// (كان في scripts/load-env.js — inlined هنا لتفادي ملفٍ ESM إضافيّ).
+const fs = require("fs");
+const path = require("path");
+
+const envPath = path.resolve(process.cwd(), ".env");
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, "utf8");
+  envContent.split("\n").forEach((line) => {
+    if (!line || line.trim().startsWith("#")) return;
+    const match = line.match(/^([^=]+)=(.*)$/);
+    if (match) {
+      const key = match[1].trim();
+      const value = match[2].trim().replace(/^["']|["']$/g, "");
+      if (!process.env[key]) process.env[key] = value;
+    }
+  });
+}
+
+const mappings = {
+  VITE_APP_ID: "EXPO_PUBLIC_APP_ID",
+  VITE_OAUTH_PORTAL_URL: "EXPO_PUBLIC_OAUTH_PORTAL_URL",
+  OAUTH_SERVER_URL: "EXPO_PUBLIC_OAUTH_SERVER_URL",
+  OWNER_OPEN_ID: "EXPO_PUBLIC_OWNER_OPEN_ID",
+  OWNER_NAME: "EXPO_PUBLIC_OWNER_NAME",
+};
+for (const [systemVar, expoVar] of Object.entries(mappings)) {
+  if (process.env[systemVar] && !process.env[expoVar]) {
+    process.env[expoVar] = process.env[systemVar];
+  }
+}
+
+// ─── تكوين التطبيق ───────────────────────────────────────────────────────────────
 const rawBundleId = "online.alarabiya.customerstore";
 const bundleId =
   rawBundleId
-    .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
-    .replace(/[^a-zA-Z0-9.]/g, "") // Remove invalid chars
-    .replace(/\.+/g, ".") // Collapse consecutive dots
-    .replace(/^\.+|\.+$/g, "") // Trim leading/trailing dots
+    .replace(/[-_]/g, ".")
+    .replace(/[^a-zA-Z0-9.]/g, "")
+    .replace(/\.+/g, ".")
+    .replace(/^\.+|\.+$/g, "")
     .toLowerCase()
     .split(".")
-    .map((segment) => {
-      // Android requires each segment to start with a letter
-      // Prefix with 'x' if segment starts with a digit
-      return /^[a-zA-Z]/.test(segment) ? segment : "x" + segment;
-    })
+    .map((segment) => (/^[a-zA-Z]/.test(segment) ? segment : "x" + segment))
     .join(".") || "space.manus.app";
 // رابط عميق ثابت لتطبيق العملاء؛ يلزم بناء تطوير/إصدار رسمي لتجربته، لا Expo Go.
 const schemeFromBundleId = "maktabaalarabiya";
 
 const env = {
-  // App branding - update these values directly (do not use env vars)
   appName: "مكتبة العربية",
   appSlug: "customer-store-mobile",
-  // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
-  // Leave empty to use the default icon from assets/images/icon.png
   logoUrl: "/manus-storage/icon_0519150d.png",
   scheme: schemeFromBundleId,
   iosBundleId: bundleId,
   androidPackage: bundleId,
 };
 
-const config: ExpoConfig = {
+/** @type {import('expo/config').ExpoConfig} */
+const config = {
   name: env.appName,
   slug: env.appSlug,
   version: "1.0.0",
@@ -49,9 +73,9 @@ const config: ExpoConfig = {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
     googleServicesFile: "./GoogleService-Info.plist",
-    "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
-      }
+    infoPlist: {
+      ITSAppUsesNonExemptEncryption: false,
+    },
   },
   android: {
     googleServicesFile: "./google-services.json",
@@ -87,7 +111,6 @@ const config: ExpoConfig = {
   },
   extra: {
     eas: {
-      // يُضبط عند تجهيز بناء المتجر الرسمي؛ غيابه يعطّل طلب رمز Push بأمان في نسخ المعاينة.
       projectId: process.env.EXPO_PUBLIC_EAS_PROJECT_ID || "0b99e2d2-5a59-4892-81b7-f504da7c7d0a",
     },
   },
@@ -137,4 +160,4 @@ const config: ExpoConfig = {
   },
 };
 
-export default config;
+module.exports = config;

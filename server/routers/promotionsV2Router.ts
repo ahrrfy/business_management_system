@@ -2,14 +2,14 @@
 //
 // RBAC:
 //   list/getById/create/deactivate — productsManagerProcedure (يكشف حالة/أولوية/تكلفة أثر مُجمَّع).
-//   activeToday — productsReadProcedure (POS يحتاج القائمة الحيّة لشارات).
+//   نقطة البيع تحلّ العرض ضمن catalog.pos وتعيد خدمة البيع التحقق منه؛ لا endpoint قائمة موازية.
 //
 // Branch scoping: non-admin manager يُقصر على `ctx.user.branchId` (لا يستطيع إنشاء عرضٍ عامّ NULL
 // ولا لفرع آخر). admin يختار بحرية (بما فيه NULL=عامّ).
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { z } from "zod";
-import { crmCampaigns, promotionTargets, promotions } from "../../drizzle/schema";
+import { crmCampaigns, promotions } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import {
   createPromotion,
@@ -19,7 +19,6 @@ import {
 } from "../services/salesPromotionService";
 import { getDb } from "../db";
 import { withTx } from "../services/tx";
-import { baghdadToday } from "../services/businessDay";
 import { campaignsManagerProcedure, campaignsReadProcedure, router } from "../trpc";
 
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -259,63 +258,4 @@ export const promotionsV2Router = router({
       return { ok: true };
     }),
 
-  /** العروض الساري تاريخها اليوم على فرع/فئة معيّنَين — للـPOS و/offers (badges). */
-  activeToday: campaignsReadProcedure
-    .input(
-      z.object({
-        branchId: z.number().int().positive(),
-        customerTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
-      }),
-    )
-    .query(async ({ input, ctx }) => {
-      const db = getDb();
-      if (!db) return [];
-      if (ctx.user.role !== "admin" && Number(ctx.user.branchId) !== input.branchId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة عروض فرع آخر" });
-      }
-      // B8: مقارنة حبيبة اليوم (بغداد UTC+3) بدل datetime — «اليوم الأخير» يعمل.
-      const todayYmd = baghdadToday();
-      // ⚠️ لاحقة Z إلزامية: بلا Z يُفسَّر منتصف الليل بمنطقة عملية Node، فيَنزاح على أي جهاز بغير TZ=UTC
-      // (جهاز متجرٍ ببغداد ⇒ يصير أمسِ ٢١:٠٠Z، فعرضٌ يبدأ «اليوم» يُستبعَد يومَه كاملاً — تدقيق ١٧/٧ #٧).
-      // مطابقٌ لكل نظائره (auditRouter/cashTransferService/exchange) التي تحمل Z، وبيتُ التعريف businessDay.
-      const todayDate = new Date(todayYmd + "T00:00:00Z");
-      const rows = await db
-        .select()
-        .from(promotions)
-        .where(
-          and(
-            eq(promotions.isActive, true),
-            eq(promotions.applicationMode, "AUTO"),
-            lte(promotions.effectiveFrom, todayDate),
-            or(isNull(promotions.effectiveTo), gte(promotions.effectiveTo, todayDate))!,
-            or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId))!,
-            input.customerTier
-              ? or(isNull(promotions.customerTier), eq(promotions.customerTier, input.customerTier))!
-              : isNull(promotions.customerTier),
-          ),
-        )
-        .orderBy(desc(promotions.priority));
-      const promoIds = rows.map((r) => Number(r.id));
-      const targets = promoIds.length
-        ? await db.select().from(promotionTargets).where(inArray(promotionTargets.promotionId, promoIds))
-        : [];
-      const targetsByPromo = new Map<number, typeof targets>();
-      for (const t of targets) {
-        const pid = Number(t.promotionId);
-        const list = targetsByPromo.get(pid) ?? [];
-        list.push(t);
-        targetsByPromo.set(pid, list);
-      }
-      return rows.map((r) => ({
-        ...r,
-        id: Number(r.id),
-        branchId: r.branchId == null ? null : Number(r.branchId),
-        createdBy: r.createdBy == null ? null : Number(r.createdBy),
-        targets: (targetsByPromo.get(Number(r.id)) ?? []).map((t) => ({
-          categoryId: t.categoryId == null ? null : Number(t.categoryId),
-          productId: t.productId == null ? null : Number(t.productId),
-          variantId: t.variantId == null ? null : Number(t.variantId),
-        })),
-      }));
-    }),
 });

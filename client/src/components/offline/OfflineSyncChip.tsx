@@ -26,7 +26,13 @@ import { AlertTriangle, CheckCircle2, CloudOff, CloudUpload, RefreshCw, Settings
  * الطبيعي. الطبقة z-[140]: فوق محتوى POS وتحت الشريط العلوي (150) وحوار التأكيد (200).
  * المحفّزات هنا أيضاً: عودة الاتصال + عودة رؤية التبويب + نبضة كل ٣٠ث والطابور غير فارغ.
  */
-export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
+export function OfflineSyncChip({
+  userRole,
+  placement = "floating",
+}: {
+  userRole?: string | null;
+  placement?: "floating" | "inline";
+}) {
   const connState = useConnectivity();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery(undefined, { retry: false });
@@ -152,7 +158,9 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
         type="button"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "fixed bottom-3 left-3 z-[140] flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold shadow-lg",
+          placement === "floating"
+            ? "fixed bottom-3 left-3 z-[140] flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold shadow-lg"
+            : "inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold",
           chipTone,
         )}
       >

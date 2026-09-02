@@ -2,6 +2,7 @@
 // (تبويب managerOnly في PrintHub + الخادم managerProcedure). كل الحساب المالي على الخادم
 // (decimal.js) — الواجهة تعرض فقط. المطبعة ديجيتال: صغير المقاس بالوجه، عريض (فلكس) بالمتر².
 import { useEffect, useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { Calculator, Settings2, Loader2, MessageCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -220,30 +221,30 @@ export default function PrintPricingCalculator() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <Label>النمط</Label>
-                    <select className={selectClsFull} value={colorMode} onChange={(e) => setColorMode(e.target.value as ColorMode)}>
+                    <AppSelect className="h-9" value={colorMode} onValueChange={(next) => setColorMode(next as ColorMode)}>
                       {COLOR_MODES.map((m) => (
                         <option key={m} value={m}>{COLOR_MODE_AR[m]}</option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </div>
                   <div className="space-y-1">
                     <Label>المقاس (ISO)</Label>
-                    <select className={selectClsFull} value={paperSize} onChange={(e) => setPaperSize(e.target.value as PaperSizeCode)}>
+                    <AppSelect className="h-9" value={paperSize} onValueChange={(next) => setPaperSize(next as PaperSizeCode)}>
                       <option value="">— اختر مقاساً مُسعّراً —</option>
                       {pricedSizes.map((s) => (
                         <option key={s} value={s}>{sizeLabel(s)}</option>
                       ))}
-                    </select>
+                    </AppSelect>
                     {pricedSizes.length === 0 && (
                       <p className="text-xs text-[var(--sem-warn)]">لا مقاسات مُسعّرة لهذا النمط — أضِفها في الإعدادات.</p>
                     )}
                   </div>
                   <div className="space-y-1">
                     <Label>الأوجه</Label>
-                    <select className={selectClsFull} value={sides} onChange={(e) => setSides(Number(e.target.value) === 2 ? 2 : 1)}>
+                    <AppSelect className="h-9" value={String(sides)} onValueChange={(next) => setSides(Number(next) === 2 ? 2 : 1)}>
                       <option value={1}>وجه واحد</option>
                       <option value={2}>وجهان</option>
-                    </select>
+                    </AppSelect>
                   </div>
                   <div className="space-y-1">
                     <Label>عدد النسخ</Label>
@@ -255,24 +256,24 @@ export default function PrintPricingCalculator() {
                   </div>
                   <div className="space-y-1">
                     <Label>ورق مميّز (اختياري)</Label>
-                    <select className={selectClsFull} value={paperUpchargeId} onChange={(e) => setPaperUpchargeId(e.target.value === "" ? "" : Number(e.target.value))}>
+                    <AppSelect className="h-9" value={String(paperUpchargeId)} onValueChange={(next) => setPaperUpchargeId(next === "" ? "" : Number(next))}>
                       <option value="">— بدون (ورق قياسيّ) —</option>
                       {activePapers.map((p) => (
                         <option key={p.id} value={p.id}>{p.name}</option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </div>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1 col-span-2">
                     <Label>الوسيط</Label>
-                    <select className={selectClsFull} value={mediaId} onChange={(e) => setMediaId(e.target.value === "" ? "" : Number(e.target.value))}>
+                    <AppSelect className="h-9" value={String(mediaId)} onValueChange={(next) => setMediaId(next === "" ? "" : Number(next))}>
                       <option value="">— اختر وسيطاً —</option>
                       {activeMedia.map((m) => (
                         <option key={m.id} value={m.id}>{m.name}</option>
                       ))}
-                    </select>
+                    </AppSelect>
                     {activeMedia.length === 0 && (
                       <p className="text-xs text-[var(--sem-warn)]">لا وسائط عريضة مُعرّفة — أضِفها في الإعدادات.</p>
                     )}

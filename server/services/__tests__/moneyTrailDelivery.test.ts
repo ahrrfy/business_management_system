@@ -399,8 +399,14 @@ describe("M9 — قرار المالك: ما ورّده المندوب يدخل 
     const ret = await returnSale({
       invoiceId,
       lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
-      refund: { amount: "10000.00", method: "CASH", shiftId: shift.shiftId },
-      restock: true,
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "10000.00",
+        shiftId: shift.shiftId,
+        reason: "إرجاع كامل بعد توريد عهدة المندوب",
+        disposition: "RESTOCK",
+      },
     }, MANAGER);
     expect(ret).toBeTruthy();
     const out = (await db().select().from(s.receipts).where(and(

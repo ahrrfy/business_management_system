@@ -1,4 +1,7 @@
 import { Button } from "@/components/ui/button";
+import { ActorCell } from "@/components/data-table/ActorCell";
+import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { CopyInline } from "@/components/CopyButton";
@@ -694,39 +697,39 @@ export default function Vouchers() {
               className="text-muted-foreground"
             >
               <X aria-hidden className="size-4" />
-              مسح الفلاتر
+              {FILTER_LABELS.reset}
             </Button>
           )}
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
           <FilterField label="النوع">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.type}
-              onChange={(e) => applyFilter({ type: e.target.value })}
+              onValueChange={(value) => applyFilter({ type: value })}
             >
               <option value="">الكل</option>
               <option value="RECEIPT">قبض</option>
               <option value="PAYMENT">صرف</option>
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="الطرف">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.party}
-              onChange={(e) => applyFilter({ party: e.target.value })}
+              onValueChange={(value) => applyFilter({ party: value })}
             >
               <option value="">الكل</option>
               <option value="CUSTOMER">عميل</option>
               <option value="SUPPLIER">مورّد</option>
               <option value="OTHER">أخرى</option>
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="طريقة الدفع">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.method}
-              onChange={(e) => applyFilter({ method: e.target.value })}
+              onValueChange={(value) => applyFilter({ method: value })}
             >
               <option value="">الكل</option>
               <option value="CASH">نقدي</option>
@@ -736,13 +739,13 @@ export default function Vouchers() {
               <option value="TRANSFER">تحويل</option>
               <option value="WALLET">محفظة</option>
               <option value="EXCHANGE">صيرفة</option>
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="الاعتماد">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.approval}
-              onChange={(e) => applyFilter({ approval: e.target.value })}
+              onValueChange={(value) => applyFilter({ approval: value })}
             >
               <option value="">الكل</option>
               <option value="APPROVED">
@@ -760,7 +763,7 @@ export default function Vouchers() {
                     : "بانتظار الاعتماد / الصرف"}
               </option>
               <option value="REJECTED">مَرفوض</option>
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="حالة السند">
             <AppSelect
@@ -794,10 +797,10 @@ export default function Vouchers() {
             </FilterField>
           )}
           <FilterField label="الفئة">
-            <select
-              className={selectClsFull}
+            <AppSelect
+              className="h-9"
               value={f.cat}
-              onChange={(e) => applyFilter({ cat: e.target.value })}
+              onValueChange={(value) => applyFilter({ cat: value })}
             >
               <option value="">الكل</option>
               {(categories.data ?? []).map((c) => (
@@ -805,7 +808,7 @@ export default function Vouchers() {
                   {c.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </FilterField>
           <FilterField label="من تاريخ">
             <Input
@@ -939,6 +942,7 @@ export default function Vouchers() {
                   {canFilterBranch && <th className="p-2">الفرع</th>}
                   <th className="p-2 text-center">النوع</th>
                   <th className="p-2">الطرف</th>
+                  <th className="p-2">{ATTRIBUTION_LABELS.performedBy}</th>
                   <th className="p-2">الفئة</th>
                   <th className="p-2">الوصف</th>
                   <th className="p-2 text-right">المبلغ</th>
@@ -951,14 +955,14 @@ export default function Vouchers() {
               <tbody>
                 {list.isLoading && (
                   <tr>
-                    <td colSpan={canFilterBranch ? 12 : 11}>
+                    <td colSpan={canFilterBranch ? 13 : 12}>
                       <LoadingState />
                     </td>
                   </tr>
                 )}
                 {list.isError && !list.isLoading && (
                   <tr>
-                    <td colSpan={canFilterBranch ? 12 : 11}>
+                    <td colSpan={canFilterBranch ? 13 : 12}>
                       <ErrorState
                         message={list.error?.message}
                         onRetry={() => void list.refetch()}
@@ -1055,13 +1059,12 @@ export default function Vouchers() {
                               {r.counterpartyName}
                             </div>
                           )}
-                        <div className="text-[11px] text-muted-foreground">
-                          نفّذ:{" "}
-                          {r.createdByName ??
-                            (r.createdBy
-                              ? `مستخدم #${r.createdBy}`
-                              : "غير موثق")}
-                        </div>
+                        {/*
+                          أُزيل سطرُ «نفّذ: …» المدفون داخل خليّة الطرف: صار للفاعل عمودٌ
+                          مستقلّ باسم العقد ({ATTRIBUTION_LABELS.performedBy}). إبقاؤه هنا
+                          يُكرّر المعلومة في خليّتين ويُبقي الخلطَ الذي نُعالجه: الطرفُ الآخر
+                          والفاعلُ دوران مختلفان لا يسكنان خليّةً واحدة.
+                        */}
                         {r.invoiceNumber && (
                           // ٢٤/٨ (تدقيق + Codex P2 على PR #746): رابطٌ مباشرٌ بـ`invoiceId` لا فلترٍ
                           // بالرقم — «INV-1» و«INV-10» و«INV-11» يتشابهان في `q=INV-1` فتُرجع
@@ -1081,6 +1084,9 @@ export default function Vouchers() {
                             </div>
                           )
                         )}
+                      </td>
+                      <td className="p-2 text-xs">
+                        <ActorCell actor={{ name: r.createdByName, userId: r.createdBy }} />
                       </td>
                       <td className="p-2 text-xs">
                         {r.voucherCategoryId
@@ -1292,7 +1298,7 @@ export default function Vouchers() {
                 })}
                 {!list.isLoading && !list.isError && rows.length === 0 && (
                   <TableEmptyRow
-                    colSpan={canFilterBranch ? 12 : 11}
+                    colSpan={canFilterBranch ? 13 : 12}
                     message="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً."
                   />
                 )}

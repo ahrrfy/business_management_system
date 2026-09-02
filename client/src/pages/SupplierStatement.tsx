@@ -1,4 +1,5 @@
 import { CopyInline } from "@/components/CopyButton";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -284,14 +285,14 @@ export default function SupplierStatement() {
         <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="space-y-1 md:col-span-2">
             <Label className="text-xs">المورد</Label>
-            <select className={selectClsFull} value={supplierId} onChange={(e) => selectSupplier(Number(e.target.value))}>
+            <AppSelect className="h-9" value={String(supplierId)} onValueChange={(value) => selectSupplier(Number(value))}>
               <option value={0}>— اختر مورداً —</option>
               {(index.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name} {s.phone ? `· ${s.phone}` : ""}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <Label className="text-xs">من تاريخ</Label>

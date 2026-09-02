@@ -18,22 +18,23 @@
 
 | الحالة | المسار | الأثر | القرار |
 |---|---|---|---|
-| حفظ مسودة | `PurchaseNew.tsx` / تطبيق Android → `purchases.createOrder` → `createPurchaseInvoice` بحالة `DRAFT` | يحفظ الفاتورة والبنود فقط؛ لا مخزون ولا WAVG ولا قيد ولا ذمة | **KEEP** |
-| حفظ واعتماد | `PurchaseNew.tsx` → `purchases.createOrder` → `createPurchaseInvoice` → `postPurchaseInvoiceInTx` | في معاملة واحدة: فاتورة `RECEIVED`، كامل الكميات `IN`، تحديث WAVG، قيد `PURCHASE`، ذمة المورد للآجل أو clearing وطلب صرف للنقدي | **MERGE — منفذ** |
-| اعتماد مسودة/سجل قديم | `PurchaseOrderDetail.tsx` أو تفاصيل Android → `purchases.confirmOrder` → `confirmPurchaseOrder` → `postPurchaseInvoiceInTx` | يرحّل كامل المتبقي مرة واحدة؛ إعادة النقر replay بلا تكرار | **MERGE — منفذ** |
-| رابط الاستلام القديم | `/purchases/:id/receive` | Redirect مؤقت إلى `/purchases/:id` بلا شاشة أو mutation استلام | **KEEP مؤقتاً للتوافق** |
+| حفظ مسودة | `/purchases/new` (`PurchaseNew.tsx`) أو تطبيق Android → `purchases.createOrder` → `createPurchaseOrder` | يحفظ الأمر ومراجعته بحالة `DRAFT` فقط؛ لا مخزون ولا WAVG ولا GRNI ولا AP | **KEEP** |
+| إرسال للاعتماد | `/purchases` (`Purchases.tsx`) أو تفاصيل Android → `purchases.confirmOrder` → `submitPurchaseOrderForApproval` | ينتقل `DRAFT → SENT` وينشئ طلب `APPROVE_REVISION` معلّقاً؛ لا أثر مخزني أو مالي | **KEEP** كحدّ فصل مهام |
+| اعتماد المراجعة مع إقرار الوصول الكامل | `/purchases?tab=approvals` (`PurchaseApprovalQueue.tsx`) → `purchases.decideControl` مع `confirmedFullReceipt=true` → `decidePurchaseOrderControl` → `postApprovedPurchaseInvoiceInTx` | في `withTx` واحد: GRN داخلي لكامل الكميات → `stock/WAVG` → GRNI → فاتورة مورد داخلية → مطابقة ثلاثية وترحيل AP/رصيد المورد → حالة الأمر `RECEIVED`. أي فشل يرجع السلسلة كلها، والمعتمد مستقل عن المنشئ وآخر محرر وصاحب الطلب | **MERGE — المنفذ التشغيلي الوحيد** |
+| الروابط القديمة | `/purchases/:id/receive` و`/purchases/goods-receipts` و`/purchases/supplier-invoices` | Redirects توافقية فقط إلى شاشة المشتريات؛ لا شاشة إدخال ولا tRPC عام للاستلام أو لفاتورة المورد | **KEEP مؤقتاً للتوافق** |
 | تسديد المورد | `PurchaseOrderDetail.tsx` → `purchases.pay` أو `settleUsdDirect` → خدمات الدفع/الاعتماد | طلب دفع مخصص للفاتورة؛ النقد لا يخرج قبل اعتماد شخص آخر | **KEEP** |
 | بونص المورد | `PurchaseOrderDetail.tsx` → `gifts.receivePurchaseBonus` → `purchaseBonus.ts` | سند هدية مستقل وحركة مخزون مستقلة للكميات المجانية غير الموجودة في الفاتورة | **KEEP** |
 | مرتجع الشراء | `/purchase-returns` → `purchaseReturns.create` → `purchaseReturnsService` | عكس مخزون/ذمة/تسوية حسب أصل الفاتورة | **KEEP** |
 
-الأسطح المحذوفة من جذورها: `PurchaseReceive.tsx`، و`tRPC purchases.receive`، و`purchasesWarehouseProcedure`، ونموذج/زر/Repository الاستلام في Android، وروابط الاستلام الداخلية. بقي `receivePurchase` كدالة توافق داخلية لا تصل إليها الواجهة، لأن اختبارات وسجلات تاريخية تعتمد الاستلام الجزئي القديم؛ لا تُعد واجهة تشغيلية.
+الأسطح التشغيلية المحذوفة من جذورها: `PurchaseReceive.tsx`، و`tRPC purchases.receive`، و`purchasesWarehouseProcedure`، وشاشتا/راوترا GRN وفاتورة المورد المنفصلان، ونموذج/زر/Repository الاستلام في Android، وروابط الاستلام الداخلية. تبقى خدمات GRN وفاتورة المورد والمطابقة **داخلية فقط** كي يصنعها اعتماد `APPROVE_REVISION` ذرياً ويحفظ أدلة المخزون وGRNI وAP؛ ليست لها واجهة إدخال عامة. أمّا `receivePurchase` القديم فليس مساراً تشغيلياً، ويُحصر في التوافق الداخلي والاختبارات التاريخية إلى حين إزالته الآمنة.
 
 ### شرط السلامة التشغيلي
 
 **اعتماد فاتورة الشراء يعني أن البضاعة وصلت فعلياً وتمت مطابقة كامل كمياتها.** لذلك:
 
-- قبل الاعتماد: يُعدل النقص أو التلف في المسودة.
-- الشحنة الجزئية: تُسجّل كفاتورة/دفعة مستقلة بالكميات الواصلة فعلياً.
+- الإنشاء `DRAFT` والإرسال `SENT` صفريا الأثر؛ لا يبدأ الاستلام أو الالتزام بمجرد الحفظ أو الإرسال.
+- قبل الإرسال أو بعد رفض الطلب إلى `DRAFT`: يُعدل النقص أو التلف في المسودة ثم يُعاد إرسالها.
+- الشحنة الجزئية: تُسجّل **كفاتورة شراء مستقلة** بالكميات الواصلة فعلياً؛ لا استلام جزئي على الفاتورة الأصلية.
 - أجور الشحن والجمارك وطريقة تسويتها ومرجعها تُثبت في الفاتورة نفسها، فلا توجد شاشة متابعة منفصلة لإكمالها.
 - بعد الاعتماد: التصحيح بمرتجع شراء موثق، لا بتعديل المخزون صامتاً.
 - طلب الدفع النقدي يبقى maker-checker؛ تبسيط الاستلام لا يبرر الدفع الذاتي.

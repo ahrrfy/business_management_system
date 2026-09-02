@@ -36,7 +36,9 @@ import {
   isCurrentTenantCandidateKey,
   isImageStoreClientAbortError,
   isImageStoreUnavailableError,
+  MAX_PUBLIC_PRODUCT_THUMBNAIL_BYTES,
   MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
+  PUBLIC_PRODUCT_IMAGE_WIDTHS,
   recordImageStorePublicFallback,
   shortHash,
 } from "./lib/imageStore";
@@ -45,6 +47,7 @@ import { resolveKioskDevice } from "./services/kioskDeviceService";
 import { inspectStorefrontContext } from "./services/storefrontContextService";
 import type { Request, Response } from "express";
 import type { Readable } from "node:stream";
+import type { PublicProductImageWidth } from "./lib/imageStore";
 import { companyCodeTenancyMiddleware } from "./tenancy/expressMiddleware";
 import { getCurrentCompanyId } from "./tenancy/context";
 import { resolvePortalIdentity, type PortalIdentity } from "./services/countPortal/identity";
@@ -119,8 +122,35 @@ export function bannerImageUrl(bannerId: number, slot: string, dataUrl: string):
  * فرابطٌ مُفتَّح بـproductId يصير غامضاً (الاستعلام يختار صفّاً والنقطة قد تختار غيره) فتُخدَم
  * بايتاتٌ لا تطابق بصمة `v=` ⇒ ينكسر عهد `immutable` بصمت. المعرّف يشير لصفٍّ بعينه ⇒ لا غموض.
  */
-export function productImageUrl(imageId: number, dataUrl: string): string {
-  return `/api/img/product/${imageId}?v=${imageHash(dataUrl)}`;
+export function productImageUrl(
+  imageId: number,
+  dataUrl: string,
+  width?: PublicProductImageWidth,
+): string {
+  const suffix = width == null ? "" : `&w=${assertPublicProductImageWidth(width)}`;
+  return `/api/img/product/${imageId}?v=${imageHash(dataUrl)}${suffix}`;
+}
+
+function assertPublicProductImageWidth(value: number): PublicProductImageWidth {
+  if (!(PUBLIC_PRODUCT_IMAGE_WIDTHS as readonly number[]).includes(value)) {
+    throw new Error("عرض صورة المتجر غير مدعوم");
+  }
+  return value as PublicProductImageWidth;
+}
+
+/** يضيف عقد الحجم فقط لمسارات صور المنتج الداخلية؛ الروابط المستوردة الخارجية تبقى كما هي. */
+export function withPublicProductImageWidth(value: string, width: PublicProductImageWidth): string {
+  assertPublicProductImageWidth(width);
+  if (!/^\/api\/img\/(?:company\/[^/]+\/)?product\/\d+(?:\?|$)/.test(value)) return value;
+  const parsed = new URL(value, "http://storefront.local");
+  parsed.searchParams.set("w", String(width));
+  return `${parsed.pathname}${parsed.search}`;
+}
+
+export function parsePublicProductImageWidth(value: unknown): { valid: true; width: PublicProductImageWidth | null } | { valid: false } {
+  if (value == null) return { valid: true, width: null };
+  if (typeof value !== "string" || !/^(?:320|640|1200)$/.test(value)) return { valid: false };
+  return { valid: true, width: Number(value) as PublicProductImageWidth };
 }
 
 /**
@@ -196,7 +226,13 @@ export function countProductImageUrl(
  * ⚠️ **للعلنيّ فقط `public` بلا `Vary`:** إضافتها هناك تُجزّئ الكاش المشترك بلا مقابل (الردّ لا
  * يعتمد على الكوكي أصلاً) فتُضعف مكسب #212/#213.
  */
-function sendImage(req: Request, res: Response, dataUrl: string | null, visibility: "public" | "private"): Response {
+function sendImage(
+  req: Request,
+  res: Response,
+  dataUrl: string | null,
+  visibility: "public" | "private",
+  requestedWidth: PublicProductImageWidth | null = null,
+): Response {
   const img = decodeDataUrl(dataUrl);
   if (!img) return res.status(404).end();
 
@@ -207,6 +243,7 @@ function sendImage(req: Request, res: Response, dataUrl: string | null, visibili
   res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
   if (visibility === "private") res.setHeader("Vary", "Cookie");
   res.setHeader("ETag", etag);
+  if (requestedWidth != null) res.setHeader("X-Image-Variant", "original-fallback");
 
   // إعادة تحقّق رخيصة للمتصفّحات التي تتجاهل immutable (أو بعد انتهاء السنة).
   if (req.headers["if-none-match"] === etag) return res.status(304).end();
@@ -224,8 +261,39 @@ type StoredProductImage = {
   contentHash: string | null;
   mime: string | null;
   bytes: number | null;
+  width?: number | null;
+  height?: number | null;
   thumbDataUrl?: string | null;
 };
+
+/** 320 مشتق منشور فعلياً؛ كاشه قصير لأن schema لا يحمل hash مستقلاً للمصغّرة بعد. */
+function sendPublicThumbnailVariant(req: Request, res: Response, dataUrl: string | null | undefined): Response | null {
+  const img = decodeDataUrl(dataUrl);
+  if (!img || img.bytes.length > MAX_PUBLIC_PRODUCT_THUMBNAIL_BYTES) return null;
+  const etag = `"${imageHash(dataUrl!)}-w320"`;
+  res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=86400");
+  res.setHeader("ETag", etag);
+  res.setHeader("X-Image-Variant", "320");
+  if (req.headers["if-none-match"] === etag) return res.status(304).end();
+  res.setHeader("Content-Type", img.mime);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("Content-Length", String(img.bytes.length));
+  return res.end(img.bytes);
+}
+
+/** محاولة واحدة إضافية فقط للأعطال العابرة upstream؛ القاطع/الطابور لا يُعاد ضغطهما. */
+export async function readPublicStoredBodyWithRetry(
+  read: () => Promise<Buffer | null>,
+  signal: AbortSignal,
+): Promise<Buffer | null> {
+  try {
+    return await read();
+  } catch (error) {
+    if (!isImageStoreUnavailableError(error) || error.reason !== "upstream" || signal.aborted) throw error;
+    return read();
+  }
+}
 
 /**
  * سقوط عرضي عام فقط عند تعثّر R2. لا ETag ولا immutable: لا يجوز تثبيت المصغّرة سنةً مكان
@@ -344,6 +412,7 @@ async function sendStoredProductImage(
   res: Response,
   image: StoredProductImage,
   visibility: "public" | "private",
+  requestedWidth: PublicProductImageWidth | null = null,
 ): Promise<Response> {
   const { objectKey, contentHash, mime, bytes } = image;
   if (
@@ -355,11 +424,16 @@ async function sendStoredProductImage(
 
   const version = shortHash(contentHash);
   if (typeof req.query.v !== "string" || req.query.v !== version) return res.status(404).end();
+  if (visibility === "public" && requestedWidth === 320) {
+    const thumbnail = sendPublicThumbnailVariant(req, res, image.thumbDataUrl);
+    if (thumbnail) return thumbnail;
+  }
   const etag = `"${version}"`;
   if (req.headers["if-none-match"] === etag) {
     res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
     if (visibility === "private") res.setHeader("Vary", "Cookie");
     res.setHeader("ETag", etag);
+    if (visibility === "public" && requestedWidth != null) res.setHeader("X-Image-Variant", "original-fallback");
     return res.status(304).end();
   }
 
@@ -378,7 +452,10 @@ async function sendStoredProductImage(
     res.once("close", abortOnEarlyClose);
     try {
       // لا ترويسة 200 ولا pipe قبل اكتمال الجسم داخل semaphore والقاطع.
-      body = await getImageStore().getBuffer(objectKey, bytes, { signal: abortController.signal });
+      body = await readPublicStoredBodyWithRetry(
+        () => getImageStore().getBuffer(objectKey, bytes, { signal: abortController.signal }),
+        abortController.signal,
+      );
     } catch (error) {
       if (isImageStoreClientAbortError(error)) {
         preventCachingStoredImageFailure(res);
@@ -410,6 +487,7 @@ async function sendStoredProductImage(
     }
     res.setHeader("Cache-Control", `public, max-age=${ONE_YEAR}, immutable`);
     res.setHeader("ETag", etag);
+    if (requestedWidth != null) res.setHeader("X-Image-Variant", "original-fallback");
     res.setHeader("Content-Type", mime.toLowerCase());
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
@@ -558,6 +636,8 @@ export function imageRouter(): Router {
   const servePublicProduct = async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
+    const requestedWidth = parsePublicProductImageWidth(req.query.w);
+    if (!requestedWidth.valid) return res.status(400).end();
     // الرابط غير المسند لشركة متاح فقط في النشر الأحادي أو داخل جلسة شركة؛ المجهول في multi يستخدم /company/:code/.
     if (isMultiTenantModeActive() && getCurrentCompanyId() == null) return res.status(404).end();
     const db = getDb();
@@ -572,6 +652,8 @@ export function imageRouter(): Router {
             contentHash: productImages.contentHash,
             mime: productImages.mime,
             bytes: productImages.bytes,
+            width: productImages.width,
+            height: productImages.height,
             thumbDataUrl: productImages.thumbDataUrl,
           })
           .from(productImages)
@@ -590,8 +672,8 @@ export function imageRouter(): Router {
       )[0];
       if (!row) return res.status(404).end();
 
-      if (row.objectKey) return await sendStoredProductImage(req, res, row, "public");
-      return sendImage(req, res, row.url, "public");
+      if (row.objectKey) return await sendStoredProductImage(req, res, row, "public", requestedWidth.width);
+      return sendImage(req, res, row.url, "public", requestedWidth.width);
     } catch (e) {
       logger.error({ err: e, productImageId: id }, "img: product image fetch failed");
       return res.status(500).end();

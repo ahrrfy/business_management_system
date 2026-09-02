@@ -14,6 +14,7 @@
  * مستقلّة بتنسيقها: <style> داخلي (CSP: style-src unsafe-inline) + SVG داخلي + موارد ذاتية المصدر فقط.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc } from "@/lib/trpc";
 import { errMsg } from "@/lib/notify";
 import {
@@ -648,11 +649,11 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
                 <>
                   <div className="cj-field">
                     <label htmlFor="cj-branch">الفرع المطلوب <i>*</i></label>
-                    <select
+                    <AppSelect
                       id="cj-branch"
                       className="cj-input"
-                      value={branchId}
-                      onChange={(e) => setBranchId(e.target.value)}
+                      value={String(branchId)}
+                      onValueChange={(next) => setBranchId(next)}
                       disabled={branches.isLoading}
                       required
                     >
@@ -660,7 +661,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
                       {((branches.data ?? []) as PublicBranch[]).map((branch) => (
                         <option key={branch.id} value={branch.id}>{branch.name}</option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </div>
                   <div className="cj-field">
                     <label htmlFor="cj-job">الوظيفة المطلوبة</label>

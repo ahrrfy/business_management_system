@@ -6,6 +6,7 @@ import { decryptSecret, encryptSecret } from "./cryptoService";
 export const NATIVE_PUSH_ENVIRONMENTS = ["dev", "staging", "prod"] as const;
 export type NativePushEnvironment = (typeof NATIVE_PUSH_ENVIRONMENTS)[number];
 export type NativePushUrgency = "information" | "action";
+export type NativePushFamily = "OPERATIONS" | "ADMIN" | "EMPLOYEE" | "SYSTEM" | "APPROVAL";
 
 export interface NativePushPayloadInput {
   notificationId: string;
@@ -15,6 +16,8 @@ export interface NativePushPayloadInput {
   destination: string;
   urgency: NativePushUrgency;
   sensitive: boolean;
+  /** قناة العرض الموجّهة؛ اختيارية فقط لتوافق المستدعين القدامى داخل الخادم. */
+  family?: NativePushFamily;
 }
 
 export interface NormalizedNativePushPayload {
@@ -26,6 +29,7 @@ export interface NormalizedNativePushPayload {
   destination: string;
   urgency: NativePushUrgency;
   sensitive: "true" | "false";
+  family: NativePushFamily;
 }
 
 export class NativePushValidationError extends Error {}
@@ -38,6 +42,7 @@ const FID_RE = /^[A-Za-z0-9_-]{20,128}$/;
 const DEVICE_THUMBPRINT_RE = /^[A-Za-z0-9_-]{43}$/;
 const NOTIFICATION_ID_RE = /^[A-Za-z0-9_-]{1,96}$/;
 const KIND_RE = /^[A-Z][A-Z0-9_]{1,39}$/;
+const NATIVE_PUSH_FAMILIES = new Set<NativePushFamily>(["OPERATIONS", "ADMIN", "EMPLOYEE", "SYSTEM", "APPROVAL"]);
 const ENTITY_ID_RE = /^[A-Za-z0-9_-]{1,96}$/;
 const PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,61}[a-z0-9]$/;
 const MODULES = new Set([
@@ -213,6 +218,16 @@ export function normalizeNativePushPayload(
   if (input.urgency !== "information" && input.urgency !== "action") {
     throw new NativePushValidationError("أولوية الإشعار غير صالحة.");
   }
+  const family = input.family ?? (
+    kind === "SESSION_EVENT" ? "ADMIN"
+      : kind === "APPROVAL_REQUIRED" ? "APPROVAL"
+        : ["PAYROLL_READY", "LEAVE_STATUS", "ATTENDANCE", "ATTENDANCE_CHECK_IN", "ATTENDANCE_CHECK_OUT"].includes(kind) ? "EMPLOYEE"
+          : kind === "TASK_ASSIGNED" ? "OPERATIONS"
+            : "SYSTEM"
+  );
+  if (!NATIVE_PUSH_FAMILIES.has(family)) {
+    throw new NativePushValidationError("تصنيف الإشعار غير صالح.");
+  }
   const destination = validateNativeDestination(input.destination);
   return {
     version: "1",
@@ -223,6 +238,7 @@ export function normalizeNativePushPayload(
     destination,
     urgency: input.urgency,
     sensitive: input.sensitive ? "true" : "false",
+    family,
   };
 }
 

@@ -19,13 +19,16 @@ import {
 } from "@/lib/offline/pinLock";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { trpc } from "@/lib/trpc";
-import { moduleAccessAllowed, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasModuleAccess, moduleAccessAllowed, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { Lock } from "lucide-react";
 import { useSyncExternalStore } from "react";
 
 type Props = {
   /** الأدوار المسموح لها بالوصول. لا تقبل قائمة فارغة. */
-  roles: RoleKey[];
+  roles?: RoleKey[];
+  /** بوابة مركبة (anyOf/allOf) للمسارات التي لا تختزل في وحدة واحدة. */
+  gate?: RoleGate;
   /**
    * مفتاح الوحدة في مصفوفة الصلاحيات (pos/sales/reports/…). عند تمريره يُفتح الوصول
    * أيضاً لمن مُنح الوحدة صراحةً بالمستوى المطلوب، وتُنفَّذ خريطة الدور على أدوار القائمة.
@@ -40,6 +43,7 @@ type Props = {
 
 export function RequireRole({
   roles,
+  gate,
   module,
   level,
   localOfflineActor,
@@ -71,9 +75,13 @@ export function RequireRole({
 
   const role = (localActor?.role ?? me.data?.role) as RoleKey | undefined;
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const allowed = !!role && (module
-    ? moduleAccessAllowed(role, override, module, level ?? "READ", roles)
-    : role === "admin" || roles.includes(role));
+  const allowed = !!role && (gate
+    ? canSeeGate(gate, role, override)
+    : module
+      ? roles?.length
+        ? moduleAccessAllowed(role, override, module, level ?? "READ", roles)
+        : hasModuleAccess(role, override, module, level ?? "READ")
+      : role === "admin" || !!roles?.includes(role));
   if (!allowed) {
     return <Forbidden />;
   }

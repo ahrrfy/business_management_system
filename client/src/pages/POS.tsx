@@ -3,7 +3,9 @@
  * تصميم Odoo 19-style مع multi-tab، حاسبة ذكية، مسح باركود آني، وإدارة وردية كاملة.
  */
 import CustomerPicker from "@/components/CustomerPicker";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog } from "@/components/pos/CashDropDialog";
+import { ShiftHandoverSection } from "@/components/pos/ShiftHandoverSection";
 import {
   discardLegacyPosDrafts,
   loadPosTabsDraft,
@@ -16,7 +18,7 @@ import { variantDisplayName } from "@shared/variantDisplay";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
-import { D, roundCashIQD, round2 } from "@/lib/money";
+import { D, formatIqd, roundCashIQD, round2 } from "@/lib/money";
 import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, printShiftClose, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -36,7 +38,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, Zap, ChevronDown, ChevronUp, Send, Wallet, Percent, Calculator } from "lucide-react";
+import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, Zap, ChevronDown, ChevronUp, Send, Wallet, Percent, Calculator, PackagePlus } from "lucide-react";
 import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
 import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { CopyButton } from "@/components/CopyButton";
@@ -46,6 +48,8 @@ import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { normalizeNumberInput } from "@shared/numberNormalize";
+import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
+import { createPortal } from "react-dom";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -503,6 +507,11 @@ export default function POS() {
   const [bridge,         setBridge]         = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
   const [showCustPicker, setShowCustPicker] = useState(false);
   const [restoredDraftKey, setRestoredDraftKey] = useState<string | null>(null);
+  const [headerActionsNode, setHeaderActionsNode] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    setHeaderActionsNode(document.getElementById("pos-header-actions"));
+  }, []);
 
   // تحت 1024px (اللوحي/الأصغر) تُكدَّس لوحتا الكاشير عمودياً بدل الصفّ الأفقي ذي العرض الثابت.
   // القيد الحاكم عند زوم المتصفح هو الارتفاع لا العرض (الزوم يُقلّص المساحة بوحدات CSS)،
@@ -510,6 +519,7 @@ export default function POS() {
   const stacked = useMediaQuery("(max-width: 1023px), (max-height: 620px)");
 
   const searchRef = useRef<HTMLInputElement>(null);
+  const qtyEntryRef = useRef({ tabId: activeId, lineId: null as number | null, replaceNextDigit: true });
 
   // ── Tab helpers ───────────────────────────────────────────────────────────
   // كل التعديلات على التبويب النشط تمرّ عبر activeIdRef.current (لا activeId المُغلَق عليه)
@@ -538,8 +548,16 @@ export default function POS() {
       )
     );
   }
-  const setSelId   = (v: number | null) => patchActive({ selId: v });
-  const setNumMode = (v: NumMode)        => patchActive({ numMode: v });
+  const setSelId = (v: number | null) => {
+    qtyEntryRef.current = { tabId: activeIdRef.current, lineId: v, replaceNextDigit: true };
+    patchActive({ selId: v });
+  };
+  const setNumMode = (v: NumMode) => {
+    if (v === "QTY") {
+      qtyEntryRef.current = { tabId: activeIdRef.current, lineId: activeTab.selId, replaceNextDigit: true };
+    }
+    patchActive({ numMode: v });
+  };
   const setMethod  = (v: PaymentMethod)  => patchActive({ method: v, externalPayment: null });
   const resetCouponItems = (items: CartItem[]) => items.map((item) => item.preCouponRow ? { ...item, row: item.preCouponRow, preCouponRow: undefined, disc: undefined } : item);
   const clearAppliedCoupon = () => {
@@ -789,6 +807,11 @@ export default function POS() {
 
   function changeQty(id: number, qty: number) {
     if (activeTab.couponCode) clearAppliedCoupon();
+    qtyEntryRef.current = {
+      tabId: activeIdRef.current,
+      lineId: qty <= 0 ? null : id,
+      replaceNextDigit: true,
+    };
     if (qty <= 0) {
       setCart((prev) => prev.filter((c) => lineIdOf(c) !== id));
       if (activeTab.selId === id) setSelId(null);
@@ -935,6 +958,7 @@ export default function POS() {
       availableBase: 0,
       openedAt: null,
       isService: true,
+      allowBackorder: false, // الكرت الرقميّ خدمةٌ أصلاً — لا معنى لبيعٍ بالطلب عليه.
       isCustomizable: false,
       isPrintService: false,
       isContractPrice: false,
@@ -1016,11 +1040,17 @@ export default function POS() {
         prev.map((c) => {
           // §٨.٦: لا كمّية ولا خصم يدويّ على كرت رقميّ من لوحة الأرقام.
           if (lineIdOf(c) !== selId || c.digital) return c;
-          let s = String(c.qty);
-          if (k === "⌫") s = s.length > 1 ? s.slice(0, -1) : "1";
-          else if (k === "C") s = "1";
-          else s = s === "0" ? k : s + k;
-          return { ...c, qty: Math.max(1, parseInt(s, 10) || 1) };
+          const entry = qtyEntryRef.current;
+          const replaceNextDigit = entry.tabId !== activeIdRef.current || entry.lineId !== selId
+            ? true
+            : entry.replaceNextDigit;
+          const result = applyPosQuantityKey(c.qty, k, replaceNextDigit);
+          qtyEntryRef.current = {
+            tabId: activeIdRef.current,
+            lineId: selId,
+            replaceNextDigit: result.replaceNextDigit,
+          };
+          return { ...c, qty: result.quantity };
         })
       );
     } else if (numMode === "DISC") {
@@ -1639,14 +1669,14 @@ export default function POS() {
                 حسابك بلا فرعٍ مُسنَد — اختر الفرع الذي تعمل منه كي لا تُنسَب المبيعات لفرعٍ خاطئ.
               </div>
               <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الفرع</label>
-              <select
-                value={pickedBranch ?? ""}
-                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+              <AppSelect
+                value={String(pickedBranch ?? "")}
+                onValueChange={(value) => setPickedBranch(value ? Number(value) : null)}
                 style={{ width: "100%", height: 48, border: `1.5px solid ${pickedBranch == null ? C.danger : C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 15, fontWeight: 700, padding: "0 12px", outline: "none", boxSizing: "border-box" }}
               >
                 <option value="">— اختر الفرع —</option>
                 {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+              </AppSelect>
             </div>
           )}
           <div style={{ marginBottom: 16 }}>
@@ -1706,20 +1736,27 @@ export default function POS() {
         addToCart={addRow}
         searchRef={searchRef}
         handleScanKeyDown={handleScanKeyDown}
-        shift={shift}
-        me={me.data}
         lastInv={lastInv}
-        onCloseShift={() => setShifting(true)}
-        onCashDrop={() => setCashDropping(true)}
-        printerReady={printerReady}
-        onConnectPrinter={connectPrinter}
-        bridgeEnabled={bridge.enabled}
-        bridgeDesc={bridge.description}
-        onTestPrint={testServerPrint}
         onOpenCards={() => setCardsOpen(true)}
         cardsDisabled={offline}
         branchName={activeBranchName}
       />
+
+      {headerActionsNode && createPortal(
+        <RetailPosHeaderActions
+          C={C}
+          shift={shift}
+          userRole={me.data?.role}
+          onCloseShift={() => setShifting(true)}
+          onCashDrop={() => setCashDropping(true)}
+          printerReady={printerReady}
+          onConnectPrinter={connectPrinter}
+          bridgeEnabled={bridge.enabled}
+          bridgeDesc={bridge.description}
+          onTestPrint={testServerPrint}
+        />,
+        headerActionsNode,
+      )}
 
       {/* شبكة البطاقات الرقمية (ش٥) — لا أثر ماليّ عند الإضافة، فقط سطرٌ في السلة بسعر الخادم. */}
       <DigitalCardsPickerDialog
@@ -1821,9 +1858,6 @@ export default function POS() {
 
       {/* Tab Bar */}
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />
-
-      {/* ش٣ أوفلاين: شارة/درج مزامنة المبيعات الملتقطة + إعدادات الجهاز (ش٥). */}
-      <OfflineSyncChip userRole={me.data?.role} />
 
       {/* Body */}
       <div style={{ flex: 1, display: "flex", flexDirection: stacked ? "column-reverse" : "row", overflow: "hidden", padding: "7px 8px 8px", gap: 7, minHeight: 0 }}>
@@ -1954,6 +1988,85 @@ export default function POS() {
 
 type ShiftData = RouterOutputs["shifts"]["current"];
 
+function RetailPosHeaderActions({
+  C,
+  shift,
+  userRole,
+  onCloseShift,
+  onCashDrop,
+  printerReady,
+  onConnectPrinter,
+  bridgeEnabled,
+  bridgeDesc,
+  onTestPrint,
+}: {
+  C: C;
+  shift: ShiftData;
+  userRole?: string | null;
+  onCloseShift: () => void;
+  onCashDrop: () => void;
+  printerReady: boolean;
+  onConnectPrinter: () => void;
+  bridgeEnabled: boolean;
+  bridgeDesc: string;
+  onTestPrint: () => void;
+}) {
+  return (
+    <>
+      {shift && (
+        <span className="inline-flex h-[var(--ui-control)] shrink-0 items-center rounded-lg border bg-muted/40 px-2.5 text-xs font-bold text-muted-foreground">
+          <span aria-hidden className="me-1.5 size-2 rounded-full bg-[var(--sem-pos)]" />
+          وردية #{shift.id}
+        </span>
+      )}
+      {bridgeEnabled && (
+        <button
+          type="button"
+          onClick={onTestPrint}
+          title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
+          aria-label="اختبار جسر الطباعة"
+          className="inline-flex size-[var(--ui-control)] shrink-0 items-center justify-center rounded-lg border border-[var(--sem-pos)] text-[var(--sem-pos)]"
+        >
+          <Globe aria-hidden size={16} />
+        </button>
+      )}
+      {isWebUsbSupported() && (
+        <button
+          type="button"
+          onClick={onConnectPrinter}
+          title={printerReady ? "الطابعة الافتراضية مربوطة — اضغط لتبديلها" : "ربط الطابعة الحرارية"}
+          aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط الطابعة الحرارية"}
+          className="inline-flex size-[var(--ui-control)] shrink-0 items-center justify-center rounded-lg border"
+          style={{ color: printerReady ? C.success : C.mutedFg, borderColor: printerReady ? C.success : C.border }}
+        >
+          <Printer aria-hidden size={16} />
+        </button>
+      )}
+      {shift && (
+        <button
+          type="button"
+          onClick={onCashDrop}
+          title="سحب نقدي من الدرج إلى الخزينة"
+          className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2.5 text-xs font-bold"
+        >
+          <Banknote aria-hidden size={16} />
+          <span className="hidden 2xl:inline">سحب نقدي</span>
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onCloseShift}
+        title="إغلاق الوردية"
+        className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2.5 text-xs font-bold"
+      >
+        <Power aria-hidden size={16} />
+        <span className="hidden 2xl:inline">إغلاق الوردية</span>
+      </button>
+      <OfflineSyncChip userRole={userRole} placement="inline" />
+    </>
+  );
+}
+
 interface POSHeaderProps {
   C: C;
   search: string; setSearch: (s: string) => void;
@@ -1965,23 +2078,14 @@ interface POSHeaderProps {
   addToCart: (row: RouterOutputs["catalog"]["posList"][number]) => void;
   searchRef: React.RefObject<HTMLInputElement | null>;
   handleScanKeyDown: (e: React.KeyboardEvent<HTMLInputElement>, curVal: string, setValue: (s: string) => void) => void;
-  shift: ShiftData;
-  me: RouterOutputs["auth"]["me"] | undefined;
   lastInv: { num: string; total: number } | null;
-  onCloseShift: () => void;
-  onCashDrop: () => void;
-  printerReady: boolean;
-  onConnectPrinter: () => void;
-  bridgeEnabled: boolean;
-  bridgeDesc: string;
-  onTestPrint: () => void;
   /** فتح شبكة «الكروت والاشتراكات» (ش٥) — معطَّل أثناء الانقطاع (البيع الرقميّ أونلاين حصراً). */
   onOpenCards: () => void;
   cardsDisabled: boolean;
   branchName: string;
 }
 
-function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, onCashDrop, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint, onOpenCards, cardsDisabled, branchName }: POSHeaderProps) {
+function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, lastInv, onOpenCards, cardsDisabled, branchName }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -1995,7 +2099,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
     stock < 5 ? C.danger : stock < 15 ? C.amber : C.mutedFg;
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 14px", height: 64, flexShrink: 0, background: C.card, borderBottom: `1px solid ${C.border}`, position: "relative", zIndex: 40 }}>
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, padding: "7px 14px", minHeight: 64, flexShrink: 0, background: C.card, borderBottom: `1px solid ${C.border}`, position: "relative", zIndex: 40 }}>
 
       {/* Brand */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
@@ -2026,7 +2130,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
       </button>
 
       {/* Search with smart scan */}
-      <div ref={wrapRef} style={{ flex: 1, maxWidth: 560, position: "relative" }}>
+      <div ref={wrapRef} style={{ flex: "1 1 460px", minWidth: 240, position: "relative" }}>
         <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
           <span style={{ position: "absolute", right: 13, zIndex: 1, color: C.mutedFg, display: "flex", pointerEvents: "none" }} aria-hidden><Search size={17} /></span>
           <input
@@ -2105,8 +2209,6 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
         )}
       </div>
 
-      <div style={{ flex: 1 }} />
-
       {/* Last invoice badge */}
       {lastInv && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--pos-branch-bg)", border: "1px solid var(--pos-branch-bord)", borderRadius: 8, padding: "3px 6px 3px 12px", flexShrink: 0, lineHeight: 1.3 }}>
@@ -2117,65 +2219,11 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
             <CopyButton value={lastInv.num} title="نسخ رقم آخر فاتورة" successMessage="تم نسخ رقم الفاتورة" />
-            <CopyButton value={String(lastInv.total)} title="نسخ إجمالي آخر فاتورة" successMessage="تم نسخ الإجمالي" />
+            <CopyButton value={lastInv.total} title="نسخ إجمالي آخر فاتورة" successMessage="تم نسخ الإجمالي" />
           </div>
         </div>
       )}
 
-      {/* Shift badge */}
-      {shift && (
-        <div style={{ background: C.muted, borderRadius: 8, padding: "4px 11px", fontSize: 12, color: C.mutedFg, fontWeight: 700, flexShrink: 0, border: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
-          <span aria-hidden className="inline-block size-2 rounded-full bg-[var(--sem-pos)]" style={{ marginLeft: 6 }} />وردية #{shift.id}
-        </div>
-      )}
-
-      {/* User */}
-      {me && (
-        <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
-          <div style={{ textAlign: "left" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.2, color: C.fg }}>{me.name}</div>
-            <div style={{ fontSize: 10.5, color: C.mutedFg, lineHeight: 1.2 }}>
-              {/* تسمية الدور المخصّص أولاً («كاشير تجزئة/طباعة») — كانت «كاشير» مثبّتةً نصاً. */}
-              {me.customRoleLabel ?? (me.role === "admin" ? "مدير" : me.role === "manager" ? "مدير فرع" : "كاشير")} · {branchName}
-            </div>
-          </div>
-          <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, flexShrink: 0 }}>
-            {me.name?.[0] ?? "م"}
-          </div>
-        </div>
-      )}
-
-      {/* جسر الطباعة على الخادم (طباعة صامتة) — يظهر حين يكون مفعّلاً؛ نقرة = تذكرة اختبار. */}
-      {bridgeEnabled && (
-        <button onClick={onTestPrint} title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
-          aria-label="جسر طباعة على الخادم — تذكرة اختبار"
-          style={{ background: "none", border: `1.5px solid ${C.success}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: C.success, fontFamily: "inherit", fontWeight: 600, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
-          <Printer size={15} aria-hidden /><Globe size={13} aria-hidden />
-        </button>
-      )}
-
-      {/* Printer (WebUSB) */}
-      {isWebUsbSupported() && (
-        <button onClick={onConnectPrinter} title={printerReady ? "الطابعة الافتراضية مربوطة (تلقائياً) — اضغط لتبديلها" : "اربط طابعة حرارية (تُربط تلقائياً بعدها)"}
-          aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط طابعة حرارية"}
-          style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 600, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
-          <Printer size={15} aria-hidden />{printerReady && <Check size={13} aria-hidden strokeWidth={3} />}
-        </button>
-      )}
-
-      {/* Cash drop — سحب نقديّ من الدرج إلى الخزينة أثناء الوردية (يقلّل مخاطرة تكدّس النقد) */}
-      {shift && (
-        <button onClick={onCashDrop} title="سحب نقديّ من الدرج إلى الخزينة أثناء الوردية"
-          style={{ height: 44, padding: "0 12px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
-          <Banknote size={16} aria-hidden /> سحب نقدي
-        </button>
-      )}
-
-      {/* Close shift */}
-      <button onClick={onCloseShift}
-        style={{ height: 44, padding: "0 14px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
-        <Power size={16} aria-hidden /> إغلاق الوردية
-      </button>
     </div>
   );
 }
@@ -2324,6 +2372,10 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
     const isOut       = availBase <= 0;                       // نافذ — لا رصيد
     const isShort     = !isOut && reqBase > availBase;        // الطلب يتجاوز المتاح
     const availInUnit = Math.floor(availBase / convFactor);  // المتاح بوحدة السطر
+    // «يُباع بالطلب» (0318): الخادم يُعفيه من حارس النفاد إعفاءً دائماً (`applyMovement`)، فوسمُه
+    // «نافذاً» يكذب على الكاشير ويحجب زرّاً يعمل. نُطفئ **الوسم وحده** ونُبقي `availInUnit`
+    // صادقاً كما هو — رصيدُه السالب هو عدّاد «مُباعٌ لم يُورَّد»، وإخفاؤه خلف ∞ يطمس الفائدة.
+    if (c.row.allowBackorder) return { isKnown: true, isOut: false, isShort: false, availInUnit };
     return { isKnown: true, isOut, isShort, availInUnit };
   };
   // ملخّص للشارة الدائمة في التذييل (كي لا يختفي التحذير حين ينزلق السطر المميَّز خارج الرؤية).
@@ -2386,12 +2438,12 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
                 <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <label style={{ fontSize: 12, color: C.mutedFg }}>فئة السعر:</label>
-                    <select value={effectiveTier} onChange={(e) => setTierOvr(e.target.value as Tier)}
+                    <AppSelect value={effectiveTier} onValueChange={(value) => setTierOvr(value as Tier)}
                       style={{ height: 30, border: `1px solid ${C.border}`, borderRadius: 6, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 12, padding: "0 6px", outline: "none" }}>
                       <option value="RETAIL">مفرد</option>
                       <option value="WHOLESALE">جملة</option>
                       <option value="GOVERNMENT">حكومي</option>
-                    </select>
+                    </AppSelect>
                     {tierOverride && (
                       <button onClick={() => setTierOvr(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.mutedFg }}>↩</button>
                     )}
@@ -2530,6 +2582,13 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
                     {openingSellable && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
                         <AlertTriangle aria-hidden size={12} /> غير مجرود — يُباع نقداً بالسالب
+                      </span>
+                    )}
+                    {/* «يُباع بالطلب» (0318): الصنف مسموحٌ بيعه قبل توريده — نُصرّح بذلك بدل ترك
+                        الكاشير يظنّ الرصيدَ الصفريّ/السالب عطباً. الرقم في العمود يبقى الحقيقة. */}
+                    {c.row.allowBackorder && (c.row.availableBase ?? 0) <= 0 && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                        <PackagePlus aria-hidden size={12} /> يُباع بالطلب — يُورَّد لاحقاً
                       </span>
                     )}
                     {!openingSellable && isOut && (
@@ -3152,7 +3211,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             <span style={{ fontSize: 13.5, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 22, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12.5, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span>
-              <CopyButton value={String(change)} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
+              <CopyButton value={change} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
             </span>
           </>
         )}
@@ -3161,7 +3220,7 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>المتبقي للدفع</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 22, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12.5, fontWeight: 500 }}>د.ع</span></span>
-              <CopyButton value={String(credit)} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
+              <CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
             </span>
           </>
         )}
@@ -3305,7 +3364,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
           ].map((item) => (
             <div key={item.label} style={{ background: C.muted, borderRadius: 10, padding: "14px 10px", textAlign: "center", position: "relative" }}>
               <div style={{ position: "absolute", top: 4, left: 4 }}>
-                <CopyButton value={String(item.raw)} title={`نسخ ${item.label}`} successMessage={`تم نسخ ${item.label}`} />
+                <CopyButton value={item.raw} title={`نسخ ${item.label}`} successMessage={`تم نسخ ${item.label}`} />
               </div>
               <div style={{ fontSize: 12, color: C.mutedFg, marginBottom: 4 }}>{item.label}</div>
               <div style={{ fontSize: 26, fontWeight: 900, direction: "ltr", color: item.color }}>{item.value}</div>
@@ -3319,7 +3378,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
             <span style={{ fontSize: 14, fontWeight: 700, color: C.success }}>الباقي للعميل</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 26, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(receipt.change)} <span style={{ fontSize: 12 }}>د.ع</span></span>
-              <CopyButton value={String(receipt.change)} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
+              <CopyButton value={receipt.change} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
             </span>
           </div>
         )}
@@ -3329,7 +3388,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
             <span style={{ fontSize: 14, fontWeight: 700, color: C.amber }}>آجل على {receipt.customerName ?? "العميل"}</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 26, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(receipt.credit)} <span style={{ fontSize: 12 }}>د.ع</span></span>
-              <CopyButton value={String(receipt.credit)} title="نسخ المتبقي الآجل" successMessage="تم نسخ المتبقي" />
+              <CopyButton value={receipt.credit} title="نسخ المتبقي الآجل" successMessage="تم نسخ المتبقي" />
             </span>
           </div>
         )}
@@ -3384,6 +3443,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
   const [countEntered, setCountEntered] = useState(false);
+  const [handoverToUserId, setHandoverToUserId] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
   // ش٤ أوفلاين — حارس الطابور: إغلاق الوردية وثمة مبيعات غير مُزامنة يترك نقداً في الدرج بلا
@@ -3430,7 +3490,20 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
         expectedCash: r.expectedCash,
         countedCash:  r.countedCash,
         variance:     r.variance,
+        cashHandover: r.treasuryReturn
+          ? {
+              amount: r.countedCash,
+              referenceNumber: r.treasuryReturn.handoverNumber,
+              recipientName: r.treasuryReturn.recipientName,
+            }
+          : null,
       });
+      if (r.treasuryReturn) {
+        notify.ok(
+          `سلّم ${formatIqd(r.countedCash)} إلى ${r.treasuryReturn.recipientName}`,
+          `العهدة ${r.treasuryReturn.handoverNumber} بانتظار العدّ والقبول في الخزينة.`,
+        );
+      }
       await utils.shifts.current.invalidate();
       onClosed();
     },
@@ -3448,6 +3521,17 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const showExpected = isElevatedRole || countEntered;
   const diffD       = showExpected && expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   const hasVariance = diffD != null && diffD.abs().gt("0.005");
+  const needsHandoverRecipient = countedD?.gt(0) === true && handoverToUserId == null;
+  const closeDisabled = !counted || closeShift.isPending || closeBlocked || hasVariance || needsHandoverRecipient;
+  const closeLabel = closeShift.isPending
+    ? "جارٍ الإغلاق…"
+    : closeBlocked
+      ? "أكمل المزامنة أولاً"
+      : hasVariance
+        ? "الإغلاق مرفوض لوجود فرق"
+        : needsHandoverRecipient
+          ? "اختر مستلم عهدة الإغلاق"
+          : "إغلاق وطباعة Z";
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
   const openingBal  = openingD.toNumber();
   const diff        = diffD?.toNumber() ?? null;
@@ -3552,11 +3636,13 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             )}
 
-            {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق
-                (drawer→0) — لا اختيار مستلِم. الوردية التالية تبدأ بعهدةٍ جديدة تُسحَب من الخزينة. */}
-            <div style={{ marginTop: 14, padding: "10px 12px", background: C.muted, border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 12.5, color: C.mutedFg }}>
-              يعود كامل النقد المعدود إلى الخزينة تلقائياً عند الإغلاق (تسليمٌ كامل). الوردية التالية تبدأ بعهدةٍ جديدة من الخزينة.
-            </div>
+            <ShiftHandoverSection
+              branchId={branchId}
+              amount={counted}
+              value={handoverToUserId}
+              onChange={setHandoverToUserId}
+              disabled={closeShift.isPending}
+            />
 
             {/* ش٤ أوفلاين: لا مصدر مالي قبل ترحيل الفاتورة، لذلك لا يوجد تجاوز للإغلاق. */}
             {outboxQueued.count > 0 && (
@@ -3579,13 +3665,14 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 إلغاء
               </button>
               <button
-                disabled={!counted || closeShift.isPending || closeBlocked || hasVariance}
+                disabled={closeDisabled}
                 onClick={() => shift && closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
+                  handoverToUserId,
                 })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || hasVariance ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || hasVariance ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || hasVariance ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
-                {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}
+                style={{ flex: 1, height: 46, background: closeDisabled ? C.muted : C.danger, color: closeDisabled ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: closeDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
+                {closeLabel}
               </button>
             </div>
           </>

@@ -1,5 +1,6 @@
 import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
 import { PageHeader } from "@/components/PageHeader";
+import { ErrorState } from "@/components/PageState";
 import { shiftTypeLabel, sourceTypeLabel } from "@/lib/labels";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,8 @@ import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -48,6 +51,7 @@ import {
 import { InvoiceDigitalCards } from "@/components/digitalCards/InvoiceDigitalCards";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
+import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useParams, useSearch } from "wouter";
 import {
@@ -60,20 +64,24 @@ import {
   Paperclip,
   Pencil,
   Printer,
-  RotateCcw,
   Truck,
 } from "lucide-react";
 import { notify } from "@/lib/notify";
+import { getDeviceCode } from "@/lib/offline/outbox";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   POS_METHODS as METHODS,
   paymentMethodClass,
   paymentMethodLabel,
 } from "@/lib/paymentMethod";
-import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
-import { invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
+} from "@shared/posPaymentPolicy";
+import { invoiceStatusLabel, invoiceStatusBadgeVariant,
+} from "@shared/invoiceStatus";
 import { Badge } from "@/components/ui/badge";
 
-const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v));
+const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v),
+);
 
 // التعريب و variant من `@shared/invoiceStatus` وحده — كانت خريطة `STATUS_CLS` محلّية بألوان
 // Tailwind خامّة (`bg-emerald-100 text-emerald-700`) تتجاوز التوكنز الدلالية للحالة، ولا مقابل
@@ -154,6 +162,13 @@ export default function InvoiceDetail() {
   const [payReference, setPayReference] = useState("");
   const [payMethod, setPayMethod] =
     useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [externalAttempt, setExternalAttempt] = useState<{
+    attemptId: number | null;
+    requestId: string;
+    deviceId: string;
+    fingerprint: string;
+    confirmed: boolean;
+  } | null>(null);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [printingReceipt, setPrintingReceipt] = useState(false);
@@ -167,7 +182,8 @@ export default function InvoiceDetail() {
   const [cancelMethod, setCancelMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [cancelReason, setCancelReason] = useState("");
   const [cancelConfirmText, setCancelConfirmText] = useState("");
-  const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID());
+  const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID(),
+  );
 
   // Default the payment amount to remaining balance once data loads.
   useEffect(() => {
@@ -191,6 +207,8 @@ export default function InvoiceDetail() {
         utils.sales.list.invalidate(),
       ]);
       setClientRequestId(crypto.randomUUID()); // مفتاح جديد للدفعة التالية
+      setExternalAttempt(null);
+      setPayReference("");
     },
     onError: (e) => {
       setError(e.message);
@@ -198,20 +216,18 @@ export default function InvoiceDetail() {
     },
   });
 
+  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+
   const cancel = trpc.sales.cancel.useMutation({
     onSuccess: async (r) => {
-      const refunded = D(r.refundAmount ?? "0");
-      const refundMsg = refunded.gt(0)
-        ? ` — استُرِدّ ${fmt(refunded.toFixed(2))}${r.refundVoucherNumber ? ` بسند ${r.refundVoucherNumber}` : ""}`
-        : "";
-      setDone(`أُلغيت الفاتورة ${r.invoiceNumber}${refundMsg}.`);
+      setDone(`أُرسل طلب الإلغاء #${r.requestId} للاعتماد — لم يتغير المخزون أو المال بعد.`);
       setError("");
       setCancelOpen(false);
       setCancelReason("");
       setCancelConfirmText("");
       await Promise.all([
-        utils.sales.get.invalidate({ invoiceId }),
-        utils.sales.list.invalidate(),
+        utils.salesControl.list.invalidate(),
       ]);
       setCancelRequestId(crypto.randomUUID());
     },
@@ -239,12 +255,12 @@ export default function InvoiceDetail() {
   );
   const canCorrectInvoice =
     !!me.data?.role &&
-    (me.data.role === "admin" || me.data.role === "manager") &&
-    hasModuleAccess(
+    moduleAccessAllowed(
       me.data.role as RoleKey,
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
       "sales",
       "FULL",
+      ["manager"],
     );
   const corrections = trpc.sales.correctionHistory.useQuery(
     { invoiceId },
@@ -254,38 +270,11 @@ export default function InvoiceDetail() {
   const [correctionNotes, setCorrectionNotes] = useState("");
   const [correctionDueDate, setCorrectionDueDate] = useState("");
   const [correctionReason, setCorrectionReason] = useState("");
+  const [correctionRequestKey, setCorrectionRequestKey] = useState(() => crypto.randomUUID());
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [cancelDeliveryOpen, setCancelDeliveryOpen] = useState(false);
-  // عكس فاتورة الخدمة الصفريّة (١٩/٨) — المقبوض يبقى أمانةً يردّها سند صرفٍ موثَّق.
-  const reverseService = trpc.workOrders.reverseServiceInvoice.useMutation({
-    onSuccess: (r) => {
-      const refundable = Number((r as { refundableAmount?: string }).refundableAmount ?? 0);
-      notify.ok(
-        "عُكس التسليم",
-        refundable > 0
-          ? `الفاتورة مرتجعة. المقبوض ${refundable.toLocaleString()} د.ع يبقى أمانةً — اصرفه للزبون بسند صرفٍ موثَّق.`
-          : "الفاتورة مرتجعة وأمر الشغل مُلغى.",
-      );
-      void utils.sales.get.invalidate();
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  const correctInvoice = trpc.sales.correct.useMutation({
-    onSuccess: async () => {
-      setCorrectionOpen(false);
-      setCorrectionReason("");
-      notify.ok("تم تصحيح الفاتورة", "حُفظ التعديل وسجلّه باسمك.");
-      await Promise.all([
-        utils.sales.get.invalidate({ invoiceId }),
-        utils.sales.list.invalidate(),
-        utils.sales.listPage.invalidate(),
-        utils.sales.listSummary.invalidate(),
-        utils.sales.correctionHistory.invalidate({ invoiceId }),
-      ]);
-    },
-    onError: (error) => notify.err(error),
-  });
+  const correctInvoice = trpc.sales.correct.useMutation();
+  const requestDueDateChange = trpc.salesControl.requestDueDateChange.useMutation();
 
   // ش١٠: لقطات الكروت الرقمية للفاتورة — بدونها تفقد **إعادة** الطباعة مراجع الكروت وبيانات
   // الطالب التي طُبعت أوّل مرّة (الإيصال الأصلي يأخذها من ردّ `finalize`). محجوبة خلف صلاحية
@@ -309,6 +298,13 @@ export default function InvoiceDetail() {
         جارٍ التحميل…
       </div>
     );
+  if (inv.isError)
+    return (
+      <ErrorState
+        message={`تعذّر تحميل الفاتورة: ${inv.error.message}`}
+        onRetry={() => void inv.refetch()}
+      />
+    );
   if (!inv.data)
     return (
       <div className="p-10 text-center text-muted-foreground">
@@ -322,6 +318,13 @@ export default function InvoiceDetail() {
       .minus(D(data.returnedTotal ?? "0"))
       .minus(D(data.paidAmount)),
   );
+  const normalizedPayAmount = round2(D(payAmount || "0")).toFixed(2);
+  const externalNeeded = payMethod !== "CASH" && D(payAmount || "0").gt(0);
+  const externalFingerprint = `SALES_COLLECTION|${data.branchId}|${payMethod}|${normalizedPayAmount}|${payReference.trim()}`;
+  const externalConfirmed =
+    !externalNeeded ||
+    (externalAttempt?.confirmed === true &&
+      externalAttempt.fingerprint === externalFingerprint);
   const canPay = data.status === "PENDING" || data.status === "PARTIALLY_PAID";
   // بوّابة عرض مطابقة للخادم: كاشير/مدير قالبياً أو مَن مُنح sales=FULL صراحةً (أو admin).
   const canRecordPayment =
@@ -333,8 +336,7 @@ export default function InvoiceDetail() {
       "FULL",
       ["cashier", "manager"],
     );
-  // بوّابة الإلغاء (مطابقةٌ لـsalesManagerProcedure على الخادم): مدير قالبياً أو مَن مُنح sales=FULL صراحةً (أو admin).
-  // الكاشير مستَبعَد صراحةً — الإلغاء مديريٌّ حصراً (SOD مع البائع الأصلي).
+  // الإلغاء صار طلباً صفري الأثر؛ موظف sales=FULL يطلب، ومديرٌ مستقل يعتمد وينفّذ.
   const canCancelInvoice =
     !!me.data?.role &&
     moduleAccessAllowed(
@@ -342,7 +344,7 @@ export default function InvoiceDetail() {
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
       "sales",
       "FULL",
-      ["manager"],
+      ["cashier", "manager"],
     );
   const canDispatchInvoice =
     !!me.data?.role &&
@@ -370,23 +372,30 @@ export default function InvoiceDetail() {
     ) &&
     data.consignmentId != null &&
     (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "FAILED");
+  const hasDeliveryLifecycle =
+    data.consignmentId != null || data.consignmentStatus != null || data.deliveryPartyId != null;
+  // مرآة بصرية للحارس الخادمي: الإرسالية الحديثة لا تصبح آمنة إلا بعد CANCELLED النهائي.
+  // طلب المتجر القديم الملغى يُعرض موحّداً كـRETURNED (saleRouter)، وهو الاستثناء الآمن بلا consignmentId.
+  const deliveryCancellationResolved =
+    data.consignmentId != null
+      ? data.consignmentStatus === "CANCELLED"
+      : data.sourceType === "ONLINE" && data.consignmentStatus === "RETURNED";
+  const deliveryCancellationBlockReason = !hasDeliveryLifecycle || deliveryCancellationResolved
+    ? null
+    : canCancelDelivery
+      ? "ألغِ إسناد التوصيل أولاً، ثم ألغِ الفاتورة. لا يجوز إعادة المخزون والطرد ما زال مسنداً."
+      : data.consignmentStatus === "DISPATCHED" || data.consignmentStatus === "PARTIAL"
+        ? "لا يمكن إلغاء الفاتورة والطرد أو تحصيل COD ما زال في دورة التوصيل. أعد الطرد وسوِّ العهدة من مركز التوصيل أولاً."
+        : "لا يمكن إلغاء الفاتورة بعد تسليم الطرد أو وجود تسوية توصيل. استخدم الإرجاع الموثق أو عالج العهدة من مركز التوصيل.";
   const isCancellable =
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
-    data.sourceType !== "WORKORDER";
-  /**
-   * فاتورة أمر شغلٍ حيّة: مخرجها الوحيد هو المرتجع الموثَّق (الإلغاء والتصحيح يرفضهما الخادم
-   * لهذا المنشأ). البوّابة مرآةُ `returns.create` = مدير + `sales:FULL`. التوصيلُ النشط يُستثنى:
-   * الطرد بيد المندوب ⇒ المخرج هناك «استرجاع الإرسالية» لا مرتجعٌ من هنا.
-   */
-  /**
-   * ١٩/٨ — الفاتورة الصفريّة البنود (أمرُ تخصيصٍ خالصٍ بلا منتجٍ كتالوجيّ) لا يقبلها
-   * المرتجع (يشترط أسطراً) ⇒ مخرجها عكسٌ رأسيّ مخصّص. وذاتُ البنود مخرجها المرتجع المُختبَر.
-   */
-  const isZeroItemServiceInvoice = data.sourceType === "WORKORDER" && data.items.length === 0;
-  /** مُعرّف أمر الشغل مشتقٌّ من `sourceId` (`WO-{id}`) — الحقل الرابط الوحيد على الفاتورة. */
+    data.sourceType !== "WORKORDER" &&
+    deliveryCancellationBlockReason == null;
+  /** فاتورة أمر الشغل الحيّة لا تمرّ بإلغاء البيع أو مرتجعه العام؛ مخرجها طلب عكس محكوم. */
+  /** مُعرّف أمر الشغل مشتقٌّ من `sourceId` (`WO-{id}` القديم أو النسخة `WO-{id}:R{n}`). */
   const linkedWorkOrderId = (() => {
-    const m = /^WO-(\d+)$/.exec(String(data.sourceId ?? ""));
+    const m = /^WO-(\d+)(?::R\d+)?$/.exec(String(data.sourceId ?? ""));
     return m ? Number(m[1]) : null;
   })();
   const canReverseWorkOrderInvoice =
@@ -394,14 +403,13 @@ export default function InvoiceDetail() {
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
     data.status !== "SUPERSEDED" &&
-    !data.consignmentNumber &&
     !!me.data?.role &&
     moduleAccessAllowed(
       me.data.role as RoleKey,
       (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "sales",
+      "workorders",
       "FULL",
-      ["manager"],
+      ["cashier", "manager"],
     );
   const paidAmountForRefund = round2(D(data.paidAmount ?? "0"));
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
@@ -413,7 +421,7 @@ export default function InvoiceDetail() {
   //    **كل فاتورة استقبالٍ عليها عربون لا يظهر لها زرّ تصحيحٍ إطلاقاً** — وهو جوهر الشكوى.
   //    الآن المقبوض يُنقل للمصحّحة كما هو، والفرق الزائد يُردّ نقداً أو يُرصَّد (correct.ts خطوة ⑨).
   const canFullCorrect =
-    canCorrectInvoice &&
+    canRecordPayment &&
     data.status !== "CANCELLED" &&
     data.status !== "SUPERSEDED" &&
     D(data.returnedTotal ?? "0").isZero() &&
@@ -424,16 +432,71 @@ export default function InvoiceDetail() {
     setCorrectionNotes(data.notes ?? "");
     setCorrectionDueDate(data.dueDate ? String(data.dueDate).slice(0, 10) : "");
     setCorrectionReason("");
+    setCorrectionRequestKey(crypto.randomUUID());
     setCorrectionOpen(true);
   }
 
-  function submitCorrection() {
-    correctInvoice.mutate({
-      invoiceId,
-      notes: correctionNotes,
-      dueDate: correctionDueDate || null,
-      reason: correctionReason,
-    });
+  async function submitCorrection() {
+    const nextNotes = correctionNotes.trim() || null;
+    const currentNotes = data.notes ?? null;
+    const nextDueDate = correctionDueDate || null;
+    const currentDueDate = data.dueDate ? String(data.dueDate).slice(0, 10) : null;
+    const notesChanged = nextNotes !== currentNotes;
+    const dueDateChanged = nextDueDate !== currentDueDate;
+    if (!notesChanged && !dueDateChanged) {
+      notify.err("لا يوجد تغيير", "عدّل الملاحظات أو تاريخ الاستحقاق أولاً.");
+      return;
+    }
+
+    let notesSaved = false;
+    try {
+      // الملاحظات غير مالية وتُحفظ مباشرة أولاً، كي تلتقط بصمة طلب التاريخ
+      // الرأس النهائي ولا يصبح الطلب STALE بسبب هذا التعديل نفسه.
+      if (notesChanged) {
+        await correctInvoice.mutateAsync({
+          invoiceId,
+          notes: correctionNotes,
+          reason: correctionReason,
+        });
+        notesSaved = true;
+      }
+      let dueDateRequestId: number | null = null;
+      if (dueDateChanged) {
+        const requested = await requestDueDateChange.mutateAsync({
+          requestKey: correctionRequestKey,
+          invoiceId,
+          dueDate: nextDueDate,
+          reason: correctionReason,
+        });
+        dueDateRequestId = Number(requested.id);
+      }
+      setCorrectionOpen(false);
+      setCorrectionReason("");
+      setCorrectionRequestKey(crypto.randomUUID());
+      if (dueDateRequestId != null) {
+        notify.ok(
+          notesSaved ? "حُفظت الملاحظات وأُرسل الطلب" : "أُرسل طلب تغيير الاستحقاق",
+          `الطلب #${dueDateRequestId} صفري الأثر؛ يتغير التاريخ بعد اعتماد مدير مستقل فقط.`,
+        );
+      } else {
+        notify.ok("حُفظت الملاحظات", "سُجل التعديل غير المالي باسمك.");
+      }
+      await Promise.all([
+        utils.sales.get.invalidate({ invoiceId }),
+        utils.sales.list.invalidate(),
+        utils.sales.listPage.invalidate(),
+        utils.sales.listSummary.invalidate(),
+        utils.sales.correctionHistory.invalidate({ invoiceId }),
+        utils.salesControl.list.invalidate(),
+      ]);
+    } catch (error) {
+      if (notesSaved) {
+        const detail = error instanceof Error ? error.message : "تعذّر إرسال طلب تاريخ الاستحقاق";
+        notify.err("حُفظت الملاحظات فقط", `${detail}. أعد إرسال طلب التاريخ؛ لم يتغير تاريخ الاستحقاق.`);
+      } else {
+        notify.err(error);
+      }
+    }
   }
 
   async function reprintThermal() {
@@ -445,7 +508,8 @@ export default function InvoiceDetail() {
         digitalDetails: digitalPrint.data?.length ? digitalPrint.data : null,
       });
       if (!result.ok) {
-        notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
+        notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة",
+        );
       } else if (result.via === "server") {
         notify.ok(
           "تمت إعادة الطباعة",
@@ -469,13 +533,77 @@ export default function InvoiceDetail() {
     }
   }
 
+  async function confirmInvoiceExternalPayment() {
+    const reference = payReference.trim();
+    if (!reference) return setError("أدخل مرجع العملية أولاً.");
+    if (!D(payAmount || "0").gt(0))
+      return setError("أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
+    setError("");
+    try {
+      const prior =
+        externalAttempt?.fingerprint === externalFingerprint
+          ? externalAttempt
+          : null;
+      const deviceId = prior?.deviceId ?? (await getDeviceCode());
+      const requestId = prior?.requestId ?? crypto.randomUUID();
+      let attemptId = prior?.attemptId ?? null;
+      if (attemptId == null) {
+        const initiated = await initiateExternal.mutateAsync({
+          branchId: Number(data.branchId),
+          channel: "SALES_COLLECTION",
+          method: payMethod as "CARD" | "TRANSFER" | "WALLET",
+          amount: normalizedPayAmount,
+          reference,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        setExternalAttempt({
+          attemptId,
+          requestId,
+          deviceId,
+          fingerprint: externalFingerprint,
+          confirmed: false,
+        });
+      }
+      await confirmExternal.mutateAsync({
+        branchId: Number(data.branchId),
+        channel: "SALES_COLLECTION",
+        attemptId,
+        deviceId,
+      });
+      setExternalAttempt({
+        attemptId,
+        requestId,
+        deviceId,
+        fingerprint: externalFingerprint,
+        confirmed: true,
+      });
+      notify.ok(
+        "تأكّد الدفع الخارجي",
+        `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرة واحدة.`,
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "تعذّر تأكيد الدفع الخارجي",
+      );
+    }
+  }
+
   async function submit() {
     setError("");
     setDone("");
     if (!isPosPaymentMethodEnabled(payMethod)) return setError(posPaymentRejectionMessage(payMethod));
     const amt = D(payAmount || "0");
     if (payMethod !== "CASH" && !payReference.trim()) {
-      return setError("مرجع عملية البطاقة/التحويل مطلوب — لا يُسجَّل قبضٌ بلا أثرٍ قابلٍ للمطابقة.");
+      return setError("مرجع عملية البطاقة/التحويل مطلوب — لا يُسجَّل قبضٌ بلا أثرٍ قابلٍ للمطابقة.",
+      );
+    }
+    if (
+      payMethod !== "CASH" &&
+      (!externalConfirmed || externalAttempt?.attemptId == null)
+    ) {
+      return setError("ثبّت تأكيد الدفع غير النقدي قبل تسجيل الدفعة.");
     }
     if (amt.lte(0)) return setError("أدخل مبلغاً موجباً.");
     if (amt.gt(remaining))
@@ -495,6 +623,12 @@ export default function InvoiceDetail() {
       amount: amt.toFixed(2),
       method: payMethod,
       reference: payMethod === "CASH" ? undefined : payReference.trim(),
+      ...(payMethod === "CASH"
+        ? {}
+        : {
+            externalPaymentAttemptId: externalAttempt!.attemptId!,
+            externalPaymentDeviceId: externalAttempt!.deviceId,
+          }),
       clientRequestId,
     });
   }
@@ -537,7 +671,8 @@ export default function InvoiceDetail() {
       // ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة ⇒ نمرّرها للعرض
       // كي تُظهر الفاتورة المطبوعة «المجموع النهائي الذي يدفعه الزبون شاملاً التوصيل».
       courierDelivery: data.courierName && Number(data.courierFee ?? 0) > 0
-        ? { partyName: data.courierName, fee: data.courierFee ?? "0", feeCollection: data.courierFeeCollection ?? "COURIER" }
+        ? { partyName: data.courierName, fee: data.courierFee ?? "0", feeCollection: data.courierFeeCollection ?? "COURIER",
+            }
         : null,
     });
   }
@@ -569,7 +704,8 @@ export default function InvoiceDetail() {
       <PageHeader
         title={
           <span>
-            تفاصيل الفاتورة <span dir="ltr" className="font-mono text-primary">#{data.invoiceNumber}</span>
+            تفاصيل الفاتورة{" "}
+            <span dir="ltr" className="font-mono text-primary">#{data.invoiceNumber}</span>
           </span>
         }
         backHref="/invoices"
@@ -684,7 +820,8 @@ export default function InvoiceDetail() {
               size="sm"
               onClick={() => {
                 setCancelMethod(
-                  (data.paymentMethod as (typeof METHODS)[number]["v"] | null) ??
+                  (data.paymentMethod as
+                      | (typeof METHODS)[number]["v"] | null) ??
                     "CASH",
                 );
                 setCancelReason("");
@@ -697,41 +834,42 @@ export default function InvoiceDetail() {
               إلغاء الفاتورة
             </Button>
           )}
-          {/* ١٨/٨ — مخرج فاتورة أمر الشغل (بلاغ المالك: «لا نستطيع إلغاءها أو التعديل عليها»).
-              كانت أزرارُ الإلغاء والتصحيح تُخفى لها **بلا أيّ بديلٍ معروض**: الخادم يرفض
-              `sales.cancel` لمنشأ WORKORDER ويحيل إلى إلغاء أمر الشغل، وذاك يرفض المُسلَّم ⇒
-              الفاتورة بلا مخرجٍ ظاهر البتّة. المسار المشروع الوحيد هو **المرتجع الموثَّق**
-              (returnService يعرف WORKORDER: لا يعيدها للمخزون — منتَجٌ مخصّص لا يُباع لغيره)،
-              فنعرضه صراحةً بدل تركِ الموظف أمام شاشةٍ بلا أفعال. */}
-          {canReverseWorkOrderInvoice && (isZeroItemServiceInvoice ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              title="فاتورة خدمةٍ بلا بنود — تُعكَس رأسياً (لا مخزون لها)"
-              disabled={reverseService.isPending || linkedWorkOrderId == null}
-              onClick={() => {
-                const reason = window.prompt("سبب عكس التسليم (يُوثَّق في الفاتورة وسجلّ التدقيق):")?.trim();
-                if (!reason || reason.length < 3) return;
-                reverseService.mutate({
-                  workOrderId: Number(linkedWorkOrderId),
-                  reason,
-                  clientRequestId: crypto.randomUUID(),
-                });
-              }}
-            >
-              <RotateCcw aria-hidden className="size-4" />
-              عكس التسليم (خدمة)
-            </Button>
-          ) : (
-            <Button variant="destructive" size="sm" asChild title="المسار الموثَّق لعكس تسليم أمر شغل">
-              <Link href={`/returns?invoiceId=${data.id}`}>
-                <RotateCcw aria-hidden className="size-4" />
-                إرجاع / عكس التسليم
-              </Link>
-            </Button>
-          ))}
-        </>}
+          {/* كل فواتير أمر الشغل، ذات البنود والصفرية، تمرّ من طلب تحكم واحد صفري الأثر.
+              لا عكس مباشر ولا تحويل إلى مرتجع بيع عام؛ الاعتماد المستقل هو من ينفّذ العملية. */}
+          {canReverseWorkOrderInvoice && linkedWorkOrderId != null && (
+              <ReverseDeliveryRequestDialog
+                workOrderId={linkedWorkOrderId}
+                orderNumber={String(data.sourceId ?? linkedWorkOrderId)}
+                title={`فاتورة ${data.invoiceNumber}`}
+                buttonLabel="طلب عكس التسليم"
+                size="sm"
+                onRequested={(message) => {
+                  setDone(message);
+                  setError("");
+                }}
+              />
+            )}
+          </>
+        }
       />
+
+      {canCancelInvoice && deliveryCancellationBlockReason && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-sm text-[var(--sem-warn)]"
+        >
+          <span className="inline-flex items-center gap-2 font-medium">
+            <Truck aria-hidden className="size-4 shrink-0" />
+            {deliveryCancellationBlockReason}
+          </span>
+          <Link
+            href={`/delivery?tab=parties&detail=${data.deliveryPartyId ?? ""}`}
+            className="font-bold underline underline-offset-2"
+          >
+            فتح مركز التوصيل
+          </Link>
+        </div>
+      )}
 
       {/* بطاقة الترويسة: بيانات وصفية + لوحة ملخّص مالي */}
       <Card>
@@ -741,7 +879,7 @@ export default function InvoiceDetail() {
             <div className="flex items-center gap-2">
               {/* بالطريق مع المندوب ⇒ الحقيقة «عند الاستلام» لا طريقة السلة المخزَّنة (بلاغ
                   المالك ١٠/٨: فاتورة توصيل بلا أي قبضٍ كانت تتصدّر بشارة «نقدي»). */}
-              {(data.consignmentStatus === "DISPATCHED" || data.consignmentStatus === "PARTIAL") ? (
+              {data.consignmentStatus === "DISPATCHED" || data.consignmentStatus === "PARTIAL" ? (
                 <span
                   className="text-xs rounded-full px-2.5 py-0.5 font-semibold badge-stock-low"
                   title={D(data.paidAmount).gt(0) && data.paymentMethod
@@ -750,13 +888,15 @@ export default function InvoiceDetail() {
                 >
                   عند الاستلام (COD)
                 </span>
-              ) : data.paymentMethod && (
+              ) : (
+                data.paymentMethod && (
                 <span
                   className={`text-xs rounded-full px-2.5 py-0.5 font-semibold ${paymentMethodClass(data.paymentMethod)}`}
                   title="طريقة الدفع المسجّلة على هذه الفاتورة"
                 >
                   {paymentMethodLabel(data.paymentMethod)}
                 </span>
+              )
               )}
               {/* التمييز البصريّ «مُعدَّلة» (طلب المالك ١٧/٨): هذه الفاتورة صدرت تصحيحاً
                   لفاتورةٍ سابقة. `correctionOfInvoiceId` كان يُكتَب ولا يُقرأ من أيّ استعلام. */}
@@ -797,7 +937,8 @@ export default function InvoiceDetail() {
                     {data.customerName ?? `#${data.customerId}`}
                   </Link>
                 ) : (
-                  data.customerName ?? "عميل نقدي"
+                  (data.customerName ?? "عميل نقدي"
+                )
                 )}
               </Field>
               <Field label="موظف المبيعات">{data.salespersonName ?? "—"}</Field>
@@ -873,7 +1014,9 @@ export default function InvoiceDetail() {
                   {data.courierFeeCollection !== "SHOP" && (
                     <div className="mt-1.5 flex items-center justify-between border-t border-[var(--sem-warn)]/30 pt-1.5 font-black text-[var(--sem-warn)]">
                       <span>المجموع النهائي (يدفعه الزبون شاملاً التوصيل)</span>
-                      <span className="tabular-nums" dir="ltr">{fmt(round2(D(data.total).plus(D(data.courierFee ?? 0))).toFixed(2))}</span>
+                      <span className="tabular-nums" dir="ltr">{fmt(round2(D(data.total).plus(D(data.courierFee ?? 0)),
+                          ).toFixed(2),
+                        )}</span>
                     </div>
                   )}
                 </div>
@@ -884,12 +1027,16 @@ export default function InvoiceDetail() {
                 <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1.5 rounded-md border px-2.5 py-2 text-sm">
                   <span className="inline-flex items-center gap-1.5">
                     <Truck aria-hidden className="size-3.5 text-muted-foreground" />
-                    إرسالية <span className="font-mono font-bold" dir="ltr">{data.consignmentNumber}</span>
+                    إرسالية{" "}
+                    <span className="font-mono font-bold" dir="ltr">{data.consignmentNumber}</span>
                     <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      data.consignmentStatus === "DELIVERED"
-                        ? "badge-status-active"
-                        : data.consignmentStatus === "RETURNED" || data.consignmentStatus === "WRITTEN_OFF" ? "badge-stock-out" : "badge-stock-low"
-                    }`}>
+                        data.consignmentStatus === "DELIVERED"
+                          ? "badge-status-active"
+                          : data.consignmentStatus === "RETURNED" ||
+                              data.consignmentStatus === "WRITTEN_OFF"
+                            ? "badge-stock-out"
+                            : "badge-stock-low"
+                      }`}>
                       {data.consignmentStatus === "DISPATCHED" ? "بالطريق"
                         : data.consignmentStatus === "PARTIAL" ? "حُصِّل جزئياً"
                         : data.consignmentStatus === "DELIVERED" ? "سُلِّمت"
@@ -1114,11 +1261,11 @@ export default function InvoiceDetail() {
                       {PAY_STATUS[p.status] ?? p.status}
                     </td>
                     <td className="px-3 py-2 text-xs">
-                      {p.voucherNumber && (
+                      {p.voucherNumber &&
                         // ٢٤/٨ (تدقيق + Codex P2): رقمُ السند رابطٌ لصفحة السندات — لأدوار الخزينة
                         // فقط (Cashier يذهب إلى /treasury بلا تبويب vouchers). الفلترُ عبر `q` — العقد
                         // الفعليّ في Vouchers.tsx (لا يتعرّف على `number`).
-                        canOpenVouchers ? (
+                        (canOpenVouchers ? (
                           <Link
                             href={`/vouchers?q=${encodeURIComponent(p.voucherNumber)}`}
                             className="text-primary hover:underline"
@@ -1188,36 +1335,45 @@ export default function InvoiceDetail() {
             </div>
             <div className="space-y-1">
               <Label>طريقة الدفع</Label>
-              <select
-                className={selectCls}
+              <AppSelect
                 value={payMethod}
-                onChange={(e) =>
-                  setPayMethod(e.target.value as typeof payMethod)
-                }
+                onValueChange={(value) => {
+                  setPayMethod(value as typeof payMethod);
+                  setPayReference("");
+                  setExternalAttempt(null);
+                }}
               >
                 {ENABLED_COLLECTION_METHODS.map((m) => (
                   <option key={m.v} value={m.v}>
                     {m.label}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             {payMethod !== "CASH" && (
-              <div className="space-y-1">
-                <Label htmlFor="invoice-pay-reference">
-                  مرجع العملية <span className="text-destructive">*</span>
-                </Label>
-                <Input
-                  id="invoice-pay-reference"
-                  dir="ltr"
+              <div className="md:col-span-3 rounded-xl border bg-card p-3">
+                <PaymentReferenceField
                   value={payReference}
-                  onChange={(e) => setPayReference(e.target.value)}
-                  maxLength={100}
-                  placeholder="رقم إشعار الجهاز أو رقم التحويل"
+                  onChange={(value) => {
+                    setPayReference(value);
+                    setExternalAttempt(null);
+                  }}
+                  method={payMethod}
+                  confirmed={externalConfirmed}
+                  confirming={
+                    initiateExternal.isPending || confirmExternal.isPending
+                  }
+                  onConfirm={confirmInvoiceExternalPayment}
+                  inputId="invoice-pay-reference"
+                  colors={{
+                    border: "var(--border)",
+                    muted: "var(--muted)",
+                    mutedFg: "var(--muted-foreground)",
+                    fg: "var(--foreground)",
+                    amber: "var(--sem-warn)",
+                    success: "var(--sem-pos)",
+                  }}
                 />
-                <p className="text-xs text-muted-foreground">
-                  لا تُسجَّل دفعة إلكترونية بلا مرجع قابل للمطابقة مع كشف المزوّد.
-                </p>
               </div>
             )}
             <Button onClick={submit} disabled={pay.isPending}>
@@ -1378,10 +1534,9 @@ export default function InvoiceDetail() {
           <DialogHeader>
             <DialogTitle>تعديل بيانات الفاتورة</DialogTitle>
             <DialogDescription>
-              الملاحظات وتاريخ الاستحقاق فقط — لا يمسّ البنود ولا المبالغ ولا
-              طريقة الدفع. لتغيير البنود أو الأسعار استعمل «تصحيح الفاتورة»
-              (عكسٌ وإعادةُ إصدار). متاح للمدير والمالك وحدهما، ويُسجّل السبب
-              والقيم قبل وبعد باسمك.
+              تُحفظ الملاحظات غير المالية مباشرة. أمّا تاريخ الاستحقاق فيُرسل
+              كطلب صفري الأثر ولا يتغير إلا بعد اعتماد مدير مستقل عن الطالب
+              ومنشئ الفاتورة. لتغيير البنود أو الأسعار استعمل «تصحيح الفاتورة».
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -1420,17 +1575,19 @@ export default function InvoiceDetail() {
             <Button
               variant="outline"
               onClick={() => setCorrectionOpen(false)}
-              disabled={correctInvoice.isPending}
+              disabled={correctInvoice.isPending || requestDueDateChange.isPending}
             >
               إلغاء
             </Button>
             <Button
               onClick={submitCorrection}
               disabled={
-                correctInvoice.isPending || correctionReason.trim().length < 3
+                correctInvoice.isPending || requestDueDateChange.isPending || correctionReason.trim().length < 3
               }
             >
-              {correctInvoice.isPending ? "جارٍ الحفظ…" : "حفظ التصحيح"}
+              {correctInvoice.isPending || requestDueDateChange.isPending
+                ? "جارٍ الحفظ والإرسال…"
+                : "حفظ الملاحظات / إرسال طلب التاريخ"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1449,14 +1606,18 @@ export default function InvoiceDetail() {
             </DialogTitle>
             <DialogDescription className="space-y-2 pt-2 text-start">
               <div>
-                إلغاءٌ كامل يعكس القيد المحاسبيّ ويعيد كامل البضاعة إلى المخزون
+                هذا طلب إلغاء صفري الأثر. بعد اعتماد مراجع مستقل يعكس النظام القيد المحاسبيّ ويعيد كامل البضاعة إلى المخزون
                 {paidAmountForRefund.gt(0) && (
-                  <> ويُصدر <strong>سند صرفٍ</strong> باستردادِ {fmt(paidAmountForRefund.toFixed(2))}</>
+                  <>
+                    {" "}
+                    ويُصدر <strong>سند صرفٍ</strong> باستردادِ {" "}
+                    {fmt(paidAmountForRefund.toFixed(2))}</>
                 )}.
               </div>
               {data.status !== "PENDING" && (
                 <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
-                  حالة الفاتورة حالياً: <strong>{invoiceStatusLabel(data.status)}</strong> — يُلغى ما تبقّى غير مُرتجَع.
+                  حالة الفاتورة حالياً:{" "}
+                  <strong>{invoiceStatusLabel(data.status)}</strong> — يُلغى ما تبقّى غير مُرتجَع.
                 </div>
               )}
             </DialogDescription>
@@ -1466,21 +1627,22 @@ export default function InvoiceDetail() {
             {paidAmountForRefund.gt(0) && (
               <div className="space-y-1">
                 <Label htmlFor="cancel-method">جهة الاسترداد (إلزاميّة)</Label>
-                <select
+                <AppSelect
                   id="cancel-method"
-                  className={selectCls}
+                  className="h-9"
                   value={cancelMethod}
-                  onChange={(e) => setCancelMethod(e.target.value as typeof cancelMethod)}
+                  onValueChange={(value) => setCancelMethod(value as typeof cancelMethod)}
                 >
-                  {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
-                </select>
+                  {METHODS.map((m) => (
+                    <option key={m.v} value={m.v}>{m.label}</option>))}
+                </AppSelect>
                 <p className="text-xs text-muted-foreground">
                   النقد يخرج من درج الوردية المفتوحة (أو من الخزينة الإدارية إن كنت مديراً بلا وردية).
                 </p>
               </div>
             )}
             <div className="space-y-1">
-              <Label htmlFor="cancel-reason">سبب الإلغاء (اختياريّ)</Label>
+              <Label htmlFor="cancel-reason">سبب الإلغاء *</Label>
               <Input
                 id="cancel-reason"
                 value={cancelReason}
@@ -1491,7 +1653,8 @@ export default function InvoiceDetail() {
             </div>
             <div className="space-y-1">
               <Label htmlFor="cancel-confirm">
-                للتأكيد اكتب رقم الفاتورة: <span dir="ltr" className="font-mono font-semibold">{data.invoiceNumber}</span>
+                للتأكيد اكتب رقم الفاتورة:{" "}
+                <span dir="ltr" className="font-mono font-semibold">{data.invoiceNumber}</span>
               </Label>
               <Input
                 id="cancel-confirm"
@@ -1507,18 +1670,18 @@ export default function InvoiceDetail() {
             <Button variant="outline" onClick={() => setCancelOpen(false)}>رجوع</Button>
             <Button
               variant="destructive"
-              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber}
+              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3}
               onClick={() => {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
                 cancel.mutate({
                   invoiceId,
                   refundPaymentMethod: cancelMethod,
-                  reason: cancelReason.trim() || undefined,
+                  reason: cancelReason.trim(),
                   clientRequestId: cancelRequestId,
                 });
               }}
             >
-              {cancel.isPending ? "جارٍ الإلغاء…" : "إلغاء الفاتورة نهائياً"}
+              {cancel.isPending ? ACTION_LABELS.sending : "إرسال طلب الإلغاء"}
             </Button>
           </DialogFooter>
         </DialogContent>

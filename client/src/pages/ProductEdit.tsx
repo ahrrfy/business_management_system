@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -55,7 +56,7 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
@@ -138,6 +139,9 @@ export default function ProductEdit() {
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isService, setIsService] = useState(false);
+  // «يُباع بالطلب» (0318): صنفٌ مخزنيّ يُسمح ببيعه قبل توريده — يُغذَّى بفاتورة شراءٍ من مورّد
+  // أو بإنتاجٍ داخليّ بوصفته، ورصيدُه السالب عدّاد «مُباعٌ لم يُورَّد».
+  const [allowBackorder, setAllowBackorder] = useState(false);
   const [isActive, setIsActive] = useState(true);
   // ٢٤/٨ — متابعةُ PR #755 (هجرة 0262): توجيه العرض قابل للتحرير بعد الإنشاء.
   // كان يُضبط مرّةً واحدةً عند الإنشاء عبر ServiceForm ثم يتعذّر تعديله ⇒ لا وسيلةَ لإخفاء
@@ -183,7 +187,7 @@ export default function ProductEdit() {
   }, [
     hydrated, costPrice, units, variants, images, colors, sizes, categoryId,
     originalName, productType, brand, modelName, description,
-    isCustomizable, allowAutoCartRecommendations, isService, isActive, showInReception, showInPrintPos, consignment, baseSku,
+    isCustomizable, allowAutoCartRecommendations, isService, allowBackorder, isActive, showInReception, showInPrintPos, consignment, baseSku,
   ]);
   useUnsavedGuard(touched);
 
@@ -200,6 +204,7 @@ export default function ProductEdit() {
     setIsCustomizable(d.isCustomizable);
     setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsService(d.isService);
+    setAllowBackorder(d.allowBackorder);
     setIsActive(d.isActive);
     setShowInReception(d.showInReception);
     setShowInPrintPos(d.showInPrintPos);
@@ -473,6 +478,9 @@ export default function ProductEdit() {
       isCustomizable,
       allowAutoCartRecommendations,
       isService,
+      // التبديل معطَّلٌ بصرياً على الخدمة، لكن قيمةً قديمة قد تبقى في الحالة لو قُلب «خِدمة»
+      // بعد تفعيلها ⇒ نُصفّرها هنا صراحةً فلا تصل تركيبةٌ يرفضها CHECK القاعدة أصلاً.
+      allowBackorder: isService ? false : allowBackorder,
       isActive,
       showInReception,
       showInPrintPos,
@@ -643,14 +651,14 @@ export default function ProductEdit() {
             <Field label="الماركة (اختياري)"><Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Pilot" dir="auto" /></Field>
             <Field label="الموديل (اختياري)"><Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="G-2" dir="auto" /></Field>
             <Field label="الفئة / التصنيف">
-              <select
-                value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+              <AppSelect
+                value={String(categoryId)}
+                onValueChange={(next) => setCategoryId(next === "" ? "" : Number(next))}
+                className="h-9 border-input px-3 text-sm"
               >
                 <option value="">— بلا فئة —</option>
-                <CategoryOptionList categories={categoriesQ.data ?? []} />
-              </select>
+                {categoryOptionElements(categoriesQ.data ?? [])}
+              </AppSelect>
             </Field>
             <Field label="بادئة SKU (للمتغيّرات الجديدة)" className="md:col-span-2"><Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" /></Field>
           </CardContent>
@@ -688,6 +696,25 @@ export default function ProductEdit() {
             <CostCoachRow costPrice={costPrice} baseRetail={units.find((u) => u.isBase)?.retail ?? ""} categoryId={categoryId === "" ? null : Number(categoryId)} brand={brand} productType={productType} productId={productId} />
           </Field>
           <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
+          <Field
+            label="يُباع بالطلب (قبل التوريد)"
+            hint={
+              isService || product.data?.isBundle || product.data?.isConsignment
+                ? "غير متاح: يخصّ السلع المخزنية وحدها (لا خدمة ولا بكج ولا أمانة)."
+                : allowBackorder
+                  ? "يُباع ولو كان الرصيد صفراً أو سالباً؛ السالب = عدد الأعمال المُباعة ولم تُورَّد، ويعود صفراً بفاتورة شراء من مورّد أو بإنتاجٍ داخليّ."
+                  : "البيع يتوقّف عند نفاد الرصيد (السلوك المعتاد)."
+            }
+          >
+            <div className="flex items-center gap-2 h-9">
+              <Switch
+                checked={allowBackorder}
+                onCheckedChange={setAllowBackorder}
+                disabled={isService || !!product.data?.isBundle || !!product.data?.isConsignment}
+              />
+              <span className="text-xs text-muted-foreground">{allowBackorder ? "مسموح" : "متوقف"}</span>
+            </div>
+          </Field>
           <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
           <Field label="التوصيات الآلية" hint="يكمل العلاقات اليدوية بمنتجات متاحة من نفس التصنيف."><div className="flex items-center gap-2 h-9"><Switch checked={allowAutoCartRecommendations} onCheckedChange={setAllowAutoCartRecommendations} /><span className="text-xs text-muted-foreground">{allowAutoCartRecommendations ? "مسموح" : "متوقف"}</span></div></Field>
           <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span></div></Field>
@@ -752,9 +779,9 @@ export default function ProductEdit() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">الفرع:
-              <select value={branchId} onChange={(e) => setPickedBranch(Number(e.target.value))} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs text-foreground">
+              <AppSelect value={String(branchId)} onValueChange={(next) => setPickedBranch(Number(next))} className="h-8 border-input px-2 text-xs text-foreground">
                 {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+              </AppSelect>
             </label>
             <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>استيراد / لصق</Button>
             <Button type="button" variant="outline" size="sm" onClick={() => setPrintOpen(true)} disabled={!variants.length}>طباعة الملصقات</Button>

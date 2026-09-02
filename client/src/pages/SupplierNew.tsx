@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -236,11 +237,11 @@ export default function SupplierNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="cat">تصنيف المورّد</Label>
-            <select id="cat" className={selectClsFull} value={supplierCategory} onChange={(e) => setSupplierCategory(e.target.value)}>
+            <AppSelect id="cat" className="h-9" value={supplierCategory} onValueChange={(value) => setSupplierCategory(value)}>
               {CATEGORIES.map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <Label htmlFor="taxId">الرقم الضريبي</Label>
@@ -346,10 +347,10 @@ export default function SupplierNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="terms">شروط الدفع</Label>
-            <select id="terms" className={selectClsFull} value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)}>
+            <AppSelect id="terms" className="h-9" value={paymentTerms} onValueChange={(value) => setPaymentTerms(value)}>
               <option value="">—</option>
               {PAYMENT_TERMS.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <Label htmlFor="lead">مدة التوريد (يوم)</Label>
@@ -415,15 +416,15 @@ export default function SupplierNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="openDir">اتجاه الرصيد</Label>
-            <select
+            <AppSelect
               id="openDir"
-              className={selectClsFull}
+              className="h-9"
               value={openingDir}
-              onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
+              onValueChange={(value) => setOpeningDir(value as "OWED_TO_US" | "OWED_BY_US")}
             >
               <option value="OWED_BY_US">له علينا</option>
               <option value="OWED_TO_US">لنا على المورّد (دفعة مقدّمة لنا)</option>
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <Label htmlFor="openAmt">المبلغ (د.ع)</Label>
@@ -461,11 +462,11 @@ export default function SupplierNew() {
           <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <div className="space-y-1">
               <Label htmlFor="cycle">دورية التسوية</Label>
-              <select id="cycle" className={selectClsFull} value={settlementCycle} onChange={(e) => setSettlementCycle(e.target.value)}>
+              <AppSelect id="cycle" className="h-9" value={settlementCycle} onValueChange={(value) => setSettlementCycle(value)}>
                 <option value="MONTHLY">شهرية</option>
                 <option value="WEEKLY">أسبوعية</option>
                 <option value="ON_DEMAND">عند الطلب</option>
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label htmlFor="aband">مدة البضاعة المتروكة (شهر)</Label>

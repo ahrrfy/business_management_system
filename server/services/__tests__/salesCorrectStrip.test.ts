@@ -73,7 +73,7 @@ async function paidInvoice() {
 }
 
 describe("تجريد sales.correct", () => {
-  it("⭐ حمولة التدقيق مجرّدة: ملاحظاتٌ واستحقاقٌ فقط — لا طريقة دفعٍ ولا إيصالات", async () => {
+  it("⭐ حمولة التدقيق مجرّدة: ملاحظات فقط — لا استحقاق ولا طريقة دفع ولا إيصالات", async () => {
     const invoiceId = await paidInvoice();
     await caller().sales.correct({ invoiceId, notes: "ملاحظة جديدة", reason: "طلب العميل" });
 
@@ -82,8 +82,8 @@ describe("تجريد sales.correct", () => {
     expect(log).toBeTruthy();
     const oldV = log.oldValue as Record<string, unknown>;
     const newV = (log.newValue as { fields: Record<string, unknown> }).fields;
-    expect(Object.keys(oldV).sort()).toEqual(["dueDate", "notes"]);
-    expect(Object.keys(newV).sort()).toEqual(["dueDate", "notes"]);
+    expect(Object.keys(oldV).sort()).toEqual(["notes"]);
+    expect(Object.keys(newV).sort()).toEqual(["notes"]);
     expect(newV.notes).toBe("ملاحظة جديدة");
   });
 
@@ -114,7 +114,7 @@ describe("تجريد sales.correct", () => {
   it("يرفض بلا تغيّرٍ فعليّ، ويرفض المستند الميت", async () => {
     const invoiceId = await paidInvoice();
     await expect(caller().sales.correct({ invoiceId, reason: "بلا تغيير" }))
-      .rejects.toThrowError(/لم يتغير/);
+      .rejects.toThrowError(/لم تتغير/);
     await db().update(s.invoices).set({ status: "CANCELLED" }).where(eq(s.invoices.id, invoiceId));
     await expect(caller().sales.correct({ invoiceId, notes: "x", reason: "محاولة" }))
       .rejects.toThrowError(/ملغاة|مرتجعة|مستبدَلة/);

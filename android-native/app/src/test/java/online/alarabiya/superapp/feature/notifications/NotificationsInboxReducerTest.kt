@@ -2,6 +2,7 @@ package online.alarabiya.superapp.feature.notifications
 
 import online.alarabiya.superapp.data.NotificationFilter
 import online.alarabiya.superapp.model.selfservice.PersonalNotification
+import online.alarabiya.superapp.model.selfservice.NotificationFamily
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -12,6 +13,7 @@ class NotificationsInboxReducerTest {
     private val sampleRow = PersonalNotification(
         id = 7L,
         kind = "TASK_ASSIGNED",
+        family = NotificationFamily.OPERATIONS,
         title = "مهمّة جديدة",
         body = "أُسندت لك مهمّة عاجلة",
         createdAt = "2026-08-24T10:00:00Z",

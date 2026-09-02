@@ -39,6 +39,9 @@ export interface PosRow {
   /** «وضع الافتتاح» (ش٥): لحظة تثبيت الرصيد الافتتاحي — null = غير مُفتتَح (يُباع نقداً بالسالب أثناء النافذة). */
   openedAt: Date | null;
   isService: boolean; // مُنتج خِدمي: لا مَخزون، POS يَتجاوز فَحص نَقص المَخزون.
+  // «يُباع بالطلب» (0318): صنفٌ مخزنيّ يُسمح ببيعه قبل توريده — الكاشير لا يراه «نافذاً»،
+  // ورصيدُه ينزل بالسالب عدّادَ التزامٍ يرفعه الشراء (فاتورة مورّد) أو الإنتاج الداخليّ.
+  allowBackorder: boolean;
   // شاشة الاستقبال الهجينة: المنتج المخصّص يفتح نافذة التخصيص بدل الإضافة المباشرة للسلّة.
   isCustomizable: boolean;
   // خدمة طباعة (productType=PRINT_SERVICE): تُباع عبر مسار createPrintSale (خصم مواد + COGS) لا sales.create.
@@ -80,6 +83,7 @@ export interface CatalogStockSnapshotRow {
   availableBase: number;
   openedAt: Date | null;
   isService: boolean;
+  allowBackorder: boolean;
   isBundle: boolean;
 }
 
@@ -109,6 +113,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       // أثناء النافذة) عن «نافذ» الصارم — الحارس الفعلي خادميّ في sale/create بأي حال.
       openedAt: branchStock.openedAt,
       isService: products.isService,
+      allowBackorder: products.allowBackorder,
       isCustomizable: products.isCustomizable,
       productType: products.productType,
       isBundle: products.isBundle,
@@ -147,6 +152,7 @@ function normalize(rows: any[], branchId: number): PosRow[] {
     availableBase: Math.max(0, (r.stockBase ?? 0) - (r.reservedBase ?? 0)),
     openedAt: r.openedAt ?? null,
     isService: !!r.isService,
+    allowBackorder: !!r.allowBackorder,
     isCustomizable: !!r.isCustomizable,
     isPrintService: r.productType === PRINT_SERVICE_TYPE,
     isContractPrice: false,
@@ -300,6 +306,7 @@ export async function listStockByUnitIds(
       reservedBase: reservationStock.reservedBase,
       openedAt: branchStock.openedAt,
       isService: products.isService,
+      allowBackorder: products.allowBackorder,
       isBundle: products.isBundle,
     })
     .from(productUnits)
@@ -327,6 +334,7 @@ export async function listStockByUnitIds(
       availableBase: Math.max(0, stockBase - reservedBase),
       openedAt: row.openedAt ?? null,
       isService: !!row.isService,
+      allowBackorder: !!row.allowBackorder,
       isBundle: !!row.isBundle,
     };
   });

@@ -355,7 +355,7 @@ private fun OrderDetail(order: PurchaseOrderDetail, capabilities: PurchasingCapa
         items(order.lines, key = { it.id }) { line -> CompactCard(Icons.Rounded.Inventory2, line.productName, "${line.quantity} ${line.unitName.orEmpty()} · مستلم ${line.receivedBaseQuantity}/${line.baseQuantity}", line.total?.let { "$it د.ع" }) }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (capabilities.canConfirm(order)) Button(onClick = onConfirm, modifier = Modifier.weight(1f)) { Text("اعتماد وإضافة للمخزون") }
+                if (capabilities.canConfirm(order)) Button(onClick = onConfirm, modifier = Modifier.weight(1f)) { Text("إرسال للاعتماد") }
                 if (capabilities.canCancel(order)) OutlinedButton(onClick = onCancel) { Text("إلغاء") }
             }
         }
@@ -395,7 +395,7 @@ private fun PurchasingComposerDialog(composer: PurchasingComposer, capabilities:
                 }
             }
         },
-        confirmButton = { Button(onClick = onSubmit) { Text(if (composer is PurchasingComposer.Order) "حفظ واعتماد" else "حفظ") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
+        confirmButton = { Button(onClick = onSubmit) { Text(if (composer is PurchasingComposer.Order) "حفظ وإرسال للاعتماد" else "حفظ") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
     )
 }
 
@@ -415,7 +415,7 @@ private fun SupplierFields(draft: SupplierDraft, canOpening: Boolean, onChange: 
 @Composable
 private fun OrderFields(draft: PurchaseOrderDraft, catalog: List<online.alarabiya.superapp.model.purchasing.PurchaseCatalogItem>, onCatalogBranch: (Long) -> Unit, onChange: (PurchaseOrderDraft) -> Unit) {
     val line = draft.items.first()
-    Text("حفظ واعتماد يضيف كامل الكميات إلى المخزون فوراً — تأكد من وصول البضاعة فعلياً.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text("تُحفظ الفاتورة وتُرسل لمراجع مستقل؛ عند اعتماده تُضاف كامل الكميات إلى المخزون تلقائياً.", color = MaterialTheme.colorScheme.onSurfaceVariant)
     TextInput("معرّف المورد", draft.supplierId.takeIf { it > 0 }?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(supplierId = it.toLongOrNull() ?: 0)) }
     TextInput("معرّف الفرع", draft.branchId?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(branchId = it.toLongOrNull())) }
     if (draft.branchId != null) OutlinedButton(onClick = { onCatalogBranch(draft.branchId) }) { Text("تحميل أصناف الفرع") }

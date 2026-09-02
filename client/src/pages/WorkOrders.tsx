@@ -52,9 +52,12 @@ import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { deriveWoDeliveryState, woDeliveryStateLabel } from "@shared/workOrderDeliveryState";
 import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
+import { WorkOrderControlApprovals } from "@/components/workOrders/WorkOrderControlApprovals";
 import { newClientRequestId } from "@/lib/countQueue";
-import { canCancelWorkOrder, cancellationRefundNotice } from "@/lib/workOrderRefundPolicy";
+import { canCancelWorkOrder } from "@/lib/workOrderRefundPolicy";
+import { mayRequestWorkOrderControl } from "@shared/workOrderControlAuthority";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import {
   Dialog,
   DialogContent,
@@ -632,7 +635,15 @@ type EditForm = {
 
 function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: number | null; onClose: () => void; onSaved: () => void }) {
   const detail = trpc.workOrders.get.useQuery({ workOrderId: workOrderId ?? 0 }, { enabled: workOrderId != null });
+  const preflight = trpc.workOrders.controlPreflight.useQuery(
+    { workOrderId: workOrderId ?? 0 },
+    { enabled: workOrderId != null },
+  );
+  const me = trpc.auth.me.useQuery();
   const [form, setForm] = useState<EditForm | null>(null);
+  const [reason, setReason] = useState("");
+  const requestKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const hasDirectAuthority = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
 
   // يعبّئ النموذج من بيانات الخادم عند فتح طلبٍ جديد — لا يُعيد الكتابة فوق تعديلات المستخدم
   // الجارية إن أُعيد جلب نفس الطلب (invalidate) أثناء الفتح.
@@ -660,11 +671,24 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
     onSuccess: () => { notify.ok("حُفظ التعديل"); onSaved(); },
     onError: (e) => notify.err(e),
   });
+  const requestControl = trpc.workOrders.requestControl.useMutation({
+    onSuccess: (result) => {
+      notify.ok(result.replayed
+        ? "أُعيد تحميل طلب التعديل السابق — ما زال بانتظار مراجع مستقل."
+        : "أُرسل طلب التعديل بلا تغيير فوري؛ ينتظر اعتماد مدير مستقل.");
+      requestKeyRef.current = null;
+      onSaved();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   if (workOrderId == null) return null;
   const d = detail.data;
   const locked = !!d && (d.status === "DELIVERED" || d.status === "CANCELLED");
   const deposit = D(d?.deposit ?? 0);
+  const canDirect =
+    hasDirectAuthority &&
+    preflight.data?.controlRequired.commercial === false;
 
   function submit() {
     if (!form) return;
@@ -673,8 +697,9 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
     const priceD = D(form.salePrice);
     if (priceD.lte(0)) { notify.err("السعر يجب أن يكون أكبر من صفر"); return; }
     if (priceD.lt(deposit)) { notify.err(`السعر أقلّ من العربون المقبوض سلفاً (${fmtAr(deposit.toFixed(2))} د.ع)`); return; }
-    update.mutate({
-      workOrderId: workOrderId!,
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length < 3) { notify.err("سبب التعديل مطلوب من 3 محارف على الأقل"); return; }
+    const payload = {
       title,
       customizationText: form.customizationText.trim() || null,
       salePrice: round2(priceD).toFixed(2),
@@ -685,6 +710,22 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
       contactPhone: form.contactPhone.trim() || null,
       receptionChannel: form.receptionChannel,
       channelHandle: form.channelHandle.trim() || null,
+    };
+    if (canDirect) {
+      update.mutate({ workOrderId: workOrderId!, expectedVersion: Number(d?.version), reason: normalizedReason, ...payload });
+      return;
+    }
+    const fingerprint = JSON.stringify({ workOrderId, version: d?.version, normalizedReason, payload });
+    const existing = requestKeyRef.current;
+    const requestKey = existing?.fingerprint === fingerprint ? existing.key : newClientRequestId();
+    requestKeyRef.current = { fingerprint, key: requestKey };
+    requestControl.mutate({
+      requestType: "COMMERCIAL_EDIT",
+      requestKey,
+      workOrderId: workOrderId!,
+      baseVersion: Number(d?.version),
+      reason: normalizedReason,
+      payload,
     });
   }
 
@@ -696,7 +737,9 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
           <DialogDescription>
             {locked
               ? "هذا الطلب مُسلَّم أو مُلغى — لا يمكن تعديله بعد الآن."
-              : "يسري التعديل فوراً. الكمية والمواد المستهلَكة لا تُعدَّلان من هنا."}
+              : canDirect
+                ? "يسري التعديل فوراً لأن الأمر لم يبدأ ولم يُقبض عليه شيء. الكمية والمواد لا تُعدَّلان من هنا."
+                : "سيُرسل التعديل بلا أثر فوري إلى مراجع مستقل لأن الأمر بدأ أو قُبض عليه مبلغ."}
           </DialogDescription>
         </DialogHeader>
         {!d || !form ? (
@@ -756,11 +799,15 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
                   <IntlPhoneInput value={form.contactPhone} onChange={(v) => setForm({ ...form, contactPhone: v })} />
                 </div>
               </div>
+              <div className="space-y-1">
+                <Label>سبب التعديل</Label>
+                <Textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={500} rows={2} placeholder="ما الذي تغيّر ولماذا؟" />
+              </div>
             </div>
             <DialogFooter>
-              <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={update.isPending}>إلغاء</button>
-              <button className="wob-btn wob-btn-primary" disabled={update.isPending} onClick={submit}>
-                {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديل"}
+              <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={update.isPending || requestControl.isPending}>إلغاء</button>
+              <button className="wob-btn wob-btn-primary" disabled={update.isPending || requestControl.isPending || reason.trim().length < 3} onClick={submit}>
+                {update.isPending || requestControl.isPending ? "جارٍ الحفظ…" : canDirect ? "حفظ التعديل" : "إرسال طلب التعديل"}
               </button>
             </DialogFooter>
           </>
@@ -772,9 +819,11 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
 
 // ─────────────── لوحة التفاصيل (Drawer) ───────────────
 function Drawer({
-  id, onClose, isManager, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, busy,
+  id, onClose, isManager, canRequestControl, canRequestCancel, canDeliver, onAdvance, onCancel, onDeliver, onAssign, onEdit, onOpenCustomer, busy,
 }: {
-  id: number; onClose: () => void; isManager: boolean; canDeliver: boolean;
+  id: number; onClose: () => void; isManager: boolean; canRequestControl: boolean;
+  /** طلبُ الإلغاء أوسعُ من التعديل التجاريّ: يشمل فنّي المطبعة (قرار المالك ١/٩/٢٦). */
+  canRequestCancel: boolean; canDeliver: boolean;
   onAdvance: (id: number, to: Status) => void; onCancel: (d: Detail) => void;
   onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void;
   onEdit: (id: number) => void; busy: boolean;
@@ -799,7 +848,7 @@ function Drawer({
 
   // أحداث الخط الزمني: من سجلّ التدقيق إن توفّر، وإلا اشتقاق صادق من الطوابع.
   const tlRows = timeline.data ?? [];
-  const tlItems = tlRows.length
+  const tlItems = timeline.isError ? [] : tlRows.length
     ? tlRows.map((r) => ({ ev: workOrderTimelineLabel(r.action), at: r.createdAt, by: r.userName as string | null }))
     : d ? [
         { ev: "استُلم الطلب", at: d.createdAt, by: null as string | null },
@@ -811,8 +860,12 @@ function Drawer({
       <div className="wob-scrim" onClick={onClose} />
       <div className="wob-drawer" role="dialog" aria-modal="true" aria-label="تفاصيل طلب الخدمة">
         <button className="wob-dr-close" onClick={onClose} aria-label="إغلاق"><X aria-hidden className="size-4" /></button>
-        {!d ? (
-          <div className="wob-dr-body"><div style={{ color: "var(--muted-fg)", textAlign: "center", padding: 40 }}>{detail.isLoading ? "جارٍ التحميل…" : "تعذّر العثور على الأمر."}</div></div>
+        {detail.isError ? (
+          <div className="wob-dr-body">
+            <ErrorState message="تعذّر تحميل أمر الشغل؛ لم يُفترض أنه غير موجود." onRetry={() => void detail.refetch()} />
+          </div>
+        ) : !d ? (
+          <div className="wob-dr-body"><LoadingState message="جارٍ تحميل أمر الشغل…" /></div>
         ) : (
           <>
             <div className="wob-dr-head">
@@ -898,7 +951,15 @@ function Drawer({
 
               <div>
                 <div className="wob-dr-sec-t">الخط الزمني للأمر</div>
-                <div className="wob-timeline">
+                {timeline.isError ? (
+                  <ErrorState
+                    className="p-4"
+                    message="تعذّر تحميل سجل الأمر؛ لن نعرض طوابع مشتقة كأنها السجل الحقيقي."
+                    onRetry={() => void timeline.refetch()}
+                  />
+                ) : timeline.isLoading ? (
+                  <LoadingState className="p-4" message="جارٍ تحميل سجل الأمر…" />
+                ) : <div className="wob-timeline">
                   {[...tlItems].reverse().map((e, i) => (
                     <div className="wob-tl-item" key={i}>
                       <div className="wob-tl-dot" style={{ background: i === 0 ? `oklch(0.6 0.17 ${hue})` : "var(--border-strong)" }} />
@@ -907,7 +968,7 @@ function Drawer({
                     </div>
                   ))}
                   {tlItems.length === 0 && <div style={{ color: "var(--muted-fg)", fontSize: 12.5 }}>لا أحداث مسجّلة بعد.</div>}
-                </div>
+                </div>}
               </div>
 
               {d.qrPayload && (
@@ -998,13 +1059,15 @@ function Drawer({
               ) : (
                 <button className="wob-btn wob-btn-ghost" disabled style={{ flex: 1, opacity: 0.6 }}><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> اكتمل الأمر</button>
               )}
-              {isManager && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
+              {canRequestControl && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
                 <button className="wob-btn wob-btn-ghost" disabled={busy} onClick={() => onEdit(d.id)}>
-                  <Pencil aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تعديل
+                  <Pencil aria-hidden className="size-4 inline-block align-text-bottom me-1" /> {isManager ? "تعديل" : "طلب تعديل"}
                 </button>
               )}
-              {isManager && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
-                <button className="wob-btn wob-btn-danger" disabled={busy} onClick={() => onCancel(d)}>إلغاء الأمر</button>
+              {canRequestCancel && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
+                <button className="wob-btn wob-btn-danger" disabled={busy} onClick={() => onCancel(d)}>
+                  {isManager ? "إلغاء الأمر" : "طلب إلغاء الأمر"}
+                </button>
               )}
               {d.status === "DELIVERED" && d.invoiceId && (
                 // رابط مباشر لتفاصيل الفاتورة الصادرة عن التسليم (كان يهبط على القائمة العامة)
@@ -1022,10 +1085,12 @@ function Drawer({
 // طلب المالك (٩/٨): الكانبان يخدم الإنتاج/الفنّيين؛ يلزم عرضٌ يشبه شاشة «المبيعات» — جدولٌ يمكن
 // فرزه وفلترته، بأزرار تحكّمٍ وتعديل، دون حاجةٍ لفتح شاشة الاستقبال (التي تتطلّب وردية مفتوحة).
 function OrdersTable({
-  rows, isManager, canDeliver, onOpen, onEdit, onAdvance, onCancel,
+  rows, isManager, canRequestControl, canRequestCancel, canDeliver, onOpen, onEdit, onAdvance, onCancel,
 }: {
   rows: WO[];
   isManager: boolean;
+  canRequestControl: boolean;
+  canRequestCancel: boolean;
   canDeliver: boolean;
   onOpen: (id: number) => void;
   onEdit: (id: number) => void;
@@ -1158,7 +1223,7 @@ function OrdersTable({
         const next = WO_NEXT_STATUS[o.status as WorkOrderStatus];
         const actions: RowAction[] = [
           { key: "open", kind: "view", label: "فتح التفاصيل", onSelect: () => onOpen(o.id) },
-          { key: "edit", kind: "edit", label: "تعديل", icon: Pencil, hidden: isFinal, onSelect: () => onEdit(o.id), gate: { managerOnly: true } },
+          { key: "edit", kind: "edit", label: isManager ? "تعديل" : "طلب تعديل", icon: Pencil, hidden: isFinal || !canRequestControl, onSelect: () => onEdit(o.id), gate: { roles: ["cashier", "manager"], module: "workorders", level: "FULL" } },
           { key: "print", kind: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o) },
           { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
           { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
@@ -1168,8 +1233,8 @@ function OrdersTable({
         } else if (next && (next !== "DELIVERED" || canDeliver)) {
           actions.push({ key: "advance", kind: next === "DELIVERED" ? "pay" : "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
         }
-        if (isManager && !isFinal) {
-          actions.push({ key: "cancel", kind: "cancel", label: "إلغاء الأمر", variant: "destructive", onSelect: () => onCancel(o) });
+        if (canRequestCancel && !isFinal) {
+          actions.push({ key: "cancel", kind: "cancel", label: isManager ? "إلغاء الأمر" : "طلب إلغاء الأمر", variant: "destructive", onSelect: () => onCancel(o) });
         }
         return (
           <RowActions
@@ -1187,7 +1252,7 @@ function OrdersTable({
         );
       },
     },
-  ], [isManager, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
+  ], [isManager, canRequestControl, canRequestCancel, canDeliver, onOpen, onEdit, onAdvance, onCancel]);
 
   const operation = useMemo(() => ({
     getOperation: (order: WO) => ({
@@ -1270,6 +1335,14 @@ export default function WorkOrders() {
   const isManager = canCancel;
   const isOwner = me.data?.isOwner === true;
   const canCrossBranches = me.data?.role === "admin";
+  // مرآة workordersManagerProcedure حرفياً، بما فيها المنح الصريح لدور مخصّص.
+  const canReviewWorkOrderControls = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "workorders",
+    "FULL",
+    ["manager"],
+  );
   // المشرف (أدمن/مالك/مدير) نطاقُه كلُّ الفرع بحكم `scopedOwnerId=null` — فالرقاقة بلا أثرٍ له.
   const isSupervisor = me.data?.role === "admin" || me.data?.role === "manager" || !!me.data?.isOwner;
   // مرآة بوّابة الخادم: deliver = workordersCashierProcedure(["cashier","manager"], "workorders", "FULL") —
@@ -1277,6 +1350,12 @@ export default function WorkOrders() {
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
   const canDeliver = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager"]);
+  const canRequestControl = canDeliver;
+  /**
+   * **طلبُ الإلغاء لفنّي المطبعة** (قرار المالك ١/٩/٢٦): مصدرُه القاموس المشترك نفسه الذي
+   * يُنفّذه الخادم، لا قائمةُ أدوارٍ ثانية. التعديلُ التجاريّ يبقى على `canRequestControl`.
+   */
+  const canRequestCancel = mayRequestWorkOrderControl("CANCEL", me.data?.role, (me.data?.permissionsOverride ?? null) as PermissionMap | null);
   // مرآة workordersExecProcedure الخادميّة: workorders/FULL + roles=[cashier|manager|print_operator].
   // إشارة الكانبان (setKanbanState) تحته ⇒ لا نُظهر زرّاً سيفشل بـFORBIDDEN لمستخدم READ (Codex #6).
   const canSetKanban = !!me.data?.role &&
@@ -1307,13 +1386,10 @@ export default function WorkOrders() {
   }, [view]);
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [deliverOrder, setDeliverOrder] = useState<DeliverTarget | null>(null);
-  const [cancelNotice, setCancelNotice] = useState<{ title: string; description: string; awaitingOwner: boolean } | null>(null);
-  const [cancelRetryWorkOrderId, setCancelRetryWorkOrderId] = useState<number | null>(null);
   const [drag, setDrag] = useState<{ order: WO; x: number; y: number; overCol: string | null } | null>(null);
 
   const colRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{ order: WO; startX: number; startY: number; ox: number; oy: number; moved: boolean } | null>(null);
-  const cancelRequestIdsRef = useRef(new Map<number, string>());
 
   // فلاتر خادمية مشتركة بين القائمتين والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
   const serverFilters = {
@@ -1366,27 +1442,6 @@ export default function WorkOrders() {
     onSuccess: (r) => { notify.ok("تم التسليم", `صدرت فاتورة ${r.invoiceNumber} تلقائياً.`); setDeliverOrder(null); invalidateAll(); },
     onError: (e) => { notify.err(e); invalidateAll(); },
   });
-  const cancel = trpc.workOrders.cancel.useMutation({
-    onSuccess: (result, variables) => {
-      const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
-      setCancelNotice(notice);
-      if (notice.awaitingOwner) notify.warn(notice.title, notice.description);
-      else notify.ok(notice.title, notice.description);
-      cancelRequestIdsRef.current.delete(variables.workOrderId);
-      setCancelRetryWorkOrderId(null);
-      setSel(null);
-      invalidateAll();
-    },
-    onError: (error, variables) => {
-      notify.err(error, "لم نتأكد من نتيجة الإلغاء؛ يمكنك إعادة المحاولة بالمعرّف نفسه دون تكرار الأثر.");
-      setCancelRetryWorkOrderId(variables.workOrderId);
-      setCancelNotice({
-        title: "تعذّر التحقق من نتيجة الإلغاء",
-        description: "لم تُنشأ محاولة جديدة تلقائياً. أعد التحقق والمحاولة الآمنة بالمعرّف نفسه؛ إن كان الإلغاء نُفّذ فسيعيد الخادم النتيجة بلا تكرار.",
-        awaitingOwner: true,
-      });
-    },
-  });
   const assign = trpc.workOrders.assign.useMutation({
     onSuccess: () => { notify.ok("تم تحديث الإسناد"); invalidateAll(); },
     onError: (e) => { notify.err(e); invalidateAll(); },
@@ -1414,7 +1469,7 @@ export default function WorkOrders() {
     }
     setKanban.mutate({ workOrderId: orderId, kanbanState: next });
   };
-  const busy = start.isPending || markReady.isPending || deliver.isPending || cancel.isPending || assign.isPending;
+  const busy = start.isPending || markReady.isPending || deliver.isPending || assign.isPending;
 
   const all = useMemo(() => [...(activeQ.data ?? []), ...(deliveredQ.data ?? [])], [activeQ.data, deliveredQ.data]);
   // الأولوية/القناة ترشيح عميلي (لا يدعمهما الخادم)؛ q تُطبَّق فورياً هنا أيضاً فوق الترشيح الخادمي
@@ -1646,16 +1701,16 @@ export default function WorkOrders() {
     window.addEventListener("pointercancel", cancel);
   }
 
-  async function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
-    if (!(await confirm({ variant: "danger", title: "إلغاء طلب الخدمة", description: `إلغاء «${d.title}» (${d.orderNumber})؟ تُعكَس المواد المخصومة للمخزون.`, confirmText: "إلغاء الطلب", cancelText: "تراجع" }))) return;
-    const clientRequestId = cancelRequestIdsRef.current.get(d.id) ?? newClientRequestId();
-    cancelRequestIdsRef.current.set(d.id, clientRequestId);
-    cancel.mutate({ workOrderId: d.id, clientRequestId });
+  function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
+    // الإلغاء يحتاج سبباً ومصير كل خامة ووردية ردّ النقد، وقد يتحول إلى طلب اعتماد.
+    // لذلك لا ننفّذ اختصاراً ناقصاً من اللوحة؛ نفتح مسار التفاصيل الجامع بهذه البيانات.
+    navigate(`/work-orders/${d.id}?cancel=1`);
   }
 
   const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1";
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
+  const boardError = activeQ.isError || deliveredQ.isError || countsQ.isError;
 
   return (
     <div className="wob">
@@ -1712,35 +1767,10 @@ export default function WorkOrders() {
       </div>
 
       <WorkOrderRefundApprovals isOwner={isOwner} currentUserId={me.data?.id} />
-
-      {cancelNotice && (
-        <div
-          role="status"
-          className={cancelNotice.awaitingOwner
-            ? "rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]"
-            : "rounded-md border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] p-3 text-sm text-[var(--sem-pos)]"}
-        >
-          <div className="font-bold">{cancelNotice.title}</div>
-          <div>{cancelNotice.description}</div>
-          {cancelRetryWorkOrderId != null && canCancel && (
-            <button
-              type="button"
-              className="mt-2 rounded-md border border-current px-3 py-1.5 text-xs font-bold disabled:opacity-50"
-              disabled={cancel.isPending}
-              onClick={() => {
-                const clientRequestId = cancelRequestIdsRef.current.get(cancelRetryWorkOrderId);
-                if (!clientRequestId) {
-                  notify.err("تعذّر العثور على معرّف المحاولة السابقة؛ افتح أمر الشغل للتحقق من حالته.");
-                  return;
-                }
-                cancel.mutate({ workOrderId: cancelRetryWorkOrderId, clientRequestId });
-              }}
-            >
-              {cancel.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
-            </button>
-          )}
-        </div>
-      )}
+      <WorkOrderControlApprovals
+        canReview={canReviewWorkOrderControls}
+        currentUserId={me.data?.id}
+      />
 
       <div className="wob-toolbar">
         {/* رقاقة النطاق (قرار المالك ١٩/٨) — «كل طلبات الفرع» هو الافتراضيّ، و«طلباتي» تضييقٌ
@@ -1925,10 +1955,23 @@ export default function WorkOrders() {
         {anyFilter && <button className="wob-chip-clear" onClick={resetF}>مسح الفلاتر <X aria-hidden className="size-3.5 inline-block align-text-bottom" /></button>}
       </div>
 
-      {view === "list" ? (
+      {boardLoading ? (
+        <LoadingState message="جارٍ تحميل أوامر الشغل…" />
+      ) : boardError ? (
+        <ErrorState
+          message="تعذّر تحميل جزء من أوامر الشغل أو عدّاداتها؛ لم يُفترض أن الطابور فارغ أو أن القيم صفر."
+          onRetry={() => {
+            void activeQ.refetch();
+            void deliveredQ.refetch();
+            void countsQ.refetch();
+          }}
+        />
+      ) : view === "list" ? (
         <OrdersTable
           rows={filtered}
           isManager={isManager}
+          canRequestControl={canRequestControl}
+          canRequestCancel={canRequestCancel}
           canDeliver={canDeliver}
           onOpen={setSel}
           onEdit={setEditTarget}
@@ -1937,9 +1980,7 @@ export default function WorkOrders() {
         />
       ) : (
       <div className="wob-board-wrap">
-        {boardLoading ? (
-          <div className="wob-empty-board">جارٍ التحميل…</div>
-        ) : boardEmpty ? (
+        {boardEmpty ? (
           <div className="wob-empty-board">{anyFilter ? "لا طلبات مطابقة للبحث/الفلاتر الحالية." : "لا أوامر شغل بعد. تُنشأ الطلبات من شاشة الاستقبال الموحدة."}</div>
         ) : (
           <div className={`wob-board wob-d-${f.d === "compact" ? "compact" : f.d === "detailed" ? "detailed" : "normal"}`}>
@@ -2044,6 +2085,8 @@ export default function WorkOrders() {
           id={sel}
           onClose={() => setSel(null)}
           isManager={isManager}
+          canRequestControl={canRequestControl}
+          canRequestCancel={canRequestCancel}
           canDeliver={canDeliver}
           busy={busy}
           onAdvance={async (id, to) => {

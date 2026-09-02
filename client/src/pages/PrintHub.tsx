@@ -13,10 +13,15 @@ const PrintPricingSettings = lazy(() => import("@/pages/PrintPricingSettings"));
 const TABS: HubTab[] = [
   // توحيد اصطلاحي (٣/٨): «طابور المطبعة» يطابق الآن عنوان الصفحة نفسها («أوامر الشغل» —
   // WorkOrders.tsx:841) بدل تسمية قديمة منفصلة توحي بمفهوم مختلف (طابور المطبعة فقط).
-  { value: "queue", label: "أوامر الشغل", Component: WorkOrders },
-  { value: "station", label: "محطة التنفيذ", gate: { roles: ["admin", "manager", "print_operator", "cashier"] }, Component: WorkOrderStation },
-  { value: "production", label: "الإنتاج والتحويل", gate: { managerOnly: true }, Component: Production },
-  { value: "recipes", label: "وصفات الإنتاج", gate: { managerOnly: true }, Component: ProductionRecipes },
+  { value: "queue", label: "أوامر الشغل", gate: { module: "workorders", level: "READ" }, Component: WorkOrders },
+  {
+    value: "station",
+    label: "محطة التنفيذ",
+    gate: { roles: ["cashier", "manager", "print_operator"], module: "workorders", level: "FULL" },
+    Component: WorkOrderStation,
+  },
+  { value: "production", label: "الإنتاج والتحويل", gate: { roles: ["manager"], module: "inventory", level: "FULL" }, Component: Production },
+  { value: "recipes", label: "وصفات الإنتاج", gate: { roles: ["manager"], module: "inventory", level: "FULL" }, Component: ProductionRecipes },
   // محرّك تسعير الطباعة الرقمية (البند⑥ ط٢) — حاسبة + إعدادات، محصورة بالمدير.
   { value: "print-pricing", label: "حاسبة التسعير", gate: { managerOnly: true }, Component: PrintPricingCalculator },
   { value: "print-pricing-settings", label: "إعدادات التسعير", gate: { managerOnly: true }, Component: PrintPricingSettings },

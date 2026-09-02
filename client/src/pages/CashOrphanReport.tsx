@@ -3,6 +3,7 @@
 //  - نقد يتيم حقيقي (TRUE_ORPHAN): سجلات تاريخية قبل cashBucket (NULL) أو خَلل كاشير بـnull-shift.
 // كلاهما خارج Z-report. تَسوية درج الكاشير تَبقى دقيقة، والمعاملات الإدارية تَدخل تَسوية شهرية مستقلّة.
 import { useState, type ReactNode } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { AlertTriangle, Building2 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -153,10 +154,10 @@ export default function CashOrphanReport() {
           <PeriodFilter value={period} onChange={setPeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select
-              className={selectCls}
-              value={branchId}
-              onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(value) => setBranchId(value ? Number(value) : "")}
             >
               <option value="">الكل</option>
               {branches.data?.map((b) => (
@@ -164,7 +165,7 @@ export default function CashOrphanReport() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }

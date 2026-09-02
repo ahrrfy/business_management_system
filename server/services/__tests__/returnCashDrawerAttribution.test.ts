@@ -91,19 +91,28 @@ async function sellOneCash(shiftId: number) {
   return { invoiceId: sale.invoiceId, itemId: Number(item.id) };
 }
 
+const walkInCashResolution = (shiftId?: number) => ({
+  kind: "IMMEDIATE_REFUND" as const,
+  method: "CASH" as const,
+  amount: "10.00",
+  shiftId,
+  reason: "إرجاع اختبار الدرج",
+  disposition: "RESTOCK" as const,
+});
+
 beforeEach(async () => {
   await reset();
   await seedBase();
 });
 
 describe("returnSale — إسناد الاسترداد النقدي لدرج الفرع الفعليّ (لا وردية الفاعل)", () => {
-  it("المديرة بلا وردية + وردية الكاشير هي الوحيدة المفتوحة ⇒ الاسترداد يُنسَب لها تلقائياً (لا رفض)", async () => {
+  it("المديرة بلا وردية + resolution يحدّد وردية الكاشير ⇒ الاسترداد يُنسَب للدرج الفعلي", async () => {
     const cashierShift = await openShiftFor(2, 1);
     const { invoiceId, itemId } = await sellOneCash(cashierShift);
 
-    // قبل الإصلاح: openShiftIdTx(actor=المديرة) يُعيد null (لا وردية لها) ⇒ PRECONDITION_FAILED.
+    // resolution يثبت الدرج الذي خرج منه مال الزبون العابر؛ لا تُستعمل وردية الفاعل ضمنياً.
     await returnSale(
-      { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } },
+      { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], resolution: walkInCashResolution(cashierShift) },
       manager,
     );
 
@@ -123,7 +132,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
 
     await expect(
       returnSale({ invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: null }, manager),
-    ).rejects.toThrow(/زبونٌ عابر بلا حساب/);
+    ).rejects.toThrow(/resolution.*CASH.*كامل/);
 
     // صفر أثر: البضاعة لم تعُد والإيراد لم يُعكَس (المعاملة ذرّية).
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
@@ -137,7 +146,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
 
     await expect(
       returnSale(
-        { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } },
+        { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], resolution: walkInCashResolution() },
         manager,
       ),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
@@ -147,7 +156,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
     expect((mgrReport?.payments ?? []).some((p) => p.direction === "OUT" && p.method === "CASH")).toBe(false);
   });
 
-  it("تعدّد الدرج + refund.shiftId صريح لوردية الكاشير ⇒ ينجح وينتسب لها لا لوردية المديرة", async () => {
+  it("تعدّد الدرج + resolution.shiftId صريح لوردية الكاشير ⇒ ينجح وينتسب لها لا لوردية المديرة", async () => {
     const mgrShift = await openShiftFor(1, 1);
     const cashierShift = await openShiftFor(2, 1);
     const { invoiceId, itemId } = await sellOneCash(cashierShift);
@@ -156,7 +165,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
       {
         invoiceId,
         lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
-        refund: { amount: "10.00", method: "CASH", shiftId: cashierShift },
+        resolution: walkInCashResolution(cashierShift),
       },
       manager,
     );
@@ -169,7 +178,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
     expect(outOnMgr).toBe(false); // لم يَنتسب خطأً لوردية المديرة رغم أنها الفاعلة.
   });
 
-  it("refund.shiftId صريح لا يخصّ الفرع/غير مفتوح ⇒ يُرفَض", async () => {
+  it("resolution.shiftId صريح لا يخصّ الفرع/غير مفتوح ⇒ يُرفَض", async () => {
     const cashierShift = await openShiftFor(2, 1);
     const { invoiceId, itemId } = await sellOneCash(cashierShift);
 
@@ -178,7 +187,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
         {
           invoiceId,
           lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
-          refund: { amount: "10.00", method: "CASH", shiftId: 999999 },
+          resolution: walkInCashResolution(999999),
         },
         manager,
       ),
@@ -192,7 +201,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
 
     await expect(
       returnSale(
-        { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } },
+        { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], resolution: walkInCashResolution(cashierShift) },
         manager,
       ),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
@@ -216,7 +225,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
     // المتاح الآن = ١٠.٠٠ − ٩.٠٠ = ١.٠٠، لكن المرتجع يطلب كامل قيمة الفاتورة (١٠.٠٠).
     await expect(
       returnSale(
-        { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } },
+        { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], resolution: walkInCashResolution(cashierShift) },
         manager,
       ),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
@@ -240,7 +249,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
     });
     // المتاح الآن = ١٠+١٠−٥ = ١٥.٠٠ — يكفي استرداد ١٠.٠٠ بالكامل.
     await returnSale(
-      { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } },
+      { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], resolution: walkInCashResolution(cashierShift) },
       manager,
     );
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, itemId)))[0];

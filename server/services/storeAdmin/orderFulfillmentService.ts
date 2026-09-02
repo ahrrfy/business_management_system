@@ -25,6 +25,11 @@ import { withTx } from "../tx";
 import { decodeDataUrl, productImageUrl } from "../../imageRoute";
 import { onlineOrderLabelToken } from "../barcodeService";
 import { awardDeliveredOnlineOrderPoints } from "./loyaltyService";
+import {
+  confirmCouponReservationForOnlineOrder,
+  releaseCouponReservationForOnlineOrder,
+} from "../couponService";
+import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignService";
 
 export type OnlineOrderStatus = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -291,6 +296,9 @@ export async function setOnlineOrderStatus(
           message: "انتهت مهلة حجز مخزون هذا الطلب — اطلب من الزبون إعادة الطلب حسب التوفر الحالي",
         });
       }
+      // التأكيد قبل المهلة يثبت وعد القسيمة حتى الإرسال أو الإلغاء؛ لا يعاد فحص تاريخها لاحقاً
+      // بوصفه استعمالاً متاحاً لطلب آخر.
+      await confirmCouponReservationForOnlineOrder(tx, input.id);
     }
     // ⛔ حارس تسريب COD (مراجعة عدائية ١٢/٧): «تم التسليم» هنا تغييرُ حالةٍ بلا أثر مالي. لو كان الطلب
     // مُسنَداً لمندوب وفاتورته ما تزال بها مبلغٌ مستحقّ (COD غير محصَّل)، فإنهاؤه «مُسلَّم» يُخفي التحصيل
@@ -322,11 +330,26 @@ export async function setOnlineOrderStatus(
         ? { status: input.status, cancelReason: input.cancelReason?.trim() ? input.cancelReason.trim().slice(0, 500) : null }
         : { status: input.status };
     await tx.update(onlineOrders).set(patch).where(eq(onlineOrders.id, input.id));
+    if (input.status === "CANCELLED") {
+      await releaseCouponReservationForOnlineOrder(
+        tx,
+        input.id,
+        input.cancelReason?.trim() || "أُلغي الطلب قبل الإرسال",
+      );
+    }
     if (input.status === "DELIVERED") {
       await awardDeliveredOnlineOrderPoints(tx, {
         onlineOrderId: input.id,
         customerId: Number(order.customerId),
         total: String(order.total),
+      });
+    }
+    if (input.status !== "PENDING") {
+      await enqueueStorefrontOrderStatusPush(tx, {
+        orderId: input.id,
+        orderNumber: order.orderNumber,
+        customerId: order.customerId == null ? null : Number(order.customerId),
+        status: input.status,
       });
     }
     return { id: input.id, from, to: input.status };

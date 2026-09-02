@@ -8,6 +8,7 @@ import {
 } from "@/components/data-table/OperationAttribution";
 import { DISPLAY_SCALES, isDisplayScale } from "@/lib/displayScale";
 import { APPLICATION_MODULES } from "@/lib/moduleRegistry";
+import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 
 describe("سجل وحدات التطبيق", () => {
   it("لا يكرر المعرّفات أو المسارات", () => {
@@ -101,5 +102,33 @@ describe("مقياس العرض الآمن", () => {
     for (const scale of DISPLAY_SCALES) expect(isDisplayScale(scale)).toBe(true);
     expect(isDisplayScale("200%")).toBe(false);
     expect(isDisplayScale(1.5)).toBe(false);
+  });
+});
+
+describe("انحدارات واجهة نقطة البيع", () => {
+  it("يستبدل الكمية الافتراضية بأول رقم ثم يواصل التحرير", () => {
+    const first = applyPosQuantityKey(1, "5", true);
+    expect(first).toEqual({ quantity: 5, replaceNextDigit: false });
+
+    const second = applyPosQuantityKey(first.quantity, "2", first.replaceNextDigit);
+    expect(second).toEqual({ quantity: 52, replaceNextDigit: false });
+    expect(applyPosQuantityKey(second.quantity, "⌫", false).quantity).toBe(5);
+    expect(applyPosQuantityKey(6, "C", false)).toEqual({ quantity: 1, replaceNextDigit: true });
+  });
+
+  it("يحجز إجراءات الوردية وشارة الأوفلاين في الرأس الموحد", () => {
+    const shell = readFileSync("client/src/pages/PointOfSale.tsx", "utf8");
+    const retail = readFileSync("client/src/pages/POS.tsx", "utf8");
+    const print = readFileSync("client/src/pages/PrintPOS.tsx", "utf8");
+    const offlineChip = readFileSync("client/src/components/offline/OfflineSyncChip.tsx", "utf8");
+
+    expect(shell).not.toContain('activeMode === "RECEPTION" ?');
+    expect(retail).toContain("createPortal");
+    expect(print).toContain("createPortal");
+    expect(retail).toContain('placement="inline"');
+    expect(print).toContain('placement="inline"');
+    expect(retail).not.toContain('<OfflineSyncChip userRole={me.data?.role} />');
+    expect(print).not.toContain('<OfflineSyncChip userRole={me.data?.role} />');
+    expect(offlineChip).toContain('placement = "floating"');
   });
 });

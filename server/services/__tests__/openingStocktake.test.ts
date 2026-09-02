@@ -18,7 +18,11 @@ import {
   getStocktakeReport,
   refreshOpeningValuationBasis,
 } from "../stocktakeService";
-import { cancelPurchaseOrder, createPurchaseOrder } from "../purchaseService";
+import { createPurchaseOrder } from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  requestPurchaseOrderControl,
+} from "../purchase/controls";
 import type { CreateStocktakeInput } from "../stocktake/create";
 
 const ADMIN = { userId: 1, role: "admin" };
@@ -28,6 +32,12 @@ const WH = { userId: 4, role: "warehouse" };
 const DAY_MS = 86_400_000;
 
 const TABLES = [
+  "idempotencyKeys",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
   "stocktakeItemReviewEvents",
   "stocktakeDecisions",
   "stocktakeCountOperations",
@@ -262,6 +272,35 @@ async function expectTrpc(p: Promise<unknown>, code: string, msg?: RegExp) {
   if (msg) expect((err as TRPCError).message).toMatch(msg);
 }
 
+async function approvePurchaseOrderCancellation(po: {
+  purchaseOrderId: number;
+  revisionId: number;
+  version: number;
+}) {
+  const requestKey = `opening-cancel-request:${po.purchaseOrderId}:${randomUUID()}`;
+  const decisionKey = `opening-cancel-decision:${po.purchaseOrderId}:${randomUUID()}`;
+  const request = await requestPurchaseOrderControl(
+    {
+      purchaseOrderId: po.purchaseOrderId,
+      revisionId: po.revisionId,
+      expectedVersion: po.version,
+      kind: "CANCEL_ORDER",
+      requestKey,
+      reason: "إلغاء أمر الشراء وإعادة الصنف إلى الجرد الافتتاحي",
+    },
+    { userId: MGR.userId, branchId: 1, role: MGR.role },
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: request.requestId,
+      decisionKey,
+      approve: true,
+      reason: "راجعت سلامة الإلغاء واعتمدت إعادة أهلية الصنف للجرد",
+    },
+    { userId: MGR2.userId, branchId: 1, role: MGR2.role },
+  );
+}
+
 describe("بوابات إنشاء الجلسة الافتتاحية", () => {
   it("تُرفض والوضع مطفأ — القناة محصورة بنافذة الافتتاح", async () => {
     await expectTrpc(
@@ -472,10 +511,7 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
       .update(s.productVariants)
       .set({ costPrice: "333.00" })
       .where(eq(s.productVariants.id, 1));
-    await cancelPurchaseOrder(po.purchaseOrderId, {
-      userId: ADMIN.userId,
-      branchId: 1,
-    });
+    await approvePurchaseOrderCancellation(po);
 
     const [restored] = await db()
       .select()
@@ -510,10 +546,7 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
     const first = await makePo();
     const second = await makePo();
 
-    await cancelPurchaseOrder(first.purchaseOrderId, {
-      userId: ADMIN.userId,
-      branchId: 1,
-    });
+    await approvePurchaseOrderCancellation(first);
     expect(
       await db()
         .select()
@@ -521,10 +554,7 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
         .where(eq(s.stocktakeItems.sessionId, session.sessionId)),
     ).toHaveLength(0);
 
-    await cancelPurchaseOrder(second.purchaseOrderId, {
-      userId: ADMIN.userId,
-      branchId: 1,
-    });
+    await approvePurchaseOrderCancellation(second);
     const restored = await db()
       .select({ variantId: s.stocktakeItems.variantId })
       .from(s.stocktakeItems)
@@ -567,10 +597,7 @@ describe("بوابات إنشاء الجلسة الافتتاحية", () => {
       },
       { userId: ADMIN.userId, branchId: 1 },
     );
-    await cancelPurchaseOrder(po.purchaseOrderId, {
-      userId: ADMIN.userId,
-      branchId: 1,
-    });
+    await approvePurchaseOrderCancellation(po);
 
     const [sessionRow] = await db()
       .select({

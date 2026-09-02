@@ -7,6 +7,7 @@
 // لغة الواجهة مبسَّطة عمداً (٣١/٧): «شريحة»→«مستوى»، «عتبة»→«حدّ»، «نمط»→«طريقة الاحتساب»،
 // «إسناد»→«ربط». المصطلحات التقنية تبقى في الكود والخادم — الشاشة تخاطب مستخدم المتجر.
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -78,11 +79,14 @@ export default function CommissionPlans() {
     return q ? rows.filter((p) => [p.name, p.notes, MODE_LABEL[p.tierMode], tierSummary(p)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
   }, [rows, query]);
 
-  // بوّابة عرض مطابقة للخادم: الكتابة commissionsManagerProcedure(["manager"],"commissions","FULL")
-  // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد. القراءة (accountant/auditor) بلا أزرار كتابة.
+  // الخطة نفسها عقد شركة لا يعدله مدير فرع؛ الإسنادات فقط تُقصَر إلى موظفي فرعه.
   const me = trpc.auth.me.useQuery();
-  const canWrite = !!me.data?.role &&
+  const hasFull = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "commissions", "FULL", ["manager"]);
+  const isCompanyAuthority = me.data?.role === "admin" || me.data?.isOwner === true ||
+    (me.data?.role === "accountant" && me.data?.branchId == null);
+  const canManageAssignments = hasFull && (isCompanyAuthority || (me.data?.role === "manager" && me.data?.branchId != null));
+  const canManagePlans = hasFull && isCompanyAuthority;
 
   /* ── حوار الخطة (إنشاء/تعديل) ── */
   const [formOpen, setFormOpen] = useState(false);
@@ -231,10 +235,12 @@ export default function CommissionPlans() {
         description="الخطة تحدّد كم يستحق البائع مقابل مبيعاته. لكل خطة مستويات مرتّبة من الأدنى إلى الأعلى: بلوغ حدّ المستوى يمنح نسبته على كامل مبيعات الموظف المحتسَبة + مكافأة ثابتة اختيارية."
         actions={
           <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)}>
-              <Users className="size-4" /> ربط الموظفين بالخطط
-            </Button>
-            {canWrite && (
+            {canManageAssignments && (
+              <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)}>
+                <Users className="size-4" /> ربط موظفي النطاق بالخطط
+              </Button>
+            )}
+            {canManagePlans && (
               <Button size="sm" onClick={openAdd}>
                 <Plus className="size-4" /> خطة جديدة
               </Button>
@@ -300,7 +306,7 @@ export default function CommissionPlans() {
                       </span>
                     </td>
                     <td className="p-2 text-center">
-                      {canWrite && (
+                      {canManagePlans && (
                         <RowActions
                           actions={[
                             {
@@ -308,7 +314,7 @@ export default function CommissionPlans() {
                               kind: "edit",
                               label: "تعديل",
                               onSelect: () => openEdit(p),
-                              gate: { roles: ["manager"], module: "commissions", level: "FULL" },
+                              gate: { roles: ["admin", "manager"], module: "commissions", level: "FULL" },
                             },
                             {
                               key: "toggle",
@@ -318,7 +324,7 @@ export default function CommissionPlans() {
                               disabled: setActiveMut.isPending,
                               disabledReason: "توجد عملية تحديث قيد التنفيذ",
                               onSelect: () => void toggleActive(p),
-                              gate: { roles: ["manager"], module: "commissions", level: "FULL" },
+                              gate: { roles: ["admin", "manager"], module: "commissions", level: "FULL" },
                             },
                           ]}
                         />
@@ -364,14 +370,14 @@ export default function CommissionPlans() {
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-medium">طريقة الاحتساب</label>
-                <select
+                <AppSelect
                   value={fMode}
-                  onChange={(e) => setFMode(e.target.value as TierMode)}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+                  onValueChange={(next) => setFMode(next as TierMode)}
+                  className="h-9 border-input px-3 text-sm"
                 >
                   <option value="TARGET_PCT">حسب نسبة تحقيق الهدف — يلزم تحديد هدف شهري لكل موظف</option>
                   <option value="AMOUNT_SLAB">حسب مبلغ المبيعات — بلا حاجة إلى هدف</option>
-                </select>
+                </AppSelect>
               </div>
             </div>
 
@@ -516,24 +522,24 @@ export default function CommissionPlans() {
                       )}
                     </td>
                     <td className="p-2">
-                      {canWrite ? (
-                        <select
+                      {canManageAssignments ? (
+                        <AppSelect
                           value={draftPlan[r.employeeId] ?? ""}
-                          onChange={(e) => setDraftPlan((prev) => ({ ...prev, [r.employeeId]: e.target.value }))}
-                          className="h-8 w-44 rounded-md border border-input bg-transparent px-2 text-xs shadow-sm"
+                          onValueChange={(next) => setDraftPlan((prev) => ({ ...prev, [r.employeeId]: next }))}
+                          className="h-8 w-44 border-input px-2 text-xs"
                           aria-label={`خطة ${r.employeeName}`}
                         >
                           <option value="">اختر خطة…</option>
                           {activePlans.map((p) => (
                             <option key={p.id} value={p.id}>{p.name}</option>
                           ))}
-                        </select>
+                        </AppSelect>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}
                     </td>
                     <td className="p-2">
-                      {canWrite ? (
+                      {canManageAssignments ? (
                         <Input
                           type="month"
                           dir="ltr"
@@ -547,7 +553,7 @@ export default function CommissionPlans() {
                       )}
                     </td>
                     <td className="p-2 text-center">
-                      {canWrite && (
+                      {canManageAssignments && (
                         <div className="flex items-center justify-center gap-1 whitespace-nowrap">
                           <Button size="sm" variant="outline" disabled={assignMut.isPending} onClick={() => assignRow(r)}>
                             ربط

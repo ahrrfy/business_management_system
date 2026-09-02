@@ -9,9 +9,12 @@
  * التصميم:
  *  - يقبل `<option value>Label</option>` و`<optgroup label>` أطفالاً — نفس نمط `<select>` الأصليّ
  *    لتقليل تكلفة الهجرة إلى أدنى حدّ (استبدال الاسم + `onChange` → `onValueChange`).
- *  - `<option value="">Label</option>` يُعامَل تلقائياً كـplaceholder على الـtrigger — Radix يرفض
- *    القيمة الفارغة على `<SelectItem>` (documented) فلا يجوز تمريرها. نستخرج نصّه كـplaceholder
- *    ولا نُدرجه بنداً.
+ *  - `<option value="">Label</option>` يُستعمل نصُّه placeholder على الـtrigger **ويُدرَج أيضاً
+ *    بنداً قابلاً للاختيار** (بقيمةٍ بديلة داخلية، لأنّ Radix يرفض `value=""` على `SelectItem`).
+ *    كان يُسقَط فيتعذّر الرجوع إلى «الكل» بعد أوّل اختيار — أصلحته مراجعة Codex على PR #931.
+ *  - ⛔ الأطفال يجب أن يكونوا `<option>`/`<optgroup>` **حرفياً**: المحوِّل لا يُصيّر المكوّنات
+ *    المخصّصة، فمكوّنٌ يُرجع options يصل خامّاً إلى `SelectContent` ويصير غير قابل للاختيار.
+ *    مرّر العناصر من دالّة بدلاً منه (مثال: `categoryOptionElements(list)`).
  *  - `disabled` على `<option>` مدعوم عبر `data-[disabled]` (Radix).
  *
  * لماذا `onValueChange` بدل `onChange` النمطيّ؟ Radix API يعطي القيمة مباشرةً بلا SyntheticEvent —
@@ -56,6 +59,26 @@ interface AppSelectProps {
   /** aria-label اختياري (فُضِّل ربط <Label htmlFor={id}> عبر id، هذا للحالات القليلة بلا Label بصريّ). */
   "aria-label"?: string;
   "aria-invalid"?: boolean;
+  /**
+   * تلميحُ مرور (tooltip) على الزرّ. أُضيف ١/٩/٢٦: غيابُه كان يدفع الشاشات إلى `<select>`
+   * خامّ لمجرّد الحاجة إلى `title` — أي أنّ نقصَ الخاصّية كان يُنتج انحرافاً.
+   */
+  title?: string;
+  /**
+   * اتّجاه نصّ الزرّ. يلزم للقيم اللاتينية داخل صفحةٍ RTL (باركود · SKU · مبالغ):
+   * بلا `dir="ltr"` تنقلب علامات الترقيم والشرطات في العرض.
+   */
+  dir?: "rtl" | "ltr";
+  /**
+   * أنماطٌ سطريّة على الزرّ. يلزم شاشات الكاشير (POS/PrintPOS) التي تبني هويّتها
+   * البصريّة على توكنز `--pos-*` بأحجامٍ محسوبة للمس — بلا هذه الخاصّية كانت الشاشة
+   * تبقى على `<select>` خامّ لأنّ المكوّن الموحّد لا يسعها.
+   */
+  style?: React.CSSProperties;
+  /** حقلٌ إلزاميّ في نموذج — يُمرَّر إلى Select الأساس ليشارك في تحقّق النموذج. */
+  required?: boolean;
+  /** ربطُ الحقل بتلميحه/خطئه (§A11y) — تستعمله نماذج المتجر والتوظيف. */
+  "aria-describedby"?: string;
   /** أطفال `<option>`/`<optgroup>` — يُحلَّلون بنيوياً إلى SelectItem/SelectGroup. */
   children: React.ReactNode;
 }
@@ -74,6 +97,14 @@ function elementName(el: React.ReactElement): string | undefined {
  * يحوّل شجرة `<option>` / `<optgroup>` إلى شجرة `<SelectItem>` / `<SelectGroup>+<SelectLabel>`.
  * يستخرج `<option value="">` كـplaceholder ويُبلّغ عنه للـcaller (كي يظهر على الـtrigger فارغاً).
  */
+/**
+ * قيمةٌ بديلة للخيار الفارغ. Radix يرفض `value=""` على `SelectItem`، وكان الحلّ السابق
+ * **إسقاط** الخيار الفارغ والاكتفاء به placeholder — فيتعذّر الرجوع إلى «الكل» بعد أوّل
+ * اختيار (مراجعة Codex على PR #931، P1). الآن يُصيَّر عنصراً حقيقياً بهذه القيمة،
+ * وتُترجَم عند الحدّين فيبقى العقد الخارجيّ `""` كما هو لكل المستدعين.
+ */
+const EMPTY_VALUE = "__appselect_empty__";
+
 function convertChildren(
   children: React.ReactNode,
   extractedPlaceholder: { text: string | null },
@@ -103,13 +134,16 @@ function convertChildren(
       const raw = props.value;
       const value = raw == null ? "" : String(raw);
 
-      // Placeholder: <option value="">النصّ</option> — Radix يرفض value="" على SelectItem فنستخرجه.
+      // <option value=""> يخدم غرضين: نصُّ الـplaceholder، **وخيارُ إعادةٍ إلى «الكل»**.
+      // إسقاطه (السلوك السابق) كان يحبس المستخدم على أوّل اختيار.
       if (value === "") {
-        if (extractedPlaceholder.text == null) {
-          const t = typeof props.children === "string" ? props.children : String(props.children ?? "");
-          extractedPlaceholder.text = t.trim() || null;
-        }
-        return null;
+        const t = typeof props.children === "string" ? props.children : String(props.children ?? "");
+        if (extractedPlaceholder.text == null) extractedPlaceholder.text = t.trim() || null;
+        return (
+          <SelectItem value={EMPTY_VALUE} disabled={props.disabled}>
+            {props.children}
+          </SelectItem>
+        );
       }
 
       return (
@@ -123,6 +157,18 @@ function convertChildren(
     const props = child.props as { children?: React.ReactNode };
     if (props && "children" in props) {
       return React.cloneElement(child, {}, convertChildren(props.children, extractedPlaceholder));
+    }
+    /*
+     * وصلنا مكوّناً مخصّصاً بلا أطفال — لا يمكن تصييره هنا، وتمريره كما هو يضع `<option>`
+     * خامّة داخل `SelectContent` فتبدو القائمة سليمة **وهي غير قابلة للاختيار**. العطبُ
+     * صامتٌ تماماً في الإنتاج (لا خطأ، لا تحذير) ولذلك نصرخ في التطوير.
+     */
+    if (import.meta.env?.DEV && typeof child.type !== "string") {
+      const label = typeof child.type === "function" ? (child.type.name || "مكوّن") : String(child.type);
+      console.error(
+        `[AppSelect] الطفل «${label}» مكوّنٌ مخصّص لا option/optgroup — خياراته لن تكون قابلة للاختيار. ` +
+        `مرّر العناصر من دالّة بدلاً منه (مثال: categoryOptionElements(list)).`,
+      );
     }
     return child;
   });
@@ -142,6 +188,11 @@ export function AppSelect({
   id,
   "aria-label": ariaLabel,
   "aria-invalid": ariaInvalid,
+  title,
+  dir,
+  style,
+  required,
+  "aria-describedby": ariaDescribedBy,
   children,
 }: AppSelectProps) {
   // نستخرج placeholder من `<option value="">` إن وُجد ولم يُمرَّر placeholder صريحاً.
@@ -157,12 +208,27 @@ export function AppSelect({
 
   return (
     <Select
-      value={value === "" ? undefined : value}
-      onValueChange={onValueChange}
+      /*
+       * ⚠️ يُمرَّر `value` كما هو — بما فيه `""`.
+       *
+       * كان هنا `value === "" ? undefined : value`، و`undefined` يجعل Radix Select
+       * **غير مُتحكَّم به** فيحتفظ بآخر اختيارٍ داخليّ. الأثر: تصفيرُ الفلتر يمسح الحالة
+       * (يختفي العدّاد وزرّ «مسح الفلاتر») بينما الزرّ **يظلّ يعرض القيمة القديمة** —
+       * أي أنّ الشاشة تكذب على الموظّف: الجدول يعرض الكلّ والمنتقي يقول «تسوية».
+       * أمسكه تحقّقٌ حيّ على شاشة حركات المخزون (١/٩/٢٦).
+       *
+       * و`""` آمنٌ هنا: `SelectValue` في Radix يُظهر الـplaceholder حين تكون القيمة
+       * `""` أو `undefined` (shouldShowPlaceholder)، والقيدُ الحقيقيّ أن لا يحمل
+       * **عنصرٌ** قيمةً فارغة — وهذا مضمون: `convertChildren` يحوّل `<option value="">`
+       * إلى placeholder ولا يُنشئ له SelectItem.
+       */
+      value={value === "" ? EMPTY_VALUE : value}
+      onValueChange={(next) => onValueChange(next === EMPTY_VALUE ? "" : next)}
       disabled={disabled}
       open={open}
       onOpenChange={onOpenChange}
       name={name}
+      required={required}
     >
       <SelectTrigger
         id={id}
@@ -170,6 +236,10 @@ export function AppSelect({
         className={cn("w-full", className)}
         aria-label={ariaLabel}
         aria-invalid={ariaInvalid}
+        title={title}
+        dir={dir}
+        style={style}
+        aria-describedby={ariaDescribedBy}
       >
         <SelectValue placeholder={resolvedPlaceholder} />
       </SelectTrigger>

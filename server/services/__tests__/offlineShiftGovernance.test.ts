@@ -46,6 +46,7 @@ async function seed() {
   await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
     { id: 2, openId: "local_cashier1", name: "كاشير ف١", email: "c1@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 9, openId: "local_handover_manager", name: "مدير استلام العهدة", email: "m9@t.test", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.products).values([{ id: 1, name: "قلم" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "PEN-1", costPrice: "100.00" }]);

@@ -27,6 +27,8 @@ export type RoleGate = {
    * أي أنّ الشاشة تُرفض عرضاً على من يقبله الخادم فعلاً.
    */
   anyOf?: RoleGate[];
+  /** بوّابة مركّبة تقاطعية: لا يظهر العنصر إلا إذا مرّت كل الفروع. */
+  allOf?: RoleGate[];
 };
 
 /**
@@ -82,6 +84,9 @@ export function canSeeGate(
   if (gate.anyOf?.length) {
     return gate.anyOf.some((g) => canSeeGate(g, role, override));
   }
+  if (gate.allOf?.length) {
+    return gate.allOf.every((g) => canSeeGate(g, role, override));
+  }
   // adminOnly حصري عمداً (إدارة النظام) — لا يُفتح بمنح وحدة.
   if (gate.adminOnly) return isAdmin;
   // بوّابة الوحدة تُحسم بالخريطة المحلولة (قالب الدور + المنح الصريح) — تدقيق ١٧/٧: كان القيد بلا قيود
@@ -120,5 +125,13 @@ export const INVOICE_LIST_GATE: RoleGate = {
     { module: "sales" },
     { module: "workorders", level: "FULL" },
     { module: "pos", level: "FULL" },
+  ],
+};
+
+/** مدخل المطبعة الموحّد: طابور أوامر الشغل أو إدارة الإنتاج المخزني. */
+export const WORK_ORDERS_HUB_GATE: RoleGate = {
+  anyOf: [
+    { module: "workorders" },
+    { roles: ["manager"], module: "inventory", level: "FULL" },
   ],
 };

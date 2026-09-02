@@ -62,6 +62,7 @@ import { printRouter } from "./printRoute";
 import { imageRouter } from "./imageRoute";
 import { backupRouter } from "./backupRoutes";
 import { isLoopbackHost, resolveListenHost } from "./config/listenHost";
+import { assertStorefrontProductionReadiness } from "./config/storefrontProductionReadiness";
 import {
   channelWebhooksRouter,
   companyChannelWebhooksRouter,
@@ -114,6 +115,8 @@ async function startServer() {
 
   // الطلب العام سطح كتابة مجهول: تفعيله بلا Siteverify كامل ممنوع قبل فتح منفذ HTTP.
   assertStorefrontOrderingReadiness();
+  // مفاتيح Cloudflare التجريبية صالحة للاختبار فقط ولا يجوز أن تُقبل في عملية إنتاج.
+  assertStorefrontProductionReadiness();
   const storefrontOrderingEnabled =
     process.env.STOREFRONT_ORDERING_ENABLED === "1";
 
@@ -722,7 +725,9 @@ async function startServer() {
   // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
   // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
   let stopNativePushOutboxWorker: (() => void) | null = null;
-  let stopStorefrontPushCampaignWorker: (() => void) | null = null;
+  let stopAppNotificationOutboxWorker: (() => Promise<void>) | null = null;
+  let stopWebPushOutboxWorker: (() => void) | null = null;
+  let stopStorefrontPushCampaignWorker: (() => Promise<void>) | null = null;
   let stopDeliveryOutboxWorker: (() => void) | null = null;
   let stopProductStudioStagingWorker: (() => void) | null = null;
   let stopProductStudioNotificationWorker: (() => void) | null = null;
@@ -736,6 +741,11 @@ async function startServer() {
       await import("./services/morningPushScheduler");
     startMorningPushCron();
 
+    // نوايا إشعارات المجال (المهام وغيرها): عامل عام مستقل؛ لا يعتمد تعافيها على عامل الاستوديو.
+    const appNotifications = await import("./services/appNotificationOutboxWorker");
+    appNotifications.startAppNotificationOutboxWorker();
+    stopAppNotificationOutboxWorker = appNotifications.stopAppNotificationOutboxWorker;
+
     // كنّاس صندوق واتساب الصادر (waOutbox) — إرسال فعلي + إعادة محاولة بتراجع أسّي + إعادة محاولة
     // أحداث webhook الفاشلة (سباق ترتيب). لا cron في بيئة الاختبار (NODE_ENV=test).
     const { startWaOutboxSweeper } =
@@ -746,6 +756,11 @@ async function startServer() {
     const nativePush = await import("./services/nativePushOutboxWorker");
     nativePush.startNativePushOutboxWorker();
     stopNativePushOutboxWorker = nativePush.stopNativePushOutboxWorker;
+
+    // Web Push يمر بالطابور الدائم نفسه دلالياً: لا تضيع الرسالة عند عطل مؤقت في المزود.
+    const webPush = await import("./services/webPushOutboxWorker");
+    webPush.startWebPushOutboxWorker();
+    stopWebPushOutboxWorker = webPush.stopWebPushOutboxWorker;
 
     // حملات متجر العملاء: صندوق Expo Push منفصل عن تطبيق الموظفين، مع موافقة العميل وحدود دفعات ثابتة.
     const storefrontPush =
@@ -843,7 +858,9 @@ async function startServer() {
     }, 10_000);
     try {
       stopNativePushOutboxWorker?.();
-      stopStorefrontPushCampaignWorker?.();
+      await stopAppNotificationOutboxWorker?.();
+      stopWebPushOutboxWorker?.();
+      await stopStorefrontPushCampaignWorker?.();
       stopDeliveryOutboxWorker?.();
       stopProductStudioStagingWorker?.();
       stopProductStudioNotificationWorker?.();

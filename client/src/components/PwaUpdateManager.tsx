@@ -34,6 +34,18 @@ export type PwaAutoAttempt = {
 };
 type AttemptStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
+export function pwaOfflineReadyMessage(input: {
+  hostname: string;
+  pathname: string;
+}): string {
+  const storefrontPath =
+    input.pathname === "/store" || input.pathname.startsWith("/store/");
+  if (isPublicHost(input.hostname) && storefrontPath) {
+    return "تم حفظ واجهة مكتبة العربية؛ عرض المنتجات والأسعار وإرسال الطلب يحتاج اتصالاً بالإنترنت.";
+  }
+  return "تم حفظ ملفات التطبيق الأساسية؛ البيانات والعمليات تحتاج اتصالاً بالإنترنت.";
+}
+
 /**
  * زائر المتجر لا يملك مسودة ERP حرجة ويجب ألا يبقى على shell قديم يحوّل أخطاء API إلى فراغ.
  * أما الموظفون والمناديب فيحتفظون بالموافقة اليدوية لأن لديهم عمليات قد تكون غير محفوظة.
@@ -386,7 +398,12 @@ export function PwaUpdateManager() {
             }
           },
           onOfflineReady() {
-            toast.success("النظام جاهز للعمل دون اتصال");
+            toast.success(
+              pwaOfflineReadyMessage({
+                hostname: window.location.hostname,
+                pathname: window.location.pathname,
+              }),
+            );
           },
           onRegisteredSW(_swUrl, registration) {
             registrationRef.current = registration ?? null;

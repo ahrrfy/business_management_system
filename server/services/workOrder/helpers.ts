@@ -23,6 +23,23 @@ async function loadWorkOrder(tx: any, workOrderId: number) {
   return rows[0];
 }
 
+/**
+ * هويةُ مستند التسليم التجاريّ لأمر الشغل.
+ *
+ * لا يجوز استعمال `WO-{id}` وحده: الفاتورة المرتجعة تبقى سجلاً تاريخياً تحت القيد الفريد
+ * `(sourceType, sourceId)`، فيصطدم بها التسليم المصحّح بعد `reopen`. نسخة الأمر ترتفع من
+ * trigger لكل انتقال، والأمر مقفول قبل إنشاء الفاتورة، لذلك تشكّل revision مستقراً ومشتركاً
+ * بين التسليم المباشر والإرسال للتوصيل بلا عدّادٍ ثانٍ قابل للانجراف.
+ */
+function workOrderInvoiceSourceId(wo: { id: number | string; version: number | string }): string {
+  const id = Number(wo.id);
+  const version = Number(wo.version);
+  if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(version) || version <= 0) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر اشتقاق نسخة مستند أمر الشغل" });
+  }
+  return `WO-${id}:R${version}`;
+}
+
 /** عزل الفرع: أيّ عملية مال على طلب الخدمة تُجبَر فرع الفاعل. عزل مدير الفرع (قرار المالك ١٢/٨):
  *  المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير صار مقيَّداً بفرعه. يُمرَّر actor.role من الراوتر. */
 function assertWorkOrderBranch(wo: { branchId: number | string }, actor: Actor & { role?: string }) {
@@ -132,4 +149,4 @@ async function assertNoBlockingTask(
   });
 }
 
-export { nextWorkOrderNumber, loadWorkOrder, assertWorkOrderBranch, assertOperatorOwns, assertNoLiveConsignment, assertNoBlockingTask };
+export { nextWorkOrderNumber, loadWorkOrder, workOrderInvoiceSourceId, assertWorkOrderBranch, assertOperatorOwns, assertNoLiveConsignment, assertNoBlockingTask };

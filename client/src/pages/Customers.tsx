@@ -1,4 +1,5 @@
 import { CopyInline } from "@/components/CopyButton";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -482,26 +483,26 @@ export default function Customers() {
                 {/* E (١٢/٨): تسميات صريحة بدل placeholder — يختفي عند الاختيار فيضيع معنى الحقل.
                     شكوى المالك الأصلية «الفلاتر مبعثرة» تسبب رئيسيّ لها هو غياب التسميات. */}
                 <FilterField label="النوع">
-                  <select
-                    className={selectClsSm}
+                  <AppSelect
+                    className="h-9"
                     value={customerType}
-                    onChange={(e) => { setCustomerType(e.target.value as any); setPage(0); }}
+                    onValueChange={(value) => { setCustomerType(value as any); setPage(0); }}
                   >
                     <option value="">كل الأنواع</option>
                     {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="فئة السعر">
-                  <select
-                    className={selectClsSm}
+                  <AppSelect
+                    className="h-9"
                     value={priceTier}
-                    onChange={(e) => { setPriceTier(e.target.value as any); setPage(0); }}
+                    onValueChange={(value) => { setPriceTier(value as any); setPage(0); }}
                   >
                     <option value="">كل الفئات</option>
                     <option value="RETAIL">مفرد</option>
                     <option value="WHOLESALE">جملة</option>
                     <option value="GOVERNMENT">حكومي</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 {/* فلتر مدينة — مدعوم خادمياً في customers.search فقط (المستخدم غير المرتفع)؛
                     لوحة العمليات (operations) للمرتفعين لا تدعمه فنُخفيه عنهم بدل عرض فلتر معطَّل. */}
@@ -518,46 +519,46 @@ export default function Customers() {
                 {isElevated && (
                   <>
                     <FilterField label="حالة الرصيد">
-                      <select className={selectClsSm} value={balanceFilter} onChange={(e) => { setBalanceFilter(e.target.value as typeof balanceFilter); setPage(0); }}>
+                      <AppSelect className="h-9" value={balanceFilter} onValueChange={(value) => { setBalanceFilter(value as typeof balanceFilter); setPage(0); }}>
                         <option value="">كل الأرصدة</option>
                         <option value="RECEIVABLE">لنا عليهم</option>
                         <option value="CREDIT">لهم علينا</option>
                         <option value="ZERO">رصيد صفر</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     <FilterField label="حالة التحصيل">
-                      <select className={selectClsSm} value={collectionFilter} onChange={(e) => { setCollectionFilter(e.target.value as typeof collectionFilter); setPage(0); }}>
+                      <AppSelect className="h-9" value={collectionFilter} onValueChange={(value) => { setCollectionFilter(value as typeof collectionFilter); setPage(0); }}>
                         <option value="">كل حالات التحصيل</option>
                         <option value="OVERDUE">فواتير متأخرة</option>
                         <option value="PROMISE_DUE">وعد مستحق/متأخر</option>
                         <option value="PROMISE_FUTURE">وعد قادم</option>
                         <option value="NO_FOLLOWUP">بلا متابعة</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     <FilterField label="الحالة الائتمانية">
-                      <select className={selectClsSm} value={creditFilter} onChange={(e) => { setCreditFilter(e.target.value as typeof creditFilter); setPage(0); }}>
+                      <AppSelect className="h-9" value={creditFilter} onValueChange={(value) => { setCreditFilter(value as typeof creditFilter); setPage(0); }}>
                         <option value="">كل الحالات الائتمانية</option>
                         <option value="CASH_ONLY">نقدي فقط</option>
                         <option value="NEAR_LIMIT">بلغ 80% من الحد</option>
                         <option value="OVER_LIMIT">تجاوز الحد</option>
                         <option value="UNLIMITED">بلا حد</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     <FilterField label="نشاط الشراء">
-                      <select className={selectClsSm} value={inactivityDays} onChange={(e) => { setInactivityDays(e.target.value ? Number(e.target.value) as 30 | 60 | 90 : ""); setPage(0); }}>
+                      <AppSelect className="h-9" value={String(inactivityDays)} onValueChange={(value) => { setInactivityDays(value ? Number(value) as 30 | 60 | 90 : ""); setPage(0); }}>
                         <option value="">كل نشاطات الشراء</option>
                         <option value="30">لم يشترِ منذ 30 يوماً</option>
                         <option value="60">لم يشترِ منذ 60 يوماً</option>
                         <option value="90">لم يشترِ منذ 90 يوماً</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     <FilterField label="الترتيب">
-                      <select className={selectClsSm} value={sort} onChange={(e) => { setSort(e.target.value as typeof sort); setPage(0); }}>
+                      <AppSelect className="h-9" value={sort} onValueChange={(value) => { setSort(value as typeof sort); setPage(0); }}>
                         <option value="NAME">ترتيب بالاسم</option>
                         <option value="BALANCE_DESC">أعلى مديونية</option>
                         <option value="OLDEST_DUE">أقدم استحقاق</option>
                         <option value="LAST_PURCHASE">الأطول بلا شراء</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     {(balanceFilter || collectionFilter || creditFilter || inactivityDays || sort !== "NAME") && (
                       <Button type="button" variant="ghost" size="sm" onClick={resetOperationalFilters}>مسح فلاتر التشغيل</Button>
@@ -576,7 +577,7 @@ export default function Customers() {
                   </label>
                 </FilterField>
                 {hasAnyFilter && (
-                  <Button type="button" variant="ghost" size="sm" onClick={() => resetAllFilters()}>مسح كل الفلاتر</Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => resetAllFilters()}>{FILTER_LABELS.reset}</Button>
                 )}
               </>
             }
@@ -812,7 +813,7 @@ export default function Customers() {
                       <span>لا عملاء مطابقين.</span>
                       {hasAnyFilter ? (
                         <Button type="button" variant="outline" size="sm" onClick={() => { resetAllFilters(); setPage(0); }}>
-                          مسح كل الفلاتر
+                          {FILTER_LABELS.reset}
                         </Button>
                       ) : (
                         <span className="text-xs">أضِف عميلاً جديداً أو غيّر البحث.</span>

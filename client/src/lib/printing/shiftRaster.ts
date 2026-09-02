@@ -59,6 +59,73 @@ function dashedLine(ctx: CanvasRenderingContext2D, y: number): void {
   ctx.beginPath(); ctx.moveTo(PAD, y); ctx.lineTo(W - PAD, y); ctx.stroke(); ctx.restore();
 }
 
+/** يضبط حجم النص داخل عمود ثابت من دون قص مبلغ مالي أو السماح له بدخول العمود المجاور. */
+function fitFont(
+  ctx: CanvasRenderingContext2D,
+  weight: number,
+  preferredPx: number,
+  minPx: number,
+  text: string,
+  maxWidth: number,
+): void {
+  let px = preferredPx;
+  do {
+    ctx.font = `${weight} ${px}px Cairo, sans-serif`;
+    if (ctx.measureText(text).width <= maxWidth || px === minPx) return;
+    px -= 1;
+  } while (px >= minPx);
+}
+
+/** يلفّ النص وفق القياس الفعلي للخط، ويقسّم الكلمة الطويلة كي لا تُقصّ خارج الورق. */
+function wrapMeasuredText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): string[] {
+  const lines: string[] = [];
+  let current = "";
+  const tokens = text.trim().split(/\s+/);
+  for (const token of tokens) {
+    const candidate = current ? `${current} ${token}` : token;
+    if (ctx.measureText(candidate).width <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+    if (current) lines.push(current);
+    current = "";
+    let fragment = "";
+    for (const char of Array.from(token)) {
+      const next = fragment + char;
+      if (fragment && ctx.measureText(next).width > maxWidth) {
+        lines.push(fragment);
+        fragment = char;
+      } else {
+        fragment = next;
+      }
+    }
+    current = fragment;
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [""];
+}
+
+function fillTextDirection(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  direction: CanvasDirection,
+): void {
+  const previous = ctx.direction;
+  ctx.direction = direction;
+  ctx.fillText(text, x, y);
+  ctx.direction = previous;
+}
+
+function valueDirection(text: string): CanvasDirection {
+  return /^[#(+−\-\d]/.test(text.trim()) ? "ltr" : "rtl";
+}
+
 function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -109,22 +176,29 @@ function drawBadge(ctx: CanvasRenderingContext2D, y: number, title: string, subt
 }
 
 /** صف بيانات (تسمية يمين/قيمة يسار) + خط dashed أسفله. يعيد y بعد الرسم. */
-function metaRow(ctx: CanvasRenderingContext2D, y: number, label: string, value: string): number {
+function metaRow(
+  ctx: CanvasRenderingContext2D,
+  y: number,
+  label: string,
+  value: string,
+  advance = 44,
+): number {
   ctx.fillStyle = "#000";
   ctx.font = "600 25px Cairo, sans-serif"; ctx.textAlign = "right"; ctx.fillText(label, W - PAD, y);
-  ctx.font = "800 26px Cairo, sans-serif"; ctx.textAlign = "left"; ctx.fillText(value, PAD, y);
+  ctx.font = "800 26px Cairo, sans-serif"; ctx.textAlign = "left";
+  fillTextDirection(ctx, value, PAD, y, valueDirection(value));
   dashedLine(ctx, y + 12);
-  return y + 44;
+  return y + advance;
 }
 
 /** رأس قسم معكوس (شريط أسود صغير). يعيد y بعد الرسم. */
 function sectionHdr(ctx: CanvasRenderingContext2D, y: number, title: string): number {
-  const h = 46;
+  const h = 50;
   invertedBlock(ctx, y, h);
   ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.font = "900 26px Cairo, sans-serif";
-  ctx.fillText(title, W / 2, y + 31);
+  ctx.fillText(title, W / 2, y + 33);
   ctx.fillStyle = "#000";
-  return y + h + 12;
+  return y + h + 14;
 }
 
 /** شبكة توقيعين (كاشير/مشرف). يعيد y بعد الرسم. */
@@ -236,7 +310,10 @@ export async function shiftOpenToRaster(d: ShiftOpenData): Promise<Raster | null
 
 // أعمدة جدول طرق الدفع (RTL): الطريقة يميناً ← عدد توسيط ← المبلغ يساراً
 const PAY_AMOUNT_X = PAD;
-const PAY_COUNT_X = PAD + 110;
+const PAY_AMOUNT_MAX_W = 176;
+const PAY_COUNT_X = 236;
+const PAY_COUNT_MAX_W = 64;
+const PAY_METHOD_MAX_W = 280;
 const PAY_METHOD_R = W - PAD;
 
 export async function shiftCloseToCanvas(
@@ -275,12 +352,12 @@ export async function shiftCloseToCanvas(
   y = drawBadge(ctx, y, "إغلاق الوردية", "تقرير نهاية اليوم — Z");
 
   y += 14;
-  y = metaRow(ctx, y, "رقم الوردية", `#${d.shiftId}`);
-  y = metaRow(ctx, y, "فُتحت", openedStr);
-  y = metaRow(ctx, y, "أُغلقت", closedStr);
-  y = metaRow(ctx, y, "مدة الوردية", duration);
-  y = metaRow(ctx, y, "الكاشير", d.cashierName);
-  y = metaRow(ctx, y, "الفرع", d.branchName);
+  y = metaRow(ctx, y, "رقم الوردية", `#${d.shiftId}`, 48);
+  y = metaRow(ctx, y, "فُتحت", openedStr, 48);
+  y = metaRow(ctx, y, "أُغلقت", closedStr, 48);
+  y = metaRow(ctx, y, "مدة الوردية", duration, 48);
+  y = metaRow(ctx, y, "الكاشير", d.cashierName, 48);
+  y = metaRow(ctx, y, "الفرع", d.branchName, 48);
 
   // ─── ملخّص المبيعات ───
   y += 6;
@@ -288,8 +365,9 @@ export async function shiftCloseToCanvas(
   const bigRow = (label: string, value: string) => {
     ctx.fillStyle = "#000"; ctx.font = "600 24px Cairo, sans-serif"; ctx.textAlign = "right";
     ctx.fillText(label, W - PAD, y);
-    ctx.font = "900 28px Cairo, sans-serif"; ctx.textAlign = "left"; ctx.fillText(value, PAD, y);
-    dashedLine(ctx, y + 12); y += 44;
+    ctx.font = "900 28px Cairo, sans-serif"; ctx.textAlign = "left";
+    fillTextDirection(ctx, value, PAD, y, valueDirection(value));
+    dashedLine(ctx, y + 12); y += 48;
   };
   bigRow("عدد الفواتير", `${d.invoiceCount} فاتورة`);
   bigRow("إجمالي المبيعات", `${fmt(d.salesTotal)} د.ع`);
@@ -322,43 +400,74 @@ export async function shiftCloseToCanvas(
     for (const p of payList) {
       const label = `${METHOD_AR[p.method] ?? p.method} ${p.direction === "IN" ? "وارد" : "صادر"}`;
       const amt = p.direction === "OUT" ? `( ${fmt(p.total)} )` : fmt(p.total);
-      ctx.font = "700 23px Cairo, sans-serif"; ctx.textAlign = "right"; ctx.fillText(label, PAY_METHOD_R, y);
-      ctx.font = "600 22px Cairo, sans-serif"; ctx.textAlign = "center"; ctx.fillText(String(p.count), PAY_COUNT_X, y);
-      ctx.font = "800 23px Cairo, sans-serif"; ctx.textAlign = "left"; ctx.fillText(amt, PAY_AMOUNT_X, y);
-      dashedLine(ctx, y + 12); y += 44;
+      fitFont(ctx, 700, 23, 18, label, PAY_METHOD_MAX_W);
+      ctx.textAlign = "right"; fillTextDirection(ctx, label, PAY_METHOD_R, y, "rtl");
+      const count = String(p.count);
+      fitFont(ctx, 600, 22, 16, count, PAY_COUNT_MAX_W);
+      ctx.textAlign = "center"; fillTextDirection(ctx, count, PAY_COUNT_X, y, "ltr");
+      fitFont(ctx, 800, 23, 16, amt, PAY_AMOUNT_MAX_W);
+      ctx.textAlign = "left"; fillTextDirection(ctx, amt, PAY_AMOUNT_X, y, "ltr");
+      dashedLine(ctx, y + 12); y += 48;
     }
   }
 
   // ─── تسوية الصندوق النقدي ───
   y += 4;
   y = sectionHdr(ctx, y, "تسوية الصندوق النقدي");
-  y = metaRow(ctx, y, "الرصيد الافتتاحي", `${fmt(d.openingBalance)} د.ع`);
+  y = metaRow(ctx, y, "الرصيد الافتتاحي", `${fmt(d.openingBalance)} د.ع`, 48);
 
   // النقد المتوقع — صندوق بارز
-  const ecH = 56;
+  const ecH = 64;
   strokeBox(ctx, y, ecH, 2);
   ctx.fillStyle = "#000";
-  ctx.font = "900 24px Cairo, sans-serif"; ctx.textAlign = "right"; ctx.fillText("النقد المتوقع", W - PAD - 12, y + 37);
-  ctx.font = "900 26px Cairo, sans-serif"; ctx.textAlign = "left"; ctx.fillText(`${fmt(d.expectedCash)} د.ع`, PAD + 12, y + 37);
+  ctx.font = "900 24px Cairo, sans-serif"; ctx.textAlign = "right"; ctx.fillText("النقد المتوقع", W - PAD - 12, y + 42);
+  ctx.font = "900 26px Cairo, sans-serif"; ctx.textAlign = "left"; ctx.fillText(`${fmt(d.expectedCash)} د.ع`, PAD + 12, y + 42);
   y += ecH + 12;
 
   // النقد المعدود — صندوق بارز أثقل
-  const ccH = 56;
+  const ccH = 64;
   strokeBox(ctx, y, ccH, 3);
   ctx.fillStyle = "#000";
-  ctx.font = "900 24px Cairo, sans-serif"; ctx.textAlign = "right"; ctx.fillText("النقد المعدود", W - PAD - 12, y + 37);
-  ctx.font = "900 26px Cairo, sans-serif"; ctx.textAlign = "left"; ctx.fillText(`${fmt(d.countedCash)} د.ع`, PAD + 12, y + 37);
+  ctx.font = "900 24px Cairo, sans-serif"; ctx.textAlign = "right"; ctx.fillText("النقد المعدود", W - PAD - 12, y + 42);
+  ctx.font = "900 26px Cairo, sans-serif"; ctx.textAlign = "left"; ctx.fillText(`${fmt(d.countedCash)} د.ع`, PAD + 12, y + 42);
   y += ccH + 16;
 
   // الفرق — كتلة معكوسة
-  const vH = varNum !== 0 ? 86 : 64;
+  const vH = varNum !== 0 ? 96 : 72;
   invertedBlock(ctx, y, vH);
   ctx.fillStyle = "#fff"; ctx.textAlign = "right";
-  ctx.font = "900 26px Cairo, sans-serif"; ctx.fillText(varLabel, W - PAD - 12, y + (varNum !== 0 ? 36 : 42));
-  if (varNum !== 0) { ctx.font = "600 18px Cairo, sans-serif"; ctx.fillText("يتطلّب مراجعة المشرف", W - PAD - 12, y + 64); }
-  ctx.textAlign = "left"; ctx.font = "900 34px Cairo, sans-serif"; ctx.fillText(varVal, PAD + 12, y + (varNum !== 0 ? 52 : 44));
+  ctx.font = "900 26px Cairo, sans-serif"; ctx.fillText(varLabel, W - PAD - 12, y + (varNum !== 0 ? 40 : 47));
+  if (varNum !== 0) { ctx.font = "600 18px Cairo, sans-serif"; ctx.fillText("يتطلّب مراجعة المشرف", W - PAD - 12, y + 70); }
+  ctx.textAlign = "left"; ctx.font = "900 34px Cairo, sans-serif"; ctx.fillText(varVal, PAD + 12, y + (varNum !== 0 ? 58 : 49));
   ctx.fillStyle = "#000";
   y += vH + 16;
+
+  if (d.cashHandover) {
+    y = sectionHdr(ctx, y, "عقد تسليم النقد");
+    ctx.font = "800 22px Cairo, sans-serif";
+    const handoverMaxWidth = W - (PAD + 12) * 2;
+    const recipientLines = wrapMeasuredText(ctx, `سلّم إلى: ${d.cashHandover.recipientName}`, handoverMaxWidth);
+    const referenceLines = wrapMeasuredText(ctx, `رقم العهدة: ${d.cashHandover.referenceNumber}`, handoverMaxWidth);
+    const lineHeight = 30;
+    const h = 34 + lineHeight * (1 + recipientLines.length + referenceLines.length) + 38;
+    strokeBox(ctx, y, h, 2);
+    ctx.fillStyle = "#000";
+    ctx.textAlign = "right";
+    ctx.font = "800 22px Cairo, sans-serif";
+    let handoverY = y + 34;
+    ctx.fillText(`المبلغ: ${fmt(d.cashHandover.amount)} د.ع`, W - PAD - 12, handoverY);
+    for (const line of recipientLines) {
+      handoverY += lineHeight;
+      ctx.fillText(line, W - PAD - 12, handoverY);
+    }
+    for (const line of referenceLines) {
+      handoverY += lineHeight;
+      ctx.fillText(line, W - PAD - 12, handoverY);
+    }
+    ctx.font = "700 18px Cairo, sans-serif";
+    ctx.fillText("بانتظار العدّ والقبول في الخزينة", W - PAD - 12, handoverY + 30);
+    y += h + 16;
+  }
 
   // الإجمالي الكبير — كتلة معكوسة
   const totH = 130;

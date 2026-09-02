@@ -128,23 +128,22 @@ class PurchasingViewModel(
         if (capabilities.canWriteSuppliers) state = state.copy(confirmation = PurchasingConfirmation.SupplierActivation(id, name, active))
     }
 
-    fun createOrder(draft: PurchaseOrderDraft) = launch("order:create", "تم اعتماد الفاتورة وإضافتها إلى المخزون") {
+    fun createOrder(draft: PurchaseOrderDraft) = launch("order:create", "تم حفظ الفاتورة وإرسالها للاعتماد المستقل") {
         val result = source.createOrder(draft)
+        source.confirmOrder(result.purchaseOrderId, result.version)
         state = state.copy(orders = source.orders(state.query), selectedOrder = source.order(result.purchaseOrderId))
     }
     fun requestConfirmOrder() {
         val order = state.selectedOrder ?: return
-        val hasShipping = (order.summary.shippingCost?.toBigDecimalOrNull()?.signum() ?: 0) > 0 ||
-            (order.summary.customsCost?.toBigDecimalOrNull()?.signum() ?: 0) > 0
         if (capabilities.canConfirm(order)) {
             state = state.copy(
-                confirmation = PurchasingConfirmation.ConfirmOrder(order.id, order.summary.number, hasShipping),
+                confirmation = PurchasingConfirmation.ConfirmOrder(order.id, order.summary.number, order.summary.version),
             )
         }
     }
     fun requestCancelOrder() {
         val order = state.selectedOrder ?: return
-        if (capabilities.canCancel(order)) state = state.copy(confirmation = PurchasingConfirmation.CancelOrder(order.id, order.summary.number))
+        if (capabilities.canCancel(order)) state = state.copy(confirmation = PurchasingConfirmation.CancelOrder(order.id, order.summary.number, order.summary.version))
     }
     fun createReturn(draft: PurchaseReturnDraft) = launch("return:create", "تم تسجيل مرتجع الشراء") {
         source.createReturn(draft)
@@ -163,11 +162,11 @@ class PurchasingViewModel(
     fun confirmPending() {
         val pending = state.confirmation ?: return
         when (pending) {
-            is PurchasingConfirmation.ConfirmOrder -> launch("order:confirm", "تم اعتماد الفاتورة وإضافتها إلى المخزون") {
-                source.confirmOrder(pending.id, if (pending.hasShipping) "CASH" else null); reloadOrder(pending.id)
+            is PurchasingConfirmation.ConfirmOrder -> launch("order:confirm", "تم إرسال الفاتورة للاعتماد المستقل") {
+                source.confirmOrder(pending.id, pending.version); reloadOrder(pending.id)
             }
             is PurchasingConfirmation.CancelOrder -> launch("order:cancel", "تم إلغاء أمر الشراء") {
-                source.cancelOrder(pending.id); reloadOrder(pending.id)
+                source.cancelOrder(pending.id, pending.version); reloadOrder(pending.id)
             }
             is PurchasingConfirmation.SupplierActivation -> launch("supplier:active", if (pending.active) "تم تفعيل المورد" else "تم تعطيل المورد") {
                 source.setSupplierActive(pending.id, pending.active)

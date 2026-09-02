@@ -11,20 +11,19 @@ import {
   unsubscribeByEndpoint,
 } from "../services/pushService";
 import { logAudit } from "../services/auditService";
-import { managerProcedure, router } from "../trpc";
+import { router, selfServiceProcedure } from "../trpc";
 
-// كل الإجراءات محدودة بمدير أو أدمن (مطابق RBAC لوحة MorningBrief التي تُغذّي محتوى الإشعار).
-// الكاشير/المستودع لا يحتاجون إشعار «برنامج اليوم» (بيانات إشرافية) — الحظر يمنع تلوّث DB بأشتراكات
-// عديمة الفائدة (لا cron يُرسل لهم) وتفادي تسريب أي محتوى مستقبلي لغير المفوَّضين.
+// الاشتراك ذاتيّ لكل مستخدم مسجّل. نوع المحتوى وتفويضه يقرره منشئ الحدث الخادميّ؛ فتح
+// الاشتراك لا يمنح بياناتٍ ولا يسمح للمستخدم باختيار مستلمٍ آخر.
 export const pushRouter = router({
   /** حالة تفعيل الإشعارات على الخادم (VAPID مُهيّأ؟) + المفتاح العام. للعميل ليعرف هل يعرض الزر. */
-  publicKey: managerProcedure.query(() => {
+  publicKey: selfServiceProcedure.query(() => {
     if (!isPushEnabled()) return { enabled: false as const, publicKey: null };
     return { enabled: true as const, publicKey: getVapidPublicKey() };
   }),
 
   /** عدد اشتراكاتي النشطة (لعرض حالة «مفعّل على X أجهزة» في واجهة الحساب). */
-  myStatus: managerProcedure.query(async ({ ctx }) => {
+  myStatus: selfServiceProcedure.query(async ({ ctx }) => {
     const db = getDb();
     if (!db) return { activeCount: 0 };
     const rows = await db
@@ -38,7 +37,7 @@ export const pushRouter = router({
 
   /** اشتراك: يستدعيه العميل بعد subscribe() من PushManager. UPSERT على endpoint (نفس المتصفّح
    *  يعيد الاشتراك ⇒ نحدّث لا نُنشئ ثانياً). */
-  subscribe: managerProcedure
+  subscribe: selfServiceProcedure
     .input(
       z.object({
         endpoint: z.string().url().max(500),
@@ -59,7 +58,7 @@ export const pushRouter = router({
     }),
 
   /** إبطال اشتراك — من زرّ «إيقاف الإشعارات» في واجهة الحساب. */
-  unsubscribe: managerProcedure
+  unsubscribe: selfServiceProcedure
     .input(z.object({ endpoint: z.string().url().max(500) }))
     .mutation(async ({ input, ctx }) => {
       await unsubscribeByEndpoint(input.endpoint, ctx.user.id);

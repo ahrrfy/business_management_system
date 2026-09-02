@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
@@ -42,9 +43,12 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/date";
-import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
+} from "@shared/posPaymentPolicy";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
-import { invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
+import { invoiceStatusLabel, invoiceStatusBadgeVariant,
+} from "@shared/invoiceStatus";
+import { getDeviceCode } from "@/lib/offline/outbox";
 
 type QueueOut = RouterOutputs["reception"]["invoiceQueue"];
 type Row = QueueOut["rows"][number];
@@ -76,7 +80,8 @@ export function ReceptionInvoiceQueue({
   defaultPayChip?: PayChip;
 }) {
   const utils = trpc.useUtils();
-  const [range, setRange] = useState<RangeChip>(currentShiftId ? "MY_SHIFT" : "TODAY");
+  const [range, setRange] = useState<RangeChip>(currentShiftId ? "MY_SHIFT" : "TODAY",
+  );
   const [payChip, setPayChip] = useState<PayChip>(defaultPayChip ?? "ALL");
   const [search, setSearch] = useState("");
   const debouncedQ = useDebouncedValue(search, 250);
@@ -124,7 +129,8 @@ export function ReceptionInvoiceQueue({
   const [dispatchTarget, setDispatchTarget] = useState<Row | null>(null);
   const [returnTarget, setReturnTarget] = useState<Row | null>(null);
   const [printingId, setPrintingId] = useState<number | null>(null);
-  const taxSettings = trpc.system.getTaxSettings.useQuery(undefined, { staleTime: 300_000 });
+  const taxSettings = trpc.system.getTaxSettings.useQuery(undefined, { staleTime: 300_000,
+  });
 
   /** ش٥: رفضُ الإرسال الجزئيّ يُعرَض بأرقام الإخوة، ويُقرّ صراحةً — لا خانةَ سبقٍ تُنقَر بلا قراءة. */
   const [partialNotice, setPartialNotice] = useState<string | null>(null);
@@ -137,7 +143,8 @@ export function ReceptionInvoiceQueue({
 
   const dispatchInvoice = trpc.delivery.dispatchInvoice.useMutation({
     onSuccess: (r) => {
-      notify.ok("أُسنِدت للتوصيل", `إرسالية ${r.consignmentNumber} — تحصيل ${fmt(r.codAmount)} د.ع`);
+      notify.ok("أُسنِدت للتوصيل", `إرسالية ${r.consignmentNumber} — تحصيل ${fmt(r.codAmount)} د.ع`,
+      );
       setPartialNotice(null);
       lastDispatchArgs.current = null;
       setDispatchTarget(null);
@@ -162,8 +169,10 @@ export function ReceptionInvoiceQueue({
       const d = await utils.sales.get.fetch({ invoiceId: Number(row.id) });
       if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
       const result = await printReceipt(invoiceToReceipt(d));
-      if (!result.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
-      else if (result.via === "browser") notify.warn("الطابعة المباشرة غير متاحة", "فُتحت نافذة الطباعة البديلة");
+      if (!result.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة",
+        );
+      else if (result.via === "browser") notify.warn("الطابعة المباشرة غير متاحة", "فُتحت نافذة الطباعة البديلة",
+        );
       else notify.ok("تمت إعادة الطباعة", `الفاتورة ${d.invoiceNumber}`);
     } catch (e) {
       notify.err(e);
@@ -176,7 +185,8 @@ export function ReceptionInvoiceQueue({
     try {
       const d = await utils.sales.get.fetch({ invoiceId: Number(row.id) });
       if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
-      const afterDisc = round2(D(d.subtotal).minus(D(d.discountAmount ?? "0"))).toFixed(2);
+      const afterDisc = round2(D(d.subtotal).minus(D(d.discountAmount ?? "0")),
+      ).toFixed(2);
       const shares = allocateLineTax(
         d.items.map((it) => ({ total: String(it.total) })),
         String(d.taxAmount ?? "0"),
@@ -212,7 +222,8 @@ export function ReceptionInvoiceQueue({
   if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
 
   const remainingOf = (r: Row) =>
-    round2(D(r.total).minus(D(r.paidAmount ?? 0)).minus(D(r.returnedTotal ?? 0))).toNumber();
+    round2(D(r.total).minus(D(r.paidAmount ?? 0)).minus(D(r.returnedTotal ?? 0)),
+    ).toNumber();
 
   const chip = (active: boolean) =>
     cn(
@@ -303,7 +314,8 @@ export function ReceptionInvoiceQueue({
                     </td>
                     <td className="px-2 py-2 text-center font-bold tabular-nums" dir="ltr">{fmt(r.total)}</td>
                     <td className="px-2 py-2 text-center tabular-nums" dir="ltr">{fmt(r.paidAmount ?? "0")}</td>
-                    <td className={cn("px-2 py-2 text-center font-extrabold tabular-nums", remaining > 0 ? "text-[var(--sem-warn)]" : "text-muted-foreground")} dir="ltr">
+                    <td className={cn("px-2 py-2 text-center font-extrabold tabular-nums", remaining > 0 ? "text-[var(--sem-warn)]" : "text-muted-foreground",
+                      )} dir="ltr">
                       {fmt(remaining)}
                     </td>
                     <td className="px-2 py-2 text-center">
@@ -337,7 +349,8 @@ export function ReceptionInvoiceQueue({
                         {/* بالطريق مع المندوب ⇒ التحصيل عبر توريده لا الدرج (مرآة حارس الخادم — مراجعة ٥/٨) */}
                         {remaining > 0 && r.consignmentStatus !== "DISPATCHED" && r.consignmentStatus !== "PARTIAL" && (
                           <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => setCollectTarget(r)}>
-                            <HandCoins aria-hidden className="size-3 me-1" /> تسديد
+                            <HandCoins aria-hidden className="size-3 me-1" />{" "}
+                              تسديد
                           </Button>
                         )}
                         {remaining > 0 && (r.consignmentStatus === "DISPATCHED" || r.consignmentStatus === "PARTIAL") && (
@@ -396,6 +409,7 @@ export function ReceptionInvoiceQueue({
         <CollectPaymentDialog
           row={collectTarget}
           remaining={remainingOf(collectTarget)}
+          branchId={branchId}
           currentShiftId={currentShiftId}
           branchName={branchName}
           onClose={() => setCollectTarget(null)}
@@ -416,7 +430,8 @@ export function ReceptionInvoiceQueue({
           onClose={() => { setPartialNotice(null); setDispatchTarget(null); }}
           onConfirmPartial={() => {
             const prev = lastDispatchArgs.current;
-            if (prev) dispatchInvoice.mutate({ ...prev, partialDispatchConfirmed: true });
+            if (prev) dispatchInvoice.mutate({ ...prev, partialDispatchConfirmed: true,
+              });
           }}
           onConfirm={(args) => {
             const payload = {
@@ -453,6 +468,7 @@ export function ReceptionInvoiceQueue({
 function CollectPaymentDialog({
   row,
   remaining,
+  branchId,
   currentShiftId,
   branchName,
   onClose,
@@ -460,6 +476,7 @@ function CollectPaymentDialog({
 }: {
   row: Row;
   remaining: number;
+  branchId: number;
   currentShiftId: number | null;
   branchName: string;
   onClose: () => void;
@@ -470,6 +487,14 @@ function CollectPaymentDialog({
   const [reference, setReference] = useState("");
   const [telecomConfirmed, setTelecomConfirmed] = useState(false);
   const [clientRequestId] = useState(() => crypto.randomUUID());
+
+  const [externalAttempt, setExternalAttempt] = useState<{
+    attemptId: number | null;
+    requestId: string;
+    deviceId: string;
+    fingerprint: string;
+    confirmed: boolean;
+  } | null>(null);
 
   const collect = trpc.reception.collectOnInvoice.useMutation({
     onSuccess: (r) => {
@@ -486,7 +511,75 @@ function CollectPaymentDialog({
     onError: (e) => notify.err(e),
   });
 
+  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+
   const needRef = method !== "CASH";
+  const normalizedAmount = round2(D(amount || "0")).toFixed(2);
+  const externalFingerprint = `SALES_COLLECTION|${branchId}|${method}|${normalizedAmount}|${reference.trim()}`;
+  const externalConfirmed =
+    method === "CASH" ||
+    (externalAttempt?.confirmed === true &&
+      externalAttempt.fingerprint === externalFingerprint);
+
+  async function confirmReceptionExternalPayment() {
+    const normalizedReference = reference.trim();
+    if (
+      !normalizedReference ||
+      !D(amount || "0").gt(0) ||
+      method === "CASH" ||
+      method === "TELECOM"
+    )
+      return;
+    try {
+      const prior =
+        externalAttempt?.fingerprint === externalFingerprint
+          ? externalAttempt
+          : null;
+      const deviceId = prior?.deviceId ?? (await getDeviceCode());
+      const requestId = prior?.requestId ?? crypto.randomUUID();
+      let attemptId = prior?.attemptId ?? null;
+      if (attemptId == null) {
+        const initiated = await initiateExternal.mutateAsync({
+          branchId,
+          channel: "SALES_COLLECTION",
+          method,
+          amount: normalizedAmount,
+          reference: normalizedReference,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        setExternalAttempt({
+          attemptId,
+          requestId,
+          deviceId,
+          fingerprint: externalFingerprint,
+          confirmed: false,
+        });
+      }
+      await confirmExternal.mutateAsync({
+        branchId,
+        channel: "SALES_COLLECTION",
+        attemptId,
+        deviceId,
+      });
+      setExternalAttempt({
+        attemptId,
+        requestId,
+        deviceId,
+        fingerprint: externalFingerprint,
+        confirmed: true,
+      });
+      notify.ok(
+        "تأكّد الدفع الخارجي",
+        `ثُبّت المرجع ${normalizedReference} وأصبح جاهزاً للاستهلاك مرة واحدة.`,
+      );
+    } catch (error) {
+      notify.err(error, "تعذّر تأكيد الدفع الخارجي");
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl" onClick={onClose}>
       <div className="w-full max-w-sm space-y-3 rounded-2xl bg-card p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
@@ -515,6 +608,8 @@ function CollectPaymentDialog({
               onClick={() => {
                 if (!isPosPaymentMethodEnabled(p.v)) return;
                 setMethod(p.v);
+                setReference("");
+                setExternalAttempt(null);
                 setTelecomConfirmed(false);
               }}
               disabled={!isPosPaymentMethodEnabled(p.v)}
@@ -536,16 +631,33 @@ function CollectPaymentDialog({
         <p id="reception-collection-external-disabled" className="text-[10px] leading-relaxed text-muted-foreground">
           {INBOUND_TELECOM_DISABLED_MESSAGE}
         </p>
-        {needRef && (
+        {needRef && method !== "TELECOM" && (
+          <PaymentReferenceField
+            value={reference}
+            onChange={(value) => {
+              setReference(value);
+              setExternalAttempt(null);
+            }}
+            method={method}
+            confirmed={externalConfirmed}
+            confirming={initiateExternal.isPending || confirmExternal.isPending}
+            onConfirm={confirmReceptionExternalPayment}
+            inputId="reception-invoice-pay-reference"
+            colors={{
+              border: "var(--border)",
+              muted: "var(--muted)",
+              mutedFg: "var(--muted-foreground)",
+              fg: "var(--foreground)",
+              amber: "var(--sem-warn)",
+              success: "var(--sem-pos)",
+            }}
+          />
+        )}
+        {method === "TELECOM" && (
           <Input
             value={reference}
-            onChange={(e) => { setReference(e.target.value); if (method === "TELECOM") setTelecomConfirmed(false); }}
-            placeholder={
-              method === "CARD" ? "رقم عملية البطاقة"
-              : method === "WALLET" ? "رقم عملية المحفظة"
-              : method === "TELECOM" ? "أرقام كارت شحن زين (الكود)"
-              : "رقم مرجع التحويل"
-            }
+            onChange={(e) => { setReference(e.target.value); setTelecomConfirmed(false); }}
+            placeholder="أرقام كارت شحن زين (الكود)"
             className="h-9 text-xs"
             dir="ltr"
           />
@@ -568,11 +680,13 @@ function CollectPaymentDialog({
           {method === "CASH" ? (
             <>
               سيدخل المبلغ <span className="underline">درجك أنت</span>
-              {currentShiftId ? ` — وردية #${currentShiftId}` : " (لا وردية مفتوحة — النقدي سيُرفض)"} · {branchName}
+              {currentShiftId ? ` — وردية #${currentShiftId}` : " (لا وردية مفتوحة — النقدي سيُرفض)"}{" "}
+              · {branchName}
             </>
           ) : (
             <>
-              يُسجَّل على ورديتك{currentShiftId ? ` #${currentShiftId}` : ""} للمحاسبة — لا يدخل درج النقد · {branchName}
+              يُسجَّل على ورديتك{currentShiftId ? ` #${currentShiftId}` : ""}{" "}
+              للمحاسبة — لا يدخل درج النقد · {branchName}
             </>
           )}
         </p>
@@ -580,13 +694,23 @@ function CollectPaymentDialog({
           <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
           <Button
             className="flex-1"
-            disabled={collect.isPending || D(amount || 0).lte(0) || (needRef && !reference.trim()) || (method === "TELECOM" && !telecomConfirmed)}
+            disabled={collect.isPending || D(amount || 0).lte(0) || (needRef && !reference.trim()) ||
+              !externalConfirmed ||
+              (method === "TELECOM" && !telecomConfirmed)}
             onClick={() =>
               collect.mutate({
                 invoiceId: Number(row.id),
                 amount: round2(D(amount)).toFixed(2),
                 method,
                 reference: needRef ? reference.trim() : undefined,
+                ...(method === "CASH"
+                  ? {}
+                  : {
+                      externalPaymentAttemptId:
+                        externalAttempt?.attemptId ?? undefined,
+                      externalPaymentDeviceId:
+                        externalAttempt?.deviceId ?? undefined,
+                    }),
                 clientRequestId,
               })
             }
@@ -603,7 +727,9 @@ function CollectPaymentDialog({
  * نموذج **طلب الإرجاع** لموظّف المحطة (١٩/٨): الأصناف والسبب — لا مبالغَ ولا رافدَ ولا درج.
  * قرارُ المال كلّه للمدير لحظة الاعتماد، فالطلب مستند نيّةٍ لا مال.
  */
-function StaffReturnRequestForm({ row, onClose }: { row: Row; onClose: () => void }) {
+function StaffReturnRequestForm({ row, onClose,
+}: { row: Row; onClose: () => void;
+}) {
   const utils = trpc.useUtils();
   const detail = trpc.sales.get.useQuery({ invoiceId: Number(row.id) });
   const [qty, setQty] = useState<Record<number, number>>({});
@@ -611,7 +737,8 @@ function StaffReturnRequestForm({ row, onClose }: { row: Row; onClose: () => voi
 
   const req = trpc.returns.request.useMutation({
     onSuccess: (r) => {
-      notify.ok("أُرسل طلب الإرجاع", `طلب #${r.requestId} — بانتظار اعتماد المدير. لا أثر ماليّ قبل الاعتماد.`);
+      notify.ok("أُرسل طلب الإرجاع", `طلب #${r.requestId} — بانتظار اعتماد المدير. لا أثر ماليّ قبل الاعتماد.`,
+      );
       utils.returns.requests.invalidate();
       onClose();
     },
@@ -625,14 +752,16 @@ function StaffReturnRequestForm({ row, onClose }: { row: Row; onClose: () => voi
   })).filter((it) => it.remaining > 0);
 
   const lines = items
-    .map((it) => ({ invoiceItemId: it.id, baseQuantity: Math.min(qty[it.id] ?? 0, it.remaining) }))
+    .map((it) => ({ invoiceItemId: it.id, baseQuantity: Math.min(qty[it.id] ?? 0, it.remaining),
+    }))
     .filter((l) => l.baseQuantity > 0);
   const canSubmit = lines.length > 0 && reason.trim().length >= 3 && !req.isPending;
 
   return (
     <>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        حدّد المُرجَع واذكر السبب. <span className="font-bold">لا أثر ماليّ الآن</span> — المدير
+        حدّد المُرجَع واذكر السبب.{" "}
+        <span className="font-bold">لا أثر ماليّ الآن</span> — المدير
         يعتمده فيُنفَّذ المرتجع ويقرّر هو ردّ النقد إن لزم.
       </p>
       {detail.isLoading ? (
@@ -652,7 +781,8 @@ function StaffReturnRequestForm({ row, onClose }: { row: Row; onClose: () => voi
                 min={0}
                 max={it.remaining}
                 value={qty[it.id] ?? ""}
-                onChange={(e) => setQty((q) => ({ ...q, [it.id]: Math.max(0, Number(e.target.value) || 0) }))}
+                onChange={(e) => setQty((q) => ({ ...q, [it.id]: Math.max(0, Number(e.target.value) || 0),
+                  }))}
                 className="h-8 w-20 text-center tabular-nums"
                 aria-label={`كمية إرجاع ${it.name}`}
               />
@@ -676,7 +806,8 @@ function StaffReturnRequestForm({ row, onClose }: { row: Row; onClose: () => voi
         <Button
           className="flex-1"
           disabled={!canSubmit}
-          onClick={() => req.mutate({ invoiceId: Number(row.id), lines, reason: reason.trim() })}
+          onClick={() => req.mutate({ invoiceId: Number(row.id), lines, reason: reason.trim(),
+            })}
         >
           {req.isPending ? "جارٍ الإرسال…" : "إرسال الطلب للمدير"}
         </Button>
@@ -686,7 +817,9 @@ function StaffReturnRequestForm({ row, onClose }: { row: Row; onClose: () => voi
 }
 
 /** م٧ — المرتجع مديريّ: المدير يُوجَّه لشاشة المرتجعات، وغيره يقدّم طلباً يعتمده المدير. */
-function ReturnRequestDialog({ row, isManager, onClose }: { row: Row; isManager: boolean; onClose: () => void }) {
+function ReturnRequestDialog({ row, isManager, onClose,
+}: { row: Row; isManager: boolean; onClose: () => void;
+}) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl" onClick={onClose}>
       <div className="w-full max-w-sm space-y-3 rounded-2xl bg-card p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
@@ -748,13 +881,16 @@ function InvoiceDispatchDialog({
   const [partyId, setPartyId] = useState("");
   const [fee, setFee] = useState("0");
   // ش٠ (V15): COUNTER خارج مسار الفاتورة حتى ش٦ — النوع مُضيَّق عمداً ليمسك TypeScript أيّ إرجاعٍ سهويّ.
-  const [feeCollection, setFeeCollection] = useState<"COURIER" | "SHOP">("COURIER");
+  const [feeCollection, setFeeCollection] = useState<"COURIER" | "SHOP">("COURIER",
+  );
   const [name, setName] = useState(row.customerName ?? row.contactName ?? "");
-  const [phone, setPhone] = useState(row.customerPhone ?? row.contactPhone ?? row.deliveryPhone ?? "");
+  const [phone, setPhone] = useState(row.customerPhone ?? row.contactPhone ?? row.deliveryPhone ?? "",
+  );
   const [address, setAddress] = useState(row.deliveryAddress ?? "");
   const [assignedUserId, setAssignedUserId] = useState("");
   const remaining = useMemo(
-    () => round2(D(row.total).minus(D(row.paidAmount ?? 0)).minus(D(row.returnedTotal ?? 0))).toNumber(),
+    () => round2(D(row.total).minus(D(row.paidAmount ?? 0)).minus(D(row.returnedTotal ?? 0)),
+      ).toNumber(),
     [row],
   );
   const party = parties.find((p) => String(p.id) === partyId);
@@ -835,7 +971,9 @@ function InvoiceDispatchDialog({
 
         {/* شفافية محاسبية صريحة: الأجرة ليست جزءاً ممّا يحصّله المندوب لنا. */}
         <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-          يحصّل المندوب <span className="font-bold tabular-nums" dir="ltr">{fmt(remaining.toFixed(2))}</span> د.ع
+          يحصّل المندوب{" "}
+          <span className="font-bold tabular-nums" dir="ltr">{fmt(remaining.toFixed(2))}</span>{" "}
+          د.ع
           لصالح المكتبة (المتبقّي على الفاتورة). أجرة التوصيل مبلغٌ مستقلّ لا يدخل الفاتورة ولا الإيراد
           {feeCollection === "SHOP" && " — وتتحمّلها المكتبة كمصروف"}.
         </p>

@@ -45,8 +45,8 @@ data class PurchasingCapabilities(
             if (canReadReminders) add(PurchasingSection.REMINDERS)
         }
 
-    fun canConfirm(order: PurchaseOrderDetail) = canWriteOrders && order.status in setOf(PurchaseStatus.DRAFT, PurchaseStatus.SENT, PurchaseStatus.CONFIRMED)
-    fun canCancel(order: PurchaseOrderDetail) = canWriteOrders && branchId != null && order.status in setOf(PurchaseStatus.DRAFT, PurchaseStatus.SENT, PurchaseStatus.CONFIRMED)
+    fun canConfirm(order: PurchaseOrderDetail) = canWriteOrders && order.status == PurchaseStatus.DRAFT
+    fun canCancel(order: PurchaseOrderDetail) = canWriteOrders && branchId != null && order.status in setOf(PurchaseStatus.DRAFT, PurchaseStatus.SENT)
 
     companion object {
         fun fromBootstrap(bootstrap: AppBootstrap) = PurchasingCapabilities(
@@ -124,6 +124,7 @@ data class PurchaseOrderSummary(
     val returnedUsd: String?,
     val agreedRate: String?,
     val status: PurchaseStatus,
+    val version: Int = 1,
 )
 
 data class PurchaseOrderLine(
@@ -168,7 +169,7 @@ data class PurchaseOrderDraft(
     val supplierId: Long = 0,
     val branchId: Long? = null,
     val taxRatePercent: String = "0",
-    val status: PurchaseStatus = PurchaseStatus.CONFIRMED,
+    val status: PurchaseStatus = PurchaseStatus.DRAFT,
     val items: List<PurchaseOrderDraftLine> = listOf(PurchaseOrderDraftLine()),
     val notes: String = "",
     val currency: Currency = Currency.IQD,

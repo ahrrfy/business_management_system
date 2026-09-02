@@ -284,18 +284,21 @@ describe("dayCloseReconciliation — الحوكمة عبر الراوتر (I6)",
     await expect(caller.reports.dayCloseReconciliation({ date: DATE, branchId: 2 })).rejects.toThrow(/فرع آخر/);
   });
 
-  it("المدير بلا تحديد فرع يُقصَر على فرعه (scopedBranchId)", async () => {
+  it("المدير بلا تحديد فرع يُقصَر على فرعه وتُحجب عهدته قبل العد الأول", async () => {
     // وردية فرع١ + وردية فرع٢ في نفس اليوم
     const a = await openShift({ branchId: 1, openingBalance: "3000" }, { userId: CASHIER1, branchId: 1 });
     await closeShift({ shiftId: a.shiftId, countedCash: "3000" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
     const bShift = await openShift({ branchId: 2, openingBalance: "5000" }, { userId: MANAGER2, branchId: 2, role: "manager" } as any);
     await closeShift({ shiftId: bShift.shiftId, countedCash: "5000" }, { userId: MANAGER2, branchId: 2, role: "manager" });
 
-    // مدير الفرع١ بلا branchId ⇒ يُقصَر على فرعه (١) فلا يرى وردية فرع٢
+    // مدير الفرع١ بلا branchId ⇒ يُقصَر على فرعه (١) فلا يرى وردية فرع٢، كما لا يرى
+    // مبلغ وردية فرعه لأنها أنشأت CH معلّقة وهو مستلم محتمل لم يثبّت عدّه الأول بعد.
     const caller = appRouter.createCaller(makeCtx({ id: MANAGER1, role: "manager", branchId: 1, name: "مدير الفرع١" }));
     const res = await caller.reports.dayCloseReconciliation({ date: DATE });
     expect(res.branchId).toBe(1);
-    expect(res.shifts.map((x) => x.shiftId)).toEqual([a.shiftId]);
+    expect(res.shifts).toEqual([]);
+    expect(res.withheldBlindCountShiftCount).toBe(1);
+    expect(res.totals.handoversCash).toBe("0.00");
   });
 
   it("admin يرى الفرع المطلوب", async () => {

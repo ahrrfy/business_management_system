@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Plus, Search, X } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -53,7 +54,7 @@ export default function Campaigns() {
         <option value="">كل الحالات</option>
         {Object.entries(LABEL).map(([k,l])=><option key={k} value={k}>{l}</option>)}
       </AppSelect>
-      {filtersActive && <Button variant="ghost" size="sm" onClick={resetF} className="text-muted-foreground"><X aria-hidden className="size-4"/> مسح الفلاتر</Button>}
+      {filtersActive && <Button variant="ghost" size="sm" onClick={resetF} className="text-muted-foreground"><X aria-hidden className="size-4"/> {FILTER_LABELS.reset}</Button>}
       <span className="text-xs text-muted-foreground ms-auto">{list.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} حملة`}</span>
     </CardContent></Card>
 

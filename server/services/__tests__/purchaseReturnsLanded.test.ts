@@ -9,6 +9,7 @@
 //       (مرّةً مصروفَ نقلٍ عند الاستلام ومرّةً خسارةً عند الإرجاع).
 //   (٣) مصروف النقل المُسجَّل عند الاستلام **لا يُعكَس** بالإرجاع: البضاعة شُحنت إلينا فعلاً والمال دُفع.
 //   (٤) reconcileSupplierBalances يبقى خالياً (الدفتر والرصيد متطابقان).
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -17,6 +18,10 @@ import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createPurchaseReturn } from "../purchaseReturnsService";
 import { reconcileSupplierBalances } from "../reconcileService";
 import { approveVoucher } from "../voucher/approval";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
@@ -27,10 +32,30 @@ function db() {
 }
 
 const TABLES = [
-  "documentPrintEvents", "purchaseReturnItems", "purchaseReturns", "idempotencyKeys",
-  "accountingEntries", "expenses", "receipts", "inventoryMovements",
-  "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices",
-  "productUnits", "productVariants", "products", "auditLogs", "suppliers", "branches", "users",
+  "documentPrintEvents",
+  "purchaseReturnItems",
+  "purchaseReturns",
+  "idempotencyKeys",
+  "accountingEntries",
+  "expenses",
+  "receipts",
+  "inventoryMovements",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
+  "purchaseOrderItems",
+  "purchaseOrders",
+  "branchStock",
+  "productPrices",
+  "productUnits",
+  "productVariants",
+  "products",
+  "auditLogs",
+  "suppliers",
+  "branches",
+  "users",
 ];
 
 async function reset() {
@@ -42,10 +67,27 @@ async function reset() {
 
 async function seed() {
   const d = db();
-  await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
+  await d
+    .insert(s.branches)
+    .values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
-    { id: 2, openId: "owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+    {
+      id: 1,
+      openId: "t",
+      name: "admin",
+      role: "admin",
+      loginMethod: "local",
+      isOwner: false,
+    },
+    {
+      id: 2,
+      openId: "owner",
+      name: "owner",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+      isOwner: true,
+    },
   ]);
   await d.insert(s.receipts).values({
     branchId: 1,
@@ -58,57 +100,122 @@ async function seed() {
     referenceNumber: "TEST-TREASURY-PURCHASE-RETURN-LANDED",
     createdBy: 2,
   });
-  await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
-  await d.insert(s.products).values([{ id: 1, name: "ورق" }, { id: 2, name: "حبر" }]);
+  await d
+    .insert(s.suppliers)
+    .values({ id: 1, name: "مورد", currentBalance: "0" });
+  await d.insert(s.products).values([
+    { id: 1, name: "ورق" },
+    { id: 2, name: "حبر" },
+  ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "P-1", costPrice: "0.00" },
     { id: 2, productId: 2, sku: "P-2", costPrice: "0.00" },
   ]);
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
-    { id: 2, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    {
+      id: 1,
+      variantId: 1,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 2,
+      variantId: 2,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
   ]);
 }
 
-beforeEach(async () => { await reset(); await seed(); });
+beforeEach(async () => {
+  await reset();
+  await seed();
+});
 
 async function supplierBalance(): Promise<string> {
-  const r = (await db().select({ b: s.suppliers.currentBalance }).from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+  const r = (
+    await db()
+      .select({ b: s.suppliers.currentBalance })
+      .from(s.suppliers)
+      .where(eq(s.suppliers.id, 1))
+  )[0];
   return String(r?.b);
 }
 async function entries() {
-  return db().select().from(s.accountingEntries).orderBy(s.accountingEntries.id);
+  return db()
+    .select()
+    .from(s.accountingEntries)
+    .orderBy(s.accountingEntries.id);
 }
 async function shippingLossEntries() {
-  return (await entries()).filter((e) => String(e.dedupeKey ?? "").startsWith("PURCHRET_LANDED"));
+  return (await entries()).filter((e) =>
+    String(e.dedupeKey ?? "").startsWith("PURCHRET_LANDED"),
+  );
 }
 async function transportExpenses() {
-  return db().select().from(s.expenses).where(eq(s.expenses.category, "TRANSPORT"));
+  return db()
+    .select()
+    .from(s.expenses)
+    .where(eq(s.expenses.category, "TRANSPORT"));
 }
 
 /** أمرٌ ببضاعة ٤٬٠٠٠ وشحن ٤٠٠، مُستلَمٌ بالكامل. `payNow` يسدّد للمورّد عند الاستلام (يلزم
  *  للاسترداد النقديّ: لا يُستردّ نقدٌ لم يُدفَع). يعيد معرّف الأمر. */
-async function orderedAndReceived(payNow?: string): Promise<{ poId: number; itemIds: number[] }> {
+async function orderedAndReceived(
+  payNow?: string,
+): Promise<{ poId: number; itemIds: number[] }> {
   const po = await createPurchaseOrder(
     {
-      supplierId: 1, branchId: 1, taxRatePercent: "0",
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
       items: [
         { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
         { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" },
       ],
-      shippingCost: "300", customsCost: "100",
+      shippingCost: "300",
+      customsCost: "100",
     },
     actor,
   );
-  const items = await db().select().from(s.purchaseOrderItems)
-    .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)).orderBy(s.purchaseOrderItems.id);
+  const items = await db()
+    .select()
+    .from(s.purchaseOrderItems)
+    .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
+    .orderBy(s.purchaseOrderItems.id);
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار مرتجع تكاليف النقل للمراجعة المستقلة",
+      requestKey: `prl-submit:${randomUUID()}`,
+    },
+    actor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `prl-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والبضاعة وتكاليف النقل واعتمدت الأمر",
+    },
+    { userId: 2, branchId: 1, role: "manager" },
+    { legacyConfirmOnly: true },
+  );
   const received = await receivePurchase(
     {
       purchaseOrderId: po.purchaseOrderId,
-      lines: items.map((i) => ({ purchaseOrderItemId: Number(i.id), receivedBaseQuantity: i.baseQuantity })),
+      lines: items.map((i) => ({
+        purchaseOrderItemId: Number(i.id),
+        receivedBaseQuantity: i.baseQuantity,
+      })),
       shippingEvidenceReference: `SHIP-RET-${po.purchaseOrderId}`,
       shippingBeneficiaryName: "شركة الرافدين للنقل الاختبارية",
-      ...(payNow ? { payment: { amount: payNow, method: "CASH" as const } } : {}),
+      ...(payNow
+        ? { payment: { amount: payNow, method: "CASH" as const } }
+        : {}),
     },
     actor,
   );
@@ -119,7 +226,10 @@ async function orderedAndReceived(payNow?: string): Promise<{ poId: number; item
       role: "manager",
     });
   }
-  return { poId: po.purchaseOrderId, itemIds: items.map((item) => Number(item.id)) };
+  return {
+    poId: po.purchaseOrderId,
+    itemIds: items.map((item) => Number(item.id)),
+  };
 }
 
 describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل الشحن إلى المصروفات", () => {
@@ -129,7 +239,11 @@ describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل ال�
 
     await createPurchaseReturn(
       {
-        clientRequestId: "landed-credit-full", supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
+        clientRequestId: "landed-credit-full",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: poId,
+        settlement: "CREDIT",
         items: [
           { purchaseOrderItemId: itemIds[0], quantity: "10" },
           { purchaseOrderItemId: itemIds[1], quantity: "5" },
@@ -151,7 +265,11 @@ describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل ال�
 
     await createPurchaseReturn(
       {
-        clientRequestId: "landed-credit-transport", supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
+        clientRequestId: "landed-credit-transport",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: poId,
+        settlement: "CREDIT",
         items: [{ purchaseOrderItemId: itemIds[0], quantity: "10" }],
       },
       actor,
@@ -167,7 +285,11 @@ describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل ال�
     const { poId, itemIds } = await orderedAndReceived();
     await createPurchaseReturn(
       {
-        clientRequestId: "landed-credit-partial", supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
+        clientRequestId: "landed-credit-partial",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: poId,
+        settlement: "CREDIT",
         items: [{ purchaseOrderItemId: itemIds[1], quantity: "2" }], // 1,200
       },
       actor,
@@ -182,7 +304,11 @@ describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل ال�
     const { poId, itemIds } = await orderedAndReceived("4000.00");
     await createPurchaseReturn(
       {
-        clientRequestId: "landed-cash-full", supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CASH",
+        clientRequestId: "landed-cash-full",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: poId,
+        settlement: "CASH",
         items: [
           { purchaseOrderItemId: itemIds[0], quantity: "10" },
           { purchaseOrderItemId: itemIds[1], quantity: "5" },

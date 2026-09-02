@@ -1,7 +1,7 @@
 // إلغاء أمر شغل: يعيد المواد المُستهلَكة للمخزون ويسترد العربون المقبوض (إن وُجد).
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, like, notLike, or, sql } from "drizzle-orm";
-import { accountingEntries, customers, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
+import { accountingEntries, customers, invoices, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { applyMovement } from "../inventoryService";
@@ -10,7 +10,7 @@ import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { appliedCollectionsForWorkOrder } from "../reception/deposits";
-import { assertCashOutAvailable, assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
 import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import { paymentAssetRole } from "../sale/paymentPosting";
@@ -18,6 +18,16 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { logAuditTx } from "../auditService";
 import type { TrpcContext } from "../../context";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { refundRailIsImmediate, refundRailNeedsReference, refundRailReceiptShape, type RefundRail } from "@shared/refundRail";
+import { recordWorkOrderEvent } from "../workOrderEvents";
+import {
+  hasWorkOrderDirectCancelAuthority,
+  hasWorkOrderManagerAuthority,
+  mayCancelWorkOrderWithoutApproval,
+} from "@shared/workOrderControlAuthority";
+import type { ApprovedWorkOrderControl } from "./update";
+import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
+import { computeWorkOrderInvoiceNetPaidInTx } from "./reverseDelivery";
 
 async function resolveLockedReceptionCashShift(
   tx: Tx,
@@ -71,28 +81,52 @@ export interface WorkOrderCancelMaterialDecision {
   wasteBase: number;
 }
 
-export async function cancelWorkOrder(
+export interface CancelWorkOrderOptions {
+  refundShiftId?: number | null;
+  /**
+   * **رافدُ ردّ العربون النقديّ** (قرار المالك ١/٩) — الافتراض `DRAWER` فيبقى السلوكُ القائم
+   * حرفياً لكلّ مستدعٍ لم يُعدَّل. يُطبَّق **فقط** حين يكون الأصلُ نقدياً (`CASH`/`TELECOM`)؛
+   * والمقبوضُ ببطاقةٍ أو تحويلٍ يبقى على مساره غير النقديّ («يُردّ بطريقة قبضه»).
+   *
+   * الحاجةُ من بلاغٍ حيّ: عربونٌ ٧٠٬٠٠٠ وأوسعُ درجٍ مفتوح ٥٦٬٠٠٠ ⇒ لا درجَ يغطّيه، فالردّ
+   * من درجٍ وحده بابٌ مسدود. الفروقُ المحاسبيّة في [`shared/refundRail.ts`](../../../shared/refundRail.ts).
+   */
+  refundRail?: RefundRail | null;
+  /** مرجعُ التنفيذ الخارجيّ — إلزاميّ لرافد `CARD` وحده (إثباتُ الاسترداد على جهاز الدفع). */
+  refundReference?: string | null;
+  clientRequestId?: string | null;
+  expectedVersion?: number;
+  reason?: string | null;
+  materials?: readonly WorkOrderCancelMaterialDecision[] | null;
+}
+
+export async function cancelWorkOrderInTx(
+  tx: Tx,
   workOrderId: number,
-  actor: Actor & { role?: string },
-  opts: {
-    refundShiftId?: number | null;
-    clientRequestId?: string | null;
-    /** سببُ الإلغاء — يُكتب على الأمر نفسه لا في سجلّ التدقيق وحده (0237). */
-    reason?: string | null;
-    /**
-     * مصيرُ كلّ مادّة. **غيابُه = رجوعٌ كامل** (السلوك القائم). ووجودُه يلزمه أن يغطّي
-     * **كلّ** أسطر المواد بالضبط — لا سطرَ ضمنيّ ولا مكرَّر.
-     */
-    materials?: readonly WorkOrderCancelMaterialDecision[] | null;
-  } = {},
+  actor: Actor & { role?: string; permissionsOverride?: unknown },
+  opts: CancelWorkOrderOptions = {},
+  control: ApprovedWorkOrderControl = {},
 ) {
-  return withTx(async (tx) => {
+    const reason = opts.reason?.trim() ?? "";
+    if (reason.length < 3 || reason.length > 500) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الإلغاء مطلوب (3-500 محرف)" });
+    }
+    if (!Number.isInteger(opts.expectedVersion) || Number(opts.expectedVersion) <= 0) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "نسخة أمر الشغل المتوقعة مطلوبة" });
+    }
     const clientRequestId = opts.clientRequestId?.trim() || null;
     const requestFingerprint = clientRequestId
       // القرارُ جزءٌ من البصمة: إعادةُ محاولةٍ بقرارِ هدرٍ مختلف **ليست** نفس الطلب.
       ? idempotencyHash({
           workOrderId,
           refundShiftId: opts.refundShiftId ?? null,
+          // الرافدُ جزءٌ من البصمة كذلك: «درج» و«خزينة» و«بطاقة» ثلاثةُ آثارٍ ماليّةٍ مختلفة
+          // (دلوٌ مختلف · تسويةٌ مختلفة · معلّقٌ باعتماد) — فإعادةُ محاولةٍ برافدٍ آخر طلبٌ آخر،
+          // ولا يجوز أن يُعيد المفتاحُ نتيجةَ الأوّل مكانها.
+          refundRail: opts.refundRail ?? null,
+          refundReference: (opts.refundReference ?? "").trim() || null,
+          expectedVersion: opts.expectedVersion,
+          reason,
           materials: (opts.materials ?? [])
             .map((m) => [Number(m.workOrderMaterialId), Number(m.returnBase), Number(m.wasteBase)])
             .sort((a, b) => a[0] - b[0]),
@@ -130,6 +164,9 @@ export async function cancelWorkOrder(
     const pendingRefundReceiptIds: number[] = [];
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
+    if (Number(wo.version) !== opts.expectedVersion) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر أمر الشغل منذ فتحه — حدّث الصفحة ثم أعد المحاولة" });
+    }
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED")
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء أمر مُسلَّم أو مُلغى" });
     // ١٨/٨: الحالة وحدها لا تكفي — الأمر يبقى READY والطرد بيد المندوب. بلا هذا الحارس كان
@@ -143,6 +180,63 @@ export async function cancelWorkOrder(
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: `صدرت فاتورة لهذا الطلب (#${Number(wo.invoiceId)}) — لا يُلغى بعد الفوترة؛ استعمل الاسترجاع (مرتجع) ليُعكس البيع والذمّة معاً`,
+      });
+    }
+    const existingMaterials = await tx
+      .select({ id: workOrderMaterials.id })
+      .from(workOrderMaterials)
+      .where(eq(workOrderMaterials.workOrderId, workOrderId));
+    const heldFeeBeforeCancel = await workOrderFeeHeldNet(tx, workOrderId);
+    const appliedDepositsBeforeCancel = await appliedCollectionsForWorkOrder(tx, workOrderId);
+    /**
+     * **بوّابةُ المدير القائمة — لم تُمَسّ حرفاً.** بقيت هي هي بكلّ حدودها المتشدّدة، لأنّ
+     * تخفيفَها كان سيوسّع سلطةً قائمةً بلا طلب.
+     */
+    const riskyCancellation = wo.status !== "RECEIVED"
+      || money(wo.deposit ?? "0").gt(0)
+      || appliedDepositsBeforeCancel.length > 0
+      || existingMaterials.length > 0
+      || heldFeeBeforeCancel.gt(0);
+    /**
+     * **شرطُ الإلغاء المباشر لغير المدير** (فنّي المطبعة/الكاشير — قرار المالك ١/٩/٢٦):
+     * أمرٌ لم يبدأ تنفيذُه ولا مالَ فيه. أسطرُ الخامة **المخطَّطة** لا تدخل الحساب: الإلغاء
+     * من `RECEIVED` لا يُنتج أيَّ حركة مخزون أصلاً (الاستهلاك يقع في `startWorkOrder`)،
+     * ولو حُوسِبت لأُلغِيت الصلاحيةُ عملياً — فأغلبُ أوامر الطباعة يحمل أسطرَها منذ الإنشاء.
+     *
+     * ⚠️ الحارسُ هنا في **الخدمة** لا في الراوتر وحده: البوّابةُ التي تُقرأ من قناةٍ واحدة
+     * تُعمي القنواتِ الأخرى (أوفلاين/أندرويد/استيراد) — §٢ قاعدة الطبقات.
+     */
+    const moneyAtStake = money(wo.deposit ?? "0").gt(0)
+      || appliedDepositsBeforeCancel.length > 0
+      || heldFeeBeforeCancel.gt(0);
+    const directCancelAllowed = mayCancelWorkOrderWithoutApproval({
+      role: actor.role ?? "",
+      override: (actor.permissionsOverride ?? null) as never,
+      status: wo.status,
+      moneyAtStake,
+      managerControlRequired: riskyCancellation,
+    });
+    if (!directCancelAllowed && control.approvedControlRequestId == null) {
+      // **٤٠٣ لِمَن ليس له القرار، و٤١٢ لِمَن له القرار وحالةُ الأمر تمنعه** — رمزان مختلفان
+      // لسببَين مختلفَين. الكاشير يقع في الأوّل (مسارُه الطلب) ولو كان الأمرُ خالياً من المال.
+      if (!hasWorkOrderDirectCancelAuthority(actor.role ?? "", (actor.permissionsOverride ?? null) as never)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "الإلغاء المباشر لدورك غير متاح — أرسل طلب إلغاء ليعتمده مدير",
+        });
+      }
+      const isManager = hasWorkOrderManagerAuthority(
+        actor.role ?? "",
+        (actor.permissionsOverride ?? null) as never,
+      );
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        // رسالةٌ تقول **لِمَ** مُنع وما البديل — لا «غير مسموح» عمياء توقف الموظّف بلا مخرج.
+        message: isManager
+          ? "إلغاء أمرٍ له عربون أو مواد أو أجرة أو بدأ إنتاجه يتطلب طلباً واعتماد مديرٍ آخر"
+          : moneyAtStake
+            ? "في الطلب عربون أو مبلغ مقبوض — أرسل طلب إلغاء ليعتمده المدير ويردّ المبلغ من درجه"
+            : "بدأ تنفيذ الطلب — أرسل طلب إلغاء ليقرّر المدير مصير الخامة المستهلَكة",
       });
     }
     if (wo.status === "IN_PROGRESS" || wo.status === "READY") {
@@ -255,6 +349,21 @@ export async function cancelWorkOrder(
     // يعكس قيد PAYMENT_IN المُسجَّل عند الإنشاء (صافي الدفتر = صفر)، ويظهر خروجاً في Z-report يوم الإلغاء.
     // نعكس فقط ما قُبِض فعلاً (إيصال موجود) — لا نختلق استرداداً لأوامر قديمة لم تُسجِّل العربون كقيد.
     const refundD = round2(money(wo.deposit ?? "0"));
+    /**
+     * **الرافدُ قرارٌ واحدٌ للعملية كلّها لا للعربون وحده** (مراجعة Codex P1 على #928):
+     * الأمرُ قد يجمع عربوناً مباشراً + حصصَ مسوّدةٍ مطبَّقة + أمانةَ أجرة توصيل. وتطبيقُ الرافد
+     * على الأوّل وحده يشقّ الردَّ بين الخزينة ودرجٍ صامتاً، أو يُسقطه حين لا يُرسَل
+     * `refundShiftId` أصلاً (وهو ما تفعله مسارات الخزينة/البطاقة عمداً).
+     */
+    const opRail: RefundRail = opts.refundRail ?? "DRAWER";
+    const opRailShape = refundRailReceiptShape(opRail);
+    /** دلوُ النقد الفوريّ لهذه العملية — درجٌ أو خزينة. */
+    const cashSinkBucket: "DRAWER" | "TREASURY" = opRail === "TREASURY" ? "TREASURY" : "DRAWER";
+    /** الوردية: للدرج وحده — الخزينةُ بلا وردية. */
+    const resolveCashSinkShift = async (): Promise<number | null> =>
+      cashSinkBucket === "DRAWER"
+        ? await resolveLockedReceptionCashShift(tx, Number(wo.branchId), opts.refundShiftId ?? null)
+        : null;
     if (refundD.gt(0)) {
       // ش٠ (V3): الردّ من إيصال العربون **بهويّته** (depositReceiptId) لا بالتقاطٍ ظنّي — كان
       // `.limit(1)` قد يلتقط إيصال أجرة COUNTER (نفس البصمة) فيُردّ للزبون مبلغ الأجرة بدل
@@ -308,30 +417,55 @@ export async function cancelWorkOrder(
         // استثناء رصيد زين (ش٥، مراجعة عدائية ٦/٨): لا سكّة ردٍّ له — إيصال OUT بTELECOM
         // يُنقص الحساب المشتقّ بينما رصيد زين الحقيقيّ لا يتحرّك ⇒ يُردّ نقداً من الدرج.
         const collectedMethod = depRcpt.paymentMethod ?? "CASH";
-        const refundMethod = collectedMethod === "TELECOM" ? "CASH" : collectedMethod;
+        const collectedInCash = collectedMethod === "CASH" || collectedMethod === "TELECOM";
+        /**
+         * **الرافد** — يُختار فقط حين يكون الأصلُ نقدياً. غيرُ النقديّ يبقى على مساره كما كان
+         * (يُردّ بطريقة قبضه)، فلا يتغيّر سلوكُ أيّ مستدعٍ قائم.
+         */
+        const rail: RefundRail = collectedInCash ? (opts.refundRail ?? "DRAWER") : "DRAWER";
+        const railShape = refundRailReceiptShape(rail);
+        const refundMethod = collectedInCash ? railShape.paymentMethod : collectedMethod;
+        const refundBucket = collectedInCash ? railShape.cashBucket : null;
+        const immediate = collectedInCash ? refundRailIsImmediate(rail) : false;
+        const refundRef = (opts.refundReference ?? "").trim();
+        if (collectedInCash && refundRailNeedsReference(rail) && refundRef.length < 3) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "ردّ العربون على البطاقة يلزمه مرجع تنفيذ الاسترداد من جهاز الدفع (٣ محارف على الأقل)",
+          });
+        }
         // الدرج مورد فرعٍ لا مستخدم — الإلغاء صلاحية مدير قد يختلف عن كاشير الاستقبال.
         // نختار RECEPTION فقط، نقفلها FOR UPDATE، ثم نتحقّق من النقد المتاح قبل الخروج.
         let shiftId: number | null;
-        if (refundMethod === "CASH") {
-          shiftId = await resolveLockedReceptionCashShift(tx, Number(wo.branchId), opts.refundShiftId ?? null);
+        if (collectedInCash && immediate) {
+          // TREASURY: لا درجَ ولا وردية — النقد من خزينة الفرع، والحارسُ نفسه يقيس توفّره.
+          shiftId = refundBucket === "DRAWER"
+            ? await resolveLockedReceptionCashShift(tx, Number(wo.branchId), opts.refundShiftId ?? null)
+            : null;
+          // خروجُ الخزينة عكسٌ مقيَّدٌ بمصدره لا صرفٌ جديد ⇒ يُعلَن استثناءً مغلقاً (نظيرَ إلغاء
+          // البيع) بدل طابور اعتماد المالك؛ وبلا هذا الإعلان يمرّ عبر assertCashOutAvailable الحيادي
+          // فيتسرّب صرفُ خزينةٍ بلا حارسٍ (مراجعة Codex P1 على #930).
+          if (refundBucket === "TREASURY") assertTreasuryOutException("WORK_ORDER_CANCELLATION_COMPENSATION");
           await assertCashOutAvailable(tx, {
-            branchId: Number(wo.branchId), cashBucket: "DRAWER", shiftId,
-            amount: refundAmt, operation: "رد عربون إلغاء أمر الشغل",
+            branchId: Number(wo.branchId), cashBucket: refundBucket === "DRAWER" ? "DRAWER" : "TREASURY", shiftId,
+            amount: refundAmt, operation: `رد عربون إلغاء أمر الشغل (${rail === "TREASURY" ? "خزينة" : "درج"})`,
           });
         } else {
-          if (wo.customerId == null) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: "رد العربون غير النقدي يحتاج عميلاً مرتبطاً بأمر الشغل كي يمرّ بسند واعتماد مالك",
-            });
-          }
+          // **العربونُ العابر (بلا عميلٍ مسجَّل) يُردّ كذلك** (مراجعة Codex P2 على #930): كان الحارسُ
+          // يرفضه فيَعلَق الأمرُ الملغى بمالٍ محتجَزٍ بلا مخرج (خرقُ §٥). والأسوأ أنّ `cardRefundAllowed`
+          // يُتيح البطاقةَ لعربونٍ نقديٍّ مباشر بلا عميل، فيُنشأ طلبُ تحكّمٍ يتعذّر اعتمادُه. إيصالُ
+          // الردّ يقع طرفاً OTHER (أدناه، نظيرَ الحصص المطبَّقة)، ومسارُ الاعتماد
+          // `approveWorkOrderCancellationRefund` يقبل الطرفَ الفارغ (0 === 0) فيُبرَّأ المالُ بسندٍ
+          // واعتماد مالكٍ ومرجعِ تنفيذٍ خارجيّ.
           shiftId = null;
           assertNonPhysicalOutReceipt({
             classification: "DEFERRED_APPROVAL",
             paymentMethod: refundMethod,
             cashBucket: null,
             approvalStatus: "PENDING_APPROVAL",
-            operation: "طلب رد عربون أمر شغل غير نقدي",
+            operation: rail === "CARD" && collectedInCash
+              ? "طلب رد عربون نقديّ على البطاقة"
+              : "طلب رد عربون أمر شغل غير نقدي",
           });
         }
         const rRes = await tx.insert(receipts).values({
@@ -341,25 +475,29 @@ export async function cancelWorkOrder(
           direction: "OUT",
           amount: toDbMoney(refundAmt),
           paymentMethod: refundMethod,
-          // cashBucket='DRAWER' للاسترداد النقدي ⇒ يَخصم من تسوية الدرج/Z-report (مرآة العربون عند القبض).
-          cashBucket: refundMethod === "CASH" ? "DRAWER" : null,
-          status: refundMethod === "CASH" ? "COMPLETED" : "PENDING",
-          approvalStatus: refundMethod === "CASH" ? "APPROVED" : "PENDING_APPROVAL",
-          referenceNumber: refundMethod === "CASH" ? `WO-CANCEL-REFUND-${workOrderId}` : null,
-          description: refundMethod === "CASH"
-            ? `استرداد عربون أمر شغل ملغى #${workOrderId}`
-            : `طلب استرداد غير نقدي معلّق لأمر الشغل #${workOrderId} — بلا أثر حتى التنفيذ`,
+          // الدلوُ يتبع الرافد: DRAWER يَخصم من تسوية الوردية، وTREASURY من خزينة الفرع،
+          // وغيرُ الفوريّ بلا دلوٍ إطلاقاً (لا يمسّ نقداً حتى يُعتمد).
+          cashBucket: immediate ? refundBucket : null,
+          status: immediate ? "COMPLETED" : "PENDING",
+          approvalStatus: immediate ? "APPROVED" : "PENDING_APPROVAL",
+          referenceNumber: immediate ? `WO-CANCEL-REFUND-${workOrderId}` : null,
+          description: immediate
+            ? `استرداد عربون أمر شغل ملغى #${workOrderId}${rail === "TREASURY" ? " (من الخزينة الإدارية)" : ""}`
+            : rail === "CARD" && collectedInCash
+              ? `طلب استرداد على البطاقة لعربونٍ نقديّ — أمر الشغل #${workOrderId} (مرجع: ${refundRef}) — بلا أثر حتى التنفيذ`
+              : `طلب استرداد غير نقدي معلّق لأمر الشغل #${workOrderId} — بلا أثر حتى التنفيذ`,
           partyType: wo.customerId ? "CUSTOMER" : "OTHER",
           partyId: wo.customerId ?? null,
-          internalNote: refundMethod !== "CASH"
+          internalNote: !immediate
             ? `WORK_ORDER_CUSTOMER_REFUND:DIRECT:${workOrderId}:${Number(depRcpt.id)}`
             : null,
           createdBy: actor.userId,
         });
         const refundReceiptId = extractInsertId(rRes);
-        if (refundMethod !== "CASH") pendingRefundReceiptIds.push(refundReceiptId);
-        if (refundMethod === "CASH") {
-          const refundAssetRole = paymentAssetRole(refundMethod, "DRAWER", "OUT");
+        if (!immediate) pendingRefundReceiptIds.push(refundReceiptId);
+        if (immediate) {
+          // الحسابُ يتبع الدلو: CASH للدرج وTREASURY_CASH للخزينة (paymentAssetRole).
+          const refundAssetRole = paymentAssetRole(refundMethod, refundBucket, "OUT");
           const refundPostingSource = {
             roleDebits: { OTHER_LIABILITY: refundAmt },
             roleCredits: { [refundAssetRole]: refundAmt },
@@ -370,118 +508,143 @@ export async function cancelWorkOrder(
             receiptId: refundReceiptId,
             customerId: wo.customerId ?? null,
             amount: refundAmt,
-            notes: `استرداد عربون طلب خدمة ملغى #${workOrderId}${collectedMethod === "TELECOM" ? " (أصل القبض: رصيد زين — رُدّ نقداً)" : ""}`,
+            notes: `استرداد عربون طلب خدمة ملغى #${workOrderId}`
+              + (collectedMethod === "TELECOM" ? " (أصل القبض: رصيد زين — رُدّ نقداً)" : "")
+              + (rail === "TREASURY" ? " (من الخزينة الإدارية لا من الدرج)" : ""),
             postingIntent: createPostingIntent("PAYMENT_OUT_OTHER", "PAYMENT_OUT", [debitLine("OTHER_LIABILITY", refundAmt), creditLine(refundAssetRole, refundAmt)], refundPostingSource),
             postingSourceComponents: refundPostingSource,
           });
         }
       }
-      // ش٤: حصص العربون المقبوضة **سلفاً** (مسوّدة ⇒ APPLICATION على هذا الأمر) — إيصال
-      // depositReceiptId أعلاه يحمل الجزء الجديد N وحده، فردُّه وحدَه يترك حصص P بلا ردّ
-      // (وقد يكون N صفراً أصلاً). كلّ حصّة تُردّ بطريقة قبضها + صفّ REFUND مربوط بأمّه (I17).
-      const appliedParts = await appliedCollectionsForWorkOrder(tx, workOrderId);
-      let appliedCashShiftId: number | null = null;
-      for (const part of appliedParts) {
-        if (part.receiptId == null) {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "حصة عربون مطبقة بلا إيصال قبض قابل للتحقق" });
-        }
-        const source = (
-          await tx
-            .select({ direction: receipts.direction, status: receipts.status, approvalStatus: receipts.approvalStatus })
-            .from(receipts)
-            .where(eq(receipts.id, part.receiptId))
-            .for("update")
-            .limit(1)
-        )[0];
-        if (!source || source.direction !== "IN" || source.status !== "COMPLETED" || source.approvalStatus !== "APPROVED") {
+    }
+
+    /**
+     * **حصصُ العربون المطبَّقة تُردّ ولو كان العمود `deposit` صفراً** (فجوةٌ ماليّة رفعها
+     * الفحصُ، وأقرّ المالكُ سدَّها ١/٩): أمرٌ من مسوّدة استقبالٍ قد يحمل حصصَ قبضٍ نقديّةً
+     * محتجَزة بينما `workOrders.deposit = 0`. وكانت هذه الحلقةُ داخل `if (refundD.gt(0))`
+     * فتُتخطّى ⇒ مالُ العميل يبقى في الدرج بلا مسار خروج، مخالفاً §٥ («لكلّ مالٍ محتجَز
+     * مسارُ خروجٍ ممكنٌ دائماً»). أُخرِجت من الحارس فتُصرَف حين توجد حصصٌ فعلاً — لا حين
+     * يكون العربونُ المباشر موجباً وحده.
+     *
+     * وهي idempotent بطبيعتها: كلُّ حصّةٍ تُختَم بصفّ REFUND مربوطٍ بأمّه (I17)، فإعادةُ
+     * التشغيل لا تُكرّر ردّاً.
+     */
+    // ش٤: حصص العربون المقبوضة **سلفاً** (مسوّدة ⇒ APPLICATION على هذا الأمر) — إيصال
+    // depositReceiptId أعلاه يحمل الجزء الجديد N وحده، فردُّه وحدَه يترك حصص P بلا ردّ
+    // (وقد يكون N صفراً أصلاً). كلّ حصّة تُردّ بطريقة قبضها + صفّ REFUND مربوط بأمّه (I17).
+    const appliedParts = await appliedCollectionsForWorkOrder(tx, workOrderId);
+    let appliedCashShiftId: number | null = null;
+    for (const part of appliedParts) {
+      if (part.receiptId == null) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "حصة عربون مطبقة بلا إيصال قبض قابل للتحقق" });
+      }
+      const source = (
+        await tx
+          .select({ direction: receipts.direction, status: receipts.status, approvalStatus: receipts.approvalStatus })
+          .from(receipts)
+          .where(eq(receipts.id, part.receiptId))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (!source || source.direction !== "IN" || source.status !== "COMPLETED" || source.approvalStatus !== "APPROVED") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "حصة العربون لا تستند إلى إيصال IN منفذ ومعتمد؛ أوقف الإلغاء وراجع القبض",
+        });
+      }
+      const amountD = round2(money(part.amount));
+      if (amountD.lte(0)) continue;
+      const refundMethod = part.method === "TELECOM" ? "CASH" : part.method;
+      let shiftId: number | null = null;
+      if (refundMethod === "CASH") {
+        if (opRail === "CARD") {
+          // ⛔ لا نشقّ ردّاً واحداً بين بطاقةٍ ونقد: البطاقةُ مسارٌ معلّقٌ باعتماد، والحصصُ
+          // تُصرَف فوراً — فخلطُهما يُخرج بعضَ المال ويُعلّق بعضَه على مستندٍ واحد. رفضٌ صريح
+          // أصدقُ من شقٍّ صامت (§٥).
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "حصة العربون لا تستند إلى إيصال IN منفذ ومعتمد؛ أوقف الإلغاء وراجع القبض",
+            message: "هذا الأمر يحمل حصص عربون مقبوضة سلفاً — لا يُردّ على البطاقة. اختر الدرج أو الخزينة الإدارية.",
           });
         }
-        const amountD = round2(money(part.amount));
-        if (amountD.lte(0)) continue;
-        const refundMethod = part.method === "TELECOM" ? "CASH" : part.method;
-        let shiftId: number | null = null;
-        if (refundMethod === "CASH") {
-          appliedCashShiftId ??= await resolveLockedReceptionCashShift(tx, Number(wo.branchId), opts.refundShiftId ?? null);
-          shiftId = appliedCashShiftId;
-          await assertCashOutAvailable(tx, {
-            branchId: Number(wo.branchId), cashBucket: "DRAWER", shiftId,
-            amount: amountD, operation: "رد حصة عربون أمر شغل",
-          });
-        } else {
-          const customerId = part.customerId ?? wo.customerId ?? null;
-          if (customerId == null) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: "رد حصة العربون غير النقدية يحتاج عميلاً مرتبطاً كي يمرّ بسند واعتماد مالك",
-            });
-          }
-          assertNonPhysicalOutReceipt({
-            classification: "DEFERRED_APPROVAL",
-            paymentMethod: refundMethod,
-            cashBucket: null,
-            approvalStatus: "PENDING_APPROVAL",
-            operation: "طلب رد حصة عربون أمر شغل غير نقدي",
-          });
-        }
-        const inserted = await tx.insert(receipts).values({
-          branchId: Number(wo.branchId),
-          shiftId,
-          workOrderId,
-          direction: "OUT",
-          amount: toDbMoney(amountD),
+        appliedCashShiftId ??= await resolveCashSinkShift();
+        shiftId = appliedCashShiftId;
+        // نظيرُ المسار المباشر: خروجُ الخزينة يُعلَن استثناءً مغلقاً لا يمرّ حيادياً (Codex P1 #930).
+        if (cashSinkBucket === "TREASURY") assertTreasuryOutException("WORK_ORDER_CANCELLATION_COMPENSATION");
+        await assertCashOutAvailable(tx, {
+          branchId: Number(wo.branchId), cashBucket: cashSinkBucket, shiftId,
+          amount: amountD, operation: "رد حصة عربون أمر شغل",
+        });
+      } else {
+        // **الحصّةُ غير النقديّة العابرة (بلا عميلٍ مسجَّل) تُردّ كذلك** (مراجعة Codex P2 على #930):
+        // كان الحارسُ يرفضها فيَعلَق الأمرُ الملغى بمالٍ نقديٍّ محتجَزٍ بلا مخرج (خرقُ §٥ — «لكلّ مالٍ
+        // محتجَز مسارُ خروجٍ ممكنٌ دائماً»). إيصالُ الردّ يقع طرفاً OTHER (كنظيره النقديّ أدناه)،
+        // ومسارُ الاعتماد `approveWorkOrderCancellationRefund` يقبل الطرفَ الفارغ (0 === 0) فيُبرَّأ
+        // المالُ بسندٍ واعتماد مالكٍ ومرجعِ تنفيذٍ خارجيّ.
+        assertNonPhysicalOutReceipt({
+          classification: "DEFERRED_APPROVAL",
           paymentMethod: refundMethod,
-          cashBucket: refundMethod === "CASH" ? "DRAWER" : null,
-          status: refundMethod === "CASH" ? "COMPLETED" : "PENDING",
-          approvalStatus: refundMethod === "CASH" ? "APPROVED" : "PENDING_APPROVAL",
-          referenceNumber: refundMethod === "CASH" ? `WO-CANCEL-REFUND-${workOrderId}` : null,
-          description: refundMethod === "CASH"
-            ? `ردّ حصة عربون مقبوضة سلفاً — إلغاء طلب #${workOrderId}`
-            : `طلب رد غير نقدي معلّق لحصة عربون — إلغاء طلب #${workOrderId}`,
-          partyType: (part.customerId ?? wo.customerId) != null ? "CUSTOMER" : "OTHER",
-          partyId: part.customerId ?? wo.customerId ?? null,
-          internalNote: refundMethod !== "CASH"
-            ? `WORK_ORDER_CUSTOMER_REFUND:APPLIED:${workOrderId}:${part.collectionId}`
-            : null,
+          cashBucket: null,
+          approvalStatus: "PENDING_APPROVAL",
+          operation: "طلب رد حصة عربون أمر شغل غير نقدي",
+        });
+      }
+      const inserted = await tx.insert(receipts).values({
+        branchId: Number(wo.branchId),
+        shiftId,
+        workOrderId,
+        direction: "OUT",
+        amount: toDbMoney(amountD),
+        paymentMethod: refundMethod,
+        cashBucket: refundMethod === "CASH" ? cashSinkBucket : null,
+        status: refundMethod === "CASH" ? "COMPLETED" : "PENDING",
+        approvalStatus: refundMethod === "CASH" ? "APPROVED" : "PENDING_APPROVAL",
+        referenceNumber: refundMethod === "CASH" ? `WO-CANCEL-REFUND-${workOrderId}` : null,
+        description: refundMethod === "CASH"
+          ? `ردّ حصة عربون مقبوضة سلفاً — إلغاء طلب #${workOrderId}`
+          : `طلب رد غير نقدي معلّق لحصة عربون — إلغاء طلب #${workOrderId}`,
+        partyType: (part.customerId ?? wo.customerId) != null ? "CUSTOMER" : "OTHER",
+        partyId: part.customerId ?? wo.customerId ?? null,
+        internalNote: refundMethod !== "CASH"
+          ? `WORK_ORDER_CUSTOMER_REFUND:APPLIED:${workOrderId}:${part.collectionId}`
+          : null,
+        createdBy: actor.userId,
+      });
+      const refundReceiptId = extractInsertId(inserted);
+      if (refundMethod !== "CASH") pendingRefundReceiptIds.push(refundReceiptId);
+      if (refundMethod === "CASH") {
+        // الحسابُ يتبع الدلو الفعليّ: CASH للدرج وTREASURY_CASH للخزينة — وإلّا خرج المال
+        // من الخزينة وسُجّل على حساب الدرج (قيدٌ يخالف الحركة).
+        const refundAssetRole = paymentAssetRole(refundMethod, cashSinkBucket, "OUT");
+        const postingSource = {
+          roleDebits: { OTHER_LIABILITY: amountD },
+          roleCredits: { [refundAssetRole]: amountD },
+        };
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: Number(wo.branchId),
+          receiptId: refundReceiptId,
+          customerId: part.customerId ?? wo.customerId ?? null,
+          amount: amountD,
+          notes: `استرداد حصة عربون مقبوضة سلفاً — إلغاء طلب #${workOrderId}`,
+          postingIntent: createPostingIntent("PAYMENT_OUT_OTHER", "PAYMENT_OUT", [debitLine("OTHER_LIABILITY", amountD), creditLine(refundAssetRole, amountD)], postingSource),
+          postingSourceComponents: postingSource,
+        });
+      }
+      // صفّ REFUND يحجز حصة القبض الملغاة تشغيلياً فور إلغاء الأمر، حتى إن كان إيصال
+      // الصرف غير النقدي ما زال PENDING؛ الحالة المالية يحكمها receipt ولا materialize إلا بالاعتماد.
+      if (part.draftId != null) {
+        await tx.insert(orderPayments).values({
+          draftId: part.draftId,
+          branchId: Number(wo.branchId),
+          customerId: part.customerId ?? wo.customerId ?? null,
+          kind: "REFUND",
+          amount: toDbMoney(amountD),
+          method: refundMethod,
+          receiptId: refundReceiptId,
+          shiftId,
+          parentPaymentId: part.collectionId,
           createdBy: actor.userId,
         });
-        const refundReceiptId = extractInsertId(inserted);
-        if (refundMethod !== "CASH") pendingRefundReceiptIds.push(refundReceiptId);
-        if (refundMethod === "CASH") {
-          const refundAssetRole = paymentAssetRole(refundMethod, "DRAWER", "OUT");
-          const postingSource = {
-            roleDebits: { OTHER_LIABILITY: amountD },
-            roleCredits: { [refundAssetRole]: amountD },
-          };
-          await postEntry(tx, {
-            entryType: "PAYMENT_OUT",
-            branchId: Number(wo.branchId),
-            receiptId: refundReceiptId,
-            customerId: part.customerId ?? wo.customerId ?? null,
-            amount: amountD,
-            notes: `استرداد حصة عربون مقبوضة سلفاً — إلغاء طلب #${workOrderId}`,
-            postingIntent: createPostingIntent("PAYMENT_OUT_OTHER", "PAYMENT_OUT", [debitLine("OTHER_LIABILITY", amountD), creditLine(refundAssetRole, amountD)], postingSource),
-            postingSourceComponents: postingSource,
-          });
-        }
-        // صفّ REFUND يحجز حصة القبض الملغاة تشغيلياً فور إلغاء الأمر، حتى إن كان إيصال
-        // الصرف غير النقدي ما زال PENDING؛ الحالة المالية يحكمها receipt ولا materialize إلا بالاعتماد.
-        if (part.draftId != null) {
-          await tx.insert(orderPayments).values({
-            draftId: part.draftId,
-            branchId: Number(wo.branchId),
-            customerId: part.customerId ?? wo.customerId ?? null,
-            kind: "REFUND",
-            amount: toDbMoney(amountD),
-            method: refundMethod,
-            receiptId: refundReceiptId,
-            shiftId,
-            parentPaymentId: part.collectionId,
-            createdBy: actor.userId,
-          });
-        }
       }
     }
 
@@ -501,33 +664,44 @@ export async function cancelWorkOrder(
     )[0];
     const feeHeldNet = round2(money(feeHeldRow?.v ?? "0"));
     if (feeHeldNet.gt(0)) {
-      const feeShiftId = await resolveLockedReceptionCashShift(tx, Number(wo.branchId), opts.refundShiftId ?? null);
+      if (opRail === "CARD") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "على هذا الأمر أمانة أجرة توصيل تُردّ نقداً — لا تُردّ على البطاقة. اختر الدرج أو الخزينة الإدارية.",
+        });
+      }
+      const feeShiftId = await resolveCashSinkShift();
+      // نظيرُ المسارين أعلاه: خروجُ الخزينة يُعلَن استثناءً مغلقاً لا يمرّ حيادياً (Codex P1 #930).
+      if (cashSinkBucket === "TREASURY") assertTreasuryOutException("WORK_ORDER_CANCELLATION_COMPENSATION");
       await assertCashOutAvailable(tx, {
-        branchId: Number(wo.branchId), cashBucket: "DRAWER", shiftId: feeShiftId,
+        branchId: Number(wo.branchId), cashBucket: cashSinkBucket, shiftId: feeShiftId,
         amount: feeHeldNet, operation: "رد أمانة أجرة توصيل أمر الشغل",
       });
       const feeOut = await tx.insert(receipts).values({
         branchId: Number(wo.branchId), shiftId: feeShiftId, workOrderId,
-        direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",
+        direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: cashSinkBucket,
         status: "COMPLETED", approvalStatus: "APPROVED", partyType: "OTHER",
         referenceNumber: `DLV-FEE-WO-${workOrderId}`,
         description: `ردّ أمانة أجرة توصيل — إلغاء طلب #${workOrderId}`,
         createdBy: actor.userId,
       });
+      // الحسابُ يتبع الدلو: خروجٌ من الخزينة يُقيَّد على TREASURY_CASH لا على CASH.
+      const feeAssetRole = paymentAssetRole("CASH", cashSinkBucket, "OUT");
       await postEntry(tx, {
         entryType: "DELIVERY_FEE_HELD",
         dedupeKey: `DELIVERY_FEE_HELD_REFUND:WO:${workOrderId}`,
         branchId: Number(wo.branchId),
         receiptId: extractInsertId(feeOut),
         amount: feeHeldNet.neg(),
-        notes: `ردّ أمانة أجرة توصيل — إلغاء طلب #${workOrderId}`,
+        notes: `ردّ أمانة أجرة توصيل — إلغاء طلب #${workOrderId}`
+          + (cashSinkBucket === "TREASURY" ? " (من الخزينة الإدارية)" : ""),
         postingSourceComponents: {
           roleDebits: { COURIER_PAYABLE: feeHeldNet },
-          roleCredits: { CASH: feeHeldNet },
+          roleCredits: { [feeAssetRole]: feeHeldNet },
         },
-        postingIntent: createPostingIntent("DELIVERY_FEE_HELD_PAYOUT", "DELIVERY_FEE_HELD", [debitLine("COURIER_PAYABLE", feeHeldNet), creditLine("CASH", feeHeldNet)], {
+        postingIntent: createPostingIntent("DELIVERY_FEE_HELD_PAYOUT", "DELIVERY_FEE_HELD", [debitLine("COURIER_PAYABLE", feeHeldNet), creditLine(feeAssetRole, feeHeldNet)], {
           roleDebits: { COURIER_PAYABLE: feeHeldNet },
-          roleCredits: { CASH: feeHeldNet },
+          roleCredits: { [feeAssetRole]: feeHeldNet },
         }),
       });
     }
@@ -536,10 +710,19 @@ export async function cancelWorkOrder(
       status: "CANCELLED",
       // 0237: السببُ على المستند لا في سجلّ التدقيق وحده — الأخير بذلٌ أفضل ومُعقَّم وليس
       // سطحَ قراءةٍ للأعمال، فبلا هذه الأعمدة يذوب «لم يحضر العميل» في إلغاءٍ مجهول.
-      cancelReason: opts.reason?.trim() || null,
+      cancelReason: reason,
       cancelledAt: new Date(),
       cancelledBy: actor.userId,
     }).where(eq(workOrders.id, workOrderId));
+    await recordWorkOrderEvent(tx, {
+      workOrderId,
+      eventType: "CANCELLED",
+      fromStatus: wo.status,
+      toStatus: "CANCELLED",
+      payload: { reason, controlRequestId: control.approvedControlRequestId ?? null },
+      actorUserId: actor.userId,
+      branchId: Number(wo.branchId),
+    });
     if (clientRequestId) {
       await recordIdempotencyKey(
         tx,
@@ -549,8 +732,15 @@ export async function cancelWorkOrder(
         requestFingerprint,
       );
     }
-    return { workOrderId, status: "CANCELLED" as const, pendingRefundReceiptIds, replayed: false as const };
-  });
+    return { workOrderId, status: "CANCELLED" as const, pendingRefundReceiptIds, replayed: false as const, version: Number(opts.expectedVersion) + 1 };
+}
+
+export async function cancelWorkOrder(
+  workOrderId: number,
+  actor: Actor & { role?: string; permissionsOverride?: unknown },
+  opts: CancelWorkOrderOptions = {},
+) {
+  return withTx((tx) => cancelWorkOrderInTx(tx, workOrderId, actor, opts));
 }
 
 /**
@@ -618,7 +808,7 @@ export async function approveWorkOrderCancellationRefund(
     )[0];
     if (
       !wo ||
-      wo.status !== "CANCELLED" ||
+      (wo.status !== "CANCELLED" && wo.status !== "READY") ||
       Number(wo.branchId) !== Number(refund.branchId) ||
       Number(wo.customerId ?? 0) !== Number(refund.partyId ?? 0)
     ) {
@@ -745,7 +935,8 @@ export async function approveWorkOrderCancellationRefund(
       source.direction !== "IN" ||
       source.status !== "COMPLETED" ||
       source.approvalStatus !== "APPROVED" ||
-      (resolvesLikeDirect && !round2(money(source.amount)).eq(round2(money(refund.amount))))
+      (refundKind === "DIRECT" && !round2(money(source.amount)).eq(round2(money(refund.amount)))) ||
+      (isReverseKind && round2(money(refund.amount)).gt(round2(money(source.amount))))
     ) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "مصدر العربون لم يعد إيصال IN منفذاً ومعتمداً" });
     }
@@ -809,6 +1000,7 @@ export async function approveWorkOrderCancellationRefund(
     await postEntry(tx, {
       entryType: "PAYMENT_OUT",
       branchId: Number(refund.branchId),
+      invoiceId: refund.invoiceId != null ? Number(refund.invoiceId) : null,
       receiptId,
       customerId: refund.partyId != null ? Number(refund.partyId) : null,
       amount,
@@ -822,6 +1014,17 @@ export async function approveWorkOrderCancellationRefund(
       ),
       postingSourceComponents: postingSource,
     });
+    // رأس الفاتورة لا يسبق النقد: الرد غير النقدي لا يخفض paidAmount وهو PENDING،
+    // ويُشتق الصافي من IN المنفذ ناقص OUT المنفذ لحظة الاعتماد فقط.
+    if (refund.invoiceId != null) {
+      const paidAmount = await computeWorkOrderInvoiceNetPaidInTx(
+        tx,
+        workOrderId,
+        Number(refund.invoiceId),
+        wo.deposit,
+      );
+      await tx.update(invoices).set({ paidAmount }).where(eq(invoices.id, Number(refund.invoiceId)));
+    }
     await logAuditTx(tx, auditContext, {
       action: "workOrder.refund.approve",
       entityType: "receipt",

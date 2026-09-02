@@ -6,12 +6,14 @@
 //   pnpm session:remove <اسم> [--keep-branch]         إزالة شجرة العمل (والفرع ما لم يُطلب إبقاؤه)
 // كل شجرة عمل = مجلّد مستقل بفهرس git خاص + قاعدة بيانات + منفذ ⇒ عزل حقيقي (انظر CLAUDE.md §٧ + coord).
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
   coordRootFor, sessionKeyFor, ensureCoordDirs, sessionsDir, writeJson, readJson,
 } from "./coord-core.mjs";
+import { TEST_DB_BASE } from "./lib/test-db-name.mjs";
 
 function git(args, { capture = true } = {}) {
   return execFileSync("git", args, { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit" });
@@ -87,18 +89,141 @@ function pickPort(preferred) {
 }
 
 // أنشئ قاعدتَي التطوير والاختبار للجلسة (idempotent). يفشل ناعماً إن كان Docker متوقّفاً.
-function provisionDbs(dbName, testDbName) {
-  const container = process.env.DB_CONTAINER ?? "erp-mysql";
-  const pw = process.env.DB_ROOT_PW ?? "erp_root_pw";
-  const sql =
-    `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` +
-    `CREATE DATABASE IF NOT EXISTS \`${testDbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`;
+/** محرفا الاقتباس كثابتين — لا سلاسلَ حرفيّة يفسدها هروبُ أداةٍ أو محرّر. */
+const DQ = String.fromCharCode(34);
+const SQ = String.fromCharCode(39);
+
+/**
+ * يجرّد الاقتباس المحيط بقيمة `.env` — `parseEnv` لا يُزيله، و`.env.example` يوثّق قيماً
+ * مقتبَسة. وبلا هذا يصير الرابطُ المقتبَس غيرَ صالح فيسقط الاشتقاق إلى الافتراض صامتاً.
+ *
+ * (!) بلا مرجعٍ خلفيّ في التعبير النمطيّ عمداً: كُتب أوّلاً بمرجعٍ خلفيّ فتحوّل عند الكتابة
+ * إلى محرفِ تحكّمٍ حرفيّ، فصار التعبيرُ لا يطابق شيئاً — والدالّة تُرجع القيمة مقتبَسةً كما
+ * هي بلا خطأٍ ولا تحذير. أمسكه فحصُ الأسبقيّة (حالةُ «قيمة مقتبَسة»). المقارنةُ الحرفية
+ * أدناه لا يفسدها هروبٌ ولا أداة.
+ */
+function unquote(v) {
+  const t = String(v ?? "").trim();
+  if (t.length >= 2) {
+    const first = t[0];
+    const last = t[t.length - 1];
+    if ((first === DQ && last === DQ) || (first === SQ && last === SQ)) return t.slice(1, -1);
+  }
+  return t;
+}
+
+/** أساسُ رابطٍ بلا اسم قاعدة: `mysql://u:p@h:port/db` ⇒ `mysql://u:p@h:port`. */
+function baseOfUrl(url) {
+  const m = unquote(url).match(/^(mysql:\/\/[^/]+)(?:\/.*)?$/);
+  return m ? m[1] : null;
+}
+
+/**
+ * **أساسُ رابط قاعدة الاختبار — مصدرٌ واحدٌ للمضيف والمنفذ والاعتماد**، بترتيبِ أسبقيّةٍ صريح.
+ *
+ * (مراجعة Codex P2، الجولة الأولى): كان الإنشاءُ يقرأ كلمةَ المرور من `TEST_DB_ROOT_PW` بينما
+ * الرابطُ المكتوب يأخذها من `TEST_DB_BASE` الثابتة ⇒ **إنشاءٌ ناجح ورابطٌ يفشل بالمصادقة**.
+ *
+ * (مراجعة Codex P2، الجولة الثانية): وهذا السكربت **لا يستورد dotenv** — يُحلّل `.env` الجذر
+ * يدوياً وكان يقرأ منه `DATABASE_URL` وحده. فمَن هيّأ `TEST_DATABASE_URL` في `.env` (وهو
+ * الموضعُ المُوثَّق في `.env.example`) كان يُتجاهَل صامتاً، ويُصوَّب كلُّ شيءٍ إلى
+ * `root:testpw@127.0.0.1:3310` الثابت بدل خادم اختباره المُهيّأ.
+ *
+ * ⇒ الأسبقيّة: بيئةُ الصدفة ← `TEST_DB_BASE_URL` في `.env` ← اشتقاقٌ من `TEST_DATABASE_URL`
+ * في `.env` ← الافتراضُ `TEST_DB_BASE` (صندوق الاختبار 3310).
+ */
+function resolveTestBaseUrl(rootEnv) {
+  const configuredTestUrl = rootEnv.get("TEST_DATABASE_URL");
+  const candidates = [
+    process.env.TEST_DB_BASE_URL,
+    rootEnv.get("TEST_DB_BASE_URL"),
+    configuredTestUrl ? baseOfUrl(configuredTestUrl) : null,
+    TEST_DB_BASE,
+  ];
+  for (const c of candidates) {
+    const v = unquote(c);
+    if (v) return v.replace(/\/+$/, "");
+  }
+  return TEST_DB_BASE;
+}
+
+/** اعتمادُ صندوق الاختبار مشتقٌّ من الأساس نفسه — لا متغيّرَ ثانٍ ينحرف عنه. */
+function credsOf(baseUrl) {
   try {
-    execFileSync("docker", ["exec", container, "mysql", "-uroot", `-p${pw}`, "-e", sql], { stdio: ["ignore", "ignore", "pipe"] });
+    const u = new URL(String(baseUrl).replace(/^mysql:/, "http:"));
+    return {
+      user: decodeURIComponent(u.username || "root"),
+      pw: decodeURIComponent(u.password || ""),
+    };
+  } catch {
+    return { user: "root", pw: "testpw" };
+  }
+}
+
+/**
+ * **اسمُ قاعدة اختبار الجلسة — من اسم الجلسة الفريد لا من اسم المجلّد** (مراجعة Codex P1 #921).
+ *
+ * `testDbNameForWorktree` يقتطع اسمَ المجلّد إلى ٤٠ محرفاً، وبادئةُ `business_management_system__`
+ * تلتهم ٢٧ منها ⇒ لم يبقَ للاسم إلّا ١٣. فجلستا `refund-return-handling-a` و`-b` تحصلان على
+ * **القاعدة نفسها** (`erp_business_management_system_refund_return_test`)، و`__setup__.ts` يمسح
+ * كلَّ صفوفِ كلِّ جداولها بعد كلّ ملفّ ⇒ **جلستان تتقاتلان صامتاً** — وهو بالضبط ما وُجد
+ * `test-db-name.mjs` ليمنعه. أُثبت التصادمُ بالتشغيل قبل الإصلاح.
+ *
+ * اسمُ الجلسة فريدٌ بالبناء (`session:new` يفشل إن وُجد المجلّد)، وقصيرٌ فلا يُقتطع عادةً؛
+ * وحين يطول تُضاف بصمةٌ تحفظ التمايز بدل أن يُلقى الذيلُ المميِّز.
+ *
+ * ⚠️ ولذلك **لا يُستعمل `defaultTestDatabaseUrl` هنا**: التوافقُ مع الاشتقاق التلقائيّ مطلوبٌ
+ * لكنّه لا يُشترى بتصادمِ قاعدتين. والرابطُ يُكتب صراحةً على أيّ حال فلا اشتقاقَ يجري.
+ */
+function sessionTestDbName(sessionName) {
+  const slug = String(sessionName).replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase();
+  if (!slug) return "erp_session_test";
+  if (slug.length <= 40) return `erp_session_${slug}_test`;
+  const hash = createHash("sha1").update(slug).digest("hex").slice(0, 8);
+  return `erp_session_${slug.slice(0, 32).replace(/_+$/g, "")}_${hash}_test`;
+}
+
+/** إنشاءُ قاعدةٍ واحدة على حاويةٍ بعينها. */
+function createDbIn(container, user, pw, dbName) {
+  const sql = `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`;
+  try {
+    execFileSync("docker", ["exec", container, "mysql", `-u${user}`, `-p${pw}`, "-e", sql], { stdio: ["ignore", "ignore", "pipe"] });
     return { ok: true };
   } catch (e) {
     return { ok: false, err: e?.message ?? String(e) };
   }
+}
+
+/**
+ * **حاويتان لا واحدة** (٣١/٨) — وهذا جوهرُ الإصلاح.
+ *
+ * كانت القاعدتان تُنشآن معاً على حاوية **التطوير** (3306)، ويُشتقّ `TEST_DATABASE_URL` من
+ * `DATABASE_URL` في `.env` الجذر ⇒ يرث المنفذ 3306. ونتيجتُه عطبٌ مزدوج:
+ *
+ *  ١) **حرّاسُ السلامة ترفضه فوراً**: [`init-test-db.mjs`](./init-test-db.mjs) و
+ *     [`__setup__.ts`](../server/services/__tests__/__setup__.ts) يرفضان المنفذ 3306 صراحةً
+ *     ⇒ **جلسةٌ جديدة لا تستطيع تشغيل اختبارٍ واحد** حتى يُعدَّل `.env` يدوياً.
+ *  ٢) **وأخطر**: على هذا الجهاز حاويةُ 3306 هي `erp-mysql-prod` — مرآةُ الإنتاج، وخطٌّ أحمر
+ *     في CLAUDE.md. فكان السكربت يُنشئ قواعدَ اختبارٍ داخل مرآة الإنتاج، وقاعدةُ الاختبار
+ *     يمسحها `__setup__.ts` **كلَّ صفوفِ كلِّ جداولها** بعد كل ملفّ.
+ *
+ * ⇒ قاعدةُ التطوير على حاوية التطوير، وقاعدةُ الاختبار على **صندوق الاختبار 3310** الذي
+ * يفترضه `TEST_DB_BASE` أصلاً — فيتوافق السكربت مع الاشتقاق التلقائيّ بدل أن ينقضه.
+ */
+function provisionDbs(dbName, testDbName, testBase) {
+  const devContainer = process.env.DB_CONTAINER ?? "erp-mysql";
+  const devPw = process.env.DB_ROOT_PW ?? "erp_root_pw";
+  const testContainer = process.env.TEST_DB_CONTAINER ?? "erp-test-db";
+  const { user: testUser, pw: testPw } = credsOf(testBase);
+  const dev = createDbIn(devContainer, "root", devPw, dbName);
+  const test = createDbIn(testContainer, testUser, testPw, testDbName);
+  return {
+    ok: dev.ok && test.ok,
+    dev,
+    test,
+    devContainer,
+    testContainer,
+  };
 }
 
 // اكتب .env للـ worktree من قالب الجذر مع تجاوز المفاتيح الثلاثة (دون طمس الأسرار إن وُجد الملف).
@@ -162,24 +287,61 @@ function cmdNew() {
   if (!res.ok) fail(`فشل إنشاء شجرة العمل:\n${res.err}`);
 
   const dbName = `erp_${name.replace(/-/g, "_")}`;
-  const testDbName = `${dbName}_test`;
+  /**
+   * اسمُ قاعدة الاختبار **مشتقٌّ من مجلّد شجرة العمل** بنفس دالّة الاشتقاق التلقائيّ
+   * ([`lib/test-db-name.mjs`](./lib/test-db-name.mjs)) — لا `${dbName}_test`.
+   * فالاسمُ الذي يكتبه السكربت هو عينُه الذي يحسبه `vitest` حين يغيب `TEST_DATABASE_URL`
+   * ⇒ لا انحرافَ ممكنٌ بين الاثنين، ولا قاعدةٌ يتيمةٌ يُنشئها أحدُهما ويبحث عنها الآخر.
+   */
+  const testDbName = sessionTestDbName(name);
   const port = pickPort(flagVal("--port"));
 
-  // ٢) قاعدتا البيانات
+  /**
+   * `.env` الجذر يُقرأ **قبل** التزويد لا بعده: الإنشاءُ والرابطُ المكتوب يجب أن ينطلقا من
+   * الإعداد نفسه، وإلّا زُوِّدت قاعدةٌ على خادمٍ ويُكتب رابطٌ لخادمٍ آخر (مراجعة Codex).
+   */
+  const rootEnv = existsSync(path.join(root, ".env"))
+    ? parseEnv(readFileSync(path.join(root, ".env"), "utf8"))
+    : new Map();
+  const testBase = resolveTestBaseUrl(rootEnv);
+  if (/:3306(\/|$)/.test(testBase)) {
+    warn(`أساسُ قاعدة الاختبار يشير إلى المنفذ 3306 (${testBase}) — وهو مرآةُ الإنتاج محلّياً.
+` +
+      `   حرّاسُ الاختبار سيرفضونه (init-test-db.mjs / __setup__.ts). راجع TEST_DATABASE_URL في .env الجذر.`);
+  }
+
+  // ٢) قاعدتا البيانات — كلٌّ على حاويتها (تطوير 3306 · اختبار 3310)
   if (!noDb) {
-    const prov = provisionDbs(dbName, testDbName);
-    if (prov.ok) console.log(`• قاعدتان جاهزتان: ${dbName} (تطوير) + ${testDbName} (اختبار)`);
-    else warn(`تعذّر إنشاء القاعدتين تلقائياً (Docker متوقّف؟). أنشئهما يدوياً:\n` +
-      `   docker exec erp-mysql mysql -uroot -perp_root_pw -e "CREATE DATABASE \\\`${dbName}\\\`; CREATE DATABASE \\\`${testDbName}\\\`;"`);
+    const prov = provisionDbs(dbName, testDbName, testBase);
+    if (prov.ok) {
+      console.log(`• قاعدتان جاهزتان: ${dbName} على ${prov.devContainer} (تطوير) + ${testDbName} على ${prov.testContainer} (اختبار)`);
+    } else {
+      if (!prov.dev.ok) {
+        warn(`تعذّر إنشاء قاعدة التطوير (Docker متوقّف؟). أنشئها يدوياً:\n` +
+          `   docker exec ${prov.devContainer} mysql -uroot -perp_root_pw -e "CREATE DATABASE \\\`${dbName}\\\`;"`);
+      }
+      if (!prov.test.ok) {
+        warn(`تعذّر إنشاء قاعدة الاختبار على صندوق الاختبار. أنشئها يدوياً:\n` +
+          `   docker exec ${prov.testContainer} mysql -uroot -ptestpw -e "CREATE DATABASE \\\`${testDbName}\\\`;"\n` +
+          `   (أو شغّل داخل المجلّد: pnpm test:db:init)`);
+      }
+    }
   }
 
   // ٣) ‎.env للجلسة (منفذ + قاعدتان مستقلّتان)
-  const rootEnv = existsSync(path.join(root, ".env")) ? parseEnv(readFileSync(path.join(root, ".env"), "utf8")) : new Map();
-  const baseUrl = rootEnv.get("DATABASE_URL") || "mysql://root:erp_root_pw@127.0.0.1:3306/erp";
+  const baseUrl = unquote(rootEnv.get("DATABASE_URL")) || "mysql://root:erp_root_pw@127.0.0.1:3306/erp";
+  /**
+   * ⛔ **لا يُشتقّ رابطُ الاختبار من `DATABASE_URL`** — هذا كان الجذر: يرث منه المنفذ 3306
+   * (مرآةَ الإنتاج على هذا الجهاز) فترفضه حرّاسُ الاختبار، ويُلغي في الوقت نفسه الاشتقاقَ
+   * التلقائيّ الصحيح لأنّ الكتابةَ الصريحة تسبقه.
+   * مصدرُه الآن `resolveTestBaseUrl` — **نفسُ الأساس الذي أُنشئت به القاعدة
+   * فعلاً**، فلا يفترق الاعتمادُ عن الإنشاء. واسمُها من `sessionTestDbName` لا من اسم المجلّد
+   * (تصادمُ الاقتطاع — مراجعة Codex P1).
+   */
   const envFile = writeWorktreeEnv(dir, {
     PORT: String(port),
     DATABASE_URL: withDb(baseUrl, dbName),
-    TEST_DATABASE_URL: withDb(baseUrl, testDbName),
+    TEST_DATABASE_URL: `${testBase}/${testDbName}`,
   });
   console.log(`• ‎.env مكتوب: ${path.relative(parent, envFile)} (PORT=${port})`);
 

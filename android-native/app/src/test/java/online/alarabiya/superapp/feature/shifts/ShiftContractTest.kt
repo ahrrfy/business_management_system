@@ -2,6 +2,7 @@ package online.alarabiya.superapp.feature.shifts
 
 import online.alarabiya.superapp.model.shifts.ShiftAccessPolicy
 import online.alarabiya.superapp.model.shifts.ShiftFilters
+import online.alarabiya.superapp.model.shifts.ShiftHandoverRecipient
 import online.alarabiya.superapp.model.shifts.ShiftMappers
 import online.alarabiya.superapp.model.shifts.ShiftMoney
 import online.alarabiya.superapp.model.shifts.ShiftRecord
@@ -125,6 +126,8 @@ class ShiftContractTest {
             rows = listOf(report.shift),
             selectedShiftId = report.shift.id,
             detail = ShiftDetailState.Content(report),
+            handoverRecipients = listOf(ShiftHandoverRecipient(11, "مدير الوردية", 7)),
+            handoverRecipientsLoaded = true,
             closeDraft = ShiftCloseDraft(report.shift.id),
         )
 
@@ -139,13 +142,62 @@ class ShiftContractTest {
                 base.copy(closeDraft = base.closeDraft?.copy(countedCash = "999.10", countedCashConfirmation = "999.10", acknowledged = true)),
             )!!.contains("فرق"),
         )
+        assertTrue(
+            ShiftStatePolicy.closeValidation(
+                base.copy(closeDraft = base.closeDraft?.copy(countedCash = "1000.10", countedCashConfirmation = "1000.10", acknowledged = true)),
+            )!!.contains("اختر"),
+        )
         assertNull(
             ShiftStatePolicy.closeValidation(
-                base.copy(closeDraft = base.closeDraft?.copy(countedCash = "1000.1", countedCashConfirmation = "1000.10", acknowledged = true)),
+                base.copy(
+                    closeDraft = base.closeDraft?.copy(
+                        countedCash = "1000.1",
+                        countedCashConfirmation = "1000.10",
+                        handoverRecipientUserId = 11,
+                        acknowledged = true,
+                    ),
+                ),
             ),
         )
         assertTrue(ShiftStatePolicy.closeValidation(base.copy(loaded = false))!!.contains("تحميل"))
         assertFalse(ShiftStatePolicy.canRequestClose(base.copy(loaded = false), report.shift))
+    }
+
+    @Test
+    fun `handover candidates are limited to same branch and separated from both actors`() {
+        val report = report(expected = "1000.10")
+        val candidates = listOf(
+            ShiftHandoverRecipient(1, "منفذ الإغلاق", 7),
+            ShiftHandoverRecipient(5, "مالك الوردية", 7),
+            ShiftHandoverRecipient(11, "مدير مستقل", 7),
+            ShiftHandoverRecipient(12, "مدير فرع آخر", 9),
+            ShiftHandoverRecipient(13, "إداري بلا فرع", null),
+        )
+
+        val eligible = ShiftStatePolicy.eligibleHandoverRecipients(report, actorUserId = 1, recipients = candidates)
+
+        assertEquals(listOf(11L), eligible.map { it.id })
+    }
+
+    @Test
+    fun `empty drawer closes without loading or selecting a handover recipient`() {
+        val report = report(expected = "0")
+        val state = ShiftUiState(
+            policy = policy(role = "manager", branchId = 7),
+            loading = false,
+            loaded = true,
+            rows = listOf(report.shift),
+            selectedShiftId = report.shift.id,
+            detail = ShiftDetailState.Content(report),
+            closeDraft = ShiftCloseDraft(
+                shiftId = report.shift.id,
+                countedCash = "0",
+                countedCashConfirmation = "0.00",
+                acknowledged = true,
+            ),
+        )
+
+        assertNull(ShiftStatePolicy.closeValidation(state))
     }
 
     @Test

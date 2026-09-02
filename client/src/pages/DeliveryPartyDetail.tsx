@@ -108,16 +108,16 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
   onChanged: () => void;
 }) {
   const me = trpc.auth.me.useQuery();
-  const isManager = ["admin", "manager"].includes(me.data?.role ?? "");
-  // مرآة بوّابة الخادم storeManagerProcedure (store=FULL على manager) — لا قائمة أدوار خام:
+  // مرآة بوّابة الخادم deliveryManagerProcedure (store=FULL على manager) — لا قائمة أدوار خام:
   // مدير سُحبت منه store لا يرى لوحةً سيرفضها الخادم، ودورٌ مُنح store:FULL صراحةً يراها.
-  const canRecover = !!me.data?.role && moduleAccessAllowed(
+  const canManageParty = !!me.data?.role && moduleAccessAllowed(
     me.data.role as RoleKey,
     (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
     "store",
     "FULL",
     ["manager"],
   );
+  const canRecover = canManageParty;
   const [tab, setTab] = useState<"consignments" | "remittances" | "statement" | "members" | "commission" | "settings">("consignments");
 
   return (
@@ -154,12 +154,12 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
           <button className={tabBtn(tab === "settings")} onClick={() => setTab("settings")}>بيانات الجهة</button>
         </div>
 
-        {tab === "consignments" && <ConsignmentsTab partyId={party.id} canEdit={isManager} />}
+        {tab === "consignments" && <ConsignmentsTab partyId={party.id} canEdit={canManageParty} />}
         {tab === "remittances" && <RemittancesTab partyId={party.id} />}
         {tab === "statement" && <StatementTab party={party} />}
-        {tab === "members" && <PartyMembersTab partyId={party.id} canEdit={isManager} />}
-        {tab === "commission" && <CommissionRuleTab partyId={party.id} canEdit={isManager} />}
-        {tab === "settings" && <SettingsTab party={party} isManager={isManager} canRecover={canRecover} onChanged={onChanged} />}
+        {tab === "members" && <PartyMembersTab partyId={party.id} canEdit={canManageParty} />}
+        {tab === "commission" && <CommissionRuleTab partyId={party.id} canEdit={canManageParty} />}
+        {tab === "settings" && <SettingsTab party={party} canManage={canManageParty} canRecover={canRecover} onChanged={onChanged} />}
       </div>
     </div>
   );
@@ -259,17 +259,17 @@ function PartyMembersTab({ partyId, canEdit }: { partyId: number; canEdit: boole
     <div className="space-y-3">
       {canEdit && (
         <div className="grid gap-2 rounded-xl border bg-card p-3 sm:grid-cols-[1fr_180px_auto]">
-          <select value={userId} onChange={(e) => setUserId(e.target.value)} className="rounded-lg border bg-background px-3 py-2 text-sm">
+          <AppSelect value={userId} onValueChange={(next) => setUserId(next)} className="px-3 py-2 text-sm">
             <option value="">اختر حساب دخول نشطاً</option>
             {(accounts.data ?? []).filter((a) => a.linkedPartyId == null || Number(a.linkedPartyId) === partyId).map((a) => (
               <option key={a.id} value={a.id}>{a.name} {a.username ? `(${a.username})` : ""}</option>
             ))}
-          </select>
-          <select value={memberRole} onChange={(e) => setMemberRole(e.target.value as typeof memberRole)} className="rounded-lg border bg-background px-3 py-2 text-sm">
+          </AppSelect>
+          <AppSelect value={memberRole} onValueChange={(next) => setMemberRole(next as typeof memberRole)} className="px-3 py-2 text-sm">
             <option value="DRIVER">سائق</option>
             <option value="MANAGER">مدير الشركة</option>
             <option value="ACCOUNTANT">محاسب الشركة</option>
-          </select>
+          </AppSelect>
           <Button disabled={!userId || addM.isPending} onClick={() => addM.mutate({ partyId, userId: Number(userId), memberRole })}>إضافة الحساب</Button>
         </div>
       )}
@@ -373,20 +373,20 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
                       <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
                       {c.failureReason && <div className="mb-1 text-destructive">{c.failureReason}</div>}
                       {canEdit && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") && (
-                        <select
-                          value={c.assignedUserId ?? ""}
+                        <AppSelect
+                          value={String(c.assignedUserId ?? "")}
                           disabled={reassignM.isPending}
-                          onChange={(e) => reassignM.mutate({
+                          onValueChange={(next) => reassignM.mutate({
                             partyId,
                             consignmentId: Number(c.id),
-                            assignedUserId: e.target.value ? Number(e.target.value) : null,
+                            assignedUserId: next ? Number(next) : null,
                             clientRequestId: crypto.randomUUID(),
                           })}
-                          className="w-full rounded-md border bg-background px-2 py-1"
+                          className="px-2 py-1"
                         >
                           <option value="">مشترك لكل السائقين</option>
                           {drivers.map((d) => <option key={d.userId} value={d.userId}>{d.name ?? d.username ?? `#${d.userId}`}</option>)}
-                        </select>
+                        </AppSelect>
                       )}
                     </td>
                     <td className="p-2.5 text-xs text-muted-foreground">{c.dispatchedAt ? fmtDate(c.dispatchedAt) : "—"}</td>
@@ -824,10 +824,10 @@ function CommissionRuleTab({ partyId, canEdit }: { partyId: number; canEdit: boo
 }
 
 // ───────────────────────── بيانات الجهة ─────────────────────────
-function SettingsTab({ party, isManager, canRecover, onChanged }: { party: PartyRow; isManager: boolean; canRecover: boolean; onChanged: () => void }) {
+function SettingsTab({ party, canManage, canRecover, onChanged }: { party: PartyRow; canManage: boolean; canRecover: boolean; onChanged: () => void }) {
   const utils = trpc.useUtils();
   const full = trpc.delivery.getParty.useQuery({ id: party.id });
-  const accounts = trpc.delivery.courierAccounts.useQuery(undefined, { enabled: isManager });
+  const accounts = trpc.delivery.courierAccounts.useQuery(undefined, { enabled: canManage });
   const [form, setForm] = useState<{
     name: string; phone: string; phone2: string; defaultFee: string; floatLimit: string;
     nationalId: string; vehicleInfo: string; notes: string; userId: number | null;
@@ -875,8 +875,8 @@ function SettingsTab({ party, isManager, canRecover, onChanged }: { party: Party
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <div className="rounded-xl border bg-card p-4">
-        <h3 className="mb-3 font-extrabold">تعديل البيانات {!isManager && <span className="text-xs font-normal text-muted-foreground">(للمدير فقط)</span>}</h3>
-        <fieldset disabled={!isManager} className="space-y-2.5">
+        <h3 className="mb-3 font-extrabold">تعديل البيانات {!canManage && <span className="text-xs font-normal text-muted-foreground">(بحاجة إلى صلاحية إدارة التوصيل)</span>}</h3>
+        <fieldset disabled={!canManage} className="space-y-2.5">
           <label className="block text-sm font-bold">الاسم
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1 h-10" />
           </label>
@@ -908,16 +908,16 @@ function SettingsTab({ party, isManager, canRecover, onChanged }: { party: Party
             <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="mt-1 h-10" />
           </label>
           <label className="block text-sm font-bold">حساب بوابة الجهة
-            <select
-              className="mt-1 h-10 w-full rounded-md border bg-transparent px-3 text-sm"
-              value={form.userId ?? ""}
-              onChange={(e) => setForm({ ...form, userId: e.target.value ? Number(e.target.value) : null })}
+            <AppSelect
+              className="mt-1 h-10 px-3 text-sm"
+              value={String(form.userId ?? "")}
+              onValueChange={(next) => setForm({ ...form, userId: next ? Number(next) : null })}
             >
               <option value="">بلا حساب دخول</option>
               {(accounts.data ?? [])
                 .filter((a) => a.linkedPartyId == null || a.linkedPartyId === party.id)
                 .map((a) => <option key={a.id} value={a.id}>{a.name}{a.username ? ` (${a.username})` : ""}</option>)}
-            </select>
+            </AppSelect>
             <span className="mt-1 block text-xs font-normal text-muted-foreground">ربط أو تغيير الحساب ممنوع تلقائياً إذا كان سيُخفي إرساليات مفتوحة عن مستخدم قائم.</span>
           </label>
           <div className="flex gap-2 pt-1">

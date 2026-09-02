@@ -1,5 +1,6 @@
 // ميزان مراجعة رسمي من journalEntries/journalLines — افتتاح، حركة، وختام لكل حساب قابل للترحيل.
 import { useEffect, useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -300,12 +301,12 @@ export default function TrialBalance() {
           {canChooseBranch && (
             <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
               الفرع
-              <select
-                className={selectCls}
-                value={branchId}
-                onChange={(event) =>
+              <AppSelect
+                className="h-9"
+                value={String(branchId)}
+                onValueChange={(next) =>
                   setBranchId(
-                    event.target.value ? Number(event.target.value) : "",
+                    next ? Number(next) : "",
                   )
                 }
               >
@@ -315,7 +316,7 @@ export default function TrialBalance() {
                     {branch.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </label>
           )}
         </div>

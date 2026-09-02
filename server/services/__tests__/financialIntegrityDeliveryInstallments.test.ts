@@ -6,6 +6,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { recordDeliveryRemittance } from "../delivery/remittance";
 import { settleDeliveryBalance } from "../delivery/settle";
 import { bounceCheck, cancelPlan, createPlan, getPlan, payLine } from "../installmentService";
+import { returnSale } from "../returnService";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 const TABLES = [
@@ -125,30 +126,42 @@ describe("حوكمة مصدر الأقساط والشيكات", () => {
       subtotal: "100.00", total: "100.00", paidAmount: "20.00", status: "PARTIALLY_PAID",
     });
     const input = {
-      customerId: 1, invoiceId: 10, branchId: 1, totalAmount: "80.00", downPayment: "0.00",
+      clientRequestId: crypto.randomUUID(), customerId: 1, invoiceId: 10, branchId: 1, totalAmount: "80.00", downPayment: "0.00",
       lines: [{ dueDate: "2026-08-01", amount: "80.00", kind: "CHECK" as const, checkNumber: "CHK-FIH" }],
-      enforceFinancialIntegrity: true,
     };
     await createPlan(input, actor);
-    await expect(createPlan(input, actor)).rejects.toThrow(/خطة أقساط نشطة/);
-    await expect(createPlan({ ...input, invoiceId: 10, totalAmount: "70.00", lines: [
+    await expect(createPlan({ ...input, clientRequestId: crypto.randomUUID() }, actor)).rejects.toThrow(/خطة أقساط نشطة/);
+    await expect(createPlan({ ...input, clientRequestId: crypto.randomUUID(), invoiceId: 10, totalAmount: "70.00", lines: [
       { dueDate: "2026-08-01", amount: "70.00", kind: "CHECK", checkNumber: "CHK-2" },
     ] }, actor)).rejects.toThrow(/متبقي الفاتورة/);
+    await expect(returnSale({
+      invoiceId: 10,
+      lines: [],
+      clientRequestId: crypto.randomUUID(),
+    }, actor)).rejects.toThrow(/خطة أقساط نشطة/);
   });
 
   it("لا يسمح بارتداد قسط CHECK إذا كان تحصيله الفعلي نقدياً", async () => {
+    await db().insert(s.invoices).values({
+      id: 11, invoiceNumber: "FIH-INST-11", sourceType: "POS", branchId: 1, customerId: 1,
+      subtotal: "100.00", total: "100.00", paidAmount: "0.00", status: "PENDING",
+    });
     const { planId } = await createPlan({
-      customerId: 1, branchId: 1, totalAmount: "100.00", downPayment: "0.00",
+      clientRequestId: crypto.randomUUID(), customerId: 1, invoiceId: 11, branchId: 1, totalAmount: "100.00", downPayment: "0.00",
       lines: [{ dueDate: "2026-08-01", amount: "100.00", kind: "CHECK", checkNumber: "CHK-CASH" }],
     }, actor);
     const line = (await getPlan(planId)).lines[0];
-    await payLine({ lineId: Number(line.id), paymentMethod: "CASH" }, actor);
+    await payLine({ lineId: Number(line.id), paymentMethod: "CASH", clientRequestId: crypto.randomUUID() }, actor);
     await expect(bounceCheck({ lineId: Number(line.id) }, actor)).rejects.toThrow(/لم يكن بشيك/);
   });
 
   it("يمنع إلغاء خطة لها سند تحصيل معتمد ولو بقي السطر PENDING", async () => {
+    await db().insert(s.invoices).values({
+      id: 12, invoiceNumber: "FIH-INST-12", sourceType: "POS", branchId: 1, customerId: 1,
+      subtotal: "100.00", total: "100.00", paidAmount: "0.00", status: "PENDING",
+    });
     const { planId } = await createPlan({
-      customerId: 1, branchId: 1, totalAmount: "100.00", downPayment: "0.00",
+      clientRequestId: crypto.randomUUID(), customerId: 1, invoiceId: 12, branchId: 1, totalAmount: "100.00", downPayment: "0.00",
       lines: [{ dueDate: "2026-08-01", amount: "100.00", kind: "CHECK", checkNumber: "CHK-APP" }],
     }, actor);
     const line = (await getPlan(planId)).lines[0];
@@ -158,6 +171,6 @@ describe("حوكمة مصدر الأقساط والشيكات", () => {
     });
     const receiptId = extractInsertId(inserted);
     await db().update(s.installmentLines).set({ receiptId }).where(eq(s.installmentLines.id, Number(line.id)));
-    await expect(cancelPlan({ planId }, actor)).rejects.toThrow(/سند تحصيل معتمد/);
+    await expect(cancelPlan({ planId, clientRequestId: crypto.randomUUID() }, actor)).rejects.toThrow(/سند تحصيل معتمد/);
   });
 });

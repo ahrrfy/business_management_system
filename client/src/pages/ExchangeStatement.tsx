@@ -1,5 +1,6 @@
 // تبويب «كشف الحساب» — حركات الصيرفة بعملتيها + رصيد جارٍ (لقطة بعد كل عملية) + ملخّص.
 import { useCallback, useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { type ColumnDef } from "@tanstack/react-table";
 import { FileText, Printer, Undo2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -225,10 +226,10 @@ export default function ExchangeStatement() {
         <div className="flex flex-wrap items-end gap-3">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
-            <select className={selectCls} value={houseId} onChange={(e) => setHouseId(Number(e.target.value))}>
+            <AppSelect className="h-9" value={String(houseId)} onValueChange={(value) => setHouseId(Number(value))}>
               <option value={0}>— اختر —</option>
               {houseRows.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">من تاريخ</label>

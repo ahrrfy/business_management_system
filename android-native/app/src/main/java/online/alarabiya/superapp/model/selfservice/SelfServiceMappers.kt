@@ -113,6 +113,7 @@ object SelfServiceMappers {
             PersonalNotification(
                 id = row.long("id"),
                 kind = row.text("kind"),
+                family = NotificationFamily.fromWire(row.nullableText("family"), row.text("kind")),
                 title = row.text("title"),
                 body = row.text("body"),
                 createdAt = row.nullableText("createdAt"),

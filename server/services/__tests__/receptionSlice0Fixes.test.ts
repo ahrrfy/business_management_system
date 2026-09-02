@@ -16,6 +16,7 @@
  *  V1  — تقريب IQD في الاستقبال: بيعٌ مباشر خالص نقديّ بإجماليٍّ يُقرَّب لأعلى/لأسفل ينجح
  *        لزبونٍ عابر. (السلّة المختلطة صار لها تقريبها في ش٦ — receptionSlice6.test.ts.)
  */
+import { randomUUID } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -24,7 +25,10 @@ import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
 import { createWorkOrder } from "../workOrder/create";
 import { deliverWorkOrder } from "../workOrder/deliver";
-import { cancelWorkOrder } from "../workOrder/cancel";
+import {
+  approveWorkOrderControlRequest,
+  requestWorkOrderControl,
+} from "../workOrder/controlRequests";
 import {
   confirmConsignmentDelivery,
   createDeliveryParty,
@@ -37,6 +41,7 @@ const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts",
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
+  "workOrderControlRequests", "workOrderEvents",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
   "workOrderMaterials", "workOrderImages", "workOrders",
   "productPrices", "productUnits", "productVariants", "products",
@@ -45,6 +50,7 @@ const TABLES = [
 
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
 const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
+const OWNER = { userId: 4, branchId: 1, role: "manager" as const };
 
 function db() {
   const d = getDb();
@@ -66,6 +72,7 @@ async function seed() {
     { id: 1, openId: "local_mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_recep", name: "موظف خدمة", email: "r@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_courier", name: "مندوب", email: "c@t.test", role: "courier", loginMethod: "local", branchId: 1 },
+    { id: 4, openId: "local_owner", name: "مالك", email: "o@t.test", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values([{ id: 1, name: "عميل مسجَّل", phone: "+9647700000001", currentBalance: "0.00" }]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
@@ -97,6 +104,26 @@ async function receiptsOf(workOrderId: number) {
   return db().select().from(s.receipts).where(eq(s.receipts.workOrderId, workOrderId));
 }
 
+async function cancelGoverned(workOrderId: number) {
+  const [workOrder] = await db().select({ version: s.workOrders.version })
+    .from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
+  const [shift] = await db().select({ id: s.shifts.id }).from(s.shifts)
+    .where(and(eq(s.shifts.userId, CASHIER.userId), eq(s.shifts.status, "OPEN")));
+  const request = await requestWorkOrderControl({
+    requestKey: `reception-s0-cancel:${randomUUID()}`,
+    workOrderId,
+    requestType: "CANCEL",
+    baseVersion: Number(workOrder.version),
+    reason: "إلغاء أمر الاختبار ورد العربون وأمانة التوصيل",
+    payload: { refundShiftId: Number(shift.id), materials: null },
+  }, MANAGER);
+  await approveWorkOrderControlRequest(
+    Number(request.id),
+    OWNER,
+    "راجعت مسار رد العربون وأمانة التوصيل",
+  );
+}
+
 beforeEach(async () => {
   await reset();
   await seed();
@@ -112,7 +139,7 @@ describe("I13 — إيصال العربون بهويّته لا بالصدفة (
     const depRcpt = (await db().select().from(s.receipts).where(eq(s.receipts.id, Number(wo.depositReceiptId))))[0];
     expect(depRcpt.amount).toBe("2000.00");
 
-    await cancelWorkOrder(workOrderId, MANAGER);
+    await cancelGoverned(workOrderId);
 
     // تدقيق ٦/٨ (ث٢): الإلغاء يردّ **الاثنين** — العربون بهويّته (٢٬٠٠٠) وأمانة الأجرة
     // (٣٬٠٠٠) التي لم تُصرَف للمندوب. سابقاً كانت الأمانة تُستثنى فتبقى نقداً في الدرج بلا
@@ -132,7 +159,7 @@ describe("I13 — إيصال العربون بهويّته لا بالصدفة (
     // محاكاة أمرٍ قديم لم يلتقطه backfill.
     await db().update(s.workOrders).set({ depositReceiptId: null }).where(eq(s.workOrders.id, workOrderId));
 
-    await cancelWorkOrder(workOrderId, MANAGER);
+    await cancelGoverned(workOrderId);
 
     // البديل الاحتياطي يلتقط العربون (٢٬٠٠٠) لا الأجرة، وأمانة الأجرة تُردّ بمسارها المستقلّ.
     const outs = (await receiptsOf(workOrderId)).filter((r) => r.direction === "OUT");

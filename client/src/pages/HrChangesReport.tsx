@@ -1,6 +1,7 @@
 // تقرير التغييرات الوظيفية — قائمتا الترقيات وإنهاء الخدمات في قسمين.
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). يكشف رواتب/تسويات ⇒ صلاحية hr/READ خادمياً.
 import { useMemo, useState } from "react";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell } from "@/components/reports/ReportShell";
@@ -148,7 +149,7 @@ export default function HrChangesReport() {
               className="text-xs text-muted-foreground hover:underline"
               onClick={() => { setQuery(""); setFrom(""); setTo(""); }}
             >
-              مسح الفلاتر
+              {FILTER_LABELS.reset}
             </button>
           )}
         </CardContent>

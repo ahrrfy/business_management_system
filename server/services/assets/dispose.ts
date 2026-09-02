@@ -1,4 +1,5 @@
 // إخراج من الخدمة (retired) أو استبعاد ببيع/خردة (disposed) مع احتساب الربح/الخسارة.
+import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, isNull } from "drizzle-orm";
 import {
@@ -23,6 +24,7 @@ import { companyBranchScope } from "../companyBranchScope";
 import { computeDepreciation } from "./depreciation";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 
 export interface DisposeInput {
   kind: "retired" | "disposed";
@@ -144,7 +146,43 @@ export async function disposeAsset(
 ) {
   const scope = companyBranchScope(actor);
   await withTx(async (tx) => {
+    // مسار اعتماد اقتناء الأصل يقفل الخزينة قبل الأصل. نأخذ معاينة غير قافلة للفرع
+    // ثم نتبع الترتيب نفسه حتى لا نصنع دورة asset → treasury مقابل treasury → asset.
+    let prelockedCashBranchId: number | null = null;
+    const requestedProceeds =
+      input.kind === "disposed" ? money(input.value ?? "0") : new Decimal(0);
+    if (requestedProceeds.gt(0)) {
+      const previewConditions = [eq(fixedAssets.id, assetId)];
+      if (scope.branchId != null) {
+        previewConditions.push(eq(fixedAssets.branchId, scope.branchId));
+      }
+      const [preview] = await tx
+        .select({ branchId: fixedAssets.branchId })
+        .from(fixedAssets)
+        .where(and(...previewConditions))
+        .limit(1);
+      if (preview) {
+        prelockedCashBranchId =
+          preview.branchId != null ? Number(preview.branchId) : actor.branchId || null;
+        await lockMaterializedCashReceiptSourceForWrite(tx, {
+          branchId: prelockedCashBranchId,
+          shiftId: null,
+          cashBucket: "TREASURY",
+          paymentMethod: "CASH",
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+        });
+      }
+    }
     const a = await loadForUpdate(tx, assetId, scope);
+    const lockedAssetBranchId =
+      a.branchId != null ? Number(a.branchId) : actor.branchId || null;
+    if (prelockedCashBranchId != null && lockedAssetBranchId !== prelockedCashBranchId) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تغيّر فرع الأصل أثناء قفل مصدر النقد؛ أعد المحاولة",
+      });
+    }
     if (a.status === "disposed") throw new Error("الأصل مُستبعَد سلفاً");
     await tx
       .update(assetCustodyLog)
@@ -219,8 +257,7 @@ export async function disposeAsset(
         new Date(input.date),
       ).bookValue,
     );
-    const proceeds =
-      input.kind === "disposed" ? money(input.value ?? "0") : new Decimal(0);
+    const proceeds = requestedProceeds;
     const purchaseValue = money(a.purchaseValue ?? "0");
     const gain = proceeds.minus(nbv);
     const branchId =

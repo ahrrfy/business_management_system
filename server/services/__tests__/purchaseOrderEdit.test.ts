@@ -1,4 +1,4 @@
-// تعديل فاتورة الشراء قبل اعتمادها + اختياريّة إثبات الشحن/الكمرك (قرار المالك ١٧/٨/٢٦).
+// تعديل أمر الشراء قبل الاستلام + اختياريّة إثبات الشحن/الكمرك (قرار المالك ١٧/٨/٢٦).
 //
 // شقّان تحرسهما هذه الحزمة:
 //
@@ -7,17 +7,27 @@
 //     لا سطرَ مستلَماً، ولا دفعةَ مسجَّلة، والحالة غير نهائية — وكلّ خرقٍ لها يُرفَض صراحةً بدل
 //     أن يُصحّح مخزوناً أو ذمّةً مُرحَّلَين من تحت القيود.
 //
-// (ب) **اختياريّة إثبات الشحن** — كان الترحيل يرفض أيّ فاتورةٍ عليها شحن/كمرك ما لم يحمل الطلبُ
-//     اسمَ ناقلٍ ومرجعَ مستند، بينما لم تكن الحقول في شاشة الفاتورة نفسها ⇒ ميزةٌ مقفلة كلّياً.
+// (ب) **اختياريّة إثبات الشحن** — كان الاستلام يرفض أيّ أمرٍ عليه شحن/كمرك ما لم يحمل الطلبُ
+//     اسمَ ناقلٍ ومرجعَ مستند، بينما لا حقلَ لهما في شاشة الاستلام أصلاً ⇒ ميزةٌ مقفلة كلّياً.
 //     صارا اختياريَّين، والخادم يُكمل الناقص ببديلٍ **صريح الجهالة** فيبقى المصروف مثبتاً
 //     ومنسوباً وقابلاً للتصحيح — لا مبلغاً يضيع بصمت.
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createPurchaseOrder, receivePurchase, updatePurchaseOrder } from "../purchaseService";
+import {
+  createPurchaseOrder,
+  receivePurchase,
+  updatePurchaseOrder,
+} from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
+const reviewer = { userId: 4, branchId: 1, role: "manager" as const };
 /** مدير فرعٍ آخر — يحرس عزل الفرع على التعديل (لا عبور بين الفروع). */
 const otherBranchManager = { userId: 3, branchId: 2, role: "manager" as const };
 
@@ -32,6 +42,10 @@ async function reset() {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const t of [
     "idempotencyKeys",
+    "purchaseOrderControlRequests",
+    "purchaseOrderRequisitionAllocations",
+    "purchaseOrderRevisionItems",
+    "purchaseOrderRevisions",
     "accrualCorrectionRequests",
     "accrualObligationEvents",
     "accrualObligations",
@@ -63,13 +77,40 @@ async function seed() {
   ]);
   await d.insert(s.users).values([
     { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" },
-    { id: 2, openId: "recv-2", name: "أمين المخزن", role: "warehouse", loginMethod: "local", branchId: 1 },
-    { id: 3, openId: "mgr-3", name: "مدير فرع المبيعات", role: "manager", loginMethod: "local", branchId: 2 },
+    {
+      id: 2,
+      openId: "recv-2",
+      name: "أمين المخزن",
+      role: "warehouse",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: 3,
+      openId: "mgr-3",
+      name: "مدير فرع المبيعات",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 2,
+    },
+    {
+      id: 4,
+      openId: "po-reviewer",
+      name: "مراجع مشتريات",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+    },
   ]);
   await d.insert(s.suppliers).values([
     { id: 1, name: "مورد أوّل", currentBalance: "0" },
     { id: 2, name: "مورد ثانٍ", currentBalance: "0" },
-    { id: 3, name: "مودِع أمانة", currentBalance: "0", supplierKind: "CONSIGNOR" },
+    {
+      id: 3,
+      name: "مودِع أمانة",
+      currentBalance: "0",
+      supplierKind: "CONSIGNOR",
+    },
     { id: 4, name: "شركة النقل الأهلية", currentBalance: "0" },
   ]);
   // تمويل الخزينة — تسويةُ الشحن تبقى معلّقة، لكن نُبقي البيئة مطابقة لبقيّة حزم الشراء.
@@ -94,10 +135,28 @@ async function seed() {
     { id: 3, productId: 3, sku: "P-3", costPrice: "0.00" },
   ]);
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
-    { id: 2, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    {
+      id: 1,
+      variantId: 1,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 2,
+      variantId: 2,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
     { id: 3, variantId: 1, unitName: "درزن", conversionFactor: "12" },
-    { id: 4, variantId: 3, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    {
+      id: 4,
+      variantId: 3,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
   ]);
 }
 
@@ -107,7 +166,12 @@ beforeEach(async () => {
 });
 
 async function orderRow(poId: number) {
-  return (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, poId)))[0];
+  return (
+    await db()
+      .select()
+      .from(s.purchaseOrders)
+      .where(eq(s.purchaseOrders.id, poId))
+  )[0];
 }
 async function itemsOf(poId: number) {
   return db()
@@ -118,20 +182,46 @@ async function itemsOf(poId: number) {
 }
 
 /** أمرٌ ديناريّ بسيط: ١٠×١٠٠ = ١٬٠٠٠ بلا ضريبة ولا شحن. */
-async function simpleOrder(status: "DRAFT" | "CONFIRMED" = "CONFIRMED") {
+async function simpleOrder() {
   return createPurchaseOrder(
     {
       supplierId: 1,
       branchId: 1,
       taxRatePercent: "0",
-      status,
-      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+      status: "DRAFT",
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
+      ],
     },
     actor,
   );
 }
 
-describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
+async function approvePurchaseOrder(
+  po: Awaited<ReturnType<typeof createPurchaseOrder>>,
+) {
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار التعديل للمراجعة",
+      requestKey: `po-edit-submit:${randomUUID()}`,
+    },
+    actor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `po-edit-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+    },
+    reviewer,
+    { legacyConfirmOnly: true },
+  );
+}
+
+describe("تعديل أمر الشراء قبل الاستلام", () => {
   it("يستبدل البنود ويُعيد اشتقاق الإجماليات بنفس حساب الإنشاء", async () => {
     const po = await simpleOrder();
     const before = await orderRow(po.purchaseOrderId);
@@ -140,12 +230,24 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
     const res = await updatePurchaseOrder(
       {
         purchaseOrderId: po.purchaseOrderId,
+        expectedVersion: po.version,
+        revisionReason: "تعديل المورد والبنود قبل الإرسال للاعتماد",
         supplierId: 2, // تبديل المورّد جزءٌ من التعديل
         taxRatePercent: "0",
-        notes: "عُدّلت قبل الاعتماد",
+        notes: "عُدّل قبل الاستلام",
         items: [
-          { variantId: 1, productUnitId: 3, quantity: "2", unitPrice: "1200.00" }, // درزن ⇒ 2,400
-          { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" }, // 3,000
+          {
+            variantId: 1,
+            productUnitId: 3,
+            quantity: "2",
+            unitPrice: "1200.00",
+          }, // درزن ⇒ 2,400
+          {
+            variantId: 2,
+            productUnitId: 2,
+            quantity: "5",
+            unitPrice: "600.00",
+          }, // 3,000
         ],
       },
       actor,
@@ -156,7 +258,7 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
     expect(after.subtotal).toBe("5400.00");
     expect(after.total).toBe("5400.00");
     expect(Number(after.supplierId)).toBe(2);
-    expect(after.notes).toBe("عُدّلت قبل الاعتماد");
+    expect(after.notes).toBe("عُدّل قبل الاستلام");
     // رقم الأمر وحالته لا يتغيّران بالتعديل — لكلٍّ إجراؤه المستقلّ.
     expect(after.poNumber).toBe(before.poNumber);
     expect(after.status).toBe(before.status);
@@ -177,7 +279,9 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
         taxRatePercent: "0",
         agreedCurrency: "USD",
         agreedRate: "1500.0000",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" }],
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" },
+        ],
       },
       actor,
     );
@@ -186,11 +290,15 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
     await updatePurchaseOrder(
       {
         purchaseOrderId: po.purchaseOrderId,
+        expectedVersion: po.version,
+        revisionReason: "تعديل سعر شراء الدولار قبل الاعتماد",
         supplierId: 1,
         taxRatePercent: "0",
         agreedCurrency: "USD",
         agreedRate: "1500.0000",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "3.00" }],
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "3.00" },
+        ],
       },
       actor,
     );
@@ -207,7 +315,14 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
         supplierId: 1,
         branchId: 1,
         taxRatePercent: "0",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
+        ],
         shippingCost: "300.00",
         customsCost: "100.00",
       },
@@ -218,9 +333,18 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
     await updatePurchaseOrder(
       {
         purchaseOrderId: po.purchaseOrderId,
+        expectedVersion: po.version,
+        revisionReason: "حذف تكاليف الشحن والكمرك قبل الاعتماد",
         supplierId: 1,
         taxRatePercent: "0",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
+        ],
       },
       actor,
     );
@@ -232,53 +356,82 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
     expect(after.total).toBe("1000.00");
   });
 
-  it("يرفض التعديل بعد اعتماد الفاتورة وإضافة بضاعتها إلى المخزون", async () => {
+  it("يرفض التعديل بعد استلام أيّ كمية (ولو جزئية)", async () => {
     const po = await simpleOrder();
+    await approvePurchaseOrder(po);
     const items = await itemsOf(po.purchaseOrderId);
     // مُستلِمٌ غير المُنشئ (فصل المهام) — الأدمن مُستثنى لكنّنا نتبع المسار الواقعيّ.
     await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: 4 }],
+        lines: [
+          { purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: 4 },
+        ],
       },
       { userId: 2, branchId: 1, role: "warehouse" },
     );
+    // أعد حالة الـfixture وحدها إلى مسوّدة كي نبلغ حارس الكمية الدفاعي؛
+    // تبقى الكمية المستلمة مثبتة في السطر، ويزيد trigger النسخة تلقائياً.
+    await db()
+      .update(s.purchaseOrders)
+      .set({ status: "DRAFT" })
+      .where(eq(s.purchaseOrders.id, po.purchaseOrderId));
+    const receivedOrder = await orderRow(po.purchaseOrderId);
 
     await expect(
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: Number(receivedOrder.version),
+          revisionReason: "محاولة تعديل أمر بعد استلام جزئي",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "99", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "99",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
-    ).rejects.toThrow(/أُضيفت بضاعة هذه الفاتورة إلى المخزون/);
+    ).rejects.toThrow(/استُلمت بضاعة/);
 
     // ولا سطرَ تغيّر: الرفض قبل أيّ كتابة.
     const after = await itemsOf(po.purchaseOrderId);
     expect(after[0].quantity).toBe("10.000");
   });
 
-  it("يرفض تعديل فاتورة شراء ملغاة", async () => {
+  it("يرفض تعديل أمرٍ ملغى", async () => {
     const po = await simpleOrder();
     await db()
       .update(s.purchaseOrders)
       .set({ status: "CANCELLED" })
       .where(eq(s.purchaseOrders.id, po.purchaseOrderId));
+    const cancelledOrder = await orderRow(po.purchaseOrderId);
 
     await expect(
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: Number(cancelledOrder.version),
+          revisionReason: "محاولة تعديل أمر ملغى",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
-    ).rejects.toThrow(/معتمدة ومضافة للمخزون أو ملغاة/);
+    ).rejects.toThrow(/لا يُعدَّل إلا أمر شراء مسوّدة/);
   });
 
   it("يرفض التعديل حين يحمل الأمر دفعةً مسجَّلة", async () => {
@@ -287,14 +440,24 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
       .update(s.purchaseOrders)
       .set({ paidAmount: "250.00" })
       .where(eq(s.purchaseOrders.id, po.purchaseOrderId));
+    const paidOrder = await orderRow(po.purchaseOrderId);
 
     await expect(
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: Number(paidOrder.version),
+          revisionReason: "محاولة تعديل أمر يحمل دفعة",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
@@ -307,9 +470,18 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة تعديل أمر من فرع آخر",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         otherBranchManager,
       ),
@@ -322,9 +494,18 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة إدخال بكج في أمر شراء",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 3, productUnitId: 4, quantity: "1", unitPrice: "5000.00" }],
+          items: [
+            {
+              variantId: 3,
+              productUnitId: 4,
+              quantity: "1",
+              unitPrice: "5000.00",
+            },
+          ],
         },
         actor,
       ),
@@ -334,9 +515,18 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة تحويل المورد إلى مودع أمانة",
           supplierId: 3, // مودِع أمانة
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
@@ -347,7 +537,14 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
     const po = await simpleOrder();
     await expect(
       updatePurchaseOrder(
-        { purchaseOrderId: po.purchaseOrderId, supplierId: 1, taxRatePercent: "0", items: [] },
+        {
+          purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة حفظ أمر بلا أصناف",
+          supplierId: 1,
+          taxRatePercent: "0",
+          items: [],
+        },
         actor,
       ),
     ).rejects.toThrow(/بلا أصناف/);
@@ -356,9 +553,18 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
       updatePurchaseOrder(
         {
           purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة حفظ نسبة ضريبة غير صالحة",
           supplierId: 1,
           taxRatePercent: "150",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
@@ -366,22 +572,31 @@ describe("تعديل فاتورة الشراء قبل اعتمادها", () => {
   });
 });
 
-describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب الترحيل", () => {
+describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب الاستلام", () => {
   async function orderWithShipping() {
-    return createPurchaseOrder(
+    const po = await createPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
         taxRatePercent: "0",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
+        ],
         shippingCost: "300.00",
         customsCost: "100.00",
       },
       actor,
     );
+    await approvePurchaseOrder(po);
+    return po;
   }
 
-  it("يُرحَّل بلا اسم ناقلٍ ولا مستند، ويُسجَّل المصروف ببديلٍ صريح الجهالة", async () => {
+  it("يُستلَم بلا اسم ناقلٍ ولا مستند، ويُسجَّل المصروف ببديلٍ صريح الجهالة", async () => {
     const po = await orderWithShipping();
     const items = await itemsOf(po.purchaseOrderId);
 
@@ -389,7 +604,12 @@ describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب 
     const res = await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: items[0].baseQuantity }],
+        lines: [
+          {
+            purchaseOrderItemId: Number(items[0].id),
+            receivedBaseQuantity: items[0].baseQuantity,
+          },
+        ],
       },
       { userId: 2, branchId: 1, role: "warehouse" },
     );
@@ -422,7 +642,12 @@ describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب 
     await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: items[0].baseQuantity }],
+        lines: [
+          {
+            purchaseOrderItemId: Number(items[0].id),
+            receivedBaseQuantity: items[0].baseQuantity,
+          },
+        ],
         shippingBeneficiaryName: "لا يوجد",
         shippingEvidenceReference: "-",
       },
@@ -444,7 +669,12 @@ describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب 
     await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: items[0].baseQuantity }],
+        lines: [
+          {
+            purchaseOrderItemId: Number(items[0].id),
+            receivedBaseQuantity: items[0].baseQuantity,
+          },
+        ],
         shippingBeneficiarySupplierId: 4,
         shippingEvidenceReference: "INV-CARRIER-8891",
       },
