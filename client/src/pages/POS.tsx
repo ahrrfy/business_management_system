@@ -675,6 +675,9 @@ export default function POS() {
   // مطابقة `expectedTotal` على البطاقات المدفوعة). البوّابة تفصل الحالتين قبل الإرسال.
   const cartHasDigital = cart.some((c) => c.digital);
   const cartHasRegular = cart.some((c) => !c.digital);
+  // يقرأ مسار الباركود/HID الحالة الحيّة من المرجع؛ callback البحث async وقد يبقى من رسم سابق.
+  const cartHasDigitalRef = useRef(cartHasDigital);
+  cartHasDigitalRef.current = cartHasDigital;
   const cartAllDigital = cart.length > 0 && cart.every((c) => c.digital);
   const invoiceDiscountAllowed = !cartAllDigital && !cartHasDigital;
   // خصم رأس الفاتورة (٢٢/٨) — نسبة يُدخلها الكاشير، مقصوصة إلى [0, CASHIER_INVOICE_DISCOUNT_MAX_PCT].
@@ -786,7 +789,7 @@ export default function POS() {
 
   // ── Cart ops ──────────────────────────────────────────────────────────────
   function addRow(row: PosRow) {
-    if (cartHasDigital) {
+    if (cartHasDigitalRef.current) {
       notify.warn("لا يمكن خلط المنتجات مع البطاقات الرقمية", DIGITAL_CART_BLOCKS_REGULAR_MESSAGE);
       return;
     }
@@ -1013,6 +1016,11 @@ export default function POS() {
   // ── Barcode ───────────────────────────────────────────────────────────────
   const lookupBarcode = useCallback(async (code: string) => {
     if (!code) return;
+    // رفضٌ قبل طلب الشبكة، ثم يعيد addRow الفحص بعد اكتماله للحماية من تغيّر السلة أثناء الطلب.
+    if (cartHasDigitalRef.current) {
+      notify.warn("لا يمكن خلط المنتجات مع البطاقات الرقمية", DIGITAL_CART_BLOCKS_REGULAR_MESSAGE);
+      return;
+    }
     try {
       // ش٢ أوفلاين: أثناء الانقطاع تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
       const row = offline
