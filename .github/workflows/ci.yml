@@ -249,6 +249,12 @@ jobs:
         run: pnpm check:loading-strings
       - name: حارِس تغطية useSaveShortcuts (Ctrl+S في نماذج New/Edit)
         run: pnpm check:save-shortcut-coverage
+      # مقياس الاحتكاك (برنامج v2، الموجة ٠) — **وضعُ التقرير**: يطبع لوحة العلل الثمانية
+      # ولا يحجب. سببُ التقرير أوّلاً: خطُّ الأساس يُجمَّد قبل أن يبدأ الترحيل، فتشديدُه قبل
+      # وجود العلاجات (سجلّ القرارات · محرّك العكس · shared/predicates) كان سيمنع كلّ PR
+      # على دينٍ قائمٍ لا علاقةَ له به. يُشدَّد إلى `check:friction:strict` في الموجة ٩.
+      - name: مقياس الاحتكاك (تقرير — لا يحجب)
+        run: pnpm check:friction
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: اختبار عقود النشر والبناء الآمنة
