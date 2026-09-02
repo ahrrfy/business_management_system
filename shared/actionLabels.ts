@@ -30,6 +30,10 @@ export const ACTION_LABELS = {
   refreshing: "جارٍ التحديث…",
   fetching: "جارٍ الجلب…",
   verifying: "جارٍ التحقّق…",
+  approving: "جارٍ الاعتماد…",
+  rejecting: "جارٍ الرفض…",
+  cancelling: "جارٍ الإلغاء…",
+  closing: "جارٍ الإغلاق…",
 
   // حالات الأفعال الجاهزة (idle) — للأزرار قبل الضغط.
   save: "حفظ",

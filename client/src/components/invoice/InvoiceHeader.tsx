@@ -265,7 +265,13 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
       )}
 
       {/* الشبكة الكاملة — تُطوى على الشاشة حين تمتلئ السلة، لكنها تبقى في DOM وتُطبَع دائماً
-          (طباعة المسودّة عبر window.print تعتمد على بيانات الرأس: العميل/الفرع/الشروط/المراجع). */}
+          (`hidden print:block`): بيانات الرأس — العميل/الفرع/الشروط/المراجع — جزءٌ من المستند
+          لا زينةُ شاشة، فطيُّها للتوفير البصريّ يجب ألّا يحذفها من الورقة.
+          ملحوظة: التبريرُ تغيّر ولم يتغيّر السلوك (٢/٩/٢٦): كان هذا التعليق يعزو البقاءَ إلى «طباعة
+          المسوّدة عبر `window.print`»، وقد استُبدلت في شاشتَي الشراء بـ`printReportDoc` (تبني
+          مستندها بنفسها فلا تقرأ هذا الـDOM أصلاً). لكنّ `QuotationNew` و`SalesInvoiceNew`
+          **بلا زرِّ طباعةٍ إطلاقاً** ⇒ طريقُهما الوحيد هو Ctrl+P من المتصفّح، وهو يطبع هذا
+          الـDOM حرفياً. فالقاعدة باقيةٌ بسببٍ أقوى: لا يملك المستعمل مساراً آخر هناك. */}
       <div className={cn("px-4 pb-3 pt-2.5", collapsed && "hidden print:block")}>
         <HeaderSection title="تفاصيل الفاتورة" icon={FileText} columnsClass="grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
           <FieldGroup label="رقم المستند" icon={Hash}>

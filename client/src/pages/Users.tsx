@@ -22,10 +22,17 @@ function StationBadge({ station }: { station?: PosStation | "MULTI" | "NONE" }) 
   if (!station || station === "NONE") return <span className="text-muted-foreground text-xs">—</span>;
   // لوحةُ هويّةٍ تصنيفية (قسمٌ لا حالة): كلّ قسمٍ صِبغةٌ مستقلّة تُميّزه عن جاره. لا تُترجَم إلى
   // توكنز sem-* لأنّ «التجزئة» ليست موجباً و«الاستقبال» ليست معلومة — والترجمة تُوحّد لونَ قسمين.
+  // ولذلك توكنز `--chan-*` بالذات: هي المصمَّمة لهذا الغرض في tokens.css («هويّة لا حالة»، تشبّعٌ
+  // أدنى عمداً كي لا تُزاحم ألوان الإنذار)، ونطاقُها هو نطاقُ الأقسام حرفياً — نفس النغمات التي
+  // يُسندها `shared/invoiceChannel.ts` لقنوات RETAIL/RECEPTION/PRINT ⇒ القسمُ الواحد بلونٍ واحد
+  // في شاشة المستخدمين وفي قوائم الفواتير معاً.
+  // وكان الخامُّ السابق (زمرّديّ للتجزئة وبنفسجيّ للاستقبال) يَعِد بتمييزٍ لا يُسلّمه: طبقةُ التوافق
+  // الداكن في tokens.css تطوي التدرّجَين 100/700 إلى --sem-pos و--chart-check ⇒ «التجزئة» تُقرأ
+  // ليلاً حالةً موجبة، وهي قسمٌ لا حُكم.
   const cls: Record<string, string> = {
-    RETAIL: "bg-emerald-100 text-emerald-700",
-    PRINT_SERVICES: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-    RECEPTION: "bg-violet-100 text-violet-700",
+    RETAIL: "bg-[var(--chan-retail-bg)] text-[var(--chan-retail)]",
+    PRINT_SERVICES: "bg-[var(--chan-print-bg)] text-[var(--chan-print)]",
+    RECEPTION: "bg-[var(--chan-reception-bg)] text-[var(--chan-reception)]",
     MULTI: "bg-muted text-foreground",
   };
   const label = station === "MULTI" ? "متعدّد الأقسام" : POS_STATION_LABEL[station];
@@ -42,47 +49,60 @@ function stationExportLabel(station?: PosStation | "MULTI" | "NONE"): string {
  *  فجوة صدق الدور (٢٤/٧): «كاشير طباعة» كان يظهر «كاشير» فيبدو سلوك النظام غير منطقي.
  *  hasOverride: تخصيص فردي (permissionsOverride) بلا دور مخصّص ⇒ لاحقة «مُخصَّص» — الشكوى نفسها
  *  تتكرر حرفياً لو حُصر الحساب بالمصفوفة اليدوية بدل دور مخصّص وظلّت شارته «كاشير» مجرّدة. */
+/** صفُّ الإدارة — الأدوار ذاتُ السلطة الواسعة، تُميَّز بالشكل لا باللون (انظر RoleBadge). */
+const AUTHORITY_ROLES = new Set(["admin", "manager"]);
+
 export function RoleBadge({ role, customRoleLabel, hasOverride, isOwner }: { role: string; customRoleLabel?: string | null; hasOverride?: boolean; isOwner?: boolean }) {
   if (isOwner) {
-    // كان `bg-amber-200 text-amber-900`: طبقةُ التوافق الداكن في tokens.css تُترجم النصّ (amber-900)
-    // إلى --sem-warn ولا تملك مقابلاً لخلفية amber-200 ⇒ نصٌّ فاتحٌ على خلفيةٍ فاتحة في الوضع الداكن.
-    // التوكن يُصلح ذلك ويحفظ الهيو. لكنّ --sem-warn-bg أخفّ من amber-200: بعد التحويل قِيست الشارة
-    // (خلفية #ffefd5 ونصّ #8a6000) فصارت شبهَ توأمٍ لشارة «مخزن» (#fef3c7 / #b45309)، وحدٌّ بشفافية ٤٠٪
-    // لا يعوّض فارقَ التشبُّع. فالحدُّ كاملُ القوّة و font-bold يُعيدان بروزَ أعلى شارةِ صلاحيةٍ في الشاشة.
+    // كان تدرّجاً كهرمانياً خامّاً (خلفية ٢٠٠ ونصّ ٩٠٠): طبقةُ التوافق الداكن في tokens.css تُترجم
+    // النصّ إلى --sem-warn ولا تملك مقابلاً لتلك الخلفية ⇒ نصٌّ فاتحٌ على خلفيةٍ فاتحة في الوضع
+    // الداكن. التوكن يُصلح ذلك ويحفظ الهيو. لكنّ --sem-warn-bg أخفّ من الخلفية القديمة: بعد التحويل
+    // قِيست الشارة (خلفية #ffefd5 ونصّ #8a6000) فصارت شبهَ توأمٍ لشارة «مخزن» يومَها (#fef3c7 /
+    // #b45309)، وحدٌّ بشفافية ٤٠٪ لا يعوّض فارقَ التشبُّع. فالحدُّ كاملُ القوّة و font-bold يُعيدان
+    // بروزَ أعلى شارةِ صلاحيةٍ في الشاشة.
     return (
       <span className="inline-block rounded-full border border-[var(--sem-warn)] px-2 py-0.5 text-xs font-bold bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
         مالك النظام
       </span>
     );
   }
-  // لوحةُ هويّةٍ تصنيفية أيضاً (١١ دوراً بصِبغٍ متمايز): «admin» أحمرُ تمييزٍ لا خطر، و«cashier»
-  // أخضرُ تمييزٍ لا موجب. ترجمتُها إلى أربعة توكنز دلالية تُلوّن دورين بلونٍ واحد فتُلغي التمييز.
-  const colors: Record<string, string> = {
-    admin:          "bg-red-100 text-red-700",
-    manager:        "bg-purple-100 text-purple-700",
-    accountant:     "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-    cashier:        "bg-emerald-100 text-emerald-700",
-    warehouse:      "bg-amber-100 text-amber-700",
-    purchasing:     "bg-orange-100 text-orange-700",
-    print_operator: "bg-cyan-100 text-cyan-700",
-    sales_rep:      "bg-teal-100 text-teal-700",
-    auditor:        "bg-muted text-foreground",
-    courier:        "bg-lime-100 text-lime-700",
-    user:           "bg-muted text-muted-foreground",
-  };
+  // الدور **هويّةٌ إداريّة لا حالة**: لا توكن دلاليّ يصلح له — أحمرُ «مدير النظام» يُقرأ خطأً،
+  // وأخضرُ «كاشير» يُقرأ نجاحاً. لكنّ لوحة الأحد عشر صِبغاً الخامّة لم تكن تفي بوعدها أصلاً:
+  // طبقةُ التوافق الداكن في tokens.css تطوي كلّ 100/700 إلى خمس مجموعات (emerald≡lime ⇒
+  // كاشير≡مندوب توصيل · amber≡orange ⇒ أمين مخزن≡مشتريات · cyan≡teal≡info ⇒ فنّي≡مندوب≡محاسب)
+  // وتطبعها **بألوان الحالة نفسها** ⇒ ليلاً تصير شارةُ «كاشير» sem-pos وشارةُ «مدير النظام»
+  // sem-neg، فتُزاحم عمودَ «الحالة» في الصفّ ذاته وتُلغي التمييزَ الذي كانت اللوحة تدّعيه.
+  // فالقرار: سطحٌ محايد واحد، والتمييزُ محفوظٌ حيث يحمل وزناً تشغيلياً وحده — المالك (أعلاه)
+  // والدور المخصّص (أدناه). والتسميةُ العربية تحمل الدور كاملاً بلا لون.
   if (customRoleLabel) {
     return (
       <span
-        className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700"
+        // كان تدرّجاً نيليّاً خامّاً. المعنى المطلوب «هذا دورٌ مخصّص لا فئةٌ أساس» —
+        // يُؤدّيه الحدُّ المتقطّع بالشكل لا باللون، فيصمد في الوضعين بلا استهلاك صِبغٍ دلاليّ.
+        className="inline-block rounded-full border border-dashed px-2 py-0.5 text-xs font-medium bg-muted text-foreground"
         title={`دور مخصّص — الفئة الأساس: ${ROLE_LABEL[role] ?? role}`}
       >
         {customRoleLabel}
       </span>
     );
   }
+  // ⭐ **محورٌ واحدٌ يستحقّ تمييزاً بصرياً في هذا الجدول: السلطة.** إسقاطُ لوحة الأحد عشر
+  // صِبغاً كان صحيحاً (أعلاه)، لكنّ تسويةَ الأدوار كلِّها بسطحٍ واحد تُسقط معها السؤالَ الذي
+  // يُفتَح لأجله جدولُ المستخدمين أصلاً: «من يملك صلاحيةً واسعة؟» — لا «من كاشير ومن مندوب».
+  // فيُستعاد صفُّ الإدارة وحده (مدير النظام · مدير فرع) تحت مالك النظام مباشرةً.
+  // والتمييزُ **بالشكل لا باللون** — حدٌّ ووزنٌ أثقل، كما في الدور المخصّص — لسببين:
+  // يصمد في الوضعين الفاتح والداكن معاً بلا طبقةِ توافقٍ تطويه، ولا يستعير صِبغاً دلالياً
+  // فيُزاحم عمودَ «الحالة» في الصفّ نفسه؛ وتلك بالضبط هي العلّة التي أسقطت اللوحة الملوّنة.
+  const roleCls = AUTHORITY_ROLES.has(role)
+    ? "bg-muted text-foreground font-semibold border border-border"
+    : role === "user" || !ROLE_LABEL[role]
+      // «مستخدم عام» والدورُ غير المعروف أخفتُ من الأدوار التشغيلية — تمييزٌ كان قائماً في
+      // الخريطة الملوّنة (`user` وحده كان muted-foreground) فحُفظ كما هو.
+      ? "bg-muted text-muted-foreground"
+      : "bg-muted text-foreground";
   return (
     <span
-      className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${colors[role] ?? "bg-muted text-muted-foreground"}`}
+      className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${roleCls}`}
       title={hasOverride ? "صلاحيات معدَّلة يدوياً عن قالب الدور" : undefined}
     >
       {ROLE_LABEL[role] ?? role}

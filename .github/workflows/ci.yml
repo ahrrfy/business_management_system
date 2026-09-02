@@ -253,6 +253,8 @@ jobs:
         run: pnpm check:invoice-status-variants
       - name: حارِس اعتماد DataTable (يمنع <table> جديدة في pages)
         run: pnpm check:raw-tables
+      - name: حارِس اعتماد Card (يمنع بطاقةً مدحرجةً يدوياً جديدة في pages)
+        run: pnpm check:raw-card
       - name: حارِس اعتماد printReportDoc (يمنع window.print() جديدة في pages)
         run: pnpm check:window-print
       - name: حارِس قاعدة الأرقام اللاتينية (قرار المالك ٢٥/٨/٢٦)

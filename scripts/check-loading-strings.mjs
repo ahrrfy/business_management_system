@@ -64,7 +64,21 @@ for (const file of walkTsx(SCAN_ROOT)) {
   let count = 0;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+    /*
+     * ⚠️ **وتعليقُ JSX `{/* … *\/}` كذلك** (٢/٩/٢٦): كانت الثلاثةُ أدناه تُسقط `//` و`*`
+     * و`/*` وحدها، فبقي تعليقُ JSX يُفحَص كأنّه شيفرة — وهو الشكل الأشيع في `client/**`.
+     * والنتيجة إنذارٌ كاذب: `GiftsHub.tsx` بقي في خطّ الأساس بمخالفةٍ واحدة بعد ترحيله
+     * كاملاً إلى `ACTION_LABELS`، ومَصدرُها **تعليقان** يشرحان الترحيل نفسه ويقتبسان
+     * «جارٍ» ليوضّحا الإملاء. أي أنّ الحارس كان يطالب بإصلاح ما أصلحه المُرحِّل للتوّ.
+     * والإنذارُ الكاذب أسوأ من الصمت: يدفع إلى تشويه تعليقٍ صحيحٍ للتملّص منه.
+     * (نفسُ العلّة أُصلحت في `check-no-window-dialogs.mjs` على `Vouchers.tsx`.)
+     */
+    if (
+      trimmed.startsWith("//") ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("/*") ||
+      trimmed.startsWith("{/*")
+    ) continue;
     for (const rx of REJECTED_PATTERNS) {
       rx.lastIndex = 0;
       const m = line.match(rx);
