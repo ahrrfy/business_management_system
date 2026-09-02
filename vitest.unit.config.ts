@@ -40,6 +40,7 @@ export default defineConfig({
       "client/src/lib/doubleEntryRoleLabels.test.ts",
       "client/src/lib/workOrderRefundPolicy.test.ts",
       "client/src/components/CustomizationDialog.test.ts",
+      "client/src/components/ui/layering.test.ts",
       "client/src/lib/refundDrawer.test.ts",
       "server/__tests__/devViteConfig.test.ts",
       "client/src/lib/voucherCategoryAccounting.test.ts",
