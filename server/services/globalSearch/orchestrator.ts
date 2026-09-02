@@ -1,4 +1,5 @@
 // نقطة الدخول: يشغّل بحث كل نوع مطلوب بالتوازي (Promise.all) ثم يرتّب النتائج برتبتها.
+import { TRPCError } from "@trpc/server";
 import { getDb } from "../../db";
 import type { SearchEntityType, SearchResult, GlobalSearchInput } from "./types";
 import { classifyQuery } from "./types";
@@ -7,7 +8,17 @@ import { searchEmployees, searchUsers } from "./searchHr";
 import { searchProducts, searchCustomers, searchSuppliers } from "./searchMasterData";
 import { searchInvoices, searchQuotations, searchWorkOrders, searchPurchaseOrders, searchExpenses } from "./searchDocuments";
 
+function resolveBranchScope(input: GlobalSearchInput): number | null {
+  // يُطبَّع المالك إلى admin في سياق الطلب؛ لذلك admin وحده يصل هنا بصلاحية عبور مثبتة.
+  if (input.role === "admin") return null;
+  if (input.branchId == null) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+  }
+  return input.branchId;
+}
+
 export async function globalSearch(input: GlobalSearchInput): Promise<SearchResult[]> {
+  const scopedBranchId = resolveBranchScope(input);
   const db = getDb();
   if (!db) return [];
 
@@ -15,11 +26,6 @@ export async function globalSearch(input: GlobalSearchInput): Promise<SearchResu
   if (!query) return [];
 
   const perEntityLimit = Math.min(Math.max(input.perEntityLimit ?? 6, 1), 20);
-  // قصر الفرع (قرار المالك ١٢/٨: عزل مدير الفرع): المالك/الأدمن فقط يبحثان كلَّ الفروع (null)؛
-  // مدير الفرع وغيره مقيَّدون بفرعهم (input.role مُطبَّع ⇒ owner=admin). isElevated في rbac.ts يبقى
-  // لسلطة رؤية أنواع المستندات (المدير يراها) لا للفرع — فصلٌ متعمَّد بين السلطة والعزل.
-  const scopedBranchId = input.role === "admin" ? null : input.branchId;
-
   const override = input.permissionsOverride ?? null;
   const requested = new Set<SearchEntityType>(
     (input.scopes ?? [...MASTER_DATA_TYPES, ...BRANCH_SCOPED_TYPES, ...ADMIN_TYPES]).filter((t) =>
@@ -44,7 +50,7 @@ export async function globalSearch(input: GlobalSearchInput): Promise<SearchResu
 
   // كيانات إدارية (موظف/مستخدم) — RBAC مطبَّق في canSeeType (يحلّ override)، وتشمل تحليل كود EMP-/USER-.
   if (requested.has("EMPLOYEE") && canSeeType(input.role, "EMPLOYEE", override))
-    tasks.push(searchEmployees(db, kind, query, perEntityLimit));
+    tasks.push(searchEmployees(db, kind, query, perEntityLimit, scopedBranchId));
   if (requested.has("USER") && canSeeType(input.role, "USER", override))
     tasks.push(searchUsers(db, kind, query, perEntityLimit));
 
