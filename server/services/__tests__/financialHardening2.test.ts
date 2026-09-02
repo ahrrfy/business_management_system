@@ -411,7 +411,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
     expect(unconsumed.consumedAt).toBeNull();
   });
 
-  it("purchases.receive محذوف وgoodsReceipts.create يعيد نفس الاستلام لنفس clientRequestId", async () => {
+  it("purchases.receive وgoodsReceipts.create محذوفان ولا ينشئان استلاماً منفصلاً", async () => {
     await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
     const po = await createApprovedPurchaseOrder("5.00");
     const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
@@ -430,12 +430,10 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
       lines: [{ purchaseOrderItemId: Number(poItem.id), acceptedBaseQuantity: 5 }],
       clientRequestId: "recv-key-1",
     };
-    const first = await warehouseCaller().goodsReceipts.create(input);
-    const replay = await warehouseCaller().goodsReceipts.create(input);
-    expect(Number(replay.id)).toBe(first.goodsReceiptId);
-    expect(replay.idempotentReplay).toBe(true);
-    expect(await db().select().from(s.goodsReceipts)).toHaveLength(1);
-    expect(await db().select().from(s.goodsReceiptItems)).toHaveLength(1);
+    await expect(warehouseCaller().goodsReceipts.create(input))
+      .rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(await db().select().from(s.goodsReceipts)).toHaveLength(0);
+    expect(await db().select().from(s.goodsReceiptItems)).toHaveLength(0);
     expect((await db().select().from(s.inventoryMovements)).filter((m) => m.movementType === "IN",
       ),
     ).toHaveLength(1);
