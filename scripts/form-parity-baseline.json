@@ -1,0 +1,7 @@
+{
+  "client/src/pages/Asset": 4,
+  "client/src/pages/Product": 8,
+  "client/src/pages/Purchase": 1,
+  "client/src/pages/Supplier": 2,
+  "client/src/pages/User": 7
+}

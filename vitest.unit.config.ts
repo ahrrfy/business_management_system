@@ -12,6 +12,10 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "client/src/lib/moneyInput.test.ts",
+      "shared/expenseLabels.test.ts",
+      "shared/cashReceiptSourceDocument.test.ts",
+      "shared/negativeCashDiagnosis.test.ts",
       "client/src/lib/printing/couponCard.test.ts",
       "client/src/lib/printing/barcode.test.ts",
       "client/src/lib/printing/invoiceReceipt.test.ts",
@@ -65,6 +69,8 @@ export default defineConfig({
       "client/src/pages/__tests__/assetAccrualUi.test.ts",
       "client/src/pages/__tests__/assetPendingLifecycleUi.test.ts",
       "client/src/pages/__tests__/assetFormParity.test.ts",
+      "client/src/pages/__tests__/userFormParity.test.ts",
+      "client/src/pages/__tests__/customerFormParity.test.ts",
       "client/src/pages/__tests__/purchaseShippingAccrualUi.test.ts",
       "client/src/pages/__tests__/purchaseOrderApprovalUi.test.tsx",
       "client/src/pages/__tests__/purchaseGovernanceUi.test.tsx",
@@ -137,6 +143,7 @@ export default defineConfig({
       "shared/errors.test.ts",
       "shared/cashVarianceDictionaries.test.ts",
       "server/services/approval/ownerGate.test.ts",
+      "server/services/approval/treasuryApprovalWiring.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "server/lib/__tests__/opaqueFailure.test.ts",
       "server/lib/__tests__/paymentModeCod.test.ts",
