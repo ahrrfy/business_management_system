@@ -382,6 +382,8 @@ export default function TransfersLog() {
                 <p className="text-sm text-muted-foreground">ألغاه {doc.cancelledByName ?? "—"} في <span dir="ltr" className="tabular-nums">{fmtDateTime(doc.cancelledAt)}</span> — أُعيدت الكمية للفرع المرسل.</p>
               )}
 
+              {/* شبكةُ تحرير لا عرض: كل سطرٍ يحمل حقلَ الكمية المستلَمة وحقلَ ملاحظته —
+                  `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. */}
               <div className="border rounded-md overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/40">

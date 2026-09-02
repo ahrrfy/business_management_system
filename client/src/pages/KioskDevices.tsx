@@ -10,20 +10,29 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { trpc } from "@/lib/trpc";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { downloadInstallerCmd, kioskUrl } from "@/lib/kioskLauncher";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
-import { fmtDateTime } from "@/lib/date";
+import { fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { internalUrl } from "@/lib/siteHosts";
 import { Download, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ListToolbar, RowActions, FilterField } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 
+/** فرزٌ زمنيّ على الطابع الخامّ: نصّ العرض «21/06/2026» يُفرَز باليوم لا بالتاريخ. */
+const cmpTime = (a: DateInput, b: DateInput) => {
+  const ta = toDate(a)?.getTime() ?? -Infinity;
+  const tb = toDate(b)?.getTime() ?? -Infinity;
+  return ta === tb ? 0 : ta < tb ? -1 : 1;
+};
+
 type Reveal = { deviceId: number; label: string; branchName: string | null; rawToken: string };
+/** صفُّ جهاز كشك — مشتقٌّ من عقد `kiosk.devices.list`. */
+type KioskDeviceRow = RouterOutputs["kiosk"]["devices"]["list"][number];
 
 // أصل الخادم المحقون في مُشغّل الكشك: **دومين الشركة** حتماً (سياسة الدومينَين) — لا المضيف
 // الذي صادف أن المدير يتصفّحه، فالجهاز يعمل بلا إشراف ولا يصحّ أن يمرّ بتحويل بين الدومينَين.
@@ -54,6 +63,7 @@ export default function KioskDevices() {
   const activeFilterCount = (f.status ? 1 : 0) + (f.branch ? 1 : 0);
 
   const [branchId, setBranchId] = useState<number | "">("");
+
   const [label, setLabel] = useState("");
   const [reveal, setReveal] = useState<Reveal | null>(null);
 
@@ -87,6 +97,78 @@ export default function KioskDevices() {
     onSuccess: () => { notify.ok("حُذف الجهاز"); void utils.kiosk.devices.list.invalidate(); },
     onError: (e) => notify.err(e.message),
   });
+
+  // أعمدة الأجهزة — داخل المكوّن (وقبل الخروج المبكّر للصلاحية) لأنّ الإجراءات تستدعي الطفرات.
+  const deviceColumns = useMemo<ColumnDef<KioskDeviceRow, unknown>[]>(() => [
+    { id: "label", header: "الجهاز", accessorFn: (d) => d.label, meta: { width: "wide" }, cell: ({ row }) => <span className="font-medium">{row.original.label}</span> },
+    { id: "branchName", header: "الفرع", accessorFn: (d) => d.branchName ?? "—", cell: ({ row }) => row.original.branchName ?? "—" },
+    { id: "tokenPrefix", header: "الرمز", accessorFn: (d) => `${d.tokenPrefix}…`, meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs">{row.original.tokenPrefix}…</span> },
+    {
+      id: "isActive",
+      header: "الحالة",
+      accessorFn: (d) => (d.isActive ? "مفعّل" : "مُلغى"),
+      meta: { kind: "status" },
+      cell: ({ row }) =>
+        row.original.isActive ? (
+          <span className="inline-flex items-center gap-1 text-[var(--status-active)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--status-active)]" />مفعّل</span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-destructive"><span className="h-1.5 w-1.5 rounded-full bg-destructive" />مُلغى</span>
+        ),
+    },
+    // «آخر ظهور» يُفرَز لاصطياد الأجهزة الميتة ⇒ الفرز على الطابع الخامّ لا على نصّ العرض.
+    { id: "lastSeenAt", header: "آخر ظهور", accessorFn: (d) => fmtDateTime(d.lastSeenAt), meta: { kind: "datetime" }, sortingFn: (a, b) => cmpTime(a.original.lastSeenAt, b.original.lastSeenAt), cell: ({ row }) => <span className="text-xs text-muted-foreground">{fmtDateTime(row.original.lastSeenAt)}</span> },
+    {
+      id: "actions",
+      header: "إجراءات",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const d = row.original;
+        return (
+          <RowActions
+            mode="menu"
+            actions={[
+              {
+                key: "rotate",
+                kind: "approve",
+                label: "تدوير الرمز",
+                disabled: rotate.isPending,
+                disabledReason: "توجد عملية تدوير قيد التنفيذ",
+                onSelect: () => void (async () => {
+                  if (!(await confirm({ variant: "warning", title: "تدوير رمز الجهاز", description: `تدوير الرمز يُبطل الرمز القديم لجهاز «${d.label}». متابعة؟`, confirmText: "تدوير الرمز" }))) return;
+                  rotate.mutate({ id: d.id });
+                })(),
+                gate: { adminOnly: true },
+              },
+              {
+                key: "toggle",
+                kind: "approve",
+                label: d.isActive ? "إلغاء" : "تفعيل",
+                variant: d.isActive ? "destructive" : "default",
+                disabled: setActive.isPending,
+                disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                onSelect: () => setActive.mutate({ id: d.id, active: !d.isActive }),
+                gate: { adminOnly: true },
+              },
+              {
+                key: "delete",
+                kind: "delete",
+                label: "حذف",
+                variant: "destructive",
+                disabled: remove.isPending,
+                disabledReason: "توجد عملية حذف قيد التنفيذ",
+                onSelect: () => void (async () => {
+                  if (!(await confirmDelete({ description: `حذف الجهاز «${d.label}» نهائياً يلغي رمزه فوراً ويعطّل الشاشة.` }))) return;
+                  remove.mutate({ id: d.id });
+                })(),
+                gate: { adminOnly: true },
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ], [rotate, setActive, remove]);
 
   if (me.data && me.data.role !== "admin") {
     return <div className="p-10 text-center text-muted-foreground">هذه الشاشة للمدير فقط.</div>;
@@ -238,84 +320,17 @@ export default function KioskDevices() {
           />
         </CardHeader>
         <CardContent>
-          {devicesQ.isLoading ? (
-            <LoadingState />
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-right text-muted-foreground">
-                    <th className="py-2 px-2 font-medium">الجهاز</th>
-                    <th className="py-2 px-2 font-medium">الفرع</th>
-                    <th className="py-2 px-2 font-medium">الرمز</th>
-                    <th className="py-2 px-2 font-medium">الحالة</th>
-                    <th className="py-2 px-2 font-medium">آخر ظهور</th>
-                    <th className="py-2 px-2 font-medium">إجراءات</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleDevices.length === 0 && (
-                    <TableEmptyRow colSpan={6} message="لا أجهزة بعد — أضف جهازاً أعلاه." />
-                  )}
-                  {visibleDevices.map((d) => (
-                    <tr key={d.id} className="border-b last:border-0">
-                      <td className="py-2 px-2 font-medium">{d.label}</td>
-                      <td className="py-2 px-2">{d.branchName ?? "—"}</td>
-                      <td className="py-2 px-2 font-mono text-xs" dir="ltr">{d.tokenPrefix}…</td>
-                      <td className="py-2 px-2">
-                        {d.isActive
-                          ? <span className="inline-flex items-center gap-1 text-[var(--status-active)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--status-active)]" />مفعّل</span>
-                          : <span className="inline-flex items-center gap-1 text-destructive"><span className="h-1.5 w-1.5 rounded-full bg-destructive" />مُلغى</span>}
-                      </td>
-                      <td className="py-2 px-2 text-xs text-muted-foreground">{fmtDateTime(d.lastSeenAt)}</td>
-                      <td className="py-2 px-2">
-                        <RowActions
-                          mode="menu"
-                          actions={[
-                            {
-                              key: "rotate",
-                              kind: "approve",
-                              label: "تدوير الرمز",
-                              disabled: rotate.isPending,
-                              disabledReason: "توجد عملية تدوير قيد التنفيذ",
-                              onSelect: () => void (async () => {
-                                if (!(await confirm({ variant: "warning", title: "تدوير رمز الجهاز", description: `تدوير الرمز يُبطل الرمز القديم لجهاز «${d.label}». متابعة؟`, confirmText: "تدوير الرمز" }))) return;
-                                rotate.mutate({ id: d.id });
-                              })(),
-                              gate: { adminOnly: true },
-                            },
-                            {
-                              key: "toggle",
-                              kind: "approve",
-                              label: d.isActive ? "إلغاء" : "تفعيل",
-                              variant: d.isActive ? "destructive" : "default",
-                              disabled: setActive.isPending,
-                              disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                              onSelect: () => setActive.mutate({ id: d.id, active: !d.isActive }),
-                              gate: { adminOnly: true },
-                            },
-                            {
-                              key: "delete",
-                              kind: "delete",
-                              label: "حذف",
-                              variant: "destructive",
-                              disabled: remove.isPending,
-                              disabledReason: "توجد عملية حذف قيد التنفيذ",
-                              onSelect: () => void (async () => {
-                                if (!(await confirmDelete({ description: `حذف الجهاز «${d.label}» نهائياً يلغي رمزه فوراً ويعطّل الشاشة.` }))) return;
-                                remove.mutate({ id: d.id });
-                              })(),
-                              gate: { adminOnly: true },
-                            },
-                          ]}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          {/* البحث والفلاتر في `ListToolbar` أعلاه (تغذّي visibleDevices) ⇒ لا حقلَ بحثٍ ثانٍ هنا. */}
+          <DataTable<KioskDeviceRow>
+            columns={deviceColumns}
+            data={visibleDevices}
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0 || f.q.trim() !== ""}
+            loading={devicesQ.isLoading}
+            errorState={{ isError: devicesQ.isError, message: devicesQ.error?.message, onRetry: () => void devicesQ.refetch() }}
+            emptyState="لا أجهزة بعد — أضف جهازاً أعلاه."
+            emptyFilteredState="لا أجهزة مطابقة للفلاتر."
+          />
         </CardContent>
       </Card>
     </div>

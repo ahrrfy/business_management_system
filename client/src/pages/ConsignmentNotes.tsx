@@ -8,8 +8,8 @@ import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { FilterField } from "@/components/list/FilterField";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { PageHeader } from "@/components/PageHeader";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TableEmptyRow, TableSkeleton } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { type ExportColumn } from "@/lib/export";
@@ -83,8 +83,53 @@ export default function ConsignmentNotes() {
   );
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE));
   const activeFilterCount = [f.type, f.consignor, isElevated ? f.branch : "", f.from, f.to].filter(Boolean).length;
+
+  // أعمدة السندات — داخل المكوّن لأنّ عمود الطباعة يستدعي `printFromNote` (تصريح دالّة مرفوع).
+  const noteColumns = useMemo<ColumnDef<NoteRow, unknown>[]>(
+    () => [
+      { id: "noteNumber", header: "الرقم", accessorFn: (n) => n.noteNumber, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.noteNumber },
+      {
+        id: "noteType",
+        header: "النوع",
+        // التسمية العربية لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+        accessorFn: (n) => TYPE_META[n.noteType as NoteType]?.label ?? n.noteType,
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", TYPE_META[row.original.noteType as NoteType].cls)}>
+            {TYPE_META[row.original.noteType as NoteType].label}
+          </span>
+        ),
+      },
+      { id: "consignorName", header: "المودِع", accessorFn: (n) => n.consignorName ?? "", meta: { width: "wide" }, cell: ({ row }) => row.original.consignorName },
+      {
+        id: "hasAttachment",
+        header: "مرفق",
+        accessorFn: (n) => (n.hasAttachment ? "نعم" : "لا"),
+        meta: { align: "center", width: "status" },
+        cell: ({ row }) => (row.original.hasAttachment ? <Paperclip aria-hidden className="size-3.5 inline text-[var(--sem-pos)]" /> : null),
+      },
+      {
+        id: "createdAt",
+        header: "التاريخ",
+        accessorFn: (n) => new Date(n.createdAt).toLocaleDateString("en-GB"),
+        meta: { kind: "date" },
+        cell: ({ row }) => new Date(row.original.createdAt).toLocaleDateString("en-GB"),
+      },
+      {
+        id: "print",
+        header: "طباعة",
+        enableSorting: false,
+        meta: { kind: "actions" },
+        cell: ({ row }) => (
+          <Button size="sm" variant="ghost" onClick={() => printFromNote(row.original.id)} title="طباعة السند">
+            <Printer aria-hidden className="size-4" />
+          </Button>
+        ),
+      },
+    ],
+    [],
+  );
 
   const exportColumns: ExportColumn<NoteRow>[] = [
     { key: "noteNumber", header: "رقم السند" },
@@ -192,56 +237,23 @@ export default function ConsignmentNotes() {
               }
             />
 
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">الرقم</th><th className="p-2">النوع</th><th className="p-2">المودِع</th>
-                    <th className="p-2">مرفق</th><th className="p-2">التاريخ</th><th className="p-2 text-center">طباعة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.isLoading && <TableSkeleton rows={6} cols={6} />}
-                  {!list.isLoading && rows.map((n) => (
-                    <tr key={n.id} className="border-t">
-                      <td className="p-2 font-mono text-xs" dir="ltr">{n.noteNumber}</td>
-                      <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", TYPE_META[n.noteType as NoteType].cls)}>{TYPE_META[n.noteType as NoteType].label}</span></td>
-                      <td className="p-2">{n.consignorName}</td>
-                      <td className="p-2 text-xs text-muted-foreground">{n.hasAttachment ? <Paperclip aria-hidden className="size-3.5 inline text-[var(--sem-pos)]" /> : null}</td>
-                      <td className="p-2 text-xs" dir="ltr">{new Date(n.createdAt).toLocaleDateString("en-GB")}</td>
-                      <td className="p-2 text-center">
-                        <Button size="sm" variant="ghost" onClick={() => printFromNote(n.id)} title="طباعة السند">
-                          <Printer aria-hidden className="size-4" />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                  {!list.isLoading && rows.length === 0 && (
-                    <TableEmptyRow
-                      colSpan={6}
-                      message={activeFilterCount > 0 || f.q ? "لا سندات مطابقة للفلاتر." : "لا سندات بعد. أنشئ سند إيداع لأول مودِع."}
-                    />
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-
-            {/* ترقيم فعلي — السندات مستندات موقَّعة، اختفاؤها بعد حدّ الصفحة الصامت خطر حقيقي. */}
-            {total > PAGE && (
-              <div className="flex items-center justify-between border-t pt-3 text-xs text-muted-foreground">
-                <span>
-                  الصفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")} من {totalPages.toLocaleString("ar-IQ-u-nu-latn")} — {total.toLocaleString("ar-IQ-u-nu-latn")} سند
-                </span>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" disabled={page === 0 || list.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-                    السابق
-                  </Button>
-                  <Button variant="outline" size="sm" disabled={page + 1 >= totalPages || list.isFetching} onClick={() => setPage((p) => p + 1)}>
-                    التالي
-                  </Button>
-                </div>
-              </div>
-            )}
+            {/*
+              * ترقيم خادميّ داخل الجدول — السندات مستندات موقَّعة، اختفاؤها بعد حدّ الصفحة
+              * الصامت خطر حقيقي. وشريط الترقيم صار من `DataTable` وحده (شريطان يقفزان
+              * بمقدارَين مختلفَين يُخفيان صفوفاً بصمت).
+              * البحث والفلاتر في `ListToolbar` أعلاه ⇒ `searchable={false}` بلا حقلَي بحث متجاورَين.
+              */}
+            <DataTable<NoteRow>
+              columns={noteColumns}
+              data={rows}
+              searchable={false}
+              externalFiltersActive={activeFilterCount > 0 || f.q.trim() !== ""}
+              loading={list.isLoading}
+              errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => list.refetch() }}
+              serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, total, isFetching: list.isFetching }}
+              emptyState="لا سندات بعد. أنشئ سند إيداع لأول مودِع."
+              emptyFilteredState="لا سندات مطابقة للفلاتر."
+            />
           </CardContent>
         </Card>
       )}

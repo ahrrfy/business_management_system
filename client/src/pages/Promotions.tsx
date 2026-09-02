@@ -6,15 +6,16 @@
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list/RowActions";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -23,7 +24,7 @@ import { confirm } from "@/lib/confirm";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { D } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
   EMPTY_TERMINATION_SETTLEMENT,
   TERMINATION_PAYMENT_METHOD_LABEL,
@@ -48,6 +49,9 @@ const promoStatusCls: Record<string, string> = {
   approved: "badge-status-active",
   pending: "badge-status-pending",
 };
+type PromoRow = RouterOutputs["promotions"]["listPromotions"][number];
+type TermRow = RouterOutputs["promotions"]["listTerminations"][number];
+
 const promoStatusLabel = (s: string) => (s === "approved" ? "معتمدة" : "قيد الاعتماد");
 const termStatusCls: Record<string, string> = {
   completed: "badge-status-cancelled",
@@ -393,8 +397,8 @@ export default function Promotions() {
     }
   };
 
-  const promoRows = promotions.data ?? [];
-  const termRows = terminations.data ?? [];
+  const promoRows: PromoRow[] = promotions.data ?? [];
+  const termRows: TermRow[] = terminations.data ?? [];
   const filteredPromos = useMemo(() => {
     const q = query.trim().toLocaleLowerCase("ar");
     return q ? promoRows.filter((p) => [p.employeeName, p.fromTitle, p.toTitle, p.reason, promoStatusLabel(p.status)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : promoRows;
@@ -403,6 +407,282 @@ export default function Promotions() {
     const q = query.trim().toLocaleLowerCase("ar");
     return q ? termRows.filter((t) => [t.employeeName, t.terminationType, t.reason, termStatusLabel(t.status)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : termRows;
   }, [termRows, query]);
+
+  /** أعمدة سجلّ الترقيات — تُغلِق على `approvePromo` وحوار الاعتماد. */
+  const promoColumns: ColumnDef<PromoRow, unknown>[] = [
+    {
+      id: "employeeName",
+      header: "الموظف",
+      accessorFn: (p) => p.employeeName,
+      meta: { width: "actor" },
+      cell: ({ row }) => <EmpCell name={row.original.employeeName} color={row.original.colorTag} photoUrl={row.original.photoUrl} />,
+    },
+    {
+      id: "fromTitle",
+      header: "من مسمّى",
+      accessorFn: (p) => p.fromTitle ?? "—",
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.fromTitle ?? "—"}</span>,
+    },
+    {
+      // مسمّى فارغ = تغييرٌ أجريٌّ بحت لا ترقيةَ مسمّى.
+      id: "toTitle",
+      header: "إلى مسمّى",
+      accessorFn: (p) => p.toTitle || "—",
+      cell: ({ row }) => <span className="text-[13px] font-medium">{row.original.toTitle || "—"}</span>,
+    },
+    {
+      /*
+       * خليّةٌ مركّبة (رقمان + قائمة فروق الأجر بالعربية) ⇒ بلا `kind: "money"`:
+       * عزلُ الخليّة كلّها LTR كان سيقلب اتّجاه سطور الأجر العربية. الاتّجاه يبقى
+       * كما كان: غلافٌ LTR للرقمين وكتلةٌ RTL لحزمة الأجر.
+       */
+      id: "salaryChange",
+      header: "تغيّر الراتب",
+      accessorFn: (p) => `${iqd(p.fromSalary)} → ${p.toSalary != null ? iqd(p.toSalary) : "—"}`,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => {
+        const p = row.original;
+        return (
+          <div className="text-xs tabular-nums" dir="ltr">
+            <span className="text-muted-foreground">{iqd(p.fromSalary)}</span> →{" "}
+            <span className="font-medium text-money-positive">{p.toSalary != null ? iqd(p.toSalary) : "—"}</span>
+            {/* «الراتب لم يتغيّر» لا يعني «الأجر لم يتغيّر»: الجدول وأسعار الساعات
+                تُغيّر المدفوع فعلياً، فيلزم أن يراها المعتمِد قبل الاعتماد. */}
+            {p.toWage != null && (
+              <div dir="rtl">
+                <span className="mt-0.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
+                  <Wallet aria-hidden className="size-3" /> حزمة أجر
+                </span>
+                <WageDiffList from={p.fromWage} to={p.toWage} />
+              </div>
+            )}
+          </div>
+        );
+      },
+    },
+    { id: "effectiveDate", header: "التاريخ", accessorFn: (p) => p.effectiveDate, meta: { kind: "date" }, cell: ({ row }) => row.original.effectiveDate },
+    {
+      id: "reason",
+      header: "السبب",
+      accessorFn: (p) => p.reason ?? "—",
+      meta: { wrap: true },
+      cell: ({ row }) => <span className="text-xs">{row.original.reason ?? "—"}</span>,
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (p) => promoStatusLabel(p.status),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${promoStatusCls[row.original.status] ?? "bg-muted text-muted-foreground"}`}>
+          {promoStatusLabel(row.original.status)}
+        </span>
+      ),
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const p = row.original;
+        if (p.status !== "pending") return <span className="text-xs text-muted-foreground">—</span>;
+        return (
+          <RowActions
+            mode="inline"
+            actions={[{
+              key: "approve",
+              kind: "approve",
+              label: "اعتماد",
+              gate: { module: "hr", level: "FULL" },
+              disabled: approvePromo.isPending,
+              disabledReason: "جارٍ اعتماد الترقية",
+              onSelect: async () => {
+                // الحوار يسرد التغييرات بقيمها لا بوصفٍ عامّ — المعتمِد يقرّ ما يراه.
+                const diff = describeWageDiff(p.fromWage as WageProfileShape | null, p.toWage as WageProfileShape | null);
+                const wageNote = diff.length
+                  ? `\n\nتغييرات حزمة الأجر:\n${diff.map((r) => `• ${r.label}: ${r.before} ← ${r.after}`).join("\n")}`
+                  : "";
+                const titleNote = p.toTitle ? ` إلى «${p.toTitle}»` : "";
+                if (!(await confirm({ variant: "warning", title: "اعتماد الترقية", description: `اعتماد طلب «${p.employeeName}»${titleNote} يحدّث بيانات الموظف المالية.${wageNote}`, confirmText: "اعتماد" }))) return;
+                approvePromo.mutate({ id: p.id });
+              },
+            }]}
+          />
+        );
+      },
+    },
+  ];
+
+  /** أعمدة سجلّ إنهاء الخدمات — تُغلِق على صلاحيات المالك وحوارات العكس. */
+  const termColumns: ColumnDef<TermRow, unknown>[] = [
+    {
+      id: "employeeName",
+      header: "الموظف",
+      accessorFn: (t) => t.employeeName,
+      meta: { width: "actor" },
+      cell: ({ row }) => <EmpCell name={row.original.employeeName} color={row.original.colorTag} photoUrl={row.original.photoUrl} />,
+    },
+    {
+      id: "terminationType",
+      header: "نوع الإنهاء",
+      accessorFn: (t) => t.terminationType,
+      cell: ({ row }) => <span className="text-[13px]">{row.original.terminationType}</span>,
+    },
+    { id: "lastDay", header: "آخر يوم عمل", accessorFn: (t) => t.lastDay, meta: { kind: "date" }, cell: ({ row }) => row.original.lastDay },
+    {
+      /* خليّةٌ مركّبة: مبلغٌ واحدٌ معزولٌ LTR فوق تفكيكٍ عربيّ متعدّد السطور ⇒ بلا `kind`. */
+      id: "settlement",
+      header: "التسوية النهائية",
+      accessorFn: (t) => iqd(t.settlement),
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => {
+        const t = row.original;
+        return (
+          <>
+            <div className="tabular-nums font-medium" dir="ltr">{iqd(t.settlement)}</div>
+            <div className="mt-1 text-[10px] leading-4 text-muted-foreground">
+              إجمالي أجر {iqd(t.earnedGrossWages)} · تخفيض {iqd(t.wageReductions)} · سلفة {iqd(t.advanceRecovery)}<br />
+              ضريبة {iqd(t.incomeTax)} · ضمان موظف {iqd(t.employeeSocialSecurity)} · ضمان شركة {iqd(t.employerSocialSecurity)}<br />
+              رصيد السلفة بعد التسوية {iqd(t.remainingAdvanceAtRecognition)}<br />
+              <span className="text-muted-foreground">الرصيد الحالي وقت العرض {iqd(t.currentRemainingAdvanceBalance)}</span><br />
+              إجازات {iqd(t.leaveCompensation)} · إشعار {iqd(t.noticeCompensation)}<br />
+              نهاية خدمة {iqd(t.eosBenefit)} · آخر {iqd(t.otherSettlement)}
+            </div>
+            {t.recognizedAt && (
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                من المخصص {iqd(t.eosProvisionConsumed)} · محرر {iqd(t.eosProvisionReleased)} · فرق مصروف {iqd(t.eosExpenseRecognized)}
+              </div>
+            )}
+          </>
+        );
+      },
+    },
+    {
+      id: "reason",
+      header: "السبب",
+      accessorFn: (t) => t.reason ?? "—",
+      meta: { wrap: true },
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.reason ?? "—"}</span>,
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (t) => terminationFinancialStatus(t),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${termStatusCls[row.original.status] ?? "bg-muted text-muted-foreground"}`}>
+          {terminationFinancialStatus(row.original)}
+        </span>
+      ),
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const t = row.original;
+        return (
+          <RowActions
+            mode="menu"
+            actions={[
+              {
+                key: "print",
+                kind: "print",
+                label: "طباعة بيان التفكيك",
+                icon: Printer,
+                gate: { module: "hr", level: "READ" },
+                onSelect: () => printTerminationSettlement({
+                  id: t.id,
+                  employeeName: t.employeeName,
+                  terminationType: t.terminationType,
+                  lastDay: t.lastDay,
+                  earnedGrossWages: t.earnedGrossWages,
+                  wageReductions: t.wageReductions,
+                  advanceRecovery: t.advanceRecovery,
+                  incomeTax: t.incomeTax,
+                  employeeSocialSecurity: t.employeeSocialSecurity,
+                  employerSocialSecurity: t.employerSocialSecurity,
+                  leaveCompensation: t.leaveCompensation,
+                  noticeCompensation: t.noticeCompensation,
+                  eosBenefit: t.eosBenefit,
+                  otherSettlement: t.otherSettlement,
+                  otherSettlementLabel: t.otherSettlementLabel,
+                  evidenceNote: t.settlementEvidenceNote,
+                  remainingAdvanceAtRecognition: t.remainingAdvanceAtRecognition,
+                  total: t.settlement,
+                  paymentMethod: TERMINATION_PAYMENT_METHOD_LABEL[t.settlementPaymentMethod] ?? t.settlementPaymentMethod,
+                  status: terminationFinancialStatus(t),
+                  reason: t.reason,
+                  snapshotHash: t.settlementSnapshotHash,
+                }),
+              },
+              ...(t.status === "pending" ? [{
+                key: "complete",
+                kind: "approve" as const,
+                label: "إكمال",
+                gate: { module: "hr" as const, level: "FULL" as const },
+                disabled: completeTerm.isPending || me.data?.isOwner !== true || Number(me.data?.id) === Number(t.createdBy),
+                disabledReason: completeTerm.isPending
+                  ? "جارٍ إكمال إنهاء الخدمة"
+                  : me.data?.isOwner !== true
+                    ? "إثبات الاستحقاق يتطلب مالكاً نشطاً"
+                    : "منشئ الإجراء لا يجوز أن يثبت استحقاقه",
+                onSelect: async () => {
+                  if (!(await confirm({ variant: "danger", title: "إكمال إنهاء الخدمة", description: `إنهاء خدمة «${t.employeeName}» نهائي، سيُستثنى الموظف من المسيّرات. اكتب «إنهاء الخدمة» للتأكيد.`, confirmText: "إنهاء الخدمة", requireText: "إنهاء الخدمة" }))) return;
+                  completeTerm.mutate({ id: t.id });
+                },
+              }] : []),
+              ...(t.status === "completed" && terminationPaymentIsOutstanding(t) && !t.recognitionReversedAt ? [{
+                key: "reverse-payment",
+                kind: "reverse" as const,
+                label: "عكس الصرف وإعادة الالتزام",
+                icon: RotateCcw,
+                gate: { module: "hr" as const, level: "FULL" as const },
+                disabled: me.data?.isOwner !== true || Number(me.data?.id) === Number(t.createdBy) || Number(me.data?.id) === Number(t.recognizedBy),
+                disabledReason: me.data?.isOwner !== true
+                  ? "عكس الصرف يتطلب مالكاً نشطاً"
+                  : "يلزم مالك مستقل عن منشئ ومثبت التسوية",
+                onSelect: () => {
+                  setReverseTarget({ id: t.id, employeeName: t.employeeName, mode: "payment" });
+                  setReverseReason(""); setReverseMethod("CASH"); setReverseReference(""); setReverseDate(today());
+                },
+              }] : []),
+              ...(t.status === "completed" && t.recognizedAt && D(t.settlement).gt(0) && !terminationPaymentIsOutstanding(t) && !t.recognitionReversedAt ? [{
+                key: "reissue-payment",
+                kind: "pay" as const,
+                label: "إعادة إصدار طلب الصرف",
+                icon: Wallet,
+                gate: { module: "hr" as const, level: "FULL" as const },
+                disabled: me.data?.isOwner !== true,
+                disabledReason: "إعادة الإصدار تتطلب مالكاً نشطاً",
+                onSelect: () => {
+                  setReverseTarget({ id: t.id, employeeName: t.employeeName, mode: "reissue" });
+                  setReverseReason("");
+                },
+              }] : []),
+              ...(t.status === "completed" && t.recognizedAt && t.recognitionEventId && !terminationPaymentIsOutstanding(t) && !t.recognitionReversedAt ? [{
+                key: "reverse-recognition",
+                kind: "reverse" as const,
+                label: "عكس إثبات الاستحقاق",
+                icon: RotateCcw,
+                gate: { module: "hr" as const, level: "FULL" as const },
+                disabled: me.data?.isOwner !== true || Number(me.data?.id) === Number(t.createdBy) || Number(me.data?.id) === Number(t.recognizedBy),
+                disabledReason: me.data?.isOwner !== true
+                  ? "عكس الاستحقاق يتطلب مالكاً نشطاً"
+                  : "يلزم مالك مستقل عن منشئ ومثبت التسوية",
+                onSelect: () => {
+                  setReverseTarget({ id: t.id, employeeName: t.employeeName, mode: "recognition" });
+                  setReverseReason("");
+                },
+              }] : []),
+            ]}
+          />
+        );
+      },
+    },
+  ];
 
   return (
     <div className="space-y-4">
@@ -451,82 +731,18 @@ export default function Promotions() {
               />
             </CardHeader>
             <CardContent className="p-0">
-              <ScrollTableShell bordered={false}>
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="p-2">الموظف</th>
-                      <th className="p-2">من مسمّى</th>
-                      <th className="p-2">إلى مسمّى</th>
-                      <th className="p-2 text-right">تغيّر الراتب</th>
-                      <th className="p-2 text-center">التاريخ</th>
-                      <th className="p-2">السبب</th>
-                      <th className="p-2 text-center">الحالة</th>
-                      <th className="p-2 text-center">إجراء</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredPromos.map((p) => (
-                      <tr key={p.id} className="border-t hover:bg-accent/40">
-                        <td className="p-2"><EmpCell name={p.employeeName} color={p.colorTag} photoUrl={p.photoUrl} /></td>
-                        <td className="p-2 text-xs text-muted-foreground">{p.fromTitle ?? "—"}</td>
-                        {/* مسمّى فارغ = تغييرٌ أجريٌّ بحت لا ترقيةَ مسمّى. */}
-                        <td className="p-2 text-[13px] font-medium">{p.toTitle || "—"}</td>
-                        <td className="p-2 text-right tabular-nums text-xs" dir="ltr">
-                          <span className="text-muted-foreground">{iqd(p.fromSalary)}</span> → <span className="font-medium text-money-positive">{p.toSalary != null ? iqd(p.toSalary) : "—"}</span>
-                          {/* «الراتب لم يتغيّر» لا يعني «الأجر لم يتغيّر»: الجدول وأسعار الساعات
-                              تُغيّر المدفوع فعلياً، فيلزم أن يراها المعتمِد قبل الاعتماد. */}
-                          {p.toWage != null && (
-                            <div dir="rtl">
-                              <span className="mt-0.5 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
-                                <Wallet aria-hidden className="size-3" /> حزمة أجر
-                              </span>
-                              <WageDiffList from={p.fromWage} to={p.toWage} />
-                            </div>
-                          )}
-                        </td>
-                        <td className="p-2 text-center text-xs tabular-nums" dir="ltr">{p.effectiveDate}</td>
-                        <td className="p-2 text-xs">{p.reason ?? "—"}</td>
-                        <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${promoStatusCls[p.status] ?? "bg-muted text-muted-foreground"}`}>{promoStatusLabel(p.status)}</span></td>
-                        <td className="p-2 text-center">
-                          {p.status === "pending" ? (
-                            <RowActions
-                              mode="inline"
-                              actions={[{
-                                key: "approve",
-                                kind: "approve",
-                                label: "اعتماد",
-                                gate: { module: "hr", level: "FULL" },
-                                disabled: approvePromo.isPending,
-                                disabledReason: "جارٍ اعتماد الترقية",
-                                onSelect: async () => {
-                                  // الحوار يسرد التغييرات بقيمها لا بوصفٍ عامّ — المعتمِد يقرّ ما يراه.
-                                  const diff = describeWageDiff(p.fromWage as WageProfileShape | null, p.toWage as WageProfileShape | null);
-                                  const wageNote = diff.length
-                                    ? `\n\nتغييرات حزمة الأجر:\n${diff.map((r) => `• ${r.label}: ${r.before} ← ${r.after}`).join("\n")}`
-                                    : "";
-                                  const titleNote = p.toTitle ? ` إلى «${p.toTitle}»` : "";
-                                  if (!(await confirm({ variant: "warning", title: "اعتماد الترقية", description: `اعتماد طلب «${p.employeeName}»${titleNote} يحدّث بيانات الموظف المالية.${wageNote}`, confirmText: "اعتماد" }))) return;
-                                  approvePromo.mutate({ id: p.id });
-                                },
-                              }]}
-                            />
-                          ) : <span className="text-xs text-muted-foreground">—</span>}
-                        </td>
-                      </tr>
-                    ))}
-                    {promotions.isLoading && (
-                      <tr><td colSpan={8}><LoadingState /></td></tr>
-                    )}
-                    {promotions.isError && (
-                      <tr><td colSpan={8}><ErrorState message="تعذّر تحميل الترقيات." onRetry={() => promotions.refetch()} /></td></tr>
-                    )}
-                    {!promotions.isLoading && !promotions.isError && filteredPromos.length === 0 && (
-                      <TableEmptyRow colSpan={8} message="لا ترقيات مسجّلة بعد." />
-                    )}
-                  </tbody>
-                </table>
-              </ScrollTableShell>
+              {/* البحث في ListToolbar أعلاه (يغذّي filteredPromos) ⇒ لا بحثَ داخليّ،
+                  ونُعلم الجدولَ بنشاط الفلتر كي لا يقول «لا ترقيات بعد» وهي محجوبةٌ ببحث. */}
+              <DataTable<PromoRow>
+                columns={promoColumns}
+                data={filteredPromos}
+                searchable={false}
+                externalFiltersActive={query.trim() !== ""}
+                loading={promotions.isLoading}
+                errorState={{ isError: promotions.isError, message: "تعذّر تحميل الترقيات.", onRetry: () => void promotions.refetch() }}
+                emptyText="لا ترقيات مسجّلة بعد."
+                emptyFilteredState="لا ترقيات مطابقة للبحث."
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -586,145 +802,15 @@ export default function Promotions() {
                 />
               </CardHeader>
               <CardContent className="p-0">
-                <ScrollTableShell bordered={false}>
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/50">
-                      <tr>
-                        <th className="p-2">الموظف</th>
-                        <th className="p-2">نوع الإنهاء</th>
-                        <th className="p-2 text-center">آخر يوم عمل</th>
-                        <th className="p-2 text-right">التسوية النهائية</th>
-                        <th className="p-2">السبب</th>
-                        <th className="p-2 text-center">الحالة</th>
-                        <th className="p-2 text-center">إجراء</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredTerms.map((t) => (
-                        <tr key={t.id} className="border-t hover:bg-accent/40">
-                          <td className="p-2"><EmpCell name={t.employeeName} color={t.colorTag} photoUrl={t.photoUrl} /></td>
-                          <td className="p-2 text-[13px]">{t.terminationType}</td>
-                          <td className="p-2 text-center text-xs tabular-nums" dir="ltr">{t.lastDay}</td>
-                          <td className="p-2 text-right">
-                            <div className="tabular-nums font-medium" dir="ltr">{iqd(t.settlement)}</div>
-                            <div className="mt-1 text-[10px] leading-4 text-muted-foreground">
-                              إجمالي أجر {iqd(t.earnedGrossWages)} · تخفيض {iqd(t.wageReductions)} · سلفة {iqd(t.advanceRecovery)}<br />
-                              ضريبة {iqd(t.incomeTax)} · ضمان موظف {iqd(t.employeeSocialSecurity)} · ضمان شركة {iqd(t.employerSocialSecurity)}<br />
-                              رصيد السلفة بعد التسوية {iqd(t.remainingAdvanceAtRecognition)}<br />
-                              <span className="text-muted-foreground">الرصيد الحالي وقت العرض {iqd(t.currentRemainingAdvanceBalance)}</span><br />
-                              إجازات {iqd(t.leaveCompensation)} · إشعار {iqd(t.noticeCompensation)}<br />
-                              نهاية خدمة {iqd(t.eosBenefit)} · آخر {iqd(t.otherSettlement)}
-                            </div>
-                            {t.recognizedAt && (
-                              <div className="mt-1 text-[10px] text-muted-foreground">
-                                من المخصص {iqd(t.eosProvisionConsumed)} · محرر {iqd(t.eosProvisionReleased)} · فرق مصروف {iqd(t.eosExpenseRecognized)}
-                              </div>
-                            )}
-                          </td>
-                          <td className="p-2 text-xs text-muted-foreground">{t.reason ?? "—"}</td>
-                          <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${termStatusCls[t.status] ?? "bg-muted text-muted-foreground"}`}>{terminationFinancialStatus(t)}</span></td>
-                          <td className="p-2 text-center">
-                            <RowActions
-                              mode="menu"
-                              actions={[
-                                {
-                                  key: "print",
-                                  kind: "print",
-                                  label: "طباعة بيان التفكيك",
-                                  icon: Printer,
-                                  gate: { module: "hr", level: "READ" },
-                                  onSelect: () => printTerminationSettlement({
-                                    id: t.id,
-                                    employeeName: t.employeeName,
-                                    terminationType: t.terminationType,
-                                    lastDay: t.lastDay,
-                                    earnedGrossWages: t.earnedGrossWages,
-                                    wageReductions: t.wageReductions,
-                                    advanceRecovery: t.advanceRecovery,
-                                    incomeTax: t.incomeTax,
-                                    employeeSocialSecurity: t.employeeSocialSecurity,
-                                    employerSocialSecurity: t.employerSocialSecurity,
-                                    leaveCompensation: t.leaveCompensation,
-                                    noticeCompensation: t.noticeCompensation,
-                                    eosBenefit: t.eosBenefit,
-                                    otherSettlement: t.otherSettlement,
-                                    otherSettlementLabel: t.otherSettlementLabel,
-                                    evidenceNote: t.settlementEvidenceNote,
-                                    remainingAdvanceAtRecognition: t.remainingAdvanceAtRecognition,
-                                    total: t.settlement,
-                                    paymentMethod: TERMINATION_PAYMENT_METHOD_LABEL[t.settlementPaymentMethod] ?? t.settlementPaymentMethod,
-                                    status: terminationFinancialStatus(t),
-                                    reason: t.reason,
-                                    snapshotHash: t.settlementSnapshotHash,
-                                  }),
-                                },
-                                ...(t.status === "pending" ? [{
-                                  key: "complete",
-                                  kind: "approve" as const,
-                                  label: "إكمال",
-                                  gate: { module: "hr" as const, level: "FULL" as const },
-                                  disabled: completeTerm.isPending || me.data?.isOwner !== true || Number(me.data?.id) === Number(t.createdBy),
-                                  disabledReason: completeTerm.isPending
-                                    ? "جارٍ إكمال إنهاء الخدمة"
-                                    : me.data?.isOwner !== true
-                                      ? "إثبات الاستحقاق يتطلب مالكاً نشطاً"
-                                      : "منشئ الإجراء لا يجوز أن يثبت استحقاقه",
-                                  onSelect: async () => {
-                                    if (!(await confirm({ variant: "danger", title: "إكمال إنهاء الخدمة", description: `إنهاء خدمة «${t.employeeName}» نهائي، سيُستثنى الموظف من المسيّرات. اكتب «إنهاء الخدمة» للتأكيد.`, confirmText: "إنهاء الخدمة", requireText: "إنهاء الخدمة" }))) return;
-                                    completeTerm.mutate({ id: t.id });
-                                  },
-                                }] : []),
-                                ...(t.status === "completed" && terminationPaymentIsOutstanding(t) && !t.recognitionReversedAt ? [{
-                                  key: "reverse-payment",
-                                  kind: "reverse" as const,
-                                  label: "عكس الصرف وإعادة الالتزام",
-                                  icon: RotateCcw,
-                                  gate: { module: "hr" as const, level: "FULL" as const },
-                                  disabled: me.data?.isOwner !== true || Number(me.data?.id) === Number(t.createdBy) || Number(me.data?.id) === Number(t.recognizedBy),
-                                  disabledReason: me.data?.isOwner !== true
-                                    ? "عكس الصرف يتطلب مالكاً نشطاً"
-                                    : "يلزم مالك مستقل عن منشئ ومثبت التسوية",
-                                  onSelect: () => {
-                                    setReverseTarget({ id: t.id, employeeName: t.employeeName, mode: "payment" });
-                                    setReverseReason(""); setReverseMethod("CASH"); setReverseReference(""); setReverseDate(today());
-                                  },
-                                }] : []),
-                                ...(t.status === "completed" && t.recognizedAt && D(t.settlement).gt(0) && !terminationPaymentIsOutstanding(t) && !t.recognitionReversedAt ? [{
-                                  key: "reissue-payment",
-                                  kind: "pay" as const,
-                                  label: "إعادة إصدار طلب الصرف",
-                                  icon: Wallet,
-                                  gate: { module: "hr" as const, level: "FULL" as const },
-                                  disabled: me.data?.isOwner !== true,
-                                  disabledReason: "إعادة الإصدار تتطلب مالكاً نشطاً",
-                                  onSelect: () => {
-                                    setReverseTarget({ id: t.id, employeeName: t.employeeName, mode: "reissue" });
-                                    setReverseReason("");
-                                  },
-                                }] : []),
-                                ...(t.status === "completed" && t.recognizedAt && t.recognitionEventId && !terminationPaymentIsOutstanding(t) && !t.recognitionReversedAt ? [{
-                                  key: "reverse-recognition",
-                                  kind: "reverse" as const,
-                                  label: "عكس إثبات الاستحقاق",
-                                  icon: RotateCcw,
-                                  gate: { module: "hr" as const, level: "FULL" as const },
-                                  disabled: me.data?.isOwner !== true || Number(me.data?.id) === Number(t.createdBy) || Number(me.data?.id) === Number(t.recognizedBy),
-                                  disabledReason: me.data?.isOwner !== true
-                                    ? "عكس الاستحقاق يتطلب مالكاً نشطاً"
-                                    : "يلزم مالك مستقل عن منشئ ومثبت التسوية",
-                                  onSelect: () => {
-                                    setReverseTarget({ id: t.id, employeeName: t.employeeName, mode: "recognition" });
-                                    setReverseReason("");
-                                  },
-                                }] : []),
-                              ]}
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </ScrollTableShell>
+                <DataTable<TermRow>
+                  columns={termColumns}
+                  data={filteredTerms}
+                  searchable={false}
+                  externalFiltersActive={query.trim() !== ""}
+                  loading={terminations.isLoading}
+                  emptyText="لا إجراءات إنهاء خدمة."
+                  emptyFilteredState="لا إجراءات مطابقة للبحث."
+                />
               </CardContent>
             </Card>
           )}

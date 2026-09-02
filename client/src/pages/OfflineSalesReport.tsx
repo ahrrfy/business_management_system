@@ -7,14 +7,15 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { FilterField } from "@/components/list";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtDateTime as formatDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlertTriangle, CloudUpload } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 type Row = RouterOutputs["offline"]["salesReport"]["rows"][number];
 
@@ -69,6 +70,75 @@ export default function OfflineSalesReport() {
     branches.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
   const branchLabel = branchId ? branchName(Number(branchId)) : "الكل";
   const periodLabel = from || to ? `${from || "—"} — ${to || "—"}` : "كل الفترة";
+
+  /* الأعمدة تُبنى داخل المكوّن لأنّ عمود الفرع يترجم المعرّف باسمه من استعلام الفروع. */
+  const columns = useMemo<ColumnDef<Row, unknown>[]>(
+    () => [
+      {
+        id: "invoiceNumber",
+        header: "الفاتورة الرسمية",
+        accessorFn: (r) => r.invoiceNumber,
+        meta: { kind: "code" },
+        cell: ({ row }) => row.original.invoiceNumber,
+      },
+      {
+        id: "offlineReceiptNumber",
+        header: "الإيصال المؤقّت",
+        accessorFn: (r) => r.offlineReceiptNumber ?? "—",
+        meta: { kind: "code" },
+        cell: ({ row }) => <span className="text-muted-foreground">{row.original.offlineReceiptNumber ?? "—"}</span>,
+      },
+      {
+        id: "branch",
+        header: "الفرع",
+        accessorFn: (r) => branchName(r.branchId),
+        cell: ({ row }) => branchName(row.original.branchId),
+      },
+      {
+        id: "capturedAt",
+        header: "الالتقاط",
+        accessorFn: (r) => fmtDateTime(r.capturedAt),
+        meta: { kind: "datetime" },
+        cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.capturedAt)}</span>,
+      },
+      {
+        id: "syncedAt",
+        header: "الترحيل",
+        accessorFn: (r) => fmtDateTime(r.syncedAt),
+        meta: { kind: "datetime" },
+        cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.syncedAt)}</span>,
+      },
+      {
+        id: "lag",
+        header: "التأخّر",
+        accessorFn: (r) => (r.replayLagMinutes != null ? `${r.replayLagMinutes} د` : "—"),
+        meta: { kind: "number" },
+        cell: ({ row }) => (row.original.replayLagMinutes != null ? `${row.original.replayLagMinutes} د` : "—"),
+      },
+      {
+        id: "total",
+        header: "الإجمالي",
+        accessorFn: (r) => `${fmtIQD(r.total)} د.ع`,
+        meta: { kind: "money" },
+        cell: ({ row }) => <span className="font-semibold">{fmtIQD(row.original.total)} د.ع</span>,
+      },
+      {
+        id: "notes",
+        header: "ملاحظات",
+        accessorFn: (r) => (r.lateSynced ? "مُزامنة بعد الإغلاق" : ""),
+        meta: { kind: "status" },
+        cell: ({ row }) =>
+          row.original.lateSynced ? (
+            <span className="rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]">
+              <AlertTriangle aria-hidden className="ms-1 inline size-3" />
+              مُزامنة بعد الإغلاق
+            </span>
+          ) : null,
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [branches.data],
+  );
 
   const kpis: KpiItem[] = totals
     ? [
@@ -267,54 +337,38 @@ export default function OfflineSalesReport() {
         </div>
       }
     >
-      <ScrollTableShell bordered>
-        <table className="w-full min-w-[760px] text-sm">
-          <thead className="bg-muted/50 text-xs">
-            <tr>
-              <th className="p-2 text-start">الفاتورة الرسمية</th>
-              <th className="p-2 text-start">الإيصال المؤقّت</th>
-              <th className="p-2 text-start">الفرع</th>
-              <th className="p-2 text-start">الالتقاط</th>
-              <th className="p-2 text-start">الترحيل</th>
-              <th className="p-2 text-start">التأخّر</th>
-              <th className="p-2 text-start">الإجمالي</th>
-              <th className="p-2 text-start">ملاحظات</th>
-            </tr>
-          </thead>
-          <tbody>
-            {report.isLoading ? (
-              <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td></tr>
-            ) : !rows.length ? (
-              <tr>
-                <td colSpan={8} className="p-6 text-center text-muted-foreground">
-                  <CloudUpload aria-hidden className="mx-auto mb-2 size-6" />
-                  لا مبيعات أوفلاينية في النطاق المحدد
-                </td>
-              </tr>
-            ) : (
-              rows.map((r: Row) => (
-                <tr key={r.invoiceId} className="border-t">
-                  <td className="p-2 font-mono">{r.invoiceNumber}</td>
-                  <td className="p-2 font-mono text-muted-foreground">{r.offlineReceiptNumber ?? "—"}</td>
-                  <td className="p-2">{branchName(r.branchId)}</td>
-                  <td className="p-2 text-xs">{fmtDateTime(r.capturedAt)}</td>
-                  <td className="p-2 text-xs">{fmtDateTime(r.syncedAt)}</td>
-                  <td className="p-2">{r.replayLagMinutes != null ? `${r.replayLagMinutes} د` : "—"}</td>
-                  <td className="p-2 font-semibold">{fmtIQD(r.total)} د.ع</td>
-                  <td className="p-2">
-                    {r.lateSynced ? (
-                      <span className="rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]">
-                        <AlertTriangle aria-hidden className="ms-1 inline size-3" />
-                        مُزامنة بعد الإغلاق
-                      </span>
-                    ) : null}
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </ScrollTableShell>
+      <DataTable<Row>
+        columns={columns}
+        data={rows}
+        loading={report.isLoading}
+        errorState={{ isError: report.isError, message: report.error?.message, onRetry: () => void report.refetch() }}
+        /*
+         * ⛔ لا بحثَ محلّيّ: `offline.salesReport` يقتطع الصفوف عند LIMIT 500 بينما
+         * `totals.count` عدٌّ كامل غير مقتطَع — فبحثٌ فوق الخمسمئة المحمَّلة يقول «لا نتائج»
+         * عن فاتورةٍ موجودة، وهو أكذبُ من الاقتطاع نفسه. الفلترة خادمية (الفترة · الفرع).
+         */
+        searchable={false}
+        /* فلاتر التاريخ والفرع خارج الجدول (تغذّي الاستعلام) — بلا هذا تُعلَن «لا صفوف بعد» زوراً. */
+        externalFiltersActive={!!from || !!to || branchId !== ""}
+        /* صدقُ الاقتطاع: العدّاد الكامل أعلى الشاشة قد يتجاوز المعروض ⇒ نُعلنه بدل إخفائه. */
+        statusSummary={
+          totals && totals.count > rows.length
+            ? `معروضٌ ${fmtIQD(rows.length)} من ${fmtIQD(totals.count)} — ضيّق الفترة أو الفرع لرؤية الباقي`
+            : undefined
+        }
+        emptyState={
+          <span className="inline-flex flex-col items-center gap-1">
+            <CloudUpload aria-hidden className="size-6" />
+            لا مبيعات أوفلاينية في النطاق المحدد
+          </span>
+        }
+        emptyFilteredState={
+          <span className="inline-flex flex-col items-center gap-1">
+            <CloudUpload aria-hidden className="size-6" />
+            لا مبيعات أوفلاينية في النطاق المحدد
+          </span>
+        }
+      />
     </ReportShell>
   </>
   );

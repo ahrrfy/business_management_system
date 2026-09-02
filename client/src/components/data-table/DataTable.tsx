@@ -51,8 +51,25 @@ import {
   operationTimeLabel,
   type OperationAttribution,
 } from "@/components/data-table/OperationAttribution";
-import { columnPresentationClass, columnUsesLtrIsolate } from "@/components/data-table/columnContract";
+import { columnPresentationClass, columnUsesLtrIsolate, sortingFnForKind } from "@/components/data-table/columnContract";
 import { TABLE_TFOOT_CLS } from "@/components/data-table/tableStyles";
+
+/**
+ * صنفُ الصفّ: الزخرفة الشريطية **تُكتَم** حين يقدّم `getRowClassName` خلفيةً خاصّة.
+ *
+ * السبب: Tailwind هنا يُصدِّر `odd:bg-background` كصنفٍ عارٍ `.odd\:bg-background`
+ * — أي **بنفس نوعيّة** (specificity) صنفِ الخلفية القادم من الشاشة. فالفائزُ بينهما
+ * يتحدّد بترتيب المصدر في ملفّ الأنماط، وهو ترتيبٌ لا تضبطه الشاشة ولا هذا المكوّن.
+ * إبقاءُ صنفَين متنازعَين على نفس الخاصّية رهانٌ على ترتيبٍ عرَضيّ؛ وكتمُ الزخرفة عند
+ * وجود خلفيةٍ صريحة يجعل النتيجة **حتميّة**: ما تطلبه الشاشة هو ما يُرسَم.
+ *
+ * الصفوفُ بلا خلفيةٍ مخصّصة تبقى مخطّطةً كما كانت.
+ */
+function rowShellClass(custom: string | undefined): string {
+  const hasCustomBg = !!custom && /(^|\s)(bg-|dark:bg-)/.test(custom);
+  const zebra = hasCustomBg ? "" : "odd:bg-background even:bg-muted/20";
+  return `border-t ${zebra} hover:bg-accent/35 data-[selected=true]:bg-accent/60`;
+}
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
 function columnHeaderText(col: { columnDef: { header?: unknown }; id: string }): string {
@@ -337,6 +354,23 @@ export function DataTable<T, K = string>({
     }
     return columns;
   }, [columns, operation]);
+
+  /*
+   * فرزٌ مشتقٌّ من `meta.kind` (٢/٩/٢٦): `accessorFn` يحمل **القيمة المعروضة** كي يصحّ
+   * نسخُها، فالفرزُ الافتراضيّ عليها نصّيٌّ ⇒ «1,234» قبل «999» و«2/9» قبل «10/9».
+   * هنا نُلحق مقارنةً تناسب نوعَ العمود، و`sortingFn` الصريح على العمود يتقدّم دائماً.
+   */
+  const sortAwareColumns = useMemo<ColumnDef<T, unknown>[]>(
+    () =>
+      effectiveColumns.map((column) => {
+        if ((column as { sortingFn?: unknown }).sortingFn) return column;
+        const kind = column.meta?.kind;
+        if (!kind) return column;
+        const fn = sortingFnForKind(kind);
+        return fn === "auto" ? column : ({ ...column, sortingFn: fn } as ColumnDef<T, unknown>);
+      }),
+    [effectiveColumns],
+  );
   const storageKey = useMemo(() => {
     const scope = viewKey || (typeof window !== "undefined" ? window.location.pathname : "table");
     const ids = effectiveColumns.map((column, index) => columnIdentity(column as ColumnDef<unknown, unknown>, index)).join("|");
@@ -363,7 +397,7 @@ export function DataTable<T, K = string>({
   const effectiveSorting = serverMode ? (serverSorting?.value ?? []) : sorting;
   const table = useReactTable({
     data,
-    columns: effectiveColumns,
+    columns: sortAwareColumns,
     state: serverMode ? { sorting: effectiveSorting, columnVisibility } : { sorting, globalFilter, columnVisibility },
     onSortingChange: serverMode && serverSorting ? (updater) => serverSorting.onChange(typeof updater === "function" ? updater(serverSorting.value) : updater) : setSorting,
     onColumnVisibilityChange: setColumnVisibility,
@@ -711,7 +745,7 @@ export function DataTable<T, K = string>({
                       <tr
                         key={row.id}
                         data-selected={isSelected || undefined}
-                        className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
+                        className={`${rowShellClass(getRowClassName?.(row.original))} ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                         onClick={(e) => {
                           const target = e.target as HTMLElement;
                           /*
@@ -855,7 +889,7 @@ export function DataTable<T, K = string>({
                   <tr
                     key={row.id}
                     data-selected={isSelected || undefined}
-                    className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
+                    className={`${rowShellClass(getRowClassName?.(row.original))} ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                     onClick={(e) => {
                       const target = e.target as HTMLElement;
                       // حاجزُ البوّابة أوّلاً — انظر شرحَ المسار الآخر أعلاه (Codex P2، PR #939).

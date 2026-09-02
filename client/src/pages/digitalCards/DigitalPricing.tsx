@@ -4,6 +4,8 @@
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -33,6 +35,10 @@ type PriceLine = {
 
 type MismatchReport =
   RouterOutputs["digitalCards"]["pricing"]["mismatchReports"][number];
+
+/** صفُّ «تغيير كبير في الحصة» كما يصله من ورقة الصباح. */
+type BigChangeRow =
+  RouterOutputs["digitalCards"]["pricing"]["getMorningSheet"]["bigChanges"][number];
 
 /** بصمة حتمية تمنع نشر أرقام لم تصل معاينتها الخادمية الحالية بعد. */
 function priceLinesKey(lines: PriceLine[]): string {
@@ -428,6 +434,87 @@ export default function DigitalPricing() {
   const canApproveBig =
     Boolean(me.data?.isOwner) || Number(me.data?.id) !== Number(draftCreatedBy);
   const bigChangeBlocking = bigChanges.length > 0 && bigApprovedBy == null;
+
+  /** أعمدة «تغيير كبير في الحصة» — عرضٌ محض، مُضمَّنٌ في بطاقة العنوان. */
+  const bigChangeColumns: ColumnDef<BigChangeRow, unknown>[] = [
+    { id: "name", header: "البطاقة", accessorFn: (b) => b.name, cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
+    {
+      id: "currentShare",
+      header: "التكلفة النافذة",
+      accessorFn: (b) => fmtAr(b.currentShare),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.currentShare)}</span>,
+    },
+    {
+      id: "newShare",
+      header: "التكلفة الجديدة",
+      accessorFn: (b) => fmtAr(b.newShare),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{fmtAr(row.original.newShare)}</span>,
+    },
+    {
+      id: "changePercent",
+      header: "نسبة التغيّر",
+      accessorFn: (b) => `${b.changePercent}%`,
+      meta: { kind: "number" },
+      cell: ({ row }) => <span className="text-destructive font-medium">{row.original.changePercent}%</span>,
+    },
+  ];
+
+  /** أعمدة «بلاغات تغيّر السعر» — تُغلِق على قراري الاعتماد والرفض. */
+  const reportColumns: ColumnDef<MismatchReport, unknown>[] = [
+    { id: "offeringName", header: "البطاقة", accessorFn: (r) => r.offeringName, cell: ({ row }) => <span className="font-medium">{row.original.offeringName}</span> },
+    {
+      id: "providerName",
+      header: "المزوّد",
+      accessorFn: (r) => r.providerName,
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.providerName}</span>,
+    },
+    {
+      id: "currentProviderShare",
+      header: "التكلفة في النظام",
+      accessorFn: (r) => fmtAr(r.currentProviderShare),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmtAr(row.original.currentProviderShare),
+    },
+    {
+      id: "reportedProviderShare",
+      header: "التكلفة التي أبلغ بها الكاشير",
+      accessorFn: (r) => fmtAr(r.reportedProviderShare),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{fmtAr(row.original.reportedProviderShare)}</span>,
+    },
+    {
+      id: "currentSellPrice",
+      header: "سعر البيع الذي سيبقى",
+      accessorFn: (r) => (r.currentSellPrice != null ? fmtAr(r.currentSellPrice) : "—"),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{row.original.currentSellPrice != null ? fmtAr(row.original.currentSellPrice) : "—"}</span>,
+    },
+    {
+      id: "notes",
+      header: "ملاحظة",
+      accessorFn: (r) => r.notes || "—",
+      meta: { wrap: true },
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.notes || "—"}</span>,
+    },
+    {
+      id: "decision",
+      header: "قرار",
+      enableSorting: false,
+      meta: { kind: "actions", width: "wide" },
+      cell: ({ row }) => (
+        <div className="flex justify-center gap-2">
+          <Button size="sm" disabled={approveMut.isPending} onClick={() => void approveMismatch(row.original)}>
+            مراجعة واعتماد
+          </Button>
+          <Button size="sm" variant="outline" disabled={rejectMut.isPending} onClick={() => rejectMut.mutate({ reportId: row.original.id })}>
+            رفض
+          </Button>
+        </div>
+      ),
+    },
+  ];
   const publishBlockedReason = bigChangeBlocking
     ? `تغييرٌ ≥${threshold}% ينتظر اعتماد مديرٍ آخر`
     : rows.length > 0 && !previewReady
@@ -546,34 +633,15 @@ export default function DigitalPricing() {
             )}
           </CardHeader>
           <CardContent className="space-y-3 p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">البطاقة</th>
-                    <th className="p-2 text-start">التكلفة النافذة</th>
-                    <th className="p-2 text-start">التكلفة الجديدة</th>
-                    <th className="p-2 text-start">نسبة التغيّر</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bigChanges.map((b) => (
-                    <tr key={b.offeringId} className="border-t">
-                      <td className="p-2 font-medium">{b.name}</td>
-                      <td className="p-2 tabular-nums text-muted-foreground">
-                        {fmtAr(b.currentShare)}
-                      </td>
-                      <td className="p-2 tabular-nums font-medium">
-                        {fmtAr(b.newShare)}
-                      </td>
-                      <td className="p-2 tabular-nums text-destructive font-medium">
-                        {b.changePercent}%
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            {/* مُضمَّن: البطاقة تحمل العنوان والعدّ؛ pageSize=Infinity لازمٌ معه (شريط الترقيم مكتوم). */}
+            <DataTable<BigChangeRow>
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+              data={bigChanges}
+              columns={bigChangeColumns}
+            />
             <div className="flex flex-wrap items-center gap-3 px-4 pb-4 text-sm text-muted-foreground">
               {bigApprovedBy != null ? (
                 <span>
@@ -618,66 +686,14 @@ export default function DigitalPricing() {
             بلاغات تغيّر السعر ({openReports.length})
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">البطاقة</th>
-                    <th className="p-2 text-start">المزوّد</th>
-                    <th className="p-2 text-start">التكلفة في النظام</th>
-                    <th className="p-2 text-start">
-                      التكلفة التي أبلغ بها الكاشير
-                    </th>
-                    <th className="p-2 text-start">سعر البيع الذي سيبقى</th>
-                    <th className="p-2 text-start">ملاحظة</th>
-                    <th className="p-2 text-center">قرار</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {openReports.map((r) => (
-                    <tr key={r.id} className="border-t">
-                      <td className="p-2 font-medium">{r.offeringName}</td>
-                      <td className="p-2 text-muted-foreground">
-                        {r.providerName}
-                      </td>
-                      <td className="p-2 tabular-nums">
-                        {fmtAr(r.currentProviderShare)}
-                      </td>
-                      <td className="p-2 tabular-nums font-medium">
-                        {fmtAr(r.reportedProviderShare)}
-                      </td>
-                      <td className="p-2 tabular-nums font-medium">
-                        {r.currentSellPrice != null
-                          ? fmtAr(r.currentSellPrice)
-                          : "—"}
-                      </td>
-                      <td className="p-2 text-muted-foreground">
-                        {r.notes || "—"}
-                      </td>
-                      <td className="p-2 text-center">
-                        <div className="flex justify-center gap-2">
-                          <Button
-                            size="sm"
-                            disabled={approveMut.isPending}
-                            onClick={() => void approveMismatch(r)}
-                          >
-                            مراجعة واعتماد
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={rejectMut.isPending}
-                            onClick={() => rejectMut.mutate({ reportId: r.id })}
-                          >
-                            رفض
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            <DataTable<MismatchReport>
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+              data={openReports}
+              columns={reportColumns}
+            />
           </CardContent>
         </Card>
       )}

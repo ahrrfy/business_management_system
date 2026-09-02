@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { UsagePanel } from "@/components/UsagePanel";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { EmpAvatar, EmploymentStatusBadge, iqd } from "@/lib/hr/ui";
@@ -14,6 +16,16 @@ import { type EmployeeEducation, payTypeLabel, WEEK_DAYS } from "@shared/hr";
 import { useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { PageHeader } from "@/components/PageHeader";
+
+/** أعمدة المؤهلات الدراسية — قائمةُ صفوفٍ متجانسة داخل تبويب البطاقة. */
+const educationColumns: ColumnDef<EmployeeEducation, unknown>[] = [
+  { id: "degree", header: "الشهادة", accessorFn: (r) => r.degree, cell: ({ row }) => row.original.degree },
+  { id: "major", header: "التخصص", accessorFn: (r) => r.major ?? "—", cell: ({ row }) => row.original.major ?? "—" },
+  { id: "school", header: "الجهة", accessorFn: (r) => r.school ?? "—", meta: { width: "wide" }, cell: ({ row }) => row.original.school ?? "—" },
+  // سَنَة: رقمٌ يُعزَل اتّجاهه بـkind، ومحاذاته تبقى بدايةً كما كانت في الجدول الخامّ.
+  { id: "year", header: "السنة", accessorFn: (r) => r.year ?? "—", meta: { kind: "number", align: "start" }, cell: ({ row }) => row.original.year ?? "—" },
+  { id: "gpa", header: "التقدير", accessorFn: (r) => r.gpa ?? "—", cell: ({ row }) => row.original.gpa ?? "—" },
+];
 
 function Field({ label, value, dir }: { label: string; value: React.ReactNode; dir?: "ltr" | "rtl" }) {
   return (
@@ -204,15 +216,16 @@ export default function EmployeeDetail() {
 
         <TabsContent value="education">
           <Card><CardContent className="p-0">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50"><tr><th className="p-2">الشهادة</th><th className="p-2">التخصص</th><th className="p-2">الجهة</th><th className="p-2">السنة</th><th className="p-2">التقدير</th></tr></thead>
-              <tbody>
-                {education.map((ed, i) => (
-                  <tr key={i} className="border-t"><td className="p-2">{ed.degree}</td><td className="p-2">{ed.major ?? "—"}</td><td className="p-2">{ed.school ?? "—"}</td><td className="p-2" dir="ltr">{ed.year ?? "—"}</td><td className="p-2">{ed.gpa ?? "—"}</td></tr>
-                ))}
-                {education.length === 0 && <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">لا مؤهلات مسجّلة.</td></tr>}
-              </tbody>
-            </table>
+            {/* مُضمَّن: تبويبٌ داخل بطاقة الموظف يحمل عدَّه في رأس التبويب. */}
+            <DataTable<EmployeeEducation>
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+              data={education}
+              columns={educationColumns}
+              emptyText="لا مؤهلات مسجّلة."
+            />
           </CardContent></Card>
         </TabsContent>
 

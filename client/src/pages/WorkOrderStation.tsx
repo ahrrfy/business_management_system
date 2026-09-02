@@ -5,6 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Banknote, CalendarDays, Check, Undo2, CheckCircle2, ChevronRight, ClipboardList, CornerDownLeft, Layers, MapPin, Phone, Ruler, Truck, Timer as TimerIcon, UserRound } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
@@ -33,6 +35,22 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
  */
 
 type WO = RouterOutputs["workOrders"]["list"][number];
+/** صفُّ مادّة مطلوبة من المخزون — مشتقٌّ من عقد `workOrders.get` (بلا تكلفة: مُخفاة عن الفني). */
+type WorkOrderMaterialRow = NonNullable<NonNullable<RouterOutputs["workOrders"]["get"]>["materials"]>[number];
+
+const materialColumns: ColumnDef<WorkOrderMaterialRow, unknown>[] = [
+  {
+    id: "product",
+    header: "المادة",
+    accessorFn: (m) => `${m.productName ?? "—"}${m.variantName ? ` · ${m.variantName}` : ""}`,
+    meta: { width: "wide", wrap: true },
+    cell: ({ row }) => `${row.original.productName ?? "—"}${row.original.variantName ? ` · ${row.original.variantName}` : ""}`,
+  },
+  { id: "sku", header: "SKU", accessorFn: (m) => m.sku ?? "—", meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs">{row.original.sku ?? "—"}</span> },
+  // `accessorFn` نصُّ العرض (بفواصل آلاف) ⇒ الفرز الافتراضيّ نصّيّ يقرأ «1,200» أصغر من «900»؛
+  // `sortingFn` صريحٌ على القيمة الخامّ.
+  { id: "baseQuantity", header: "الكمية (أساس)", accessorFn: (m) => fmtInt(m.baseQuantity), meta: { kind: "number", align: "center" }, sortingFn: (a, b) => Number(a.original.baseQuantity ?? 0) - Number(b.original.baseQuantity ?? 0), cell: ({ row }) => fmtInt(row.original.baseQuantity) },
+];
 
 const PRIORITIES: Record<string, { label: string; cls: string }> = {
   URGENT: { label: "عاجل", cls: "badge-stock-out border-transparent" },
@@ -417,24 +435,16 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-sm">المواد المطلوبة من المخزون</CardTitle></CardHeader>
             <CardContent className="p-0">
-              {d.materials && d.materials.length > 0 ? (
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50"><tr>
-                    <th className="p-2">المادة</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th>
-                  </tr></thead>
-                  <tbody>
-                    {d.materials.map((m) => (
-                      <tr key={m.id} className="border-t">
-                        <td className="p-2">{m.productName ?? "—"}{m.variantName ? ` · ${m.variantName}` : ""}</td>
-                        <td className="p-2 font-mono text-xs" dir="ltr">{m.sku ?? "—"}</td>
-                        <td className="p-2 text-center tabular-nums">{fmtInt(m.baseQuantity)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="p-4 text-center text-muted-foreground text-sm">لا مواد محدّدة — خدمة تخصيص بلا استهلاك مخزون.</div>
-              )}
+              {/* مُضمَّن: العنوان في رأس البطاقة، والمواد قائمة قصيرة تُقرأ كاملةً بلا ترقيم. */}
+              <DataTable<WorkOrderMaterialRow>
+                embedded
+                searchable={false}
+                bounded={false}
+                pageSize={Infinity}
+                columns={materialColumns}
+                data={d.materials ?? []}
+                emptyText="لا مواد محدّدة — خدمة تخصيص بلا استهلاك مخزون."
+              />
             </CardContent>
           </Card>
 

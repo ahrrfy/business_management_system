@@ -1,10 +1,9 @@
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, TableEmptyRow, TableSkeleton } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -135,7 +134,6 @@ export default function Users() {
 
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];
-  const pages = Math.max(1, Math.ceil(total / limit));
   const activeFilterCount = [role, branchId, includeInactive ? "1" : "", customRoleId ? "1" : ""].filter(Boolean).length;
 
   async function toggle(id: number, isActive: boolean, name: string, email: string) {
@@ -150,6 +148,134 @@ export default function Users() {
     }
     setActive.mutate({ userId: id, isActive: !isActive });
   }
+
+  /*
+   * أعمدة القائمة — تُبنى داخل المكوّن لأنّها تقرأ خريطة الفروع وحالة الطفرة ودالّة التبديل.
+   * كلّ عمودٍ ذي قيمة يحمل `accessorFn` بالتسمية **المعروضة** (لا الرمز الخامّ) كي يَنسخ
+   * «نسخ القيمة» ما يقرأه المستعمِل. عمود الإجراءات معفى (لا قيمة له).
+   */
+  const columns = useMemo<ColumnDef<Row, unknown>[]>(
+    () => [
+      {
+        id: "name",
+        header: "الاسم",
+        accessorFn: (u) => u.name ?? "—",
+        cell: ({ row }) => (
+          <span className="font-medium">
+            {row.original.name ?? "—"}
+            {/* الحقلان mustChangePassword وisOwner خارج نوع الصفّ المُصدَّر — نفس الصبّ الذي كان. */}
+            {!!(row.original as any).mustChangePassword && (
+              <span className="me-1 inline-flex text-amber-600" title="إلزام تغيير كلمة المرور">
+                <AlertTriangle aria-hidden className="size-3.5" />
+              </span>
+            )}
+          </span>
+        ),
+      },
+      {
+        id: "login",
+        header: "معرّف الدخول",
+        accessorFn: (u) => (u as { username?: string | null }).username || u.email || "—",
+        // kind: "code" يتكفّل بـfont-mono وعزل اتّجاه النصّ اللاتينيّ (بدل dir="ltr" اليدويّ).
+        meta: { kind: "code" },
+        cell: ({ row }) => {
+          const username = (row.original as { username?: string | null }).username;
+          return (
+            <span className="text-xs">
+              {username ? <span className="block">{username}</span> : null}
+              {row.original.email ? <span className="block text-muted-foreground">{row.original.email}</span> : null}
+              {!username && !row.original.email ? "—" : null}
+            </span>
+          );
+        },
+      },
+      {
+        id: "role",
+        header: "الدور",
+        accessorFn: (u) =>
+          (u as any).isOwner ? "مالك النظام" : (u.customRoleLabel ?? ROLE_LABEL[u.role] ?? u.role),
+        cell: ({ row }) => (
+          <RoleBadge
+            role={row.original.role}
+            customRoleLabel={row.original.customRoleLabel}
+            hasOverride={Object.keys((row.original.permissionsOverride as Record<string, string> | null) ?? {}).length > 0}
+            isOwner={!!(row.original as any).isOwner}
+          />
+        ),
+      },
+      {
+        id: "effectiveStation",
+        header: "القسم الفعليّ",
+        accessorFn: (u) => stationExportLabel((u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation),
+        cell: ({ row }) => (
+          <StationBadge station={(row.original as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation} />
+        ),
+      },
+      {
+        id: "branch",
+        header: "الفرع",
+        accessorFn: (u) => (u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—"),
+        cell: ({ row }) => (
+          <span className="text-xs">
+            {row.original.branchId ? (branchName.get(Number(row.original.branchId)) ?? `#${Number(row.original.branchId)}`) : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "lastSignedIn",
+        header: "آخر دخول",
+        accessorFn: (u) => fmtDate(u.lastSignedIn),
+        meta: { kind: "date" },
+        cell: ({ row }) => fmtDate(row.original.lastSignedIn),
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        accessorFn: (u) => (u.isActive ? "مفعّل" : "معطّل"),
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "badge-stock-out"}`}>
+            {row.original.isActive ? "مفعّل" : "معطّل"}
+          </span>
+        ),
+      },
+      {
+        id: "actions",
+        header: "إجراء",
+        meta: { kind: "actions" },
+        cell: ({ row }) => {
+          const id = Number(row.original.id);
+          const isActive = !!row.original.isActive;
+          return (
+            <RowActions
+              actions={[
+                { key: "edit", kind: "edit", label: "تعديل", href: `/users/${id}/edit`, gate: { adminOnly: true } },
+                {
+                  key: "reset",
+                  kind: "edit",
+                  label: "إعادة تعيين كلمة المرور",
+                  href: `/users/${id}/edit`,
+                  gate: { adminOnly: true },
+                },
+                {
+                  key: "toggle",
+                  kind: "approve",
+                  label: isActive ? "تعطيل" : "تفعيل",
+                  variant: isActive ? "destructive" : "default",
+                  disabled: setActive.isPending,
+                  disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                  onSelect: () => void toggle(id, isActive, row.original.name ?? "", row.original.email ?? ""),
+                  gate: { adminOnly: true },
+                },
+              ]}
+            />
+          );
+        },
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [branchName, setActive.isPending],
+  );
 
   return (
     <div className="space-y-4">
@@ -248,107 +374,23 @@ export default function Users() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2">الاسم</th>
-                <th className="p-2">معرّف الدخول</th>
-                <th className="p-2">الدور</th>
-                <th className="p-2">القسم الفعليّ</th>
-                <th className="p-2">الفرع</th>
-                <th className="p-2">آخر دخول</th>
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.isLoading && <TableSkeleton rows={8} cols={8} />}
-              {!list.isLoading && rows.map((u) => {
-                const id = Number(u.id);
-                const isActive = !!u.isActive;
-                const mustChange = !!(u as any).mustChangePassword;
-                return (
-                  <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">
-                      {u.name ?? "—"}
-                      {mustChange && <span className="me-1 inline-flex text-amber-600" title="إلزام تغيير كلمة المرور"><AlertTriangle aria-hidden className="size-3.5" /></span>}
-                    </td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">
-                      {(u as { username?: string | null }).username
-                        ? <div>{(u as { username?: string | null }).username}</div>
-                        : null}
-                      {u.email ? <div className="text-muted-foreground">{u.email}</div> : null}
-                      {!(u as { username?: string | null }).username && !u.email ? "—" : null}
-                    </td>
-                    <td className="p-2">
-                      <RoleBadge
-                        role={u.role}
-                        customRoleLabel={u.customRoleLabel}
-                        hasOverride={Object.keys((u.permissionsOverride as Record<string, string> | null) ?? {}).length > 0}
-                        isOwner={!!(u as any).isOwner}
-                      />
-                    </td>
-                    <td className="p-2"><StationBadge station={(u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation} /></td>
-                    <td className="p-2 text-xs">{u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—"}</td>
-                    <td className="p-2 text-xs" dir="ltr">{fmtDate(u.lastSignedIn)}</td>
-                    <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
-                        {isActive ? "مفعّل" : "معطّل"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        actions={[
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل",
-                            href: `/users/${id}/edit`,
-                            gate: { adminOnly: true },
-                          },
-                          {
-                            key: "reset",
-                            kind: "edit",
-                            label: "إعادة تعيين كلمة المرور",
-                            href: `/users/${id}/edit`,
-                            gate: { adminOnly: true },
-                          },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: isActive ? "تعطيل" : "تفعيل",
-                            variant: isActive ? "destructive" : "default",
-                            disabled: setActive.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                            onSelect: () => void toggle(id, isActive, u.name ?? "", u.email ?? ""),
-                            gate: { adminOnly: true },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-              {list.isError && (
-                <tr><td colSpan={8} className="p-0"><ErrorState message="تعذّر تحميل المستخدمين." onRetry={() => list.refetch()} /></td></tr>
-              )}
-              {!list.isLoading && !list.isError && rows.length === 0 && (
-                <TableEmptyRow colSpan={8} message="لا مستخدمين مطابقين." />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          <DataTable<Row>
+            columns={columns}
+            data={rows}
+            /* البحث والفلاتر في ListToolbar أعلاه (تُغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ
+               متجاوران، وتُعلن الشاشةُ «لا مستخدمين» بينما الفلترُ وحده هو الحاجب. */
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0 || q.trim() !== ""}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: "تعذّر تحميل المستخدمين.", onRetry: () => void list.refetch() }}
+            /* ترقيمٌ خادميّ (limit/offset + total) — شريطُ الترقيم اليدويّ أسفل البطاقة حُذف
+               معه كي لا يقفز شريطان بمقدارَين مختلفَين فتُتخطّى صفوفٌ بصمت. */
+            serverPagination={{ page, onPageChange: (next) => setPage(next), pageSize: limit, total, isFetching: list.isFetching }}
+            getRowClassName={(u) => (u.isActive ? undefined : "opacity-60")}
+            emptyText="لا مستخدمين مطابقين."
+          />
         </CardContent>
       </Card>
-
-      {pages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-          <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
-          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
-        </div>
-      )}
     </div>
   );
 }

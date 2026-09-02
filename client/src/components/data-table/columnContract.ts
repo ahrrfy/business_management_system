@@ -88,3 +88,65 @@ export function withColumnPresentation<T>(
 ): ColumnDef<T, unknown> {
   return { ...column, meta: { ...column.meta, ...meta } };
 }
+
+/**
+ * ⭐ فرزُ الأعمدة المُنسَّقة — يُشتقّ من `meta.kind` لا يُكتَب في كل شاشة.
+ *
+ * المشكلة (مراجعةٌ عدائية، ٢/٩/٢٦): العمود يمرّر للنسخ قيمةً **معروضة** — «1,234 د.ع»
+ * أو «2024-01-08» — و`accessorFn` هو نفسه مصدرُ الفرز. فالفرزُ يصير **نصّياً**:
+ * «1,234» يسبق «999»، و«٣ أيام» تسبق «١٠ أيام». المدير يفرز عمودَ المبالغ ليرى الأكبر
+ * فيرى ترتيباً مقلوباً **بلا أيّ إشارة على الخطأ** — وهو أسوأ من غياب الفرز.
+ * أُحصي ١١٧ عموداً في ٣٧ شاشة تحمل هذا العطب.
+ *
+ * الحلّ في المكوّن لا في الشاشات: `kind` يعرف طبيعة العمود أصلاً، فمنه نشتقّ المقارنة.
+ * وتبقى للشاشة الكلمةُ الأخيرة: `sortingFn` صريحٌ على العمود يتقدّم على هذا الاشتقاق.
+ */
+
+/** يستخرج عدداً من نصٍّ معروض (فواصل آلاف · رموز عملة · علامة سالب · نسبة). */
+function numericFromDisplay(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  // نُبقي الأرقام والفاصلة العشرية والسالب فقط — الفواصل والرموز والوحدات تُطرَح.
+  const cleaned = value.replace(/[^\d.\-]/g, "");
+  if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** مقارنةٌ رقمية تُبقي الفارغَ في الذيل دائماً (لا يتصدّر «—» قائمةَ الأكبر). */
+export function compareNumericDisplay(a: unknown, b: unknown): number {
+  const x = numericFromDisplay(a);
+  const y = numericFromDisplay(b);
+  if (x === null && y === null) return 0;
+  if (x === null) return 1;
+  if (y === null) return -1;
+  return x - y;
+}
+
+/** مقارنةُ تواريخ: تُحاول التحليل الزمنيّ، وتسقط إلى مقارنةٍ نصّية مستقرّة. */
+export function compareDateDisplay(a: unknown, b: unknown): number {
+  const parse = (v: unknown): number | null => {
+    if (v instanceof Date) return v.getTime();
+    if (typeof v === "number") return v;
+    if (typeof v !== "string" || v.trim() === "") return null;
+    const t = Date.parse(v);
+    return Number.isNaN(t) ? null : t;
+  };
+  const x = parse(a);
+  const y = parse(b);
+  if (x === null && y === null) return String(a ?? "").localeCompare(String(b ?? ""), "ar");
+  if (x === null) return 1;
+  if (y === null) return -1;
+  return x - y;
+}
+
+/** الأنواع التي تلزمها مقارنةٌ مشتقّة بدل المقارنة النصّية الافتراضية. */
+export function sortingFnForKind(kind: TableColumnKind): "auto" | ((rowA: { getValue: (id: string) => unknown }, rowB: { getValue: (id: string) => unknown }, id: string) => number) {
+  if (kind === "money" || kind === "number") {
+    return (rowA, rowB, id) => compareNumericDisplay(rowA.getValue(id), rowB.getValue(id));
+  }
+  if (kind === "date" || kind === "datetime") {
+    return (rowA, rowB, id) => compareDateDisplay(rowA.getValue(id), rowB.getValue(id));
+  }
+  return "auto";
+}

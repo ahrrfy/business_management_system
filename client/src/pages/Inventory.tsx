@@ -1,11 +1,9 @@
 import { RowActions } from "@/components/list";
 import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { DataTable } from "@/components/data-table/DataTable";
-import { TablePager } from "@/components/table/TablePager";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +30,7 @@ import { groupCategoriesTree } from "@/lib/categoryTree";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
@@ -400,6 +399,181 @@ export default function Inventory() {
     { key: "quantity" as const, header: "الرصيد", map: (r: OnHandRow) => r.quantity },
     { key: "minStock" as const, header: "الحد الأدنى", map: (r: OnHandRow) => r.minStock ?? 0 },
     { key: "isLow" as const, header: "الحالة", map: (r: OnHandRow) => (r.isLow ? "منخفض" : "متوفّر") },
+  ];
+
+  /*
+   * أعمدة «الأرصدة الحالية» — تُبنى في العَرض لأنّها تُغلِق على حالة التسوية المضمّنة
+   * (`editing`/`target`/`reason`/`notes`/المرفق) وعلى الصلاحيات. التحرير سطرٌ واحدٌ في
+   * كل مرّة، فالجدولُ يبقى جدولَ عرضٍ لا شبكةَ تحرير.
+   */
+  const stockColumns: ColumnDef<OnHandRow, unknown>[] = [
+    {
+      id: "productName",
+      header: "المنتج",
+      accessorFn: (r) => r.productName,
+      meta: { width: "wide" },
+      cell: ({ row }) => <span className="font-medium">{row.original.productName}</span>,
+    },
+    {
+      id: "variant",
+      header: "المتغيّر / SKU",
+      accessorFn: (r) => `${variantLabel(r)} (${r.sku})`,
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {variantLabel(row.original)} <span className="text-muted-foreground font-mono" dir="ltr">({row.original.sku})</span>
+        </span>
+      ),
+    },
+    {
+      id: "quantity",
+      header: "الرصيد",
+      accessorFn: (r) => fmtInt(r.quantity),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) =>
+        editing === row.original.variantId ? (
+          <Input
+            dir="ltr"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            className="h-8 w-24 mx-auto text-center"
+            autoFocus
+          />
+        ) : (
+          <span className="font-semibold">{fmtInt(row.original.quantity)}</span>
+        ),
+    },
+    {
+      id: "minStock",
+      header: "الحد الأدنى",
+      accessorFn: (r) => fmtInt(r.minStock ?? 0),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtInt(row.original.minStock ?? 0)}</span>,
+    },
+    {
+      id: "isLow",
+      header: "الحالة",
+      accessorFn: (r) => (r.isLow ? "منخفض" : "متوفّر"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.isLow ? "badge-stock-low" : "badge-status-active"}`}>
+          {row.original.isLow ? "منخفض" : "متوفّر"}
+        </span>
+      ),
+    },
+    {
+      id: "lastCountedAt",
+      header: "آخر جرد",
+      accessorFn: (r) => (r.lastCountedAt ? fmtDate(r.lastCountedAt) : "لم يُجرَد"),
+      meta: { kind: "date" },
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground" title="آخر جرد معتمد شمل هذا المنتج">
+          {row.original.lastCountedAt ? fmtDate(row.original.lastCountedAt) : "لم يُجرَد"}
+        </span>
+      ),
+    },
+    {
+      // العمود لكل الأدوار (تحويل/حركات روابط قراءة)، والتسوية تبقى لمن يملكها.
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions", width: "wide" },
+      cell: ({ row }) => {
+        const r = row.original;
+        if (canInlineAdjust && editing === r.variantId) {
+          return (
+            <div className="flex flex-col gap-1 items-stretch min-w-[220px]">
+              <AppSelect
+                value={reason}
+                onValueChange={(v) => setReason(v as AdjReason | "")}
+                placeholder="السبب (إلزاميّ)"
+                size="sm"
+              >
+                {ADJUSTMENT_REASONS.map((rr) => (
+                  <option key={rr.key} value={rr.key}>
+                    {"requiresProof" in rr && rr.requiresProof ? `${rr.label} · يستلزم مرفقاً` : rr.label}
+                  </option>
+                ))}
+              </AppSelect>
+              <Input
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="ملاحظة اختيارية"
+                className="h-8 text-xs"
+              />
+              <label className="text-[11px] flex items-center gap-1 justify-center cursor-pointer text-muted-foreground hover:text-primary">
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => handleAttachmentChange(e.target.files?.[0] ?? null)}
+                />
+                {attachmentUrl
+                  ? "صورة مرفقة — اضغط للتغيير"
+                  : attachmentRequired
+                    ? "التقط/ارفع صورة إثبات (إلزاميّ)"
+                    : "إرفاق صورة (اختياريّ)"}
+              </label>
+              <div className="flex gap-1 justify-center">
+                <Button size="sm" onClick={() => saveAdjust(r.variantId)} disabled={adjust.isPending}>
+                  {adjust.isPending ? "…" : "حفظ"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={adjust.isPending}>
+                  إلغاء
+                </Button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          // menu صريح: عدد الإجراءات الظاهرة يتفاوت بالدور — نثبّت ⋯ لاتساق الصفوف
+          <RowActions
+            mode="menu"
+            actions={[
+              {
+                key: "stocktake",
+                kind: "create",
+                label: "جلسة جرد للمنتج",
+                hidden: !canAdjust,
+                href: `/stocktakes/new?variants=${r.variantId}&name=${encodeURIComponent(`جرد تحقّق — ${r.productName}`)}`,
+                gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
+              },
+              {
+                key: "adjust",
+                kind: "edit",
+                label: "تسوية مباشرة (مدير)",
+                hidden: !canInlineAdjust,
+                onSelect: () => startAdjust(r),
+                gate: { roles: ["manager"], module: "inventory", level: "FULL" },
+              },
+              {
+                key: "revalue",
+                kind: "edit",
+                label: "إعادة تقييم التكلفة",
+                hidden: !canInlineAdjust,
+                onSelect: () => startReval(r),
+                gate: { roles: ["manager"], module: "inventory", level: "FULL" },
+              },
+              {
+                key: "transfer",
+                kind: "create",
+                label: "تحويل بين الفروع",
+                href: "/transfers",
+                gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
+              },
+              {
+                key: "moves",
+                kind: "view",
+                label: "حركات المنتج",
+                // شاشة الحركات تقرأ ?q= من URL فتفتح مفلترة على SKU
+                href: `/inventory-movements?q=${encodeURIComponent(r.sku)}`,
+                gate: { module: "inventory", level: "READ" },
+              },
+            ]}
+          />
+        );
+      },
+    },
   ];
 
   return (
@@ -783,159 +957,32 @@ export default function Inventory() {
               القائمة مقسّمة صفحات — تنقّل بالترقيم أسفل الجدول، و«تصدير Excel» ينزّل كامل النتائج المطابقة للفلاتر.
             </p>
           )}
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 text-start">المنتج</th>
-                <th className="p-2 text-start">المتغيّر / SKU</th>
-                <th className="p-2 text-center">الرصيد</th>
-                <th className="p-2 text-center">الحد الأدنى</th>
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">آخر جرد</th>
-                {/* العمود لكل الأدوار الآن (تحويل/حركات روابط قراءة)، والتسوية تبقى لمن يملكها */}
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const isEditing = editing === r.variantId;
-                return (
-                  <tr key={r.variantId} className={`border-t ${r.isLow ? "bg-[var(--sem-warn-bg)]" : ""}`}>
-                    <td className="p-2 font-medium">{r.productName}</td>
-                    <td className="p-2 text-xs">
-                      {variantLabel(r)} <span className="text-muted-foreground font-mono" dir="ltr">({r.sku})</span>
-                    </td>
-                    <td className="p-2 text-center tabular-nums font-semibold">
-                      {isEditing ? (
-                        <Input
-                          dir="ltr"
-                          value={target}
-                          onChange={(e) => setTarget(e.target.value)}
-                          className="h-8 w-24 mx-auto text-center"
-                          autoFocus
-                        />
-                      ) : (
-                        fmtInt(r.quantity)
-                      )}
-                    </td>
-                    <td className="p-2 text-center tabular-nums text-muted-foreground">{fmtInt(r.minStock ?? 0)}</td>
-                    <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.isLow ? "badge-stock-low" : "badge-status-active"}`}>
-                        {r.isLow ? "منخفض" : "متوفّر"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center text-xs text-muted-foreground" title="آخر جرد معتمد شمل هذا المنتج">
-                      {r.lastCountedAt ? fmtDate(r.lastCountedAt) : "لم يُجرَد"}
-                    </td>
-                    <td className="p-2 text-center">
-                      {canInlineAdjust && isEditing ? (
-                        <div className="flex flex-col gap-1 items-stretch min-w-[220px]">
-                          <AppSelect
-                            value={reason}
-                            onValueChange={(v) => setReason(v as AdjReason | "")}
-                            placeholder="السبب (إلزاميّ)"
-                            size="sm"
-                          >
-                            {ADJUSTMENT_REASONS.map((rr) => (
-                              <option key={rr.key} value={rr.key}>
-                                {"requiresProof" in rr && rr.requiresProof ? `${rr.label} · يستلزم مرفقاً` : rr.label}
-                              </option>
-                            ))}
-                          </AppSelect>
-                          <Input
-                            value={notes}
-                            onChange={(e) => setNotes(e.target.value)}
-                            placeholder="ملاحظة اختيارية"
-                            className="h-8 text-xs"
-                          />
-                          <label className="text-[11px] flex items-center gap-1 justify-center cursor-pointer text-muted-foreground hover:text-primary">
-                            <input
-                              type="file"
-                              accept="image/*"
-                              capture="environment"
-                              className="hidden"
-                              onChange={(e) => handleAttachmentChange(e.target.files?.[0] ?? null)}
-                            />
-                            {attachmentUrl
-                              ? "صورة مرفقة — اضغط للتغيير"
-                              : attachmentRequired
-                              ? "التقط/ارفع صورة إثبات (إلزاميّ)"
-                              : "إرفاق صورة (اختياريّ)"}
-                          </label>
-                          <div className="flex gap-1 justify-center">
-                            <Button size="sm" onClick={() => saveAdjust(r.variantId)} disabled={adjust.isPending}>
-                              {adjust.isPending ? "…" : "حفظ"}
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={adjust.isPending}>
-                              إلغاء
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        // menu صريح: عدد الإجراءات الظاهرة يتفاوت بالدور — نثبّت ⋯ لاتساق الصفوف
-                        <RowActions
-                          mode="menu"
-                          actions={[
-                            {
-                              key: "stocktake",
-                              kind: "create",
-                              label: "جلسة جرد للمنتج",
-                              hidden: !canAdjust,
-                              href: `/stocktakes/new?variants=${r.variantId}&name=${encodeURIComponent(`جرد تحقّق — ${r.productName}`)}`,
-                              gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
-                            },
-                            {
-                              key: "adjust",
-                              kind: "edit",
-                              label: "تسوية مباشرة (مدير)",
-                              hidden: !canInlineAdjust,
-                              onSelect: () => startAdjust(r),
-                              gate: { roles: ["manager"], module: "inventory", level: "FULL" },
-                            },
-                            {
-                              key: "revalue",
-                              kind: "edit",
-                              label: "إعادة تقييم التكلفة",
-                              hidden: !canInlineAdjust,
-                              onSelect: () => startReval(r),
-                              gate: { roles: ["manager"], module: "inventory", level: "FULL" },
-                            },
-                            {
-                              key: "transfer",
-                              kind: "create",
-                              label: "تحويل بين الفروع",
-                              href: "/transfers",
-                              gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
-                            },
-                            {
-                              key: "moves",
-                              kind: "view",
-                              label: "حركات المنتج",
-                              // شاشة الحركات تقرأ ?q= من URL فتفتح مفلترة على SKU
-                              href: `/inventory-movements?q=${encodeURIComponent(r.sku)}`,
-                              gate: { module: "inventory", level: "READ" },
-                            },
-                          ]}
-                        />
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {!onHand.isLoading && rows.length === 0 && (
-                <TableEmptyRow colSpan={7} message={page > 0 ? "لا صفوف في هذه الصفحة — ارجع للصفحة السابقة." : "لا منتجات برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء."} />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
-          <TablePager
-            page={page}
-            onPageChange={setPage}
-            pageSize={PAGE_SIZE}
-            rowsOnPage={rows.length}
-            hasMore={hasMore}
-            isLoading={onHand.isLoading}
+          {/* الترقيم خادميّ (limit/offset بلا COUNT ⇒ hasMore) ⇒ شريطٌ واحدٌ داخل الجدول؛
+              الشريط المنفصل الذي كان تحته حُذف كي لا يقفز ترقيمان بمقدارَين فتُتخطّى صفوفٌ صامتاً.
+              والبحث والفلاتر في شريط الأدوات أعلى الصفحة (تغذّي الاستعلام) ⇒ لا بحثَ داخليّ. */}
+          <DataTable<OnHandRow>
+            columns={stockColumns}
+            data={rows}
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0}
+            loading={onHand.isLoading}
+            errorState={{ isError: onHand.isError, message: onHand.error?.message, onRetry: () => void onHand.refetch() }}
+            /* `!` إلزاميّ: صفُّ DataTable يحمل `odd:bg-background even:bg-muted/20` وحاويتُه
+               تحمل `[&_tbody_tr:nth-child(even)]:bg-muted/20` — وكلاهما أعلى تخصيصاً من صنفِ
+               خلفيةٍ عاديّ، فتُبتلَع نبرةُ الصفّ المنخفض صامتةً (كانت تعمل في الجدول الخامّ). */
+            getRowClassName={(r) => (r.isLow ? "!bg-[var(--sem-warn-bg)]" : undefined)}
+            emptyText={page > 0 ? "لا صفوف في هذه الصفحة — ارجع للصفحة السابقة." : "لا منتجات برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء."}
+            /* بلا هذه يُقال «أضف رصيداً افتتاحياً» بينما الصفوف موجودةٌ ومحجوبةٌ ببحثٍ أو فلتر. */
+            emptyFilteredState={(
+              <div className="space-y-2">
+                <div>لا منتجات مطابقة للبحث أو الفلاتر الحالية.</div>
+                {/* زرٌّ فعليّ بتسمية العقد بدل إعادة كتابة نصّ الزرّ في الجملة. */}
+                <Button variant="outline" size="sm" onClick={resetF}>
+                  {FILTER_LABELS.reset}
+                </Button>
+              </div>
+            )}
+            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, hasMore, isFetching: onHand.isFetching }}
           />
         </CardContent>
       </Card>

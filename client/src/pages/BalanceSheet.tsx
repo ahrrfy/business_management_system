@@ -7,6 +7,8 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -217,29 +219,57 @@ export default function BalanceSheet() {
   );
 }
 
+/** سطرُ قسمٍ في الميزانية (أصل أو خصم) — تسمية البند وقيمته نصّاً. */
+type SectionRow = { label: string; v: string };
+
 function SectionCard({ title, rows, total, totalLabel, tone }: {
-  title: string; rows: { label: string; v: string }[]; total: string; totalLabel: string; tone: "emerald" | "amber";
+  title: string; rows: SectionRow[]; total: string; totalLabel: string; tone: "emerald" | "amber";
 }) {
+  // الإجمالي في `<tfoot>` عبر `footer` على الأعمدة — يبقى محاذياً لعموده (لا سطرَ ملخّصٍ حرّ).
+  const columns = useMemo<ColumnDef<SectionRow, unknown>[]>(
+    () => [
+      {
+        id: "label",
+        header: "البند",
+        accessorFn: (r) => r.label,
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => row.original.label,
+        footer: () => totalLabel,
+      },
+      {
+        id: "amount",
+        header: "القيمة",
+        accessorFn: (r) => fmtAr(r.v),
+        meta: { kind: "money" },
+        cell: ({ row }) => fmtAr(row.original.v),
+        footer: () => fmtAr(total),
+      },
+    ],
+    [total, totalLabel],
+  );
+
   return (
     <Card>
       <CardContent className="p-0">
         <div className={`px-4 py-2.5 font-semibold border-b ${tone === "emerald" ? "text-[var(--sem-pos)]" : "text-[var(--sem-warn)]"}`}>{title}</div>
-        <table className="w-full text-sm">
-          <tbody>
-            {rows.length === 0 ? (
-              <tr><td className="p-4 text-center text-muted-foreground">—</td></tr>
-            ) : rows.map((r, i) => (
-              <tr key={i} className="border-b">
-                <td className="p-3 text-end">{r.label}</td>
-                <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(r.v)}</td>
-              </tr>
-            ))}
-            <tr className="font-bold bg-muted/30">
-              <td className="p-3 text-end">{totalLabel}</td>
-              <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(total)}</td>
-            </tr>
-          </tbody>
-        </table>
+        {/* قسمٌ مُضمَّن في بطاقةٍ تحمل عنوانه ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+        <DataTable<SectionRow>
+          embedded
+          searchable={false}
+          bounded={false}
+          pageSize={Infinity}
+          columns={columns}
+          data={rows}
+          emptyText="—"
+        />
+        {/* الإجماليّ يبقى مرئياً حتى على قسمٍ فارغ: DataTable لا يرسم ذيلاً فوق صفر صفوف،
+            والجدول الخامّ كان يعرض صفَّ الإجمالي دائماً. */}
+        {rows.length === 0 && (
+          <div className="flex items-center justify-between gap-3 border-t-2 border-border bg-muted/40 px-[var(--ui-table-cell-inline)] py-2.5 text-sm font-bold">
+            <span>{totalLabel}</span>
+            <span className="tabular-nums" dir="ltr">{fmtAr(total)}</span>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
