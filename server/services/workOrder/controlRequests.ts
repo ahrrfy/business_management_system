@@ -14,6 +14,8 @@ import { extractInsertId } from "../../lib/insertId";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { idempotencyHash } from "../idempotency";
+import { money, round2, toDbMoney } from "../money";
+import { computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
 import {
   hasWorkOrderCommercialAuthority,
   maySeeDrawerCash,
@@ -21,7 +23,6 @@ import {
   workOrderControlDeniedMessage,
   type WorkOrderControlTypeKey,
 } from "@shared/workOrderControlAuthority";
-import { money, round2 } from "../money";
 import type { RefundRail } from "@shared/refundRail";
 import { type Actor, requireDb, withTx } from "../tx";
 import { recordWorkOrderEvent } from "../workOrderEvents";
@@ -174,6 +175,24 @@ export async function requestWorkOrderControl(
     assertWorkOrderBranch(wo, actor);
     if (Number(wo.version) !== input.baseVersion) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر أمر الشغل منذ فتحه — حدّث الصفحة قبل إرسال الطلب" });
+    }
+    if (input.requestType === "CANCEL") {
+      // **رفضُ البطاقة عند وجود جزءٍ نقديٍّ لا يقبلها** (مراجعة Codex P2 على #930): حصصٌ
+      // مطبَّقة أو أمانةُ أجرة تُردّان نقداً حتماً، فطلبُ البطاقة يُنشئ تحكّماً يستحيل اعتمادُه
+      // (التنفيذُ يرفضه فيبقى معلّقاً للأبد). نرفضه هنا فلا يُخزَّن أصلاً.
+      const cancelPayload = input.payload as unknown as CancelControlPayload;
+      if ((cancelPayload.refundRail ?? "DRAWER") === "CARD") {
+        const appliedCash = (await appliedCollectionsForWorkOrder(tx, input.workOrderId)).some(
+          (part) => (part.method === "CASH" || part.method === "TELECOM") && money(part.amount).gt(0),
+        );
+        const feeHeld = await workOrderFeeHeldNet(tx, input.workOrderId);
+        if (appliedCash || feeHeld.gt(0)) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "هذا الأمر يحمل مالاً نقدياً محتجزاً (حصص عربون أو أمانة أجرة) لا يُردّ على البطاقة — اختر الدرج أو الخزينة الإدارية.",
+          });
+        }
+      }
     }
     if (input.requestType === "REVERSE_DELIVERY") {
       if (wo.status !== "DELIVERED" || wo.invoiceId == null) {
@@ -513,16 +532,16 @@ export async function getWorkOrderControlPreflight(
         ))
     )[0];
     const cashRefund = round2(money(cashReceipt?.value ?? "0"));
-    const openReceptionShifts = await tx.select({
+    const openReceptionShiftRows = await tx.select({
       id: shifts.id,
       userId: shifts.userId,
       userName: users.name,
-      expectedCash: shifts.expectedCash,
+      openingBalance: shifts.openingBalance,
     }).from(shifts)
       .innerJoin(users, eq(users.id, shifts.userId))
       .where(and(eq(shifts.branchId, Number(wo.branchId)), eq(shifts.status, "OPEN"), eq(shifts.shiftType, "RECEPTION")));
     /**
-     * ⛔ **`reverseDelivery` لمن يملك طلبَ العكس وحده** (مراجعة Codex P1).
+     * ⛔ **`reverseDelivery` لمن يملك طلبَ العكس وحده** (مراجعة Codex P1 على #929).
      *
      * لمّا وُسِّعت هذه النقطة إلى `workordersExecProcedure` (ليطلب فنّي المطبعة الإلغاء) صار
      * مجرّدُ فتح صفحة أمرٍ **مُسلَّم** يُسلّمه هذا الكائنَ المتشعّب: صافي المدفوع، ومصادرُ الردّ
@@ -538,14 +557,33 @@ export async function getWorkOrderControlPreflight(
       ? await getWorkOrderReverseDeliveryPreflightInTx(tx, workOrderId, actor)
       : null;
     /**
-     * وأرصدةُ الأدراج تتبع سياسةَ الإفصاح الواحدة (`treasury:READ`) كما في `refundPreflight` —
-     * القائمةُ تُعرَض ليُختار الدرج، والرقمُ لا. (عملياً هذا العمود `NULL` لكلّ وردية مفتوحة
-     * لأنّه يُكتب عند الإغلاق، لكنّ السياسة لا تُبنى على مصادفةٍ في البيانات.)
+     * أرصدةُ الأدراج تتبع سياسةَ الإفصاح الواحدة (`treasury:READ`) كما في `refundPreflight`:
+     * القائمةُ تُعرَض ليُختار الدرج، والرقمُ الحسّاس يُحجَب عمّن لا يملكها (يكفيه علَمُ `sufficient`).
      */
     const exposeDrawerCash = maySeeDrawerCash(
       actor.role ?? "",
       (actor.permissionsOverride ?? null) as never,
     );
+    /**
+     * ⚠️ **النقدُ المتاح يُحسَب حيّاً لا من عمود `shifts.expectedCash`** (بلاغ المالك بالصورة ١/٩،
+     * ومراجعة Codex على #930): ذلك العمودُ لقطةٌ تُكتب **عند إغلاق الوردية** فيكون `NULL` لكلّ
+     * وردية مفتوحة، فتعرض الشاشةُ «0 د.ع» على درجٍ يحمل ٥٦٬٠٠٠. `computeDrawerCashBalance` يقيسه
+     * بنفس صيغة `assertCashOutAvailable` — فما تعرضه الشاشة هو ما يقبله الحارسُ عند التنفيذ.
+     */
+    const expectedCashRefundAmt = round2(cashRefund.plus(appliedCashRefund).plus(feeHeld));
+    const openReceptionShifts = await Promise.all(
+      openReceptionShiftRows.map(async (shift) => {
+        const available = round2(await computeDrawerCashBalance(tx, Number(shift.id), shift.openingBalance ?? "0"));
+        return {
+          id: Number(shift.id),
+          userId: Number(shift.userId),
+          userName: shift.userName,
+          expectedCash: exposeDrawerCash ? toDbMoney(available) : null,
+          sufficient: available.gte(expectedCashRefundAmt),
+        };
+      }),
+    );
+    const treasuryAvailable = round2(await computeTreasuryCashBalance(tx, Number(wo.branchId)));
     return {
       workOrderId,
       branchId: Number(wo.branchId),
@@ -555,7 +593,10 @@ export async function getWorkOrderControlPreflight(
       materialLineCount: materialRows.length,
       feeHeld: feeHeld.toFixed(2),
       cashRefundRequired: cashRefund.gt(0) || appliedCashRefund.gt(0) || feeHeld.gt(0),
-      expectedCashRefund: round2(cashRefund.plus(appliedCashRefund).plus(feeHeld)).toFixed(2),
+      expectedCashRefund: expectedCashRefundAmt.toFixed(2),
+      // البطاقةُ ممنوعةٌ حين يوجد جزءٌ نقديٌّ لا يقبلها (حصصٌ مطبَّقة أو أمانةُ أجرة تُردّان
+      // نقداً حتماً) — فاختيارُها يُنشئ طلبَ تحكّمٍ يستحيل اعتمادُه (مراجعة Codex P2 على #930).
+      cardRefundAllowed: !(appliedCashRefund.gt(0) || feeHeld.gt(0)),
       /**
        * **هل في الإلغاء مالٌ فعلاً؟** (قرار المالك ١/٩/٢٦) — هذا وحده ما يستدعي مديراً حين
        * يطلب فنّي المطبعة الإلغاء. متعمَّدٌ **ألّا** يكون مرادفاً لـ`controlRequired.cancel`:
@@ -577,14 +618,10 @@ export async function getWorkOrderControlPreflight(
         cancel: wo.status !== "RECEIVED" || money(wo.deposit ?? "0").gt(0) || appliedDeposits.length > 0 || materialRows.length > 0 || feeHeld.gt(0),
       },
       reverseDelivery,
-      openReceptionShifts: openReceptionShifts.map((shift) => ({
-        id: Number(shift.id),
-        userId: Number(shift.userId),
-        userName: shift.userName,
-        expectedCash: !exposeDrawerCash || shift.expectedCash == null
-          ? null
-          : round2(money(shift.expectedCash)).toFixed(2),
-      })),
+      openReceptionShifts,
+      // نقدُ الخزينة الإدارية — محجوبُ الرقم عمّن لا يملك treasury:READ، مع علَمِ كفايةٍ باقٍ.
+      treasuryCash: exposeDrawerCash ? toDbMoney(treasuryAvailable) : null,
+      treasurySufficient: treasuryAvailable.gte(expectedCashRefundAmt),
     };
   }, { gate: "NONE" });
 }

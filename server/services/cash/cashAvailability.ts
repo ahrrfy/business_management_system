@@ -228,6 +228,9 @@ export const TREASURY_OUT_EXCEPTION_POLICY = Object.freeze({
   SALE_RETURN_COMPENSATION: "REVERSAL_COMPENSATION",
   DIGITAL_CARD_REVERSAL_COMPENSATION: "REVERSAL_COMPENSATION",
   EXCHANGE_REVERSAL_COMPENSATION: "REVERSAL_COMPENSATION",
+  // ردُّ عربون/حصص/أمانة أمرِ شغلٍ مُلغى: عكسٌ مقيَّدٌ بمصدره (إيصالُ القبض بهويّته، ومبلغٌ لا
+  // يتجاوزه) — نظيرُ SALE_CANCELLATION_COMPENSATION تماماً، فيُعفى من طابور مالك الصرف الخارجي.
+  WORK_ORDER_CANCELLATION_COMPENSATION: "REVERSAL_COMPENSATION",
 } as const);
 
 export type TreasuryOutExceptionOperation = keyof typeof TREASURY_OUT_EXCEPTION_POLICY;

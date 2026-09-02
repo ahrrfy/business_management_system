@@ -1,14 +1,17 @@
 // تقرير الإنتاج — مستندات الإنتاج المؤكَّدة ضمن الفترة: كلفة المواد/العمالة/الهدر/إجمالي الكلفة.
 // المصدر: reports.productionReport. عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc).
 import { useState } from "react";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { useMemo } from "react";
 import { FilterField } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+
+
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -94,6 +97,31 @@ export default function ProductionReport() {
         : undefined,
     });
   }
+  /** أعمدة تقرير الإنتاج. */
+  const productionColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
+    { id: "docNumber", header: "رقم المستند", accessorFn: (r) => r.docNumber ?? "—", meta: { kind: "code" } },
+    { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" } },
+    {
+      id: "branchName", header: "الفرع",
+      accessorFn: (r) => r.branchName ?? "—",
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName ?? "—"}</span>,
+      meta: { kind: "text" },
+    },
+    { id: "inputsCost", header: "المواد", accessorFn: (r) => Number(r.inputsCost), cell: ({ row }) => fmtAr(row.original.inputsCost), meta: { kind: "money" } },
+    { id: "laborCost", header: "العمالة", accessorFn: (r) => Number(r.laborCost), cell: ({ row }) => fmtAr(row.original.laborCost), meta: { kind: "money" } },
+    {
+      id: "wasteCost", header: "الهدر",
+      accessorFn: (r) => Number(r.wasteCost),
+      cell: ({ row }) => <span className="text-money-negative">{fmtAr(row.original.wasteCost)}</span>,
+      meta: { kind: "money" },
+    },
+    {
+      id: "totalCost", header: "إجمالي التكلفة",
+      accessorFn: (r) => Number(r.totalCost),
+      cell: ({ row }) => <span className="font-medium">{fmtAr(row.original.totalCost)}</span>,
+      meta: { kind: "money" },
+    },
+  ], []);
 
   return (
     <ReportShell
@@ -118,44 +146,14 @@ export default function ProductionReport() {
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message={q.error?.message} onRetry={() => q.refetch()} />
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">رقم المستند</th>
-                    <th className="p-2.5 text-right font-medium">التاريخ</th>
-                    <th className="p-2.5 text-right font-medium">الفرع</th>
-                    <th className="p-2.5 text-right font-medium">المواد</th>
-                    <th className="p-2.5 text-right font-medium">العمالة</th>
-                    <th className="p-2.5 text-right font-medium">الهدر</th>
-                    <th className="p-2.5 text-right font-medium">إجمالي التكلفة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!rows.length ? (
-                    <TableEmptyRow colSpan={7} message="لا مستندات إنتاج في هذا النطاق." />
-                  ) : (
-                    rows.map((r: Row) => (
-                      <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
-                        <td className="p-2.5 text-right">{r.docNumber ?? "—"}</td>
-                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
-                        <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
-                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.inputsCost)}</td>
-                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.laborCost)}</td>
-                        <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{fmtAr(r.wasteCost)}</td>
-                        <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{fmtAr(r.totalCost)}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          <DataTable
+            columns={productionColumns}
+            data={rows}
+            loading={q.isLoading}
+            searchable={false}
+            errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
+            emptyText="لا مستندات إنتاج في هذا النطاق."
+          />
         </CardContent>
       </Card>
     </ReportShell>
