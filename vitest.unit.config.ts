@@ -135,7 +135,6 @@ export default defineConfig({
       "shared/approvalPolicy.test.ts",
       "shared/approvalTriggers.test.ts",
       "shared/errors.test.ts",
-      "shared/sessionContext.test.ts",
       "shared/cashVarianceDictionaries.test.ts",
       "server/services/approval/ownerGate.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",

@@ -215,7 +215,12 @@ function collect() {
 
   // ── D2 أيضاً في shared (المسند يُكتب هناك أحياناً)
   for (const file of walk(path.join(REPO_ROOT, "shared"), /\.ts$/)) {
-    bump("D2", relOf(file), detectOpenBalancePredicate(readFileSync(file, "utf8")));
+    const rel = relOf(file);
+    // ⚠️ **المصدرُ الواحد ليس تكراراً.** `shared/predicates/**` هي بالتعريف حيث يُكتب المسند
+    // مرّةً واحدة ليُستورَد؛ عدُّها انتهاكاً يجعل الحارس يُنذر على العلاج نفسه — وحارسٌ
+    // يُنذر كذباً يُتجاوَز فيصير مسرحياً (CLAUDE.md §٤-ج).
+    if (rel.startsWith("shared/predicates/")) continue;
+    bump("D2", rel, detectOpenBalancePredicate(readFileSync(file, "utf8")));
   }
 
   // ── D4 · D6 — الواجهة

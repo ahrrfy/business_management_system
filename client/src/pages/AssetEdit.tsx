@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { iqd } from "@/lib/assets/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { ASSET_CATEGORIES, DEPRECIATION_METHODS } from "@shared/assets";
 import { AlertCircle } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -32,6 +33,8 @@ export default function AssetEdit() {
   const q = trpc.assets.get.useQuery({ id }, { enabled: Number.isFinite(id) });
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  // لقطة ما حُمّل من الخادم — مرجع المقارنة الوحيد لحارس فقد البيانات أدناه.
+  const [baseline, setBaseline] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     name: "", category: "computers", brand: "", serial: "",
@@ -44,12 +47,14 @@ export default function AssetEdit() {
   // تعبئة النموذج من بيانات الأصل (مرّة واحدة).
   if (q.data && !loaded) {
     const a = q.data;
-    setForm({
+    const loadedForm = {
       name: a.name ?? "", category: a.category ?? "computers", brand: a.brand ?? "", serial: a.serial ?? "",
       branchId: a.branchId ? String(a.branchId) : "", location: a.location ?? "", condition: a.condition ?? "",
       supplierId: a.supplierId ? String(a.supplierId) : "", purchaseDate: a.purchaseDate ?? "", purchaseValue: stripMoney(a.purchaseValue), warrantyEnd: a.warrantyEnd ?? "",
       method: (a.depreciationMethod as "sl" | "db") ?? "sl", usefulLifeYears: String(a.usefulLifeYears ?? 1), salvageValue: stripMoney(a.salvageValue),
-    });
+    };
+    setForm(loadedForm);
+    setBaseline(JSON.stringify(loadedForm));
     setLoaded(true);
   }
 
@@ -57,6 +62,11 @@ export default function AssetEdit() {
     () => previewAnnual(Number(form.purchaseValue || 0), Number(form.salvageValue || 0), Number(form.usefulLifeYears || 0), form.method),
     [form.purchaseValue, form.salvageValue, form.usefulLifeYears, form.method],
   );
+
+  // حارس فقد بيانات: يُقاس الانحراف عن لقطة الخادم لا عن حالةٍ فارغة، وإلّا لبدت التعبئة الأولى
+  // نفسها «تغييراً» فظهر التحذير على كل فتحٍ للشاشة حتى بلا لمس حقل — فيتدرّب المستخدم على تجاهله.
+  const isDirty = useMemo(() => baseline != null && JSON.stringify(form) !== baseline, [form, baseline]);
+  useUnsavedGuard(isDirty);
 
   const update = trpc.assets.update.useMutation({
     onSuccess: async (a) => {
@@ -129,7 +139,7 @@ export default function AssetEdit() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">التصنيف والموقع</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">التصنيف والموقع والعهدة</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="br">الفرع</Label>
@@ -140,7 +150,13 @@ export default function AssetEdit() {
           </div>
           <div className="space-y-1"><Label htmlFor="loc">الموقع</Label><Input id="loc" value={form.location} onChange={(e) => set({ location: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="cond">الحالة الفنية</Label><Input id="cond" value={form.condition} onChange={(e) => set({ condition: e.target.value })} placeholder="ممتاز / جيد / متوسط" /></div>
-          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground self-end">العهدة تُغيَّر من صفحة الأصل («تسليم عهدة») لا من هنا.</div>
+          <div className="space-y-1">
+            <Label htmlFor="cust">العهدة (الموظف المسؤول)</Label>
+            <Input id="cust" value={q.data.custodianName ?? "بلا عهدة"} readOnly aria-describedby="asset-custody-lock" />
+            <p id="asset-custody-lock" className="text-xs text-muted-foreground">
+              تُنقل من صفحة الأصل («تسليم عهدة») لا من هنا، لأنّ نقلها يفتح قيداً في سجلّ العهدة باسم المُستلم وتاريخه — ولا يُنشئه حفظُ نموذجٍ عام.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
