@@ -36,7 +36,6 @@ import { notify } from "@/lib/notify";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
-import { ShiftHandoverSection } from "@/components/pos/ShiftHandoverSection";
 import { loadPosTabsDraft, posTabsDraftKey, savePosTabsDraft, type PosDraftScope } from "@/lib/cartDraft";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { normalizeSearchText } from "@shared/searchNormalize";
@@ -1549,7 +1548,6 @@ function Bar({ C, c, k, v, copyTitle }: { C: C; c: string; k: string; v: number;
 function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; isElevatedRole: boolean; onClose: () => void; onClosed: () => void }) {
   const [counted, setCounted] = useState("");
   const [countEntered, setCountEntered] = useState(false);
-  const [handoverToUserId, setHandoverToUserId] = useState<number | null>(null);
   const utils = trpc.useUtils();
   const reportQ = trpc.shifts.report.useQuery({ shiftId: shift.id });
   const report = reportQ.data;
@@ -1570,18 +1568,18 @@ function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: 
           { label: "النقد المعدود", value: r.countedCash },
           { label: "الفرق", value: r.variance },
           ...(r.treasuryReturn ? [
-            { label: "سلّم النقد إلى", value: r.treasuryReturn.recipientName },
-            { label: "رقم عهدة التسليم", value: r.treasuryReturn.handoverNumber },
+            { label: "رُحّل إلى", value: "الخزينة" },
+            { label: "رقم سند الترحيل", value: r.treasuryReturn.handoverNumber },
           ] : []),
         ],
         footer: r.treasuryReturn
-          ? "النقد عهدة بانتظار العدّ والقبول في الخزينة"
+          ? "تم ترحيل النقد إلى الخزينة تلقائياً"
           : "نهاية الوردية — شكراً",
       });
       if (r.treasuryReturn) {
         notify.ok(
-          `سلّم ${formatIqd(r.countedCash)} إلى ${r.treasuryReturn.recipientName}`,
-          `العهدة ${r.treasuryReturn.handoverNumber} بانتظار العدّ والقبول في الخزينة.`,
+          `أُغلقت الوردية ورُحّل ${formatIqd(r.countedCash)} إلى الخزينة تلقائياً`,
+          `سند الترحيل ${r.treasuryReturn.handoverNumber}`,
         );
       }
       await utils.shifts.current.invalidate();
@@ -1596,15 +1594,12 @@ function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: 
   const showExpected = isElevatedRole || countEntered;
   const diff = showExpected && expected != null && counted ? Number(counted) - expected : null;
   const hasVariance = diff != null && Math.abs(diff) >= 0.01;
-  const needsHandoverRecipient = D(counted || 0).gt(0) && handoverToUserId == null;
-  const closeDisabled = !counted || closeShift.isPending || hasVariance || needsHandoverRecipient;
+  const closeDisabled = !counted || closeShift.isPending || hasVariance;
   const closeLabel = closeShift.isPending
     ? "جارٍ الإغلاق…"
     : hasVariance
       ? "الإغلاق مرفوض لوجود فرق"
-      : needsHandoverRecipient
-        ? "اختر مستلم عهدة الإغلاق"
-        : "إغلاق وطباعة Z";
+      : "إغلاق وطباعة Z";
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgb(0 0 0/.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
@@ -1664,20 +1659,12 @@ function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: 
                 </div>
               </div>
             )}
-            <ShiftHandoverSection
-              branchId={Number(shift.branchId)}
-              amount={counted}
-              value={handoverToUserId}
-              onChange={setHandoverToUserId}
-              disabled={closeShift.isPending}
-            />
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={onClose} style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>إلغاء</button>
               <button disabled={closeDisabled}
                 onClick={() => closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
-                  handoverToUserId,
                 })}
                 style={{ flex: 1, height: 46, background: closeDisabled ? C.muted : C.danger, color: closeDisabled ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: closeDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeLabel}</button>
             </div>

@@ -15,7 +15,6 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { ShiftHandoverSection } from "@/components/pos/ShiftHandoverSection";
 import {
   ShiftCashReconciliation,
   adaptShiftCashReconciliation,
@@ -91,7 +90,6 @@ export default function Shifts() {
   const [copying, setCopying] = useState<number | null>(null);
   const [closingShiftId, setClosingShiftId] = useState<number | null>(null);
   const [closeCounted, setCloseCounted] = useState("");
-  const [handoverToUserId, setHandoverToUserId] = useState<number | null>(null);
   const [legacyEvidenceNote, setLegacyEvidenceNote] = useState("");
   const [legacySourceReceiptId, setLegacySourceReceiptId] = useState("");
   const [legacyConfirmedZero, setLegacyConfirmedZero] = useState(false);
@@ -199,9 +197,9 @@ export default function Shifts() {
         "legacyNegativeRemediation" in result
           ? "مُوّلت الوردية من الخزنة بالقيمة الدقيقة، وصُفّرت وأُغلقت"
           : result.treasuryReturn
-            ? `أُغلقت الوردية — سلّم ${formatIqd(result.countedCash)} إلى ${result.treasuryReturn.recipientName} (${result.treasuryReturn.handoverNumber})`
+            ? `أُغلقت الوردية ورُحّل ${formatIqd(result.countedCash)} إلى الخزينة تلقائياً`
             : "أُغلقت الوردية",
-        result.treasuryReturn ? "النقد عهدة بانتظار العدّ والقبول في الخزينة." : undefined,
+        result.treasuryReturn ? `سند الترحيل ${result.treasuryReturn.handoverNumber}` : undefined,
       );
       setClosingShiftId(null);
       setCloseCounted("");
@@ -1265,7 +1263,6 @@ export default function Shifts() {
           if (!open) {
             setClosingShiftId(null);
             setCloseCounted("");
-            setHandoverToUserId(null);
             setLegacyEvidenceNote("");
             setLegacySourceReceiptId("");
             setLegacyConfirmedZero(false);
@@ -1394,16 +1391,6 @@ export default function Shifts() {
                     )}
                   </div>
                 )}
-                {closingRow && (
-                  <ShiftHandoverSection
-                    branchId={Number(closingRow.branchId)}
-                    amount={closeCounted}
-                    value={handoverToUserId}
-                    onChange={setHandoverToUserId}
-                    disabled={closeShiftM.isPending}
-                    excludeUserIds={[Number(closingRow.userId)]}
-                  />
-                )}
               </div>
               )}
               {!isLegacyNegative && closeHasVariance && (
@@ -1428,7 +1415,7 @@ export default function Shifts() {
                     legacyEvidenceNote.trim().length < 20 ||
                     !legacyConfirmedZero ||
                     !legacyClientRequestId
-                  : !closeCounted || closeHasVariance || (D(closeCounted || 0).gt(0) && handoverToUserId == null))
+                  : !closeCounted || closeHasVariance)
               }
               onClick={() => {
                 if (closingShiftId == null || closeExpected == null) return;
@@ -1451,7 +1438,6 @@ export default function Shifts() {
                 closeShiftM.mutate({
                   shiftId: closingShiftId,
                   countedCash: closeCounted,
-                  handoverToUserId,
                 });
               }}
             >

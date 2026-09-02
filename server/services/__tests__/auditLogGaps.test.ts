@@ -323,7 +323,7 @@ describe("shift.close — يَلتقط expectedCash/variance/handover", () => {
       await db().select().from(s.users).where(eq(s.users.id, 9)).limit(1)
     )[0];
     const caller = appRouter.createCaller(makeCtx(cashier));
-    await caller.shifts.close({ shiftId, countedCash: "100.00", handoverToUserId: 10 });
+    await caller.shifts.close({ shiftId, countedCash: "100.00" });
     const row = await lastAudit("shift.close");
     expect(row).toBeTruthy();
     const newV = row.newValue as {

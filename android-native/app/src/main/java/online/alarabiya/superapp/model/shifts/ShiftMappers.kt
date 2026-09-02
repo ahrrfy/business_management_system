@@ -58,20 +58,6 @@ object ShiftMappers {
         )
     }
 
-    fun handoverRecipients(root: List<Any?>): List<ShiftHandoverRecipient> = root
-        .mapNotNull { item ->
-            val recipient = item.asMapOrNull() ?: return@mapNotNull null
-            val id = recipient.long("id")
-            val name = recipient.text("name").trim()
-            if (id <= 0 || name.isEmpty()) return@mapNotNull null
-            ShiftHandoverRecipient(
-                id = id,
-                name = name,
-                branchId = recipient.longOrNull("branchId")?.takeIf { it > 0 },
-            )
-        }
-        .distinctBy(ShiftHandoverRecipient::id)
-
     fun closeResult(root: Map<String, Any?>): ShiftCloseResult? {
         val id = root.long("shiftId")
         if (id <= 0) return null
@@ -86,7 +72,6 @@ object ShiftMappers {
             requiresManagerReview = root.boolean("requiresManagerReview"),
             alreadyClosed = root.boolean("alreadyClosed"),
             treasuryHandoverNumber = treasuryReturn?.textOrNull("handoverNumber"),
-            treasuryRecipientName = treasuryReturn?.textOrNull("recipientName"),
         )
     }
 
