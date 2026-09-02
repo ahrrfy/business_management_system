@@ -36,6 +36,8 @@ import {
   type SupplierInvoiceDraftEvidenceType,
   type SupplierInvoiceDraftIdentity,
 } from "./supplierInvoiceDraftPolicy";
+import { supplierInvoiceApprovalTrigger } from "@shared/approvalTriggers";
+import { assertApprover } from "../approval/ownerGate";
 
 export type SupplierInvoiceEvidenceType = SupplierInvoiceDraftEvidenceType;
 
@@ -721,15 +723,25 @@ export async function decideSupplierInvoiceApproval(
       tx,
       new Date(`${invoice.invoiceDate}T00:00:00.000Z`),
     );
-    if (
-      Number(request.requestedBy) === actor.userId ||
-      Number(invoice.createdBy) === actor.userId
-    ) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "فصل المهام: منشئ الفاتورة أو طلبها لا يعتمد الترحيل أو العكس",
-      });
-    }
+    // بالفعل لا بالإجراء: **الترحيل** ينشئ ذمّةً جديدة (لا مالٌ خرج ولا أثرٌ قائمٌ مُحي)
+    // ⇒ لا بوّابة؛ و**العكس** محوُ أثرٍ مُثبَت (قيدٌ عكسيّ + إنقاصُ رصيد المورّد + الحالة
+    // REVERSED التي لا كاتبَ لها سواه) ⇒ المالك حصراً. والرفضُ حرٌّ في الحالتين.
+    assertApprover({
+      actor,
+      trigger: supplierInvoiceApprovalTrigger(request.kind, input.action),
+      subject: `فاتورة المورّد ${invoice.invoiceNumber}`,
+      legacy: () => {
+        if (
+          Number(request.requestedBy) === actor.userId ||
+          Number(invoice.createdBy) === actor.userId
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "فصل المهام: منشئ الفاتورة أو طلبها لا يعتمد الترحيل أو العكس",
+          });
+        }
+      },
+    });
     let accountingEntryId: number;
     if (request.kind === "POST_INVOICE") {
       if (invoice.status !== "MATCHED" || request.matchRunId == null)
@@ -745,17 +757,32 @@ export async function decideSupplierInvoiceApproval(
           .for("update")
           .limit(1)
       )[0];
+      // فُصِل الفحصان لأنّهما مختلفان: **حالةُ المطابقة** شرطُ صحّةٍ يبقى دائماً، أمّا
+      // **منفّذُ المطابقة لا يعتمدها** ففصلُ مهامٍ تحكمه سياسة الاعتماد. ودمجُهما في شرطٍ
+      // واحد كان يُنتج رسالةً واحدة لسببين مختلفين، فلا يعرف الموظّف أيَّهما وقع.
       if (
         !match ||
         match.outcome === "HOLD" ||
-        match.invoiceHash !== invoice.payloadHash ||
-        Number(match.performedBy) === actor.userId
+        match.invoiceHash !== invoice.payloadHash
       ) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "المطابقة محجوزة/متغيرة أو منفذها لا يعتمدها",
+          message: "المطابقة محجوزة أو تغيّرت بعد إجرائها — أعد تشغيل المطابقة ثم أعد الطلب",
         });
       }
+      assertApprover({
+        actor,
+        trigger: supplierInvoiceApprovalTrigger(request.kind, input.action),
+        subject: `فاتورة المورّد ${invoice.invoiceNumber}`,
+        legacy: () => {
+          if (Number(match.performedBy) === actor.userId) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "فصل المهام: منفّذ المطابقة لا يعتمدها",
+            });
+          }
+        },
+      });
       const allocationRows = await tx
         .select({ purchaseOrderId: purchaseOrderRevisions.purchaseOrderId })
         .from(supplierInvoiceMatchAllocations)

@@ -53,6 +53,8 @@ import {
   assertExpectedVersion,
   assertIndependentPurchaseReviewer,
 } from "./returnGovernance";
+import { supplierPaymentRefundTrigger, supplierPaymentTrigger } from "@shared/approvalTriggers";
+import { assertApprover } from "../approval/ownerGate";
 
 type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 export const SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY = Symbol(
@@ -831,10 +833,15 @@ export async function decideSupplierPayment(
         .for("update")
         .limit(1)
     )[0]!;
-    assertIndependentPurchaseReviewer(
-      Number(request.requestedBy),
-      actor.userId,
-    );
+    // سدادُ المورّد **خروجُ مال**، وهذه البوّابة هي التفويض الوحيد له: إيصال OUT مكتمل
+    // بـcashBucket + حارسُ توفّرٍ + قفلُ مصدر النقد. ⇒ المالك حصراً.
+    assertApprover({
+      actor,
+      trigger: supplierPaymentTrigger(input.action),
+      subject: `سداد مورّد (طلب ${input.requestId})`,
+      legacy: () =>
+        assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId),
+    });
     if (request.status !== "PENDING") {
       if (request.decisionKey === decisionKey && request.decisionHash === hash)
         return {
@@ -1435,10 +1442,15 @@ export async function decideSupplierPaymentRefund(
         .for("update")
         .limit(1)
     )[0]!;
-    assertIndependentPurchaseReviewer(
-      Number(request.requestedBy),
-      actor.userId,
-    );
+    // استردادُ السداد **محوُ أثر**: عكسٌ جبريٌّ سطراً بسطر للدفع — إيصال IN مقابل OUT،
+    // وPAYMENT_IN مقابل PAYMENT_OUT، ورصيدُ المورّد يعود، والفاتورة تعود OPEN.
+    assertApprover({
+      actor,
+      trigger: supplierPaymentRefundTrigger(input.action),
+      subject: `استرداد سداد (طلب ${input.requestId})`,
+      legacy: () =>
+        assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId),
+    });
     if (request.status !== "PENDING") {
       if (request.decisionKey === decisionKey && request.decisionHash === hash)
         return {

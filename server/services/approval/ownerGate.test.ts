@@ -95,6 +95,15 @@ describe("العلَم مفتوح — شخصان لا أكثر", () => {
     expect(msg).toContain("مطلوب مني الآن");
   });
 
+  it("⭐ trigger = null ⇒ لا بوّابةَ إطلاقاً — يمرّ الموظّف بلا اعتماد", () => {
+    const legacy = vi.fn();
+    expect(() =>
+      assertApprover({ actor: STAFF, trigger: null, subject: "ترحيل فاتورة مورّد", legacy }),
+    ).not.toThrow();
+    // ولا يُستدعى الفحص القديم: البوّابة **حُذفت** لا استُبدلت.
+    expect(legacy).not.toHaveBeenCalled();
+  });
+
   it("قيمةٌ غير مفهومة في العلَم ⇒ يُعامَل مطفأً (يفشل مغلقاً)", () => {
     process.env[FLAG] = "نعم";
     const legacy = vi.fn();

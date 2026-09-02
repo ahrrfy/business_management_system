@@ -19,8 +19,10 @@ import {
   supplierInvoices,
   suppliers,
 } from "../../../drizzle/schema";
+import { goodsReceiptReversalTrigger } from "@shared/approvalTriggers";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import { assertApprover } from "../approval/ownerGate";
 import { applyMovement, ensureBranchStockRows } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import { money, round2, toDateStr, toDbMoney } from "../money";
@@ -952,18 +954,27 @@ export async function decideGoodsReceiptReversal(
     }
     if (request.status !== "PENDING")
       throw new TRPCError({ code: "CONFLICT", message: "طلب العكس غير معلّق" });
-    if (
-      Number(request.requestedBy) === actor.userId ||
-      Number(receipt.createdBy) === actor.userId ||
-      Number(receipt.postedBy) === actor.userId ||
-      Number(po.createdBy) === actor.userId ||
-      Number(po.approvedBy) === actor.userId
-    ) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "فصل المهام: منفذ الاستلام أو منشئ الطلب/الأمر لا يعتمد العكس",
-      });
-    }
+    // عكسُ الاستلام محوُ أثرٍ مُثبَت: `applyMovement` باتّجاه OUT (إخراجُ مخزونٍ أُدخل) +
+    // قيدٌ عكسيّ يمحو التزام GRNI. ⇒ المالك حصراً. والرفضُ حرٌّ — لا يكتب شيئاً ماليّاً.
+    assertApprover({
+      actor,
+      trigger: goodsReceiptReversalTrigger(input.action),
+      subject: `عكس استلام ${receipt.receiptNumber}`,
+      legacy: () => {
+        if (
+          Number(request.requestedBy) === actor.userId ||
+          Number(receipt.createdBy) === actor.userId ||
+          Number(receipt.postedBy) === actor.userId ||
+          Number(po.createdBy) === actor.userId ||
+          Number(po.approvedBy) === actor.userId
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "فصل المهام: منفذ الاستلام أو منشئ الطلب/الأمر لا يعتمد العكس",
+          });
+        }
+      },
+    });
     const decidedAt = new Date();
     if (input.action === "REJECT") {
       await tx

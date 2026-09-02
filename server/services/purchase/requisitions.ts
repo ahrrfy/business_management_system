@@ -9,8 +9,10 @@ import {
   purchaseRequisitionItems,
   purchaseRequisitions,
 } from "../../../drizzle/schema";
+import { purchaseRequisitionControlTrigger } from "@shared/approvalTriggers";
 import { extractInsertId } from "../../lib/insertId";
 import type { DB, Tx } from "../../db";
+import { assertApprover } from "../approval/ownerGate";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -676,16 +678,26 @@ export async function decidePurchaseRequisitionControl(
         message: "حُسم طلب القرار مسبقاً",
       });
     }
-    if (
-      actor.userId === Number(request.requestedBy) ||
-      actor.userId === Number(requisition.createdBy) ||
-      actor.userId === Number(requisition.submittedBy)
-    ) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "يلزم معتمد مستقل عن المنشئ والمرسل وصاحب الطلب",
-      });
-    }
+    // طلبُ الشراء الداخليّ هو **الوحيد** في المشتريات الذي صمد تصنيفُه أمام التفنيد العدائيّ:
+    // لا خروجَ مالٍ ولا محوَ أثر — يكتب كمّياتٍ معتمَدة وحالةً داخل مستنده، والالتزامُ
+    // التعاقديّ (أمر الشراء) لاحقٌ له. ⇒ بوّابتُه تسقط كاملةً بالسياسة الجديدة.
+    assertApprover({
+      actor,
+      trigger: purchaseRequisitionControlTrigger(),
+      subject: `طلب الشراء ${requisition.requisitionNumber}`,
+      legacy: () => {
+        if (
+          actor.userId === Number(request.requestedBy) ||
+          actor.userId === Number(requisition.createdBy) ||
+          actor.userId === Number(requisition.submittedBy)
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "يلزم معتمد مستقل عن المنشئ والمرسل وصاحب الطلب",
+          });
+        }
+      },
+    });
     if (Number(request.baseVersion) !== Number(requisition.version)) {
       await tx
         .update(purchaseRequisitionControlRequests)

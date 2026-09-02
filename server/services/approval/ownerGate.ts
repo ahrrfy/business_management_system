@@ -78,7 +78,12 @@ export function planApproval(args: {
  */
 export function assertApprover(args: {
   actor: Pick<Actor, "isOwner">;
-  trigger: ApprovalTrigger;
+  /**
+   * `null` قرارٌ صريحٌ معناه **لا بوّابةَ لهذا الفعل** — يمرّ أيُّ فاعلٍ اجتاز بوّابة الوحدة.
+   * وهو الحالُ في الغالبية: الرفضُ في كل المسارات · اعتمادُ أمر الشراء · ترحيلُ فاتورة
+   * المورّد · طلبُ الشراء الداخليّ. تصنيفُه يأتي من `shared/approvalTriggers.ts` بدليله.
+   */
+  trigger: ApprovalTrigger | null;
   /** وصفٌ قصيرٌ للمستند يظهر في الرسالة: «طلب دفع مورّد SP-42». */
   subject: string;
   legacy: () => void;
@@ -87,6 +92,9 @@ export function assertApprover(args: {
     args.legacy();
     return;
   }
+  // لا خروجَ مالٍ ولا محوَ أثر ⇒ لا بوّابة. وهذا **جوهرُ التبسيط**: خطواتُ الشراء الوسيطة
+  // تمرّ بلا مقاطعة، فيُتمّها موظّفٌ واحد بدل أن تتفرّق على خمسة.
+  if (args.trigger === null) return;
   if (actorIsOwner(args.actor)) return;
   throw new TRPCError({
     code: "FORBIDDEN",
