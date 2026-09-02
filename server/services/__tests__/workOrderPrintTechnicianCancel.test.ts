@@ -253,8 +253,7 @@ describe("تمهيدُ التحكّم كما يراه الفنّي", () => {
    * الإرسالية وأرصدةَ الأدراج، وهو **لا يملك طلبَ العكس أصلاً**.
    */
   it("⭐ لا يُسلّم الفنّيَّ سطحَ عكس التسليم ولا أرصدةَ الأدراج", async () => {
-    const shiftId = await openReceptionShift();
-    await db().update(s.shifts).set({ expectedCash: "7500.00" }).where(eq(s.shifts.id, shiftId));
+    await openReceptionShift();
     const workOrderId = await createOrder({ deposit: "2000.00" });
     // أمرٌ مُسلَّمٌ بفاتورة — الحالة الوحيدة التي يُحسَب فيها `reverseDelivery`.
     const invoiceId = extractInsertId(await db().insert(s.invoices).values({
@@ -269,10 +268,13 @@ describe("تمهيدُ التحكّم كما يراه الفنّي", () => {
     expect(techView.reverseDelivery).toBeNull();
     for (const shift of techView.openReceptionShifts) expect(shift.expectedCash).toBeNull();
 
-    // والكاشير — صاحبُ طلب العكس — يراه كاملاً بأرصدته.
+    // والكاشير — صاحبُ طلب العكس — يراه كاملاً بأرصدته. والرصيدُ **حيٌّ** (`computeDrawerCashBalance`)
+    // لا من عمود `shifts.expectedCash` اللقطيّ الذي يكون NULL لكلّ وردية مفتوحة — إصلاحُ «0 د.ع» (#930):
+    // يكفي إثباتُ أنّه ظاهرٌ للكاشير (غيرُ null) محجوبٌ عن الفنّي.
     const cashierView = await getWorkOrderControlPreflight(workOrderId, CASHIER);
     expect(cashierView.reverseDelivery).not.toBeNull();
-    expect(cashierView.openReceptionShifts.map((shift) => shift.expectedCash)).toEqual(["7500.00"]);
+    expect(cashierView.openReceptionShifts.length).toBeGreaterThan(0);
+    for (const shift of cashierView.openReceptionShifts) expect(shift.expectedCash).not.toBeNull();
   });
 
   it("⭐ الفنّي يختار درج الردّ في طلبه فيصرف المديرُ منه عند الاعتماد", async () => {

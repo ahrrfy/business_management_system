@@ -8,7 +8,7 @@
  * فهنا سطرٌ لكلّ خامة: **راجع** و**تالف**، مجموعُهما = المستهلَك (يفرضه الخادم أيضاً)، وقيمةُ
  * الهدر تظهر **قبل** التأكيد — لا امتصاصَ خفيّ (§٥).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Loader2, PackageX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -193,15 +193,20 @@ export default function CancelWorkOrderDialog({
   const [refundReference, setRefundReference] = useState("");
 
   /**
-   * **الرافدُ الافتراضيّ يتبع ما يكفي فعلاً** (بلاغ المالك ١/٩): عربونٌ ٧٠٬٠٠٠ وأوسعُ درجٍ
-   * مفتوح ٥٦٬٠٠٠ ⇒ بدءُ الحوار على «الدرج» يعني باباً مسدوداً بنقرةٍ واحدة. فإن لم يكفِ أيُّ
-   * درجٍ وكفت الخزينةُ نبدأ عليها — والموظّفُ يبقى حرّاً في التغيير.
+   * **بطاقةٌ مختارةٌ ثمّ تبيّن أنّها ممنوعة (حصصٌ/أمانة) ⇒ اردُد للدرج** — تفاعليٌّ مع الرافد
+   * لتصحيح أيّ اختيارٍ لاحقٍ يصير غيرَ صالح، لا مرّةً واحدة.
    */
   useEffect(() => {
     if (!open || !needsCashDrawer || !effectivePreflight) return;
-    const anyDrawerFits = effectivePreflight.drawers.some((d) => d.sufficient);
-    if (!anyDrawerFits && effectivePreflight.treasurySufficient) setRail("TREASURY");
-  }, [open, needsCashDrawer, effectivePreflight]);
+    if (rail === "CARD" && effectivePreflight.cardRefundAllowed !== true) setRail("DRAWER");
+  }, [open, needsCashDrawer, effectivePreflight, rail]);
+
+  // مرجعُ «حُسم الافتراضُ» يُصفَّر مع كلّ فتح؛ والافتراضُ نفسُه (إلى الخزينة) يقع في مؤثّرٍ **بعد**
+  // إعادة ضبط الفتح أدناه ليكون آخرَ تحديثٍ للرافد (مراجعة Codex P2 على #930).
+  const railAutoDefaultedRef = useRef(false);
+  useEffect(() => {
+    railAutoDefaultedRef.current = false;
+  }, [open]);
 
   /**
    * سببُ الحجب **بحسب الرافد**: الدرجُ وحده يلزمه اختيارُ وردية، والبطاقةُ وحدها مرجعٌ خارجيّ.
@@ -238,6 +243,21 @@ export default function CancelWorkOrderDialog({
     setRail("DRAWER");
     setRefundReference("");
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * **الافتراضُ إلى الخزينة مرّةً واحدةً** (بلاغ المالك ١/٩): بدءُ الحوار على «الدرج» بابٌ مسدودٌ
+   * حين لا يكفي أيُّ درجٍ وتكفي الخزينة. ⚠️ **يقع بعد إعادة ضبط الفتح أعلاه** (مراجعة Codex P2 على
+   * #930): لو سبقها لَطمَسَ `setRail("DRAWER")` اللاحقُ الخزينةَ، والمرجعُ يمنع إعادةَ المحاولة،
+   * فيُفتَح على درجٍ لا يكفي — خاصّةً في مسار الاعتماد حيث يصل التمهيدُ محمَّلاً مع الفتح. وبلا
+   * `rail` في التبعيّات: كفايةُ الدرج إرشاديّةٌ لا حاجزة (الرصيدُ الحيّ قد تغيّر)، فلا تُطمَس نقرةُ
+   * الموظّف اليدويّة على «الدرج».
+   */
+  useEffect(() => {
+    if (!open || !needsCashDrawer || !effectivePreflight || railAutoDefaultedRef.current) return;
+    railAutoDefaultedRef.current = true;
+    const anyDrawerFits = effectivePreflight.drawers.some((d) => d.sufficient);
+    if (!anyDrawerFits && effectivePreflight.treasurySufficient) setRail("TREASURY");
+  }, [open, needsCashDrawer, effectivePreflight]);
 
   const hasMaterials = materials.length > 0;
   const anyWaste = materials.some((m) => (waste[m.id] ?? 0) > 0);
@@ -402,7 +422,11 @@ export default function CancelWorkOrderDialog({
                 عربوناً ٧٠٬٠٠٠ وأوسعُ درجٍ مفتوح ٥٦٬٠٠٠ — لا اختيارَ يُصلح نقصَ المصدر.
               */}
               <div className="flex flex-wrap gap-1.5">
-                {REFUND_RAILS.map((r) => {
+                {REFUND_RAILS
+                  // البطاقةُ تُخفى حين يوجد جزءٌ نقديٌّ لا يقبلها (حصصٌ/أمانة) — وإلّا أنشأ
+                  // اختيارُها طلبَ تحكّمٍ يستحيل اعتمادُه (مراجعة Codex P2 على #930).
+                  .filter((r) => r !== "CARD" || effectivePreflight?.cardRefundAllowed === true)
+                  .map((r) => {
                   const fits = r === "TREASURY"
                     ? effectivePreflight?.treasurySufficient
                     : r === "DRAWER"
