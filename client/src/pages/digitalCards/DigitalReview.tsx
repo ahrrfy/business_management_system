@@ -756,7 +756,7 @@ function PendingResolution({
               <CheckCircle2 className="size-4" /> {approving ? "جارٍ التنفيذ…" : "اعتماد وتنفيذ"}
             </Button>
             <Button size="sm" variant="destructive" disabled={approving || rejecting} onClick={onReject}>
-              {rejecting ? "جارٍ الرفض…" : "رفض القرار"}
+              {rejecting ? ACTION_LABELS.rejecting : "رفض القرار"}
             </Button>
           </div>
         </div>

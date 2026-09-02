@@ -1600,7 +1600,7 @@ function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: 
   const needsHandoverRecipient = D(counted || 0).gt(0) && handoverToUserId == null;
   const closeDisabled = !counted || closeShift.isPending || hasVariance || needsHandoverRecipient;
   const closeLabel = closeShift.isPending
-    ? "جارٍ الإغلاق…"
+    ? ACTION_LABELS.closing
     : hasVariance
       ? "الإغلاق مرفوض لوجود فرق"
       : needsHandoverRecipient

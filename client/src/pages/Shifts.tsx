@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /* ═══════════ سجلّ الورديات + إعادة طباعة Z-report ═══════════
    يستهلك shifts.list (branch-scoped): ورديات الكاشير مع فُتحت/أُغلقت/المتوقع/المعدود/الفرق.
@@ -1196,7 +1197,7 @@ export default function Shifts() {
                 });
               }}
             >
-              {respondFundingM.isPending ? "جارٍ الرفض…" : "تأكيد الرفض بلا أثر نقدي"}
+              {respondFundingM.isPending ? ACTION_LABELS.rejecting : "تأكيد الرفض بلا أثر نقدي"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1246,7 +1247,7 @@ export default function Shifts() {
                 });
               }}
             >
-              {cancelFundingM.isPending ? "جارٍ الإلغاء…" : "إلغاء الطلب بلا أثر نقدي"}
+              {cancelFundingM.isPending ? ACTION_LABELS.cancelling : "إلغاء الطلب بلا أثر نقدي"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -630,6 +630,19 @@ export default function PurchaseNew() {
     const usd = state.currency === "USD";
     const priceSym = usd ? "$" : "د.ع";
     const rate = safeMoney(state.agreedRate);
+    /*
+     * ⚠️ **لا تُطبَع ورقةٌ دولاريّة بلا سعر تثبيت** (مراجعة Codex على PR #953):
+     * `landed.grand` يُضرب في `rate`، فالصفرُ يُنتج آخرَ سطرٍ في المستند — وهو
+     * السطر العريض الكبير — «التكلفة بالدينار 0.00» تحت إجماليٍّ دولاريٍّ صحيح.
+     * ورقةٌ كهذه لا تبدو ناقصةً بل **مُحوَّلةً بصفر**، وقد تُقرأ التزاماً فعلياً.
+     * ولا مهربَ بطباعة «—» مكانه: `printReportDoc` يُلحق «د.ع» بآخر سطرٍ ثابتاً.
+     * والحجبُ هنا لا يُنشئ قاعدةً جديدة — `validate()` يرفض **الحفظ** بالشرط نفسه
+     * وبالرسالة نفسها؛ فالطباعةُ تتبع المستند لا تسبقه.
+     */
+    if (usd && !rate.gt(0)) {
+      notify.warn("أدخل سعر الصرف المثبت للفاتورة قبل الطباعة.");
+      return;
+    }
     // نفس شرط عمود «المعادل د.ع» في ProductTable — لا يظهر إلا حيث يظهر على الشاشة.
     const showIqdEquivalent = usd && rate.gt(0);
 
@@ -651,8 +664,18 @@ export default function PurchaseNew() {
         barcode: l.barcode ?? "—",
         name: l.name,
         unit: l.unit || "—",
-        // السعر المعروض في الخليّة هو `costBase || price` بدقّة عملة الأمر (مرآة ProductTable).
-        price: fmtPrice(l.costBase || l.price),
+        /*
+         * ⚠️ **`l.price` لا `costBase || price`** (مراجعة Codex على PR #953): خليّةُ
+         * الشاشة تعرض `costBase || price`، لكنّ `calcLineTotal` والحمولةَ المُرسَلة
+         * يقرآن `l.price` وحده. وهما يفترقان في مسارٍ واحدٍ حقيقيّ: أمرٌ مُولَّدٌ من
+         * طلبِ شراءٍ يُملأ بـ`price = estimatedUnitPrice` و`costBase = costPriceBase`
+         * (أعلاه) ⇒ سطرٌ **لم يُحرَّر بعد** يحمل قيمتين مختلفتين. (وأيُّ تحريرٍ
+         * للخليّة يكتب الحقلين معاً فيتطابقان — لذلك لا يظهر الفرق عادةً.)
+         * وطباعةُ `costBase` عندئذٍ تُخرج ورقةً **حسابُها لا يستقيم**: السعر × الكمية
+         * ≠ الإجمالي المطبوع، وتُبلِّغ المورّدَ سعراً غير الذي سيُحاسَب عليه.
+         * المستند يلتزم السعر النافذ: `l.price`.
+         */
+        price: fmtPrice(l.price),
         qty: fmtAr(safeMoney(String(l.qty)).toString()),
         total: fmtAr(lineTotal),
         iqd: showIqdEquivalent
@@ -664,21 +687,34 @@ export default function PurchaseNew() {
     // ملخّص المبالغ = لوحة `TotalsPanel` المعروضة سطراً بسطر (بعملة الأمر)، يليها بطاقة
     // الدولار حين تظهر. شريط الإجمالي الأخير في `docSummary` يكتب «د.ع» ثابتاً ⇒ آخر عنصرٍ
     // يجب أن يكون ديناريّاً دائماً: للأمر الدولاريّ هو «التكلفة بالدينار» من بطاقة الدولار.
+    /*
+     * ⚠️ **الأرقام من `docTotals` لا `totals`** (مراجعة Codex على PR #953): الدالّتان
+     * تختلفان في **ترتيب التقريب**. `calcTotals` تجمع السطور خامّةً ثمّ تُقرّب مرّة،
+     * و`deriveDocumentTotal` تُقرّب **كلّ سطرٍ** ثمّ تجمع — وهو ترتيبُ الخادم نفسه
+     * (ولذلك يقرأ `landed` أعلاه `docTotals.subtotal` صراحةً).
+     * والصفوفُ المطبوعة تُبنى بـ`calcLineTotal` أي مُقرَّبةً سطراً سطراً ⇒ لو أُخذ
+     * الملخّصُ من `calcTotals` لَما جمعت الصفوفُ المطبوعة إلى مجموعها المطبوع.
+     * مثال حيّ: سطران بسعرٍ دولاريٍّ من أربع منازل (3.4566 × 7) يطبع كلٌّ منهما
+     * 24.20 — والمجموع 48.40 محفوظاً، بينما `calcTotals` تعطي 48.39.
+     * فالورقةُ تُخالف نفسها **وتُخالف ذمّةَ المورّد المحفوظة** بفلسٍ لا يُفسَّر.
+     * (والصفوف تُطابق `grossSubtotal` بالضبط: عمودُ الخصم محجوبٌ في وضع الشراء
+     * — `showDiscountCol = !isPurchase` — فـ`calcLineTotal` = السعر × الكمية.)
+     */
     const summary = [
-      { label: `المجموع الفرعي (${priceSym})`, value: fmtAr(totals.subtotal) },
-      ...(invoiceDiscountAmount.gt(0)
+      { label: `المجموع الفرعي (${priceSym})`, value: fmtAr(docTotals.grossSubtotal) },
+      ...(D(docTotals.discount).gt(0)
         ? [
             {
               label: `خصم فاتورة المورّد (${priceSym})`,
-              value: `− ${fmtAr(invoiceDiscountAmount.toFixed(2))}`,
+              value: `− ${fmtAr(docTotals.discount)}`,
             },
           ]
         : []),
-      ...(D(totals.totalTax).gt(0)
+      ...(D(docTotals.tax).gt(0)
         ? [
             {
               label: `الضريبة (${fmtAr(state.taxRatePercent || "0")}%) (${priceSym})`,
-              value: fmtAr(totals.totalTax),
+              value: fmtAr(docTotals.tax),
             },
           ]
         : []),

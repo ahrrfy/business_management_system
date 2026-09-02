@@ -3534,7 +3534,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const needsHandoverRecipient = countedD?.gt(0) === true && handoverToUserId == null;
   const closeDisabled = !counted || closeShift.isPending || closeBlocked || hasVariance || needsHandoverRecipient;
   const closeLabel = closeShift.isPending
-    ? "جارٍ الإغلاق…"
+    ? ACTION_LABELS.closing
     : closeBlocked
       ? "أكمل المزامنة أولاً"
       : hasVariance

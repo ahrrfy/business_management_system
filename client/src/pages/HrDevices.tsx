@@ -61,6 +61,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -685,7 +686,7 @@ export default function HrDevices() {
       hidden: d.enabled,
       gate: { module: "hr", level: "FULL" },
       disabled: del.isPending,
-      disabledReason: "جارٍ الحذف",
+      disabledReason: ACTION_LABELS.deleting,
       onSelect: () => void deleteDevice(d),
     },
   ];

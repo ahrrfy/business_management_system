@@ -69,6 +69,7 @@ import {
   voucherApprovalLabel,
 } from "@/components/vouchers/voucherUiPolicy";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type VoucherRow = RouterOutputs["vouchers"]["list"][number];
 
@@ -1374,7 +1375,7 @@ export default function Vouchers() {
               onClick={submitReject}
               disabled={!rejectReason.trim() || rejectMut.isPending}
             >
-              {rejectMut.isPending ? "جارٍ الرفض…" : "رفض السند"}
+              {rejectMut.isPending ? ACTION_LABELS.rejecting : "رفض السند"}
             </Button>
           </DialogFooter>
         </DialogContent>

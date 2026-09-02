@@ -23,6 +23,7 @@ import { hasModuleAccess, moduleAccessAllowed, type AccessLevel, type Permission
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { Lock } from "lucide-react";
 import { useSyncExternalStore } from "react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type Props = {
   /** الأدوار المسموح لها بالوصول. لا تقبل قائمة فارغة. */
@@ -68,7 +69,7 @@ export function RequireRole({
   if (localActor === undefined && me.isLoading) {
     return (
       <div className="min-h-[40vh] flex items-center justify-center text-muted-foreground">
-        جارٍ التحقّق من الصلاحيات…
+        {ACTION_LABELS.verifyingPermissions}
       </div>
     );
   }
