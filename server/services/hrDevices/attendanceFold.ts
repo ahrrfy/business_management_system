@@ -13,7 +13,7 @@
  *   - **لا تسقط طلبات الطيّ:** نداءٌ أثناء طيٍّ جارٍ يرفع علم إعادة تشغيل فيُعاد بعد الفراغ،
  *     وبلوغ سقف الدفعات يسلّم البقية إلى دورة متابعة منسّقة بدلاً من تركها معلّقة.
  * ========================================================================== */
-import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import {
   attendance,
   branches,
@@ -21,6 +21,7 @@ import {
   hrAttendancePunches,
   hrAttendanceSettings,
   hrFingerprintDevices,
+  users,
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
@@ -29,7 +30,7 @@ import { computeDayHours, DEFAULT_MAX_DAILY_HOURS, DEFAULT_NIGHT_CUTOFF_HOUR, ty
 import { DEFAULT_WORK_SCHEDULE, hoursForDay } from "../hr/attendancePay";
 import { createAppNotification } from "../appNotificationService";
 import {
-  buildAttendanceNotification,
+  buildAttendanceNotificationDeliveries,
   type AttendanceMovement,
 } from "./attendanceNotification";
 
@@ -90,6 +91,41 @@ async function punchWorkplaceOf(
 
 function includeAttendanceWorkplace(): boolean {
   return process.env.ATTENDANCE_PUSH_INCLUDE_WORKPLACE === "true";
+}
+
+async function attendanceAdminRecipientIds(
+  employeeBranchId: number | null,
+  employeeUserId: number | null,
+): Promise<number[]> {
+  const managerCondition =
+    employeeBranchId != null
+      ? and(
+          eq(users.role, "manager"),
+          eq(users.branchId, employeeBranchId),
+        )
+      : sql`FALSE`;
+  const rows = await requireDb()
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.isActive, true),
+        or(eq(users.role, "admin"), eq(users.isOwner, true), managerCondition),
+        sql`(${users.accessExpiresAt} IS NULL OR ${users.accessExpiresAt} > NOW())`,
+      ),
+    );
+  return Array.from(
+    new Set(
+      rows
+        .map((row) => Number(row.id))
+        .filter(
+          (id) =>
+            Number.isInteger(id) &&
+            id > 0 &&
+            (employeeUserId == null || id !== employeeUserId),
+        ),
+    ),
+  );
 }
 
 /** إعدادات الاحتساب (صفّ مفرد) — الغياب = الافتراضي المعطَّل، فلا تفشل الوحدة قبل الهجرة/البذر. */
@@ -223,7 +259,13 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
     // ساعات ذلك اليوم في جدول الموظف — بدونها كان حارس «أقلّ من نصف المقرَّر» ميتاً
       // في الإنتاج ولا يُختبَر إلا في الوحدات (Codex P2).
       const [empRow] = await db
-        .select({ userId: employees.userId, workSchedule: employees.workSchedule })
+        .select({
+          userId: employees.userId,
+          branchId: employees.branchId,
+          firstName: employees.firstName,
+          lastName: employees.lastName,
+          workSchedule: employees.workSchedule,
+        })
         .from(employees)
         .where(eq(employees.id, g.employeeId))
         .limit(1);
@@ -265,7 +307,15 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
       // لا نوسم البصمات الخام معالَجة قبل أن يُحفظ إشعار الموظف وصندوق FCM. إذا تعذّر
       // الحفظ يبقى الصف معلّقاً؛ وإعادة الطيّ آمنة لأن recordAttendance وeventKey كلاهما
       // idempotent. هذه هي وصلة الاعتمادية بين ingest الجهاز وشاشة القفل.
-      if (g.date === baghdadDate() && empRow?.userId) {
+      if (g.date === baghdadDate()) {
+        const employeeUserId = empRow?.userId ?? null;
+        const adminRecipientUserIds = await attendanceAdminRecipientIds(
+          empRow?.branchId ?? null,
+          employeeUserId,
+        );
+        const employeeDisplayName = [empRow?.firstName, empRow?.lastName]
+          .filter((part): part is string => !!part?.trim())
+          .join(" ") || "موظّف";
         const events: Array<{ movement: AttendanceMovement; clock: string }> = [];
         if (day.checkIn) {
           events.push({ movement: "ATTENDANCE_CHECK_IN", clock: day.checkIn });
@@ -279,30 +329,22 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
             g.date,
             event.clock,
           );
-          const notification = buildAttendanceNotification({
+          const deliveries = buildAttendanceNotificationDeliveries({
             employeeId: g.employeeId,
+            employeeUserId,
+            employeeDisplayName,
+            adminRecipientUserIds,
+            attendanceId: savedAttendance.id,
             attendanceDate: g.date,
             movement: event.movement,
             clock: event.clock,
-            // تسجيل الدخول ناجح بذاته؛ نقص الخروج في منتصف اليوم ليس خطأً للمستخدم.
+            // بصمة الحضور ناجحة بذاتها؛ نقص الخروج في منتصف اليوم ليس خطأً للمستخدم.
             needsReview:
               event.movement === "ATTENDANCE_CHECK_OUT" && day.needsReview,
             ...workplace,
             includeWorkplace: includeAttendanceWorkplace(),
           });
-          await createAppNotification({
-            userId: empRow.userId,
-            kind: "ATTENDANCE",
-            title: notification.title,
-            body: notification.body,
-            route: "/hr?tab=attendance",
-            eventKey: notification.eventKey,
-            entityType: "attendance",
-            entityId: savedAttendance.id,
-            requiresAction: notification.requiresAction,
-            lockScreenSafe: true,
-            push: true,
-          });
+          await Promise.all(deliveries.map((delivery) => createAppNotification(delivery)));
         }
       }
       await db

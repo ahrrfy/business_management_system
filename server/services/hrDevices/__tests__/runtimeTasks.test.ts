@@ -26,9 +26,107 @@ afterEach(() => {
   vi.doUnmock("../../attendanceService");
   vi.doUnmock("../../appNotificationService");
   vi.doUnmock("../../pushService");
+  vi.doUnmock("../../sessionEventNotifier");
 });
 
 describe("تصريف مهام عامل جسر الحضور", () => {
+  it("يوجّه حدث البصمة للموظف وللإدارة باسم الموظف ولا يخلطه بدخول الحساب", async () => {
+    const { buildAttendanceNotificationDeliveries } = await import(
+      "../attendanceNotification"
+    );
+
+    const deliveries = buildAttendanceNotificationDeliveries({
+      employeeId: 91,
+      employeeUserId: 9,
+      employeeDisplayName: "أحمد علي",
+      adminRecipientUserIds: [1, 2, 9, 2],
+      attendanceId: 501,
+      attendanceDate: "2026-09-02",
+      movement: "ATTENDANCE_CHECK_IN",
+      clock: "08:05",
+      needsReview: false,
+    });
+
+    expect(deliveries).toEqual([
+      expect.objectContaining({
+        userId: 9,
+        title: "تم تسجيل الحضور",
+        eventKey: "attendance:91:2026-09-02:ATTENDANCE_CHECK_IN",
+        push: true,
+      }),
+      expect.objectContaining({
+        userId: 1,
+        title: "أحمد علي سجل حضور",
+        eventKey:
+          "attendance-admin:91:2026-09-02:ATTENDANCE_CHECK_IN:1",
+        push: true,
+      }),
+      expect.objectContaining({
+        userId: 2,
+        title: "أحمد علي سجل حضور",
+        eventKey:
+          "attendance-admin:91:2026-09-02:ATTENDANCE_CHECK_IN:2",
+        push: true,
+      }),
+    ]);
+
+    const checkOutDeliveries = buildAttendanceNotificationDeliveries({
+      employeeId: 91,
+      employeeUserId: 9,
+      employeeDisplayName: "أحمد علي",
+      adminRecipientUserIds: [1],
+      attendanceId: 501,
+      attendanceDate: "2026-09-02",
+      movement: "ATTENDANCE_CHECK_OUT",
+      clock: "16:05",
+      needsReview: false,
+    });
+
+    expect(checkOutDeliveries).toEqual([
+      expect.objectContaining({
+        userId: 9,
+        title: "تم تسجيل الانصراف",
+      }),
+      expect.objectContaining({
+        userId: 1,
+        title: "أحمد علي سجل انصراف",
+        eventKey:
+          "attendance-admin:91:2026-09-02:ATTENDANCE_CHECK_OUT:1",
+      }),
+    ]);
+  });
+
+  it("لا يرسل إشعاراً إدارياً عند تسجيل الدخول إلى الحساب", async () => {
+    const createAppNotification = vi.fn();
+    const db = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: async () => [{ id: 1 }],
+        }),
+      })),
+    };
+
+    vi.doMock("../../tx", () => ({ requireDb: () => db }));
+    vi.doMock("../../appNotificationService", () => ({
+      createAppNotification,
+    }));
+
+    const { notifyAdminsOfSessionEvent } = await import(
+      "../../sessionEventNotifier"
+    );
+    await notifyAdminsOfSessionEvent({
+      userId: 9,
+      userBranchId: 1,
+      userDisplayName: "أحمد علي",
+      kind: "LOGIN",
+      sessionId: 77,
+      occurredAt: new Date("2026-09-02T05:05:00.000Z"),
+    });
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(createAppNotification).not.toHaveBeenCalled();
+  });
+
   it("يعيد claim المتزامن مع الإغلاق إلى queued ولا يرسل على وصلة ميتة", async () => {
     const claimStarted = deferred();
     const releaseClaim = deferred();
