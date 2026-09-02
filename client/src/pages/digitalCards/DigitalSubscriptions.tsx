@@ -34,33 +34,36 @@ export default function DigitalSubscriptions() {
   });
 
   const columns = useMemo<ColumnDef<SubscriptionRow, unknown>[]>(() => [
-    { id: "invoiceDate", header: "وقت البيع", meta: { kind: "datetime" }, cell: ({ row }) => fmtDateTime(row.original.invoiceDate) },
+    { id: "invoiceDate", header: "وقت البيع", accessorFn: (r) => fmtDateTime(r.invoiceDate), meta: { kind: "datetime" }, cell: ({ row }) => fmtDateTime(row.original.invoiceDate) },
     {
       id: "invoice",
       header: "الفاتورة",
+      accessorFn: (r) => r.invoiceNumber,
       cell: ({ row }) => (
         <Link href={`/invoices/${row.original.invoiceId}`} className="font-semibold text-primary hover:underline">
           {row.original.invoiceNumber}
         </Link>
       ),
     },
-    { id: "offering", header: "الاشتراك", meta: { width: "wide" }, cell: ({ row }) => <span className="font-medium">{row.original.offeringName}</span> },
+    { id: "offering", header: "الاشتراك", accessorFn: (r) => r.offeringName, meta: { width: "wide" }, cell: ({ row }) => <span className="font-medium">{row.original.offeringName}</span> },
     {
       id: "providerReference",
       header: "رقم الاشتراك أو ID",
+      accessorFn: (r) => r.providerReference || "",
       meta: { kind: "code" },
       cell: ({ row }) => <span className="font-bold">{row.original.providerReference || "—"}</span>,
     },
-    { id: "student", header: "الطالب", cell: ({ row }) => <span className="font-medium">{row.original.studentName || "—"}</span> },
-    { id: "phone", header: "الهاتف", meta: { kind: "phone" }, cell: ({ row }) => <span className="font-mono">{row.original.studentPhone || "—"}</span> },
-    { id: "price", header: "السعر", meta: { kind: "money" }, cell: ({ row }) => <span className="font-semibold">{fmtAr(row.original.sellPrice)}</span> },
+    { id: "student", header: "الطالب", accessorFn: (r) => r.studentName || "", cell: ({ row }) => <span className="font-medium">{row.original.studentName || "—"}</span> },
+    { id: "phone", header: "الهاتف", accessorFn: (r) => r.studentPhone || "", meta: { kind: "phone" }, cell: ({ row }) => <span className="font-mono">{row.original.studentPhone || "—"}</span> },
+    { id: "price", header: "السعر", accessorFn: (r) => fmtAr(r.sellPrice), meta: { kind: "money" }, cell: ({ row }) => <span className="font-semibold">{fmtAr(row.original.sellPrice)}</span> },
     // عمود الفرع لمن يعبر الفروع فقط — مرآةُ عزل مدير الفرع أعلاه.
     ...(canPickBranch
-      ? [{ id: "branch", header: "الفرع", cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName}</span> } as ColumnDef<SubscriptionRow, unknown>]
+      ? [{ id: "branch", header: "الفرع", accessorFn: (r: SubscriptionRow) => r.branchName, cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName}</span> } as ColumnDef<SubscriptionRow, unknown>]
       : []),
     {
       id: "status",
       header: "الحالة",
+      accessorFn: (r) => STATUS[r.fulfillmentStatus] ?? r.fulfillmentStatus,
       meta: { kind: "status" },
       cell: ({ row }) => (
         <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-neutral">

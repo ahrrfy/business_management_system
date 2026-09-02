@@ -248,7 +248,7 @@ export default function Production() {
             searchable={false}
             emptyText={activeFilterCount > 0 || f.q ? "لا مستندات مطابقة للفلاتر." : "لا مستندات إنتاج بعد."}
             /* ترقيمٌ خادميّ (limit/offset) ⇒ يُعطّل DataTable الفرزَ فلا يرتّب صفحةً واحدة ويبدو شاملاً. */
-            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, hasMore }}
+            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, hasMore, isFetching: list.isFetching }}
           />
 
           {/* الترقيم يُصيّره DataTable عبر serverPagination — شريطٌ واحد لا اثنان. */}

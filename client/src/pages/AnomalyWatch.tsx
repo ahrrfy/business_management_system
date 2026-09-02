@@ -57,19 +57,26 @@ function strong(flagged: boolean | undefined, node: React.ReactNode) {
   return flagged ? <span className="font-bold text-destructive">{node}</span> : <>{node}</>;
 }
 
+/*
+ * ⚠️ كلُّ بانٍ يضع `accessorFn` بجانب `cell` (Codex P2 على PR #939): «نسخ القيمة» في قائمة
+ * سياق الجدول يقرأ `row.getValue(id)`، والعمودُ الذي يعرّف `id` و`cell` وحدَهما يُرجع
+ * `undefined` ⇒ تُنسَخ الرؤوسُ بقيمٍ فارغة والأمرُ يختفي رغم وجود محتوى ظاهر.
+ * تمريرُ نفس الجالب آمنٌ: `cellPrimitive` يُسقط عناصر React فيبقى النصُّ والرقم وحدهما.
+ */
+
 /** عمود نصّي بسيط. */
 function txtCol<T>(id: string, header: string, get: (r: T) => React.ReactNode): ColumnDef<T, unknown> {
-  return { id, header, cell: ({ row }) => get(row.original) };
+  return { id, header, accessorFn: get, cell: ({ row }) => get(row.original) };
 }
 
 /** عمود رقميّ (عدّ أو نسبة) — `kind: "number"` يتكفّل بالمحاذاة وعزل الاتّجاه. */
 function numCol<T>(id: string, header: string, get: (r: T) => React.ReactNode): ColumnDef<T, unknown> {
-  return { id, header, meta: { kind: "number" }, cell: ({ row }) => get(row.original) };
+  return { id, header, accessorFn: get, meta: { kind: "number" }, cell: ({ row }) => get(row.original) };
 }
 
 /** عمود مبلغ. */
 function moneyCol<T>(id: string, header: string, get: (r: T) => React.ReactNode): ColumnDef<T, unknown> {
-  return { id, header, meta: { kind: "money" }, cell: ({ row }) => get(row.original) };
+  return { id, header, accessorFn: get, meta: { kind: "money" }, cell: ({ row }) => get(row.original) };
 }
 
 /** الخصائص المشتركة لكل جداول الكواشف: مُضمَّنة في بطاقةٍ تحمل العنوان والعدّ. */

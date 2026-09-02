@@ -28,10 +28,11 @@ function initials(name?: string | null): string {
 type AssetRow = RouterOutputs["assets"]["list"][number];
 
 const assetColumns: ColumnDef<AssetRow, unknown>[] = [
-  { id: "code", header: "الرمز", meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
+  { id: "code", header: "الرمز", accessorFn: (r) => r.code, meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
   {
     id: "name",
     header: "الأصل",
+    accessorFn: (r) => r.name,
     meta: { width: "wide" },
     cell: ({ row }) => (
       <div className="flex items-center gap-2">
@@ -48,6 +49,7 @@ const assetColumns: ColumnDef<AssetRow, unknown>[] = [
   {
     id: "branch",
     header: "الفرع / الموقع",
+    accessorFn: (r) => r.branchName ?? "",
     cell: ({ row }) => (
       <div className="text-xs">
         {row.original.branchName ?? "—"}
@@ -58,6 +60,7 @@ const assetColumns: ColumnDef<AssetRow, unknown>[] = [
   {
     id: "custodian",
     header: "العهدة",
+    accessorFn: (r) => r.custodianName ?? "",
     meta: { width: "actor" },
     cell: ({ row }) =>
       row.original.custodianName ? (
@@ -71,17 +74,20 @@ const assetColumns: ColumnDef<AssetRow, unknown>[] = [
         <span className="text-xs text-muted-foreground">بلا عهدة</span>
       ),
   },
-  { id: "purchaseDate", header: "تاريخ الشراء", meta: { kind: "date" }, cell: ({ row }) => row.original.purchaseDate },
-  { id: "purchaseValue", header: "قيمة الشراء", meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.purchaseValue) },
+  { id: "purchaseDate", header: "تاريخ الشراء", accessorFn: (r) => r.purchaseDate, meta: { kind: "date" }, cell: ({ row }) => row.original.purchaseDate },
+  { id: "purchaseValue", header: "قيمة الشراء", accessorFn: (r) => iqd(r.purchaseValue), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.purchaseValue) },
   {
     id: "bookValue",
     header: "القيمة الدفترية",
+    accessorFn: (r) => iqd(r.bookValue),
     meta: { kind: "money" },
     cell: ({ row }) => <span className="font-medium">{iqd(row.original.bookValue)}</span>,
   },
   {
     id: "status",
     header: "الحالة / التسوية",
+    // التسمية العربية لا الرمز الخامّ: «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+    accessorFn: (r) => assetStatusLabel(r.status),
     meta: { kind: "status" },
     cell: ({ row }) => {
       const a = row.original;
@@ -226,6 +232,7 @@ export default function AssetRegister() {
             data={rows}
             /* البحث في ListToolbar أعلاه (يغذّي rows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
             searchable={false}
+            externalFiltersActive={filtersActive}
             loading={list.isLoading}
             errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => list.refetch() }}
             onRowClick={(a) => navigate(`/assets/${a.id}`)}

@@ -103,6 +103,13 @@ type DataTableProps<T, K = string> = {
   emptyState?: React.ReactNode;
   /** تجاوز يدويّ للفراغ بعد فلتر — يعرض عادةً «امسح الفلاتر» كـCTA. */
   emptyFilteredState?: React.ReactNode;
+  /**
+   * فلاترُ الشاشة **خارج** الجدول نشطة (شريط أدواتٍ ببحثٍ أو فلاتر تُغذّي الاستعلام).
+   * بلا هذا يقيس المكوّن نشاطَ الفلترة ببحثه الداخليّ وحدَه، فشاشةٌ بـ`searchable={false}`
+   * وفلترٍ خارجيّ تُفرغ نتائجَها تُعلن **«لا صفوف بعد»** وتدعو لإضافة أوّل سجلّ — بينما
+   * السجلّات موجودةٌ ومحجوبةٌ بالفلتر فقط. كذبةٌ صامتة (Codex P2 على PR #939).
+   */
+  externalFiltersActive?: boolean;
   /** أثناء التحميل: تُعرض صفوف هيكلية (skeleton) بدل النصّ الفارغ — إحساس سرعة أفضل بلا قفزة تخطيط. */
   loading?: boolean;
   /**
@@ -166,6 +173,14 @@ type DataTableProps<T, K = string> = {
     total?: number;
     /** بديل الإجمالي في وضع keyset (بلا COUNT). */
     hasMore?: boolean;
+    /**
+     * جلبُ صفحةٍ جارٍ. **مطلوبٌ مع `placeholderData: keepPreviousData`** حيث يبقى
+     * `isLoading` كاذباً أثناء الانتقال بينما `hasMore` ما زال من الصفحة السابقة:
+     * بلا هذا يبقى زرّ «التالي» مُفعَّلاً فتقفز نقرةٌ ثانية صفحةً أو تتجاوز آخر صفحةٍ
+     * فعلية (Codex P2 على PR #939). يُعطّل أزرارَ الترقيم وحدَها — و`loading` يبقى
+     * للهياكل العظمية كي لا تومض الصفوف في كل انتقال.
+     */
+    isFetching?: boolean;
   };
   /** البحث الخادميّ — **إلزاميّ عملياً مع serverPagination** (انظر رأس الملف). */
   serverSearch?: {
@@ -242,6 +257,7 @@ export function DataTable<T, K = string>({
   resourceKey,
   emptyState,
   emptyFilteredState,
+  externalFiltersActive = false,
   loading = false,
   errorState,
   toolbar,
@@ -386,7 +402,10 @@ export function DataTable<T, K = string>({
   // تمييز صريح: بحث/فلتر نشط ⇒ NO_MATCH_FILTER، وإلا NO_ROWS_YET. البحث المحلّيّ يقاس بـglobalFilter،
   // والخادميّ بـserverSearch.value. حالة الفلاتر الأخرى (شارة/تاريخ/…) تُمرَّر يدوياً عبر
   // emptyFilteredState (المستدعي يعلم متى تكون فلاتره نشطة).
-  const anySearchActive = (serverSearch?.value?.trim() ?? "") !== "" || (globalFilter?.trim() ?? "") !== "";
+  const anySearchActive =
+    externalFiltersActive ||
+    (serverSearch?.value?.trim() ?? "") !== "" ||
+    (globalFilter?.trim() ?? "") !== "";
   const emptyOrError = errorState?.isError ? (
     <div className="flex flex-col items-center gap-2 text-sm">
       <span className="inline-flex items-center gap-1.5 font-bold text-[var(--sem-danger)]">
@@ -566,6 +585,30 @@ export function DataTable<T, K = string>({
           {toolbar && <div className="flex min-w-max shrink-0 items-center gap-1.5 whitespace-nowrap [&>*]:shrink-0">{toolbar}</div>}
         </WorkspaceBar>
       )}
+      {/*
+       * شريطُ خطأٍ فوق **بياناتٍ قائمة** (Codex P2 على PR #936).
+       * كتلةُ الخطأ في جسم الجدول لا تُصيَّر إلّا حين `visibleRows.length === 0`؛ فإذا فشل
+       * إعادةُ الجلب بعد تحميلٍ ناجح بقيت الصفوف المخبَّأة معروضة **بلا أيّ إشارة** —
+       * والقارئ يظنّ الأرقامَ حيّة. على تقرير مالٍ هذا كذبٌ صامت لا مجرّد إزعاج.
+       * الصفوفُ تبقى (قد يحتاجها) لكن مع وسمٍ صريح أنّها قديمة وزرِّ إعادة محاولة.
+       */}
+      {errorState?.isError && data.length > 0 && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-2 rounded-md border border-[var(--sem-danger)]/40 bg-[var(--sem-danger-bg)] px-3 py-2 text-sm"
+        >
+          <AlertTriangle aria-hidden className="size-4 shrink-0 text-[var(--sem-danger)]" />
+          <span className="font-medium text-[var(--sem-danger)]">
+            {errorState.message?.trim() || "تعذّر تحديث البيانات"}
+          </span>
+          <span className="text-muted-foreground">— المعروض أدناه من آخر تحميلٍ ناجح وقد يكون قديماً.</span>
+          {errorState.onRetry && (
+            <Button size="sm" variant="outline" className="ms-auto" onClick={errorState.onRetry}>
+              <RotateCcw aria-hidden className="size-3.5" /> إعادة المحاولة
+            </Button>
+          )}
+        </div>
+      )}
       {mobileCardRenderer ? (
         <>
           {/* عرض الكروت الذكية على شاشات الهاتف (<md) */}
@@ -671,7 +714,16 @@ export function DataTable<T, K = string>({
                         className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                         onClick={(e) => {
                           const target = e.target as HTMLElement;
-                          // لا يبتلع النقرَ على عنصرٍ تفاعليّ داخل الصفّ (إجراءات/روابط/نسخ).
+                          /*
+                           * ⚠️ **حاجزُ البوّابة (portal) أوّلاً** (Codex P2 على PR #939):
+                           * React يُصعّد الحدثَ عبر شجرته لا شجرة DOM، فمحتوى Radix المُبوَّب
+                           * (Popover/DropdownMenu/قائمة النسخ) يُصعّد نقرتَه إلى هذا الصفّ رغم
+                           * أنّ عقدتَه **خارج** `<tr>` في DOM — و`closest` يمشي في DOM فلا يراه.
+                           * فنقرُ شرح التسوية في سجلّ الأصول كان يفتح تفاصيلَ الأصل ويُبعد
+                           * المستعمِلَ عمّا يقرأ. الاحتواءُ في DOM هو الفحص الصحيح.
+                           */
+                          if (!e.currentTarget.contains(target)) return;
+                          // ولا يبتلع النقرَ على عنصرٍ تفاعليّ داخل الصفّ (إجراءات/روابط/حقول).
                           if (target.closest("button, a, input, select, textarea, [role=button]")) return;
                           if (!selectionEnabled) {
                             onRowClick?.(row.original);
@@ -806,7 +858,9 @@ export function DataTable<T, K = string>({
                     className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                     onClick={(e) => {
                       const target = e.target as HTMLElement;
-                      // لا يبتلع النقرَ على عنصرٍ تفاعليّ داخل الصفّ (إجراءات/روابط/نسخ).
+                      // حاجزُ البوّابة أوّلاً — انظر شرحَ المسار الآخر أعلاه (Codex P2، PR #939).
+                      if (!e.currentTarget.contains(target)) return;
+                      // ولا يبتلع النقرَ على عنصرٍ تفاعليّ داخل الصفّ (إجراءات/روابط/حقول).
                       if (target.closest("button, a, input, select, textarea, [role=button]")) return;
                       if (!selectionEnabled) {
                         onRowClick?.(row.original);
@@ -876,7 +930,7 @@ export function DataTable<T, K = string>({
           rowsOnPage={data.length}
           total={serverPagination!.total}
           hasMore={serverPagination!.hasMore}
-          isLoading={loading}
+          isLoading={loading || (serverPagination!.isFetching ?? false)}
           status={
             statusSummary || (selectionEnabled && selection!.count > 0) ? (
               <span className="inline-flex min-w-max items-center gap-3">

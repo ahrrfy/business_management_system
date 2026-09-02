@@ -223,6 +223,9 @@ export default function Employees() {
             data={rows}
             loading={list.isLoading}
             searchable={false}
+            /* البحث والفلاتر في ListToolbar (تُغذّي الاستعلام) — بلا هذا لا يرى الجدول أنّ
+               الفلترة نشطة فيُعلن «لا موظفين بعد» ويدعو لإضافة أوّل موظّف والموظّفون موجودون. */
+            externalFiltersActive={activeFilterCount > 0 || f.q.trim() !== ""}
             getRowClassName={(e) => (e.isActive ? undefined : "opacity-60")}
             /* نقرُ الصفّ يفتح ملفّ الموظّف — كان السلوكَ القائم قبل التحويل. */
             onRowClick={(e) => navigate(`/hr/employees/${e.id}`)}
@@ -243,27 +246,6 @@ export default function Employees() {
         </CardContent>
       </Card>
 
-      {total > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-          <div className="text-muted-foreground">
-            {pages > 1 ? (
-              <>يعرض {(displayPage * limit + 1).toLocaleString("ar-IQ-u-nu-latn")}–
-                {Math.min((displayPage + 1) * limit, total).toLocaleString("ar-IQ-u-nu-latn")} من
-                {" "}
-                {total.toLocaleString("ar-IQ-u-nu-latn")} موظف</>
-            ) : (
-              <>الإجمالي: {total.toLocaleString("ar-IQ-u-nu-latn")} موظف</>
-            )}
-          </div>
-          {pages > 1 && (
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={displayPage <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-              <div className="text-muted-foreground">صفحة {displayPage + 1} من {pages}</div>
-              <Button variant="outline" size="sm" disabled={displayPage >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

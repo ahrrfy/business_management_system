@@ -35,6 +35,7 @@ const maintenanceColumns: ColumnDef<MaintenanceRow, unknown>[] = [
   {
     id: "asset",
     header: "الأصل",
+    accessorFn: (r) => r.assetName ?? "",
     // الرابط يبقى مع وجود onRowClick: النقرُ الأوسط/«فتح في تبويب» يحتاج <a> حقيقياً،
     // وDataTable يتجاهل نقرَ الروابط فلا يُفعَّل المساران معاً.
     cell: ({ row }) => (
@@ -46,10 +47,10 @@ const maintenanceColumns: ColumnDef<MaintenanceRow, unknown>[] = [
       </span>
     ),
   },
-  { id: "type", header: "النوع", cell: ({ row }) => <span className="text-xs">{row.original.type}</span> },
+  { id: "type", header: "النوع", accessorFn: (r) => r.type, cell: ({ row }) => <span className="text-xs">{row.original.type}</span> },
   // kind يتكفّل بالمحاذاة وعزل الاتّجاه وtabular-nums — لا dir="ltr" يدوياً بعده.
-  { id: "maintDate", header: "التاريخ", meta: { kind: "date" }, cell: ({ row }) => row.original.maintDate },
-  { id: "cost", header: "التكلفة", meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.cost) },
+  { id: "maintDate", header: "التاريخ", accessorFn: (r) => r.maintDate, meta: { kind: "date" }, cell: ({ row }) => row.original.maintDate },
+  { id: "cost", header: "التكلفة", accessorFn: (r) => iqd(r.cost), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.cost) },
 ];
 
 export default function Assets() {
