@@ -523,13 +523,29 @@ export const workOrderRouter = router({
       role: ctx.user.role,
     })),
 
+  /**
+   * **الاعتمادُ يقبل رافدَ ردٍّ بديلاً** (بلاغ المالك ٢/٩/٢٦): الطالبُ اختار الدرج ساعةَ الطلب،
+   * وفُرِّغ الدرجُ بالبيع قبل الاعتماد، فوقف المديرُ أمام «رصيد الدرج أقل من المطلوب» وحمولةٍ
+   * مبصومةٍ لا تُعدَّل. الحقولُ الثلاثة اختيارية: غيابُها = تنفيذُ ما أقرّه الطالب حرفياً
+   * (السلوك القائم بلا تغيير). ⛔ ولا تمسّ الشروطَ المادّية — تلك يحرسها `payloadHash`.
+   */
   approveControl: workordersManagerProcedure
-    .input(z.object({ id: z.number().int().positive(), note: z.string().trim().max(500).nullish() }))
+    .input(z.object({
+      id: z.number().int().positive(),
+      note: z.string().trim().max(500).nullish(),
+      refundRail: z.enum(REFUND_RAILS).nullish(),
+      refundShiftId: z.number().int().positive().nullish(),
+      refundReference: z.string().trim().max(100).nullish(),
+    }))
     .mutation(({ input, ctx }) => approveWorkOrderControlRequest(input.id, {
       userId: ctx.user.id,
       branchId: ctx.user.branchId ?? 0,
       role: ctx.user.role,
-    }, input.note)),
+    }, input.note, {
+      refundRail: input.refundRail ?? null,
+      refundShiftId: input.refundShiftId ?? null,
+      refundReference: input.refundReference ?? null,
+    })),
 
   rejectControl: workordersManagerProcedure
     .input(z.object({ id: z.number().int().positive(), reason: workOrderControlReason }))

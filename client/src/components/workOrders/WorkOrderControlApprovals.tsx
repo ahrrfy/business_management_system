@@ -16,6 +16,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import type { RefundRail } from "@shared/refundRail";
+import {
+  ApprovalRefundRailPicker,
+  useApprovalRefundChoice,
+} from "@/components/workOrders/ApprovalRefundRailPicker";
 
 export type PendingWorkOrderControl = RouterOutputs["workOrders"]["pendingControlRequests"][number];
 export type WorkOrderControlDetail = RouterOutputs["workOrders"]["controlRequest"];
@@ -144,10 +149,12 @@ function SupervisorWorkOrderControlApprovals({
         onNoteChange={setNote}
         onRetry={() => { void detail.refetch(); }}
         onClose={closeDecision}
-        onSubmit={() => {
+        onSubmit={(refundOverride) => {
           if (!decision) return;
           if (decision.mode === "APPROVE") {
-            approve.mutate({ id: decision.id, note: note.trim() || null });
+            // التجاوزُ يُرسَل **حين يختلف عن اقتراح الطالب وحده** — فلا يمتلئ سجلّ الأمر
+            // بتجاوزاتٍ صوريّة تطابق ما طُلب أصلاً.
+            approve.mutate({ id: decision.id, note: note.trim() || null, ...(refundOverride ?? {}) });
           } else {
             reject.mutate({ id: decision.id, reason: note.trim() });
           }
@@ -311,9 +318,31 @@ export function WorkOrderControlDecisionDialog({
   onNoteChange: (value: string) => void;
   onRetry: () => void;
   onClose: () => void;
-  onSubmit: () => void;
+  onSubmit: (refundOverride?: {
+    refundRail: RefundRail;
+    refundShiftId: number | null;
+    refundReference: string | null;
+  }) => void;
 }) {
   const rejecting = decision?.mode === "REJECT";
+  /**
+   * **الأرصدة الحيّة قبل الضغط.** حمولةُ الطلب تحمل اقتراحَ الطالب ساعةَ الطلب، وقد مضت
+   * ساعات؛ فالتمهيدُ يُقرأ الآن لا من الحمولة (بلاغ المالك ٢/٩/٢٦).
+   */
+  const cancelRequest = request?.requestType === "CANCEL" ? request : null;
+  const refundPreflight = trpc.workOrders.refundPreflight.useQuery(
+    { workOrderId: Number(cancelRequest?.workOrderId ?? 0), operation: "CANCEL" },
+    { enabled: cancelRequest != null && decision?.mode === "APPROVE", staleTime: 0 },
+  );
+  const requestedPayload = (cancelRequest?.payload ?? null) as
+    | { refundRail?: RefundRail | null; refundShiftId?: number | null }
+    | null;
+  const refundChoice = useApprovalRefundChoice({
+    open: cancelRequest != null && decision?.mode === "APPROVE",
+    preflight: refundPreflight.data ?? null,
+    requestedRail: requestedPayload?.refundRail ?? null,
+    requestedShiftId: requestedPayload?.refundShiftId ?? null,
+  });
   const ownRequest = request != null
     && currentUserId != null
     && Number(request.requestedBy) === Number(currentUserId);
@@ -366,6 +395,23 @@ export function WorkOrderControlDecisionDialog({
               </div>
             )}
 
+            {!rejecting && cancelRequest && (
+              refundPreflight.isLoading ? (
+                <p className="rounded-md border p-3 text-sm text-muted-foreground">
+                  جارٍ قراءة الأرصدة الحيّة…
+                </p>
+              ) : refundPreflight.isError ? (
+                <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                  تعذّر قراءة أرصدة الردّ؛ أُوقف الاعتماد حتى نجاح القراءة.
+                  <Button type="button" variant="outline" size="sm" className="mt-2" onClick={() => void refundPreflight.refetch()}>
+                    إعادة المحاولة
+                  </Button>
+                </div>
+              ) : (
+                <ApprovalRefundRailPicker preflight={refundPreflight.data ?? null} choice={refundChoice} />
+              )
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="work-order-control-review-note">
                 {rejecting ? "سبب الرفض (مطلوب)" : "ملاحظة الاعتماد (اختيارية)"}
@@ -389,11 +435,20 @@ export function WorkOrderControlDecisionDialog({
         ) : null}
 
         <DialogFooter>
+          {!rejecting && refundChoice.blockReason && (
+            <span className="text-2xs font-bold text-[var(--sem-warn)] sm:me-auto">{refundChoice.blockReason}</span>
+          )}
           <Button variant="outline" onClick={onClose} disabled={isPending}>تراجع</Button>
           <Button
             variant={rejecting ? "destructive" : "default"}
-            disabled={!request || !!errorMessage || isLoading || isPending || ownRequest || invalidNote}
-            onClick={onSubmit}
+            disabled={
+              !request || !!errorMessage || isLoading || isPending || ownRequest || invalidNote
+              || (!rejecting && cancelRequest != null && (refundPreflight.isLoading || refundPreflight.isError))
+              || (!rejecting && refundChoice.blockReason != null)
+            }
+            onClick={() => onSubmit(refundChoice.changed
+              ? { refundRail: refundChoice.rail, refundShiftId: refundChoice.shiftId ?? null, refundReference: refundChoice.reference.trim() || null }
+              : undefined)}
           >
             {isPending
               ? "جارٍ تثبيت القرار…"
