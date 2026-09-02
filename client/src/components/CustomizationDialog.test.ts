@@ -85,6 +85,15 @@ describe("عقد نافذة التخصيص", () => {
     expect(source).toContain("placeholder={derivedTitle}");
   });
 
+  it("⭐ الاسمُ العامّ يُعامَل كفراغٍ في العرض أيضاً (مراجعة Codex P2)", () => {
+    // بندٌ قديمٌ محفوظٌ بالاسم العامّ كان يَحجب الـplaceholder ويُخفي المعاينة، ثمّ يُحفَظ
+    // بعنوانٍ مشتقٍّ لم يره الموظّف — شاشةٌ تعرض غيرَ ما ستحفظ.
+    expect(source).toContain("data.title.trim() === GENERIC_SERVICE_NAME");
+    expect(source).toContain('value={titleIsPlaceholder ? "" : data.title}');
+    expect(source).toContain("{titleIsPlaceholder && (");
+    expect(source).not.toContain("{!data.title.trim() && (");
+  });
+
   it("⭐ الاختياريّ مطويٌّ افتراضاً ويُفتَح تلقائياً متى حمل قيمة", () => {
     expect(source).toContain("تفاصيل إضافية (اختيارية)");
     expect(source).toContain("const [showExtras, setShowExtras] = useState(false)");

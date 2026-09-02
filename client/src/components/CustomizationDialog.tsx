@@ -216,6 +216,17 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
 
   /** ما سيُحفَظ فعلاً — يُعرَض حيّاً في الحقل كي لا يُفاجَأ الموظّف بعنوانٍ لم يكتبه. */
   const derivedTitle = deriveWorkOrderTitle(data, productName);
+  /**
+   * **الاسمُ العامّ يُعامَل كفراغٍ في العرض أيضاً** (مراجعة Codex P2) — لا في الاشتقاق وحده.
+   *
+   * بندٌ قديمٌ محفوظٌ بعنوان «خدمة / أمر شغل» — وهو بالضبط السجلّ الذي تستهدفه هذه الشريحة —
+   * يصل بقيمةٍ **غير فارغة**، فتحجب القيمةُ الـplaceholder ويختفي سطرُ المعاينة، بينما
+   * `deriveWorkOrderTitle` تتخطّاه عند الحفظ وتكتب المشتقّ. النتيجة: يفتح الموظّف البند فيرى
+   * الاسمَ العامّ، يحفظ، فيتغيّر عنوانُ الأمر إلى نصٍّ **لم يره قطّ**. وهو عينُ العطب الذي
+   * تعالجه الشريحة: شاشةٌ تعرض غيرَ ما ستحفظ.
+   */
+  const titleIsPlaceholder =
+    data.title.trim() === "" || data.title.trim() === GENERIC_SERVICE_NAME;
 
   function handleSave() {
     setSaveError(null);
@@ -252,12 +263,12 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
             <Label htmlFor="cz-title" className="text-xs">عنوان أمر الشغل</Label>
             <Input
               id="cz-title"
-              value={data.title}
+              value={titleIsPlaceholder ? "" : data.title}
               onChange={(e) => upd("title", e.target.value)}
               placeholder={derivedTitle}
               className="text-sm"
             />
-            {!data.title.trim() && (
+            {titleIsPlaceholder && (
               <p className="text-[11px] text-muted-foreground">
                 سيُحفَظ باسم «{derivedTitle}» — اكتب عنواناً إن أردت غيره.
               </p>
