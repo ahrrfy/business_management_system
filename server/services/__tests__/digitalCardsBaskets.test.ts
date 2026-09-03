@@ -28,7 +28,7 @@ beforeEach(async () => {
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 });
 
-async function setup(mode: "PREPAID" | "POSTPAID" = "PREPAID", suffix = "A") {
+async function setup(mode: "PREPAID" | "POSTPAID" = "PREPAID", suffix = "A", educational = false) {
   const { supplierId } = await createSupplier({ name: `Provider ${suffix}` }, cashier);
   const { providerId } = await withTx((tx) => providerService.createProvider(tx, {
     supplierId, providerType: "TELECOM", settlementMode: mode, recognitionMode: "PRINCIPAL_GROSS",
@@ -42,7 +42,8 @@ async function setup(mode: "PREPAID" | "POSTPAID" = "PREPAID", suffix = "A") {
   const offerings = [];
   for (let index = 0; index < 2; index++) {
     offerings.push(await withTx((tx) => offeringService.createOffering(tx, {
-      providerId, offeringType: "TELECOM_CARD", name: `Card ${suffix}-${index}`, pricingMode: "FIXED_MARGIN",
+      providerId, offeringType: educational ? "EDUCATIONAL_SUBSCRIPTION" : "TELECOM_CARD", name: `Card ${suffix}-${index}`, pricingMode: "FIXED_MARGIN",
+      requiresStudentData: educational, subscriptionDurationDays: educational ? 30 : null,
       fixedMargin: "500", roundingStep: "250", branches: [{ branchId: 1, walletId }],
     }, cashier)));
   }
@@ -216,6 +217,29 @@ describe("digital provider transaction baskets", () => {
     expect(details.map((item) => item.profit)).toEqual(["500.00", "500.00"]);
     expect(result.printDetails.map((item) => item.providerReference)).toEqual(["OP-ONE", "OP-ONE"]);
     expect(JSON.stringify(result.printDetails)).not.toMatch(/providerShare|profit|wallet/);
+  });
+
+  it("keeps repeated offerings as distinct invoice rows and preserves each student snapshot", async () => {
+    const context = await setup("PREPAID", "EDU", true);
+    const operation = await prepare([
+      { ...context.lines[0], lineKey: "student-first", student: { studentName: "أحمد", studentPhone: "07701234567" } },
+      { ...context.lines[0], lineKey: "student-second", student: { studentName: "حسن", studentPhone: "07701234568" } },
+    ]);
+    const { claim } = await mark(operation);
+    expect(claim.intentItemIds).toEqual(operation.items.map((item) => item.id));
+    const sale = await withTx((tx) => finalizeService.finalize(tx, {
+      intentId: operation.intentId, clientRequestId: "repeated-offering-sale", paymentAmount: "20000", paymentMethod: "CASH",
+    }, cashier));
+    const details = await finalizeService.getSaleDetails(db(), sale.invoiceId);
+    const invoiceRows = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+    expect(invoiceRows).toHaveLength(2);
+    expect(new Set(invoiceRows.map((item) => item.variantId)).size).toBe(1);
+    expect(new Set(details.map((item) => item.invoiceItemId)).size).toBe(2);
+    expect(details.map((item) => item.offeringId)).toEqual([context.lines[0].offeringId, context.lines[0].offeringId]);
+    expect(details.map((item) => item.studentName)).toEqual(["أحمد", "حسن"]);
+    expect(details.map((item) => item.studentPhone)).toEqual(["+9647701234567", "+9647701234568"]);
+    expect(details.map((item) => item.providerShare)).toEqual(["9500.00", "9500.00"]);
+    expect(sale.printDetails.map((item) => item.studentName)).toEqual(["أحمد", "حسن"]);
   });
 
   it.each(["PREPAID", "POSTPAID"] as const)("reverses only one %s basket card, rejects duplicate refund, and retains the shared reference", async (mode) => {
