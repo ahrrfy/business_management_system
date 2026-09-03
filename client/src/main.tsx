@@ -6,24 +6,18 @@ import { PwaUpdateManager } from "@/components/PwaUpdateManager";
 import {
   initConnectivity,
   isDisconnected,
-  noteRequestFailure,
-  noteRequestSuccess,
   useConnectivity,
 } from "@/lib/offline/connectivity";
 import { shouldMountGlobalStudioTools } from "@/lib/productStudio/coldOfflinePolicy";
-import {
-  fetchWithStorefrontDeadline,
-  shouldRetryStorefrontCreateOrder,
-} from "@/lib/storefrontRequestPolicy";
-import { trpc } from "@/lib/trpc";
 import { screenAttributionHeaders } from "@/lib/screenAttribution";
+import { trpc } from "@/lib/trpc";
+import { createErpTrpcClient } from "@/lib/trpcClient";
 import { UNAUTHED_ERR_MSG } from "@shared/const";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { httpBatchLink, retryLink, TRPCClientError } from "@trpc/client";
+import { TRPCClientError } from "@trpc/client";
 import { ThemeProvider } from "next-themes";
 import { createRoot } from "react-dom/client";
 import { useLocation } from "wouter";
-import superjson from "superjson";
 import App from "./App";
 import { applyStoredDisplayScale } from "@/lib/displayScale";
 // خط Cairo مستضاف محلياً (بلا اعتماد على Google Fonts CDN) ⇒ يعمل النظام كاملاً بلا إنترنت.
@@ -84,7 +78,7 @@ const queryClient = new QueryClient({
       retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 15_000),
     },
     // Mutations are never retried generically. storefront.createOrder has a dedicated retryLink
-    // below because its durable clientRequestId makes one transport retry idempotent.
+    // in the unified tRPC client because its durable clientRequestId makes one retry idempotent.
     mutations: { retry: false },
   },
 });
@@ -124,55 +118,7 @@ queryClient.getMutationCache().subscribe((event) => {
 // المتصفح غير الموثوق). في الشريحة ٣ سيسبق تفريغُ طابور المبيعات هذا الإبطال.
 initConnectivity({ onBackOnline: () => void queryClient.invalidateQueries() });
 
-const trpcClient = trpc.createClient({
-  links: [
-    retryLink({
-      retry({ op, attempts, error }) {
-        const httpStatus = (
-          error.data as { httpStatus?: number } | null | undefined
-        )?.httpStatus;
-        return shouldRetryStorefrontCreateOrder({
-          path: op.path,
-          attempts,
-          httpStatus,
-        });
-      },
-      retryDelayMs: () => 600,
-    }),
-    httpBatchLink({
-      url: "/api/trpc",
-      transformer: superjson,
-      // Helmet يمنع Referer عمداً؛ نرسل pathname وحده (بلا query/أسرار) لربط الحركة
-      // بالشاشة. الخادم يعرضه كمسار مُبلّغ عنه، واسم إجراء tRPC يبقى الحقيقة السلطوية.
-      headers: () => ({
-        "X-ERP-CSRF": "1",
-        ...screenAttributionHeaders(),
-      }),
-      // كل نداء tRPC يغذّي كاشف الاتصال: وصول أي ردّ HTTP (ولو 4xx/5xx) = الشبكة والخادم
-      // موصولان؛ رفض fetch نفسه (بلا ردّ) = انقطاع. AbortError إلغاء داخلي لا إشارة شبكة.
-      fetch(input, init) {
-        return fetchWithStorefrontDeadline(
-          (target, requestInit) =>
-            globalThis.fetch(target, {
-              ...(requestInit ?? {}),
-              credentials: "include",
-            }),
-          input,
-          init,
-        ).then(
-          (res) => {
-            noteRequestSuccess();
-            return res;
-          },
-          (err: unknown) => {
-            if (!(err instanceof DOMException && err.name === "AbortError")) noteRequestFailure();
-            throw err;
-          },
-        );
-      },
-    }),
-  ],
-});
+const trpcClient = createErpTrpcClient(() => screenAttributionHeaders());
 
 createRoot(document.getElementById("root")!).render(
   <trpc.Provider client={trpcClient} queryClient={queryClient}>

@@ -23,7 +23,7 @@ import {
 import {
   activateAdvanceForApprovedVoucherTx,
   assertEmployeeAdvanceVoucherRequestTx,
-} from "../advancesService";
+} from "../advances";
 import {
   adjustCustomerBalance,
   adjustSupplierBalance,
@@ -91,7 +91,7 @@ import {
   cancelLockedEmployeeAdvanceTx,
   lockUntouchedEmployeeAdvanceForCancellationTx,
   type LockedEmployeeAdvanceCancellation,
-} from "./employeeAdvanceCancellation";
+} from "../advances";
 import {
   expensePaymentResubmitDescriptionSuffix,
   expensePaymentResubmitKey,

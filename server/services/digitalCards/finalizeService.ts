@@ -26,9 +26,12 @@ import {
   digitalWalletTransactions,
   digitalWallets,
   invoices,
+  invoiceItems,
+  productUnits,
   products,
 } from "../../../drizzle/schema";
-import { digitalSaleReferenceLabel } from "../../../shared/digitalSale";
+import { DIGITAL_BASKET_REFERENCE_LABEL, digitalOfferingDescription, digitalSaleReferenceLabel } from "../../../shared/digitalSale";
+import { appErrorMessage } from "../../../shared/errors";
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
@@ -39,6 +42,7 @@ import type { PaymentMethod } from "../sale/types";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { assertExternalPaymentReplay, createConfirmedPosSaleInTx } from "../posExternalPayment";
+import { checkoutSnapshotToSaleLines } from "./mixedCartService";
 
 export interface FinalizeInput {
   intentId: number;
@@ -54,7 +58,12 @@ export interface FinalizeInput {
 
 /** لقطة كرتٍ للطباعة (§١٢.١) — **بلا حصة مزوّد ولا ربح ولا رصيد**؛ الحقول ببساطة غير موجودة. */
 export interface DigitalPrintDetail {
+  invoiceItemId: number;
   lineName: string;
+  offeringType: string;
+  faceValue: string | null;
+  subscriptionDurationDays: number | null;
+  providerBasketKey: string | null;
   referenceLabel: string;
   providerReference: string | null;
   studentName: string | null;
@@ -71,6 +80,20 @@ export interface FinalizeResult {
   idempotentReplay: boolean;
   /** §١٢.٣: الخادم مصدر حقيقة الطباعة — يعود جاهزاً فلا يبني العميل الإيصال من حالته. */
   printDetails: DigitalPrintDetail[];
+  receiptLines: DigitalReceiptLine[];
+  customerId: number | null;
+  shiftId: number | null;
+}
+
+export interface DigitalReceiptLine {
+  invoiceItemId: number;
+  name: string;
+  unitName: string | null;
+  quantity: string;
+  unitPrice: string;
+  discountAmount: string;
+  total: string;
+  isGift: boolean;
 }
 
 async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, details: unknown): Promise<void> {
@@ -112,6 +135,22 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       message: "طريقة الدفع تغيّرت بعد إعداد الكروت — ألغِ النيّة قبل الإصدار وابدأ من جديد",
     });
   }
+  const checkout = intent.checkoutSnapshot ?? null;
+  const boundCustomerId = checkout ? checkout.customerId : input.customerId ?? null;
+  if (checkout && (input.customerId ?? null) !== boundCustomerId) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تعذّر تثبيت السلة المختلطة",
+      why: "العميل تغيّر بعد إعداد الكروت",
+      doThis: "استعد النيّة المحفوظة بعميلها الأصلي؛ لا تُعِد إصدار الكروت",
+    }) });
+  }
+  if (!money(input.paymentAmount).eq(money(intent.expectedTotal))) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "المقبوض لا يطابق إجمالي الكروت والأصناف",
+      why: `إجمالي النيّة المحفوظة ${intent.expectedTotal}؛ لا بيع رقميّ جزئيّ`,
+      doThis: "حصّل إجمالي السلة المحفوظة كاملاً قبل التثبيت، ولا تُعد تمرير البطاقة إن تم قبض المبلغ",
+    }) });
+  }
   const boundExternalAttemptId = intent.externalPaymentAttemptId == null ? null : Number(intent.externalPaymentAttemptId);
   const boundExternalDeviceId = intent.externalPaymentDeviceId ?? null;
   if (input.paymentMethod === "CARD") {
@@ -136,10 +175,18 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "نيّة مُثبَّتة بلا فاتورة — راجِع الدعم" });
     }
     const [inv] = await tx
-      .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, total: invoices.total })
+      .select({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, total: invoices.total,
+        customerId: invoices.customerId, shiftId: invoices.shiftId })
       .from(invoices)
       .where(eq(invoices.id, Number(intent.invoiceId)))
       .limit(1);
+    if (!inv || (inv.customerId ?? null) !== boundCustomerId) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّرت إعادة الفاتورة المثبّتة",
+        why: "الفاتورة غير موجودة أو لا تخص العميل المحفوظ",
+        doThis: "افتح الفاتورة من قائمة المبيعات وراجِع العملية قبل أي بيع جديد",
+      }) });
+    }
     if (boundExternalAttemptId != null) {
       await assertExternalPaymentReplay(tx, Number(intent.invoiceId), {
         branchId: Number(intent.branchId),
@@ -158,6 +205,9 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       total: inv?.total ?? intent.expectedTotal,
       idempotentReplay: true,
       printDetails: await buildPrintDetails(tx, Number(intent.invoiceId)),
+      receiptLines: await buildReceiptLines(tx, Number(intent.invoiceId)),
+      customerId: inv.customerId ?? null,
+      shiftId: inv.shiftId ?? null,
     };
   }
 
@@ -183,11 +233,11 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     throw new TRPCError({ code: "CONFLICT", message: `${notSuccess.length} كرت لم ينجح تنفيذه — لا تُنشأ فاتورة` });
   }
 
-  const expectedTotal = sumMoney(items.map((i) => i.sellPriceSnapshot));
-  if (!money(input.paymentAmount).eq(expectedTotal)) {
+  const expectedTotal = sumMoney(items.map((i) => i.sellPriceSnapshot)).plus(money(checkout?.expectedSubtotal ?? "0"));
+  if (!money(intent.expectedTotal).eq(expectedTotal)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `المقبوض لا يطابق إجمالي الكروت (${toDbMoney(expectedTotal)}) — لا بيع رقميّ جزئيّ`,
+      message: appErrorMessage({ what: "تعذّر تثبيت إجمالي السلة", why: "إجمالي النيّة لا يطابق لقطات بنودها", doThis: "أوقف التثبيت وراجِع العملية مع مسؤول النظام دون إعادة إصدار الكروت" }),
     });
   }
 
@@ -201,6 +251,8 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       variantId: number;
       productUnitId: number;
       offeringType: string;
+      faceValue: string | null;
+      subscriptionDurationDays: number | null;
     }
   >();
   for (const it of items) {
@@ -210,6 +262,8 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
         variantId: digitalOfferings.variantId,
         productUnitId: digitalOfferings.productUnitId,
         offeringType: digitalOfferings.offeringType,
+        faceValue: digitalOfferings.faceValue,
+        subscriptionDurationDays: digitalOfferings.subscriptionDurationDays,
       })
       .from(digitalOfferings)
       .where(eq(digitalOfferings.id, Number(it.offeringId)))
@@ -222,6 +276,8 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       variantId: Number(row.variantId),
       productUnitId: Number(row.productUnitId),
       offeringType: row.offeringType,
+      faceValue: row.faceValue,
+      subscriptionDurationDays: row.subscriptionDurationDays,
     });
   }
 
@@ -302,7 +358,10 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     {
       branchId: Number(intent.branchId),
       shiftId: Number(intent.shiftId),
-      customerId: input.customerId ?? null,
+      customerId: boundCustomerId,
+      priceTier: checkout?.priceTier,
+      // Same trusted authority as the ordinary POS route; no public approval boolean.
+      priceOverrideApproved: supervisor,
       sourceType: "POS",
       // namespace خادمي مشتق من النيّة؛ لا collision مع بيع POS عادي ولا اعتماد على مفتاح العميل.
       clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
@@ -314,7 +373,7 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       },
       requireExternalPaymentAttempt: input.paymentMethod !== "CASH",
       deviceId: boundExternalDeviceId,
-      lines: items.map((it) => {
+      lines: [...checkoutSnapshotToSaleLines(checkout), ...items.map((it) => {
         const m = meta.get(Number(it.offeringId))!;
         return {
           variantId: m.variantId,
@@ -324,11 +383,18 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
           unitCostOverride: it.providerShareSnapshot,
           internalLineToken: String(it.id),
         };
-      }),
+      })],
     },
     actor,
     DIGITAL_SALE_CAPABILITY,
   );
+  if (!money(sale.total).eq(expectedTotal)) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+      what: "تراجعت الفاتورة بالكامل",
+      why: "إجمالي الفاتورة المحسوب لا يطابق إجمالي النيّة المحفوظة",
+      doThis: "راجِع العملية دون إعادة إصدار الكروت أو قبض المبلغ ثانيةً",
+    }) });
+  }
 
   /* ٨. سجلّ التفاصيل: الربط برمز السطر الداخلي، لا بموضعٍ يتغيّر عند ترتيب أقفال variantId. */
   const invoiceItemByIntentItem = new Map(
@@ -454,6 +520,17 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "بيعٌ مسبق الدفع بلا حركة محفظة" });
     }
 
+    // Freeze the human description on the invoice row so later catalog edits cannot
+    // change the card value/type/duration printed on this sale's receipt.
+    const [invoiceLine] = await tx.select({ name: invoiceItems.itemNameSnapshot }).from(invoiceItems)
+      .where(eq(invoiceItems.id, invoiceItemId)).limit(1);
+    const description = digitalOfferingDescription(m);
+    // Product name (<=255) plus the bounded descriptor fits the 512-char snapshot;
+    // never shorten the course/card identity to make room for display metadata.
+    const name = invoiceLine?.name ?? "بطاقة رقمية";
+    await tx.update(invoiceItems).set({ itemNameSnapshot: `${name} — ${description}` })
+      .where(eq(invoiceItems.id, invoiceItemId));
+
     await tx.insert(digitalSaleDetails).values({
       invoiceId: sale.invoiceId,
       invoiceItemId,
@@ -497,6 +574,9 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     total: sale.total,
     idempotentReplay: false,
     printDetails: await buildPrintDetails(tx, sale.invoiceId),
+    receiptLines: await buildReceiptLines(tx, sale.invoiceId),
+    customerId: boundCustomerId,
+    shiftId: Number(intent.shiftId),
   };
 }
 
@@ -512,6 +592,7 @@ export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor)
       paymentMethod: digitalSaleIntents.paymentMethod,
       externalPaymentAttemptId: digitalSaleIntents.externalPaymentAttemptId,
       externalPaymentDeviceId: digitalSaleIntents.externalPaymentDeviceId,
+      checkoutSnapshot: digitalSaleIntents.checkoutSnapshot,
     })
     .from(digitalSaleIntents)
     .where(eq(digitalSaleIntents.id, intentId))
@@ -529,9 +610,28 @@ export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor)
       paymentMethod: intent.paymentMethod,
       externalPaymentAttemptId: intent.externalPaymentAttemptId == null ? null : Number(intent.externalPaymentAttemptId),
       deviceId: intent.externalPaymentDeviceId,
+      customerId: intent.checkoutSnapshot?.customerId ?? null,
     },
     actor,
   );
+}
+
+/** Receipt prices/names come from committed invoice rows, never browser state or costs. */
+async function buildReceiptLines(runner: DB | Tx, invoiceId: number): Promise<DigitalReceiptLine[]> {
+  const rows = await runner.select({
+    invoiceItemId: invoiceItems.id,
+    name: invoiceItems.itemNameSnapshot,
+    unitName: productUnits.unitName,
+    quantity: invoiceItems.quantity,
+    unitPrice: invoiceItems.unitPrice,
+    discountAmount: invoiceItems.discountAmount,
+    total: invoiceItems.total,
+    isGift: invoiceItems.isGift,
+  }).from(invoiceItems)
+    .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
+    .where(eq(invoiceItems.invoiceId, invoiceId)).orderBy(asc(invoiceItems.id));
+  return rows.map((line) => ({ ...line, invoiceItemId: Number(line.invoiceItemId),
+    name: line.name ?? "صنف", discountAmount: line.discountAmount ?? "0.00", isGift: line.isGift === true }));
 }
 
 /**
@@ -542,8 +642,12 @@ async function buildPrintDetails(runner: DB | Tx, invoiceId: number, branchId?: 
   await assertInvoiceBranch(runner, invoiceId, branchId);
   const rows = await runner
     .select({
+      invoiceItemId: digitalSaleDetails.invoiceItemId,
       lineName: products.name,
       offeringType: digitalOfferings.offeringType,
+      faceValue: digitalOfferings.faceValue,
+      subscriptionDurationDays: digitalOfferings.subscriptionDurationDays,
+      providerBasketKey: digitalSaleIntentItems.providerBasketKey,
       providerReference: digitalSaleDetails.providerReference,
       studentName: digitalSaleDetails.studentNameSnapshot,
       studentPhone: digitalSaleDetails.studentPhoneSnapshot,
@@ -552,6 +656,7 @@ async function buildPrintDetails(runner: DB | Tx, invoiceId: number, branchId?: 
     })
     .from(digitalSaleDetails)
     .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
+    .innerJoin(digitalSaleIntentItems, eq(digitalSaleDetails.intentItemId, digitalSaleIntentItems.id))
     .innerJoin(digitalOfferings, eq(digitalSaleDetails.offeringId, digitalOfferings.id))
     .innerJoin(products, eq(digitalOfferings.productId, products.id))
     .where(and(
@@ -560,8 +665,13 @@ async function buildPrintDetails(runner: DB | Tx, invoiceId: number, branchId?: 
     ))
     .orderBy(asc(digitalSaleDetails.id));
   return rows.map((r) => ({
+    invoiceItemId: Number(r.invoiceItemId),
     lineName: r.lineName,
-    referenceLabel: digitalSaleReferenceLabel(r.offeringType),
+    offeringType: r.offeringType,
+    faceValue: r.faceValue,
+    subscriptionDurationDays: r.subscriptionDurationDays,
+    providerBasketKey: r.providerBasketKey,
+    referenceLabel: r.providerBasketKey ? DIGITAL_BASKET_REFERENCE_LABEL : digitalSaleReferenceLabel(r.offeringType),
     providerReference: r.providerReference,
     studentName: r.studentName,
     studentPhone: r.studentPhone,

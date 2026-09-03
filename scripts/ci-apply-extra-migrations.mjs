@@ -209,6 +209,8 @@ const EXTRA_MIGRATIONS = [
   // ١/٩/٢٦: يوسّع enum قناة طابور الاسترداد بـRETURN. `db:push` يبنيه من المخطّط فتنشأ
   // الصيغة الجديدة على قاعدة الاختبار، لكن المرآة تُبقي المسارين متطابقين.
   "drizzle/migrations/0327_offline_recovery_return_channel.sql",
+  // Run after 0128 so the reference owner, not each basket member, holds uniqueness.
+  "drizzle/migrations/0332_digital_card_baskets.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

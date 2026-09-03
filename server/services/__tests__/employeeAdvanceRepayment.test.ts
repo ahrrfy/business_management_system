@@ -7,7 +7,7 @@ import { withTx } from "../tx";
 import {
   cancelLockedEmployeeAdvanceTx,
   lockUntouchedEmployeeAdvanceForCancellationTx,
-} from "../voucher/employeeAdvanceCancellation";
+} from "../advances";
 import {
   advanceRepaymentPosting,
   approveAdvanceRepaymentRequest,

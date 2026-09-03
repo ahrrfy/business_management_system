@@ -6,6 +6,7 @@
  * المعاملة نفسها: تحرير الحجز، أو إنشاء الفاتورة، أو إثبات الخسارة.
  */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "../../../shared/errors";
 import { and, asc, eq, notInArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
@@ -140,6 +141,8 @@ async function intentItems(tx: Tx, intentId: number) {
     .select({
       id: digitalSaleIntentItems.id,
       providerId: digitalSaleIntentItems.providerId,
+      providerBasketKey: digitalSaleIntentItems.providerBasketKey,
+      referenceOwnerItemId: digitalSaleIntentItems.referenceOwnerItemId,
       fulfillmentStatus: digitalSaleIntentItems.fulfillmentStatus,
       providerReference: digitalSaleIntentItems.providerReference,
     })
@@ -180,6 +183,9 @@ async function normalizeAndValidateItems(
     const providerReference = input.outcome === "ISSUED"
       ? normalizeDigitalSaleReference(input.providerReference || actual.providerReference)
       : "";
+    if (actual.providerBasketKey != null && input.outcome === "ISSUED" && providerReference !== normalizeDigitalSaleReference(actual.providerReference)) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر تغيير مرجع السلة", why: "رقم عملية المزوّد محفوظ لجميع بطاقاتها", doThis: "طابق العملية بالمرجع المحفوظ قبل طلب المعالجة" }) });
+    }
     if (input.outcome === "ISSUED" && !providerReference) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "رقم العملية أو ID الكرت مطلوب لكل كرت صادر" });
     }
@@ -191,14 +197,26 @@ async function normalizeAndValidateItems(
     };
   });
 
-  const seen = new Set<string>();
+  // The owner must keep the unique reference even if only another member was issued.
+  // All-NOT_ISSUED baskets release the complete operation together.
+  for (const owner of actualItems.filter((item) => item.providerBasketKey != null && item.referenceOwnerItemId == null)) {
+    const memberIds = new Set(actualItems.filter((item) => item.providerBasketKey === owner.providerBasketKey).map((item) => Number(item.id)));
+    if (normalized.some((item) => memberIds.has(item.intentItemId) && item.outcome === "ISSUED")) {
+      const normalizedOwner = normalized.find((item) => item.intentItemId === Number(owner.id))!;
+      normalizedOwner.providerReference = normalizeDigitalSaleReference(owner.providerReference) || null;
+    }
+  }
+
+  const actualById = new Map(actualItems.map((item) => [Number(item.id), item]));
+  const seen = new Map<string, string | null>();
   for (const item of normalized) {
     if (!item.providerReference) continue;
     const key = `${item.providerId}:${item.providerReference.toLocaleLowerCase("en")}`;
-    if (seen.has(key)) {
+    const basketKey = actualById.get(item.intentItemId)!.providerBasketKey;
+    if (seen.has(key) && (basketKey == null || seen.get(key) !== basketKey)) {
       throw new TRPCError({ code: "CONFLICT", message: "رقم العملية مكرر داخل طلب المعالجة للمزوّد نفسه" });
     }
-    seen.add(key);
+    seen.set(key, basketKey);
   }
 
   const refs = normalized.filter((item) => item.providerReference != null);
