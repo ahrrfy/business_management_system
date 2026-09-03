@@ -115,6 +115,18 @@ export function RefundRailPickerView({
     emptyLabel: context.sourceDocType === "CONSIGNMENT_RETURN" ? "وردية مفتوحة" : "وردية استقبال",
   });
 
+  // Codex #960: يُعاد ضبطُ الاختيار عند تبدّل المستند — المنتقي مصمَّمٌ للاستمرار بلا remount،
+  // فإبقاءُ `rail="CARD"` بعد الانتقال إلى مستندٍ يمنع البطاقة يُنتج تأكيداً بحمولةٍ باطلة،
+  // ودرجٌ قديمٌ قد يغيب عن قائمة مستندٍ جديد فيقفلُ الحوار بلا سبب. نُعيد كلاً إلى الافتراض.
+  useEffect(() => {
+    setRail("DRAWER");
+    setCardReference("");
+    drawer.reset();
+    // `drawer` مرجعُ hook متغيّر كلّ render — نستبعده عن التبعيّات كي لا يُطلَق كلّما بُنيت
+    // الأدراج من preflight جديد؛ الرسالةُ الحاكمة هي تبدّلُ هويّة المستند.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [context.sourceDocType, context.sourceDocId]);
+
   const needsCash = preflight?.needsCashDrawer === true;
   const cardAllowed = preflight?.cardRefundAllowed === true;
 
@@ -175,12 +187,12 @@ export function RefundRailPickerView({
         </p>
         <div className="flex gap-2">
           {onRetry ? (
-            <Button size="sm" variant="outline" onClick={onRetry}>
+            <Button type="button" size="sm" variant="outline" onClick={onRetry}>
               أعِد المحاولة
             </Button>
           ) : null}
           {onCancel ? (
-            <Button size="sm" variant="ghost" onClick={onCancel}>
+            <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
               إلغاء
             </Button>
           ) : null}
@@ -217,11 +229,11 @@ export function RefundRailPickerView({
         <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           هذا المستند لا يُخرج نقداً — تابع العمليةَ من الحوار الأمّ.
           <div className="mt-2 flex gap-2">
-            <Button size="sm" onClick={handleConfirm} disabled={submitting}>
+            <Button type="button" size="sm" onClick={handleConfirm} disabled={submitting}>
               متابعة
             </Button>
             {onCancel ? (
-              <Button size="sm" variant="ghost" onClick={onCancel} disabled={submitting}>
+              <Button type="button" size="sm" variant="ghost" onClick={onCancel} disabled={submitting}>
                 إلغاء
               </Button>
             ) : null}
@@ -310,11 +322,11 @@ export function RefundRailPickerView({
           ) : null}
 
           <div className="flex gap-2 pt-1">
-            <Button size="sm" onClick={handleConfirm} disabled={submitting || blockReason != null}>
+            <Button type="button" size="sm" onClick={handleConfirm} disabled={submitting || blockReason != null}>
               تأكيدُ رافد الردّ
             </Button>
             {onCancel ? (
-              <Button size="sm" variant="ghost" onClick={onCancel} disabled={submitting}>
+              <Button type="button" size="sm" variant="ghost" onClick={onCancel} disabled={submitting}>
                 إلغاء
               </Button>
             ) : null}
