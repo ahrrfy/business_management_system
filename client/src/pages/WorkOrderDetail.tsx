@@ -52,6 +52,7 @@ import {
   mayRequestWorkOrderControl,
 } from "@shared/workOrderControlAuthority";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
 
 
@@ -625,6 +626,14 @@ export default function WorkOrderDetail() {
             ملصق شحن
           </Button>
         </>}
+      />
+
+      {/* م٢ ق١١ — «الخطوة التالية» لأمر الشغل. `assigneeName` يمرّ إلى الرقاقة كي تعرض
+          اسمَ الفنّيّ المُسنَد بدل «الموظّف المُسنَد» العامّ حين تكون الملكيّة USER. */}
+      <NextActionChip
+        nextAction={data.nextAction ?? null}
+        terminalReason={data.nextActionReason ?? null}
+        userName={data.assigneeName}
       />
 
       <Card>

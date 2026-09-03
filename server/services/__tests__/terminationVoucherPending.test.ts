@@ -157,7 +157,7 @@ async function paymentOutEntries(receiptId: number) {
 beforeEach(resetAndSeed);
 
 describe("termination settlement voucher pending lifecycle", () => {
-  it("stays zero-effect, enforces SOD, and materializes exactly once under concurrent approval", async () => {
+  it("stays zero-effect until funded, and materializes exactly once under concurrent approval", async () => {
     await seedTermination({
       terminationId: 101,
       employeeId: 11,
@@ -212,8 +212,10 @@ describe("termination settlement voucher pending lifecycle", () => {
     );
     expect(balanceBeforeFunding.toFixed(2)).toBe("0.00");
 
+    // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — صانع الطلب مالكٌ فلا يُرفض لهذا السبب
+    // بعد اليوم؛ يبقى مرفوضاً هنا لأنّ الخزينة غير ممولة بعد (٠.٠٠ < ٧٥٠٠٠٠.٠٠)، لا لفصل المهام.
     await expect(approveVoucher(receiptId, MAKER)).rejects.toMatchObject({
-      code: "FORBIDDEN",
+      code: "PRECONDITION_FAILED",
     });
     await expect(
       approveVoucher(receiptId, INACTIVE_OWNER),

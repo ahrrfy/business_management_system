@@ -207,6 +207,7 @@ export default function PurchaseChargesGovernance() {
           suppliers={suppliers}
           pendingControls={pendingControls}
           currentUserId={me.data?.id}
+          isOwner={me.data?.isOwner === true}
           loading={
             sourcesQuery.isLoading ||
             chargesQuery.isLoading ||

@@ -108,7 +108,6 @@ export function EmployeeAdvanceRepaymentPanel() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const owner = me.data?.isOwner === true;
-  const currentUserId = Number(me.data?.id ?? 0);
   const advancesQ = trpc.payroll.advancesList.useQuery({ status: "ACTIVE" });
   const requestsQ = trpc.payroll.advanceRepaymentRequests.useQuery();
   const ledgerQ = trpc.payroll.advanceRepaymentLedger.useQuery();
@@ -143,7 +142,6 @@ export function EmployeeAdvanceRepaymentPanel() {
     () => new Map((ledgerQ.data ?? []).map((row) => [Number(row.id), row.allocations])),
     [ledgerQ.data],
   );
-  const requestById = useMemo(() => new Map(requests.map((row) => [Number(row.id), row])), [requests]);
   const activeReturnOf = useMemo(
     () => new Set(requests
       .filter((row) => row.requestKind === "RETURN" && row.originalRequestId != null && row.status !== "REJECTED")
@@ -238,11 +236,6 @@ export function EmployeeAdvanceRepaymentPanel() {
           </tr></thead>
           <tbody>
             {requests.map((request) => {
-              const original = request.originalRequestId == null ? null : requestById.get(Number(request.originalRequestId)) ?? null;
-              const originalActors = request.requestKind === "RETURN" ? [original?.createdBy, original?.reviewedBy] : [];
-              const independent = owner && [request.createdBy, ...originalActors]
-                .filter((actorId): actorId is number => actorId != null)
-                .every((actorId) => currentUserId !== Number(actorId));
               const allocations = ledgerByRequest.get(Number(request.id)) ?? [];
               const canRequestReturn = !owner && request.requestKind === "REPAYMENT" && request.status === "APPROVED" && !activeReturnOf.has(Number(request.id));
               return <tr key={request.id} className="border-t align-top">
@@ -254,12 +247,12 @@ export function EmployeeAdvanceRepaymentPanel() {
                 <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 ${REQUEST_STATUS_CLS[request.status] ?? "bg-muted"}`}>{REQUEST_STATUS_LABEL[request.status] ?? request.status}</span>{request.rejectionReason && <div className="mt-1 max-w-48 text-destructive">{request.rejectionReason}</div>}</td>
                 <td className="p-2"><div className="flex justify-end gap-1">
                   {owner && request.status === "PENDING" && <>
-                    <Button size="sm" variant="outline" disabled={!independent || approve.isPending} title={!independent ? "يلزم مالك مستقل عن صانع الطلب" : undefined} onClick={async () => {
+                    <Button size="sm" variant="outline" disabled={approve.isPending} onClick={async () => {
                       const incoming = request.requestKind === "REPAYMENT";
                       const ok = await confirm({ variant: incoming ? "warning" : "danger", title: `اعتماد ${requestKindLabel(request.requestKind)}`, description: `${incoming ? "سيُنشأ إيصال قبض ويُخفّض أصل سلفة الموظف" : "سيُنشأ سند صرف ويُعاد فتح أصل سلفة الموظف"} بمبلغ ${iqd(request.amount)} د.ع وفق الدليل المحفوظ. هذه حركة مالية فعلية وليست موافقة شكلية.`, confirmText: incoming ? "اعتماد القبض" : "اعتماد الإعادة والصرف" });
                       if (ok) approve.mutate({ id: Number(request.id) });
                     }}><Check className="size-3.5" aria-hidden /> اعتماد</Button>
-                    <Button size="sm" variant="outline" className="text-destructive" disabled={!independent} onClick={() => setRejecting(request)}><X className="size-3.5" aria-hidden /> رفض</Button>
+                    <Button size="sm" variant="outline" className="text-destructive" onClick={() => setRejecting(request)}><X className="size-3.5" aria-hidden /> رفض</Button>
                   </>}
                   {canRequestReturn && <Button size="sm" variant="outline" onClick={() => setDialog({ kind: "RETURN", request })}><RotateCcw className="size-3.5" aria-hidden /> طلب إعادة</Button>}
                   {request.status === "APPROVED" && <Button size="icon" variant="outline" title="طباعة مستند الحركة" onClick={() => repaymentPrint(request, allocations)}><Printer className="size-3.5" aria-hidden /><span className="sr-only">طباعة</span></Button>}

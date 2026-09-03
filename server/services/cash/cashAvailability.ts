@@ -116,7 +116,13 @@ export interface CashTransferAvailabilityInput {
 /**
  * إثبات سلطوي غير قابل للإنشاء خارج هذه الوحدة. وجود الرصيد وحده لا يجيز صرفاً
  * خارجياً من الخزينة؛ يجب أن يثبت المسار، داخل المعاملة نفسها، مالكاً نشطاً
- * مختلفاً عن كل صانعي الطلب ثم يمرر هذا الإثبات إلى الحارس المالي.
+ * ثم يمرر هذا الإثبات إلى الحارس المالي.
+ *
+ * ⭐ **قرار المالك (٣/٩/٢٦):** لا اعتماد ثانٍ فوق المالك — كل حسابات `isOwner` تشكّل سلطةً
+ * واحدة، فلا يُشترط أن يكون المعتمِد مالكاً **غير** صانع الطلب. الشرط الوحيد الباقي: أن يكون
+ * المُنفِّذ مالكاً نشطاً بالفعل (`isActive && isOwner`) — هذا وحده يمنع صرفاً بلا رقيبٍ من
+ * أيّ حسابٍ آخر. `makerUserIds` يبقى في المدخل توثيقاً لهوية الطالب في السجلّ التدقيقي
+ * (`receipts.createdBy`/`approvedBy` يكفيان لإظهار الاعتماد الذاتي في أيّ تقرير) لا لإنفاذٍ.
  */
 export interface ExternalTreasuryDisbursementApproval {
   readonly kind: "EXTERNAL_DISBURSEMENT";
@@ -163,17 +169,6 @@ export async function authorizeExternalTreasuryDisbursement(
     throw new TRPCError({
       code: "FORBIDDEN",
       message: `${input.operation}: التنفيذ النقدي من الخزينة محصور بحساب مالك نشط`,
-    });
-  }
-  const makers = new Set(
-    input.makerUserIds
-      .filter((id): id is number => id != null)
-      .map(Number),
-  );
-  if (makers.has(Number(owner.id))) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: `${input.operation}: لا يجوز لصانع الطلب تنفيذ صرفه — يلزم مالك آخر`,
     });
   }
 

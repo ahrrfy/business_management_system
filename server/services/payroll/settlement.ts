@@ -76,10 +76,16 @@ export function assertPayrollPaymentEvidence(
   return ref;
 }
 
+/**
+ * ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — أُزيل شرط «مختلفٌ عن صانع العملية»
+ * (كان هنا نظيراً مستقلاً لِـauthorizeExternalTreasuryDisbursement في cashAvailability.ts،
+ * التفصيل هناك). `forbiddenUserIds` يبقى في التوقيع توثيقاً لهوية الطالب في مواضع الاستدعاء —
+ * الأثر التدقيقي (createdBy/executedBy) يبقى مسجَّلاً كما هو.
+ */
 export async function assertPayrollActiveOwnerChecker(
   tx: Tx,
   actor: Actor,
-  forbiddenUserIds: Array<number | null | undefined>,
+  _forbiddenUserIds: Array<number | null | undefined>,
   operation: string,
 ): Promise<void> {
   const [owner] = await tx
@@ -92,17 +98,6 @@ export async function assertPayrollActiveOwnerChecker(
     throw new TRPCError({
       code: "FORBIDDEN",
       message: `${operation}: التنفيذ محصور بحساب مالك نشط.`,
-    });
-  }
-  if (
-    forbiddenUserIds
-      .filter((id): id is number => id != null)
-      .map(Number)
-      .includes(Number(owner.id))
-  ) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: `${operation}: يلزم منفّذ مستقل عن صانع العملية الأصلية.`,
     });
   }
 }

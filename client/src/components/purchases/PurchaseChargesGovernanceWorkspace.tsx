@@ -83,6 +83,7 @@ export function PurchaseChargesGovernanceWorkspace({
   expenseAccounts,
   pendingControls,
   currentUserId,
+  isOwner,
   loading,
   error,
   onRetry,
@@ -99,6 +100,7 @@ export function PurchaseChargesGovernanceWorkspace({
   suppliers: SupplierOption[];
   pendingControls: GovernanceQueueRow[];
   currentUserId: number | null | undefined;
+  isOwner?: boolean;
   loading: boolean;
   error?: unknown;
   onRetry: () => void;
@@ -371,6 +373,7 @@ export function PurchaseChargesGovernanceWorkspace({
         scope="purchase-charge-control"
         rows={pendingControls}
         currentUserId={currentUserId}
+        isOwner={isOwner}
         loading={loading}
         error={error}
         pending={decisionPending}

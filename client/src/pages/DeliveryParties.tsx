@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
+import { hasOpenBalance, balanceDirection } from "@shared/predicates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -105,7 +106,7 @@ export default function DeliveryParties() {
 
   if (list.isError) return <div className="p-6"><ErrorState onRetry={() => list.refetch()} /></div>;
   const allRows = list.data ?? [];
-  const rows = f.outstandingOnly === "1" ? allRows.filter((p) => !D(p.currentBalance).isZero()) : allRows;
+  const rows = f.outstandingOnly === "1" ? allRows.filter((p) => hasOpenBalance(p)) : allRows;
   const activeFilterCount = f.outstandingOnly === "1" ? 1 : 0;
 
   /*
@@ -194,7 +195,7 @@ export default function DeliveryParties() {
       enableSorting: false,
       cell: ({ row }) => {
         const p = row.original;
-        const bal = Number(p.currentBalance ?? 0);
+        const owesUs = balanceDirection(p, "deliveryParty") === "receivable";
         return (
           <RowActions
             mode="menu"
@@ -206,7 +207,7 @@ export default function DeliveryParties() {
                 partyName: p.name,
                 entityLabel: p.partyType === "COMPANY" ? "شركة التوصيل" : "المندوب",
                 status: p.openConsignments > 0 ? p.openConsignments + " شحنة مفتوحة" : "لا شحنات مفتوحة",
-                nextAction: bal > 0 ? "توجد عهدة قيد التسوية بقيمة " + fmt(p.currentBalance) + " د.ع." : null,
+                nextAction: owesUs ? "توجد عهدة قيد التسوية بقيمة " + fmt(p.currentBalance) + " د.ع." : null,
               }),
               gate: { module: "store", level: "READ" },
             }}
@@ -223,7 +224,7 @@ export default function DeliveryParties() {
                 kind: "pay",
                 label: "تسوية",
                 hidden: !canSettle,
-                disabled: bal <= 0,
+                disabled: !owesUs,
                 disabledReason: "لا يوجد رصيد قابل للتسوية",
                 onSelect: () => setSettleFor(p),
                 gate: { roles: ["cashier", "manager"] },
@@ -234,7 +235,7 @@ export default function DeliveryParties() {
                 label: "شطب",
                 variant: "destructive",
                 hidden: !canRequestWriteOff,
-                disabled: bal <= 0,
+                disabled: !owesUs,
                 disabledReason: "لا يوجد عجز قابل للشطب",
                 onSelect: () => setWriteOffFor(p),
                 gate: { roles: ["admin"] },

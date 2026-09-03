@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { branches, customers, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import type { Actor } from "../tx";
+import { canCrossBranches } from "@shared/predicates";
 
 export function isPipelineSupervisor(actor: Actor): boolean {
   return (
@@ -11,7 +12,7 @@ export function isPipelineSupervisor(actor: Actor): boolean {
 }
 
 export function canPipelineCrossBranches(actor: Actor): boolean {
-  return actor.role === "admin" || actor.isOwner === true;
+  return canCrossBranches(actor);
 }
 
 export function resolvePipelineBranch(

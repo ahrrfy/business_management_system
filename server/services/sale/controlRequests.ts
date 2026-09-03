@@ -8,7 +8,7 @@ import {
   salesExchangeCommands,
   users,
 } from "../../../drizzle/schema";
-import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { isDeadInvoice, invoiceRemaining } from "@shared/predicates";
 import type { SalesControlType } from "@shared/salesControl";
 import type { Tx } from "../../db";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -182,7 +182,7 @@ export async function requestSalesControl(
         message: "فاتورة أمر الشغل تُعالج من مسار عكس التسليم الخاص بأمر الشغل",
       });
     }
-    if (isDeadInvoiceStatus(invoice.status)) {
+    if (isDeadInvoice(invoice)) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة نهائية ولا تقبل طلب تحكم جديداً" });
     }
     if (input.requestType === "SALES_DUE_DATE_CHANGE") {
@@ -280,9 +280,7 @@ async function recordExchangeTx(
   )[0];
   if (!replacement) throw new TRPCError({ code: "CONFLICT", message: "فاتورة الاستبدال لم تُحفظ" });
   const overpay = round2(money(result.overpay ?? "0"));
-  const outstanding = round2(
-    money(replacement.total).minus(money(replacement.paidAmount)).minus(money(replacement.returnedTotal ?? "0")),
-  );
+  const outstanding = round2(invoiceRemaining(replacement));
   const additional = payload.additionalPayment;
   const settlementKind = additional
     ? "COLLECT"

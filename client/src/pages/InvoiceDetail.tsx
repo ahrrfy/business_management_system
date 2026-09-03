@@ -78,6 +78,7 @@ import {
 } from "@/lib/paymentMethod";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
+import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import { invoiceStatusLabel, invoiceStatusBadgeVariant,
 } from "@shared/invoiceStatus";
 import { Badge } from "@/components/ui/badge";
@@ -1025,6 +1026,12 @@ export default function InvoiceDetail() {
             )}
           </>
         }
+      />
+
+      {/* م٢ ق١١ — «الخطوة التالية» على المستند. الحقلُ اختياريّ في العقد فيعرض null بأمان. */}
+      <NextActionChip
+        nextAction={data.nextAction ?? null}
+        terminalReason={data.nextActionReason ?? null}
       />
 
       {canCancelInvoice && deliveryCancellationBlockReason && (
