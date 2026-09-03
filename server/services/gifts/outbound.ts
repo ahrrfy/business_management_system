@@ -6,6 +6,7 @@ import { TRPCError } from "@trpc/server";
 import type Decimal from "decimal.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { branches, customers, giftCampaigns, giftVoucherLines, giftVouchers, productVariants } from "../../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { applyMovement, convertToBaseQuantity, isBundleVariant, isServiceVariant } from "../inventoryService";
@@ -51,12 +52,35 @@ type Converted = { variantId: number; productUnitId: number; quantity: string; b
 async function convertLines(tx: Tx, lines: OutboundGiftLineInput[]): Promise<Converted[]> {
   const out: Converted[] = [];
   for (const ln of lines) {
-    if (!(ln.quantity > 0)) throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الهدية يجب أن تكون موجبة" });
+    if (!(ln.quantity > 0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر حفظ سطر الهدية",
+          why: `كمية الهدية يجب أن تكون موجبة، والقيمة المُرسَلة ${ln.quantity}`,
+          doThis: "أدخل كميّةً موجبة في «الكمية» ثمّ أعد الإرسال",
+        }),
+      });
+    }
     if (await isBundleVariant(tx, ln.variantId)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُمنَح هدية لمنتج بكج (مركّب) — امنح مكوّناته المخزونية." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر منح الهدية لمنتج بكج (مركّب)",
+          why: "البكج بلا مخزونٍ ذاتيّ ولا كلفةٍ ذاتيّة، فمنحه هديّةً يعادل تفريغَ رصيد المكوّنات بلا أثرٍ يُحسَب",
+          doThis: "افتح شاشة الهدية وامنح مكوّنات البكج مباشرةً بدلاً منه، فيُطبَّق الخصم على كل مكوّن بتكلفته",
+        }),
+      });
     }
     if (await isServiceVariant(tx, ln.variantId)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُمنَح هدية لمنتج خدميّ (بلا مخزون)." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر منح الهدية لمنتج خدميّ",
+          why: "المنتج الخدميّ بلا مخزونٍ يُخصَم منه ولا كلفةٍ يُقيَّد بها الهدية",
+          doThis: "امنح صنفاً مخزنياً بدلاً منه، أو استعمل «قسيمة خصم» على فاتورة الخدمة",
+        }),
+      });
     }
     const conv = await convertToBaseQuantity(tx, ln.productUnitId, ln.quantity, ln.variantId);
     out.push({
@@ -85,8 +109,26 @@ async function lockCampaignRow(tx: Tx, campaignId: number): Promise<string | nul
       .for("update")
       .limit(1)
   )[0];
-  if (!camp) throw new TRPCError({ code: "NOT_FOUND", message: "الحملة غير موجودة" });
-  if (camp.status !== "ACTIVE") throw new TRPCError({ code: "BAD_REQUEST", message: "الحملة مغلقة — لا يمكن ربط هدية جديدة بها" });
+  if (!camp) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر ربط الهدية بالحملة",
+        why: `الحملة رقم ${campaignId} غير موجودة أو أُزيلت`,
+        doThis: "افتح شاشة «حملات الهدايا» واختر حملةً نشطة، أو أنشئ حملةً جديدة",
+      }),
+    });
+  }
+  if (camp.status !== "ACTIVE") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر ربط الهدية بالحملة",
+        why: `الحملة مغلقة (حالتها ${camp.status})، ولا تُربَط بها هدايا جديدة`,
+        doThis: "اختر حملةً نشطة من «حملات الهدايا»، أو اطلب من المدير إعادة فتح الحملة أو إنشاء حملة جديدة",
+      }),
+    });
+  }
   return camp.budgetCost;
 }
 
@@ -162,14 +204,41 @@ async function applyOutboundEffect(
 }
 
 export async function createOutboundGift(input: CreateOutboundGiftInput, actor: Actor): Promise<OutboundGiftResult> {
-  if (!input.lines?.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أضف صنفاً واحداً على الأقل للهدية" });
+  if (!input.lines?.length) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر حفظ سند الهدية",
+        why: "سند الهدية بلا أسطر، ولا يُقبل سندٌ فارغ",
+        doThis: "أضف صنفاً واحداً على الأقل مع كميّته من زرّ «إضافة صنف»، ثمّ أعد الحفظ",
+      }),
+    });
+  }
 
   return withTx(async (tx) => {
     const b = (await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).limit(1))[0];
-    if (!b) throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+    if (!b) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر حفظ سند الهدية",
+          why: `الفرع رقم ${input.branchId} غير موجود أو أُزيل`,
+          doThis: "اختر فرعاً موجوداً من قائمة الفروع، أو راجع مدير النظام (admin) لإنشاء الفرع",
+        }),
+      });
+    }
     if (input.customerId != null) {
       const c = (await tx.select({ id: customers.id }).from(customers).where(eq(customers.id, input.customerId)).limit(1))[0];
-      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+      if (!c) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر حفظ سند الهدية",
+            why: `العميل رقم ${input.customerId} غير موجود أو أُزيل`,
+            doThis: "اختر عميلاً من القائمة، أو أنشئ العميل أوّلاً من «العملاء»، أو احفظ الهدية بلا عميلٍ محدَّد",
+          }),
+        });
+      }
     }
 
     // حماية الازدواج (تدقيق Codex P1): إعادة إرسالٍ بنفس clientRequestId ⇒ تُعاد نتيجة السند الأصليّ
@@ -276,31 +345,97 @@ export interface ApproveGiftResult {
 export async function approveGift(giftId: number, actor: Actor): Promise<ApproveGiftResult> {
   const isAdmin = actor.role === "admin";
   const isManager = actor.role === "manager";
-  if (!isAdmin && !isManager) throw new TRPCError({ code: "FORBIDDEN", message: "اعتماد الهدية من صلاحية المدير فقط" });
+  if (!isAdmin && !isManager) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد الهدية",
+        why: "اعتماد الهدايا الصادرة من صلاحية المدير أو المالك فقط، وحسابك لا يحمل أياً منهما",
+        doThis: "اطلب من المدير أو المالك اعتماد الطلب من شاشة «الهدايا الصادرة»",
+      }),
+    });
+  }
 
   return withTx(async (tx) => {
     const gift = (await tx.select().from(giftVouchers).where(eq(giftVouchers.id, giftId)).for("update").limit(1))[0];
-    if (!gift) throw new TRPCError({ code: "NOT_FOUND", message: "سند الهدية غير موجود" });
-    if (gift.direction !== "OUT") throw new TRPCError({ code: "BAD_REQUEST", message: "الاعتماد للهدايا الصادرة فقط" });
-    if (gift.status !== "PENDING_APPROVAL") throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن اعتماد هدية حالتها ${gift.status}` });
+    if (!gift) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد الهدية",
+          why: `سند الهدية رقم ${giftId} غير موجود أو أُزيل`,
+          doThis: "افتح شاشة «الهدايا الصادرة» واختر سنداً من القائمة الحاليّة",
+        }),
+      });
+    }
+    if (gift.direction !== "OUT") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد الهدية",
+          why: `هذا المسار للهدايا الصادرة فقط، والسند اتّجاهه ${gift.direction}`,
+          doThis: "افتح السند من شاشته الأصليّة، أو اختر هديّةً صادرة من قائمة الاعتماد",
+        }),
+      });
+    }
+    if (gift.status !== "PENDING_APPROVAL") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد الهدية",
+          why: `لا يُعتمَد إلّا طلبٌ في انتظار الموافقة — حالة هذا السند ${gift.status}`,
+          doThis: "حدّث شاشة «الهدايا الصادرة» لترى الحالة الحاليّة",
+        }),
+      });
+    }
     // عزل الفرع: غير الأدمن يعتمد فرعه فقط.
     if (!isAdmin && Number(gift.branchId) !== actor.branchId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الهدية لا تخصّ فرعك" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد الهدية",
+          why: `السند مسجَّل على فرعٍ آخر (فرع ${gift.branchId}) لا فرعك (${actor.branchId}), ومدير الفرع محظور من العبور بين الفروع`,
+          doThis: "اعتمد السند من فرعه الأصليّ، أو اطلب من المالك/الأدمن اعتماده",
+        }),
+      });
     }
     // SOD-04: المُنشئ لا يعتمد هديته (admin مُستثنى للتصحيح الإداري).
     if (!isAdmin && Number(gift.createdBy) === actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز اعتماد هدية أنشأتها بنفسك — يلزم مدير آخر (فصل المهام)." });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد الهدية",
+          why: "أنت من فتح هذا السند، وفصل المهام (SOD-04) يمنعك من اعتماد هديّةٍ أنشأتها بنفسك",
+          doThis: "اطلب من مديرٍ آخر أو من المالك اعتماد الطلب من نفس الشاشة",
+        }),
+      });
     }
     // الحملة قد تُغلَق بين الإنشاء والاعتماد — غير الأدمن لا يعتمد هديةً لحملةٍ أُغلقت (admin يصحّح إدارياً).
     if (gift.campaignId != null && !isAdmin) {
       const camp = (await tx.select({ status: giftCampaigns.status }).from(giftCampaigns).where(eq(giftCampaigns.id, Number(gift.campaignId))).for("update").limit(1))[0];
       if (camp && camp.status !== "ACTIVE") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "الحملة المرتبطة بهذه الهدية أُغلقت — يلزم أدمن للاعتماد" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد الهدية",
+            why: `الحملة المرتبطة بهذا السند أُغلقت (حالتها ${camp.status}) بين الإنشاء والاعتماد`,
+            doThis: "اطلب من المالك/الأدمن اعتماد السند إدارياً، أو ألغِ السند وأنشئ هديّةً بحملةٍ نشطة",
+          }),
+        });
       }
     }
 
     const lineRows = await tx.select().from(giftVoucherLines).where(eq(giftVoucherLines.giftVoucherId, giftId));
-    if (!lineRows.length) throw new TRPCError({ code: "BAD_REQUEST", message: "سند الهدية بلا أسطر" });
+    if (!lineRows.length) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد الهدية",
+          why: `سند الهدية رقم ${giftId} بلا أسطر (حُذفت أو لم تُحفَظ)`,
+          doThis: "ألغِ السند وأنشئ هديّةً جديدة بأسطرها الصحيحة",
+        }),
+      });
+    }
     const variantIds = Array.from(new Set(lineRows.map((l) => Number(l.variantId)))).sort((a, b) => a - b);
     // mutex المتغيّرات ثم branchStock (الترتيب الحاكم).
     await ensureAndLockBranchStock(tx, variantIds, Number(gift.branchId));
@@ -368,18 +503,57 @@ export async function cancelOutboundGift(
   const isManager = actor.role === "manager";
   return withTx(async (tx) => {
     const gift = (await tx.select().from(giftVouchers).where(eq(giftVouchers.id, giftId)).for("update").limit(1))[0];
-    if (!gift) throw new TRPCError({ code: "NOT_FOUND", message: "سند الهدية غير موجود" });
-    if (gift.direction !== "OUT") throw new TRPCError({ code: "BAD_REQUEST", message: "الإلغاء للهدايا الصادرة فقط" });
+    if (!gift) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء طلب الهدية",
+          why: `سند الهدية رقم ${giftId} غير موجود أو أُزيل`,
+          doThis: "افتح شاشة «الهدايا الصادرة» واختر سنداً من القائمة الحاليّة",
+        }),
+      });
+    }
+    if (gift.direction !== "OUT") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء طلب الهدية",
+          why: `هذا المسار للهدايا الصادرة فقط، والسند اتّجاهه ${gift.direction}`,
+          doThis: "افتح السند من شاشته الأصليّة، أو اختر هديّةً صادرة من قائمة الإلغاء",
+        }),
+      });
+    }
     if (gift.status !== "PENDING_APPROVAL") {
       // المُنجَزة تُعالَج بعكسٍ محاسبيّ لا بإلغاء حالة (الأثر مُرحَّل فعلاً).
-      throw new TRPCError({ code: "BAD_REQUEST", message: `لا يُلغى إلّا طلبٌ معلَّق — حالة هذه الهدية ${gift.status}` });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء طلب الهدية",
+          why: `لا يُلغى إلّا طلبٌ معلَّق (PENDING_APPROVAL) — حالة هذه الهدية ${gift.status}`,
+          doThis: "للهدية المُنجَزة (DELIVERED) استعمل «عكس/مرتجع الهدية» بدل الإلغاء، وللمُلغاة أو المرفوضة سلفاً لا حاجة لإجراءٍ آخر",
+        }),
+      });
     }
     const isOwnerOfRequest = Number(gift.createdBy) === actor.userId;
     if (!isAdmin && !isOwnerOfRequest && !isManager) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "إلغاء طلب الهدية لصاحبه أو لمدير" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء طلب الهدية",
+          why: "الإلغاء لصاحب الطلب أو لمديرٍ في فرع الهدية أو للأدمن، وحسابك ليس منهم",
+          doThis: "اطلب من صاحب الطلب سحبَه، أو من المدير/الأدمن إلغاءه من شاشة «الهدايا الصادرة»",
+        }),
+      });
     }
     if (!isAdmin && Number(gift.branchId) !== actor.branchId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الهدية لا تخصّ فرعك" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء طلب الهدية",
+          why: `السند مسجَّل على فرعٍ آخر (فرع ${gift.branchId}) لا فرعك (${actor.branchId})، ومدير الفرع محظور من العبور بين الفروع`,
+          doThis: "افتح السند من فرعه الأصليّ، أو اطلب من المالك/الأدمن إلغاءه",
+        }),
+      });
     }
     const note = reason?.trim();
     await tx

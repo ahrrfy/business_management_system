@@ -120,10 +120,17 @@ export function payrollRemittancePaymentReference(
   return normalized;
 }
 
+/**
+ * ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — أُزيل شرط «مختلفٌ عن صانع العملية»
+ * (نظيرٌ مستقلّ لِـauthorizeExternalTreasuryDisbursement في cashAvailability.ts ولـ
+ * assertPayrollActiveOwnerChecker في payroll/settlement.ts، التفصيل هناك).
+ * `_forbidden` يبقى في التوقيع توثيقاً لهوية الطالب في مواضع الاستدعاء — الأثر التدقيقي
+ * (createdBy/approvedBy/paidBy) يبقى مسجَّلاً كما هو.
+ */
 async function assertOwner(
   tx: Parameters<Parameters<typeof withTx>[0]>[0],
   actor: Actor,
-  forbidden: Array<number | null | undefined>,
+  _forbidden: Array<number | null | undefined>,
   operation: string,
 ): Promise<void> {
   const [owner] = await tx
@@ -139,21 +146,6 @@ async function assertOwner(
         what: `تعذّر تنفيذ العملية «${operation}»`,
         why: "هذا الاعتماد محصورٌ بحساب المالك النشط — دورك لا يملك الصلاحية",
         doThis: "أحل الطلب إلى المالك ليعتمده، أو سجّل الدخول بحساب المالك إن كان بحوزتك",
-      }),
-    });
-  }
-  if (
-    forbidden
-      .filter((value): value is number => value != null)
-      .map(Number)
-      .includes(Number(owner.id))
-  ) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: appErrorMessage({
-        what: `تعذّر تنفيذ العملية «${operation}»`,
-        why: "فصل المهام: لا يجوز لصانع الطلب اعتماد تنفيذه بنفسه",
-        doThis: "أحل الطلب إلى مالكٍ آخر أو مفوَّضٍ مستقلٍّ عن الصانع ليعتمده",
       }),
     });
   }

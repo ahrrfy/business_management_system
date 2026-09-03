@@ -233,6 +233,7 @@ export default function SupplierPaymentsGovernance() {
           pendingPayments={pendingPayments}
           pendingRefunds={pendingRefunds}
           currentUserId={me.data?.id}
+          isOwner={me.data?.isOwner === true}
           canDecide={canDecide}
           decisionBlockedReason={decisionBlockedReason}
           loadingSources={

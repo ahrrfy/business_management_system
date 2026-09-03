@@ -270,7 +270,8 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(rc.approvedBy).toBe(1); // adminActor.userId
   });
 
-  it("المُنشئ نَفسه يُحاول اعتماد سَنده (غير admin) ⇒ يُرفض (SOD)", async () => {
+  // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ (بأيّ دور) يعتمد سنده هو نفسه.
+  it("المالك ينشئ سنده ويعتمده بنفسه ⇒ يُنفَّذ (قرار المالك ٣/٩/٢٦: لا اعتماد ثانٍ بعد المالك)", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "2000000.00",
       paymentMethod: "TRANSFER", partyType: "OTHER",
@@ -279,7 +280,11 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
       attachmentUrl: "https://example.com/proof.pdf",
     }, managerActor);
 
-    await expect(approveVoucher(r.receiptId, managerActor)).rejects.toThrow(/أنشأته بنفسك/);
+    const ap = await approveVoucher(r.receiptId, managerActor);
+    expect(ap.approvalStatus).toBe("APPROVED");
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(rc.createdBy).toBe(managerActor.userId);
+    expect(rc.approvedBy).toBe(managerActor.userId); // الأثر التدقيقيّ يبقى كاملاً رغم الاعتماد الذاتيّ.
   });
 
   it("يعيد فحص رصيد المورد الحالي عند الاعتماد ويُبقي الطلب معلّقاً إن استُهلك المستحق بعد الإنشاء", async () => {
@@ -313,7 +318,7 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(stored.approvalStatus).toBe("PENDING_APPROVAL");
   });
 
-  it("لا استثناء admin: المالك المنشئ لا يعتمد سند نفسه", async () => {
+  it("لا فرق بحسب الدور: مالكٌ role=admin يعتمد سندَه أيضاً بنفسه", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "2000000.00",
       paymentMethod: "TRANSFER", partyType: "OTHER",
@@ -321,7 +326,8 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
       referenceNumber: "TRF-Y",
       attachmentUrl: "https://example.com/proof.pdf",
     }, adminActor);
-    await expect(approveVoucher(r.receiptId, adminActor)).rejects.toThrow(/أنشأته بنفسك/);
+    const ap = await approveVoucher(r.receiptId, adminActor);
+    expect(ap.approvalStatus).toBe("APPROVED");
   });
 
   it("رَفض سَند مُعلَّق ⇒ لا أَثَر مالي + سَبب مُحفَّظ في internalNote", async () => {
