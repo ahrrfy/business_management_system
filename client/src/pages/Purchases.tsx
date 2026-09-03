@@ -246,14 +246,13 @@ export default function Purchases() {
         utils.purchases.pendingControls.invalidate(),
       ]);
       notify.ok(
-        "أُرسل أمر الشراء للاعتماد — لا يصبح قابلاً للاستلام قبل قرار مراجع مستقل",
+        "أُرسلت الفاتورة للاعتماد المستقل؛ الاعتماد النهائي سيضيف كامل الكميات إلى المخزون",
       );
     },
     onError: (e) => notify.err(e),
   });
 
-  // اعتماد مسوّدة (DRAFT ← CONFIRMED): يُتمّم دورة «حفظ مسوّدة» في شاشة الإنشاء — بعدها الأمر
-  // قابل للاستلام عبر شاشة الاستلام.
+  // الإرسال صفري الأثر؛ الاعتماد المستقل اللاحق يستلم الفاتورة ويرحّلها كاملةً.
   async function confirmOrder(p: {
     id: number;
     poNumber: string;
@@ -262,7 +261,7 @@ export default function Purchases() {
     const ok = await confirm({
       variant: "info",
       title: "إرسال أمر الشراء للاعتماد",
-      description: `سيُرسل الأمر ${p.poNumber} إلى مراجع مستقل. لن يصبح قابلاً للاستلام بمجرد الإرسال.`,
+      description: `سيُرسل الأمر ${p.poNumber} إلى مراجع مستقل. عند اعتماده تُضاف كامل الكميات إلى المخزون مباشرةً.`,
       confirmText: "إرسال للاعتماد",
       cancelText: "تراجع",
       requireText: p.poNumber,
@@ -732,18 +731,10 @@ export default function Purchases() {
                         },
                         {
                           key: "receive",
-                          kind: terminal ? "view" : "approve",
-                          label: terminal ? "عرض" : "استلام",
-                          href: `/purchases/${p.id}/receive`,
-                          // مسوّدة غير قابلة للاستلام قبل الاعتماد (receive يشترط status=CONFIRMED خادمياً).
-                          hidden: needsConfirmation || awaitingApproval,
-                          gate: terminal
-                            ? { module: "purchases", level: "READ" }
-                            : {
-                                roles: ["warehouse", "manager", "purchasing"],
-                                module: "purchases",
-                                level: "FULL",
-                              },
+                          kind: "view",
+                          label: "عرض التفاصيل",
+                          href: `/purchases/${p.id}`,
+                          gate: { module: "purchases", level: "READ" },
                         },
                         {
                           key: "print",
@@ -765,8 +756,8 @@ export default function Purchases() {
                           kind: "reverse",
                           label: "مرتجع شراء",
                           href: `/purchase-returns/new?po=${encodeURIComponent(p.poNumber)}`,
-                          // الإرجاع للمورد ممكن فقط بعد استلام البضاعة فعلياً.
-                          hidden: p.status !== "RECEIVED" && p.status !== "CONFIRMED",
+                          // الإرجاع للمورد ممكن فقط بعد اعتماد الفاتورة وترحيلها.
+                          hidden: p.status !== "RECEIVED",
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",

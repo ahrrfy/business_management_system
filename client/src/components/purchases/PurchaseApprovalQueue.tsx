@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "wouter";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -70,6 +71,7 @@ export function PurchaseApprovalQueue({
   const queueRows = queue.data?.pages.flatMap((page) => page.rows) ?? [];
   const [decision, setDecision] = useState<Decision>(null);
   const [reason, setReason] = useState("");
+  const [confirmedFullReceipt, setConfirmedFullReceipt] = useState(false);
   const invalidate = async () => {
     await Promise.all([
       utils.purchases.pendingControls.invalidate(),
@@ -80,6 +82,7 @@ export function PurchaseApprovalQueue({
   const close = () => {
     setDecision(null);
     setReason("");
+    setConfirmedFullReceipt(false);
   };
   const success = async (status: string) => {
     notify.ok(
@@ -109,6 +112,12 @@ export function PurchaseApprovalQueue({
       decisionKey: decision.decisionKey,
       approve: decision.approve,
       reason: reason.trim(),
+      confirmedFullReceipt:
+        decision.row.documentType === "PURCHASE_ORDER" &&
+        decision.row.kind === "APPROVE_REVISION" &&
+        decision.approve
+          ? confirmedFullReceipt
+          : undefined,
     };
     if (decision.row.documentType === "PURCHASE_ORDER")
       orderDecision.mutate(input);
@@ -136,9 +145,9 @@ export function PurchaseApprovalQueue({
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            الإرسال أو طلب الإلغاء صفري الأثر. لا يتغيّر أمر الشراء أو طلب
-            الشراء إلا بعد قرار مستخدم مستقل، والخادم يعيد فحص النسخة عند
-            التطبيق.
+            الإرسال أو طلب الإلغاء صفري الأثر. اعتماد فاتورة الشراء يعني أن
+            البضاعة وصلت كاملة؛ عندها يضيفها الخادم إلى المخزون ويرحّل القيد
+            في عملية واحدة.
           </p>
           {queue.isLoading ? (
             <LoadingState message="جارٍ تحميل قائمة الاعتماد…" />
@@ -204,6 +213,13 @@ export function PurchaseApprovalQueue({
                     </dl>
                   </div>
                   <div className="flex gap-2">
+                    {row.documentType === "PURCHASE_ORDER" ? (
+                      <Button asChild size="sm" variant="outline">
+                        <Link href={`/purchases/${row.purchaseOrderId}`}>
+                          مراجعة التفاصيل
+                        </Link>
+                      </Button>
+                    ) : null}
                     <Button
                       size="sm"
                       disabled={own}
@@ -276,7 +292,13 @@ export function PurchaseApprovalQueue({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {decision?.approve ? "اعتماد الطلب وتطبيقه" : "رفض الطلب"}
+              {decision?.approve &&
+              decision.row.documentType === "PURCHASE_ORDER" &&
+              decision.row.kind === "APPROVE_REVISION"
+                ? "اعتماد الفاتورة وترحيلها كاملاً"
+                : decision?.approve
+                  ? "اعتماد الطلب وتطبيقه"
+                  : "رفض الطلب"}
             </DialogTitle>
             <DialogDescription>
               القرار يُثبت باسم حسابك. إذا تغيّرت نسخة المستند فلن يطبّق الخادم
@@ -294,6 +316,24 @@ export function PurchaseApprovalQueue({
               onChange={(event) => setReason(event.target.value)}
             />
             <p className="text-xs text-muted-foreground">مطلوب: 3–500 محرف.</p>
+            {decision?.approve &&
+            decision.row.documentType === "PURCHASE_ORDER" &&
+            decision.row.kind === "APPROVE_REVISION" ? (
+              <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1 size-4"
+                  checked={confirmedFullReceipt}
+                  onChange={(event) =>
+                    setConfirmedFullReceipt(event.target.checked)
+                  }
+                />
+                <span>
+                  أؤكد أن جميع كميات الفاتورة وصلت فعلياً وتطابق البنود؛
+                  سيزداد المخزون وتُرحّل الفاتورة فور الاعتماد.
+                </span>
+              </label>
+            ) : null}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={close} disabled={pending}>
@@ -301,13 +341,23 @@ export function PurchaseApprovalQueue({
             </Button>
             <Button
               variant={decision?.approve ? "default" : "destructive"}
-              disabled={pending || reason.trim().length < 3}
+              disabled={
+                pending ||
+                reason.trim().length < 3 ||
+                (decision?.approve === true &&
+                  decision.row.documentType === "PURCHASE_ORDER" &&
+                  decision.row.kind === "APPROVE_REVISION" &&
+                  !confirmedFullReceipt)
+              }
               onClick={submit}
             >
               {pending
                 ? "جارٍ تثبيت القرار…"
                 : decision?.approve
-                  ? "اعتماد وتطبيق"
+                  ? decision.row.documentType === "PURCHASE_ORDER" &&
+                    decision.row.kind === "APPROVE_REVISION"
+                    ? "اعتماد وترحيل المخزون"
+                    : "اعتماد وتطبيق"
                   : "تأكيد الرفض"}
             </Button>
           </DialogFooter>

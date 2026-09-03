@@ -27,6 +27,7 @@ import {
   releasePurchaseOrderRevisionAllocationsTx,
 } from "./requisitions";
 import { appendPurchaseOrderEventTx } from "./revisions";
+import { postApprovedPurchaseInvoiceInTx } from "./automaticInvoicePosting";
 
 export type PurchaseOrderControlKind =
   | "APPROVE_REVISION"
@@ -420,8 +421,10 @@ export async function decidePurchaseOrderControl(
     decisionKey: string;
     approve: boolean;
     reason: string;
+    confirmedFullReceipt?: boolean;
   },
   actor: Actor,
+  options: { legacyConfirmOnly?: true } = {},
 ) {
   const preview = (
     await requireDb()
@@ -442,6 +445,8 @@ export async function decidePurchaseOrderControl(
     requestId: input.requestId,
     approve: input.approve,
     reason,
+    confirmedFullReceipt: input.confirmedFullReceipt ?? false,
+    legacyConfirmOnly: options.legacyConfirmOnly ?? false,
   });
   return withTx(async (tx) => {
     // استعادة أهلية الصنف للجرد الافتتاحي تعتمد على رؤية كل أوامر الشراء غير الملغاة.
@@ -638,6 +643,12 @@ export async function decidePurchaseOrderControl(
 
     let applicationEvidence: Record<string, unknown> = {};
     if (request.kind === "APPROVE_REVISION") {
+      if (!options.legacyConfirmOnly && !input.confirmedFullReceipt) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "يلزم تأكيد وصول كامل كميات الفاتورة قبل الاعتماد والترحيل",
+        });
+      }
       if (
         po.status !== "SENT" ||
         po.currentRevisionId == null ||
@@ -672,6 +683,28 @@ export async function decidePurchaseOrderControl(
           approvedAt: new Date(),
         })
         .where(eq(purchaseOrders.id, po.id));
+      if (options.legacyConfirmOnly) {
+        // Internal migration/test seam for historical partial-receipt records.
+        // It is intentionally absent from every router and UI contract.
+        applicationEvidence = { legacyConfirmOnly: true };
+      } else {
+        const posting = await postApprovedPurchaseInvoiceInTx(
+          tx,
+          Number(po.id),
+          actor,
+          decisionKey,
+        );
+        applicationEvidence = {
+          automaticInvoicePosting: true,
+          fullyReceived: true,
+          goodsReceiptId: posting.goodsReceiptId,
+          supplierInvoiceId: posting.supplierInvoiceId,
+          matchRunId: posting.matchRunId,
+          accountingEntryId: posting.accountingEntryId,
+          shippingPaymentRequestReceiptId:
+            posting.shippingPaymentRequestReceiptId,
+        };
+      }
     } else if (request.kind === "CANCEL_ORDER") {
       if (!["DRAFT", "SENT", "CONFIRMED"].includes(po.status)) {
         throw new TRPCError({
@@ -806,6 +839,8 @@ export async function listPendingPurchaseOrderControls(
       lastEditedBy: purchaseOrders.lastEditedBy,
       orderVersion: purchaseOrders.version,
       orderStatus: purchaseOrders.status,
+      shippingCost: purchaseOrders.shippingCost,
+      customsCost: purchaseOrders.customsCost,
     })
     .from(purchaseOrderControlRequests)
     .innerJoin(

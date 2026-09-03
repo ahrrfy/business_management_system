@@ -14,6 +14,7 @@ import {
   supplierInvoiceMatchRuns,
   supplierInvoices,
 } from "../../../drizzle/schema";
+import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
@@ -86,7 +87,8 @@ export function allocateSupplierInvoiceLineNetAcrossMatches(input: {
   );
 }
 
-export async function runThreeWayMatch(
+export async function runThreeWayMatchInTx(
+  tx: Tx,
   input: RunThreeWayMatchInput,
   actor: Actor,
 ) {
@@ -139,7 +141,7 @@ export async function runThreeWayMatch(
       message: "لا يجوز تكرار زوج بند الفاتورة/بند الاستلام",
     });
 
-  return withTx(async (tx) => {
+  const executeInExistingTransaction = async () => {
     const existing = (
       await tx
         .select()
@@ -478,18 +480,30 @@ export async function runThreeWayMatch(
       const revision = revisionByItemId.get(
         Number(line.purchaseOrderRevisionItemId),
       )!;
-      const poBaseUnitPrice = round2(
-        money(revision.item.lineTotal).dividedBy(
-          Number(revision.item.baseQuantity),
-        ),
+      const poBaseUnitPrice = money(revision.item.lineTotal).dividedBy(
+        Number(revision.item.baseQuantity),
       );
-      const grnBaseUnitPrice = money(grn.item.unitCostIqd);
+      const grnBaseUnitPrice = money(grn.item.netAmount).dividedBy(
+        Number(grn.item.acceptedBaseQuantity),
+      );
       const invoiceBaseUnitPrice = money(line.netAmount).dividedBy(
         Number(line.invoicedBaseQuantity),
       );
       const quantity = new Decimal(allocation.matchedBaseQuantity);
-      const allocationPo = round2(poBaseUnitPrice.times(quantity));
-      const allocationGrn = round2(grnBaseUnitPrice.times(quantity));
+      // Full-line matches consume the immutable artifact total. Rebuilding it
+      // from a 2dp unit price turns 10.00 / 3 into 9.99 and creates a false
+      // variance. Partial matches remain proportional and rounded at the
+      // allocation boundary.
+      const allocationPo =
+        allocation.matchedBaseQuantity === Number(revision.item.baseQuantity)
+          ? money(revision.item.lineTotal)
+          : round2(poBaseUnitPrice.times(quantity));
+      const allocationGrn =
+        allocation.matchedBaseQuantity ===
+          Number(grn.item.acceptedBaseQuantity) &&
+        (activeAllocated.get(allocation.goodsReceiptItemId) ?? 0) === 0
+          ? money(grn.item.netAmount)
+          : round2(grnBaseUnitPrice.times(quantity));
       const allocationInvoice = matchedInvoiceAmountByPair.get(
         `${allocation.supplierInvoiceLineId}:${allocation.goodsReceiptItemId}`,
       )!;
@@ -684,7 +698,15 @@ export async function runThreeWayMatch(
       invoiceVersionAfterMatch: input.expectedInvoiceVersion + 1,
       idempotentReplay: false as const,
     };
-  });
+  };
+  return executeInExistingTransaction();
+}
+
+export async function runThreeWayMatch(
+  input: RunThreeWayMatchInput,
+  actor: Actor,
+) {
+  return withTx((tx) => runThreeWayMatchInTx(tx, input, actor));
 }
 
 export async function getThreeWayMatch(matchRunId: number, actor: Actor) {

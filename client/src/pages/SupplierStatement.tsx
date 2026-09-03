@@ -135,7 +135,7 @@ const poColumns: ColumnDef<PoRow, unknown>[] = [
     enableSorting: false,
     meta: { kind: "actions" },
     cell: ({ row }) => (
-      <Link href={`/purchases/${row.original.id}/receive`}>
+      <Link href={`/purchases/${row.original.id}`}>
         <Button variant="outline" size="sm">فتح</Button>
       </Link>
     ),

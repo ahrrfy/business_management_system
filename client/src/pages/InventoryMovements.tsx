@@ -230,7 +230,7 @@ const movementColumns: ColumnDef<RichRow, unknown>[] = [
               kind: "view",
               label: "فتح المرجع",
               hidden: !r.referenceId || (r.referenceType !== "INVOICE" && r.referenceType !== "PURCHASE_ORDER"),
-              href: r.referenceType === "INVOICE" ? `/invoices/${r.referenceId}` : `/purchases/${r.referenceId}/receive`,
+              href: r.referenceType === "INVOICE" ? `/invoices/${r.referenceId}` : `/purchases/${r.referenceId}`,
               gate: r.referenceType === "INVOICE" ? { module: "sales", level: "READ" } : { module: "purchases", level: "READ" },
             },
           ]}

@@ -244,6 +244,7 @@ describe("تقارير الذمم الدائنة (AP)", () => {
         reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
       },
       owner,
+      { legacyConfirmOnly: true },
     );
     if (receive) {
       const poItem = (await db().select().from(s.purchaseOrderItems).where(sql`purchaseOrderId = ${po.purchaseOrderId}`))[0];

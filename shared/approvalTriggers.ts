@@ -248,3 +248,31 @@ export function cashVarianceApprovalRetainsLegacy(
 ): boolean {
   return action === "APPROVE" && kind === "SURPLUS";
 }
+
+// ═══════════ المخزون — مسارانِ يُصنّفهما العقدُ ولم يكونا مُبوَّبَين ═══════════════════
+// أمسكت مراجعةُ Codex الفجوة (PR #954): `shared/approvalPolicy.ts` يُدرج «تسويةَ مخزونٍ
+// بالنقص» و«إعادةَ تقييم تكلفةٍ لصنفٍ له رصيد» ضمن `ERASE_EFFECT` صراحةً، بينما المساران
+// الحيّان يمرّان بفصل مهامٍ محلّيٍّ وحده ⇒ مديرُ مخزونٍ غيرُ مالك يغيّر رصيداً أو قيمةَ صنفٍ
+// **بينما يُعلن النظام أنّ المالك وحده يعتمد**. عقدٌ يَعِد بما لا يُنفّذه أسوأ من عقدٍ أضيق.
+
+/**
+ * اعتمادُ تسوية مخزون ⇒ **ERASE_EFFECT**: `setStock` يكتب حركةً ويُرحّل قيد `ADJUST`
+ * بقيمة الفرق × التكلفة — أي مسٌّ لرصيدٍ قائمٍ وقيدٌ ماليّ، لا إنشاءُ مستندٍ جديد.
+ * والرفضُ حرٌّ كسائر المسارات (حالةٌ وحدث تدقيق، بلا حركةٍ ولا قيد).
+ */
+export function stockAdjustmentApprovalTrigger(
+  action: "APPROVE" | "REJECT",
+): ApprovalTrigger | null {
+  return action === "APPROVE" ? "ERASE_EFFECT" : REJECT_IS_FREE;
+}
+
+/**
+ * اعتمادُ إعادة تقييم تكلفة ⇒ **ERASE_EFFECT**: يُغيّر القيمة الدفترية لمخزونٍ **قائم**
+ * ويُرحّل قيداً لكلّ فرعٍ له رصيد. وهو المسار المحكوم الذي بُني خصّيصاً كي لا تقع «حركةُ
+ * حقوقٍ صامتة»، فبقاؤه بلا بوّابةٍ يُفرغ ذلك من معناه.
+ */
+export function costRevaluationApprovalTrigger(
+  action: "APPROVE" | "REJECT",
+): ApprovalTrigger | null {
+  return action === "APPROVE" ? "ERASE_EFFECT" : REJECT_IS_FREE;
+}

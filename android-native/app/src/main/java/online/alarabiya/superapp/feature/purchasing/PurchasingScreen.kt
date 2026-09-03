@@ -75,13 +75,11 @@ import online.alarabiya.superapp.model.purchasing.PurchaseOrderDetail
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderDraftLine
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderSummary
-import online.alarabiya.superapp.model.purchasing.PurchaseReceiveDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseReturnDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseReturnLineDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseReturnSummary
 import online.alarabiya.superapp.model.purchasing.PurchasingCapabilities
 import online.alarabiya.superapp.model.purchasing.PurchasingSection
-import online.alarabiya.superapp.model.purchasing.ReceiveLineDraft
 import online.alarabiya.superapp.model.purchasing.ReminderQueueItem
 import online.alarabiya.superapp.model.purchasing.SupplierDetail
 import online.alarabiya.superapp.model.purchasing.SupplierDraft
@@ -98,7 +96,6 @@ private sealed interface PurchasingComposer {
     data class Supplier(val draft: SupplierDraft) : PurchasingComposer
     data class Order(val draft: PurchaseOrderDraft) : PurchasingComposer
     data class Return(val draft: PurchaseReturnDraft) : PurchasingComposer
-    data class Receive(val draft: PurchaseReceiveDraft) : PurchasingComposer
     data class Skip(val item: ReminderQueueItem, val reason: String = "", val promisedDate: String = "") : PurchasingComposer
 }
 
@@ -114,7 +111,7 @@ fun PurchasingRoute(viewModel: PurchasingViewModel, onBack: () -> Unit, modifier
         onConfirm = viewModel::confirmPending, onDismissConfirmation = viewModel::dismissConfirmation,
         onCreateSupplier = viewModel::createSupplier, onUpdateSupplier = viewModel::updateSupplier,
         onCatalogBranch = viewModel::loadCatalog,
-        onCreateOrder = viewModel::createOrder, onReceive = viewModel::receiveOrder,
+        onCreateOrder = viewModel::createOrder,
         onCreateReturn = viewModel::createReturn, onSkip = viewModel::skipReminder,
         modifier = modifier,
     )
@@ -140,7 +137,6 @@ fun PurchasingScreen(
     onUpdateSupplier: (SupplierDraft) -> Unit,
     onCatalogBranch: (Long) -> Unit,
     onCreateOrder: (PurchaseOrderDraft) -> Unit,
-    onReceive: (PurchaseReceiveDraft) -> Unit,
     onCreateReturn: (PurchaseReturnDraft) -> Unit,
     onSkip: (ReminderQueueItem, String, String?) -> Unit,
     modifier: Modifier = Modifier,
@@ -179,9 +175,9 @@ fun PurchasingScreen(
                     if (state.busyKey == "initial") Loading()
                     else if (wide) Row(Modifier.fillMaxSize().padding(20.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                         ListPane(state, onOrder, onSupplier, onSendReminder, onSkip = { composer = PurchasingComposer.Skip(it) }, Modifier.weight(.46f))
-                        DetailPane(state, capabilities, onConfirmOrder, onCancelOrder, onSupplierActivation, onEditSupplier = { composer = PurchasingComposer.Supplier(it) }, onReceive = { composer = PurchasingComposer.Receive(it) }, Modifier.weight(.54f))
+                        DetailPane(state, capabilities, onConfirmOrder, onCancelOrder, onSupplierActivation, onEditSupplier = { composer = PurchasingComposer.Supplier(it) }, Modifier.weight(.54f))
                     } else AnimatedContent(state.selectedOrder != null || state.selectedSupplier != null, label = "purchasing-detail") { detailed ->
-                        if (detailed) DetailPane(state, capabilities, onConfirmOrder, onCancelOrder, onSupplierActivation, onEditSupplier = { composer = PurchasingComposer.Supplier(it) }, onReceive = { composer = PurchasingComposer.Receive(it) }, Modifier.padding(14.dp))
+                        if (detailed) DetailPane(state, capabilities, onConfirmOrder, onCancelOrder, onSupplierActivation, onEditSupplier = { composer = PurchasingComposer.Supplier(it) }, Modifier.padding(14.dp))
                         else ListPane(state, onOrder, onSupplier, onSendReminder, onSkip = { composer = PurchasingComposer.Skip(it) }, Modifier.padding(horizontal = 14.dp))
                     }
                 }
@@ -205,7 +201,6 @@ fun PurchasingScreen(
                         is PurchasingComposer.Supplier -> if (current.draft.id == null) onCreateSupplier(current.draft) else onUpdateSupplier(current.draft)
                         is PurchasingComposer.Order -> onCreateOrder(current.draft)
                         is PurchasingComposer.Return -> onCreateReturn(current.draft)
-                        is PurchasingComposer.Receive -> onReceive(current.draft)
                         is PurchasingComposer.Skip -> onSkip(current.item, current.reason, current.promisedDate.trim().takeIf(String::isNotEmpty))
                         null -> Unit
                     }
@@ -224,7 +219,7 @@ private fun PurchasingHeader(onBack: () -> Unit, onRefresh: () -> Unit, busy: Bo
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "رجوع", tint = Color.White) }
             Column(Modifier.weight(1f)) {
                 Text("المشتريات والموردون", color = Color.White, style = MaterialTheme.typography.titleLarge)
-                Text("الأوامر · الاستلام · الذمم", color = Color.White.copy(alpha = .7f))
+                Text("الفواتير · المخزون الآلي · الذمم", color = Color.White.copy(alpha = .7f))
             }
             IconButton(onClick = onRefresh, enabled = !busy) { Icon(Icons.Rounded.Refresh, "تحديث", tint = Color.White) }
         }
@@ -294,11 +289,10 @@ private fun DetailPane(
     onCancelOrder: () -> Unit,
     onSupplierActivation: (Long, String, Boolean) -> Unit,
     onEditSupplier: (SupplierDraft) -> Unit,
-    onReceive: (PurchaseReceiveDraft) -> Unit,
     modifier: Modifier,
 ) {
     when {
-        state.selectedOrder != null -> OrderDetail(state.selectedOrder, capabilities, onConfirmOrder, onCancelOrder, onReceive, modifier)
+        state.selectedOrder != null -> OrderDetail(state.selectedOrder, capabilities, onConfirmOrder, onCancelOrder, modifier)
         state.selectedSupplier != null -> SupplierDetail(state.selectedSupplier, capabilities, onSupplierActivation, onEditSupplier, modifier)
         else -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("اختر سجلاً لعرض التفاصيل", color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
@@ -355,16 +349,13 @@ private fun ReminderCard(item: ReminderQueueItem, onSend: (ReminderQueueItem) ->
 }
 
 @Composable
-private fun OrderDetail(order: PurchaseOrderDetail, capabilities: PurchasingCapabilities, onConfirm: () -> Unit, onCancel: () -> Unit, onReceive: (PurchaseReceiveDraft) -> Unit, modifier: Modifier) {
+private fun OrderDetail(order: PurchaseOrderDetail, capabilities: PurchasingCapabilities, onConfirm: () -> Unit, onCancel: () -> Unit, modifier: Modifier) {
     LazyColumn(modifier.fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
         item { DetailHero(order.summary.number, order.summary.supplierName ?: "مورد", order.summary.status.label, order.summary.total?.let { "$it د.ع" }) }
         items(order.lines, key = { it.id }) { line -> CompactCard(Icons.Rounded.Inventory2, line.productName, "${line.quantity} ${line.unitName.orEmpty()} · مستلم ${line.receivedBaseQuantity}/${line.baseQuantity}", line.total?.let { "$it د.ع" }) }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (capabilities.canConfirm(order)) Button(onClick = onConfirm, modifier = Modifier.weight(1f)) { Text("اعتماد") }
-                if (capabilities.canReceive(order)) Button(onClick = {
-                    onReceive(PurchaseReceiveDraft(order.id, order.lines.filter { it.remainingBaseQuantity > 0 }.map { ReceiveLineDraft(it.id, it.remainingBaseQuantity.toString()) }))
-                }, modifier = Modifier.weight(1f)) { Text("استلام") }
+                if (capabilities.canConfirm(order)) Button(onClick = onConfirm, modifier = Modifier.weight(1f)) { Text("إرسال للاعتماد") }
                 if (capabilities.canCancel(order)) OutlinedButton(onClick = onCancel) { Text("إلغاء") }
             }
         }
@@ -390,14 +381,13 @@ private fun SupplierDetail(detail: SupplierDetail, capabilities: PurchasingCapab
 private fun PurchasingComposerDialog(composer: PurchasingComposer, capabilities: PurchasingCapabilities, catalog: List<online.alarabiya.superapp.model.purchasing.PurchaseCatalogItem>, onCatalogBranch: (Long) -> Unit, onChange: (PurchasingComposer) -> Unit, onDismiss: () -> Unit, onSubmit: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(when (composer) { is PurchasingComposer.Supplier -> if (composer.draft.id == null) "مورد جديد" else "تعديل المورد"; is PurchasingComposer.Order -> "أمر شراء جديد"; is PurchasingComposer.Return -> "مرتجع شراء"; is PurchasingComposer.Receive -> "استلام أمر الشراء"; is PurchasingComposer.Skip -> "تأجيل التذكير" }) },
+        title = { Text(when (composer) { is PurchasingComposer.Supplier -> if (composer.draft.id == null) "مورد جديد" else "تعديل المورد"; is PurchasingComposer.Order -> "فاتورة شراء جديدة"; is PurchasingComposer.Return -> "مرتجع شراء"; is PurchasingComposer.Skip -> "تأجيل التذكير" }) },
         text = {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (composer) {
                     is PurchasingComposer.Supplier -> item { SupplierFields(composer.draft, if (composer.draft.id == null) capabilities.canSetOpeningBalanceOnCreate else capabilities.canEditOpeningBalance) { onChange(PurchasingComposer.Supplier(it)) } }
                     is PurchasingComposer.Order -> item { OrderFields(composer.draft, catalog, onCatalogBranch) { onChange(PurchasingComposer.Order(it)) } }
                     is PurchasingComposer.Return -> item { ReturnFields(composer.draft) { onChange(PurchasingComposer.Return(it)) } }
-                    is PurchasingComposer.Receive -> item { ReceiveFields(composer.draft) { onChange(PurchasingComposer.Receive(it)) } }
                     is PurchasingComposer.Skip -> item {
                         OutlinedTextField(composer.reason, { onChange(composer.copy(reason = it.take(255))) }, label = { Text("سبب التأجيل") })
                         ArabicDatePicker(composer.promisedDate, { onChange(composer.copy(promisedDate = it)) }, "تاريخ الوعد")
@@ -405,7 +395,7 @@ private fun PurchasingComposerDialog(composer: PurchasingComposer, capabilities:
                 }
             }
         },
-        confirmButton = { Button(onClick = onSubmit) { Text("حفظ") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
+        confirmButton = { Button(onClick = onSubmit) { Text(if (composer is PurchasingComposer.Order) "حفظ وإرسال للاعتماد" else "حفظ") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
     )
 }
 
@@ -425,6 +415,7 @@ private fun SupplierFields(draft: SupplierDraft, canOpening: Boolean, onChange: 
 @Composable
 private fun OrderFields(draft: PurchaseOrderDraft, catalog: List<online.alarabiya.superapp.model.purchasing.PurchaseCatalogItem>, onCatalogBranch: (Long) -> Unit, onChange: (PurchaseOrderDraft) -> Unit) {
     val line = draft.items.first()
+    Text("تُحفظ الفاتورة وتُرسل لمراجع مستقل؛ عند اعتماده تُضاف كامل الكميات إلى المخزون تلقائياً.", color = MaterialTheme.colorScheme.onSurfaceVariant)
     TextInput("معرّف المورد", draft.supplierId.takeIf { it > 0 }?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(supplierId = it.toLongOrNull() ?: 0)) }
     TextInput("معرّف الفرع", draft.branchId?.toString().orEmpty(), KeyboardType.Number) { onChange(draft.copy(branchId = it.toLongOrNull())) }
     if (draft.branchId != null) OutlinedButton(onClick = { onCatalogBranch(draft.branchId) }) { Text("تحميل أصناف الفرع") }
@@ -447,6 +438,45 @@ private fun OrderFields(draft: PurchaseOrderDraft, catalog: List<online.alarabiy
     TextInput("سعر الوحدة", line.unitPrice, KeyboardType.Decimal) { onChange(draft.copy(items = listOf(line.copy(unitPrice = it)))) }
     TextInput("تكلفة الشحن", draft.shippingCost, KeyboardType.Decimal) { onChange(draft.copy(shippingCost = it)) }
     TextInput("الجمارك", draft.customsCost, KeyboardType.Decimal) { onChange(draft.copy(customsCost = it)) }
+    val hasShipping = (draft.shippingCost.toBigDecimalOrNull()?.signum() ?: 0) > 0 ||
+        (draft.customsCost.toBigDecimalOrNull()?.signum() ?: 0) > 0
+    if (hasShipping) {
+        Text("أداة تسوية الشحن", fontWeight = FontWeight.Bold)
+        val methods = listOf(
+            "CASH" to "نقدي",
+            "TRANSFER" to "تحويل",
+            "CHECK" to "صك",
+            "CARD" to "بطاقة",
+            "WALLET" to "محفظة",
+        )
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(methods, key = { it.first }) { method ->
+                Surface(
+                    onClick = { onChange(draft.copy(shippingPaymentMethod = method.first)) },
+                    color = if (draft.shippingPaymentMethod == method.first) PurchaseMist else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text(method.second, Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
+            }
+        }
+        if (draft.shippingPaymentMethod in setOf("TRANSFER", "CHECK")) {
+            TextInput(
+                if (draft.shippingPaymentMethod == "CHECK") "رقم الصك" else "مرجع التحويل",
+                draft.shippingPaymentReference,
+            ) { onChange(draft.copy(shippingPaymentReference = it)) }
+        }
+        if (draft.shippingPaymentMethod == "CARD") {
+            TextInput("آخر أربعة أرقام للبطاقة", draft.shippingCardLastFour, KeyboardType.Number) {
+                onChange(draft.copy(shippingCardLastFour = it.filter(Char::isDigit).take(4)))
+            }
+        }
+        TextInput("اسم الناقل (اختياري)", draft.shippingBeneficiaryName) {
+            onChange(draft.copy(shippingBeneficiaryName = it))
+        }
+        TextInput("فاتورة/وصل الشحن (اختياري)", draft.shippingEvidenceReference) {
+            onChange(draft.copy(shippingEvidenceReference = it))
+        }
+        Text("يُثبت المصروف الآن، ويظل الصرف معلّقاً حتى اعتماد شخص آخر.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
     TextInput("ملاحظات", draft.notes) { onChange(draft.copy(notes = it)) }
 }
 
@@ -462,12 +492,6 @@ private fun ReturnFields(draft: PurchaseReturnDraft, onChange: (PurchaseReturnDr
     TextInput("سبب المرتجع", draft.reason) { onChange(draft.copy(reason = it)) }
 }
 
-@Composable
-private fun ReceiveFields(draft: PurchaseReceiveDraft, onChange: (PurchaseReceiveDraft) -> Unit) {
-    draft.lines.forEachIndexed { index, line -> TextInput("كمية البند ${line.purchaseOrderItemId}", line.receivedBaseQuantity, KeyboardType.Decimal) { value -> onChange(draft.copy(lines = draft.lines.mapIndexed { i, old -> if (i == index) old.copy(receivedBaseQuantity = value) else old })) } }
-    TextInput("دفعة للمورد (اختياري)", draft.paymentAmount, KeyboardType.Decimal) { onChange(draft.copy(paymentAmount = it)) }
-}
-
 @Composable private fun TextInput(label: String, value: String, keyboardType: KeyboardType = KeyboardType.Text, onValue: (String) -> Unit) { OutlinedTextField(value, { onValue(it.take(500)) }, label = { Text(label) }, keyboardOptions = KeyboardOptions(keyboardType = keyboardType), modifier = Modifier.fillMaxWidth()) }
 @Composable private fun DetailHero(title: String, subtitle: String, badge: String, amount: String?) { Card(shape = RoundedCornerShape(topStart = 38.dp, topEnd = 16.dp, bottomEnd = 38.dp, bottomStart = 16.dp), colors = CardDefaults.cardColors(containerColor = PurchaseInk)) { Column(Modifier.fillMaxWidth().padding(22.dp)) { Text(badge, color = Color(0xFF80E2CD)); Text(title, color = Color.White, style = MaterialTheme.typography.titleLarge); Text(subtitle, color = Color.White.copy(alpha = .7f)); amount?.let { Text(it, color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium) } } } }
 @Composable private fun DetailField(label: String, value: String?) { if (!value.isNullOrBlank()) { Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) { Text(label, Modifier.width(100.dp), color = MaterialTheme.colorScheme.onSurfaceVariant); Text(value, Modifier.weight(1f)); }; HorizontalDivider() } }
@@ -479,4 +503,4 @@ private fun ReceiveFields(draft: PurchaseReceiveDraft, onChange: (PurchaseReceiv
 @Composable private fun EmptyState() { Box(Modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Rounded.Person, null, Modifier.size(44.dp), tint = MaterialTheme.colorScheme.outline); Text("لا توجد سجلات مطابقة") } } }
 
 private val PurchasingSection.label get() = when (this) { PurchasingSection.ORDERS -> "الأوامر"; PurchasingSection.SUPPLIERS -> "الموردون"; PurchasingSection.RETURNS -> "المرتجعات"; PurchasingSection.REMINDERS -> "الذمم" }
-private val online.alarabiya.superapp.model.purchasing.PurchaseStatus.label get() = when (this) { online.alarabiya.superapp.model.purchasing.PurchaseStatus.DRAFT -> "مسودة"; online.alarabiya.superapp.model.purchasing.PurchaseStatus.SENT -> "مرسل"; online.alarabiya.superapp.model.purchasing.PurchaseStatus.CONFIRMED -> "معتمد"; online.alarabiya.superapp.model.purchasing.PurchaseStatus.RECEIVED -> "مستلم"; online.alarabiya.superapp.model.purchasing.PurchaseStatus.CANCELLED -> "ملغي"; else -> "غير معروف" }
+private val online.alarabiya.superapp.model.purchasing.PurchaseStatus.label get() = when (this) { online.alarabiya.superapp.model.purchasing.PurchaseStatus.DRAFT -> "مسودة"; online.alarabiya.superapp.model.purchasing.PurchaseStatus.SENT -> "مرسل"; online.alarabiya.superapp.model.purchasing.PurchaseStatus.CONFIRMED -> "بانتظار الترحيل (قديم)"; online.alarabiya.superapp.model.purchasing.PurchaseStatus.RECEIVED -> "معتمدة ومضافة للمخزون"; online.alarabiya.superapp.model.purchasing.PurchaseStatus.CANCELLED -> "ملغي"; else -> "غير معروف" }

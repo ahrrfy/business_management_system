@@ -14,6 +14,8 @@ import {
   cashVarianceApprovalTrigger,
   voucherApprovalRetainsLegacy,
   voucherApprovalTrigger,
+  costRevaluationApprovalTrigger,
+  stockAdjustmentApprovalTrigger,
 } from "./approvalTriggers";
 
 /**
@@ -151,5 +153,20 @@ describe("الخزينة والسندات — الفعلُ لا الإجراء،
     expect(cashVarianceApprovalTrigger("SHORTAGE", "REJECT")).toBeNull();
     expect(cashVarianceApprovalTrigger("SURPLUS", "REJECT")).toBeNull();
     expect(cashVarianceApprovalRetainsLegacy("SURPLUS", "REJECT")).toBe(false);
+  });
+});
+
+describe("المخزون — مساران يُصنّفهما العقد ووُصلا بالبوّابة (PR #954)", () => {
+  it("اعتمادُ تسوية المخزون محوُ أثر — حركةٌ على رصيدٍ قائم وقيدُ ADJUST", () => {
+    expect(stockAdjustmentApprovalTrigger("APPROVE")).toBe("ERASE_EFFECT");
+  });
+
+  it("واعتمادُ إعادة تقييم التكلفة كذلك — تُغيّر القيمة الدفترية لمخزونٍ قائم", () => {
+    expect(costRevaluationApprovalTrigger("APPROVE")).toBe("ERASE_EFFECT");
+  });
+
+  it("والرفضُ حرٌّ فيهما — حالةٌ وأثرُ تدقيقٍ بلا حركةٍ ولا قيد", () => {
+    expect(stockAdjustmentApprovalTrigger("REJECT")).toBeNull();
+    expect(costRevaluationApprovalTrigger("REJECT")).toBeNull();
   });
 });

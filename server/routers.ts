@@ -83,8 +83,6 @@ import { executiveRouter } from "./routers/executiveRouter";
 import { cashRemediationRouter } from "./routers/cashRemediationRouter";
 import { statutoryAccountingRouter } from "./routers/statutoryAccountingRouter";
 import { workOrderDesignApprovalRouter } from "./routers/workOrderDesignApprovalRouter";
-import { goodsReceiptsRouter } from "./routers/goodsReceiptsRouter";
-import { supplierInvoicesRouter } from "./routers/supplierInvoicesRouter";
 import { salesPipelineRouter } from "./routers/salesPipelineRouter";
 import { salesControlRouter } from "./routers/salesControlRouter";
 import { purchaseReturnGovernanceRouter } from "./routers/purchaseReturnGovernanceRouter";
@@ -110,8 +108,6 @@ export const appRouter = router({
   salesPipeline: salesPipelineRouter,
   salesControl: salesControlRouter,
   purchases: purchaseRouter,
-  goodsReceipts: goodsReceiptsRouter,
-  supplierInvoices: supplierInvoicesRouter,
   purchaseReturnGovernance: purchaseReturnGovernanceRouter,
   supplierPayments: supplierPaymentsRouter,
   purchaseCharges: purchaseChargesRouter,

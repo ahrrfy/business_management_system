@@ -172,18 +172,25 @@ describe("فاتورة المورد الدولارية — التكلفة وال
     expect(item.usdTotal).toBe("200.00");
     expect(item.unitPrice).toBe("29000.00");
 
-    const submitted = await submitPurchaseOrderForApproval({
-      purchaseOrderId: created.purchaseOrderId,
-      expectedVersion: created.version,
-      reason: "إرسال أمر الشراء الدولاري للمراجعة المستقلة",
-      requestKey: `purchase-usd-submit:${randomUUID()}`,
-    }, creator);
-    await decidePurchaseOrderControl({
-      requestId: submitted.requestId,
-      decisionKey: `purchase-usd-approve:${randomUUID()}`,
-      approve: true,
-      reason: "راجعت سعر الصرف وقيمة المورد والشحن واعتمدت الأمر",
-    }, checker);
+    const submitted = await submitPurchaseOrderForApproval(
+      {
+        purchaseOrderId: created.purchaseOrderId,
+        expectedVersion: created.version,
+        reason: "إرسال أمر الشراء الدولاري للمراجعة المستقلة",
+        requestKey: `purchase-usd-submit:${randomUUID()}`,
+      },
+      creator,
+    );
+    await decidePurchaseOrderControl(
+      {
+        requestId: submitted.requestId,
+        decisionKey: `purchase-usd-approve:${randomUUID()}`,
+        approve: true,
+        reason: "راجعت سعر الصرف وقيمة المورد والشحن واعتمدت الأمر",
+      },
+      checker,
+      { legacyConfirmOnly: true },
+    );
 
     await receivePurchase(
       {

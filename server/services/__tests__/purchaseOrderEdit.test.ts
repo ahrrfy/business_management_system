@@ -16,7 +16,11 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createPurchaseOrder, receivePurchase, updatePurchaseOrder } from "../purchaseService";
+import {
+  createPurchaseOrder,
+  receivePurchase,
+  updatePurchaseOrder,
+} from "../purchaseService";
 import {
   decidePurchaseOrderControl,
   submitPurchaseOrderForApproval,
@@ -73,14 +77,40 @@ async function seed() {
   ]);
   await d.insert(s.users).values([
     { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" },
-    { id: 2, openId: "recv-2", name: "أمين المخزن", role: "warehouse", loginMethod: "local", branchId: 1 },
-    { id: 3, openId: "mgr-3", name: "مدير فرع المبيعات", role: "manager", loginMethod: "local", branchId: 2 },
-    { id: 4, openId: "po-reviewer", name: "مراجع مشتريات", role: "manager", loginMethod: "local", branchId: 1 },
+    {
+      id: 2,
+      openId: "recv-2",
+      name: "أمين المخزن",
+      role: "warehouse",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: 3,
+      openId: "mgr-3",
+      name: "مدير فرع المبيعات",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 2,
+    },
+    {
+      id: 4,
+      openId: "po-reviewer",
+      name: "مراجع مشتريات",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+    },
   ]);
   await d.insert(s.suppliers).values([
     { id: 1, name: "مورد أوّل", currentBalance: "0" },
     { id: 2, name: "مورد ثانٍ", currentBalance: "0" },
-    { id: 3, name: "مودِع أمانة", currentBalance: "0", supplierKind: "CONSIGNOR" },
+    {
+      id: 3,
+      name: "مودِع أمانة",
+      currentBalance: "0",
+      supplierKind: "CONSIGNOR",
+    },
     { id: 4, name: "شركة النقل الأهلية", currentBalance: "0" },
   ]);
   // تمويل الخزينة — تسويةُ الشحن تبقى معلّقة، لكن نُبقي البيئة مطابقة لبقيّة حزم الشراء.
@@ -105,10 +135,28 @@ async function seed() {
     { id: 3, productId: 3, sku: "P-3", costPrice: "0.00" },
   ]);
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
-    { id: 2, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    {
+      id: 1,
+      variantId: 1,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 2,
+      variantId: 2,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
     { id: 3, variantId: 1, unitName: "درزن", conversionFactor: "12" },
-    { id: 4, variantId: 3, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    {
+      id: 4,
+      variantId: 3,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
   ]);
 }
 
@@ -118,7 +166,12 @@ beforeEach(async () => {
 });
 
 async function orderRow(poId: number) {
-  return (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, poId)))[0];
+  return (
+    await db()
+      .select()
+      .from(s.purchaseOrders)
+      .where(eq(s.purchaseOrders.id, poId))
+  )[0];
 }
 async function itemsOf(poId: number) {
   return db()
@@ -136,25 +189,36 @@ async function simpleOrder() {
       branchId: 1,
       taxRatePercent: "0",
       status: "DRAFT",
-      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
+      ],
     },
     actor,
   );
 }
 
-async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchaseOrder>>) {
-  const submitted = await submitPurchaseOrderForApproval({
-    purchaseOrderId: po.purchaseOrderId,
-    expectedVersion: po.version,
-    reason: "إرسال أمر اختبار التعديل للمراجعة",
-    requestKey: `po-edit-submit:${randomUUID()}`,
-  }, actor);
-  await decidePurchaseOrderControl({
-    requestId: submitted.requestId,
-    decisionKey: `po-edit-approve:${randomUUID()}`,
-    approve: true,
-    reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
-  }, reviewer);
+async function approvePurchaseOrder(
+  po: Awaited<ReturnType<typeof createPurchaseOrder>>,
+) {
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار التعديل للمراجعة",
+      requestKey: `po-edit-submit:${randomUUID()}`,
+    },
+    actor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `po-edit-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+    },
+    reviewer,
+    { legacyConfirmOnly: true },
+  );
 }
 
 describe("تعديل أمر الشراء قبل الاستلام", () => {
@@ -172,8 +236,18 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
         taxRatePercent: "0",
         notes: "عُدّل قبل الاستلام",
         items: [
-          { variantId: 1, productUnitId: 3, quantity: "2", unitPrice: "1200.00" }, // درزن ⇒ 2,400
-          { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" }, // 3,000
+          {
+            variantId: 1,
+            productUnitId: 3,
+            quantity: "2",
+            unitPrice: "1200.00",
+          }, // درزن ⇒ 2,400
+          {
+            variantId: 2,
+            productUnitId: 2,
+            quantity: "5",
+            unitPrice: "600.00",
+          }, // 3,000
         ],
       },
       actor,
@@ -205,7 +279,9 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
         taxRatePercent: "0",
         agreedCurrency: "USD",
         agreedRate: "1500.0000",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" }],
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" },
+        ],
       },
       actor,
     );
@@ -220,7 +296,9 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
         taxRatePercent: "0",
         agreedCurrency: "USD",
         agreedRate: "1500.0000",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "3.00" }],
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "3.00" },
+        ],
       },
       actor,
     );
@@ -237,7 +315,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
         supplierId: 1,
         branchId: 1,
         taxRatePercent: "0",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
+        ],
         shippingCost: "300.00",
         customsCost: "100.00",
       },
@@ -252,7 +337,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
         revisionReason: "حذف تكاليف الشحن والكمرك قبل الاعتماد",
         supplierId: 1,
         taxRatePercent: "0",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
+        ],
       },
       actor,
     );
@@ -272,7 +364,9 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
     await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: 4 }],
+        lines: [
+          { purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: 4 },
+        ],
       },
       { userId: 2, branchId: 1, role: "warehouse" },
     );
@@ -292,7 +386,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
           revisionReason: "محاولة تعديل أمر بعد استلام جزئي",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "99", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "99",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
@@ -319,7 +420,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
           revisionReason: "محاولة تعديل أمر ملغى",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
@@ -342,7 +450,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
           revisionReason: "محاولة تعديل أمر يحمل دفعة",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
@@ -359,7 +474,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
           revisionReason: "محاولة تعديل أمر من فرع آخر",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         otherBranchManager,
       ),
@@ -376,7 +498,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
           revisionReason: "محاولة إدخال بكج في أمر شراء",
           supplierId: 1,
           taxRatePercent: "0",
-          items: [{ variantId: 3, productUnitId: 4, quantity: "1", unitPrice: "5000.00" }],
+          items: [
+            {
+              variantId: 3,
+              productUnitId: 4,
+              quantity: "1",
+              unitPrice: "5000.00",
+            },
+          ],
         },
         actor,
       ),
@@ -390,7 +519,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
           revisionReason: "محاولة تحويل المورد إلى مودع أمانة",
           supplierId: 3, // مودِع أمانة
           taxRatePercent: "0",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
@@ -421,7 +557,14 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
           revisionReason: "محاولة حفظ نسبة ضريبة غير صالحة",
           supplierId: 1,
           taxRatePercent: "150",
-          items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "2",
+              unitPrice: "100.00",
+            },
+          ],
         },
         actor,
       ),
@@ -436,7 +579,14 @@ describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب 
         supplierId: 1,
         branchId: 1,
         taxRatePercent: "0",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "10",
+            unitPrice: "100.00",
+          },
+        ],
         shippingCost: "300.00",
         customsCost: "100.00",
       },
@@ -454,7 +604,12 @@ describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب 
     const res = await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: items[0].baseQuantity }],
+        lines: [
+          {
+            purchaseOrderItemId: Number(items[0].id),
+            receivedBaseQuantity: items[0].baseQuantity,
+          },
+        ],
       },
       { userId: 2, branchId: 1, role: "warehouse" },
     );
@@ -487,7 +642,12 @@ describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب 
     await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: items[0].baseQuantity }],
+        lines: [
+          {
+            purchaseOrderItemId: Number(items[0].id),
+            receivedBaseQuantity: items[0].baseQuantity,
+          },
+        ],
         shippingBeneficiaryName: "لا يوجد",
         shippingEvidenceReference: "-",
       },
@@ -509,7 +669,12 @@ describe("إثبات الشحن/الكمرك اختياريّ — لا يحجب 
     await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
-        lines: [{ purchaseOrderItemId: Number(items[0].id), receivedBaseQuantity: items[0].baseQuantity }],
+        lines: [
+          {
+            purchaseOrderItemId: Number(items[0].id),
+            receivedBaseQuantity: items[0].baseQuantity,
+          },
+        ],
         shippingBeneficiarySupplierId: 4,
         shippingEvidenceReference: "INV-CARRIER-8891",
       },

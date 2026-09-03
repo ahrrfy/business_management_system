@@ -92,7 +92,7 @@ export const fmtInt = (v: string | number | null | undefined) =>
 
 /** تنسيق مبلغ بـ**ar-IQ** locale (أرقام لاتينية) حتى منزلتين عشريتين — **بلا** لاحقة عملة.
  *  null/undefined/"" ⇒ "—". مكافئ مركزي لتكرار Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 })
- *  المنتشر في الصفحات (Customers/Suppliers/PurchaseReceive/WorkOrderDetail/SalesReport/BarcodeLabels…). */
+ *  المنتشر في الصفحات (Customers/Suppliers/PurchaseOrderDetail/WorkOrderDetail/SalesReport/BarcodeLabels…). */
 export const fmtAr = (v: string | number | null | undefined): string => {
   if (v === null || v === undefined || v === "") return "—";
   return round2(D(v)).toNumber().toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });

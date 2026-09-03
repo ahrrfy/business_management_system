@@ -357,7 +357,21 @@ export default function UserEdit() {
   const customCount = Object.keys(permsOverride).length;
   // الدور المخصّص يحمل دوراً أساساً (baseRole) في العمود نفسه، والخادم يقيس عليه — فالفحص على
   // `role` صحيحٌ في الحالتين.
-  const branchBlocks = branchId === "" && branchlessBreaksAccount(role);
+  /**
+   * ⭐ الدورُ الفعّال = `baseRole` الدورِ المخصّص المختار، لا `role` المخزَّن على الحساب.
+   *
+   * أمسكت مراجعةُ Codex الفرقَ: `handleRoleChange` يضبط `customRoleId` وحده ويترك `role`
+   * على قيمته القديمة، فمديرٌ (`admin`) بلا فرعٍ يُحوَّل إلى دورٍ مخصّص كان **يرى صفر
+   * تحذير** — لأنّ الفحص يقيس على `admin` الباقية. والخادم `updateUser` يحلّ `baseRole`
+   * الحقيقيّ للدور المختار **قبل** فرض إسناد الفرع، والأدوارُ المخصّصة لا تحمل `admin`
+   * أساساً ⇒ الحفظ يسقط بالرسالة نفسها التي تدّعي هذه الشاشة التنبّؤ بها.
+   */
+  const effectiveRole: RoleKey = customRoleId
+    ? ((customRoles.find((r: { id: number }) => Number(r.id) === customRoleId) as
+        | { baseRole?: string }
+        | undefined)?.baseRole as RoleKey) ?? role
+    : role;
+  const branchBlocks = branchId === "" && branchlessBreaksAccount(effectiveRole);
 
   if (!userId) return <div className="p-6 text-center text-muted-foreground">معرّف مستخدم غير صالح.</div>;
   if (detail.isLoading) return <LoadingState message="جارٍ تحميل بيانات المستخدم…" />;

@@ -42,8 +42,7 @@ import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 export type SupplierInvoiceEvidenceType = SupplierInvoiceDraftEvidenceType;
 
 export interface CreateSupplierInvoiceInput
-  extends SupplierInvoiceDraftDocumentInput,
-    SupplierInvoiceDraftIdentity {
+  extends SupplierInvoiceDraftDocumentInput, SupplierInvoiceDraftIdentity {
   clientRequestId: string;
 }
 
@@ -260,12 +259,156 @@ async function nextInvoiceNumber(tx: Tx, branchId: number): Promise<string> {
   }
 }
 
-export async function createSupplierInvoice(
+interface ApprovedRevisionExactAmount {
+  purchaseOrderRevisionItemId: number;
+  grossAmountIqd: string;
+  netAmountIqd: string;
+  grossDocumentAmount: string;
+  netDocumentAmount: string;
+  usdTotal?: string | null;
+}
+
+function applyApprovedRevisionExactAmounts(
+  document: ReturnType<typeof buildSupplierInvoiceDraftDocument>,
+  amounts: ApprovedRevisionExactAmount[],
+) {
+  const amountByRevisionItem = new Map(
+    amounts.map((amount) => [amount.purchaseOrderRevisionItemId, amount]),
+  );
+  if (
+    amountByRevisionItem.size !== amounts.length ||
+    amounts.length !== document.lines.length
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "مبالغ النسخة المعتمدة لا تغطي بنود فاتورة المورد كاملة",
+    });
+  }
+  const lines = document.lines.map((line) => {
+    const exact = amountByRevisionItem.get(line.purchaseOrderRevisionItemId);
+    if (!exact) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "مبلغ بند النسخة المعتمدة مفقود",
+      });
+    }
+    const grossNetAmount = money(exact.grossAmountIqd);
+    const netAmount = money(exact.netAmountIqd);
+    const discountAmount = round2(grossNetAmount.minus(netAmount));
+    const usdTotal = exact.usdTotal == null ? null : money(exact.usdTotal);
+    if (
+      grossNetAmount.isNegative() ||
+      netAmount.isNegative() ||
+      discountAmount.isNegative() ||
+      usdTotal?.isNegative()
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "مبلغ بند النسخة المعتمدة لا يقبل السالب",
+      });
+    }
+    return {
+      ...line,
+      unitPriceIqd: netAmount.dividedBy(line.invoicedBaseQuantity),
+      grossNetAmount,
+      discountAmount,
+      netAmount,
+      taxAmount: money(0),
+      totalAmount: netAmount,
+      usdUnitPrice:
+        usdTotal == null ? null : usdTotal.dividedBy(line.invoicedBaseQuantity),
+      usdTotal,
+    };
+  });
+  const subtotal = round2(
+    lines.reduce((sum, line) => sum.plus(line.grossNetAmount), money(0)),
+  );
+  const discount = round2(
+    lines.reduce((sum, line) => sum.plus(line.discountAmount), money(0)),
+  );
+  const total = round2(subtotal.minus(discount));
+  const documentDiscount = round2(
+    amounts.reduce(
+      (sum, amount) =>
+        sum.plus(
+          money(amount.grossDocumentAmount).minus(
+            money(amount.netDocumentAmount),
+          ),
+        ),
+      money(0),
+    ),
+  );
+  if (documentDiscount.isNegative()) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "خصم النسخة المعتمدة بعملة المستند لا يقبل السالب",
+    });
+  }
+  const usdTotal = lines.some((line) => line.usdTotal != null)
+    ? round2(
+        lines.reduce(
+          (sum, line) => sum.plus(line.usdTotal ?? money(0)),
+          money(0),
+        ),
+      )
+    : null;
+  const canonicalBase = JSON.parse(document.canonical) as Record<
+    string,
+    unknown
+  >;
+  const canonical = stableCanonical({
+    ...canonicalBase,
+    subtotal: toDbMoney(subtotal),
+    taxAmount: "0.00",
+    discountAmount: toDbMoney(discount),
+    documentTaxAmount: "0.00",
+    documentDiscountAmount: toDbMoney(documentDiscount),
+    totalAmount: toDbMoney(total),
+    usdTotal: usdTotal == null ? null : toDbMoney(usdTotal),
+    lines: lines.map((line) => ({
+      lineNo: line.lineNo,
+      purchaseOrderRevisionItemId: line.purchaseOrderRevisionItemId,
+      description: line.description,
+      invoicedBaseQuantity: line.invoicedBaseQuantity,
+      unitPriceIqd: toDbMoney(line.unitPriceIqd),
+      grossNetAmount: toDbMoney(line.grossNetAmount),
+      discountAmount: toDbMoney(line.discountAmount),
+      netAmount: toDbMoney(line.netAmount),
+      taxAmount: "0.00",
+      totalAmount: toDbMoney(line.totalAmount),
+      usdUnitPrice: line.usdUnitPrice?.toFixed(4) ?? null,
+      usdTotal: line.usdTotal == null ? null : toDbMoney(line.usdTotal),
+    })),
+  });
+  return {
+    ...document,
+    tax: money(0),
+    discount,
+    subtotal,
+    total,
+    usdTotal,
+    lines,
+    canonical,
+    payloadHash: sha256(canonical),
+  };
+}
+
+export async function createSupplierInvoiceInTx(
+  tx: Tx,
   input: CreateSupplierInvoiceInput,
   actor: Actor,
+  options: {
+    /**
+     * Internal-only automatic-posting path. Purchase-order revision rows
+     * already contain the allocated supplier discount and final rounding, so
+     * their immutable line totals must be copied exactly rather than applying
+     * the header discount a second time or re-deriving cents from unit prices.
+     */
+    approvedRevisionExactAmounts?: ApprovedRevisionExactAmount[];
+  } = {},
 ) {
   const clientRequestId = required(input.clientRequestId, "مفتاح الطلب", 120);
-  const document = buildSupplierInvoiceDraftDocument(
+  const builtDocument = buildSupplierInvoiceDraftDocument(
     {
       supplierId: input.supplierId,
       branchId: input.branchId,
@@ -273,6 +416,12 @@ export async function createSupplierInvoice(
     },
     input,
   );
+  const document = options.approvedRevisionExactAmounts
+    ? applyApprovedRevisionExactAmounts(
+        builtDocument,
+        options.approvedRevisionExactAmounts,
+      )
+    : builtDocument;
   const {
     externalInvoiceNumber,
     externalNumberNorm,
@@ -288,7 +437,7 @@ export async function createSupplierInvoice(
     payloadHash,
     revisionItemIds: revisionIds,
   } = document;
-  return withTx(async (tx) => {
+  const executeInExistingTransaction = async () => {
     const existing = (
       await tx
         .select()
@@ -385,6 +534,59 @@ export async function createSupplierInvoice(
     );
     for (const line of normalizedLines) {
       const snapshot = snapshotById.get(line.purchaseOrderRevisionItemId)!;
+      const exactAmount = options.approvedRevisionExactAmounts?.find(
+        (amount) =>
+          amount.purchaseOrderRevisionItemId ===
+          line.purchaseOrderRevisionItemId,
+      );
+      if (exactAmount) {
+        const grossDocumentUnitPrice =
+          snapshot.order.agreedCurrency === "USD"
+            ? (snapshot.item.usdListUnitPrice ?? snapshot.item.usdUnitPrice)
+            : snapshot.item.listUnitPrice;
+        if (grossDocumentUnitPrice == null) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "سعر قائمة النسخة المعتمدة مفقود",
+          });
+        }
+        const expectedGrossDocument = round2(
+          money(grossDocumentUnitPrice).times(snapshot.item.quantity),
+        );
+        const expectedNetDocument =
+          snapshot.order.agreedCurrency === "USD"
+            ? money(snapshot.item.usdLineTotal ?? "0")
+            : money(snapshot.item.lineTotal);
+        const expectedGrossIqd =
+          snapshot.order.agreedCurrency === "USD"
+            ? round2(
+                expectedGrossDocument.times(
+                  snapshot.revision.agreedRate ?? "0",
+                ),
+              )
+            : expectedGrossDocument;
+        if (
+          money(exactAmount.grossAmountIqd).lt(
+            money(exactAmount.netAmountIqd),
+          ) ||
+          toDbMoney(exactAmount.grossAmountIqd) !==
+            toDbMoney(expectedGrossIqd) ||
+          toDbMoney(exactAmount.netAmountIqd) !==
+            toDbMoney(snapshot.item.lineTotal) ||
+          toDbMoney(exactAmount.grossDocumentAmount) !==
+            toDbMoney(expectedGrossDocument) ||
+          toDbMoney(exactAmount.netDocumentAmount) !==
+            toDbMoney(expectedNetDocument) ||
+          (snapshot.order.agreedCurrency === "USD" &&
+            toDbMoney(exactAmount.usdTotal ?? "0") !==
+              toDbMoney(snapshot.item.usdLineTotal ?? "0"))
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "مبلغ فاتورة المورد التلقائية لا يطابق النسخة المعتمدة",
+          });
+        }
+      }
       if (
         Number(snapshot.order.approvedRevisionId) !==
         Number(snapshot.revision.id)
@@ -466,7 +668,15 @@ export async function createSupplierInvoice(
       totalAmount: toDbMoney(total),
       idempotentReplay: false as const,
     };
-  });
+  };
+  return executeInExistingTransaction();
+}
+
+export async function createSupplierInvoice(
+  input: CreateSupplierInvoiceInput,
+  actor: Actor,
+) {
+  return withTx((tx) => createSupplierInvoiceInTx(tx, input, actor));
 }
 
 export async function requestSupplierInvoiceApproval(

@@ -21,12 +21,6 @@ const PurchaseIntegrityCases = lazy(
 const PurchaseControlSettings = lazy(
   () => import("@/pages/PurchaseControlSettings"),
 );
-const PurchaseGoodsReceipts = lazy(
-  () => import("@/pages/PurchaseGoodsReceipts"),
-);
-const PurchaseSupplierInvoices = lazy(
-  () => import("@/pages/PurchaseSupplierInvoices"),
-);
 
 const TABS: HubTab[] = [
   {
@@ -58,26 +52,6 @@ const TABS: HubTab[] = [
       level: "FULL",
     },
     Component: PurchaseApprovals,
-  },
-  {
-    value: "receipts",
-    label: "أذون الاستلام",
-    gate: {
-      roles: ["manager", "purchasing", "warehouse"],
-      module: "purchases",
-      level: "FULL",
-    },
-    Component: PurchaseGoodsReceipts,
-  },
-  {
-    value: "supplier-invoices",
-    label: "فواتير الموردين",
-    gate: {
-      roles: ["manager", "purchasing"],
-      module: "purchases",
-      level: "FULL",
-    },
-    Component: PurchaseSupplierInvoices,
   },
   // purchaseReturns.list خادمياً = purchasesManagerProcedure(["manager", "purchasing"], "purchases", "FULL") — التبويب مرآتها (يُخفى عمّن يرفضه الخادم حتماً).
   {
