@@ -28,6 +28,7 @@ export default defineConfig({
       "client/src/lib/payrollAccrual.test.ts",
       "client/src/lib/productImageThumbnail.test.ts",
       "client/src/lib/terminationSettlement.test.ts",
+      "client/src/lib/trpcClient.test.ts",
       "client/src/lib/cartDraft.test.ts",
       "client/src/lib/pwaUpdateLifecycle.test.ts",
       "client/src/lib/priceHistory.test.ts",
