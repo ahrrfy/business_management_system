@@ -34,13 +34,16 @@ async function setup(mode: "PREPAID" | "POSTPAID" = "PREPAID", suffix = "A") {
     supplierId, providerType: "TELECOM", settlementMode: mode, recognitionMode: "PRINCIPAL_GROSS",
     referencePolicy: "OPTIONAL", settlementCycle: "ON_DEMAND",
   }, cashier));
-  const { walletId } = await withTx((tx) => walletService.createWallet(tx, { providerId, branchId: 1, code: `B-${suffix}`, name: `Wallet ${suffix}` }, cashier));
-  await db().update(s.digitalWallets).set({ currentBalance: "100000" }).where(eq(s.digitalWallets.id, walletId));
+  let walletId: number | null = null;
+  if (mode === "PREPAID") {
+    ({ walletId } = await withTx((tx) => walletService.createWallet(tx, { providerId, branchId: 1, code: `B-${suffix}`, name: `Wallet ${suffix}` }, cashier)));
+    await db().update(s.digitalWallets).set({ currentBalance: "100000" }).where(eq(s.digitalWallets.id, walletId));
+  }
   const offerings = [];
   for (let index = 0; index < 2; index++) {
     offerings.push(await withTx((tx) => offeringService.createOffering(tx, {
       providerId, offeringType: "TELECOM_CARD", name: `Card ${suffix}-${index}`, pricingMode: "FIXED_MARGIN",
-      fixedMargin: "500", roundingStep: "250", branches: [{ branchId: 1, walletId: mode === "PREPAID" ? walletId : null }],
+      fixedMargin: "500", roundingStep: "250", branches: [{ branchId: 1, walletId }],
     }, cashier)));
   }
   const { batchId } = await withTx((tx) => pricingService.createOrGetDraft(tx, { branchId: 1, providerId, businessDate: "2026-09-03" }, cashier));
@@ -72,7 +75,7 @@ describe("digital provider transaction baskets", () => {
     expect(operation.items.map((item) => item.referenceOwnerItemId)).toEqual([null, operation.items[0].id]);
     expect(operation.items[0].refKey).toBe(`${context.providerId}:OP-ONE`);
     expect(operation.items[1].refKey).toBeNull();
-    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, context.walletId));
+    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, context.walletId!));
     expect(wallet.currentBalance).toBe("100000.00");
     expect(wallet.reservedBalance).toBe("29000.00");
     expect((await intentService.getIntent(db(), operation.intentId))!.items[1].providerBasketKey).toBe("basket-one");
@@ -149,7 +152,7 @@ describe("digital provider transaction baskets", () => {
     await mark(operation, "UNKNOWN");
     const result = await withTx((tx) => intentService.cancelIntent(tx, { intentId: operation.intentId }, cashier));
     expect(result.outcome).toBe("NEEDS_REVIEW");
-    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, context.walletId));
+    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, context.walletId!));
     expect(wallet.reservedBalance).toBe("29000.00");
   });
 
@@ -186,7 +189,7 @@ describe("digital provider transaction baskets", () => {
     expect(owner.fulfillmentStatus).toBe("FAILED");
     expect(owner.providerReference).toBe("OP-ONE");
     expect(owner.refKey).toBe(`${context.providerId}:OP-ONE`);
-    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, context.walletId));
+    const [wallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, context.walletId!));
     expect(wallet.currentBalance).toBe("80500.00");
     expect(wallet.reservedBalance).toBe("0.00");
     await expect(prepare(context.lines, "reuse-written-off-ref")).rejects.toThrow(/محفوظ/);
