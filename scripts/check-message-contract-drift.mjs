@@ -68,16 +68,122 @@ export function referencesModule(source, stem) {
   return source.includes(`/${stem}"`) || source.includes(`/${stem}'`);
 }
 
-/** هل انكسر التعاقد؟ كان يطابق النصَّ القديم ولم يعد يطابق الجديد. */
+/** محدّداتُ الاستيراد في مستهلِك — نسبيّةً أو باسمٍ مختصر. */
+export function importSpecifiers(source) {
+  const out = [];
+  for (const m of source.matchAll(/from\s+["']([^"'\n]+)["']/g)) out.push(m[1]);
+  return out;
+}
+
+/**
+ * ⭐ **قيدُ الصلة وحدَه لا يكفي — والسببُ أمسكه CI علينا (٣/٩/٢٦).**
+ *
+ * `saleCancel.test.ts` يستورد `returnService` **و**`sale/cancel` معاً. فحين نُقلت
+ * «الفاتورة لا تخصّ فرعك» من الأوّل — وهي ما تزال حيّةً في الثاني الذي يُنفّذه التأكيد فعلاً —
+ * أنذر الحارسُ على **ثلاثة** تأكيداتٍ سليمة. أربعةٌ من خمسة إنذاراتٍ كاذبة، وحارسٌ بهذه
+ * النسبة يُتجاوَز فيصير مسرحياً (وهو أسوأ من غيابه: يمنح ثقةً ويأخذ انتباهاً).
+ *
+ * العلاج: التعاقدُ يُقاس على **كلّ ما يستورده المستهلِك**، لا على الملفّ المتغيّر وحده.
+ * فإن بقي النصُّ مُنتَجاً في أيّ وحدةٍ يستوردها، فالتأكيدُ ما زال يُصيب ⇒ لا انجراف.
+ * ⛔ ولا يُوسَّع الفحص إلى المستودع كلّه: عبارةٌ في شاشةٍ لا يستوردها الاختبار كانت
+ * ستُخفي انجرافاً حقيقياً (جرّبناه: «الطلبات النشطة» موجودةٌ في `ReceptionOrderQueue.tsx`).
+ */
+export function satisfiedByAnotherImport(text, consumerPath, source, changedFile, readFile) {
+  let re = null;
+  try {
+    re = new RegExp(text);
+  } catch {
+    re = null;
+  }
+  const hit = (body) => (re ? re.test(body) : body.includes(text));
+  const dir = path.dirname(consumerPath);
+  for (const spec of importSpecifiers(source)) {
+    if (!spec.startsWith(".") && !spec.startsWith("@/") && !spec.startsWith("@shared/")) continue;
+    const base = spec.startsWith("@/")
+      ? path.join("client/src", spec.slice(2))
+      : spec.startsWith("@shared/")
+        ? path.join("shared", spec.slice(8))
+        : path.posix.normalize(path.posix.join(dir, spec));
+    for (const cand of [base + ".ts", base + ".tsx", base + "/index.ts", base]) {
+      if (cand === changedFile) continue; // الملفُّ المتغيّر نفسه — هو محلّ السؤال لا جوابه.
+      const body = readFile(cand);
+      if (body !== null && hit(stripComments(body))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * يحذف التعليقات ويُبقي السلاسل. ⭐ **بلا هذا كان الحارس أعمى عن أخطر حالةٍ يوجد لها**:
+ * أسقطتُ «الطلبات النشطة» من رسالةٍ في `onlineOrderService.ts` بينما بقيت العبارةُ في
+ * **تعليقٍ** بالملفّ نفسه — فرأى الحارسُ النصَّ حاضراً وأعلن سلامة التعاقد، وسقطت الحزمةُ
+ * على CI وحدها. والمقارنةُ النصّيّة الخامّة تجعل أيَّ تعليقٍ يذكر العبارة **قناعاً** يحجب
+ * حذفَها من الشيفرة الحيّة — وكلّما شرحتَ تعاقداً في تعليقٍ (وهو ما نطلبه!) عمي عنه أكثر.
+ *
+ * ⛔ ولا يصلح `replace(/\/\/.*$/gm, "")`: يقصّ داخل السلاسل عند أوّل `//` (أيّ عنوان
+ * `"https://…"` أو مسارٍ فيه `//`) فيحذف نصَّ رسالةٍ حقيقيّ ويُنتج إنذاراً كاذباً.
+ * لذلك ماسحٌ يتتبّع الحالة: سلسلة `'`/`"`/`` ` `` مع الإفلات، وتعليقٌ سطريّ وكتليّ.
+ */
+export function stripComments(source) {
+  let out = "";
+  let i = 0;
+  const n = source.length;
+  while (i < n) {
+    const c = source[i];
+    const d = source[i + 1];
+    if (c === "/" && d === "/") {
+      while (i < n && source[i] !== "\n") i++;
+      continue; // نُبقي "\n" ليبقى ترقيمُ الأسطر وحدودُ الأنماط سليمة.
+    }
+    if (c === "/" && d === "*") {
+      i += 2;
+      while (i < n && !(source[i] === "*" && source[i + 1] === "/")) {
+        if (source[i] === "\n") out += "\n";
+        i++;
+      }
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      const quote = c;
+      out += c;
+      i++;
+      while (i < n) {
+        if (source[i] === "\\") {
+          out += source[i] + (source[i + 1] ?? "");
+          i += 2;
+          continue;
+        }
+        out += source[i];
+        if (source[i] === quote) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * هل انكسر التعاقد؟ كان يطابق النصَّ القديم ولم يعد يطابق الجديد.
+ * الطرفان يُجرَّدان من التعليقات أوّلاً (انظر `stripComments`).
+ */
 export function contractBroken(text, before, after) {
+  const b = stripComments(before);
+  const a = stripComments(after);
   let re;
   try {
     re = new RegExp(text);
   } catch {
     // نصٌّ حرفيّ لا نمط (من `toContain`/`includes`).
-    return before.includes(text) && !after.includes(text);
+    return b.includes(text) && !a.includes(text);
   }
-  return re.test(before) && !re.test(after);
+  return re.test(b) && !re.test(a);
 }
 
 function runSelfTest({ quiet }) {
@@ -104,6 +210,79 @@ function runSelfTest({ quiet }) {
   // البديلُ يبقى محقَّقاً ما دام أحدُ شقّيه باقياً — وإلّا أنذر الحارس على صياغةٍ سليمة.
   eq("والبديل يُقاس كنمطٍ لا كنصّ", contractBroken("أ|ب", "فيه أ", "فيه ب"), false);
 
+  // ⭐ الحالةُ التي أسقطت CI فعلاً (٣/٩/٢٦): العبارةُ تُحذف من الرسالة وتبقى في **تعليق**
+  // بالملفّ نفسه. بلا تجريد التعليقات كان الحارس يُعلن السلامة — وهذا أخطر من غيابه،
+  // لأنّه يمنح ثقةً لا يستحقّها. الاختبارُ يُثبّت السلوك فلا ينطفئ الإصلاح بعدنا.
+  eq(
+    "⭐ تعليقٌ يذكر العبارة لا يُخفي حذفَها من الرسالة",
+    contractBroken(
+      "الطلبات النشطة",
+      'const m = "بعد احتساب الطلبات النشطة";',
+      '// قبل فحص الطلبات النشطة.\nconst m = "بعد احتساب طلبات زبائن آخرين";',
+    ),
+    true,
+  );
+  eq(
+    "والتعليقُ الكتليّ كذلك",
+    contractBroken("إرسالية مفتوحة", 'x = "إرسالية مفتوحة";', '/* إرسالية مفتوحة */ x = "إرسالية التوصيل";'),
+    true,
+  );
+  // ⛔ والعكسُ محروسٌ أيضاً: التجريد لا يقصّ داخل السلاسل عند `//` — وإلّا حُذف نصُّ
+  // رسالةٍ حقيقيّ بعد أيّ عنوانٍ في الملفّ فصار الإنذارُ كاذباً والحارسُ يُتجاوَز.
+  eq(
+    "ولا يقصّ `//` داخل سلسلة",
+    stripComments('const u = "https://x.test/a"; const m = "إرسالية مفتوحة";'),
+    'const u = "https://x.test/a"; const m = "إرسالية مفتوحة";',
+  );
+  eq(
+    "ويحترم الإفلات داخل السلسلة",
+    stripComments('const m = "قال \\"نعم\\" // ليس تعليقاً"; // هذا تعليق'),
+    'const m = "قال \\"نعم\\" // ليس تعليقاً"; ',
+  );
+
+  // ⭐ الإنذارُ الكاذب الذي أنتجه الحارسُ فعلاً: النصُّ انتقل إلى وحدةٍ أخرى **يستوردها
+  // المستهلِك نفسه** ⇒ التأكيدُ ما زال يُصيب ⇒ لا انجراف.
+  {
+    const consumerSrc = 'import { returnSale } from "../returnService";\nimport { cancelSale } from "../sale/cancel";\ntoThrow(/لا تخصّ فرعك/)';
+    const files = {
+      "server/services/sale/cancel.ts": 'message: "الفاتورة لا تخصّ فرعك"',
+      "server/services/returnService.ts": "// «الفاتورة لا تخصّ فرعك» كانت هنا",
+    };
+    eq(
+      "⭐ نصٌّ باقٍ في وحدةٍ أخرى يستوردها المستهلِك ⇒ لا إنذار",
+      satisfiedByAnotherImport(
+        "لا تخصّ فرعك",
+        "server/services/__tests__/saleCancel.test.ts",
+        consumerSrc,
+        "server/services/returnService.ts",
+        (f) => files[f] ?? null,
+      ),
+      true,
+    );
+    eq(
+      "⛔ ولا يُقمَع حين تكون الوحدةُ الأخرى غيرَ مستورَدة",
+      satisfiedByAnotherImport(
+        "لا تخصّ فرعك",
+        "server/services/__tests__/x.test.ts",
+        'import { returnSale } from "../returnService";\ntoThrow(/لا تخصّ فرعك/)',
+        "server/services/returnService.ts",
+        (f) => (f === "server/services/sale/cancel.ts" ? 'message: "الفاتورة لا تخصّ فرعك"' : null),
+      ),
+      false,
+    );
+    eq(
+      "⛔ ولا يُقمَع بوجودِ النصّ في تعليقٍ بوحدةٍ مستورَدة",
+      satisfiedByAnotherImport(
+        "لا تخصّ فرعك",
+        "server/services/__tests__/y.test.ts",
+        'import { cancelSale } from "../sale/cancel";\ntoThrow(/لا تخصّ فرعك/)',
+        "server/services/returnService.ts",
+        (f) => (f === "server/services/sale/cancel.ts" ? "// لا تخصّ فرعك — أُزيلت" : null),
+      ),
+      false,
+    );
+  }
+
   if (fails.length) {
     console.error("✗ الاختبار الذاتيّ لحارس انجراف الرسائل:");
     for (const f of fails) console.error("  - " + f);
@@ -127,10 +306,35 @@ try {
   process.exit(0);
 }
 
+// ⚠️ **الخمولُ يُعلَن، ولا يُترك يبدو نجاحاً** (درسُ ٣/٩/٢٦): شغّلتُ الحارس بعد الالتزام،
+// ففرقُ `HEAD` فارغٌ ⇒ صفرُ ملفّاتٍ تُفحَص ⇒ «✓ لا انجراف» — وهي جملةٌ صادقةٌ حرفياً
+// ومُضلِّلةٌ عملياً، بنيتُ عليها ثقةً فسقطت الحزمةُ على CI بانجرافٍ حقيقيّ. الفرقُ بين
+// «فحصتُ فلم أجد» و«لم أفحص شيئاً» يجب أن يكون **مقروءاً في المخرَج**.
+if (changed.length === 0) {
+  console.log(`ℹ️ حارسُ انجراف الرسائل **خامل**: صفرُ ملفّاتٍ متغيّرة مقابل «${BASE}».`);
+  if (BASE === "HEAD") console.log("   (بعد الالتزام يكون فرقُ HEAD فارغاً — للفحص عبر الفرع: --base origin/main)");
+  process.exit(0);
+}
+
 const consumers = execSync("git ls-files", { cwd: REPO_ROOT })
   .toString()
   .split("\n")
   .filter((f) => /[.](ts|tsx)$/.test(f));
+
+/** يقرأ ملفّاً من المستودع أو يُرجع null — بذاكرةٍ مؤقّتة (الملفّ الواحد يُسأل عنه مراراً). */
+const fileCache = new Map();
+function readRepoFile(rel) {
+  if (fileCache.has(rel)) return fileCache.get(rel);
+  let body = null;
+  try {
+    const p = path.join(REPO_ROOT, rel);
+    if (fs.existsSync(p) && fs.statSync(p).isFile()) body = fs.readFileSync(p, "utf8");
+  } catch {
+    body = null;
+  }
+  fileCache.set(rel, body);
+  return body;
+}
 
 const findings = [];
 for (const file of changed) {
@@ -154,7 +358,9 @@ for (const file of changed) {
     }
     if (!referencesModule(src, stem)) continue;
     for (const text of extractContractTexts(src)) {
-      if (contractBroken(text, before, after)) findings.push({ consumer, text, file });
+      if (!contractBroken(text, before, after)) continue;
+      if (satisfiedByAnotherImport(text, consumer, src, file, readRepoFile)) continue;
+      findings.push({ consumer, text, file });
     }
   }
 }
