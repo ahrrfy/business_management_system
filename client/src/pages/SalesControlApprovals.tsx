@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import { Check, FileWarning, RefreshCcw, X } from "lucide-react";
+import { Check, FileWarning, RefreshCcw, Undo2, X } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ import {
   type SalesControlType,
 } from "@shared/salesControl";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { salesControlFacts, type SalesControlFactsType } from "@shared/salesControlFacts";
 
 const STATUS_BADGE_VARIANTS: Record<
   SalesControlStatus,
@@ -36,43 +37,16 @@ const STATUS_BADGE_VARIANTS: Record<
   APPROVED: "success",
   REJECTED: "danger",
   STALE: "neutral",
+  WITHDRAWN: "neutral",
 };
 
-function payloadFacts(type: SalesControlType, value: unknown): Array<{ label: string; value: string }> {
-  const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const lines = Array.isArray(payload.lines) ? payload.lines : [];
-  if (type === "SALES_DUE_DATE_CHANGE") {
-    return [{
-      label: "تاريخ الاستحقاق المطلوب",
-      value: payload.dueDate == null ? "إزالة تاريخ الاستحقاق" : String(payload.dueDate),
-    }];
-  }
-  if (type === "SALES_CANCEL") {
-    return [{ label: "جهة الاسترداد", value: String(payload.refundPaymentMethod ?? "غير محددة") }];
-  }
-  if (type === "SALES_RETURN") {
-    const refund = payload.refund && typeof payload.refund === "object"
-      ? payload.refund as Record<string, unknown>
-      : payload.resolution && typeof payload.resolution === "object"
-        ? payload.resolution as Record<string, unknown>
-        : null;
-    return [
-      { label: "بنود الإرجاع", value: String(lines.length) },
-      { label: "مصير البضاعة", value: payload.restock === false ? "تالفة — لا تعاد للمخزون" : "سليمة — تعاد للمخزون" },
-      { label: "مبلغ الرد", value: refund?.amount == null ? "لا يوجد رد فوري" : `${fmt(String(refund.amount))} د.ع` },
-      { label: "طريقة الرد", value: String(refund?.method ?? "—") },
-    ];
-  }
-  const payment = payload.additionalPayment && typeof payload.additionalPayment === "object"
-    ? payload.additionalPayment as Record<string, unknown>
-    : null;
-  return [
-    { label: "بنود الفاتورة البديلة", value: String(lines.length) },
-    { label: "العميل البديل", value: payload.customerId == null ? "كما هو/عابر" : `#${String(payload.customerId)}` },
-    { label: "تحصيل فرق الآن", value: payment?.amount == null ? "لا يوجد" : `${fmt(String(payment.amount))} د.ع — ${String(payment.method ?? "")}` },
-    { label: "معالجة الزيادة", value: payload.overpayHandling === "CASH_REFUND" ? "رد نقدي" : payload.overpayHandling === "CREDIT" ? "رصيد دائن" : "حسب النتيجة" },
-  ];
-}
+/**
+ * ⭐ الاشتقاقُ من `@shared/salesControlFacts` لا نسخةٌ محلّية (تصويب مراجعة Codex على PR #932).
+ * كانت هذه الدالّة تُعيد تعريف «مصير البضاعة» محلّياً فتعرضه معكوساً للزبون العابر، ثمّ كاد
+ * صندوقُ موافقات أندرويد يُعيد العطب من بابٍ ثانٍ. تعريفٌ واحد يعرضه الطرفان.
+ */
+const payloadFacts = (type: SalesControlType, value: unknown) =>
+  salesControlFacts(type as SalesControlFactsType, value, fmt);
 
 function isReviewerConflict(
   reviewerId: number | null | undefined,
@@ -97,6 +71,15 @@ export default function SalesControlApprovals() {
   const pending = trpc.salesControl.list.useQuery(
     canReview ? { status: "PENDING" } : { mine: true },
   );
+  /**
+   * ⭐ درجُ الاسترداد لحظة الاعتماد (تدقيق ١/٩/٢٦ — «حارسٌ بلا حقلٍ في الواجهة = ميزةٌ مقفلة»).
+   *
+   * الدرج المختار وقت **الطلب** يُجمَّد في الحمولة المُبصَمة؛ فإن أُقفلت الوردية قبل الاعتماد
+   * سقط التنفيذ حتماً بـ«الوردية المحدَّدة غير مفتوحة» ولا حقلَ هنا لتبديلها — فكلّ مرتجعٍ
+   * نقديّ يُطلَب آخر الدوام كان يولد ميتاً. الخادم يقبل `cashRouting` الآن؛ هذا هو الحقل.
+   */
+  const [routingFor, setRoutingFor] = useState<number | null>(null);
+  const [routingShiftId, setRoutingShiftId] = useState<string>("");
   const [rejecting, setRejecting] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [message, setMessage] = useState("");
@@ -129,15 +112,41 @@ export default function SalesControlApprovals() {
     onError: (cause) => { setError(cause.message); setMessage(""); },
   });
 
+  /**
+   * سحبُ الطالب لطلبه — المخرج الوحيد حين لا يوجد مراجعٌ مستقلّ في الفرع (هجرة 0326).
+   * صفريُّ الأثر: يُحرّر `activeInvoiceId` فتعود الفاتورة قابلةً لطلبٍ جديد.
+   */
+  const withdraw = trpc.salesControl.withdraw.useMutation({
+    onSuccess: async () => {
+      setMessage("سُحب الطلب — تحرّرت الفاتورة ويمكن إرسال طلبٍ جديد. لم يتغيّر المال ولا المخزون.");
+      setError("");
+      await utils.salesControl.list.invalidate();
+    },
+    onError: (cause) => { setError(cause.message); setMessage(""); },
+  });
+
+  async function withdrawOne(requestId: number, invoiceNumber: string) {
+    if (!(await confirm({
+      variant: "warning",
+      title: `سحب الطلب #${requestId}`,
+      description: `تسحب طلبك على الفاتورة ${invoiceNumber}. لا يتغيّر المال ولا المخزون — يُغلَق الطلب فقط وتعود الفاتورة قابلةً لطلبٍ جديد.`,
+      confirmText: "سحب الطلب",
+    }))) return;
+    withdraw.mutate({ requestId, reason: "سحبه الطالب" });
+  }
+
   async function approveOne(requestId: number, invoiceNumber: string, type: SalesControlType) {
+    const shiftId = routingFor === requestId && routingShiftId ? Number(routingShiftId) : null;
     if (!(await confirm({
       variant: "danger",
       title: `اعتماد ${SALES_CONTROL_TYPE_LABELS[type]}`,
-      description: `سيُنفَّذ الأثر الآن على الفاتورة ${invoiceNumber} داخل معاملة واحدة. لا يمكن للطالب أو منشئ الفاتورة اعتمادها.`,
+      description: `سيُنفَّذ الأثر الآن على الفاتورة ${invoiceNumber} داخل معاملة واحدة.${
+        shiftId ? ` النقد يخرج من الدرج #${shiftId}.` : ""
+      } لا يمكن للطالب أو منشئ الفاتورة اعتمادها.`,
       confirmText: "اعتماد وتنفيذ",
       requireText: invoiceNumber,
     }))) return;
-    approve.mutate({ requestId });
+    approve.mutate(shiftId ? { requestId, cashRouting: { shiftId } } : { requestId });
   }
 
   return (
@@ -208,6 +217,45 @@ export default function SalesControlApprovals() {
               {canReview && isReviewerConflict(me.data?.id, request) && (
                 <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
                   لا يمكنك مراجعة هذا الطلب لأنك الطالب أو منشئ الفاتورة. يجب أن يحسمه مدير مستقل.
+                </div>
+              )}
+              {canReview && request.requestType === "SALES_RETURN" && !isReviewerConflict(me.data?.id, request) && (
+                <div className="space-y-1 rounded-md border border-dashed p-3">
+                  <Label htmlFor={`routing-${request.id}`} className="text-xs">
+                    درج خروج النقد (اختياريّ — اتركه فارغاً لاستعمال الدرج المسجَّل في الطلب)
+                  </Label>
+                  <Input
+                    id={`routing-${request.id}`}
+                    dir="ltr"
+                    inputMode="numeric"
+                    className="h-8 w-32 tabular-nums"
+                    placeholder="رقم الوردية"
+                    value={routingFor === Number(request.id) ? routingShiftId : ""}
+                    onChange={(event) => {
+                      setRoutingFor(Number(request.id));
+                      setRoutingShiftId(event.target.value.replace(/[^\d]/g, ""));
+                    }}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    إن أُقفلت وردية الطلب فسيسقط التنفيذ — حدّد هنا وردية مفتوحة الآن. المبلغ والطريقة لا يتغيّران.
+                  </p>
+                </div>
+              )}
+              {request.status === "PENDING" && me.data?.id != null
+                && Number(request.requestedBy) === Number(me.data.id) && (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed p-2">
+                  <span className="text-xs text-muted-foreground">
+                    هذا طلبك — لا تراجعه بنفسك. إن تعذّر إيجاد مراجعٍ مستقل، اسحبه لتتحرّر الفاتورة.
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={withdraw.isPending}
+                    onClick={() => withdrawOne(Number(request.id), request.invoiceNumber)}
+                  >
+                    <Undo2 aria-hidden className="me-1 size-4" />
+                    سحب الطلب
+                  </Button>
                 </div>
               )}
               {canReview && <div className="flex flex-wrap gap-2">

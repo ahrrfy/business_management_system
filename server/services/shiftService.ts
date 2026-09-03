@@ -206,16 +206,12 @@ export async function closeShift(
     shiftId: number;
     countedCash: string;
     countedBreakdown?: Record<string, number> | null;
-    /** مستلم عهدة الإغلاق؛ بوابة الويب تجعله إلزامياً عند وجود نقد. */
-    handoverToUserId?: number | null;
     varianceReasonCode?: ShiftVarianceCode | null;
     varianceReason?: string | null;
     /** هوية مدير تحقّق الراوتر من بياناته؛ لا تُقبل أبداً من حمولة العميل مباشرة. */
     managerApprovedByUserId?: number | null;
     /** تضبطها بوابة API. تُترك اختيارية لتوافق مهام الصيانة/الاختبارات الداخلية القديمة. */
     enforceCashGovernance?: boolean;
-    /** توافق عملاء API السابقين: يحفظ النقد كعهدة معلقة على مالك الوردية ولا يدخله الخزينة. */
-    allowLegacySelfCustody?: boolean;
   },
   actor: Actor & { role?: string },
 ) {
@@ -278,7 +274,7 @@ export async function closeShift(
       const priorIn = priorOut?.referenceNumber
         ? (
             await tx
-              .select({ id: receipts.id, createdBy: receipts.createdBy })
+              .select({ id: receipts.id })
               .from(receipts)
               .where(
                 and(
@@ -290,9 +286,6 @@ export async function closeShift(
               )
               .limit(1)
           )[0]
-        : null;
-      const priorRecipient = priorIn?.createdBy
-        ? (await tx.select({ name: users.name }).from(users).where(eq(users.id, Number(priorIn.createdBy))).limit(1))[0]
         : null;
       return {
         shiftId: input.shiftId,
@@ -307,13 +300,11 @@ export async function closeShift(
           .abs()
           .gte(MATERIAL_SHIFT_VARIANCE_IQD),
         treasuryReturn:
-          priorOut?.referenceNumber && priorIn?.createdBy
+          priorOut?.referenceNumber && priorIn
             ? {
                 handoverNumber: priorOut.referenceNumber,
                 outReceiptId: Number(priorOut.id),
                 inReceiptId: Number(priorIn.id),
-                recipientUserId: Number(priorIn.createdBy),
-                recipientName: priorRecipient?.name ?? `#${priorIn.createdBy}`,
               }
             : null,
         alreadyClosed: true as const,
@@ -359,65 +350,8 @@ export async function closeShift(
       handoverNumber: string;
       outReceiptId: number;
       inReceiptId: number;
-      recipientUserId: number;
-      recipientName: string;
-      assignmentMode: "INDEPENDENT_RECIPIENT" | "LEGACY_SELF_CUSTODY";
     } | null = null;
     if (counted.gt(0)) {
-      // عقود الإنتاج كلها (ويب/Android/API) تمرر مستلماً صريحاً. الاختيار الآلي باقٍ
-      // لاختبارات الخدمات التاريخية فقط كي لا تصبح قناة تشغيلية تتجاوز سلسلة الحيازة.
-      const legacySelfCustody =
-        input.handoverToUserId == null && input.allowLegacySelfCustody === true;
-      const legacyAutoRecipient =
-        input.handoverToUserId == null && !legacySelfCustody && process.env.NODE_ENV === "test";
-      let recipientUserId = input.handoverToUserId ?? null;
-      if (recipientUserId == null && legacySelfCustody) {
-        recipientUserId = Number(sh.userId);
-      }
-      if (recipientUserId == null && !legacyAutoRecipient) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "حدّد مستلم عهدة مستقلاً قبل إغلاق الوردية",
-        });
-      }
-      if (recipientUserId == null) {
-        const fallback = (
-          await tx
-            .select({ id: users.id })
-            .from(users)
-            .where(
-              and(
-                eq(users.branchId, Number(sh.branchId)),
-                eq(users.isActive, true),
-                inArray(users.role, ["admin", "manager"]),
-              ),
-            )
-            .orderBy(users.id)
-        ).find((candidate) =>
-          Number(candidate.id) !== Number(actor.userId) &&
-          Number(candidate.id) !== Number(sh.userId),
-        );
-        recipientUserId = fallback ? Number(fallback.id) : null;
-        if (recipientUserId == null) {
-          const fallbackAdmin = (
-            await tx
-              .select({ id: users.id })
-              .from(users)
-              .where(and(eq(users.isActive, true), eq(users.role, "admin")))
-              .orderBy(users.id)
-          ).find((candidate) =>
-            Number(candidate.id) !== Number(actor.userId) &&
-            Number(candidate.id) !== Number(sh.userId),
-          );
-          recipientUserId = fallbackAdmin ? Number(fallbackAdmin.id) : null;
-        }
-      }
-      if (recipientUserId == null) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "لا يوجد مدير مستقل صالح لاستلام عهدة إغلاق الوردية",
-        });
-      }
       // استيراد كسول لتجنّب حلقة (cashHandover → ledger → period).
       const { settleShiftReturnTx } = await import("./cashHandoverService");
       treasuryReturn = await settleShiftReturnTx(
@@ -426,10 +360,6 @@ export async function closeShift(
           shiftId: input.shiftId,
           branchId: Number(sh.branchId),
           amount: toDbMoney(counted),
-          recipientUserId,
-          shiftOwnerUserId: Number(sh.userId),
-          legacyAutoRecipient,
-          legacySelfCustody,
         },
         { ...actor, role: actor.role ?? "cashier" },
       );

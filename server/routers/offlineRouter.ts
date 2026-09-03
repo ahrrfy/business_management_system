@@ -21,6 +21,11 @@ import {
 import { replayOfflineSale, type ReplayOfflineSaleInput } from "../services/offline/replaySale";
 import { replayOfflinePrintSale } from "../services/offline/replayPrintSale";
 import { replayOfflineReception } from "../services/offline/replayReception";
+import { replayOfflineReturn } from "../services/offline/replayReturn";
+import { RETURN_EXECUTED_AUDIT_ACTION } from "../services/returns/auditActions";
+import { eq } from "drizzle-orm";
+import { invoices } from "../../drizzle/schema";
+import { requireDb } from "../services/tx";
 import { buildOfflineSalesReport } from "../services/offline/salesReport";
 import {
   captureRejectedReplay,
@@ -87,7 +92,14 @@ async function runReplay<T extends { invoiceId?: number; idempotentReplay?: bool
     capture?: {
       input: ReplayOfflineSaleInput;
       submittedByUserId: number;
-      channel: "RETAIL" | "PRINT" | "RECEPTION";
+      channel: "RETAIL" | "PRINT" | "RECEPTION" | "RETURN";
+      /**
+       * رموزُ الرفض التي تُلتقَط للاسترداد. الافتراض `PRECONDITION_FAILED` وحده (نافذةُ
+       * الالتقاط/الوردية…). أمّا **المرتجع** فرفضُه الماليّ الأهمّ — تجاوزُ سقف الاسترداد —
+       * يأتي `BAD_REQUEST` من `returnSaleInTx`، وكان يمرّ بلا التقاطٍ بينما النقدُ خرج فعلاً
+       * (أمسكه Codex على PR #932، P2). الدليلُ يبقى على متصفّحٍ واحد وحده لولا هذا.
+       */
+      captureOnCodes?: ReadonlyArray<TRPCError["code"]>;
     };
   },
 ): Promise<T> {
@@ -113,7 +125,8 @@ async function runReplay<T extends { invoiceId?: number; idempotentReplay?: bool
       if (e instanceof TRPCError) {
         // و-٤: رفضُ الأعمال يعني عمليةً **مدفوعة** لا مكان لها في الدفتر ⇒ تُلتقط خادمياً قبل
         // إعادة رمي الرفض. هنا في الغلاف المشترك كي تشمل الطباعة والاستقبال لا البيع وحده.
-        if (e.code === "PRECONDITION_FAILED" && meta.capture) {
+        const capturableCodes = meta.capture?.captureOnCodes ?? (["PRECONDITION_FAILED"] as const);
+        if (meta.capture && capturableCodes.includes(e.code)) {
           await captureRejectedReplay(
             meta.capture.input,
             e.code,
@@ -428,6 +441,73 @@ export const offlineRouter = router({
         },
       );
     }),
+  /**
+   * ترحيلُ مرتجعٍ التُقط دون اتصال (تدقيق ١/٩/٢٦).
+   *
+   * ⛔ **البوّابة `salesManagerProcedure` ليست السلطة النهائيّة**: `replayOfflineReturn` يعيد
+   * قراءة `isOwner`/`isActive` **داخل معاملته** ويرفض غير المالك. السببُ أنّ التنفيذ الفوريّ
+   * سلطةُ المالك وحده بعد قرار ١/٩، والتقاطُ «طلبٍ» أوفلاينياً عبثٌ: النقدُ خرج فعلاً فلا
+   * يصحّ ترحيلُه إلى طابور انتظار.
+   */
+  replayReturn: salesManagerProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        invoiceId: z.number().int().positive(),
+        lines: z
+          .array(z.object({
+            invoiceItemId: z.number().int().positive(),
+            baseQuantity: z.number().int().positive(),
+          }))
+          .min(1),
+        refund: z.object({
+          amount: positiveMoneyString,
+          method: z.literal("CASH"),
+          shiftId: z.number().int().positive().optional(),
+        }),
+        restock: z.boolean(),
+        reason: z.string().trim().min(3).max(500),
+        clientRequestId: z.string().min(8).max(50),
+        capturedAt: z.string().min(10).max(40),
+        offlineReceiptNumber: z.string().min(4).max(40),
+        deviceId: z.string().max(40).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { effectiveBranchId, actor } = scopeActor(ctx, input.branchId);
+      const { branchId: _branchId, ...replayInput } = input;
+      return runReplay(
+        async () => {
+          const out = await replayOfflineReturn(replayInput, actor);
+          // درجُ المزامنة يربط الرقم المؤقّت OFF بالرقم الرسميّ INV — يحتاج `invoiceNumber`.
+          const db = requireDb();
+          const [row] = await db
+            .select({ invoiceNumber: invoices.invoiceNumber })
+            .from(invoices)
+            .where(eq(invoices.id, replayInput.invoiceId))
+            .limit(1);
+          return { ...out, invoiceNumber: row?.invoiceNumber ?? "" };
+        },
+        {
+          ctx,
+          // الفعلُ المشترك لا فعلٌ خاصّ بالأوفلاين: رقيبُ D3-ب يعدّ
+          // `RETURN_EXECUTED_AUDIT_ACTION` وحده، والكتابةُ المتخصّصة تُلغي الصفَّ التلقائيّ
+          // ⇒ كان كلُّ مرتجعٍ أوفلاينيّ يغيب عن رصد تركّز المرتجعات (Codex، P2).
+          action: RETURN_EXECUTED_AUDIT_ACTION,
+          capture: {
+            input: { ...replayInput, branchId: effectiveBranchId } as unknown as ReplayOfflineSaleInput,
+            submittedByUserId: ctx.user.id,
+            channel: "RETURN" as const,
+            captureOnCodes: ["PRECONDITION_FAILED", "BAD_REQUEST"] as const,
+          },
+          offlineReceiptNumber: input.offlineReceiptNumber,
+          capturedAt: input.capturedAt,
+          deviceId: input.deviceId ?? null,
+          lines: input.lines.length,
+        },
+      );
+    }),
+
   /** طابور الاسترداد: مبيعاتٌ أوفلاينية مدفوعة رفضها الخادم ولم تدخل الدفتر بعد. */
   recoveryQueue: salesManagerProcedure.query(async ({ ctx }) => {
     return listRecoveryQueue({

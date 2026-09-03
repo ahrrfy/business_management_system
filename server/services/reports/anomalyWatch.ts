@@ -5,7 +5,7 @@
 //   D2 طفرة خصومات       — الخصم اليدوي (رأس الفاتورة + الأسطر) لكل كاشير مقابل متوسط النطاق؛
 //                           promotionDiscount يُعرض منفصلاً (خصم آليّ من عرضٍ مُعرَّف، لا قرار كاشير).
 //   D3 تركّز المرتجعات    — (أ) على بائع الفاتورة الأصلية (invoices.returnedTotal ÷ مبيعاته)؛
-//                           (ب) على معالج الإرجاع من auditLogs (action='return.create') — best-effort:
+//                           (ب) على معالج الإرجاع من auditLogs بفعل RETURN_EXECUTED_AUDIT_ACTION:
 //                           سجلّ التدقيق لا يُرمى عند فشله فقد يَنقص، ويُوثَّق هذا في الواجهة.
 //   D4 عجوزات الورديات    — shifts.variance لكل كاشير (عجز متكرر أو كبير).
 //   D5 عكس السندات        — receipts.status='REVERSED' + سند التعويض CANCEL-VCH-{id} (عاكسه createdBy).
@@ -22,6 +22,7 @@ import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
+import { RETURN_EXECUTED_AUDIT_ACTION } from "../returns/auditActions";
 
 /* ── عتبات الأعلام (ثوابت مسماة — الجداول تعرض الجميع والعلم يرتّب لا يحجب) ── */
 /** مضاعف متوسط النطاق: يُعلَّم الكاشير إذا بلغت نسبته ≥ المضاعف × متوسط كل الكاشيرية بالفترة. */
@@ -433,13 +434,20 @@ export async function getAnomalyWatch(opts: {
     null,
   );
 
-  // ── D3ب: معالجو الإرجاع (سجلّ التدقيق — best-effort) ──
+  /**
+   * ── D3ب: معالجو الإرجاع (سجلّ التدقيق) ──
+   *
+   * الفعلُ يأتي من `RETURN_EXECUTED_AUDIT_ACTION` **لا من نصٍّ ثابتٍ هنا**: كان الشرط
+   * فعلاً ميتاً لا يكتبه أيّ سطرٍ في الخادم (كان `return` + `.create` بنصٍّ ثابت) ⇒ الكاشفُ يُرجع
+   * صفر صفوفٍ أبداً مهما تركّزت المرتجعات على شخصٍ بعينه. وكان اختبارُه أخضرَ لأنّه يُدرج
+   * صفَّ التدقيق بيده بنفس النصّ الميت — حارسٌ يقرأ ما كتبه هو لا ما يكتبه النظام.
+   */
   const returnProcessorsP = safe(
     db.execute(sql`
       SELECT a.userId, u.name AS userName, COUNT(*) AS opsCount
       FROM auditLogs a
       LEFT JOIN users u ON u.id = a.userId
-      WHERE a.action = 'return.create'
+      WHERE a.action = ${RETURN_EXECUTED_AUDIT_ACTION}
         AND a.createdAt >= ${fromTs} AND a.createdAt < ${toTs}
         ${branchAudit}
       GROUP BY a.userId, u.name

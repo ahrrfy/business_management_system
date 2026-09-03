@@ -302,18 +302,64 @@ function PendingReturnRequests() {
     onError: (e) => notify.err(e),
   });
 
+  /**
+   * ⭐ الطابور المحكوم أيضاً (تدقيق ١/٩/٢٦ — بلاغ «المرتجع وهميّ ولا أثر له»).
+   *
+   * كانت هذه اللوحة تقرأ **الجدول القديم وحده** (`returnRequests`)، بينما ما تُنشئه هذه
+   * الشاشة نفسها عبر `returns.create` يهبط في `salesControlRequests`. فالموظّف يُرسل من هنا
+   * ثمّ لا يجد طلبه هنا — وهو بالضبط ما يُقرأ «النظام بلع المرتجع». والتعليق أعلاه كان يصف
+   * العطب على الطابور القديم ثمّ وقع نفسُه على الجديد.
+   */
+  const governed = trpc.salesControl.list.useQuery(
+    { status: "PENDING" },
+    { refetchInterval: 30_000, retry: false },
+  );
+  const governedReturns = (governed.data ?? []).filter((r) => r.requestType === "SALES_RETURN");
+
   const rows = requests.data ?? [];
-  if (requests.isError || rows.length === 0) return null;
+  // ⛔ لا إخفاء صامت عند فشل الاستعلام: بطاقةٌ تختفي على خطأٍ تُقرأ «لا طلبات» وهي كذبة.
+  if (requests.isError && governed.isError) {
+    return (
+      <Card className="border-destructive/40 bg-destructive/5">
+        <CardContent className="flex flex-wrap items-center gap-2 p-3 text-sm text-destructive">
+          <AlertTriangle aria-hidden className="size-4" />
+          تعذّر تحميل طلبات الإرجاع المعلّقة — قد تكون هناك طلبات لا تراها.
+          <Button size="sm" variant="outline" onClick={() => { void requests.refetch(); void governed.refetch(); }}>
+            إعادة المحاولة
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+  if (rows.length === 0 && governedReturns.length === 0) return null;
 
   return (
     <Card className="border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)]/30">
       <CardHeader className="pb-2">
         <div className="flex items-center gap-2 text-sm font-black text-[var(--sem-warn)]">
           <AlertTriangle aria-hidden className="size-4" />
-          طلبات إرجاع بانتظار اعتمادك ({rows.length})
+          طلبات إرجاع معلّقة لم تُنفَّذ بعد ({rows.length + governedReturns.length})
         </div>
+        <p className="text-[11px] font-normal text-muted-foreground">
+          الطلب المعلّق صفريّ الأثر: لم يتغيّر المخزون ولا المال. يعتمده مراجعٌ مستقلّ (غير الطالب وغير منشئ الفاتورة).
+        </p>
       </CardHeader>
       <CardContent className="space-y-2 pt-0">
+        {governedReturns.map((r) => (
+          <div key={`gov-${r.id}`} className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-black tabular-nums" dir="ltr">{r.invoiceNumber ?? `#${r.invoiceId}`}</span>
+                <span className="text-muted-foreground">طلبه {r.requestedByName ?? `مستخدم ${r.requestedBy}`}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5">طلب تحكّم #{r.id}</span>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">السبب: {r.reason}</p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => navigate("/invoices?tab=controls")}>
+              افتح شاشة الاعتماد
+            </Button>
+          </div>
+        ))}
         {rows.map((r) => (
           <div key={r.id} className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-2.5">
             <div className="min-w-0 flex-1">

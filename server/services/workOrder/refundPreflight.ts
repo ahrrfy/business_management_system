@@ -66,25 +66,27 @@ async function eligibleDrawers(
 }
 
 /**
- * النقدُ الخارج عند **إلغاء** أمر الشغل — **مطابقٌ لبنية `cancelWorkOrder` لا لِما ينبغي أن تكون.**
+ * النقدُ الخارج عند **إلغاء** أمر الشغل — **مطابقٌ لبنية `cancelWorkOrder` بنداً بند.**
  *
- * ⚠️ **قيدٌ حاسم (مراجعة Codex، الجولة الثانية):** كتلةَ الردّ كلَّها في
- * [`cancel.ts`](./cancel.ts) محكومةٌ بـ`if (refundD.gt(0))` حيث `refundD = wo.deposit` —
- * فحصصُ العربون المطبَّقة (`orderPayments`) **لا تُصرَف إطلاقاً** حين يكون العمود صفراً، ولو
- * كان النقدُ محتجزاً فعلاً. فلو ادّعى التمهيدُ خروجَ نقدٍ عندئذٍ لَحجب الإلغاءَ بلا وردية
- * مفتوحة على أمرٍ **كانت الخدمةُ ستُلغيه بلا درجٍ أصلاً** — أي حائطٌ جديد.
+ * ثلاثةُ روافدَ تُخرج نقداً، بنفس شروطها في [`cancel.ts`](./cancel.ts):
+ *  ① **العربونُ المباشر** — محكومٌ بـ`deposit > 0` (إيصالُه يحمل قيمةَ العمود).
+ *  ② **حصصُ العربون المطبَّقة** (`orderPayments`) — **بلا حارسِ العربون** بعد سدّ الفجوة (١/٩):
+ *     كانت الحلقةُ في `cancel.ts` داخل `if (refundD.gt(0))` فتُتخطّى حين `deposit = 0`، تاركةً
+ *     مالَ العميل في الدرج بلا مسار خروجٍ (خرقُ §٥). أُخرِجت من الحارس هناك، فيجب أن تُحسَب
+ *     هنا كذلك بلا حارس — وإلّا قال التمهيدُ «لا نقد» بينما الخدمةُ تصرفها وتطلب درجاً.
+ *  ③ **أمانةُ أجرة التوصيل** — نقداً دائماً.
  *
- * ⇒ التمهيدُ يعكس السلوكَ القائم حرفياً: بلا عربونٍ موجب لا نُطالب بدرج.
- *
- * 🔻 **وهذا يكشف فجوةً ماليّةً أعمق لا يجوز لي سدُّها منفرداً:** حصصُ عربونٍ نقديّةٍ محتجزة
- * على أمرٍ عموده صفر تبقى بلا مسار خروجٍ عند الإلغاء (§٥ — «لكلّ مالٍ محتجَز مسارُ خروجٍ
- * ممكنٌ دائماً»). تغييرُ ذلك سلوكٌ ماليّ يقرّره المالك، ومرفوعٌ إليه.
+ * القاعدةُ الحاكمة: **يُحسَب بنفس شرط التنفيذ حرفاً بحرف** — أيّ انحرافٍ يُنتج حائطاً أو تقديراً
+ * كاذباً. أُثبت هذا التلازمُ باختبار تكاملٍ ([`refundPreflightAppliedGap.test.ts`](../__tests__/refundPreflightAppliedGap.test.ts)).
  */
-async function cancelCashOut(tx: Tx, workOrderId: number, deposit: string | null): Promise<ReturnType<typeof money>> {
+async function cancelCashOut(tx: Tx, workOrderId: number, deposit: string | null): Promise<{ total: ReturnType<typeof money>; hasCashOnlyPortion: boolean }> {
   let total = money(0);
+  // **الجزءُ النقديُّ الذي لا يقبل البطاقة** — حصصٌ مطبَّقة أو أمانةُ أجرة: كلاهما يُردّ نقداً
+  // حتماً (مراجعة Codex P2). وجودُه يمنع رافدَ CARD كي لا يُنشأ طلبُ تحكّمٍ يستحيل اعتمادُه.
+  let hasCashOnlyPortion = false;
   const refundD = round2(money(deposit ?? "0"));
 
-  // نفسُ حارس `cancel.ts`: بلا عربونٍ موجب لا يُفتح مسارُ الردّ ولا يُطلَب درج.
+  // ① العربونُ المباشر — محكومٌ بـ`deposit > 0` كما في `cancel.ts` (إيصالُه يحمل قيمةَ العمود).
   if (refundD.gt(0)) {
     const dep = (
       await tx
@@ -101,17 +103,26 @@ async function cancelCashOut(tx: Tx, workOrderId: number, deposit: string | null
         .limit(1)
     )[0];
     if (dep && exitsCashDrawer(dep.paymentMethod)) total = total.plus(money(dep.amount));
+  }
 
-    for (const part of await appliedCollectionsForWorkOrder(tx, workOrderId)) {
-      const amt = round2(money(part.amount));
-      if (amt.lte(0)) continue;
-      if (exitsCashDrawer(part.method)) total = total.plus(amt);
+  // ② حصصُ العربون المطبَّقة — **بلا حارسِ العربون** (مطابقةً لـ`cancel.ts` بعد سدّ الفجوة ١/٩):
+  // تُصرَف حين توجد حصصٌ فعلاً ولو كان `deposit = 0`. لو بقيت داخل الحارس هنا لَقال التمهيدُ
+  // «لا نقد» بينما الخدمةُ تصرفها وتطلب درجاً ⇒ الحائطُ الذي حذّر منه الفحص.
+  for (const part of await appliedCollectionsForWorkOrder(tx, workOrderId)) {
+    const amt = round2(money(part.amount));
+    if (amt.lte(0)) continue;
+    if (exitsCashDrawer(part.method)) {
+      total = total.plus(amt);
+      hasCashOnlyPortion = true;
     }
   }
 
-  // أمانةُ أجرة التوصيل خارج الحارس أعلاه في `cancel.ts` كذلك — تُردّ نقداً ولو كان العربون صفراً.
-  total = total.plus(await workOrderFeeHeldNet(tx, workOrderId));
-  return round2(total);
+  // ③ أمانةُ أجرة التوصيل — نقداً دائماً، خارج الحارس كذلك.
+  const feeHeld = await workOrderFeeHeldNet(tx, workOrderId);
+  total = total.plus(feeHeld);
+  if (feeHeld.gt(0)) hasCashOnlyPortion = true;
+
+  return { total: round2(total), hasCashOnlyPortion };
 }
 
 /**
@@ -185,14 +196,24 @@ export async function workOrderRefundPreflight(
   if (!wo) return null;
 
   const branchId = Number(wo.branchId);
-  const cashOut = operation === "CANCEL"
+  const cancel = operation === "CANCEL"
     ? await cancelCashOut(tx, workOrderId, wo.deposit ?? null)
+    : null;
+  const cashOut = cancel != null
+    ? cancel.total
     : await reverseCashOut(tx, workOrderId, wo.invoiceId == null ? null : Number(wo.invoiceId));
   const needsCashDrawer = cashOut.gt(0);
   return {
     needsCashDrawer,
     estimatedCashOut: toDbMoney(cashOut),
     branchId,
+    /**
+     * **البطاقةُ ممنوعةٌ حين يوجد جزءٌ نقديٌّ لا يقبلها** (مراجعة Codex P2 على #930): حصصٌ
+     * مطبَّقة أو أمانةُ أجرة تُردّ نقداً حتماً، فاختيارُ CARD يُنشئ طلبَ تحكّمٍ يستحيل اعتمادُه
+     * (الخدمةُ ترفضه عند التنفيذ فيبقى معلّقاً للأبد). ⇒ تُخفيه الشاشةُ ويرفضه الطلبُ عند
+     * الإنشاء. للاسترجاع لا نُبيح البطاقةَ أصلاً (تفويضٌ لا ردٌّ مباشر) ⇒ `false`.
+     */
+    cardRefundAllowed: cancel != null ? !cancel.hasCashOnlyPortion : false,
     // لا نُحمّل الأدراج حين لا نقدَ يخرج — استعلامٌ بلا مستهلك.
     drawers: needsCashDrawer ? await eligibleDrawers(tx, branchId, "RECEPTION", { needed: cashOut, exposeCash: opts.exposeCash }) : [],
     ...(needsCashDrawer
@@ -268,6 +289,8 @@ export async function consignmentReturnPreflight(
     needsCashDrawer,
     estimatedCashOut: toDbMoney(cashOut),
     branchId,
+    // الاسترجاعُ تفويضٌ لا ردٌّ مباشر على البطاقة ⇒ لا نُبيحها أصلاً.
+    cardRefundAllowed: false,
     // مسارُ التوصيل يقبل أيّ درجٍ مفتوح بالفرع (`resolveBranchCashShiftTx`) — لا RECEPTION وحدها.
     drawers: needsCashDrawer ? await eligibleDrawers(tx, branchId, null, { needed: cashOut, exposeCash: opts.exposeCash }) : [],
     ...(needsCashDrawer

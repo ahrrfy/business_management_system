@@ -99,7 +99,19 @@ export async function allocateVoucherToInvoiceTx(
   }
 
   const newPaid = isCredit ? paid.plus(input.amount) : paid.minus(input.amount);
-  const status = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
+  /**
+   * ⭐ **المستند الميت يبقى ميتاً** (تدقيق ١/٩/٢٦).
+   * `computeInvoiceStatus` تُنتج PENDING/PARTIALLY_PAID/PAID **حصراً** — لا تعرف RETURNED ولا
+   * CANCELLED ولا SUPERSEDED. وبما أنّ الإنقاص (`direction="OUT"`) مُستثنى عمداً من حارس
+   * المستند الميت أعلاه (ولمالٍ محتجَزٍ مسارُ خروجٍ دائماً)، كان عكسُ سندٍ على فاتورةٍ
+   * **مُرتجَعةٍ بالكامل** يكتب عليها PAID فيُحييها: تعود «مدفوعة» في كل شاشةٍ وتقريرٍ
+   * وطباعةٍ ورسالة واتساب، **وتنطفئ معها كلّ حرّاس `isDeadInvoiceStatus`** فيصير ممكناً
+   * فتحُ طلب إلغاءٍ أو تصحيحٍ أو استبدالٍ عليها وربطُ سندٍ جديدٍ بها.
+   * الحالة النهائية ملكُ مسارها الذي أنشأها (`returnService`/`cancel`/`correct`) لا مسار السداد.
+   */
+  const status = isDeadInvoiceStatus(inv.status)
+    ? inv.status
+    : computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
 
   await tx
     .update(invoices)

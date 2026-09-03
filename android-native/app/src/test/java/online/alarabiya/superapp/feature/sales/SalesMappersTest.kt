@@ -1,10 +1,12 @@
 package online.alarabiya.superapp.feature.sales
 
 import online.alarabiya.superapp.model.sales.PriceTier
+import online.alarabiya.superapp.model.sales.ReturnCreation
 import online.alarabiya.superapp.model.sales.SalesMappers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -73,14 +75,49 @@ class SalesMappersTest {
         assertNull(rows.single().phone)
     }
 
+    /**
+     * الاختبارُ السابق كان يُغذّي المُحوِّل خريطةً **بالشكل القديم** بلا `mode` — شكلٌ لم يعد
+     * الخادمُ يُرجعه ⇒ أخضرُ أبداً بينما التطبيق يعرض «تم تسجيل المرتجع بقيمة 0» على الإنتاج.
+     * الآن نختبر الشكلين الحقيقيَّين ونُثبت أنّ المجهولَ **يُرمى** لا يُبتلَع.
+     */
     @Test
-    fun `return result maps server authority flags`() {
+    fun `executed return maps server authority flags`() {
         val result = SalesMappers.returnCreation(
-            mapOf("invoiceId" to 5, "returnedTotal" to "28.75", "fullyReturned" to false, "idempotentReplay" to true),
+            mapOf(
+                "mode" to "EXECUTED",
+                "invoiceId" to 5,
+                "returnedTotal" to "28.75",
+                "fullyReturned" to false,
+                "idempotentReplay" to true,
+            ),
         )
 
-        assertEquals("28.75", result.returnedTotal)
-        assertFalse(result.fullyReturned)
-        assertTrue(result.idempotentReplay)
+        val executed = result as ReturnCreation.Executed
+        assertEquals(5L, executed.invoiceId)
+        assertEquals("28.75", executed.returnedTotal)
+        assertFalse(executed.fullyReturned)
+        assertTrue(executed.idempotentReplay)
+    }
+
+    @Test
+    fun `requested return maps to a pending request, never to a zero-value success`() {
+        val result = SalesMappers.returnCreation(
+            mapOf("mode" to "REQUESTED", "requestId" to 91, "status" to "PENDING", "replayed" to false),
+        )
+
+        val requested = result as ReturnCreation.Requested
+        assertEquals(91L, requested.requestId)
+        assertEquals("PENDING", requested.status)
+        assertFalse(requested.replayed)
+    }
+
+    @Test
+    fun `unknown mode fails loudly instead of defaulting to zero`() {
+        // الشكلُ القديم بلا `mode` هو بالضبط ما كان يُبتلَع — يجب أن يسقط صريحاً الآن.
+        assertThrows(IllegalStateException::class.java) {
+            SalesMappers.returnCreation(
+                mapOf("invoiceId" to 5, "returnedTotal" to "28.75", "fullyReturned" to false),
+            )
+        }
     }
 }

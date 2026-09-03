@@ -204,8 +204,30 @@ fun SalesScreen(state: SalesUiState, capabilities: SalesCapabilities, actions: S
         val sale = action == SalesSensitiveAction.SALE
         AlertDialog(
             onDismissRequest = { pendingAction = null },
-            title = { Text(if (sale) "تأكيد حفظ عملية البيع" else "تأكيد تسجيل المرتجع") },
-            text = { Text(if (sale) "سيتم إنشاء فاتورة وإثبات حركة الدفع والمخزون." else "سيتم إثبات المرتجع والاسترداد وحركة المخزون وفق البيانات المعروضة.") },
+            // نصُّ المرتجع يتفرّع على من ينفّذه (تدقيق ١/٩/٢٦): كان يَعِد الجميع بإثبات
+            // المرتجع والاسترداد وحركة المخزون، بينما هو **طلبٌ صفريّ الأثر** لغير المالك —
+            // فيسلّم الموظّف البضاعة والنقد على وعدٍ لا يقع.
+            title = {
+                Text(
+                    when {
+                        sale -> "تأكيد حفظ عملية البيع"
+                        capabilities.returnExecutesImmediately -> "تأكيد تنفيذ المرتجع الآن"
+                        else -> "تأكيد إرسال طلب المرتجع"
+                    },
+                )
+            },
+            text = {
+                Text(
+                    when {
+                        sale -> "سيتم إنشاء فاتورة وإثبات حركة الدفع والمخزون."
+                        capabilities.returnExecutesImmediately ->
+                            "سيتم إثبات المرتجع والاسترداد وحركة المخزون وفق البيانات المعروضة."
+                        else ->
+                            "سيُرسَل طلبٌ للاعتماد فقط. لا يتغيّر المخزون ولا المال الآن — " +
+                                "لا تسلّم الزبون نقوداً ولا تستلم البضاعة حتى يعتمده مديرٌ مستقل."
+                    },
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {

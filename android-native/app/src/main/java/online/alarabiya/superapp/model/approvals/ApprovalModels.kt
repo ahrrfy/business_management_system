@@ -10,7 +10,13 @@ enum class ApprovalKind(
     INVENTORY("inventory", "inventory", "المخزون"),
     LEAVE("leave", "hr", "الإجازات"),
     VOUCHER("voucher", "treasury", "السندات"),
-    GIFT("gift", "gifts", "الهدايا");
+    GIFT("gift", "gifts", "الهدايا"),
+
+    /**
+     * طلبات التحكّم بالبيع (مرتجع/إلغاء/إعادة إصدار/استبدال/استحقاق) — تدقيق ١/٩/٢٦.
+     * كان صندوق الموافقات أعمى عنها فتتراكم صامتةً بينما سلّم الموظّف البضاعة والنقد.
+     */
+    SALES_CONTROL("salesControl", "sales", "عمليات البيع");
 
     companion object {
         fun fromApi(value: String): ApprovalKind? = entries.firstOrNull { it.apiValue == value }
@@ -40,10 +46,20 @@ data class ApprovalRequest(
     val amount: String? = null,
     val currentQuantity: Double? = null,
     val targetQuantity: Double? = null,
+    /**
+     * حقائقُ حمولة الطلب كما يشتقّها الخادم من مصدرٍ مشترك مع شاشة الويب
+     * (`shared/salesControlFacts.ts`). للمرتجع: البنود والكمّية ومصير البضاعة ومبلغ الردّ
+     * وطريقته. بلا هذه كان المُعتمِدُ على الجوّال ينفّذ حركةَ نقدٍ ومخزونٍ ودفترٍ بلا رؤية
+     * رقمٍ ماليٍّ واحد — «مراجعٌ لا يرى ما يراجعه ليس مراجعاً».
+     */
+    val facts: List<ApprovalFact> = emptyList(),
     val capabilities: ApprovalCapabilities,
 ) {
     val key: ApprovalKey get() = ApprovalKey(kind, id)
 }
+
+/** سطرُ حقيقةٍ معروضٌ للمراجع قبل القرار — عنوانٌ وقيمةٌ نصّيّة جاهزة. */
+data class ApprovalFact(val label: String, val value: String)
 
 data class ApprovalKey(val kind: ApprovalKind, val id: Long)
 
