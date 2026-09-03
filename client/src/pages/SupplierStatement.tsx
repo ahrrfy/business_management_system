@@ -240,10 +240,17 @@ export default function SupplierStatement() {
         // كما هي: موجب يزيد ما علينا). بلا هذا السطر يُعرَض باسم «دفعة مستقلة للمورد».
         : p.entryType === "OPENING" ? "تصحيح رصيد افتتاحي"
         : (p.purchaseOrderId ? "دفعة للمورد" : "دفعة على الحساب — غير مخصَّصة");
-      const descriptionSub =
-        p.entryType === "PAYMENT_OUT" && p.purchaseOrderId ? `مخصَّصة لأمر الشراء #${p.purchaseOrderId}`
-        : p.entryType === "PAYMENT_OUT" && !p.purchaseOrderId ? "بانتظار التخصيص لفاتورةٍ بعينها"
-        : undefined;
+      // مراجعة Codex #966: جدول الدفعات المنفصل القديم كان يعرض ملاحظات القيد وبيت الصيرفة/المرجع
+      // — الدفتر الموحَّد أسقطها كلياً رغم أنّ الـAPI ما زال يُرجعها، فيتعذّر تمييز/تسوية دفعتين
+      // متشابهتين. الآن تُلحَق كل التفاصيل المتاحة (تخصيص + صيرفة + ملاحظة) بدل استبدالها.
+      const descriptionSub = [
+        p.entryType === "PAYMENT_OUT" && p.purchaseOrderId ? `مخصَّصة لأمر الشراء #${p.purchaseOrderId}` : undefined,
+        p.entryType === "PAYMENT_OUT" && !p.purchaseOrderId ? "بانتظار التخصيص لفاتورةٍ بعينها" : undefined,
+        p.entryType === "EXCHANGE_SETTLE" && p.exchangeHouseName
+          ? `عبر ${p.exchangeHouseName}${p.referenceNumber ? ` — مرجع ${p.referenceNumber}` : ""}`
+          : undefined,
+        p.notes || undefined,
+      ].filter(Boolean).join(" · ") || undefined;
       // §الفلترة: PAYMENT_OUT وحدها تُصنَّف مخصَّصة/غير مخصَّصة (بحسب purchaseOrderId)؛ كل
       // الأنواع الأخرى (مرتجع/استرداد/صيرفة/شراء يتيم/تصحيح افتتاحي) تقع في «أخرى».
       const filterGroup: LedgerFilterGroup =
@@ -262,8 +269,12 @@ export default function SupplierStatement() {
     });
     // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
     const merged = [...poTxs, ...payTxs].sort((a, b) => a.t - b.t);
-    // §٥: AP بـDecimal (دائن − مدين)، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
-    let bal = from ? D(d.summary.openingBalance) : D(0);
+    // §٥: AP بـDecimal (دائن − مدين). مراجعة Codex #966: كان العمود يبدأ من صفرٍ بلا فترة رغم أنّ
+    // `openingBalance` بلا `from` هو أيضاً مجموع قيود OPENING المستورَدة فعلياً — فمورّدٍ افتُتح
+    // بـ1,000 ثمّ اشترى بـ200 كان يُعرَض بعمودٍ ينتهي بـ200 بدل 1,200 رغم أنّ بطاقة الملخّص تعرض
+    // 1,200 الصحيح. البذرة الآن دائماً openingBalance (لا شرط from).
+    const openingBal = D(d.summary.openingBalance);
+    let bal = openingBal;
     let totDebit = D(0), totCredit = D(0);
     const activityRows = merged.map(({ t: _t, ...x }) => {
       bal = bal.plus(D(x.credit)).minus(D(x.debit));
@@ -271,20 +282,20 @@ export default function SupplierStatement() {
       totCredit = totCredit.plus(D(x.credit));
       return { ...x, balance: bal.toFixed(2) };
     });
-    // صفّ «رصيد افتتاحي» أوّل السجل عند تقييد فترة — يُثبِّت عمود الرصيد الجاري لقارئٍ يفتح
-    // الكشف منتصف الفترة (نمط Odoo «Initial Balance» / بداية سجلّ GnuCash). لا يُغيّر مجموع
-    // مدين/دائن الفترة (خانتاه فارغتان) — رصيده وحده هو الرصيد المُرحَّل.
-    const rows: LedgerRow[] = from
+    // صفّ «رصيد افتتاحي» أوّل السجل — يُثبِّت عمود الرصيد الجاري (نمط Odoo «Initial Balance» /
+    // بداية سجلّ GnuCash). يظهر كلّما وُجد رصيدٌ افتتاحيّ فعليّ (مستورَد)، بفترةٍ أو بلا فترة —
+    // لا يُغيّر مجموع مدين/دائن الفترة (خانتاه فارغتان)، رصيده وحده هو المُرحَّل.
+    const rows: LedgerRow[] = openingBal.abs().gt(0)
       ? [
           {
-            date: fmtDate(from),
+            date: from ? fmtDate(from) : "—",
             ref: "—",
             description: "رصيد افتتاحي مُرحَّل",
-            descriptionSub: "ما قبل الفترة (افتتاحي + نشاط سابق)",
+            descriptionSub: from ? "ما قبل الفترة (افتتاحي + نشاط سابق)" : "الرصيد الافتتاحي المستورَد",
             actor: "—",
             debit: null,
             credit: null,
-            balance: D(d.summary.openingBalance).toFixed(2),
+            balance: openingBal.toFixed(2),
             filterGroup: "other",
           },
           ...activityRows,
@@ -294,7 +305,8 @@ export default function SupplierStatement() {
       rows,
       totalDebit: totDebit.toFixed(2),
       totalCredit: totCredit.toFixed(2),
-      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
+      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (رصيد المورّد الحقيقيّ
+      // — مصدر حقيقةٍ خادميّ منفصل عن الحساب المحليّ، يبقى الحكم الفصل عند أيّ انحرافٍ نادر).
       closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
     };
   }, [stmt.data, from]);
@@ -447,6 +459,7 @@ export default function SupplierStatement() {
           <div className="space-y-1 md:col-span-2">
             <SupplierPicker
               label="المورد"
+              source="reports"
               supplierId={supplierId || null}
               onSupplierChange={(id) => selectSupplier(id ?? 0)}
             />
@@ -581,31 +594,40 @@ function Stat({ label, value, emphasis }: { label: string; value: string | numbe
   );
 }
 
-/** بطاقة الرصيد الرئيسية — رصيدٌ واحد يقود كل شيء (نمط Odoo/ERPNext/Dolibarr المُجمَع عليه:
- *  لا رصيدان متنافسان). `usdValue` — حين وُجد — يُعرَض سطراً ثانوياً تحت الرصيد نفسه بدل
- *  بطاقةٍ منفصلة («الذمة الدولارية») كانت تبدو ديناً ثانياً غير مرتبط. */
+/** بطاقة الرصيد الرئيسية — الرصيد الدينارّي يقود شكل البطاقة، والدولاريّ (حين وُجد) سطرٌ ثانويّ
+ *  تحته بدل بطاقةٍ منفصلة متنافسة (نمط Odoo/ERPNext/Dolibarr).
+ *  مراجعة Codex #966: `currentBalanceUsd` ذمّةٌ **مستقلّة الحساب** (سعر فاتورتها وقت الترحيل، لا
+ *  تحويلاً بسعر اليوم) — لا معادلاً محوَّلاً لنفس الدَّين الدينارّي كما وُصف سابقاً، وقد تحمل
+ *  إشارةً مختلفة عنه تماماً (مورّدٌ رصيدُه الدينارّي صفرٌ وذمّتُه الدولارية موجبة كان يُعرَض «لا
+ *  ذمم» بالخطأ؛ وإشارتان متعاكستان كانتا تُعرَضان بلافتة IQD الواحدة). كل عملةٍ تُشتقّ اتجاهها
+ *  وتُعرَض بشارتها الخاصّة الآن. */
 function StatBalance({
   label, value, entityType, usdValue,
 }: {
   label: string; value: string | number; entityType: "customer" | "supplier"; usdValue?: string | number | null;
 }) {
   const num = Number(value);
-  // للمورد: الموجب = "له علينا" (أحمر)؛ للعميل: الموجب = "لنا عليه" (أخضر)
-  const weHaveClaim = entityType === "customer" ? num > 0 : num < 0;
-  const hasBalance = num !== 0;
   const usdNum = usdValue != null ? Number(usdValue) : 0;
+  // للمورد: الموجب = "له علينا" (أحمر)؛ للعميل: الموجب = "لنا عليه" (أخضر) — القاعدة نفسها لكلّ
+  // عملةٍ على حدة، مشتقّةً من قيمتها هي لا من الأخرى.
+  const dirOf = (n: number) => (entityType === "customer" ? n > 0 : n < 0);
+  const hasIqd = num !== 0;
+  const weHaveClaimIqd = dirOf(num);
+  const hasUsd = usdNum !== 0;
+  const weHaveClaimUsd = dirOf(usdNum);
   return (
-    <div className={`rounded-md p-2 ${hasBalance ? (weHaveClaim ? "badge-status-active" : "badge-stock-out") : "bg-muted/40"}`}>
+    <div className={`rounded-md p-2 ${hasIqd ? (weHaveClaimIqd ? "badge-status-active" : "badge-stock-out") : hasUsd ? (weHaveClaimUsd ? "badge-status-active" : "badge-stock-out") : "bg-muted/40"}`}>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`tabular-nums text-xl font-bold ${hasBalance ? (weHaveClaim ? "text-money-positive" : "text-money-negative") : ""}`} dir="ltr">
+      <div className={`tabular-nums text-xl font-bold ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : ""}`} dir="ltr">
         {fmt(Math.abs(num))}
       </div>
-      <div className={`text-xs font-semibold mt-0.5 ${hasBalance ? (weHaveClaim ? "text-money-positive" : "text-money-negative") : "text-muted-foreground"}`}>
-        {!hasBalance ? "لا ذمم" : weHaveClaim ? "لنا عليه" : "له علينا"}
+      <div className={`text-xs font-semibold mt-0.5 ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : "text-muted-foreground"}`}>
+        {!hasIqd ? (hasUsd ? "لا ذمّة بالدينار" : "لا ذمم") : weHaveClaimIqd ? "لنا عليه" : "له علينا"}
       </div>
-      {usdNum !== 0 && (
-        <div className="text-[10px] text-muted-foreground mt-1 pt-1 border-t border-current/10 tabular-nums" dir="ltr">
-          المعادل الدولاريّ (نفس الدَّين): {fmt(Math.abs(usdNum))}$
+      {hasUsd && (
+        <div className={`text-[10px] mt-1 pt-1 border-t border-current/10 tabular-nums flex items-center justify-between gap-2 ${weHaveClaimUsd ? "text-money-positive" : "text-money-negative"}`}>
+          <span dir="ltr">${fmt(Math.abs(usdNum))}</span>
+          <span className="font-semibold">ذمّةٌ دولارية مستقلّة — {weHaveClaimUsd ? "لنا عليه" : "له علينا"}</span>
         </div>
       )}
     </div>
@@ -621,24 +643,35 @@ const AGING_BUCKETS: { key: "d0_30" | "d31_60" | "d61_90" | "d91p"; label: strin
 
 /** تحليل أعمار الذمم — دلوٌ مدمج داخل نفس صفّ المؤشرات (نمط ERPNext: رسمٌ فوق الجدول مباشرةً
  *  بدل تقريرٍ منفصل كما في Odoo/GnuCash). المجموع قد لا يُطابق «الرصيد المستحق» بالضبط (دفعاتٌ
- *  غير مخصَّصة/رصيدٌ افتتاحيّ) — الفرق مكشوفٌ في بند «غير مصنَّف» بدل إخفائه. */
+ *  غير مخصَّصة/رصيدٌ افتتاحيّ) — الفرق مكشوفٌ في بند «غير مصنَّف» بدل إخفائه.
+ *  مراجعة Codex #966: كان `unbucketed` يُحسَب من الخادم لكن لا يُعرَض هنا إطلاقاً — مورّدٌ
+ *  رصيدُه كلّه افتتاحيّ (بلا أوامر شراء) كان يُظهر رسماً فارغاً و٠ في كل الأعمدة رغم رصيدٍ حقيقيّ
+ *  غير صفريّ، عكس النيّة الموثَّقة أعلاه بالضبط. */
 function AgingCard({ aging, scoped }: { aging: { d0_30: string; d31_60: string; d61_90: string; d91p: string; unbucketed: string }; scoped: boolean }) {
   const values = AGING_BUCKETS.map((b) => D(aging[b.key]));
-  const total = values.reduce((acc, v) => acc.plus(v), D(0));
+  const unbucketed = D(aging.unbucketed);
+  // شريط النسب: unbucketed سالبٌ نادرٌ (انحرافٌ محاسبيّ) يُستبعَد من مقام الشريط لا يُقصّ صامتاً —
+  // القيمة الحقيقية (حتى السالبة) تبقى ظاهرة في الخانة النصّية أدناه دائماً.
+  const barTotal = values.reduce((acc, v) => acc.plus(v), D(0)).plus(unbucketed.gt(0) ? unbucketed : D(0));
   return (
     <div className="rounded-md p-2 bg-muted/40">
       <div className="text-xs text-muted-foreground">
         تحليل الأعمار {scoped && <span className="opacity-70">(لأوامرَ نشطة ضمن الفترة)</span>}
       </div>
       <div className="flex h-2 rounded-full overflow-hidden bg-muted mt-2 mb-1.5">
-        {total.gt(0)
-          ? AGING_BUCKETS.map((b, i) => {
-              const pct = values[i].dividedBy(total).times(100).toNumber();
-              return pct > 0 ? <div key={b.key} className={b.barCls} style={{ width: `${pct}%` }} /> : null;
-            })
+        {barTotal.gt(0)
+          ? [
+              ...AGING_BUCKETS.map((b, i) => {
+                const pct = values[i].dividedBy(barTotal).times(100).toNumber();
+                return pct > 0 ? <div key={b.key} className={b.barCls} style={{ width: `${pct}%` }} /> : null;
+              }),
+              unbucketed.gt(0) ? (
+                <div key="unbucketed" className="bg-[var(--sem-info)]" style={{ width: `${unbucketed.dividedBy(barTotal).times(100).toNumber()}%` }} />
+              ) : null,
+            ]
           : <div className="w-full bg-border" />}
       </div>
-      <div className="grid grid-cols-4 gap-x-1 text-[10px]">
+      <div className="grid grid-cols-5 gap-x-1 text-[10px]">
         {AGING_BUCKETS.map((b, i) => (
           <div key={b.key} className="text-center">
             {/* bidi: "0–30" بلا مرساةٍ عربية تُعاد كتابتُها بصرياً "30-0" داخل حاويةٍ RTL بلا
@@ -647,6 +680,10 @@ function AgingCard({ aging, scoped }: { aging: { d0_30: string; d31_60: string; 
             <div className="tabular-nums text-muted-foreground truncate" dir="ltr">{fmt(values[i].toFixed(0))}</div>
           </div>
         ))}
+        <div className="text-center">
+          <div className="font-semibold tabular-nums text-[var(--sem-info)]">غير مصنَّف</div>
+          <div className="tabular-nums text-muted-foreground truncate" dir="ltr">{fmt(unbucketed.toFixed(0))}</div>
+        </div>
       </div>
     </div>
   );
