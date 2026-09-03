@@ -294,6 +294,7 @@ export default defineConfig({
       "shared/predicates/isVoidedSale.test.ts",
       "shared/predicates/canCrossBranches.test.ts",
       "shared/predicates/invoiceRemaining.test.ts",
+      "shared/predicates/wiring.test.ts",
       "shared/terms.test.ts",
     ],
   },

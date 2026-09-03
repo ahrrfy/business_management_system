@@ -19,6 +19,7 @@ import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@
 import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
+import { balanceDirection } from "@shared/predicates";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
@@ -165,7 +166,7 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
           <div className="flex items-center gap-2">
             <div className="rounded-lg border px-3 py-1.5 text-sm">
               <span className="text-muted-foreground">نقد بذمّتها: </span>
-              <b className={cn("tabular-nums", Number(party.currentBalance) > 0 ? "text-destructive" : "")} dir="ltr">{fmt(party.currentBalance)} د.ع</b>
+              <b className={cn("tabular-nums", balanceDirection(party, "deliveryParty") === "receivable" ? "text-destructive" : "")} dir="ltr">{fmt(party.currentBalance)} د.ع</b>
             </div>
             <StoreInTransitChip partyId={party.id} />
             <Button variant="ghost" size="icon" onClick={onClose} aria-label="إغلاق"><X aria-hidden className="size-4" /></Button>

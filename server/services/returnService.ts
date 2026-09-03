@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
-import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { isDeadInvoice } from "@shared/predicates";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, shifts, users } from "../../drizzle/schema";
@@ -393,7 +393,7 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     // المُستبدَلة كانت محجوبةً **بالمصادفة** لا بالتصميم: التصحيح يعكس كل الأسطر فيصير المتبقّي
     // صفراً، فيسقط الطلب برسالة «كمية الإرجاع تتجاوز المتبقّي للبند ####» — رحلةٌ تنتهي بخطأ
     // تقنيّ غامض بدل توجيهٍ صريح. ولو أُضيف بندٌ بعد التصحيح لتغيّر الحساب وسقط الدفاع.
-    if (isDeadInvoiceStatus(inv.status)) {
+    if (isDeadInvoice(inv)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message:
