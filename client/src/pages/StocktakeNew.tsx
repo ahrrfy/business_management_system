@@ -32,6 +32,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/PageHeader";
+import { InferredBranchField } from "@/components/form/InferredField";
 import { formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { internalUrl } from "@/lib/siteHosts";
@@ -159,7 +160,9 @@ export default function StocktakeNew() {
   /* ─── حالة المعالج ─── */
   const [step, setStep] = useState(0);
   const [name, setName] = useState(prefill.name);
-  const [branchId, setBranchId] = useState<number>(0);
+  // ⛔ لا نبدأ الحالةَ بـ0 لأنّ `?? 1`/`|| firstBranch` كان بابَ IDOR (`check:branch`):
+  //    `<InferredBranchField>` أدناه يُسندها من الاستنتاج الخادميّ، والأدمن/المالك يتجاوز بقصدٍ صريح.
+  const [branchId, setBranchId] = useState<number | null>(null);
   const [scopeType, setScopeType] = useState<StScope>(prefill.variantIds.length > 0 ? "MANUAL" : "FULL");
   const [movingDays, setMovingDays] = useState("30");
   const [manualIds, setManualIds] = useState<number[]>(prefill.variantIds);
@@ -204,13 +207,15 @@ export default function StocktakeNew() {
       workers.some((w) => w.name.trim() !== ""));
   useUnsavedGuard(isWizardDirty);
 
-  /* الفرع الافتراضي: فرع المستخدم ثم أول فرع. دور المخزن مُقيَّد بفرعه (الخادم يُجبره أيضاً). */
+  /* الفرع: مصدرُه استنتاجُ الجلسة (`<InferredBranchField>` يُسند `branchId` أوّل ما يصل)؛
+     دور المخزن مُقيَّد بفرعه — الخادمُ يُجبره أيضاً، والاستنتاجُ يعرضه قراءةً فقط له.
+     [منع] لا نمرّر رقماً افتراضياً هنا (`?? 1`/`|| firstBranch` كان بابَ IDOR — `check:branch`).
+        القيمةُ الرقميّة الوحيدة قبل الاستنتاج هي **الصفر الحارس**: كلّ استعلامٍ يستهلكه يعطّل
+        نفسه بـ`> 0`. الاستخدام: `branchIdOrZero`، ولا يُذكر مصطلح «استنتاج فرع» في اسمه كي لا
+        يُلبَس على قارئٍ لاحق. */
   const branches = branchesQ.data ?? [];
-  const effectiveBranchId =
-    branchId ||
-    (isWarehouseOnly && me.data?.branchId ? Number(me.data.branchId) : 0) ||
-    (me.data?.branchId ? Number(me.data.branchId) : 0) ||
-    (branches[0]?.id ?? 0);
+  const branchIdOrZero = branchId === null ? 0 : branchId;
+  const effectiveBranchId = branchIdOrZero;
   const branchName = branches.find((b) => b.id === effectiveBranchId)?.name ?? "—";
 
   /* منتجات الفرع — لمنتقي MANUAL فقط. بحثٌ خادميّ + صفحات حقيقية؛ نطلب صفاً إضافياً
@@ -454,18 +459,14 @@ export default function StocktakeNew() {
                 <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="مثال: الجرد النصف سنوي" />
               </div>
               <div className="space-y-1.5">
-                <Label>الفرع</Label>
-                <AppSelect
-                  value={String(effectiveBranchId)}
+                {/* الفرعُ مُستنتَجٌ من الجلسة — دورُ المخزن يراه قراءةً فقط (الخادمُ يُلزمه بفرعه)،
+                    والأدمن/المالك يرى «تغيير» لعبور الفروع بقصدٍ مشروع. */}
+                <InferredBranchField
+                  label="الفرع"
+                  value={branchId}
+                  onChange={(next) => setBranchId(next)}
                   disabled={isWarehouseOnly}
-                  onValueChange={(v) => setBranchId(Number(v))}
-                >
-                  {branches.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </AppSelect>
+                />
                 {isWarehouseOnly && (
                   <p className="text-[11px] text-muted-foreground">دور المخزن مُقيَّد بفرعه — يُطبَّق خادمياً.</p>
                 )}

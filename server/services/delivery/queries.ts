@@ -7,6 +7,7 @@ import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from "
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money } from "../money";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { getDeliveryFinancialSummary } from "./lifecycle";
 
 /**
@@ -396,7 +397,12 @@ export async function getPartyStoreInTransit(partyId: number) {
     await db
       .select({
         count: sql<number>`COUNT(*)`,
-        value: sql<string>`COALESCE(SUM(GREATEST(CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)), 0)), 0)`,
+        // «ما بيد المندوب» سؤالُ تعرّضٍ ماليّ ⇒ `COLLECTIBLE` (مقصوص): طردٌ دُفِع فيه زائداً
+        // لا يجوز أن يُنقص تعرّضَ طردٍ آخر في نفس المجموع. القصُّ كان قائماً أصلاً.
+        // ⚠️ ترتيبُ الطرح تبدّل (`total − ret − paid` ⇐ `total − paid − ret`) وهو تجميعيّ على
+        // `DECIMAL` فالنتيجة واحدة رقماً برقم. وانتشارُ `NULL` محفوظ: الانضمامُ يساريّ وقد لا
+        // تكون فاتورة، و`GREATEST(NULL,0) = NULL` يتجاهله `SUM` — كما كان تماماً.
+        value: sql<string>`COALESCE(SUM(${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")}), 0)`,
       })
       .from(onlineOrders)
       .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))

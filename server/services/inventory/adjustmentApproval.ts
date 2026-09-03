@@ -4,6 +4,8 @@
 // اعتماد ثنائيّ بلا عتبة. لا آلية اعتماد للمخزون (بخلاف السندات النقدية) ⇒ آلية جديدة: يُنشئ الطلبُ صفّاً
 // معلَّقاً في `stockAdjustmentRequests` **بلا تغيير مخزون**، ويعتمده مديرٌ آخر (SOD-04: المُعتمِد ≠ المُنشئ
 // إلا admin) فيُطبَّق `setStock` + قيد ADJUST (نفس منطق المسار المباشر السابق). الرفض بلا أثر.
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
@@ -214,7 +216,7 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
 }
 
 /** يفرض SOD-04 (المُعتمِد ≠ المُنشئ إلا admin) + عزل الفرع (غير admin يعتمد فرعه فقط). */
-function assertApprover(r: { createdBy: number | null; branchId: number }, actor: Actor, verb: string): void {
+function assertIndependentInventoryReviewer(r: { createdBy: number | null; branchId: number }, actor: Actor, verb: string): void {
   if (actor.role !== "admin" && r.createdBy != null && Number(r.createdBy) === actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: `لا يجوز ${verb} تسويةٍ طلبتها بنفسك — يلزم مدير آخر (فصل المهام).` });
   }
@@ -236,7 +238,17 @@ export async function approveStockAdjustment(
     if (r.status !== "PENDING_APPROVAL") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "طلب التسوية ليس في انتظار الموافقة" });
     }
-    assertApprover({ createdBy: r.createdBy != null ? Number(r.createdBy) : null, branchId: Number(r.branchId) }, actor, "اعتماد");
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: stockAdjustmentApprovalTrigger("APPROVE"),
+      subject: `تسوية مخزون رقم ${id}`,
+      legacy: () =>
+        assertIndependentInventoryReviewer(
+          { createdBy: r.createdBy != null ? Number(r.createdBy) : null, branchId: Number(r.branchId) },
+          actor,
+          "اعتماد",
+        ),
+    });
 
     const branchId = Number(r.branchId);
     await lockInventoryVariants(tx, [Number(r.variantId)]);
@@ -376,7 +388,7 @@ export async function rejectStockAdjustment(id: number, actor: Actor, reason: st
     if (r.status !== "PENDING_APPROVAL") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "طلب التسوية ليس في انتظار الموافقة" });
     }
-    assertApprover({ createdBy: r.createdBy != null ? Number(r.createdBy) : null, branchId: Number(r.branchId) }, actor, "رفض");
+    assertIndependentInventoryReviewer({ createdBy: r.createdBy != null ? Number(r.createdBy) : null, branchId: Number(r.branchId) }, actor, "رفض");
     const trimmed = reason.trim().slice(0, 500);
     if (!trimmed) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الرفض مطلوب (للسجل التدقيقي)" });
     await tx.update(stockAdjustmentRequests).set({

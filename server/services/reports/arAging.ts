@@ -3,6 +3,7 @@
 //  - getCustomerStatement: كشف حساب عميل (فواتير + دفعات + ملخّص).
 import { and, asc, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
+import { openBalanceExpr, openBalanceOf } from "@shared/predicates/openBalance";
 import { accountingEntries, customers, invoices, orderPayments, receipts, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
@@ -33,6 +34,16 @@ export interface ARAgingRow {
 export async function getARAging(opts: { branchId?: number; limit?: number } = {}): Promise<ARAgingRow[]> {
   const db = getDb();
   if (!db) return [];
+  // مسند «الرصيد المفتوح» من مصدره الواحد (`@shared/predicates/openBalance`) بدل كتابته بيدٍ
+  // ستّ مرّاتٍ في استعلامٍ واحد — وكلُّ نسخةٍ يدويةٍ تبدأ عمرها بفرصةِ انحرافٍ جديدة. الأعمدة
+  // بالاسم المستعار `i` لأنّ الاستعلام خامّ (الوحدةُ لا تستورد المخطّط عمداً فتصلح للحالتين).
+  // والوضع `COLLECTIBLE` (المقصوص بـ`GREATEST(…, 0)`) هو ما كان مكتوباً هنا حرفياً، وهو
+  // الصحيح لدلاء التقادم: فاتورةٌ دُفِعت زيادةً رصيدُها سالب، وجمعُه في الدلو يُنقص ذمّةَ
+  // فاتورةٍ أخرى مستحقّة فيظهر العميل أقلّ مديونيةً ممّا هو.
+  const openBalance = openBalanceExpr(
+    { total: sql`i.total`, paidAmount: sql`i.paidAmount`, returnedTotal: sql`i.returnedTotal` },
+    "COLLECTIBLE",
+  );
   const branchFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
   // بطاقة العميل currentBalance على مستوى الشركة. عند تقرير فرع نعيد بناء رصيده من
   // القيود ذات المصدر الفرعي، مع fallback لمتبقي الفواتير للبيانات التاريخية السابقة للدفتر.
@@ -52,7 +63,7 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       ) cb ON cb.customerId = c.id`
     : sql``;
   const currentBalanceExpr = opts.branchId
-    ? sql`COALESCE(cb.balance, COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0))`
+    ? sql`COALESCE(cb.balance, COALESCE(SUM(${openBalance}), 0))`
     : sql`c.currentBalance`;
   const branchGroup = opts.branchId ? sql`, cb.balance` : sql``;
   const balanceHaving = opts.branchId
@@ -74,11 +85,11 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       c.phone,
       c.customerType,
       CAST(${currentBalanceExpr} AS CHAR) AS currentBalance,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) <= 30 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 31 AND 60 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) > 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
-      CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaidTotal,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) <= 30 THEN ${openBalance} ELSE 0 END), 0) AS CHAR) AS d0_30,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 31 AND 60 THEN ${openBalance} ELSE 0 END), 0) AS CHAR) AS d31_60,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 61 AND 90 THEN ${openBalance} ELSE 0 END), 0) AS CHAR) AS d61_90,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) > 90 THEN ${openBalance} ELSE 0 END), 0) AS CHAR) AS d91p,
+      CAST(COALESCE(SUM(${openBalance}), 0) AS CHAR) AS unpaidTotal,
       DATE_FORMAT(MIN(CASE WHEN i.invoiceStatus IN ('PENDING','PARTIALLY_PAID') THEN DATE(COALESCE(i.dueDate, i.invoiceDate)) END), '%Y-%m-%d') AS oldestInvoiceDate
     FROM customers c
     LEFT JOIN invoices i
@@ -459,13 +470,12 @@ export async function getCustomerStatement(
   const totalPaid = sumMoney(nonCancelled.map((i) => i.paidAmount ?? 0));
   // REP-06: المتبقّي على الفاتورة المستحقّة = total − paidAmount − returnedTotal (مقصوص ≥ 0)؛
   // إغفال returnedTotal كان يضخّم المتبقّي بعد مرتجع جزئي على فاتورة آجلة.
+  // `openBalanceOf` هو النظيرُ الحسابيّ لِـ`openBalance` أعلاه بنفس الوضع — يُثبت اختبارُ
+  // التكافؤ في الوحدة أنّ الطرفين يُخرجان الرقم نفسه، فلا ينحرف مجموعُ الكشف عن مجموع الدلاء.
   const unpaid = sumMoney(
     invs
       .filter((i) => i.status === "PENDING" || i.status === "PARTIALLY_PAID")
-      .map((i) => {
-        const d = money(i.total ?? 0).sub(money(i.paidAmount ?? 0)).sub(money(i.returnedTotal ?? 0));
-        return d.isNegative() ? money(0) : d;
-      })
+      .map((i) => openBalanceOf(i, "COLLECTIBLE"))
   );
 
   return {

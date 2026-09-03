@@ -1,5 +1,6 @@
 // نقطة الدخول: يشغّل بحث كل نوع مطلوب بالتوازي (Promise.all) ثم يرتّب النتائج برتبتها.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { getDb } from "../../db";
 import type { SearchEntityType, SearchResult, GlobalSearchInput } from "./types";
 import { classifyQuery } from "./types";
@@ -12,7 +13,14 @@ function resolveBranchScope(input: GlobalSearchInput): number | null {
   // يُطبَّع المالك إلى admin في سياق الطلب؛ لذلك admin وحده يصل هنا بصلاحية عبور مثبتة.
   if (input.role === "admin") return null;
   if (input.branchId == null) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر البحث",
+        why: "البحث الشامل يعرض سجلّات فرعك وحده، وحسابُك بلا فرعٍ مُسنَد",
+        doThis: "اطلب من المدير إسناد فرعٍ لحسابك من شاشة المستخدمين، ثمّ أعد البحث",
+      }),
+    });
   }
   return input.branchId;
 }

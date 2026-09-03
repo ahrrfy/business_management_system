@@ -16,6 +16,7 @@
  * استيراد جماعيّ) بلا تغيير.
  */
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import type { Tx } from "../db";
 import type { Actor } from "./tx";
 import { canCrossBranches } from "../lib/branchAuthority";
@@ -52,18 +53,23 @@ export async function refundRailPreflight(
   const exposeCash = maySeeDrawerCash(actor.role ?? "", (actor.permissionsOverride ?? null) as PermissionMap | null);
   const raw = await dispatch(tx, context, exposeCash);
   if (!raw) {
-    // المستندُ غير موجود — رسالةٌ عربيةٌ بمصطلحه لا رقمُه العاري (§٥).
     throw new TRPCError({
       code: "NOT_FOUND",
-      message: `${REFUND_SOURCE_DOC_LABEL[context.sourceDocType]}: المستند رقم ${context.sourceDocId} غير موجود.`,
+      message: appErrorMessage({
+        what: `${REFUND_SOURCE_DOC_LABEL[context.sourceDocType]}: المستند رقم ${context.sourceDocId} غير موجود`,
+        why: "لعلّه حُذف أو أُلغي منذ فتحك الشاشة، أو المعرّف مكتوبٌ خطأً",
+        doThis: "ارجع إلى قائمة المستندات وافتح المستند الصحيح ثمّ أعد المحاولة",
+      }),
     });
   }
-  // عزلُ الفرع بنفس سلطة التنفيذ (`canCrossBranches` = admin/isOwner) — التمهيدُ لا يكشف
-  // أدراجَ فرعٍ لا يملك الفاعلُ التصرّفَ فيه.
   if (!canCrossBranches(actor) && raw.branchId !== Number(actor.branchId)) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: `${REFUND_SOURCE_DOC_LABEL[context.sourceDocType]} لا يخصّ فرعك — راجِع المدير للتحويل بين الفروع.`,
+      message: appErrorMessage({
+        what: `${REFUND_SOURCE_DOC_LABEL[context.sourceDocType]} لا يخصّ فرعك`,
+        why: "التحويلُ بين الفروع يتطلّب سلطةَ عبورٍ (admin/isOwner) — لا يجوز للكاشير كشفُ أدراج فرعٍ آخر",
+        doThis: "راجع المدير لنقل المستند إلى فرعك، أو استعمل حساباً بسلطةٍ عابرة",
+      }),
     });
   }
   return raw;

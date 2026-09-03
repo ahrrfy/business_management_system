@@ -8,8 +8,10 @@ import {
   purchaseOrders,
   users,
 } from "../../../drizzle/schema";
+import { purchaseOrderControlTrigger } from "@shared/approvalTriggers";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -524,16 +526,27 @@ export async function decidePurchaseOrderControl(
         message: "حُسم طلب التحكم مسبقاً",
       });
     }
-    if (
-      actor.userId === Number(request.requestedBy) ||
-      actor.userId === Number(po.createdBy) ||
-      actor.userId === Number(po.lastEditedBy)
-    ) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "يلزم معتمد مستقل عن المنشئ وآخر محرر وصاحب الطلب",
-      });
-    }
+    // سياسةُ الاعتماد (shared/approvalPolicy.ts): البوّابة **بالفعل لا بالإجراء**. اعتمادُ
+    // المراجعة والاستثناءُ الطارئ والرفضُ بلا بوّابة؛ و**إلغاءُ الأمر** وحده محوُ أثر —
+    // لأنّه يمحو توقيعَ الجرد الافتتاحيّ (openingEligibility.ts:426). التفصيل ودليلُه في
+    // `shared/approvalTriggers.ts`.
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: purchaseOrderControlTrigger(request.kind, input.approve),
+      subject: `أمر الشراء ${po.poNumber}`,
+      legacy: () => {
+        if (
+          actor.userId === Number(request.requestedBy) ||
+          actor.userId === Number(po.createdBy) ||
+          actor.userId === Number(po.lastEditedBy)
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "يلزم معتمد مستقل عن المنشئ وآخر محرر وصاحب الطلب",
+          });
+        }
+      },
+    });
     if (Number(request.baseOrderVersion) !== Number(po.version)) {
       await tx
         .update(purchaseOrderControlRequests)

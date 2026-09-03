@@ -31,6 +31,22 @@ import { printDoc } from "@/lib/printing/print";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { EXPENSE_BUCKET_LABEL } from "@shared/expenseCategories";
+import {
+  EXPENSE_APPROVAL_AR,
+  EXPENSE_AUDIT_WARNING_AR,
+  EXPENSE_FUNDING_META,
+  EXPENSE_FUNDING_VIEWS,
+  EXPENSE_STATUS_AR,
+  EXPENSE_STATUS_BADGE_CLASS,
+  expenseAuditWarningLabel,
+  expenseStockReasonLabel,
+  type ExpenseFundingView,
+} from "@shared/expenseLabels";
+import {
+  PAYMENT_METHOD_SOURCE_ENUMS,
+  PAYMENT_METHOD_TERMS,
+} from "@shared/terms";
+import { SHIFT_TYPE_AR } from "@/lib/labels";
 import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
 import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
 import {
@@ -78,42 +94,40 @@ function expenseCategoryText(row: {
   return row.expenseCategoryName ?? CATEGORY_LABEL[row.category] ?? row.category;
 }
 
-const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  CHECK: "صك",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-  ACCRUAL: "استحقاق",
-};
+/**
+ * ⛔ قواميسُ هذه الشاشة لم تعد محلّية: تسمياتُ المصروفات الخالصة في
+ * [`@shared/expenseLabels`](../../../shared/expenseLabels.ts) — يحرسها اختبارٌ نصّيّ
+ * يطابقها بتعدادات المخطّط وبرموز `expenseService` — وطريقةُ الدفع في `@shared/terms`،
+ * ونوعُ الوردية في `@/lib/labels`. الأسماءُ أدناه اختصاراتُ قراءةٍ لا تعريفاتٌ ثانية:
+ * كلُّ نصٍّ يُكتب هنا ينجرف عن بقيّة الشاشات (كان `PRINT_SERVICES` هنا «خدمات الطباعة»
+ * وفي أربعة مواضعَ أخرى «خدمات طباعة»).
+ */
+
+/**
+ * طرقُ الدفع مقصورةً على ما يقبله عمود `expenses.expensePaymentMethod` — وهو **الوحيد**
+ * الحامل لـ`ACCRUAL` بين تعدادات النظام. تُشتقّ من التعداد لا تُكتب قائمةً ثانية: توسيعُ
+ * العمود بلا تسميةٍ يسقط في `shared/terms.test.ts` بدل أن يُسرّب رمزاً إنجليزياً للشاشة.
+ */
+const METHOD_LABEL: Record<string, string> = Object.fromEntries(
+  PAYMENT_METHOD_SOURCE_ENUMS.expensePaymentMethod.map((method) => [
+    method,
+    PAYMENT_METHOD_TERMS[method].compact,
+  ]),
+);
 
 // production-slice: مصدر الصرف من المخزون (نثرية/تلف) بدل طريقة الدفع.
-const STOCK_REASON_LABEL: Record<string, string> = {
-  INTERNAL_USE: "نثرية (مخزون)",
-  WASTAGE: "تلف (مخزون)",
-};
 function sourceLabel(r: {
   source?: string | null;
   stockReason?: string | null;
   paymentMethod: string;
 }) {
   if (r.source === "STOCK")
-    return STOCK_REASON_LABEL[r.stockReason ?? ""] ?? "مخزون";
+    return expenseStockReasonLabel(r.stockReason, "مخزون");
   return METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod;
 }
 
-const STATUS_CLS: Record<string, string> = {
-  PENDING_APPROVAL: "badge-status-pending",
-  ACTIVE: "badge-status-active",
-  REJECTED: "badge-status-cancelled",
-  CANCELLED: "badge-status-cancelled",
-};
-const STATUS_LABEL: Record<string, string> = {
-  PENDING_APPROVAL: "بانتظار اعتماد المالك",
-  ACTIVE: "نافذ",
-  REJECTED: "مرفوض بلا صرف",
-  CANCELLED: "مُلغى",
-};
+const STATUS_CLS: Record<string, string> = EXPENSE_STATUS_BADGE_CLASS;
+const STATUS_LABEL: Record<string, string> = EXPENSE_STATUS_AR;
 
 /** حجم صفحة القائمة — الخادم يُرقّم (سقفه ١٠٠٠). */
 const PAGE_SIZE = 50;
@@ -171,88 +185,26 @@ type ExpenseTotals = {
   accruedPaid?: string | number | null;
 };
 
-type FundingKind =
-  | "PENDING"
-  | "DRAWER"
-  | "TREASURY"
-  | "NON_CASH"
-  | "ACCRUED_UNPAID"
-  | "ACCRUED_PAID"
-  | "STOCK"
-  | "UNATTRIBUTED";
+/** مصدرُ التمويل كما تعرضه الشاشة — التعدادُ ووصفُه في `@shared/expenseLabels`. */
+type FundingKind = ExpenseFundingView;
 
 type AuditFocus = "DESCRIPTION" | "PAYEE" | "SOURCE" | "DRAWER";
 
-const FUNDING_ORDER: FundingKind[] = [
-  "PENDING",
-  "DRAWER",
-  "TREASURY",
-  "NON_CASH",
-  "ACCRUED_UNPAID",
-  "ACCRUED_PAID",
-  "STOCK",
-  "UNATTRIBUTED",
-];
-const FUNDING_META: Record<
-  FundingKind,
-  { label: string; short: string; badge: string }
-> = {
-  PENDING: {
-    label: "طلبات اعتماد غير منفذة",
-    short: "بلا أثر مالي",
-    badge: "badge-status-pending",
-  },
-  DRAWER: {
-    label: "مصروفات الأدراج والورديات",
-    short: "درج وردية",
-    badge: "badge-status-active",
-  },
-  TREASURY: {
-    label: "مصروفات الخزينة الإدارية",
-    short: "خزينة إدارية",
-    badge: "badge-status-pending",
-  },
-  NON_CASH: {
-    label: "مصروفات غير نقدية",
-    short: "غير نقدي",
-    badge: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-  },
-  ACCRUED_UNPAID: {
-    label: "مصروفات مستحقة غير مدفوعة",
-    short: "مستحق غير مدفوع",
-    badge: "badge-status-pending",
-  },
-  ACCRUED_PAID: {
-    label: "مصروفات مستحقة سُوّيت فعلياً",
-    short: "استحقاق مسوّى",
-    badge: "badge-status-active",
-  },
-  STOCK: {
-    label: "مصروفات من المخزون بالكلفة",
-    short: "مخزون",
-    badge: "badge-stock-low",
-  },
-  UNATTRIBUTED: {
-    label: "مصروفات تحتاج تحديد مصدر التمويل",
-    short: "مصدر غير محسوم",
-    badge: "badge-status-cancelled",
-  },
-};
+const FUNDING_ORDER = EXPENSE_FUNDING_VIEWS;
+const FUNDING_META = EXPENSE_FUNDING_META;
 
-const SHIFT_TYPE_LABEL: Record<string, string> = {
-  RETAIL: "تجزئة",
-  RECEPTION: "استقبال",
-  PRINT_SERVICES: "خدمات الطباعة",
-};
+/** نوعُ الوردية مفهومٌ مشترَك تملكه `@/lib/labels` — لا نسخةَ هنا. */
+const SHIFT_TYPE_LABEL: Record<string, string> = SHIFT_TYPE_AR;
+/**
+ * حالةُ الوردية: لا مصدرَ مشترَكاً لها بعدُ (شاشةُ الورديات تُعرّفها محلّياً بنفس النصّ
+ * حرفياً)، فتبقى هنا حتى تُوحَّد في موجةٍ تملك تلك الشاشة — نقلُها وحدَنا يُبقي نسختين.
+ */
 const SHIFT_STATUS_LABEL: Record<string, string> = {
   OPEN: "مفتوحة",
   CLOSED: "مغلقة",
 };
-const APPROVAL_LABEL: Record<string, string> = {
-  APPROVED: "معتمد",
-  PENDING_APPROVAL: "بانتظار الاعتماد",
-  REJECTED: "مرفوض",
-};
+/** حالةُ اعتماد **سند الصرف** المرافق (`receipts.approvalStatus`) لا حالةُ المصروف نفسه. */
+const APPROVAL_LABEL: Record<string, string> = EXPENSE_APPROVAL_AR;
 
 function fundingKindOf(r: ExpenseRow): FundingKind {
   if (r.status === "PENDING_APPROVAL" || r.status === "REJECTED")
@@ -266,54 +218,23 @@ function fundingKindOf(r: ExpenseRow): FundingKind {
   return "UNATTRIBUTED";
 }
 
-/** رسائل تدقيق مفهومة للمستخدم بدلاً من رموز السلامة الداخلية. */
-const AUDIT_WARNING_LABEL: Record<string, string> = {
-  DESCRIPTION_MISSING: "لا يوجد شرح للعملية",
-  PAYEE_MISSING: "المستفيد غير محدد",
-  RECEIPT_MISSING: "إيصال الصرف غير مرتبط",
-  RECEIPT_DIRECTION_MISMATCH: "اتجاه الإيصال لا يطابق عملية الصرف",
-  RECEIPT_AMOUNT_MISMATCH: "مبلغ الإيصال لا يطابق المصروف",
-  RECEIPT_BRANCH_MISMATCH: "فرع الإيصال لا يطابق فرع المصروف",
-  RECEIPT_SHIFT_MISMATCH: "وردية الإيصال لا تطابق وردية المصروف",
-  RECEIPT_PAYMENT_METHOD_MISMATCH: "طريقة دفع الإيصال غير مطابقة",
-  RECEIPT_CASH_BUCKET_MISMATCH: "مصدر النقد في الإيصال غير مطابق",
-  RECEIPT_CREATOR_MISMATCH: "منشئ الإيصال لا يطابق منشئ المصروف",
-  RECEIPT_STATUS_MISMATCH: "حالة الإيصال لا تطابق حالة المصروف",
-  RECEIPT_NOT_APPROVED: "إيصال الصرف غير معتمد",
-  CASH_FUNDING_UNKNOWN: "مصدر النقد غير محسوم",
-  DRAWER_WITHOUT_SHIFT: "صرف درج بلا وردية",
-  TREASURY_WITH_SHIFT: "صرف خزينة مرتبط خطأً بورديّة",
-  NON_CASH_HAS_CASH_BUCKET: "عملية غير نقدية مرتبطة بدرج أو خزينة",
-  STOCK_HAS_RECEIPT: "صرف مخزون مرتبط خطأً بإيصال نقدي",
-  STOCK_HAS_CASH_LOCATION: "صرف مخزون مرتبط خطأً بدرج أو خزينة",
-  PENDING_RECEIPT_MISMATCH: "طلب الاعتماد لا يطابق إيصالاً معلّقاً",
-  REJECTED_RECEIPT_MISMATCH: "رفض الطلب لا يطابق حالة الإيصال",
-  UNEXECUTED_HAS_CASH_LOCATION: "طلب غير منفذ مرتبط خطأً بمصدر نقد",
-  ACCRUAL_PAYMENT_METHOD_MISMATCH:
-    "طريقة المصروف المستحق لا تطابق عقد الاستحقاق",
-  ACCRUAL_HAS_DIRECT_RECEIPT:
-    "الاعتراف بالاستحقاق مرتبط خطأً بإيصال نقدي مباشر",
-  ACCRUAL_HAS_CASH_LOCATION: "الاعتراف بالاستحقاق مرتبط خطأً بدرج أو خزينة",
-  ACCRUAL_OBLIGATION_MISSING: "سجل التزام الاستحقاق مفقود",
-  ACCRUAL_RECOGNITION_ENTRY_MISSING: "قيد الاعتراف بالاستحقاق مفقود",
-  ACCRUAL_SETTLEMENT_TRACE_MISSING: "أثر تسوية الاستحقاق المدفوع غير مكتمل",
-  UNPAID_ACCRUAL_HAS_SETTLEMENT_EFFECT:
-    "استحقاق غير مدفوع يحمل أثر تسوية متناقضاً",
-};
-
 function warningsOf(r: ExpenseRow): string[] {
   const warnings = new Set(
     (r.integrityWarnings ?? [])
       .filter(Boolean)
-      .map((warning) => AUDIT_WARNING_LABEL[warning] ?? warning),
+      .map((warning) => expenseAuditWarningLabel(warning)),
   );
-  if (!r.description?.trim()) warnings.add("لا يوجد شرح للعملية");
+  // تحذيراتٌ تشتقّها الشاشةُ من الصفّ نفسه — نصُّها من القاموس المشترك لا مكتوباً هنا:
+  // نسختان لنفس العطب تظهران للموظّف ملاحظتين اثنتين ما إن ينحرف حرفٌ واحد.
+  if (!r.description?.trim())
+    warnings.add(EXPENSE_AUDIT_WARNING_AR.DESCRIPTION_MISSING);
   if (Object.prototype.hasOwnProperty.call(r, "payee") && !r.payee?.trim())
-    warnings.add("المستفيد غير محدد");
+    warnings.add(EXPENSE_AUDIT_WARNING_AR.PAYEE_MISSING);
   const funding = fundingKindOf(r);
-  if (funding === "UNATTRIBUTED") warnings.add("مصدر النقد غير محسوم");
+  if (funding === "UNATTRIBUTED")
+    warnings.add(EXPENSE_AUDIT_WARNING_AR.CASH_FUNDING_UNKNOWN);
   if (funding === "DRAWER" && r.shiftId == null)
-    warnings.add("صرف درج بلا وردية");
+    warnings.add(EXPENSE_AUDIT_WARNING_AR.DRAWER_WITHOUT_SHIFT);
   return Array.from(warnings);
 }
 
@@ -336,7 +257,7 @@ function fundingDetail(r: ExpenseRow): string {
   }
   if (kind === "TREASURY") return "الخزينة الإدارية";
   if (kind === "STOCK")
-    return STOCK_REASON_LABEL[r.stockReason ?? ""] ?? "صرف مخزون";
+    return expenseStockReasonLabel(r.stockReason, "صرف مخزون");
   if (kind === "NON_CASH")
     return METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod;
   return "يحتاج مطابقة مع الإيصال والوردية";
