@@ -115,7 +115,10 @@ describe("حوكمة مصدر نقد التوصيل", () => {
     }, actor);
     await expect(settleDeliveryBalance({
       branchId: 1, partyId: 1, amount: "40.00", clientRequestId: "fih-settle-1",
-    }, actor)).rejects.toThrow(/بحمولةٍ مختلفة/);
+    // Wave 5 (#959) أعادت صياغةَ رسائل idempotency: القديمة «بحمولةٍ مختلفة» صارت
+    // «لتسوية عهدة مختلفة» في `delivery/settle.ts`. المعنى المتعاقَد عليه هنا هو
+    // «رفضٌ لأنّ نفس المفتاح استُعمل بحمولةٍ لا تطابق» — نلتقطه بالكلمتَين المشتركتَين.
+    }, actor)).rejects.toThrow(/(بحمولةٍ مختلفة|مستعمل لتسوية عهدة مختلفة)/);
   });
 });
 
