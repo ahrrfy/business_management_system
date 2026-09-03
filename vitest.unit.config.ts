@@ -170,6 +170,7 @@ export default defineConfig({
       "client/src/pages/__tests__/finalOperationalCutover.test.tsx",
       "client/src/pages/__tests__/systemHealth.test.tsx",
       "client/src/pages/__tests__/commissionRunApprovalUi.test.tsx",
+      "client/src/pages/__tests__/payrollCommissionReadinessUi.test.tsx",
       "client/src/pages/__tests__/DayCloseMissedCountException.test.tsx",
       "client/src/components/cash/MissedDailyCountExceptionPanel.test.tsx",
       "client/src/pages/__tests__/nonPosInboundPaymentFailClosed.test.ts",

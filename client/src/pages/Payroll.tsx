@@ -23,15 +23,16 @@ import { confirm, confirmDelete } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
 import { PAY_TYPES, payTypeLabel, payrollItemNeedsAttention } from "@shared/hr";
 import { printPayslip } from "@/lib/printing/printPayslip";
 import { payrollStatusLabel as accrualStatusLabel, toExcelMoney } from "@/lib/payrollAccrual";
-import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, TriangleAlert, Wallet, X } from "lucide-react";
+import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, ShieldCheck, TriangleAlert, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { selectClsSm } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { Link } from "wouter";
 
 
 const STATUS_CLS: Record<string, string> = {
@@ -87,6 +88,49 @@ type RunItem = NonNullable<ReturnType<typeof useRunQuery>["data"]>["items"][numb
 
 function useRunQuery(id: number | null, enabled: boolean) {
   return trpc.payroll.get.useQuery({ id: id ?? 0 }, { enabled: enabled && id != null && Number.isFinite(id) });
+}
+
+type CommissionReadiness = RouterOutputs["payroll"]["commissionReadiness"];
+
+/**
+ * يحوّل جاهزية العمولة الخام إلى نصٍّ يخبر المستخدم بالخطوة التالية فعلاً — بدل رسالة
+ * الخادم الكثيفة التي كانت تظهر توستاً عابراً (٦ث) عند فشل «اعتماد الاستحقاق» فقط، بلا
+ * زرّ ولا توضيح أنّ الاعتماد يلزمه حسابٌ آخر غير من احتسب الكشف أو طلب اعتماده (فصل مهام).
+ */
+function describeCommissionBlock(
+  r: CommissionReadiness,
+  period: string,
+  myUserId: number,
+): { title: string; body: string; selfBlocked: boolean } {
+  if (r.status === "approved") {
+    return {
+      title: `عمولات ${period} معتمدة لكن غير مُلتقطة في هذا المسيّر`,
+      body: "احذف هذه المسوّدة وأعد توليدها من زر «توليد مسيّر» كي يُدرَج بند «عمولة» تلقائياً لكل موظف.",
+      selfBlocked: false,
+    };
+  }
+  if (r.status === "draft") {
+    if (!r.pendingCompanyRequest) {
+      return {
+        title: `كشف عمولات ${period} مسوّدة — لم يُطلب اعتمادها بعد`,
+        body: `${r.eligibleEmployeeCount} موظف على خطة عمولة فعالة هذا الشهر. من تبويب «عمولات الشهر» اطلب اعتماد الشركة، ثم عُد هنا وأعد توليد المسيّر بعد اعتماده.`,
+        selfBlocked: false,
+      };
+    }
+    const self = r.pendingCompanyRequest.requestedBy === myUserId || r.runCreatedBy === myUserId;
+    return {
+      title: `طلب اعتماد عمولات ${period} بانتظار المراجعة`,
+      body: self
+        ? "أنت من احتسب الكشف أو طلبت اعتماده — لا يمكنك اعتماد طلبك بنفسك (فصل مهام مقصود). يلزم اعتماده من حساب آخر بصلاحية الشركة (مالك آخر أو مدير عام) من «عمولات الشهر ← طلبات اعتماد العمولات»، ثم أعد توليد هذا المسيّر."
+        : `بانتظار مراجعة ${r.pendingCompanyRequest.requesterName}. بعد اعتماده أعد توليد هذا المسيّر ليلتقط العمولة.`,
+      selfBlocked: self,
+    };
+  }
+  return {
+    title: `لم يُحتسب كشف عمولات ${period} بعد`,
+    body: `${r.eligibleEmployeeCount} موظف على خطة عمولة فعالة هذا الشهر بلا كشف عمولات. احتسبه من تبويب «عمولات الشهر» أولاً.`,
+    selfBlocked: false,
+  };
 }
 
 export default function Payroll() {
@@ -158,6 +202,18 @@ export default function Payroll() {
   const busy = generate.isPending || approve.isPending || cancel.isPending;
   const isOwner = me.data?.isOwner === true;
   const independentOwner = isOwner && Number(me.data?.id ?? 0) !== Number(run?.createdBy ?? 0);
+
+  // جاهزية العمولة — استباقية بدل انتظار فشل «اعتماد الاستحقاق». راجع describeCommissionBlock أعلاه.
+  const commissionReadinessQ = trpc.payroll.commissionReadiness.useQuery(
+    { period: run?.period ?? "" },
+    { enabled: ownerAccess && !!run?.period },
+  );
+  const commissionReadiness = commissionReadinessQ.data ?? null;
+  const commissionUncaptured = commissionReadiness?.status === "approved" && commissionReadiness.capturedPayrollRunId == null;
+  const commissionBlocking = !!run && isDraft && !!commissionReadiness && (!commissionReadiness.ready || commissionUncaptured);
+  const commissionBlock = commissionBlocking && run
+    ? describeCommissionBlock(commissionReadiness!, run.period, Number(me.data?.id ?? 0))
+    : null;
   const openSalaryObligations = (run?.obligations ?? []).filter((obligation) =>
     obligation.kind === "SALARY_NET" &&
     Number(obligation.revisionNo) === Number(run?.revisionNo ?? -1) &&
@@ -512,7 +568,19 @@ export default function Payroll() {
           <div className="flex-1" />
           {isDraft && (
             <>
-              <Button variant="outline" size="sm" title={!independentOwner ? "الاعتماد محصور بمالك نشط مستقل عن منشئ المسيّر" : undefined} onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد استحقاق رواتب ${run.period}`, description: "سيُثبّت مصروف الفترة والتزامات الصافي والضريبة والضمان ونهاية الخدمة بتاريخ نهاية الشهر، بلا حركة نقدية. تُقفل البنود وتُحفظ بصمات السياسة واللقطة.", confirmText: "اعتماد الاستحقاق" }))) return; approve.mutate({ id: Number(run.id) }); }} disabled={busy || !independentOwner}>
+              <Button
+                variant="outline"
+                size="sm"
+                title={
+                  !independentOwner
+                    ? "الاعتماد محصور بمالك نشط مستقل عن منشئ المسيّر"
+                    : commissionBlock
+                      ? `${commissionBlock.title} — ${commissionBlock.body}`
+                      : undefined
+                }
+                onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد استحقاق رواتب ${run.period}`, description: "سيُثبّت مصروف الفترة والتزامات الصافي والضريبة والضمان ونهاية الخدمة بتاريخ نهاية الشهر، بلا حركة نقدية. تُقفل البنود وتُحفظ بصمات السياسة واللقطة.", confirmText: "اعتماد الاستحقاق" }))) return; approve.mutate({ id: Number(run.id) }); }}
+                disabled={busy || !independentOwner || commissionBlocking}
+              >
                 <Check className="size-4" /> اعتماد الاستحقاق
               </Button>
               <Button variant="outline" size="sm" className="text-destructive" onClick={async () => { if (!(await confirmDelete({ description: `حذف مسوّدة رواتب ${run.period} وكل بنودها (${run.employeeCount} موظف) نهائياً؟` }))) return; cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
@@ -532,6 +600,36 @@ export default function Payroll() {
           )}
           {isPaid && <span className="text-xs text-muted-foreground">{D(openSalaryAmount).gt(0) ? `أُعيد جزء من الصرف: متبقٍ لإعادة الدفع ${iqd(openSalaryAmount)} د.ع على ${openSalaryObligations.length} موظف.` : "لإعادة المسيّر: أثبت أولاً إعادة كل دفعة راتب فعلياً من سجل الدفعات أدناه، ثم أعده إلى المسوّدة."}</span>}
         </div>
+      )}
+
+      {/*
+       * لوحة جاهزية العمولة — دائمة بدل توست ٦ث. تحلّ محلّ فكّ رسالة الخادم الكثيفة يدوياً:
+       * تقول للمستخدم أين هو بالضبط في التسلسل (لم يُحتسب/مسوّدة بلا طلب/بانتظار مراجعة/معتمد
+       * غير ملتقط)، وإن كان هو نفسه من احتسب أو طلب — فلا يملك اعتماد طلبه بنفسه (فصل مهام).
+       */}
+      {commissionBlock && (
+        <Card className={commissionBlock.selfBlocked ? "border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)]" : "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]"}>
+          <CardContent className="p-3">
+            <div className="flex items-start gap-2">
+              <ShieldCheck
+                aria-hidden
+                className={`size-4 mt-0.5 shrink-0 ${commissionBlock.selfBlocked ? "text-[var(--sem-neg)]" : "text-[var(--sem-warn)]"}`}
+              />
+              <div className="flex-1 text-xs leading-relaxed">
+                <span className={`font-medium ${commissionBlock.selfBlocked ? "text-[var(--sem-neg)]" : "text-[var(--sem-warn)]"}`}>
+                  {commissionBlock.title}
+                </span>{" "}
+                — {commissionBlock.body}
+              </div>
+              <Link
+                href="/hr?tab=commission-runs"
+                className="shrink-0 whitespace-nowrap text-xs font-medium text-primary hover:underline"
+              >
+                فتح تشغيلات العمولة
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* لوحة الانتباه — أيامٌ بلا انصراف: ساعاتٌ غير محتسَبة في بنودٍ قائمة (لا استبعاد) */}
