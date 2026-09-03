@@ -8,6 +8,7 @@
 // ترتيب الأقفال الموحَّد (§٧.٤): مسوّدة ← وردية ← أمر شغل. كلّ كتابة مالٍ هنا تبدأ بقفل
 // صفّ المسوّدة FOR UPDATE ⇒ I2 (سقف المقبوض) مُحكمٌ تحت التزامن الحقيقيّ بلا قفل جدول.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   orderPayments,
@@ -124,22 +125,59 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
     }
 
     const amountD = round2(money(input.amount));
-    if (amountD.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ العربون يجب أن يكون أكبر من صفر" });
+    if (amountD.lte(0))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "مبلغ العربون غير صالح",
+          why: "المبلغ يجب أن يكون أكبر من صفر — عربون بقيمة 0 لا يحجز ولا يُقبض",
+          doThis: "أدخل مبلغاً موجباً في حقل «مبلغ العربون» ثم أعد القبض",
+        }),
+      });
     if (input.method !== "CASH" && !input.reference?.trim()) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "المرجع إلزاميّ لغير النقد (رقم القسيمة/التحويل)" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن قبض العربون بلا مرجع",
+          why: `طريقة الدفع «${input.method}» ليست نقداً، وحقل «المرجع» فارغ — يلزم رقم القسيمة/التحويل للتدقيق`,
+          doThis: "أدخل رقم القسيمة/التحويل/الجهاز في حقل «المرجع»، أو غيّر الطريقة إلى نقد",
+        }),
+      });
     }
 
     // ١) قفل المسوّدة — رأس ترتيب الأقفال، وبوّابة I2.
     const draft = (
       await tx.select().from(receptionDrafts).where(eq(receptionDrafts.id, input.draftId)).for("update").limit(1)
     )[0];
-    if (!draft) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب المحفوظ غير موجود" });
+    if (!draft)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر العثور على الطلب المحفوظ",
+          why: "الرقم المرسل يشير إلى مسوّدة استقبال محذوفة أو غير موجودة",
+          doThis: "أعد تحميل قائمة الطلبات المحفوظة — الطلب قد يكون ثُبِّت أو أُلغي أو حُذف",
+        }),
+      });
     if (draft.status !== "OPEN") {
-      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الطلب لم يعد مفتوحاً — لا يُقبض عربون على طلبٍ مُثبَّت/ملغى" });
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن قبض عربون على هذا الطلب",
+          why: `الطلب لم يعد مفتوحاً (الحالة حالياً «${draft.status}») — لا يُقبض عربون على طلبٍ مُثبَّت أو ملغى`,
+          doThis: "أعد تحميل الطلب — إن كان مُثبَّتاً فالقبض يتم من فاتورة البيع، وإن كان ملغى فأنشئ طلباً جديداً",
+        }),
+      });
     }
     const elevated = actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
     if (!elevated && Number(draft.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا تستطيع العمل على هذا الطلب",
+          why: "الطلب يخص فرعاً غير فرعك، وصلاحية عبور الفروع محصورة بالإدارة (admin)",
+          doThis: "افتح الطلب من الفرع الذي يخصّه، أو اطلب من الإدارة تنفيذ العملية",
+        }),
+      });
     }
 
     // ٢) وردية استقبال مفتوحة للقابض **بنوعها الدقيق** (لا تسامح openShiftIdTx — V12).
@@ -149,8 +187,16 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: anyShift
-          ? `ورديتك المفتوحة ليست وردية استقبال (${anyShift.shiftType}) — العربون يُقبض على وردية استقبالٍ يدخل درجَها ويُحاسَب عليها`
-          : "افتح وردية استقبال أولاً — العربون يدخل درجك أنت وتُحاسَب عليه عند الإغلاق",
+          ? appErrorMessage({
+              what: "لا يمكن قبض العربون على هذه الوردية",
+              why: `ورديتك المفتوحة نوعها «${anyShift.shiftType}» وليس RECEPTION — العربون يُقبض على وردية استقبال يدخل درجها ويُحاسَب عليها`,
+              doThis: "أغلق ورديتك الحالية من شاشة الورديات وافتح وردية استقبال (RECEPTION)، ثم أعد قبض العربون",
+            })
+          : appErrorMessage({
+              what: "لا توجد وردية استقبال مفتوحة",
+              why: "العربون يدخل درج القابض ويُحاسَب عليه عند إغلاق الوردية — لا وردية استقبال باسمك على هذا الفرع",
+              doThis: "افتح وردية استقبال من شاشة الورديات، ثم أعد قبض العربون",
+            }),
       });
     }
     // مراجعة ش٤: getOpenShift قراءةٌ عاديّة خارج المعاملة — closeShift المتزامن كان يُهبط إيصال
@@ -167,7 +213,11 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
     if (!lockedShift || lockedShift.status !== "OPEN" || lockedShift.shiftType !== "RECEPTION") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "ورديتك أُغلقت للتوّ — افتح وردية استقبال ثم أعد قبض العربون",
+        message: appErrorMessage({
+          what: "لا يمكن إتمام قبض العربون",
+          why: "ورديتك أُغلقت أو تغيّر نوعها بين فتح النموذج والحفظ (سباق إغلاق) — لا درج مفتوحاً باسمك الآن",
+          doThis: "افتح وردية استقبال جديدة من شاشة الورديات، ثم أعد قبض العربون",
+        }),
       });
     }
     await lockMaterializedCashReceiptSourceForWrite(tx, {
@@ -186,7 +236,11 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
     if (nextHeld.gt(total)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `المقبوض يتجاوز إجمالي الطلب: محتجزٌ ${held.toFixed(2)} + الجديد ${amountD.toFixed(2)} > الإجمالي ${total.toFixed(2)}`,
+        message: appErrorMessage({
+          what: "المبلغ يتجاوز إجمالي الطلب",
+          why: `المحتجز الحالي ${held.toFixed(2)} + العربون الجديد ${amountD.toFixed(2)} = ${nextHeld.toFixed(2)}، وهو أكبر من إجمالي الطلب ${total.toFixed(2)}`,
+          doThis: `أنقص مبلغ العربون إلى ${round2(total.minus(held)).toFixed(2)} فأقلّ، أو أضف بنوداً للطلب أوّلاً`,
+        }),
       });
     }
 
@@ -294,33 +348,71 @@ export async function refundDeposit(
     }
 
     const amountD = round2(money(input.amount));
-    if (amountD.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الردّ يجب أن يكون أكبر من صفر" });
+    if (amountD.lte(0))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "مبلغ الردّ غير صالح",
+          why: "المبلغ يجب أن يكون أكبر من صفر — ردٌّ بقيمة 0 لا يعني عملية",
+          doThis: "أدخل مبلغاً موجباً في حقل «مبلغ الردّ» ثم أعد المحاولة",
+        }),
+      });
 
     // قراءة استرشادية لمعرفة المسوّدة، ثم قفلٌ بالترتيب الموحَّد: مسوّدة ← الصفّ الماليّ.
     const probe = (
       await tx.select().from(orderPayments).where(eq(orderPayments.id, input.paymentId)).limit(1)
     )[0];
     if (!probe || probe.kind !== "COLLECTION") {
-      throw new TRPCError({ code: "NOT_FOUND", message: "سجلّ قبض العربون غير موجود" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر ردّ العربون",
+          why: "سجل قبض العربون المُشار إليه غير موجود، أو نوعه ليس COLLECTION (قد يكون سجل ردٍّ أو تطبيقٍ)",
+          doThis: "أعد تحميل سجل عرابين الطلب واختر سجل القبض الأصلي، ثم أعد الردّ",
+        }),
+      });
     }
     const draft = (
       await tx.select().from(receptionDrafts).where(eq(receptionDrafts.id, Number(probe.draftId))).for("update").limit(1)
     )[0];
-    if (!draft) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب المحفوظ غير موجود" });
+    if (!draft)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر العثور على الطلب المحفوظ",
+          why: "الرقم المرسل يشير إلى مسوّدة استقبال محذوفة أو غير موجودة",
+          doThis: "أعد تحميل قائمة الطلبات المحفوظة — الطلب قد يكون ثُبِّت أو أُلغي أو حُذف",
+        }),
+      });
     const payment = (
       await tx.select().from(orderPayments).where(eq(orderPayments.id, input.paymentId)).for("update").limit(1)
     )[0]!;
 
     const elevated = actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
     if (!elevated && Number(draft.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا تستطيع العمل على هذا الطلب",
+          why: "الطلب يخص فرعاً غير فرعك، وصلاحية عبور الفروع محصورة بالإدارة (admin)",
+          doThis: "افتح الطلب من الفرع الذي يخصّه، أو اطلب من الإدارة تنفيذ العملية",
+        }),
+      });
     }
     if (payment.status !== "HELD") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: payment.status === "APPLIED"
-          ? "هذا المبلغ طُبِّق على فاتورةٍ عند التثبيت — استرداده بمرتجع الفاتورة (مدير)"
-          : "هذا القبض مردودٌ بكامله سلفاً",
+          ? appErrorMessage({
+              what: "لا يمكن ردّ هذا المبلغ من هنا",
+              why: "المبلغ طُبِّق على فاتورةٍ عند تثبيت الطلب — لم يعد محتجزاً، بل جزءٌ من قبض الفاتورة",
+              doThis: "افتح الفاتورة المرتبطة واعمل مرتجعاً باعتماد مدير — لا ردّ عربون على مالٍ طُبِّق",
+            })
+          : appErrorMessage({
+              what: "لا يمكن ردّ هذا القبض ثانيةً",
+              why: "القبض مردودٌ بكامله سلفاً (الحالة REFUNDED) — لا يوجد رصيد محتجز يُردّ",
+              doThis: "أعد تحميل سجل عرابين الطلب لعرض الحالة الصحيحة",
+            }),
       });
     }
 
@@ -334,7 +426,11 @@ export async function refundDeposit(
     if (amountD.gt(refundable)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `مبلغ الردّ (${amountD.toFixed(2)}) يتجاوز المتبقّي من هذا القبض (${refundable.toFixed(2)})`,
+        message: appErrorMessage({
+          what: "مبلغ الردّ يتجاوز المتبقّي",
+          why: `مبلغ الردّ المطلوب ${amountD.toFixed(2)} أكبر من الرصيد المتبقّي من هذا القبض (${refundable.toFixed(2)}) بعد ردوده السابقة`,
+          doThis: `أنقص مبلغ الردّ إلى ${refundable.toFixed(2)} فأقلّ، أو اقسم على أكثر من قبض`,
+        }),
       });
     }
 
@@ -359,7 +455,11 @@ export async function refundDeposit(
       if (!sameOpenShift) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: `ردّ عربونٍ نقديّ عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (#${collShiftId ?? "?"}) يتطلّب اعتماد مدير — المال عاد إلى الخزينة عند الإغلاق. (ردّ عربون البطاقة ذاتيٌّ في أيّ وقت.)`,
+          message: appErrorMessage({
+            what: "لا يمكنك ردّ هذا العربون النقدي بنفسك",
+            why: `العربون قُبض على وردية #${collShiftId ?? "?"} وهي مغلقة الآن أو ليست ورديتك — المال عاد إلى الخزينة، وسطح الاحتيال النقديّ العابر للورديات أعلى`,
+            doThis: "اطلب من مدير اعتماد الردّ من قائمة اعتمادات المدير، أو ردّه من نفس وردية القبض قبل إغلاقها (ردّ البطاقة ذاتيٌّ في أيّ وقت)",
+          }),
         });
       }
     }
@@ -453,10 +553,25 @@ export async function listDraftPayments(draftId: number, actor?: (Actor & { role
           .where(eq(receptionDrafts.id, draftId))
           .limit(1)
       )[0];
-      if (!draft) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب المحفوظ غير موجود" });
+      if (!draft)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر العثور على الطلب المحفوظ",
+          why: "الرقم المرسل يشير إلى مسوّدة استقبال محذوفة أو غير موجودة",
+          doThis: "أعد تحميل قائمة الطلبات المحفوظة — الطلب قد يكون ثُبِّت أو أُلغي أو حُذف",
+        }),
+      });
       const elevated = actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
       if (!elevated && Number(draft.branchId) !== Number(actor.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
+        throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا تستطيع العمل على هذا الطلب",
+          why: "الطلب يخص فرعاً غير فرعك، وصلاحية عبور الفروع محصورة بالإدارة (admin)",
+          doThis: "افتح الطلب من الفرع الذي يخصّه، أو اطلب من الإدارة تنفيذ العملية",
+        }),
+      });
       }
     }
     const rows = await t

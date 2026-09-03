@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset } from "../lib/paginateKeyset";
@@ -225,7 +226,14 @@ function requiresExpenseApproval(
 
 function assertExpenseFundingInput(input: CreateExpenseInput) {
   if (input.source === "ACCRUAL") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "مصدر ACCRUAL محجوز لمنتجي الاستحقاق النظاميين" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل المصروف",
+        why: "مصدر ACCRUAL محجوز لمنتجي الاستحقاق النظاميين (شحن أمر شراء، صيانة أصل)",
+        doThis: "أنشئ المصروف مصدرَه CASH أو STOCK، أو مرّره عبر مسار الشحن/الصيانة النظامي المعتمد",
+      }),
+    });
   }
   if (
     input.cashSource &&
@@ -233,7 +241,11 @@ function assertExpenseFundingInput(input: CreateExpenseInput) {
   ) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "مصدر النقد يُحدَّد للمصروف المالي النقدي فقط",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل المصروف",
+        why: "أرسلت مصدر نقد (DRAWER/TREASURY) مع مصروف ليس مالياً نقدياً (STOCK أو طريقة دفع غير CASH)",
+        doThis: "احذف مصدر النقد من الطلب، أو غيّر طريقة الدفع إلى CASH ومصدره إلى مصروف مالي",
+      }),
     });
   }
 }
@@ -242,7 +254,11 @@ function assertStockExpenseAuthority(actor: Actor) {
   if (actor.role !== "admin" && actor.role !== "manager") {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "صرف المخزون كمصروف يتطلب صلاحية مدير مخزون/مدير",
+      message: appErrorMessage({
+        what: "لا تستطيع صرف مخزون كمصروف",
+        why: "صرفُ المخزون (نثرية/تلف) يخفض التقييم ويكتب قيداً — يتطلب صلاحية مدير أو مدير مخزون",
+        doThis: "اطلب من المدير تسجيل الصرف، أو اطلب ترقية دورك من الإدارة",
+      }),
     });
   }
 }
@@ -277,7 +293,11 @@ function expenseCreatePayloadHash(input: CreateExpenseInput, actor: Actor) {
         if (quantity && quantity.decimalPlaces() > 4) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "كمية صرف المخزون تقبل أربعة منازل عشرية كحد أقصى",
+            message: appErrorMessage({
+              what: "كمية صرف المخزون بها منازل عشرية أكثر من المسموح",
+              why: "الحد الأقصى أربع منازل عشرية بعد الفاصلة",
+              doThis: "قرِّب الكمية إلى أربع منازل ثم أعد الحفظ",
+            }),
           });
         }
         return {
@@ -325,8 +345,11 @@ async function loadExpenseReplay(tx: any, replayId: number) {
   if (!ex) {
     throw new TRPCError({
       code: "CONFLICT",
-      message:
-        "معرّف إعادة المحاولة يشير إلى مصروف مفقود؛ لم تُنفذ عملية جديدة ويحتاج السجل مراجعة تدقيقية",
+      message: appErrorMessage({
+        what: "تعذّر إكمال إعادة المحاولة",
+        why: "معرّف إعادة المحاولة يشير إلى مصروف محذوف أو مفقود — لم تُنفَّذ عملية جديدة",
+        doThis: "أعد إرسال الطلب بمفتاح clientRequestId جديد، وأبلغ التدقيق بأن السجل يحتاج مراجعة",
+      }),
     });
   }
   return {
@@ -367,8 +390,11 @@ async function lockOwnRetailShift(
   if (!shift) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message:
-        "المصروف النقدي الصغير يُصرف من درج وردية المُنشئ فقط؛ افتح وردية مبيعات ممولة أولاً.",
+      message: appErrorMessage({
+        what: "تعذّر صرف المصروف النقدي الصغير",
+        why: "المصروف النقدي الصغير يُصرف من درج وردية المُنشئ فقط، ولا وردية RETAIL مفتوحة باسمك في هذا الفرع",
+        doThis: "افتح وردية مبيعات (RETAIL) ممولة من شاشة الورديات أولاً، ثم أعد تسجيل المصروف",
+      }),
     });
   }
   return Number(shift.id);
@@ -406,13 +432,21 @@ async function createStockExpenseTx(
   if (stockReason !== "INTERNAL_USE" && stockReason !== "WASTAGE") {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "حدّد نوع الصرف من المخزون (نثرية/تلف)",
+      message: appErrorMessage({
+        what: "لم تحدّد نوع صرف المخزون",
+        why: "الخدمة تفرّق بين نثرية (INTERNAL_USE) وتلف (WASTAGE) — قيدهما المحاسبي مختلف",
+        doThis: "اختر «نثرية داخلية» أو «تلف/هدر» في نموذج المصروف ثم أعد الحفظ",
+      }),
     });
   }
   if (!input.items?.length)
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "حدّد صنفاً واحداً على الأقل",
+      message: appErrorMessage({
+        what: "لا يمكن حفظ صرف مخزون بلا أصناف",
+        why: "قائمة الأصناف فارغة",
+        doThis: "أضف صنفاً واحداً على الأقل مع كميته من نموذج الصرف",
+      }),
     });
 
   // حلّ كل صنف إلى كمية أساس صحيحة.
@@ -424,7 +458,14 @@ async function createStockExpenseTx(
   }> = [];
   for (const it of input.items) {
     if (!Number.isInteger(it.variantId) || it.variantId <= 0) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "صنف غير صالح" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "أحد الأصناف المرسلة غير صالح",
+          why: "معرّف المتغيّر (variantId) يجب أن يكون عدداً صحيحاً موجباً",
+          doThis: "أعد اختيار الصنف من قائمة المنتجات ثم أعد الحفظ",
+        }),
+      });
     }
     let baseQuantity: number;
     let quantity: string;
@@ -445,7 +486,11 @@ async function createStockExpenseTx(
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً",
+          message: appErrorMessage({
+            what: "الكمية الأساس غير صالحة",
+            why: "المخزون يُحسب بوحدة الأساس عدداً صحيحاً موجباً — قيمتك ليست كذلك",
+            doThis: "أدخل عدداً صحيحاً موجباً (1 فأكثر) للكمية، أو استعمل الوحدة الفرعية مع معامل التحويل",
+          }),
         });
       }
       baseQuantity = it.baseQuantity;
@@ -469,7 +514,11 @@ async function createStockExpenseTx(
     if (!existSet.has(id))
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: `صنف #${id} غير موجود`,
+        message: appErrorMessage({
+          what: `تعذّر العثور على الصنف #${id}`,
+          why: "المعرّف يشير إلى متغيّر منتج محذوف أو غير موجود",
+          doThis: "أعد اختيار الصنف من قائمة المنتجات (قد يكون حُذف أو دُمج)",
+        }),
       });
 
   const expDate = resolvedExpenseDate;
@@ -610,7 +659,14 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
           .limit(1)
       )[0];
       if (!b)
-        throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المصروف",
+            why: "الفرع المرسل في الطلب غير موجود (قد يكون حُذف)",
+            doThis: "أعد اختيار الفرع من قائمة الفروع في نموذج المصروف",
+          }),
+        });
 
       // فئة المصروف المُدارة (هجرة 0203) — تُحلّ **قبل أي كتابة أو ترحيل**: حين تُمرَّر فئة
       // يُشتقّ الدلو منها ويُتجاهَل ما أرسله العميل، فيستحيل أن يفترق التصنيف عن الحساب الذي
@@ -645,12 +701,20 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       if (amt.lte(0))
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "مبلغ المصروف يجب أن يكون موجباً",
+          message: appErrorMessage({
+            what: "المبلغ غير صالح",
+            why: "مبلغ المصروف يجب أن يكون أكبر من صفر",
+            doThis: "أدخل مبلغاً موجباً في حقل «المبلغ» ثم أعد الحفظ",
+          }),
         });
       if (input.category === "OTHER" && !input.description?.trim())
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "وصف المصروف مطلوب لفئة «أخرى»",
+          message: appErrorMessage({
+            what: "وصف المصروف ناقص",
+            why: "فئة «أخرى» تفتقر إلى تصنيف افتراضي، فالوصف إلزامي لتوثيق الطبيعة الفعلية للمصروف",
+            doThis: "املأ حقل «الوصف» بشرح واضح للمصروف، أو غيّر الفئة إلى تصنيف محدَّد (نقل/صيانة/…)",
+          }),
         });
 
       const expDate = resolvedExpenseDate;
@@ -658,7 +722,11 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       if (isRecurring && !input.recurringFrequency)
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "حدّد دورية التكرار",
+          message: appErrorMessage({
+            what: "لم تحدّد دورية التكرار",
+            why: "علَّمت المصروف كمتكرّر لكن حقل «الدورية» فارغ — النظام لا يستطيع جدولة إنشاء المصروف",
+            doThis: "اختر الدورية (يومي/أسبوعي/شهري/سنوي) أو اجعله مصروفاً غير متكرّر",
+          }),
         });
 
       const pendingApproval = requiresExpenseApproval(input, amt);
@@ -797,7 +865,11 @@ async function lockActiveOwner(tx: any, actor: Actor) {
   if (!owner || owner.isActive !== true || owner.isOwner !== true) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "اعتماد المصروف أو رفضه يتطلب حساب مالك نشطاً",
+      message: appErrorMessage({
+        what: "لا يمكنك اعتماد أو رفض هذا المصروف",
+        why: "اعتماد/رفض طلب المصروف صلاحية مالك نشط فقط — حسابك ليس مالكاً أو معطَّلٌ حالياً",
+        doThis: "اطلب من مالك نشط الاعتماد، أو من الإدارة تفعيل حسابك ومنحه صلاحية المالك",
+      }),
     });
   }
   return owner;
@@ -824,8 +896,11 @@ function assertPendingExpenseReceipt(exp: any, receipt: any) {
   if (!valid) {
     throw new TRPCError({
       code: "CONFLICT",
-      message:
-        "طلب المصروف لا يطابق إيصال الاعتماد المعلّق؛ لم يُنفّذ أي أثر مالي ويحتاج مراجعة تدقيقية.",
+      message: appErrorMessage({
+        what: "لم يُنفَّذ الاعتماد",
+        why: "طلب المصروف لا يطابق إيصال الاعتماد المعلّق (مبلغ/فرع/طريقة دفع/مُنشئ) — لا أثر مالي كُتب",
+        doThis: "أوقف الاعتماد وأبلغ التدقيق برقم المصروف — يلزم إعادة توليد الإيصال المعلّق قبل الاعتماد",
+      }),
     });
   }
 }
@@ -891,7 +966,14 @@ export async function approveExpense(expenseId: number, actor: Actor) {
         .limit(1)
     )[0];
     if (!exp)
-      throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر العثور على المصروف",
+          why: "الرقم المرسل يشير إلى مصروف محذوف أو غير موجود في قاعدة البيانات",
+          doThis: "أعد تحميل قائمة المصروفات لعرض الحالة الحالية — ربما حُذف أو تغيّر رقمه",
+        }),
+      });
     // بالفعل لا بالإجراء: **اعتمادُ المصروف خروجُ مال** — تحقّقٌ من ثلاث كتاباتٍ أدناه في
     // هذه الدالّة نفسها: `assertCashOutAvailable` على خزينة الفرع حين تكون الطريقة نقداً،
     // ثمّ الإيصال المعلَّق يُقلَب `COMPLETED/APPROVED` بـ`cashBucket='TREASURY'` واتّجاهه
@@ -907,7 +989,11 @@ export async function approveExpense(expenseId: number, actor: Actor) {
         if (Number(exp.createdBy) === Number(actor.userId)) {
           throw new TRPCError({
             code: "FORBIDDEN",
-            message: "لا يجوز لمن أنشأ طلب المصروف أن يعتمد طلبه بنفسه",
+            message: appErrorMessage({
+              what: "لا يمكنك اعتماد طلبك بنفسك",
+              why: "أنت مُنشئ هذا الطلب، وفصلُ المهام (SOD) يمنع اعتماد الطلب من صاحبه",
+              doThis: "اطلب من مالك آخر (غيرك) اعتماد المصروف من قائمة الاعتمادات المعلّقة",
+            }),
           });
         }
       },
@@ -936,7 +1022,11 @@ export async function approveExpense(expenseId: number, actor: Actor) {
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "المصروف نافذ أصلاً ولم ينشأ من دورة اعتماد معلّقة",
+          message: appErrorMessage({
+            what: "لا يمكن اعتماد هذا المصروف",
+            why: "المصروف نافذ فعلاً (ACTIVE) ولم يمرّ بدورة اعتماد معلّقة — ليس هناك ما يُعتمَد",
+            doThis: "أغلق نافذة الاعتماد وأعد تحميل قائمة المصروفات — المصروف مُنفَّذ بالفعل",
+          }),
         });
       }
       return {
@@ -949,7 +1039,11 @@ export async function approveExpense(expenseId: number, actor: Actor) {
     if (exp.status !== "PENDING_APPROVAL") {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "لا يمكن اعتماد طلب مصروف غير معلّق",
+        message: appErrorMessage({
+          what: "لا يمكن اعتماد هذا المصروف",
+          why: `الاعتماد لا يُقبل إلا على طلب معلّق (PENDING_APPROVAL)، وحالة هذا الطلب حالياً «${exp.status}»`,
+          doThis: "أعد تحميل قائمة الاعتمادات — الطلب قد يكون اعتُمد أو رُفض أو أُلغي بالفعل",
+        }),
       });
     }
     if (
@@ -960,7 +1054,11 @@ export async function approveExpense(expenseId: number, actor: Actor) {
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "طلب المصروف المعلّق لا يملك مساراً مالياً صالحاً",
+        message: appErrorMessage({
+          what: "لا يمكن اعتماد هذا المصروف",
+          why: "الطلب المعلّق يفتقر إلى مسار مالي قابل للصرف (مصدره STOCK/ACCRUAL أو بلا إيصال مربوط)",
+          doThis: "أوقف الاعتماد وأبلغ التدقيق برقم المصروف — البيانات لا تتّسق مع مسار الصرف النقدي",
+        }),
       });
     }
 
@@ -1076,7 +1174,11 @@ export async function rejectExpense(
     if (reason.length < 3 || reason.length > 1000) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "سبب الرفض إلزامي وواضح (من 3 إلى 1000 حرف)",
+        message: appErrorMessage({
+          what: "سبب الرفض غير صالح",
+          why: "طول السبب يجب أن يكون بين 3 و1000 حرف، وقيمتك خارج هذا النطاق",
+          doThis: "اكتب سبباً واضحاً للرفض (لا يقلّ عن 3 أحرف ولا يزيد عن 1000)",
+        }),
       });
     }
     await lockActiveOwner(tx, actor);
@@ -1089,7 +1191,14 @@ export async function rejectExpense(
         .limit(1)
     )[0];
     if (!exp)
-      throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر العثور على المصروف",
+          why: "الرقم المرسل يشير إلى مصروف محذوف أو غير موجود في قاعدة البيانات",
+          doThis: "أعد تحميل قائمة المصروفات لعرض الحالة الحالية — ربما حُذف أو تغيّر رقمه",
+        }),
+      });
     // **الرفضُ حرّ**: لا `postEntry` ولا `assertCashOutAvailable` ولا مسَّ رصيدٍ — الإيصال
     // يبقى `PENDING` حتى اللحظة فيُقلَب `FAILED/REJECTED` والمصروف `REJECTED` وأثرٌ تدقيقيّ.
     // لا مالٌ خرج ولا أثرٌ قائمٌ يُمحى ⇒ `null`، وهو نفسُ `REJECT_IS_FREE` في كلّ مسارات
@@ -1103,7 +1212,11 @@ export async function rejectExpense(
         if (Number(exp.createdBy) === Number(actor.userId)) {
           throw new TRPCError({
             code: "FORBIDDEN",
-            message: "لا يجوز لمن أنشأ طلب المصروف أن يرفض طلبه بنفسه",
+            message: appErrorMessage({
+              what: "لا يمكنك رفض طلبك بنفسك",
+              why: "أنت مُنشئ هذا الطلب، وفصلُ المهام (SOD) يمنع رفض الطلب من صاحبه (اسحبه بدلاً من رفضه)",
+              doThis: "اسحب الطلب بنفسك من قائمة طلباتك، أو اطلب من مالك آخر رفضه من قائمة الاعتمادات",
+            }),
           });
         }
       },
@@ -1132,7 +1245,11 @@ export async function rejectExpense(
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "المصروف مرفوض لكن أثر رفضه غير مكتمل ويحتاج مراجعة تدقيقية",
+          message: appErrorMessage({
+            what: "حالة رفض المصروف غير مكتملة",
+            why: "المصروف مرفوض لكن الإيصال المربوط ليس FAILED/REJECTED كما يجب — الأثر التدقيقي ناقص",
+            doThis: "أوقف المتابعة وأبلغ التدقيق برقم المصروف لإكمال قلب الإيصال يدوياً",
+          }),
         });
       }
       return {
@@ -1145,7 +1262,11 @@ export async function rejectExpense(
     if (exp.status !== "PENDING_APPROVAL" || exp.receiptId == null) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "لا يمكن رفض طلب مصروف غير معلّق",
+        message: appErrorMessage({
+          what: "لا يمكن رفض هذا الطلب",
+          why: `الرفض لا يُقبل إلا على طلب معلّق (PENDING_APPROVAL) له إيصال مربوط، والحالة حالياً «${exp.status}»`,
+          doThis: "أعد تحميل قائمة الاعتمادات — الطلب قد يكون اعتُمد أو رُفض أو أُلغي بالفعل",
+        }),
       });
     }
     const receipt = (
@@ -1211,7 +1332,14 @@ async function assertSystemExpenseResubmissionChain(
   receipt: typeof receipts.$inferSelect,
 ) {
   if (exp.createdBy == null || receipt.createdBy == null) {
-    throw new TRPCError({ code: "CONFLICT", message: "منشئ طلب دفع المصروف مفقود" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "بيانات دفع المصروف ناقصة",
+        why: "طلب الدفع أو إيصاله بلا مُنشئ مسجّل — لا يمكن التحقق من سلسلة إعادة التقديم",
+        doThis: "أوقف الاعتماد وأبلغ التدقيق برقم المصروف — يلزم إعادة توليد الطلب بمُنشئ صحيح",
+      }),
+    });
   }
   const links = await tx
     .select({ clientRequestId: idempotencyKeys.clientRequestId })
@@ -1229,12 +1357,23 @@ async function assertSystemExpenseResubmissionChain(
   if (links.length !== 1) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "منشئ طلب دفع المصروف تغيّر بلا سلسلة إعادة تقديم نظامية وحيدة",
+      message: appErrorMessage({
+        what: "لا يمكن اعتماد دفع المصروف",
+        why: "مُنشئ طلب الدفع تغيّر بلا سلسلة إعادة تقديم نظامية وحيدة — الحماية تشترط سلسلة واحدة صريحة",
+        doThis: "أوقف الاعتماد وأبلغ التدقيق — يلزم مراجعة سلسلة إعادة التقديم قبل الاعتماد",
+      }),
     });
   }
   const lineage = parseExpensePaymentResubmitKey(links[0].clientRequestId);
   if (!lineage || lineage.family !== "expense") {
-    throw new TRPCError({ code: "CONFLICT", message: "مرجع إعادة تقديم دفع المصروف غير صالح" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "مرجع إعادة تقديم دفع المصروف تالف",
+        why: "سلسلة إعادة التقديم تشير إلى مرجع بصيغة غير صالحة أو إلى إيصال لا يمكن التحقق منه",
+        doThis: "أوقف الاعتماد وأبلغ التدقيق برقم المصروف لمراجعة سلسلة الإيصالات",
+      }),
+    });
   }
   let parentReceiptId = lineage.rootReceiptId;
   if (lineage.attempt > 1) {
@@ -1254,7 +1393,14 @@ async function assertSystemExpenseResubmissionChain(
   }
   const descriptionLineage = parseExpensePaymentResubmitDescription(receipt.description);
   if (!Number.isSafeInteger(parentReceiptId) || parentReceiptId <= 0 || parentReceiptId === Number(receipt.id)) {
-    throw new TRPCError({ code: "CONFLICT", message: "مرجع إعادة تقديم دفع المصروف غير صالح" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "مرجع إعادة تقديم دفع المصروف تالف",
+        why: "سلسلة إعادة التقديم تشير إلى مرجع بصيغة غير صالحة أو إلى إيصال لا يمكن التحقق منه",
+        doThis: "أوقف الاعتماد وأبلغ التدقيق برقم المصروف لمراجعة سلسلة الإيصالات",
+      }),
+    });
   }
   const [parent] = await tx
     .select()
@@ -1289,7 +1435,11 @@ async function assertSystemExpenseResubmissionChain(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "سلسلة إعادة تقديم دفع المصروف مفقودة أو لا تطابق الطلب المرفوض",
+      message: appErrorMessage({
+        what: "لا يمكن اعتماد دفع المصروف",
+        why: "سلسلة إعادة التقديم مفقودة أو لا تطابق الطلب الأصلي المرفوض (مبلغ/فرع/طريقة دفع/مرجع)",
+        doThis: "أوقف الاعتماد وأبلغ التدقيق برقم المصروف لمراجعة إعادة التقديم قبل أي صرف",
+      }),
     });
   }
 }
@@ -1348,7 +1498,11 @@ async function assertRecognizedExpenseSource(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "حالة استحقاق المصروف غير المدفوع لا تطابق عقد الإلغاء النظامي",
+      message: appErrorMessage({
+        what: "لا يمكن معالجة هذا المصروف المستحق",
+        why: "حالة الاستحقاق (شحن/صيانة) لا تطابق العقد النظامي — تناقض في مصدر النقد أو المستفيد أو الحالة",
+        doThis: "أوقف العملية وأبلغ التدقيق برقم المصروف — يلزم مراجعة الاستحقاق قبل أي تسوية أو إلغاء",
+      }),
     });
   }
 
@@ -1368,7 +1522,11 @@ async function assertRecognizedExpenseSource(
     if (receipt.signatureHash !== expectedSignature) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "بصمة اعتماد دفع المصروف المنفذ مفقودة أو لا تطابق السند",
+        message: appErrorMessage({
+          what: "تعذّر التحقق من دفع المصروف",
+          why: "بصمة اعتماد الإيصال مفقودة أو لا تطابق البيانات الموقَّعة عليها (مبلغ/سند/تاريخ/مُعتمِد)",
+          doThis: "أوقف العملية وأبلغ التدقيق برقم السند — يلزم مراجعة توقيع الاعتماد قبل أي حركة",
+        }),
       });
     }
   }
@@ -1377,7 +1535,11 @@ async function assertRecognizedExpenseSource(
   if (request?.kind !== "PURCHASE_SHIPPING" && request?.kind !== "ASSET_MAINTENANCE") {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "طلب دفع المصروف غير المنفذ لا يحمل مرجع مصدر نظامياً صالحاً",
+      message: appErrorMessage({
+        what: "لا يمكن التعرف على مصدر هذا الدفع",
+        why: "طلب الدفع لا يحمل مرجع مصدر نظامي صالح (شحن أمر شراء أو صيانة أصل)",
+        doThis: "أوقف العملية وأبلغ التدقيق برقم المصروف — الملاحظة الداخلية للإيصال بحاجة إلى مراجعة",
+      }),
     });
   }
   await assertSystemExpenseResubmissionChain(tx, exp, receipt);
@@ -1402,7 +1564,14 @@ async function assertRecognizedExpenseSource(
         (expectedPaymentReference ?? null) ||
       !money(request.expectedAmount).eq(money(exp.amount))
     ) {
-      throw new TRPCError({ code: "CONFLICT", message: "بيانات مصدر مصروف الشحن غير صالحة" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "بيانات مصدر مصروف الشحن غير صالحة",
+          why: "أحد الحقول المطلوبة تالف: معرّف أمر الشراء أو مفتاح الطلب أو المبلغ المتوقّع أو مرجع الدفع",
+          doThis: "أوقف العملية وأبلغ التدقيق برقم المصروف — يلزم مراجعة أمر الشراء المرتبط ومصدره",
+        }),
+      });
     }
     const [purchaseOrder] = await tx
       .select()
@@ -1421,7 +1590,11 @@ async function assertRecognizedExpenseSource(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "مصدر الشحن أو الفرع أو المبلغ لا يطابق المصروف المعترف به",
+        message: appErrorMessage({
+          what: "بيانات الشحن لا تطابق المصروف",
+          why: "فرع أمر الشراء أو فئة المصروف أو رقم المرجع أو الإجمالي لا يوافق ما هو مسجَّل على المصروف",
+          doThis: "أوقف العملية وأبلغ التدقيق برقم أمر الشراء — يلزم مراجعة مطابقة الشحن قبل أي تسوية",
+        }),
       });
     }
     accrualDedupe = `PURCHASE_SHIPPING_ACCRUAL:${request.purchaseOrderId}:${request.requestToken}`;
@@ -1433,7 +1606,14 @@ async function assertRecognizedExpenseSource(
       !Number.isSafeInteger(request.maintenanceId) ||
       request.maintenanceId <= 0
     ) {
-      throw new TRPCError({ code: "CONFLICT", message: "بيانات مصدر مصروف الصيانة غير صالحة" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "بيانات مصدر مصروف الصيانة غير صالحة",
+          why: "معرّف الأصل أو معرّف سجل الصيانة تالف أو غير موجب",
+          doThis: "أوقف العملية وأبلغ التدقيق برقم المصروف — يلزم مراجعة سجل الصيانة قبل أي تسوية",
+        }),
+      });
     }
     const [maintenance] = await tx
       .select()
@@ -1458,7 +1638,11 @@ async function assertRecognizedExpenseSource(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "سجل الصيانة أو الأصل أو الفرع أو المبلغ لا يطابق المصروف المعترف به",
+        message: appErrorMessage({
+          what: "بيانات الصيانة لا تطابق المصروف",
+          why: "الأصل أو فرعه أو فئة المصروف أو رقم المرجع أو تكلفة الصيانة لا يوافق ما هو مسجَّل على المصروف",
+          doThis: "أوقف العملية وأبلغ التدقيق برقم سجل الصيانة — يلزم مراجعة المطابقة قبل أي تسوية",
+        }),
       });
     }
     accrualDedupe = `ASSET_MAINT_ACCRUAL:${request.maintenanceId}`;
@@ -1492,7 +1676,11 @@ async function assertRecognizedExpenseSource(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "قيد استحقاق المصروف مفقود أو لا يطابق مصدره الحقيقي",
+      message: appErrorMessage({
+        what: "قيد الاستحقاق لا يطابق المصدر",
+        why: "قيد استحقاق المصروف مفقود، أو مبلغه أو فرعه أو أمر شرائه لا يوافق مصدر الاستحقاق الحقيقي",
+        doThis: "أوقف العملية وأبلغ التدقيق برقم المصروف — يلزم مراجعة قيد الاستحقاق قبل أي تسوية",
+      }),
     });
   }
   if (settlementState === "MATERIALIZED") {
@@ -1523,7 +1711,11 @@ async function assertRecognizedExpenseSource(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "قيد تسوية المصروف المنفذ مفقود أو لا يطابق الاستحقاق",
+        message: appErrorMessage({
+          what: "قيد التسوية لا يطابق الاستحقاق",
+          why: "قيد PAYMENT_OUT للمصروف المنفَّذ مفقود، أو مبلغه أو فرعه أو أمر شرائه لا يوافق قيد الاستحقاق",
+          doThis: "أوقف العملية وأبلغ التدقيق برقم المصروف — يلزم مراجعة قيدَي الاستحقاق والتسوية معاً",
+        }),
       });
     }
   }
@@ -1551,7 +1743,14 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       .where(eq(expenses.id, expenseId))
       .limit(1);
     if (!expensePreview)
-      throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر العثور على المصروف",
+          why: "الرقم المرسل يشير إلى مصروف محذوف أو غير موجود في قاعدة البيانات",
+          doThis: "أعد تحميل قائمة المصروفات لعرض الحالة الحالية — ربما حُذف أو تغيّر رقمه",
+        }),
+      });
 
     const [linkedAccrual] = await tx
       .select({ id: accrualObligations.id, status: accrualObligations.status })
@@ -1562,7 +1761,11 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     if (linkedAccrual) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "مصروف الشحن/الصيانة المرتبط باستحقاق لا يُلغى من الإلغاء العام؛ استخدم طلب تصحيح المصدر المعتمد",
+        message: appErrorMessage({
+          what: "لا يمكن إلغاء هذا المصروف من الإلغاء العام",
+          why: "المصروف مرتبط باستحقاق شحن أو صيانة — إلغاؤه يعكس قيداً محاسبياً يخصّ المصدر الأصلي",
+          doThis: "افتح أمر الشراء أو سجل الصيانة واستخدم «طلب تصحيح المصدر» لعكس الاستحقاق باعتماد ثانٍ",
+        }),
       });
     }
 
@@ -1595,7 +1798,14 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
         .limit(1)
     )[0];
     if (!exp)
-      throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر العثور على المصروف",
+          why: "الرقم المرسل يشير إلى مصروف محذوف أو غير موجود في قاعدة البيانات",
+          doThis: "أعد تحميل قائمة المصروفات لعرض الحالة الحالية — ربما حُذف أو تغيّر رقمه",
+        }),
+      });
     if (
       Number(exp.branchId) !== Number(expensePreview.branchId) ||
       Number(exp.receiptId ?? 0) !== Number(expensePreview.receiptId ?? 0) ||
@@ -1604,12 +1814,23 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       exp.paymentMethod !== expensePreview.paymentMethod ||
       !money(exp.amount).eq(money(expensePreview.amount))
     ) {
-      throw new TRPCError({ code: "CONFLICT", message: "تغيّر مصدر دفع المصروف أثناء الإلغاء — أعد المحاولة" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إلغاء المصروف — تغيّرت بياناته",
+          why: "مصدر دفع المصروف (فرع/إيصال/وردية/طريقة دفع/مبلغ) تغيّر أثناء الإلغاء نتيجة عملية متزامنة",
+          doThis: "أغلق النافذة وأعد فتح المصروف وحاول الإلغاء من جديد — قد يكون شخصٌ آخر عدَّل الحقول",
+        }),
+      });
     }
     if (exp.status !== "ACTIVE")
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "المصروف ملغى بالفعل",
+        message: appErrorMessage({
+          what: "لا يمكن إلغاء هذا المصروف",
+          why: `الإلغاء لا يُقبل إلا على مصروف نشط (ACTIVE)، والحالة حالياً «${exp.status}»`,
+          doThis: "أعد تحميل قائمة المصروفات — الحالة تحدَّثت (ملغى/مرفوض/معلّق) ولا يلزم إلغاؤه ثانيةً",
+        }),
       });
 
     // عزل عبر-فرعي: admin يمرّ؛ غيره يجب أن يكون من فرع المصروف نفسه (نمط جذري ٢).
@@ -1627,7 +1848,11 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     if (role !== "admin" && Number(actor.branchId) !== Number(exp.branchId)) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "لا تستطيع إلغاء مصروف لفرع آخر",
+        message: appErrorMessage({
+          what: "لا تستطيع إلغاء هذا المصروف",
+          why: "المصروف يخص فرعاً غير فرعك، والصلاحية العابرة للفروع محصورة بالإدارة",
+          doThis: "اطلب من مدير الفرع الذي يملك المصروف إلغاءه، أو ارفع الطلب للإدارة",
+        }),
       });
     }
 
@@ -1640,8 +1865,11 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     ) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message:
-          "لا يجوز إلغاء مصروف أنشأته بنفسك — يلزم مدير آخر (فصل المهام).",
+        message: appErrorMessage({
+          what: "لا يمكنك إلغاء مصروف أنشأته بنفسك",
+          why: "فصل المهام (SOD) يمنع من أنشأ حركة نقدية من إلغائها — حماية من إخفاء حركات النقد",
+          doThis: "اطلب من مدير آخر (غيرك) إلغاء المصروف من قائمة المصروفات النشطة",
+        }),
       });
     }
 
@@ -1656,7 +1884,11 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       if (expDay && expDay <= lock.cutoffDate) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: `الفترة المالية مُقفَلة حتى ${lock.cutoffDate} — لا يمكن إلغاء مصروف مؤرَّخ داخلها. يلزم فتح الفترة أوّلاً (admin).`,
+          message: appErrorMessage({
+            what: "لا يمكن إلغاء هذا المصروف",
+            why: `الفترة المالية مُقفَلة حتى ${lock.cutoffDate}، والمصروف مؤرَّخ داخلها — الإلغاء يغيّر تقارير شهر مغلق`,
+            doThis: "اطلب من الإدارة فتح الفترة المالية أوّلاً من شاشة إقفال الشهر، ثم أعد الإلغاء",
+          }),
         });
       }
     }
@@ -1673,7 +1905,11 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       if (s && s.status === "CLOSED")
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "لا يمكن إلغاء مصروف على وردية مغلقة",
+          message: appErrorMessage({
+            what: "لا يمكن إلغاء هذا المصروف",
+            why: "الوردية المرتبطة بالمصروف مغلقة، والإلغاء يعيد مالاً إلى درج وردية أُقفلت أرقامها",
+            doThis: "افتح الوردية أوّلاً من شاشة الورديات، أو اطلب من الإدارة إلغاء المصروف بأسلوب تصحيح إداري",
+          }),
         });
     }
 
@@ -1726,7 +1962,11 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     if (!linkedReceipt || exp.receiptId == null) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "المصروف المالي بلا سند دفع مرتبط — أوقف الإلغاء وراجع التدقيق",
+        message: appErrorMessage({
+          what: "لا يمكن إلغاء هذا المصروف تلقائياً",
+          why: "المصروف المالي يفتقر إلى سند دفع مرتبط — لا يمكن عكس الحركة بلا مرجع للإيصال الأصلي",
+          doThis: "أوقف الإلغاء وأبلغ التدقيق برقم المصروف — يلزم تصحيح يدوي يربطه بسند دفع أو حذف السجل",
+        }),
       });
     }
     if (
@@ -1735,7 +1975,14 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       linkedReceipt.paymentMethod !== exp.paymentMethod ||
       !money(linkedReceipt.amount).eq(money(exp.amount))
     ) {
-      throw new TRPCError({ code: "CONFLICT", message: "سند دفع المصروف لا يطابق سجل المصروف" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "سند الدفع لا يطابق المصروف",
+          why: "الإيصال المربوط بالمصروف مختلف في الاتّجاه أو الفرع أو طريقة الدفع أو المبلغ عن سجل المصروف",
+          doThis: "أوقف الإلغاء وأبلغ التدقيق برقم المصروف والإيصال معاً — يلزم مراجعة الربط قبل أي عكس",
+        }),
+      });
     }
 
     const cashWasMaterialized =
@@ -1744,7 +1991,11 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     if (linkedReceipt.approvalStatus === "APPROVED" && !cashWasMaterialized) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "سند المصروف معتمد لكنه ليس حركة مكتملة قابلة للعكس",
+        message: appErrorMessage({
+          what: "لا يمكن عكس هذا الإيصال",
+          why: "سند المصروف معتمد (APPROVED) لكنه ليس مكتملاً (COMPLETED) — الحركة نصف منفَّذة",
+          doThis: "أوقف الإلغاء وأبلغ التدقيق برقم الإيصال — يلزم إكمال أو إبطال الإيصال يدوياً قبل الإلغاء",
+        }),
       });
     }
 
@@ -1814,7 +2065,14 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
         Number(accrual.branchId) !== Number(exp.branchId) ||
         !money(accrual.amount).eq(money(exp.amount))
       ) {
-        throw new TRPCError({ code: "CONFLICT", message: "قيد استحقاق المصروف مفقود أو لا يطابق الطلب" });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "قيد الاستحقاق لا يطابق طلب المصروف",
+            why: "قيد ADJUST المتوقّع مفقود، أو نوع القيد أو فرعه أو مبلغه لا يوافق طلب الإلغاء الحالي",
+            doThis: "أوقف الإلغاء وأبلغ التدقيق برقم المصروف — يلزم مراجعة قيد الاستحقاق قبل عكسه",
+          }),
+        });
       }
       const reversal = expenseAccrualReversal(
         unsettledSource.expenseRole,
@@ -1839,7 +2097,14 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       linkedReceipt.cashBucket !== exp.cashBucket ||
       Number(linkedReceipt.shiftId ?? 0) !== Number(exp.shiftId ?? 0)
     ) {
-      throw new TRPCError({ code: "CONFLICT", message: "مصدر النقد المنفذ لا يطابق المصروف" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "مصدر النقد لا يطابق المصروف",
+          why: "الإيصال المنفَّذ يشير إلى درج/خزينة أو وردية غير المسجَّلة على المصروف — تناقض في مصدر الحركة",
+          doThis: "أوقف الإلغاء وأبلغ التدقيق برقم المصروف والإيصال معاً — يلزم مراجعة مصدر النقد قبل العكس",
+        }),
+      });
     }
 
     // Compensating IN-receipt so cash totals nullify cleanly.
