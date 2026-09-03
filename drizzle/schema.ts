@@ -17187,3 +17187,103 @@ export const recordVersions = mysqlTable(
 
 export type RecordVersion = typeof recordVersions.$inferSelect;
 export type InsertRecordVersion = typeof recordVersions.$inferInsert;
+
+/* ════════════════════ controlRequests — الجدول الحوكميّ الموحّد (م٧، 0331) ════════════════════
+ *
+ * جدولٌ واحد لكلّ طلبات القرار في النظام، مفتاحه `decisionKey` من
+ * [`shared/decisionRegistry.ts`](../shared/decisionRegistry.ts). يحلّ محلَّ ٣٠ جدول «طلب
+ * اعتماد» متشظّية تدريجياً في موجاتٍ لاحقة.
+ *
+ * **فرضٌ بنيويّ لطلبٍ نشطٍ واحد لكل (قرار، كيان):** العمود المولَّد `activeSlot`
+ * (STORED) يحمل بصمة `(decisionKey, entityType, entityId)` حين `PENDING` فقط، وNULL
+ * بعد القرار. `UNIQUE(activeSlot)` يمنع الازدواج بلا حدود على المحسومة.
+ *
+ * ⛔ الخدمة `controlRequests/index.ts` **لا تقرأ `ctx`** — تستقبل `Actor` صريحاً (§٥
+ * من `CLAUDE.md`)، وتفشل مغلقةً بلا سبب أو خارج معاملة.
+ */
+export const controlRequests = mysqlTable(
+  "controlRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** مفتاحُ القرار — من `DECISION_REGISTRY`. مثال `purchases.approve`. */
+    decisionKey: varchar("decisionKey", { length: 80 }).notNull(),
+    /** نوعُ الكيان الذي يقع عليه القرار (`purchaseOrder`, `invoice`, `stocktakeSession`, …). */
+    entityType: varchar("entityType", { length: 50 }).notNull(),
+    /** معرّفُ الكيان في جدوله الأصلي. بلا FK جامدة — polymorphic. */
+    entityId: bigint("entityId", { mode: "number" }).notNull(),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "APPROVED",
+      "REJECTED",
+      "WITHDRAWN",
+      "SUPERSEDED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    requestedByUserId: bigint("requestedByUserId", { mode: "number" }).notNull(),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    decidedByUserId: bigint("decidedByUserId", { mode: "number" }),
+    decidedAt: timestamp("decidedAt"),
+    /** سببُ الطلب. **إلزاميّ** (CHECK صمام على مسار الرفض؛ الخدمة تفرضه في كل مسار). */
+    reason: varchar("reason", { length: 1000 }).notNull(),
+    /** ملاحظةُ القرار. إلزاميّة على `REJECTED` بـCHECK؛ اختيارية على `APPROVED`/`WITHDRAWN`. */
+    decisionNote: varchar("decisionNote", { length: 1000 }),
+    /** حمولةُ سياقٍ (مبلغ، أرقام، تفاصيل يعرضها المُقرِّر). */
+    payloadJson: json("payloadJson"),
+    branchId: bigint("branchId", { mode: "number" }),
+    /** بصمةُ الطلب النشط: `(decisionKey \t entityType \t entityId)` حين PENDING فقط. */
+    activeSlot: varchar("activeSlot", { length: 200 }).generatedAlwaysAs(
+      sql`(CASE WHEN status = 'PENDING' THEN CONCAT(decisionKey, '\t', entityType, '\t', CAST(entityId AS CHAR)) ELSE NULL END)`,
+      { mode: "stored" },
+    ),
+  },
+  (t) => ({
+    activeSlotUq: unique("uniq_active_control_request").on(t.activeSlot),
+    pendingByKindIdx: index("idx_control_request_pending_by_kind").on(
+      t.decisionKey,
+      t.status,
+      t.requestedAt,
+    ),
+    byEntityIdx: index("idx_control_request_by_entity").on(
+      t.entityType,
+      t.entityId,
+      t.requestedAt,
+    ),
+    byRequesterIdx: index("idx_control_request_by_requester").on(
+      t.requestedByUserId,
+      t.requestedAt,
+    ),
+    byDeciderIdx: index("idx_control_request_by_decider").on(
+      t.decidedByUserId,
+      t.decidedAt,
+    ),
+    /**
+     * شكلُ الحقول حسب الحالة:
+     *   PENDING     ⇒ لا مُقرِّر ولا وقت قرار ولا ملاحظة.
+     *   APPROVED/REJECTED/SUPERSEDED ⇒ مُقرِّر ووقت قرار (والملاحظة على REJECTED بحارسٍ منفصل).
+     *   WITHDRAWN   ⇒ وقت قرار موجود (لحظة السحب)؛ المُقرِّر يبقى NULL بحكم التعريف
+     *                 (الساحبُ هو الطالبُ، وهو ما يستثنيه Maker-Checker).
+     */
+    decisionShape: check(
+      "chk_control_request_decision_shape",
+      sql`(
+        (${t.status} = 'PENDING' AND ${t.decidedByUserId} IS NULL AND ${t.decidedAt} IS NULL AND ${t.decisionNote} IS NULL)
+        OR (${t.status} IN ('APPROVED','REJECTED','SUPERSEDED') AND ${t.decidedByUserId} IS NOT NULL AND ${t.decidedAt} IS NOT NULL)
+        OR (${t.status} = 'WITHDRAWN' AND ${t.decidedAt} IS NOT NULL)
+      )`,
+    ),
+    /** فصلُ المهام: المُقرِّر ليس المُنشئ. يُستثنى `WITHDRAWN` (الساحب = الطالب بالتعريف). */
+    makerChecker: check(
+      "chk_control_request_maker_checker",
+      sql`${t.decidedByUserId} IS NULL OR ${t.status} = 'WITHDRAWN' OR ${t.decidedByUserId} <> ${t.requestedByUserId}`,
+    ),
+    /** الرفضُ يلزمه ملاحظةٌ نصّية (تُعرض للطالب فيفهم لماذا رُفض ويصحّح). */
+    rejectNeedsNote: check(
+      "chk_control_request_reject_needs_note",
+      sql`${t.status} <> 'REJECTED' OR (${t.decisionNote} IS NOT NULL AND CHAR_LENGTH(TRIM(${t.decisionNote})) > 0)`,
+    ),
+  }),
+);
+
+export type ControlRequest = typeof controlRequests.$inferSelect;
+export type InsertControlRequest = typeof controlRequests.$inferInsert;
