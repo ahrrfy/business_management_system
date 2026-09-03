@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1210,
+    "trpcTotal": 1211,
     "byKind": {
       "mutation": 633,
-      "query": 577
+      "query": 578
     },
     "byAuthority": {
       "module-gate": 618,
-      "module-map": 379,
+      "module-map": 380,
       "admin": 67,
       "none": 52,
       "raw-role": 34,
@@ -21,7 +21,7 @@
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 574,
+      "LOW": 575,
       "MEDIUM": 467,
       "HIGH": 169
     },
@@ -30,7 +30,7 @@
       "reports": 100,
       "hr": 100,
       "store": 95,
-      "treasury": 83,
+      "treasury": 84,
       "digital_cards": 75,
       "inventory": 69,
       "products": 62,
@@ -63,9 +63,9 @@
       "sales|workorders": 1
     },
     "flagCounts": {
-      "LOCAL_GATE": 204,
+      "LOCAL_GATE": 205,
       "SENSITIVE_ACTION": 169,
-      "NO_BRANCH_SCOPE": 158,
+      "NO_BRANCH_SCOPE": 159,
       "ADMIN_ONLY": 71,
       "RAW_ROLE_GATE": 44,
       "UNAUTHENTICATED": 37,
@@ -76,10 +76,10 @@
     "expressRoutes": 21,
     "expressMounts": 12,
     "jobs": 25,
-    "routerFiles": 105,
-    "proposedPermissions": 1011,
+    "routerFiles": 106,
+    "proposedPermissions": 1012,
     "proposedDomains": {
-      "treasury": 107,
+      "treasury": 108,
       "hr": 106,
       "reports": 103,
       "store": 95,
@@ -14012,6 +14012,23 @@
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
       "loc": "server/routers/recruitmentRouter.ts:188"
+    },
+    {
+      "surface": "trpc",
+      "router": "refundRailsRouter",
+      "proposedPermission": "treasury.refund_rail.preflight",
+      "name": "preflight",
+      "kind": "query",
+      "procedure": "refundReadProcedure",
+      "authority": "module-map",
+      "module": "treasury",
+      "level": "READ",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/refundRailsRouter.ts:30"
     },
     {
       "surface": "trpc",
