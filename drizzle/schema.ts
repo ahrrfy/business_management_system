@@ -23,6 +23,7 @@ import {
   type AnyMySqlColumn,
 } from "drizzle-orm/mysql-core";
 import { sql } from "drizzle-orm";
+import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
 
 /** Raw binary storage for small, validated documents that must travel with DB backups. */
 const mediumblob = customType<{ data: Buffer; driverData: Buffer }>({
@@ -1995,7 +1996,7 @@ export const invoiceItems = mysqlTable(
     // المدفوعة» يبقى سارياً، والهدية خارج وعاء العمولة تلقائياً (الوعاء يفلتر SALE/RETURN).
     isGift: boolean("isGift").default(false).notNull(),
     // product-content-governance (0251): الاسم الذي طُبع/اعتمد لحظة البيع، لا يتغير مع تحديث الكتالوج.
-    itemNameSnapshot: varchar("itemNameSnapshot", { length: 255 }),
+    itemNameSnapshot: varchar("itemNameSnapshot", { length: 512 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -15470,6 +15471,7 @@ export const digitalSaleIntents = mysqlTable(
       .default("PREPARED")
       .notNull(),
     cartFingerprint: varchar("cartFingerprint", { length: 64 }).notNull(),
+    checkoutSnapshot: json("checkoutSnapshot").$type<DigitalCheckoutSnapshot>(),
     paymentMethod: varchar("paymentMethod", { length: 20 }).notNull(),
     /** محاولة قبض الزبون بالبطاقة، مستقلة عن مرجع إصدار الكرت لدى مزوّد البطاقات. */
     externalPaymentAttemptId: bigint("externalPaymentAttemptId", {
@@ -15548,6 +15550,10 @@ export const digitalSaleIntentItems = mysqlTable(
       .notNull()
       .references(() => digitalSaleIntents.id),
     lineKey: varchar("lineKey", { length: 64 }).notNull(),
+    /** NULL for legacy single-card operations; one key per provider basket. */
+    providerBasketKey: varchar("providerBasketKey", { length: 64 }),
+    /** Only the owner retains the globally unique provider reference claim. */
+    referenceOwnerItemId: bigint("referenceOwnerItemId", { mode: "number" }),
     offeringId: bigint("offeringId", { mode: "number" })
       .notNull()
       .references(() => digitalOfferings.id),
@@ -15592,6 +15598,12 @@ export const digitalSaleIntentItems = mysqlTable(
   },
   (t) => ({
     intentLineUq: unique("uq_dsii_intent_line").on(t.intentId, t.lineKey),
+    basketOwnerTargetUq: unique("uq_dsii_basket_owner_target").on(t.intentId, t.providerId, t.providerBasketKey, t.id),
+    basketOwnerFk: foreignKey({
+      columns: [t.intentId, t.providerId, t.providerBasketKey, t.referenceOwnerItemId],
+      foreignColumns: [t.intentId, t.providerId, t.providerBasketKey, t.id],
+      name: "fk_dsii_basket_owner",
+    }),
     offeringIdx: index("idx_dsii_offering").on(t.offeringId),
     fkPv: foreignKey({
       columns: [t.priceVersionId],

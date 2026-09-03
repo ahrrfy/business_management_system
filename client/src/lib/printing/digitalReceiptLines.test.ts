@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildDigitalBlocks, digitalDetailLines, maskPhone, type DigitalReceiptDetail,
+  buildDigitalBlocks, digitalCheckoutReceiptLines, digitalDetailLines, maskPhone, type DigitalReceiptDetail,
 } from "./digitalReceiptLines";
 
 /**
@@ -23,6 +23,24 @@ const telecom: DigitalReceiptDetail = {
   referenceLabel: "رقم العملية أو ID الكرت",
   providerReference: "ASIA-12345",
 };
+
+describe("جدول إيصال الفاتورة المختلطة", () => {
+  it("يعرض كل بطاقة مستقلة مع المنتج العادي ويحفظ السعر العشري ولا يسرب التكلفة", () => {
+    const card = { name: "بطاقة", unitName: "بطاقة", quantity: "1", unitPrice: "2800.25", total: "2800.25", providerShare: "2600", profit: "200.25" };
+    const rows = digitalCheckoutReceiptLines([card, card, { name: "دفتر", unitName: "قطعة", quantity: "3", unitPrice: "1500", total: "4500" }]);
+    expect(rows).toEqual([
+      { name: "بطاقة", unit: "بطاقة", qty: 1, price: 2800.25, total: 2800.25 },
+      { name: "بطاقة", unit: "بطاقة", qty: 1, price: 2800.25, total: 2800.25 },
+      { name: "دفتر", unit: "قطعة", qty: 3, price: 1500, total: 4500 },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain("providerShare");
+    expect(JSON.stringify(rows)).not.toContain("profit");
+  });
+  it("يحفظ اسم البيع ونوعه وقيمته أو مدته المثبتة من الخادم بلا إعادة اشتقاق", () => {
+    const name = "اشتراك نجاح — اشتراك تعليمي · المدة: 30 يوم";
+    expect(digitalCheckoutReceiptLines([{ name, unitName: "بطاقة", quantity: "1", unitPrice: "10000", total: "10000" }])[0].name).toBe(name);
+  });
+});
 
 describe("ش١٠ — تقنيع الهاتف", () => {
   it("يُبقي البداية والنهاية ويُخفي الوسط", () => {
@@ -63,6 +81,24 @@ describe("ش١٠ — أسطر الكرت", () => {
   it("الحقول الفارغة لا تُنتج أسطراً فارغة", () => {
     const rows = digitalDetailLines({ lineName: "كرت", studentName: "  ", providerReference: "" });
     expect(rows).toHaveLength(0);
+  });
+
+  it("يبقي تفاصيل كل بطاقة من سلة المزوّد مستقلة بمرجعها المشترك", () => {
+    const blocks = buildDigitalBlocks([
+      { lineName: "بطاقة أولى", offeringType: "TELECOM_CARD", faceValue: "10000.00", providerReference: "BASKET-1" },
+      { lineName: "بطاقة ثانية", offeringType: "GLOBAL_CARD", faceValue: "25000.00", providerReference: "BASKET-1" },
+    ]);
+    expect(blocks).toHaveLength(2);
+    expect(blocks.map((block) => block.lineName)).toEqual(["بطاقة أولى", "بطاقة ثانية"]);
+    for (const block of blocks) {
+      expect(block.rows.some((row) => row.value === "BASKET-1")).toBe(true);
+    }
+  });
+
+  it("لا يعيد طباعة مدة الكتالوج الحالية بدل الوصف المثبت في بند البيع", () => {
+    const rows = digitalDetailLines({ ...edu, offeringType: "EDUCATIONAL_SUBSCRIPTION", subscriptionDurationDays: 30 });
+    expect(rows.some((row) => row.value.includes("30"))).toBe(false);
+    expect(rows.find((row) => row.label === "الطالب")?.value).toBe(edu.studentName);
   });
 });
 

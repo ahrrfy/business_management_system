@@ -10,9 +10,30 @@
  * افتراضياً في نسخة الزبون.
  */
 
+import { D } from "@/lib/money";
+
+/** Keep every persisted invoice item, including repeated cards; never spread private fields. */
+export function digitalCheckoutReceiptLines(lines: readonly {
+  name: string; unitName: string | null; quantity: string | number;
+  unitPrice: string | number; total: string | number; isGift?: boolean;
+}[]) {
+  return lines.map((line) => ({
+    name: line.isGift ? `${line.name} — هدية مجاناً` : line.name,
+    unit: line.unitName || "وحدة",
+    qty: D(line.quantity).toNumber(),
+    price: D(line.unitPrice).toNumber(),
+    total: D(line.total).toNumber(),
+  }));
+}
+
 /** لقطة الكرت الرقميّ كما تصل من الخادم — بلا أي حقلٍ ماليّ داخليّ. */
 export interface DigitalReceiptDetail {
+  invoiceItemId?: number;
   lineName: string;
+  offeringType?: string | null;
+  faceValue?: string | null;
+  subscriptionDurationDays?: number | null;
+  providerName?: string | null;
   referenceLabel?: string | null;
   providerReference?: string | null;
   studentName?: string | null;

@@ -225,24 +225,23 @@ describe("audited public UX contracts", () => {
   });
 });
 
-describe("عزل سلة المنتجات عن سلة البطاقات الرقمية في POS", () => {
+describe("سلة البطاقات والمنتجات الموحّدة في POS", () => {
   const source = readPage("POS.tsx");
 
-  it("يمنع إضافة منتج عادي إلى سلة رقمية قبل الدفع", () => {
-    expect(source).toContain("if (cartHasDigitalRef.current)");
-    expect(source).toContain("DIGITAL_CART_BLOCKS_REGULAR_MESSAGE");
-    expect(source).toContain("regularProductsDisabled={cartHasDigital}");
-    expect(source).toContain("disabled={regularProductsDisabled}");
+  it("يقبل المنتجات والبطاقات في نيّة موحّدة بدلاً من فصل السلتين", () => {
+    expect(source).not.toContain("DIGITAL_CART_BLOCKS_REGULAR_MESSAGE");
+    expect(source).not.toContain("REGULAR_CART_BLOCKS_DIGITAL_MESSAGE");
+    expect(source).toContain("regularLines: cart.filter((c) => !c.digital)");
+    expect(source).toContain("providerBasketKey: c.digital!.providerBasketKey");
   });
 
-  it("يمنع فتح البطاقات أو إضافتها إلى سلة منتجات عادية", () => {
-    expect(source).toContain("if (cartHasRegular)");
-    expect(source).toContain("REGULAR_CART_BLOCKS_DIGITAL_MESSAGE");
-    expect(source).toContain("cardsDisabled={offline || cartHasRegular}");
-    expect(source).toContain("if (!offline && !cartHasRegular) setCardsOpen(true)");
+  it("يبقي الاتصال مطلوباً ويضيف المجموعة كاملةً مع مرجع واحد", () => {
+    expect(source).toContain("cardsDisabled={offline}");
+    expect(source).toContain("onPickBasket={addDigitalBasket}");
+    expect(source).toContain("existingCardCount={digitalLines.length}");
   });
 
-  it("يحرس مسح HID بأحدث حالة للسلة قبل البحث وبعده", () => {
+  it("يسمح بمسح المنتجات بعد إضافة البطاقات دون حارس فصل قديم", () => {
     const lookupBarcode = source.slice(
       source.indexOf("const lookupBarcode = useCallback"),
       source.indexOf("const { handleKeyDown: handleScanKeyDown }"),
@@ -253,17 +252,14 @@ describe("عزل سلة المنتجات عن سلة البطاقات الرقم
     );
 
     expect(source).toContain("useBarcodeScanner(handleHidScan");
-    expect(lookupBarcode).toContain("if (cartHasDigitalRef.current)");
-    expect(lookupBarcode.indexOf("if (cartHasDigitalRef.current)")).toBeLessThan(
-      lookupBarcode.indexOf("utils.catalog.byBarcode.fetch"),
-    );
+    expect(lookupBarcode).not.toContain("if (cartHasDigitalRef.current)");
     expect(lookupBarcode).toContain("else addRow(row as PosRow)");
-    expect(addRow).toContain("if (cartHasDigitalRef.current)");
+    expect(addRow).not.toContain("if (cartHasDigitalRef.current)");
   });
 
-  it("يعرض سبب الفصل بالعربية داخل شاشة نقطة البيع", () => {
+  it("يوضح شروط الدفع ويطبع الأسطر المحفوظة من الخادم", () => {
     expect(source).toContain('data-testid="pos-cart-mode-guard"');
-    expect(source).toContain("السلة الحالية للبطاقات الرقمية فقط");
-    expect(source).toContain("السلة الحالية للمنتجات العادية فقط");
+    expect(source).toContain("البطاقات والمنتجات في فاتورة واحدة");
+    expect(source).toContain("digitalCheckoutReceiptLines(r.receiptLines)");
   });
 });
