@@ -232,7 +232,7 @@ export default function KioskDevices() {
           <ol className="list-decimal pr-5 space-y-1.5 text-sm text-muted-foreground marker:text-foreground/70">
             <li>نزّل الملف مرّةً واحدة أدناه ← انسخه على كل جهاز شاشة.</li>
             <li>شغّله على الجهاز ← الصق <b>رمز الجهاز</b> (من أدناه) ← Enter.</li>
-            <li>يفعّل الجهاز فوراً، يفتح ملء الشاشة، ويُثبّت نفسه للإقلاع التلقائي (تأخير ١٢٠ ثانية بعد كل تشغيل للوندوز).</li>
+            <li>يفعّل الجهاز فوراً، يفتح ملء الشاشة، ويُثبّت نفسه للإقلاع التلقائي (تأخير 120 ثانية بعد كل تشغيل للوندوز).</li>
           </ol>
           <div className="flex flex-wrap items-center gap-2">
             <Button className="inline-flex items-center gap-1.5" onClick={() => downloadInstallerCmd({ origin })}>

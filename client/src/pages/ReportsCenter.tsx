@@ -289,7 +289,7 @@ export default function ReportsCenter() {
         </Card>
         <Card>
           <CardContent className="pt-4 pb-3 text-center">
-            <p className="text-xs text-muted-foreground">الذمم المتأخّرة (+٣٠ يوم)</p>
+            <p className="text-xs text-muted-foreground">الذمم المتأخّرة (+30 يوم)</p>
             <p className="text-xl font-bold tabular-nums text-money-negative" dir="ltr">
               {metrics.isLoading ? "…" : formatIqd(metrics.data?.overdueAR.total ?? 0)}
             </p>

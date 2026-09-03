@@ -2930,7 +2930,10 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
             <Percent aria-hidden size={14} strokeWidth={2.5} />
             خصم على الفاتورة
             {invoiceDiscountAllowed ? (
-              <span style={{ color: C.mutedFg, fontWeight: 600, fontSize: 11 }}>
+              /* bidi: "0–15٪" بلا اتجاهٍ صريح يُعاد ترتيبه بصرياً "15-0٪" داخل الكاشير RTL — نفس
+                 عطب دلاء الأعمار المُصلَح في ReportShell (٣/٩)؛ السطر المجاور "قبل الخصم" يضبط
+                 direction:"ltr" بالفعل، وهذا كان الوحيد الناقص. */
+              <span style={{ color: C.mutedFg, fontWeight: 600, fontSize: 11, direction: "ltr" }}>
                 (0–{Number.isInteger(effectiveHeaderCapPct) ? effectiveHeaderCapPct : effectiveHeaderCapPct.toFixed(2).replace(/\.?0+$/, "")}٪)
               </span>
             ) : (

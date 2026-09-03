@@ -1128,7 +1128,7 @@ export default function Inventory() {
                 )}
 
                 <div className="space-y-1">
-                  <Label htmlFor="reval-reason">سبب إعادة التقييم (١٠ محارف على الأقلّ)</Label>
+                  <Label htmlFor="reval-reason">سبب إعادة التقييم (10 محارف على الأقلّ)</Label>
                   <Textarea
                     id="reval-reason"
                     value={revalReason}

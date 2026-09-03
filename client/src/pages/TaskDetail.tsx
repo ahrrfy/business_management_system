@@ -722,9 +722,9 @@ export default function TaskDetail() {
           <Button
             size="sm"
             variant="outline"
-            title={reopenWithinWindow ? undefined : "تجاوزت ٧ أيام من الحلّ — الخادم سيرفض إعادة الفتح"}
+            title={reopenWithinWindow ? undefined : "تجاوزت 7 أيام من الحلّ — الخادم سيرفض إعادة الفتح"}
             onClick={async () => {
-              if (!(await confirm({ variant: "warning", title: "إعادة فتح المهمة", description: "ستعود المهمة لحالة قيد التنفيذ (مسموح خلال ٧ أيام من الحلّ فقط).", confirmText: "إعادة فتح" }))) return;
+              if (!(await confirm({ variant: "warning", title: "إعادة فتح المهمة", description: "ستعود المهمة لحالة قيد التنفيذ (مسموح خلال 7 أيام من الحلّ فقط).", confirmText: "إعادة فتح" }))) return;
               reopen.mutate({ taskId });
             }}
             disabled={reopen.isPending}

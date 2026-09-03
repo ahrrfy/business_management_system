@@ -285,36 +285,59 @@ export default function PurchaseOrderDetail() {
               قيم التكلفة محجوبة عن صلاحيّتك.
             </p>
           ) : (
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-              <Field label="المجموع قبل الضريبة">{fmtAr(d.subtotal)}</Field>
-              {/* خصم فاتورة المورّد (0204): **مطبَّقٌ في الأعمدة أعلاه** — المجموع صافٍ بعده،
-                  والذمّة وتكلفة المخزون كذلك. يُعرَض إفصاحاً لا بنداً يُطرَح مرّةً أخرى. */}
-              {D(d.invoiceDiscount ?? 0).gt(0) && (
-                <Field label="خصم فاتورة المورّد (مطبَّق)">
-                  −{fmtAr(d.invoiceDiscount)}
-                  {isUsd && D(d.usdInvoiceDiscount ?? 0).gt(0)
-                    ? ` (${fmtAr(d.usdInvoiceDiscount)} $)`
-                    : ""}
-                </Field>
-              )}
-              <Field label="الضريبة">{fmtAr(d.taxAmount)}</Field>
-              <Field label="الشحن">{fmtAr(d.shippingCost)}</Field>
-              <Field label="الكمرك">{fmtAr(d.customsCost)}</Field>
-              <Field label="الإجمالي">{fmtAr(d.total)}</Field>
-              <Field label="المدفوع">{fmtAr(d.paidAmount)}</Field>
-              {isUsd ? (
-                <>
-                  {/* مطابَقةٌ لا اشتقاق: منذ ضابط `supplierInvoiceTotal` يُرفض حفظ أمرٍ يخالف
-                      قيمة فاتورة المورّد، فهذا الرقم هو رقم الورقة نفسه. */}
-                  <Field label="فاتورة المورّد ($)">{fmtAr(d.usdTotal)}</Field>
-                  <Field label="المدفوع ($)">{fmtAr(d.paidUsd)}</Field>
-                  <Field label="المُرتجَع ($)">{fmtAr(d.returnedUsd)}</Field>
-                  <Field label="المتبقّي للمورّد ($)">
-                    {fmtAr(remaining?.toString())}
+            <div className="space-y-4">
+              {/* ما يُحسَب فعلاً ضمن «الإجمالي» وذمّة المورّد — بضاعةٌ فقط، بلا شحن ولا كمرك
+                  (قرار المالك ٥/٨/٢٦: order.ts `total = subtotal + tax`). كانا سابقاً يُعرَضان
+                  كسطرَين مجاورَين لهذه المجموعة فيبدوان مطروحَين منها رغم أنهما لم يدخلاها قطّ —
+                  فُصلا بصرياً أدناه ليزول هذا الالتباس. */}
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                <Field label="المجموع قبل الضريبة">{fmtAr(d.subtotal)}</Field>
+                {/* خصم فاتورة المورّد (0204): **مطبَّقٌ في الأعمدة أعلاه** — المجموع صافٍ بعده،
+                    والذمّة وتكلفة المخزون كذلك. يُعرَض إفصاحاً لا بنداً يُطرَح مرّةً أخرى. */}
+                {D(d.invoiceDiscount ?? 0).gt(0) && (
+                  <Field label="خصم فاتورة المورّد (مطبَّق)">
+                    −{fmtAr(d.invoiceDiscount)}
+                    {isUsd && D(d.usdInvoiceDiscount ?? 0).gt(0)
+                      ? ` (${fmtAr(d.usdInvoiceDiscount)} $)`
+                      : ""}
                   </Field>
-                </>
-              ) : (
-                <Field label="المتبقّي">{fmtAr(remaining?.toString())}</Field>
+                )}
+                <Field label="الضريبة">{fmtAr(d.taxAmount)}</Field>
+                <Field label="الإجمالي (ذمّة المورّد)">
+                  <span className="font-bold">{fmtAr(d.total)}</span>
+                </Field>
+                <Field label="المدفوع">{fmtAr(d.paidAmount)}</Field>
+                {isUsd ? (
+                  <>
+                    {/* مطابَقةٌ لا اشتقاق: منذ ضابط `supplierInvoiceTotal` يُرفض حفظ أمرٍ يخالف
+                        قيمة فاتورة المورّد، فهذا الرقم هو رقم الورقة نفسه. */}
+                    <Field label="فاتورة المورّد ($)">{fmtAr(d.usdTotal)}</Field>
+                    <Field label="المدفوع ($)">{fmtAr(d.paidUsd)}</Field>
+                    <Field label="المُرتجَع ($)">{fmtAr(d.returnedUsd)}</Field>
+                    <Field label="المتبقّي للمورّد ($)">
+                      {fmtAr(remaining?.toString())}
+                    </Field>
+                  </>
+                ) : (
+                  <Field label="المتبقّي">
+                    <span className="font-semibold">{fmtAr(remaining?.toString())}</span>
+                  </Field>
+                )}
+              </div>
+
+              {(D(d.shippingCost ?? 0).gt(0) || D(d.customsCost ?? 0).gt(0)) && (
+                <div className="rounded-md border bg-[var(--sem-warn-bg)]/60 p-3">
+                  <p className="mb-2 text-xs font-semibold text-[var(--sem-warn)]">
+                    مصروف نقلٍ منفصل — لا يدخل «الإجمالي» أعلاه ولا ذمّة المورّد
+                  </p>
+                  <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                    <Field label="الشحن">{fmtAr(d.shippingCost)}</Field>
+                    <Field label="الكمرك">{fmtAr(d.customsCost)}</Field>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                    يُستحقّ مصروف نقلٍ لناقلٍ مستقلّ عند الاستلام (سند صرفٍ خاصّ به)، ولا يُخفَّض عند مرتجع هذا الأمر.
+                  </p>
+                </div>
               )}
             </div>
           )}

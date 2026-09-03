@@ -37,11 +37,13 @@ export const sum = (values: Array<string | number>) =>
 export const toBase = (quantity: string | number, conversionFactor: string | number) =>
   D(quantity).times(D(conversionFactor));
 
-/** تنسيق مبلغ **للعرض فقط**: فواصل آلاف + منزلتان ثابتتان (1,234,567.89) — طلب المالك ١١/٦
- *  لتجنّب سهو قراءة المبالغ الكبيرة. ⛔ ممنوع في حمولات الـAPI (zod moneyStr يرفض الفواصل) —
- *  للإرسال استعمل round2(D(v)).toFixed(2). */
+/** تنسيق مبلغ **للعرض فقط**: فواصل آلاف + منزلتان كحدٍّ أقصى، بلا أصفارٍ زائدة (1,234,567 أو
+ *  1,234,567.5) — طلب المالك ٣/٩ يُلغي القرار السابق (١١/٦: منزلتان ثابتتان دائماً) الذي كان
+ *  يُظهر «.00» على كل مبلغٍ صحيح. يطابق الآن سلوك fmtAr أدناه (المنتشر بالفعل في نصف الشاشات)
+ *  فيزيل تناقضاً كان قائماً بين الدالّتين. لا فقدان دقّة: كسرٌ حقيقي (1,234,567.5) يبقى ظاهراً.
+ *  ⛔ ممنوع في حمولات الـAPI (zod moneyStr يرفض الفواصل) — للإرسال استعمل round2(D(v)).toFixed(2). */
 export const fmt = (v: string | number | null | undefined) =>
-  round2(D(v)).toNumber().toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  round2(D(v)).toNumber().toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 /** فرق موجب بدقّة Decimal — مكافئ خادمي `positiveDiff` لحساب «المتبقّي» بلا انجراف float.
  *  Math.max(0, Number(total) - Number(paid)) → positiveDiff(total, paid).toFixed(2) */

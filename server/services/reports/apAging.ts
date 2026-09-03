@@ -146,6 +146,12 @@ export interface SupplierStatementResult {
     currentBalance: string;
     /** الرصيد المُرحَّل: قيد OPENING المستورد + (مع from) مشتريات ملتزمة − دفعات قبل from. */
     openingBalance: string;
+    /** دفعاتٌ للمورد غير مربوطةٍ بأمر شراءٍ بعينه — السبب الأشيَع لتباعد مجموع «المتبقّي» لكل
+     *  الأوامر عن `unpaid`/`currentBalance` الحقيقيَّين. */
+    unallocatedPayments: string;
+    /** أعمار الذمم لكل أمرٍ (منهجية getAPAging). `unbucketed` يُغلق الفرق مع currentBalance
+     *  (رصيدٌ افتتاديّ مستورد/شراء أصلٍ يتيم) — الثابت: مجموع الدلاء + unbucketed === currentBalance. */
+    aging: { d0_30: string; d31_60: string; d61_90: string; d91p: string; unbucketed: string };
   };
 }
 
@@ -307,6 +313,9 @@ export async function getSupplierStatement(
       periodTotal: toDbMoney(gl.periodTotal),
       // «مسدّد/مخفّض» = إجمالي PURCHASE ناقص رصيد GL المفتوح؛ يشمل المرتجع والإلغاء الصحيحين.
       paidAmount: toDbMoney(total.minus(openBalance)),
+      // للاستعمال الداخلي فقط (أعمار الذمم أدناه) — لا يدخل الصفّ المُرسَل للواجهة.
+      _openBalance: openBalance,
+      _recognitionDate: gl.recognitionDate,
     }];
   });
 
@@ -369,6 +378,34 @@ export async function getSupplierStatement(
   }, money(0));
   const closingBalance = openingBalance.plus(totalPurchases).plus(periodEntryEffect);
   const unpaid = closingBalance.isPositive() ? closingBalance : money(0);
+  const currentBalance = branchId ? closingBalance : money(s.currentBalance ?? "0");
+
+  // أعمار الذمم لكل أمرٍ (منهجيةٌ مطابقة لـgetAPAging: DATEDIFF على تاريخ الاعتراف، دلاء
+  // ٠-٣٠/٣١-٦٠/٦١-٩٠/+٩٠). المجموع لا يُطابق بالضرورة currentBalance (دفعاتٌ غير مخصَّصة/رصيدٌ
+  // افتتاديّ) — الفرق يُكشَف صراحةً بدل إخفائه، بنفس تعامل getAPAging مع unbucketed.
+  const nowMs = Date.now();
+  const agingBuckets = { d0_30: money(0), d31_60: money(0), d61_90: money(0), d91p: money(0) };
+  for (const p of posWithTotals) {
+    if (!p._openBalance || p._openBalance.lte(0) || !p._recognitionDate) continue;
+    const days = Math.floor((nowMs - new Date(p._recognitionDate).getTime()) / 86400000);
+    if (days <= 30) agingBuckets.d0_30 = agingBuckets.d0_30.plus(p._openBalance);
+    else if (days <= 60) agingBuckets.d31_60 = agingBuckets.d31_60.plus(p._openBalance);
+    else if (days <= 90) agingBuckets.d61_90 = agingBuckets.d61_90.plus(p._openBalance);
+    else agingBuckets.d91p = agingBuckets.d91p.plus(p._openBalance);
+  }
+  const bucketedTotal = agingBuckets.d0_30.plus(agingBuckets.d31_60).plus(agingBuckets.d61_90).plus(agingBuckets.d91p);
+  // غير مصنَّف = الفرق بين الرصيد الحالي ومجموع الدلاء — يشمل الرصيد الافتتاديّ المستورد وشراء
+  // الأصول اليتيم (بلا أمر شراء)، ويُثبِّت الثابت: الدلاء + غير مصنَّف === الرصيد الحالي دائماً.
+  const unbucketed = currentBalance.minus(bucketedTotal);
+
+  // دفعاتٌ للمورد (PAYMENT_OUT) غير مربوطةٍ بأمر شراءٍ بعينه («دفعة مستقلة») — هذا هو السبب
+  // الجذريّ الأكثر شيوعاً لتباعد «المتبقّي» المجموع لكل الأوامر عن «غير مدفوع» الحقيقي: مبلغٌ
+  // دخل الحساب فعلاً وخفّض ما ندين به، لكن لم يُخصَّص بعد لفاتورةٍ محدَّدة فيبقى غامضاً في
+  // الشاشة القديمة. يُحسَب ضمن نفس فلتر الفترة/الفرع المُطبَّق على `payments` أعلاه.
+  const unallocatedPayments = payments.reduce(
+    (acc, p) => (p.entryType === "PAYMENT_OUT" && p.purchaseOrderId == null ? acc.plus(money(p.amount)) : acc),
+    money(0),
+  );
 
   return {
     supplier: s,
@@ -405,8 +442,16 @@ export async function getSupplierStatement(
       totalPurchases: toDbMoney(totalPurchases),
       totalPaid: toDbMoney(totalPaid),
       unpaid: toDbMoney(unpaid),
-      currentBalance: toDbMoney(branchId ? closingBalance : money(s.currentBalance ?? "0")),
+      currentBalance: toDbMoney(currentBalance),
       openingBalance: toDbMoney(openingBalance),
+      unallocatedPayments: toDbMoney(unallocatedPayments),
+      aging: {
+        d0_30: toDbMoney(agingBuckets.d0_30),
+        d31_60: toDbMoney(agingBuckets.d31_60),
+        d61_90: toDbMoney(agingBuckets.d61_90),
+        d91p: toDbMoney(agingBuckets.d91p),
+        unbucketed: toDbMoney(unbucketed),
+      },
     },
   };
 }
