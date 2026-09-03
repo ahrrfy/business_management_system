@@ -35,10 +35,24 @@ export const salesRouter = router({
         externalPaymentAttemptId: z.number().int().positive().optional(),
         externalPaymentDeviceId: z.string().trim().min(1).max(64).optional(),
         cartFingerprint: z.string().min(1).max(64),
+        customerId: z.number().int().positive().nullish(),
+        priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
+        regularLines: z.array(z.object({
+          lineKey: z.string().min(1).max(64),
+          variantId: z.number().int().positive(),
+          productUnitId: z.number().int().positive(),
+          quantity: z.string().regex(/^\d+(\.\d{1,3})?$/).refine((value) => /[1-9]/.test(value), "الكمية يجب أن تكون موجبة"),
+          unitPriceOverride: nonNegMoneyString.nullish(),
+          discountAmount: nonNegMoneyString.nullish(),
+          discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).nullish(),
+          promotionId: z.number().int().positive().nullish(),
+          isGift: z.boolean().optional(),
+        }).strict()).max(100).optional(),
         lines: z
           .array(
             z.object({
               lineKey: z.string().min(1).max(64),
+              providerBasketKey: z.string().trim().min(1).max(64).optional(),
               offeringId: z.number().int().positive(),
               priceVersionId: z.number().int().positive(),
               expectedSellPrice: nonNegMoneyString,

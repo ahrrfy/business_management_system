@@ -14,6 +14,7 @@ export default defineConfig({
     include: [
       "client/src/lib/moneyInput.test.ts",
       "shared/expenseLabels.test.ts",
+      "shared/digitalSale.test.ts",
       "shared/cashReceiptSourceDocument.test.ts",
       "shared/negativeCashDiagnosis.test.ts",
       "client/src/lib/printing/couponCard.test.ts",
