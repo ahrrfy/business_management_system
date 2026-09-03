@@ -95,7 +95,6 @@
     "pushRouter.unsubscribe@server/routers/pushRouter.ts",
     "recruitmentRouter.openVacancies@server/routers/recruitmentRouter.ts",
     "recruitmentRouter.submit@server/routers/recruitmentRouter.ts",
-    "refundRailsRouter.preflight@server/routers/refundRailsRouter.ts",
     "reportsRouter.dashboardMetrics@server/routers/reportsRouter.ts",
     "reservationsRouter.extend@server/routers/reservationsRouter.ts",
     "roleRouter.create@server/routers/roleRouter.ts",
