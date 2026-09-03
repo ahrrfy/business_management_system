@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, like, lt, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import {
   branches,
   purchaseControlSettings,
@@ -45,7 +46,11 @@ function assertBranch(branchId: number, actor: Actor): void {
   if (actor.role !== "admin" && branchId !== actor.branchId) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "لا تستطيع إدارة طلب شراء لفرع آخر",
+      message: appErrorMessage({
+        what: "تعذّرت إدارة طلب الشراء",
+        why: "الطلب يخصّ فرعاً غير فرعك المُسنَد، وعبور الفروع محصورٌ بالمدير",
+        doThis: "أدر الطلب من داخل الفرع الصحيح، أو اطلب من المدير التنفيذ نيابةً",
+      }),
     });
   }
 }
@@ -55,13 +60,21 @@ function validateDraft(input: PurchaseRequisitionDraft): void {
   if (purpose.length < 3 || purpose.length > 500) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "غرض طلب الشراء إلزامي (3–500 محرف)",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب الشراء",
+        why: "الغرض المُدخَل خارج المدى المسموح (3-500 محرفاً) — إمّا فارغ أو أقل من ثلاثة أحرف",
+        doThis: "اكتب في حقل «الغرض» شرحاً مقتضباً لما يُشترى ولماذا، بين 3 و500 محرفاً",
+      }),
     });
   }
   if (!input.items.length) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "طلب الشراء بلا أصناف",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب الشراء",
+        why: "الطلب وصل بلا أيّ صنف في قائمة البنود",
+        doThis: "أضف صنفاً واحداً على الأقل في جدول البنود، بكميّته المطلوبة، قبل الحفظ",
+      }),
     });
   }
   const seen = new Set<string>();
@@ -72,7 +85,11 @@ function validateDraft(input: PurchaseRequisitionDraft): void {
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "كمية طلب الشراء الأساسية يجب أن تكون عدداً صحيحاً موجباً",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب الشراء",
+          why: "أحد بنود الطلب يحمل كميّةً غير موجبة أو ليست عدداً صحيحاً (كمّية الأساس تُخزَّن بالوحدة الصغرى)",
+          doThis: "افتح البند المتضرِّر واكتب كميّةً صحيحة أكبر من صفر بالوحدة المختارة",
+        }),
       });
     }
     if (
@@ -81,14 +98,22 @@ function validateDraft(input: PurchaseRequisitionDraft): void {
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "مبرر كل بند إلزامي (3–500 محرف)",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب الشراء",
+          why: "أحد بنود الطلب بلا مبرِّرٍ نصّيّ، أو مبرِّرُه خارج المدى المسموح (3-500 محرفاً)",
+          doThis: "افتح البند المتضرِّر واكتب في حقل «المبرِّر» جملةً تشرح سبب طلب الصنف",
+        }),
       });
     }
     const key = `${item.variantId}:${item.productUnitId ?? 0}`;
     if (seen.has(key)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يجوز تكرار الصنف والوحدة في طلب الشراء نفسه",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب الشراء",
+          why: "الصنف نفسه بالوحدة نفسها ظهر أكثر من مرّة في بنود الطلب",
+          doThis: "ادمج التكرار في بندٍ واحد بمجموع الكمّية، أو استعمل وحدةً مختلفة للسطر الآخر",
+        }),
       });
     }
     seen.add(key);
@@ -155,7 +180,14 @@ export async function updatePurchaseControlSettings(
       .for("update")
       .limit(1);
     if (!branch)
-      throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّرت معالجة طلب الشراء",
+          why: "الفرع المستهدف بمعرّفه غير موجود، إمّا حُذف أو أُدخل بمعرّفٍ غير صحيح",
+          doThis: "افتح شاشة الفروع وتحقّق أنّ الفرع قائم، ثمّ أعد اختياره من القائمة",
+        }),
+      });
     const [current] = await tx
       .select()
       .from(purchaseControlSettings)
@@ -166,7 +198,11 @@ export async function updatePurchaseControlSettings(
     if (currentVersion !== input.expectedVersion) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّرت إعدادات المشتريات؛ حدّث الصفحة ثم أعد المحاولة",
+        message: appErrorMessage({
+          what: "تعذّر حفظ إعدادات المشتريات",
+          why: "الإعدادات تغيّرت في جهةٍ أخرى بين لحظة فتحك الشاشة ولحظة الحفظ (رقم النسخة لا يطابق)",
+          doThis: "حدّث الصفحة لتحميل الإعدادات الحاليّة، ثمّ أعد إدخال تعديلاتك عليها",
+        }),
       });
     }
     const values = {
@@ -240,7 +276,14 @@ export async function createPurchaseRequisition(
       .for("update")
       .limit(1);
     if (!branch)
-      throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّرت معالجة طلب الشراء",
+          why: "الفرع المستهدف بمعرّفه غير موجود، إمّا حُذف أو أُدخل بمعرّفٍ غير صحيح",
+          doThis: "افتح شاشة الفروع وتحقّق أنّ الفرع قائم، ثمّ أعد اختياره من القائمة",
+        }),
+      });
     const prefix = `PR-${input.branchId}-${toDateStr().replace(/-/g, "")}-`;
     const [last] = await tx
       .select({ requisitionNumber: purchaseRequisitions.requisitionNumber })
@@ -301,25 +344,41 @@ export async function updatePurchaseRequisition(
     if (!requisition)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "طلب الشراء غير موجود",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب الشراء",
+          why: "الطلب المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة طلبات الشراء واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+        }),
       });
     assertBranch(Number(requisition.branchId), actor);
     if (Number(requisition.branchId) !== input.branchId) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن نقل طلب الشراء بين الفروع",
+        message: appErrorMessage({
+          what: "تعذّر تعديل طلب الشراء",
+          why: "الطلب أُنشئ في فرعٍ آخر ومحاولة التعديل تحاول نقله لفرعٍ جديد، والنقل غير مسموح",
+          doThis: "أبقِ الفرع كما هو في الأصل، أو ارفض الطلب وأنشئ آخرَ في الفرع الجديد",
+        }),
       });
     }
     if (requisition.status !== "DRAFT" && requisition.status !== "REJECTED") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يُعدّل إلا طلب شراء مسودة أو مرفوض لإعادة تقديمه",
+        message: appErrorMessage({
+          what: "تعذّر تعديل طلب الشراء",
+          why: "الطلب ليس بحالة «مسودة» ولا «مرفوض» — لا يُعدَّل الطلب بعد إرساله للاعتماد",
+          doThis: "ارجع لقائمة طلبات الشراء ورشّح على «مسودة/مرفوض» لعرض ما يقبل التعديل",
+        }),
       });
     }
     if (Number(requisition.version) !== input.expectedVersion) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر طلب الشراء؛ حدّث الصفحة ثم أعد المحاولة",
+        message: appErrorMessage({
+          what: "تعذّر حفظ تعديل طلب الشراء",
+          why: "الطلب تغيّر في جهةٍ أخرى بين لحظة فتحك الشاشة ولحظة الحفظ (رقم النسخة لا يطابق)",
+          doThis: "حدّث الصفحة لتحميل النسخة الحاليّة من الطلب، ثمّ أعد إدخال تعديلاتك عليها",
+        }),
       });
     }
     await tx
@@ -365,7 +424,11 @@ async function createRequisitionControlRequestTx(
   if (reason.length < 3 || reason.length > 500) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "سبب الطلب إلزامي (3–500 محرف)",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب قرار الاعتماد/الإلغاء",
+        why: "السبب المُدخَل خارج المدى المسموح (3-500 محرفاً) — إمّا فارغ أو أقل من ثلاثة أحرف",
+        doThis: "اكتب في حقل «السبب» جملةً تشرح للمُعتَمِد لماذا الاعتماد أو الإلغاء، بين 3 و500 محرفاً",
+      }),
     });
   }
   const payloadHash = idempotencyHash({
@@ -382,7 +445,14 @@ async function createRequisitionControlRequestTx(
     .for("update")
     .limit(1);
   if (!requisition)
-    throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح طلب الشراء",
+        why: "الطلب المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+        doThis: "ارجع لقائمة طلبات الشراء واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+      }),
+    });
   assertBranch(Number(requisition.branchId), actor);
   const [existing] = await tx
     .select()
@@ -397,7 +467,11 @@ async function createRequisitionControlRequestTx(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "مفتاح طلب القرار مستعمل بحمولة مختلفة",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل طلب القرار",
+          why: "نفس مفتاح الطلب مسجَّل قبل قليل بحمولةٍ مختلفة (طلبُ شراءٍ آخر أو نوع قرارٍ آخر)",
+          doThis: "حدّث الشاشة ليُولَّد مفتاحٌ جديد، ثمّ أعد الحفظ بالبيانات المعروضة أمامك",
+        }),
       });
     }
     return {
@@ -409,13 +483,21 @@ async function createRequisitionControlRequestTx(
   if (Number(requisition.version) !== input.expectedVersion) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "تغيّر طلب الشراء؛ حدّث الصفحة ثم أعد المحاولة",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل طلب القرار",
+        why: "طلب الشراء تغيّر في جهةٍ أخرى بين لحظة فتحك الشاشة ولحظة الحفظ (رقم النسخة لا يطابق)",
+        doThis: "حدّث الصفحة لتحميل النسخة الحاليّة من طلب الشراء، ثمّ أعد تسجيل طلب القرار عليها",
+      }),
     });
   }
   if (input.kind === "APPROVE" && requisition.status !== "SUBMITTED") {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "لا يُطلب اعتماد إلا لطلب شراء مُرسَل",
+      message: appErrorMessage({
+        what: "تعذّر طلب اعتماد طلب الشراء",
+        why: "الطلب ليس بحالة «مُرسَل» — لا يُطلب اعتمادٌ لطلبٍ ما زال مسودةً أو مرفوضاً أو مُعتَمَداً",
+        doThis: "افتح الطلب واضغط «إرسال» أوّلاً ليصبح جاهزاً للاعتماد، ثمّ اطلب الاعتماد",
+      }),
     });
   }
   if (
@@ -426,7 +508,11 @@ async function createRequisitionControlRequestTx(
   ) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "حالة طلب الشراء لا تقبل طلب الإلغاء",
+      message: appErrorMessage({
+        what: "تعذّر طلب إلغاء طلب الشراء",
+        why: "الطلب في حالةٍ لا تقبل الإلغاء (مطلوب أن يكون مسودة أو مُرسَلاً أو معتمداً أو مطلوباً جزئياً)",
+        doThis: "افتح الطلب لعرض حالته، ثمّ اتّخذ الإجراء المناسب لحالته (رفض/تعديل/إغلاق)",
+      }),
     });
   }
   if (input.kind === "CANCEL") {
@@ -439,8 +525,11 @@ async function createRequisitionControlRequestTx(
     if (Number(ordered?.total ?? 0) > 0) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message:
-          "لا يمكن طلب إلغاء طلب شراء رُبطت كمياته بأمر شراء؛ عدّل أو ألغِ الأمر أولاً",
+        message: appErrorMessage({
+          what: "تعذّر طلب إلغاء طلب الشراء",
+          why: "بنودُ الطلب مربوطة بأمر شراءٍ قائم بكميّاتٍ مطلوبة بالفعل، والإلغاء يترك أمر الشراء بلا مصدر",
+          doThis: "افتح أمر الشراء المرتبط وعدّله أو ألغِه أوّلاً، ثمّ ألغِ طلب الشراء",
+        }),
       });
     }
   }
@@ -483,7 +572,11 @@ export async function submitPurchaseRequisition(
     if (!requisition)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "طلب الشراء غير موجود",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب الشراء",
+          why: "الطلب المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة طلبات الشراء واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+        }),
       });
     assertBranch(Number(requisition.branchId), actor);
     const [existing] = await tx
@@ -508,7 +601,11 @@ export async function submitPurchaseRequisition(
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "مفتاح إرسال طلب الشراء مستعمل بحمولة مختلفة",
+          message: appErrorMessage({
+            what: "تعذّر إرسال طلب الشراء",
+            why: "نفس مفتاح الطلب مسجَّل قبل قليل بحمولةٍ مختلفة (طلبٌ آخر أو سببٌ مختلف)",
+            doThis: "حدّث الشاشة ليُولَّد مفتاحٌ جديد، ثمّ أعد الإرسال بالبيانات المعروضة أمامك",
+          }),
         });
       }
       return {
@@ -521,13 +618,21 @@ export async function submitPurchaseRequisition(
     if (requisition.status !== "DRAFT") {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يُرسل إلا طلب شراء مسودة",
+        message: appErrorMessage({
+          what: "تعذّر إرسال طلب الشراء",
+          why: "الطلب ليس بحالة «مسودة» — لا يُرسل طلبٌ سبق إرساله أو اعتماده",
+          doThis: "ارجع لقائمة طلبات الشراء ورشّح على «مسودة» لعرض ما يقبل الإرسال",
+        }),
       });
     }
     if (Number(requisition.version) !== input.expectedVersion) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر طلب الشراء؛ حدّث الصفحة ثم أعد المحاولة",
+        message: appErrorMessage({
+          what: "تعذّر حفظ تعديل طلب الشراء",
+          why: "الطلب تغيّر في جهةٍ أخرى بين لحظة فتحك الشاشة ولحظة الحفظ (رقم النسخة لا يطابق)",
+          doThis: "حدّث الصفحة لتحميل النسخة الحاليّة من الطلب، ثمّ أعد إدخال تعديلاتك عليها",
+        }),
       });
     }
     const items = await tx
@@ -541,7 +646,11 @@ export async function submitPurchaseRequisition(
     if (!items.length)
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "طلب الشراء بلا أصناف",
+        message: appErrorMessage({
+          what: "تعذّر إرسال طلب الشراء",
+          why: "الطلب لا يحوي أيّ بند — لا يوجد ما يُطلب اعتمادُه",
+          doThis: "افتح تعديل الطلب وأضف صنفاً واحداً على الأقل بكميّته، ثمّ احفظ وأعد الإرسال",
+        }),
       });
     const nextVersion = input.expectedVersion + 1;
     await tx
@@ -617,12 +726,23 @@ export async function decidePurchaseRequisitionControl(
       .limit(1)
   )[0];
   if (!preview)
-    throw new TRPCError({ code: "NOT_FOUND", message: "طلب القرار غير موجود" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح طلب قرار الاعتماد",
+        why: "طلب القرار المطلوب بمعرّفه غير موجود، إمّا حُذف أو حُسم من جهةٍ أخرى",
+        doThis: "ارجع لقائمة طلبات القرار واختر الطلب من القائمة لعرض حالته الحاليّة",
+      }),
+    });
   const reason = input.reason.trim();
   if (reason.length < 3 || reason.length > 500) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "سبب القرار إلزامي (3–500 محرف)",
+      message: appErrorMessage({
+        what: "تعذّر حسم طلب قرار الاعتماد",
+        why: "سبب القرار المُدخَل خارج المدى المسموح (3-500 محرفاً) — إمّا فارغ أو أقل من ثلاثة أحرف",
+        doThis: "اكتب في حقل «السبب» جملةً واضحة تشرح للطالب سبب الاعتماد أو الرفض، بين 3 و500 محرفاً",
+      }),
     });
   }
   const payloadHash = idempotencyHash({
@@ -640,7 +760,11 @@ export async function decidePurchaseRequisitionControl(
     if (!requisition)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "طلب الشراء غير موجود",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب الشراء",
+          why: "الطلب المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة طلبات الشراء واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+        }),
       });
     assertBranch(Number(requisition.branchId), actor);
     const [request] = await tx
@@ -652,7 +776,11 @@ export async function decidePurchaseRequisitionControl(
     if (!request)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "طلب القرار غير موجود",
+        message: appErrorMessage({
+          what: "تعذّر معالجة طلب قرار الاعتماد",
+          why: "طلب القرار المطلوب بمعرّفه غير موجود، إمّا حُذف أو حُسم بين لحظة الفتح والحفظ",
+          doThis: "ارجع لقائمة طلبات القرار وحدّثها، ثمّ افتح الطلب المطلوب من جديد",
+        }),
       });
     const existing = await checkIdempotency(
       tx,
@@ -665,7 +793,11 @@ export async function decidePurchaseRequisitionControl(
       if (existing !== input.requestId)
         throw new TRPCError({
           code: "CONFLICT",
-          message: "مفتاح القرار يعود لطلب آخر",
+          message: appErrorMessage({
+            what: "تعذّر حسم طلب قرار الاعتماد",
+            why: "مفتاح القرار الذي أرسلته الشاشة سبق استعمالُه على طلبٍ آخر",
+            doThis: "حدّث الشاشة ليُولَّد مفتاح قرارٍ جديد، ثمّ أعد الحسم على الطلب المعروض أمامك",
+          }),
         });
       return {
         requestId: input.requestId,
@@ -676,7 +808,11 @@ export async function decidePurchaseRequisitionControl(
     if (request.status !== "PENDING") {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "حُسم طلب القرار مسبقاً",
+        message: appErrorMessage({
+          what: "تعذّر حسم طلب قرار الاعتماد",
+          why: "الطلب حُسم مسبقاً (اعتماداً أو رفضاً)، وحسم القرار لا يتكرّر",
+          doThis: "ارجع لقائمة طلبات القرار وحدّثها لعرض النتيجة المسجَّلة",
+        }),
       });
     }
     // طلبُ الشراء الداخليّ هو **الوحيد** في المشتريات الذي صمد تصنيفُه أمام التفنيد العدائيّ:
@@ -694,7 +830,11 @@ export async function decidePurchaseRequisitionControl(
         ) {
           throw new TRPCError({
             code: "FORBIDDEN",
-            message: "يلزم معتمد مستقل عن المنشئ والمرسل وصاحب الطلب",
+            message: appErrorMessage({
+              what: "تعذّر اعتماد طلب الشراء",
+              why: "أنت أنشأت الطلب أو أرسلتَه أو طلبت القرار — فصل المهام يمنع اعتمادَك القرارَ الذي أنت طرفٌ فيه",
+              doThis: "اطلب من مديرٍ أو مستخدمٍ آخر اعتماد الطلب من صفحة طلبات الاعتماد",
+            }),
           });
         }
       },
@@ -783,7 +923,11 @@ export async function decidePurchaseRequisitionControl(
         ) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "كمية اعتماد طلب الشراء خارج الكمية المطلوبة",
+            message: appErrorMessage({
+              what: "تعذّر اعتماد طلب الشراء",
+              why: "كمّية اعتماد أحد البنود ليست عدداً صحيحاً بين صفر والكمّية المطلوبة",
+              doThis: "افتح شاشة الاعتماد وعدّل الكمّية لتكون بين 0 والكمّية المطلوبة، ثمّ أعد الاعتماد",
+            }),
           });
         }
         await tx
@@ -810,8 +954,11 @@ export async function decidePurchaseRequisitionControl(
       if (Number(ordered?.total ?? 0) > 0) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message:
-            "لا يمكن إلغاء طلب شراء رُبطت كمياته بأمر شراء؛ عدّل أو ألغِ الأمر أولاً",
+          message: appErrorMessage({
+            what: "تعذّر إلغاء طلب الشراء",
+            why: "بنودُ الطلب مربوطة بأمر شراءٍ قائم بكميّاتٍ مطلوبة بالفعل، والإلغاء يترك أمر الشراء بلا مصدر",
+            doThis: "افتح أمر الشراء المرتبط وعدّله أو ألغِه أوّلاً، ثمّ ألغِ طلب الشراء",
+          }),
         });
       }
       await tx
@@ -918,8 +1065,11 @@ export async function releasePurchaseOrderRevisionAllocationsTx(
   if (lockedItems.length !== itemIds.length) {
     throw new TRPCError({
       code: "CONFLICT",
-      message:
-        "تخصيص أمر الشراء يشير إلى بند طلب شراء مفقود؛ أوقف الإلغاء وراجع التدقيق",
+      message: appErrorMessage({
+        what: "تعذّر إلغاء تخصيصات أمر الشراء",
+        why: "التخصيص المُلغى يشير إلى بند طلب شراءٍ لم يعد موجوداً في قاعدة البيانات",
+        doThis: "أوقف مسار الإلغاء واطلب من المدير مراجعة سجلّ التدقيق للبحث عن البند المفقود",
+      }),
     });
   }
 
@@ -929,7 +1079,11 @@ export async function releasePurchaseOrderRevisionAllocationsTx(
     if (nextOrdered < 0) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "الكمية المحجوزة في طلب الشراء أقل من تخصيص الأمر الملغى",
+        message: appErrorMessage({
+          what: "تعذّر تحرير الكمّية المحجوزة",
+          why: "الكمّية المطلوبة على بند طلب الشراء أقلّ من الكمّية المُخصَّصة على أمر الشراء الملغى — البيانات غير متسقة",
+          doThis: "أوقف مسار الإلغاء واطلب من المدير مراجعة سجلّ التدقيق لطلب الشراء وأمر الشراء المرتبط به",
+        }),
       });
     }
     await tx
@@ -971,7 +1125,11 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
     if (!line)
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `سطر الربط ${allocation.lineNo} غير موجود في أمر الشراء`,
+        message: appErrorMessage({
+          what: "تعذّر ربط طلب الشراء بأمر الشراء",
+          why: `سطر الربط رقم ${allocation.lineNo} لا يقابله سطرٌ في أمر الشراء المُرسَل`,
+          doThis: "أعد فتح شاشة الربط وتحقّق من أرقام أسطر أمر الشراء، ثمّ اربط على السطر الموجود",
+        }),
       });
     if (
       !Number.isInteger(allocation.allocatedBaseQuantity) ||
@@ -979,7 +1137,11 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "كمية الربط الأساسية يجب أن تكون عدداً صحيحاً موجباً",
+        message: appErrorMessage({
+          what: "تعذّر ربط طلب الشراء بأمر الشراء",
+          why: "كمّية الربط الأساسية على أحد الأسطر ليست عدداً صحيحاً موجباً (تُخزَّن بالوحدة الصغرى)",
+          doThis: "افتح شاشة الربط وعدّل الكمّية لتكون عدداً صحيحاً أكبر من صفر",
+        }),
       });
     }
     lineTotals.set(
@@ -996,7 +1158,11 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
     if ((lineTotals.get(line.id) ?? 0) > line.baseQuantity) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `ربط السطر ${line.lineNo} يتجاوز كميته في أمر الشراء`,
+        message: appErrorMessage({
+          what: "تعذّر ربط طلب الشراء بأمر الشراء",
+          why: `مجموع كميّات الربط على السطر رقم ${line.lineNo} يتجاوز الكمّية المطلوبة على أمر الشراء`,
+          doThis: "افتح شاشة الربط وخفّض الكميات على السطر ليصير مجموعها ≤ الكمّية على أمر الشراء",
+        }),
       });
     }
   }
@@ -1056,7 +1222,11 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
     if (lockedItems.length !== ids.length) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "أحد بنود طلبات الشراء المرتبطة غير موجود",
+        message: appErrorMessage({
+          what: "تعذّر ربط طلب الشراء بأمر الشراء",
+          why: "أحد بنود طلب الشراء المشار إليه لم يعد موجوداً في قاعدة البيانات (قد يكون حُذف)",
+          doThis: "أعد فتح شاشة الربط وحدّثها، ثمّ أعد اختيار البنود من قائمة طلب الشراء الحاليّة",
+        }),
       });
     }
     const revisionItemByLine = new Map(
@@ -1082,7 +1252,11 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
       if (Number(item.branchId) !== input.branchId) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "لا يمكن ربط طلب شراء من فرع آخر",
+          message: appErrorMessage({
+            what: "تعذّر ربط طلب الشراء بأمر الشراء",
+            why: "طلب الشراء المُختار يخصّ فرعاً غير فرع أمر الشراء، والربط لا يعبر الفروع",
+            doThis: "اختر طلب شراءٍ من نفس فرع أمر الشراء، أو أنشئ طلباً جديداً في الفرع الصحيح",
+          }),
         });
       }
       if (
@@ -1093,7 +1267,11 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "لا يمكن الربط إلا بطلب شراء معتمد",
+          message: appErrorMessage({
+            what: "تعذّر ربط طلب الشراء بأمر الشراء",
+            why: "طلب الشراء المُختار ليس معتمَداً (ولا مطلوباً جزئياً أو كلياً)، والربط لا يقبل مسودةً ولا مُرسَلاً",
+            doThis: "اطلب من المدير اعتماد طلب الشراء أوّلاً من قائمة طلبات الاعتماد، ثمّ أعد الربط",
+          }),
         });
       }
       const released = previousByRequisitionItem.get(Number(item.id)) ?? 0;
@@ -1102,7 +1280,11 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
       if (nextOrdered < 0 || nextOrdered > Number(item.approved)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "ربط أمر الشراء يتجاوز الكمية المعتمدة أو المحجوزة مسبقاً",
+          message: appErrorMessage({
+            what: "تعذّر ربط طلب الشراء بأمر الشراء",
+            why: "الكمّية الجديدة ستجعل مجموع الكمّيات المرتبطة على البند أكبر من كمّيته المعتمدة أو أقلّ من صفر",
+            doThis: "افتح شاشة الربط وخفّض الكمّية على البند، أو اعتمد كمّيةً أكبر على طلب الشراء أوّلاً",
+          }),
         });
       }
       await tx
@@ -1124,7 +1306,11 @@ export async function replacePurchaseOrderRevisionAllocationsTx(
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "صنف أو وحدة ربط طلب الشراء لا تطابق سطر الأمر",
+          message: appErrorMessage({
+            what: "تعذّر ربط طلب الشراء بأمر الشراء",
+            why: "الصنف أو الوحدة على بند طلب الشراء لا يطابق الصنف أو الوحدة على سطر أمر الشراء",
+            doThis: "افتح شاشة الربط واختر بنداً يطابق الصنف والوحدة على سطر أمر الشراء، أو أضف بنداً جديداً لأمر الشراء",
+          }),
         });
       }
       await tx.insert(purchaseOrderRequisitionAllocations).values({
@@ -1183,7 +1369,11 @@ export async function listPurchaseRequisitions(
   if (branchId == null)
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "لا فرع مُسنَد للمستخدم",
+      message: appErrorMessage({
+        what: "تعذّر عرض طلبات الشراء",
+        why: "الجلسة الحاليّة بلا فرعٍ مُسنَد، والاطّلاع محصورٌ بفرع المستخدم",
+        doThis: "اخرج ثم ادخل بمستخدمٍ له فرعٌ مُسنَد، أو اطلب من المدير تحديد فرعك من شاشة المستخدمين",
+      }),
     });
   return requireDb()
     .select()
@@ -1211,7 +1401,14 @@ export async function getPurchaseRequisition(
     .where(eq(purchaseRequisitions.id, requisitionId))
     .limit(1);
   if (!requisition)
-    throw new TRPCError({ code: "NOT_FOUND", message: "طلب الشراء غير موجود" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح طلب الشراء",
+        why: "الطلب المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+        doThis: "ارجع لقائمة طلبات الشراء واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+      }),
+    });
   assertBranch(Number(requisition.branchId), actor);
   const [items, requests] = await Promise.all([
     db

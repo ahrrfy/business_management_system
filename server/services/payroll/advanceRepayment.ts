@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { appErrorMessage } from "@shared/errors";
 import {
   accountingEntries,
   employeeAdvanceRepaymentAllocations,
@@ -76,7 +77,14 @@ function transactionDate(value: string): string {
     new Date(parsed).toISOString().slice(0, 10) !== normalized ||
     normalized > baghdadToday()
   ) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ حركة سداد السلفة غير صالح أو مستقبلي." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل حركة سداد السلفة",
+        why: "تاريخ الحركة المُرسَل غير صالح بصيغته أو مستقبليّ عن تاريخ اليوم في بغداد",
+        doThis: "أعد الإدخال بتاريخٍ ماضٍ أو تاريخ اليوم بصيغة YYYY-MM-DD",
+      }),
+    });
   }
   return normalized;
 }
@@ -84,7 +92,14 @@ function transactionDate(value: string): string {
 function clientRequestId(value: string): string {
   const normalized = value.trim();
   if (normalized.length < 8 || normalized.length > 80 || !/^[A-Za-z0-9._:-]+$/.test(normalized)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح منع التكرار غير صالح." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل طلب سداد السلفة",
+        why: "مفتاح منع التكرار المُرسَل خارج الصيغة المسموحة (8-80 محرفاً من الحروف والأرقام و._:-)",
+        doThis: "أعد المحاولة من الشاشة لتوليد مفتاحٍ جديد آلياً بدل تحريره يدوياً",
+      }),
+    });
   }
   return normalized;
 }
@@ -92,7 +107,14 @@ function clientRequestId(value: string): string {
 function evidenceNote(value: string): string {
   const normalized = value.trim();
   if (normalized.length < 10 || normalized.length > 500) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "وصف دليل السداد يجب أن يكون بين 10 و500 محرف." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل دليل سداد السلفة",
+        why: "وصف الدليل خارج المدى المسموح (10-500 محرفاً) — الطول الحاليّ لا يكفي لتحرّي الحركة لاحقاً",
+        doThis: "اكتب وصفاً موجزاً يذكر مصدر المبلغ ومرجعه (رقم إيصال أو تحويل) بين 10 و500 محرفاً",
+      }),
+    });
   }
   return normalized;
 }
@@ -103,10 +125,24 @@ function normalizeEvidence(input: PaymentEvidenceInput) {
   const cardLastFour = input.cardLastFour?.trim() || null;
   if (method === "CASH") {
     if (input.cashBucket !== "DRAWER" || !Number.isInteger(input.shiftId) || Number(input.shiftId) <= 0) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "السداد النقدي يتطلب درج وردية مفتوحة محددة." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل سداد السلفة نقداً",
+          why: "السداد النقدي يلزمه درج وردية مفتوحة، والطلب وصل بلا معرّف وردية أو خارج الدرج",
+          doThis: "افتح وردية مبيعات ثمّ اختر «الدرج» في شاشة السداد النقدي وأعد الحفظ",
+        }),
+      });
     }
     if (referenceNumber || cardLastFour) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "السداد النقدي لا يحمل مرجعاً إلكترونياً أو أرقام بطاقة." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل سداد السلفة نقداً",
+          why: "الطلب النقديّ يحمل مرجع تأكيدٍ إلكترونيّاً أو آخر أربعة أرقامٍ للبطاقة، والنقد يُقبض بلا مرجعٍ إلكترونيّ",
+          doThis: "امسح حقلَي المرجع وأرقام البطاقة إذا كان السداد نقداً، أو غيّر طريقة الدفع لغير النقد",
+        }),
+      });
     }
     return {
       paymentMethod: method,
@@ -120,17 +156,45 @@ function normalizeEvidence(input: PaymentEvidenceInput) {
     };
   }
   if (input.cashBucket != null || input.shiftId != null) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع غير النقدي لا يرتبط بدرج أو خزينة نقدية." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل سداد السلفة بغير النقد",
+        why: "الطلب البطاقيّ/التحويل/المحفظة وصل مرتبطاً بدرج أو خزينة نقدية، وغير النقد لا يمسّ الدرج",
+        doThis: "امسح خانة «مصدر النقد» (الدرج/الخزينة) وأعد الحفظ، أو غيّر طريقة الدفع إلى النقد",
+      }),
+    });
   }
   if (!referenceNumber) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع التأكيد الخارجي مطلوب للدفع غير النقدي." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل سداد السلفة بغير النقد",
+        why: "الدفع البطاقيّ/التحويل/المحفظة يلزمه مرجع تأكيدٍ خارجيّ (رقم إيصال البطاقة أو رقم التحويل)",
+        doThis: "افتح إيصال جهاز البطاقة أو صورة التحويل، وانسخ رقم المرجع في حقل «رقم التأكيد الخارجي»",
+      }),
+    });
   }
   if (method === "CARD") {
     if (!/^\d{4}$/.test(cardLastFour ?? "")) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "آخر أربعة أرقام للبطاقة مطلوبة بصيغة صحيحة." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل سداد السلفة بالبطاقة",
+          why: "آخر أربعة أرقام للبطاقة إمّا غائبة أو ليست أربعة أرقامٍ صحيحة",
+          doThis: "افتح إيصال جهاز البطاقة واكتب آخر أربعة أرقام حرفياً في الحقل المخصّص",
+        }),
+      });
     }
   } else if (cardLastFour != null) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "أرقام البطاقة لا تُقبل مع التحويل أو المحفظة." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل سداد السلفة بالتحويل/المحفظة",
+        why: "الطلب يحمل آخر أربعة أرقامٍ للبطاقة، وهي لا تخصّ التحويل ولا المحفظة",
+        doThis: "امسح حقل أرقام البطاقة، أو غيّر طريقة الدفع إلى «بطاقة» إن كانت البطاقة هي الأداة الفعلية",
+      }),
+    });
   }
   return {
     paymentMethod: method,
@@ -152,10 +216,24 @@ async function assertActiveMaker(tx: Tx, actor: Actor, branchId: number): Promis
     .for("share")
     .limit(1);
   if (!row?.isActive) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا ينشئ طلب سداد سلفة إلا مستخدم نشط." });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب سداد السلفة",
+        why: "الحساب المُنشئ للطلب موقوف أو محذوف، ولا يقبل النظام إنشاء طلبٍ من مستخدمٍ غير نشط",
+        doThis: "سجّل خروج ودخول بحسابٍ نشط، أو اطلب من المدير تفعيل الحساب من شاشة المستخدمين",
+      }),
+    });
   }
   if (!row.isOwner && actor.role !== "admin" && Number(actor.branchId) !== branchId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز إنشاء طلب سداد سلفة لفرع آخر." });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب سداد السلفة",
+        why: "الطلب يخصّ فرعاً غير فرعك المُسنَد، وعبور الفروع محصورٌ بالمدير والمالك",
+        doThis: "أنشئ الطلب من داخل فرع الموظّف، أو اطلب من المدير التنفيذ نيابةً",
+      }),
+    });
   }
 }
 
@@ -201,7 +279,14 @@ async function createRequestTx(
   await assertActiveMaker(tx, actor, input.branchId);
   const amount = round2(money(input.amount));
   if (!amount.isFinite() || amount.lte(0)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ سداد السلفة يجب أن يكون موجباً." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل سداد السلفة",
+        why: "المبلغ المُرسَل صفرٌ أو سالبٌ أو غير رقميّ",
+        doThis: "أدخل مبلغاً موجباً بالدينار العراقي (أكبر من صفر) وأعد الحفظ",
+      }),
+    });
   }
   const [employee] = await tx
     .select({ id: employees.id })
@@ -209,7 +294,15 @@ async function createRequestTx(
     .where(eq(employees.id, input.employeeId))
     .for("share")
     .limit(1);
-  if (!employee) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود." });
+  if (!employee)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب سداد السلفة",
+        why: "الموظّف المرتبط بالطلب غير موجود في قاعدة البيانات، إمّا حُذف أو أُدخل بمعرّفٍ غير صحيح",
+        doThis: "افتح شاشة الموظفين وتحقّق أنّ الموظّف قائم، ثمّ أعد اختياره من القائمة لا بتحرير معرّفه يدوياً",
+      }),
+    });
 
   const normalizedAmount = toDbMoney(amount);
   const canonical = canonicalPayload({ ...input, amount: normalizedAmount });
@@ -235,7 +328,14 @@ async function createRequestTx(
     .limit(1);
   if (existing) {
     if (existing.sourceHash !== sourceHash) {
-      throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بمحتوى مختلف." });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل طلب سداد السلفة",
+          why: "نفس مفتاح منع التكرار وصل قبل قليل بمحتوىً مختلف عن الطلب الحالي، وإتمامه يعني تنفيذ طلبين بهويّةٍ واحدة",
+          doThis: "حدّث الشاشة ليُولَّد مفتاحٌ جديد، ثمّ أعد الحفظ بالمبلغ والمرجع المعروضَين أمامك",
+        }),
+      });
     }
     return { ...existing, replayed: true };
   }
@@ -263,7 +363,14 @@ async function createRequestTx(
       .where(eq(employeeAdvanceRepaymentRequests.sourceKey, sourceKey))
       .limit(1);
     if (concurrent?.sourceHash === sourceHash) return { ...concurrent, replayed: true };
-    throw new TRPCError({ code: "CONFLICT", message: "مرجع التأكيد أو مفتاح الطلب مستعمل لحركة أخرى." });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل طلب سداد السلفة",
+        why: "مرجع التأكيد الخارجي (إيصال البطاقة أو رقم التحويل) أو مفتاح الطلب مسجَّل لحركةٍ أخرى",
+        doThis: "افتح شاشة سداد السلف وابحث عن الحركة القائمة بهذا المرجع، أو استعمل مرجعاً جديداً غير مكرّر",
+      }),
+    });
   }
 }
 
@@ -272,7 +379,14 @@ export async function createAdvanceRepaymentRequest(input: CreateAdvanceRepaymen
   return withTx(async (tx) => {
     const amount = round2(money(input.amount));
     if (!amount.isFinite() || amount.lte(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ سداد السلفة يجب أن يكون موجباً." });
+      throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل سداد السلفة",
+        why: "المبلغ المُرسَل صفرٌ أو سالبٌ أو غير رقميّ",
+        doThis: "أدخل مبلغاً موجباً بالدينار العراقي (أكبر من صفر) وأعد الحفظ",
+      }),
+    });
     }
     const [replayCandidate] = await tx
       .select({ id: employeeAdvanceRepaymentRequests.id })
@@ -302,7 +416,14 @@ export async function createAdvanceRepaymentRequest(input: CreateAdvanceRepaymen
         ));
       const outstanding = advances.reduce((sum, row) => sum.plus(money(row.remaining)), money(0));
       if (outstanding.lt(amount)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ السداد يتجاوز رصيد سلف الموظف في الفرع." });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل سداد السلفة",
+            why: "المبلغ المُرسَل أكبر من إجمالي الرصيد المتبقّي لسلف الموظّف النشطة في فرعه",
+            doThis: "افتح شاشة سلف الموظّف وتحقّق من الرصيد الفعليّ، ثمّ قسّم السداد أو خفّض المبلغ ليطابق الرصيد",
+          }),
+        });
       }
     }
     return createRequestTx(tx, {
@@ -327,7 +448,14 @@ export async function createAdvanceRepaymentReturnRequest(input: CreateAdvanceRe
       .for("update")
       .limit(1);
     if (!original || original.requestKind !== "REPAYMENT" || original.status !== "APPROVED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُعكس إلا طلب سداد معتمد." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب إعادة سداد السلفة",
+          why: "الطلب الأصليّ ليس سداداً أو ليس معتمداً — لا يُعكس إلّا سدادٌ مُعتمَد ودائم",
+          doThis: "افتح شاشة طلبات السداد وابحث عن طلبٍ حالته «معتمد»، ثمّ افتحه ثمّ اضغط «إعادة»",
+        }),
+      });
     }
     const requestInput = {
       requestKind: "RETURN" as const,
@@ -358,7 +486,14 @@ export async function createAdvanceRepaymentReturnRequest(input: CreateAdvanceRe
       .for("update")
       .limit(1);
     if (activeReturn) {
-      throw new TRPCError({ code: "CONFLICT", message: "يوجد طلب إعادة قائم لهذا السداد." });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب إعادة سداد السلفة",
+          why: "لهذا السداد الأصليّ طلبُ إعادةٍ قائم بالفعل (معلَّق أو معتمَد)، ولا يُنشأ طلبُ إعادةٍ ثانٍ فوق قائم",
+          doThis: "افتح شاشة طلبات السداد ورشّح على السداد الأصليّ لترى الطلب القائم، ثمّ تابعه (اعتماد/رفض) قبل إنشاء آخر",
+        }),
+      });
     }
     return createRequestTx(tx, requestInput, actor);
   });
@@ -471,7 +606,15 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
       .from(employeeAdvanceRepaymentRequests)
       .where(eq(employeeAdvanceRepaymentRequests.id, id))
       .limit(1);
-    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "طلب سداد السلفة غير موجود." });
+    if (!preview)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب سداد السلفة",
+          why: "الطلب المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة طلبات سداد السلف واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+        }),
+      });
     // Global close/materialization order: posting gate → cash source → owner → request.
     // The later postEntry call reacquires the shared gate reentrantly.
     await lockFinancialPostingGate(tx);
@@ -511,7 +654,14 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
         approved.receiptId == null ||
         approved.accountingEntryId == null
       ) {
-        throw new TRPCError({ code: "CONFLICT", message: "طلب السداد المعتمد بلا أثر مالي كامل أو تغير أثناء الإعادة." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة محاولة اعتماد سداد السلفة",
+            why: "الطلب معتمد لكن لا يحمل معرّف إيصالٍ أو قيدٍ محاسبيّ كاملَين، أو تغيّر أحدهما بعد الاعتماد الأصليّ",
+            doThis: "افتح تفاصيل الطلب المعتمد لمراجعة الإيصال والقيد، ثمّ اطلب من المدير معالجة الطلب يدوياً",
+          }),
+        });
       }
       return { ...approved, replayed: true };
     }
@@ -535,16 +685,37 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
       .for("update")
       .limit(1);
     if (!request || request.sourceHash !== preview.sourceHash) {
-      throw new TRPCError({ code: "CONFLICT", message: "تغير طلب سداد السلفة أثناء الاعتماد." });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد طلب سداد السلفة",
+          why: "الطلب تغيّر (مبلغ أو موظّف أو مرجع) بين لحظة فتحه للمراجعة ولحظة الاعتماد",
+          doThis: "أغلق الشاشة وأعد فتح الطلب من القائمة لعرض نسخته الحالية، ثمّ راجعها ثمّ اعتمد",
+        }),
+      });
     }
     if (request.status === "APPROVED") {
       if (request.receiptId == null || request.accountingEntryId == null) {
-        throw new TRPCError({ code: "CONFLICT", message: "طلب سداد معتمد بلا أثر مالي كامل." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إتمام اعتماد طلب سداد السلفة",
+            why: "الطلب مسجَّل معتمداً في القاعدة، لكن لا يحمل معرّف إيصالٍ أو قيدٍ محاسبيّ كاملَين",
+            doThis: "افتح تفاصيل الطلب لمراجعة الإيصال والقيد، ثمّ اطلب من المدير إعادة الترحيل يدوياً",
+          }),
+        });
       }
       return { ...request, replayed: true };
     }
     if (request.status !== "PENDING") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يعتمد إلا طلب سداد معلق." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد طلب سداد السلفة",
+          why: "الطلب ليس بحالة «معلَّق» — لا يُعتمد إلّا طلبٌ حالته معلَّقٌ بانتظار المراجع",
+          doThis: "ارجع لقائمة طلبات سداد السلف ورشّح على «المعلَّق» لعرض ما يقبل الاعتماد",
+        }),
+      });
     }
     const [employee] = await tx
       .select({
@@ -557,7 +728,15 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
       .where(eq(employees.id, Number(request.employeeId)))
       .for("share")
       .limit(1);
-    if (!employee) throw new TRPCError({ code: "CONFLICT", message: "موظف طلب سداد السلفة مفقود." });
+    if (!employee)
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد طلب سداد السلفة",
+          why: "الموظّف المرتبط بالطلب لم يعد موجوداً — حُذف أو نُقل بمعرّفٍ جديد بعد إنشاء الطلب",
+          doThis: "ارفض هذا الطلب واطلب من الموظّف إعادة إنشائه بحسابه الحاليّ من شاشة سداد السلف",
+        }),
+      });
     const employeeName = fullEmployeeName(employee) || `موظف #${request.employeeId}`;
 
     let applyAdvances: Array<typeof employeeAdvances.$inferSelect> = [];
@@ -576,7 +755,14 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
         .for("update");
       const outstanding = applyAdvances.reduce((sum, row) => sum.plus(money(row.remaining)), money(0));
       if (outstanding.lt(money(request.amount))) {
-        throw new TRPCError({ code: "CONFLICT", message: "رصيد السلف تغير وأصبح أقل من مبلغ الطلب؛ ارفض الطلب وأنشئ آخر." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد طلب سداد السلفة",
+            why: "الرصيد المتبقّي لسلف الموظّف تراجع بعد إنشاء الطلب فصار أقلّ من المبلغ المطلوب سداده",
+            doThis: "ارفض هذا الطلب وأنشئ طلباً جديداً بالرصيد الحاليّ من شاشة سداد السلف",
+          }),
+        });
       }
     } else {
       const [original] = await tx
@@ -591,7 +777,14 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
         Number(original.branchId) !== Number(request.branchId) ||
         !money(original.amount).eq(money(request.amount)) || original.receiptId == null
       ) {
-        throw new TRPCError({ code: "CONFLICT", message: "أصل إعادة السداد غير متطابق أو غير مكتمل." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد طلب إعادة سداد السلفة",
+            why: "الطلب الأصليّ لم يعد سداداً معتمَداً مكتملاً، أو تغيّرت هويّته (موظّف أو فرع أو مبلغ) عن نسخة الطلب الحاليّ",
+            doThis: "ارفض طلب الإعادة وأعد إنشاءه من صفحة السداد الأصليّ لضمان التطابق",
+          }),
+        });
       }
       const [otherApprovedReturn] = await tx
         .select({ id: employeeAdvanceRepaymentRequests.id })
@@ -603,7 +796,15 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
           ne(employeeAdvanceRepaymentRequests.id, Number(request.id)),
         ))
         .limit(1);
-      if (otherApprovedReturn) throw new TRPCError({ code: "CONFLICT", message: "سداد السلفة أُعيد فعلياً من قبل." });
+      if (otherApprovedReturn)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد طلب إعادة سداد السلفة",
+            why: "لهذا السداد الأصليّ إعادةٌ معتمَدةٌ فعلاً في طلبٍ آخر، ولا تُعتمد إعادةٌ ثانية فوق قائمة",
+            doThis: "ارفض هذا الطلب، وافتح شاشة سداد السلف لعرض الإعادة القائمة",
+          }),
+        });
       const allocationPreview = await tx
         .select({
           id: employeeAdvanceRepaymentAllocations.id,
@@ -642,12 +843,23 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "تغيّرت سلف أو تخصيصات السداد أثناء اعتماد الإعادة؛ أعد المحاولة.",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد طلب إعادة سداد السلفة",
+            why: "سلف الموظّف أو تخصيصات السداد الأصليّ تغيّرت (عدد الصفوف اختلف) بين لحظة الفحص ولحظة الاعتماد",
+            doThis: "أعد فتح الطلب من قائمة سداد السلف لعرض النسخة الحاليّة، ثمّ اعتمد",
+          }),
         });
       }
       const total = reverseAllocations.reduce((sum, row) => sum.plus(money(row.amount)), money(0));
       if (!total.eq(money(request.amount)) || reverseAllocations.length === 0) {
-        throw new TRPCError({ code: "CONFLICT", message: "تخصيصات السداد الأصلي ناقصة أو غير متوازنة." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد طلب إعادة سداد السلفة",
+            why: "مجموع تخصيصات السداد الأصليّ لا يطابق مبلغ الطلب، أو لا يوجد له أيّ تخصيص",
+            doThis: "ارفض هذا الطلب واطلب من المدير إعادة تسجيل السداد الأصليّ بتخصيصاته الصحيحة",
+          }),
+        });
       }
       originalReceiptId = Number(original.receiptId);
       const [originalReceipt] = await tx
@@ -657,7 +869,14 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
         .for("update")
         .limit(1);
       if (!originalReceipt || originalReceipt.status !== "COMPLETED") {
-        throw new TRPCError({ code: "CONFLICT", message: "إيصال السداد الأصلي غير صالح للإعادة." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد طلب إعادة سداد السلفة",
+            why: "إيصال السداد الأصليّ ليس بحالة «مكتمل» — قد يكون ملغىً أو معاداً، فلا يقبل إعادة",
+            doThis: "افتح الإيصال الأصليّ للتحقّق من حالته، ثمّ ارفض هذا الطلب إن لم يعد الإيصال قابلاً للإعادة",
+          }),
+        });
       }
       if (request.paymentMethod === "CASH") {
         await assertCashOutAvailable(tx, {
@@ -696,15 +915,38 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
           createdBy: actor.userId,
         });
       }
-      if (!left.isZero()) throw new TRPCError({ code: "CONFLICT", message: "تعذر تخصيص كامل مبلغ السداد على السلف." });
+      if (!left.isZero())
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد طلب سداد السلفة",
+            why: "بقيَ جزءٌ من مبلغ السداد لم يجد سلفةً نشطة يُخصَم عليها بعد توزيع الرصيد المتاح",
+            doThis: "ارفض هذا الطلب وأنشئ طلباً جديداً بالرصيد الفعليّ من شاشة سداد السلف",
+          }),
+        });
     } else {
       const advancesById = new Map(applyAdvances.map((row) => [Number(row.id), row]));
       for (const allocation of reverseAllocations) {
         const advance = advancesById.get(Number(allocation.advanceId));
-        if (!advance) throw new TRPCError({ code: "CONFLICT", message: "سلفة تخصيص الإعادة مفقودة." });
+        if (!advance)
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر اعتماد طلب إعادة سداد السلفة",
+              why: "إحدى السلف التي خُصم عليها السداد الأصليّ لم تعد موجودة في قاعدة البيانات",
+              doThis: "ارفض هذا الطلب واطلب من المدير التحقّق من سلف الموظّف قبل إعادة إنشاء طلب الإعادة",
+            }),
+          });
         const restored = round2(money(advance.remaining).plus(money(allocation.amount)));
         if (restored.gt(money(advance.amount))) {
-          throw new TRPCError({ code: "CONFLICT", message: "إعادة السداد تتجاوز أصل السلفة." });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر اعتماد طلب إعادة سداد السلفة",
+              why: "إعادة التخصيص على إحدى السلف ستجعل رصيدها المتبقّي أكبر من مبلغها الأصليّ",
+              doThis: "ارفض هذا الطلب واطلب من المدير التحقّق من أرصدة سلف الموظّف قبل الإعادة",
+            }),
+          });
         }
         await tx.update(employeeAdvances).set({ remaining: toDbMoney(restored), status: "ACTIVE" })
           .where(eq(employeeAdvances.id, Number(advance.id)));
@@ -747,7 +989,14 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
 export async function rejectAdvanceRepaymentRequest(id: number, reason: string, actor: Actor) {
   const normalizedReason = reason.trim();
   if (normalizedReason.length < 5 || normalizedReason.length > 255) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الرفض يجب أن يكون بين 5 و255 محرفاً." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر رفض طلب سداد السلفة",
+        why: "سبب الرفض المُرسَل خارج المدى المسموح (5-255 محرفاً) — لا يُكتفى بحرفٍ أو حرفَين",
+        doThis: "اكتب سبب الرفض بجملةٍ واضحة تشرح للطالب ما يُصلحه، بين 5 و255 محرفاً",
+      }),
+    });
   }
   return withTx(async (tx) => {
     const [preview] = await tx
@@ -755,7 +1004,15 @@ export async function rejectAdvanceRepaymentRequest(id: number, reason: string, 
       .from(employeeAdvanceRepaymentRequests)
       .where(eq(employeeAdvanceRepaymentRequests.id, id))
       .limit(1);
-    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "طلب سداد السلفة غير موجود." });
+    if (!preview)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب سداد السلفة",
+          why: "الطلب المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة طلبات سداد السلف واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+        }),
+      });
     const [original] = preview.requestKind === "RETURN" && preview.originalRequestId != null
       ? await tx
           .select({
@@ -779,16 +1036,37 @@ export async function rejectAdvanceRepaymentRequest(id: number, reason: string, 
       .for("update")
       .limit(1);
     if (!request || request.sourceHash !== preview.sourceHash) {
-      throw new TRPCError({ code: "CONFLICT", message: "تغير طلب سداد السلفة أثناء الرفض." });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر رفض طلب سداد السلفة",
+          why: "الطلب تغيّر (مبلغ أو موظّف أو مرجع) بين لحظة فتحه للمراجعة ولحظة الرفض",
+          doThis: "أغلق الشاشة وأعد فتح الطلب من قائمة سداد السلف لعرض نسخته الحاليّة، ثمّ راجعها ثمّ ارفض بسببٍ محدَّث",
+        }),
+      });
     }
     if (request.status === "REJECTED") {
       if (request.rejectionReason !== normalizedReason) {
-        throw new TRPCError({ code: "CONFLICT", message: "سبب إعادة المحاولة لا يطابق السبب المحفوظ." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة محاولة رفض طلب سداد السلفة",
+            why: "الطلب مرفوضٌ سابقاً بسببٍ مسجَّل، ومحاولة الرفض الجديدة تحمل سبباً مختلفاً — لا يتغيّر سبب رفضٍ منجَز",
+            doThis: "افتح الطلب المرفوض لعرض السبب المسجَّل، وأعد المحاولة بنفس السبب إن أردت التأكيد أو أعد فتحه لإدخال سببٍ جديد",
+          }),
+        });
       }
       return { ...request, replayed: true };
     }
     if (request.status !== "PENDING") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يرفض إلا طلب سداد معلق." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر رفض طلب سداد السلفة",
+          why: "الطلب ليس بحالة «معلَّق» — لا يُرفض إلّا طلبٌ حالته معلَّقٌ بانتظار المراجع",
+          doThis: "ارجع لقائمة طلبات سداد السلف ورشّح على «المعلَّق» لعرض ما يقبل الرفض",
+        }),
+      });
     }
     const reviewedAt = new Date();
     await tx.update(employeeAdvanceRepaymentRequests).set({
@@ -803,7 +1081,14 @@ export async function rejectAdvanceRepaymentRequest(id: number, reason: string, 
 
 export async function listAdvanceRepaymentRequests(filters?: AdvanceRepaymentFilters) {
   if (filters?.branchId != null && (!Number.isInteger(filters.branchId) || filters.branchId <= 0)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "نطاق الفرع مطلوب." });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر عرض طلبات سداد السلف",
+        why: "الجلسة الحاليّة بلا فرعٍ مُسنَد، والاطّلاع محصورٌ بفرع الموظّف",
+        doThis: "اخرج ثم ادخل بمستخدمٍ له فرعٌ مُسنَد، أو اطلب من المدير تحديد فرعك من شاشة المستخدمين",
+      }),
+    });
   }
   const where = [
     filters?.requestKind ? eq(employeeAdvanceRepaymentRequests.requestKind, filters.requestKind) : undefined,
@@ -851,7 +1136,14 @@ export async function listAdvanceRepaymentRequests(filters?: AdvanceRepaymentFil
 export async function getAdvanceRepaymentRequest(id: number, branchId?: number) {
   const db = requireDb();
   if (branchId != null && (!Number.isInteger(branchId) || branchId <= 0)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "نطاق الفرع مطلوب." });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر عرض طلبات سداد السلف",
+        why: "الجلسة الحاليّة بلا فرعٍ مُسنَد، والاطّلاع محصورٌ بفرع الموظّف",
+        doThis: "اخرج ثم ادخل بمستخدمٍ له فرعٌ مُسنَد، أو اطلب من المدير تحديد فرعك من شاشة المستخدمين",
+      }),
+    });
   }
   const rows = await db
     .select({
@@ -868,7 +1160,15 @@ export async function getAdvanceRepaymentRequest(id: number, branchId?: number) 
       branchId != null ? eq(employeeAdvanceRepaymentRequests.branchId, branchId) : undefined,
     ))
     .limit(1);
-  if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "طلب سداد السلفة غير موجود ضمن النطاق." });
+  if (!rows[0])
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح طلب سداد السلفة",
+        why: "الطلب المطلوب إمّا حُذف، أو يخصّ فرعاً خارج نطاقك",
+        doThis: "ارجع لقائمة طلبات سداد السلف واختر الطلب من قائمة فرعك، أو اطلب من المدير التحقّق من نطاقك",
+      }),
+    });
   const allocations = await db
     .select()
     .from(employeeAdvanceRepaymentAllocations)
