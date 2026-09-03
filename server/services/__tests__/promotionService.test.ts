@@ -451,7 +451,8 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
     expect(Number(after[0].branchId)).toBe(1);
   });
 
-  it("المالك المُنشئ لا يعتمد سند تسويته بنفسه (فصل مهام SOD-04)", async () => {
+  // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — المالكُ يعتمد سند تسويته الخاصّ بنفسه.
+  it("المالك المُنشئ يعتمد سند تسويته بنفسه (قرار المالك ٣/٩/٢٦: لا اعتماد ثانٍ بعد المالك)", async () => {
     await db().insert(s.users).values({
       id: 6, openId: "self-approving-owner", name: "مالك منشئ", role: "manager",
       branchId: 1, loginMethod: "local", isOwner: true,
@@ -474,15 +475,26 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       ACTOR,
     );
     const res = await completeTermination(t!.id, ownerMaker);
-    await expect(
-      approveVoucher(res.settlementVoucher!.receiptId, ownerMaker),
-    ).rejects.toThrow(/صانع الطلب|أنشأته بنفسك/);
-    // لا أثر ماليّ (لم يُعتمَد).
+    // تمويلُ الخزينة (كنظير الاختبار أعلاه) — الاعتمادُ الذاتيّ لا يُعفي من فحص كفاية النقد.
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "500000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-SELF-APPROVE-FUND", createdBy: 3,
+    });
+    const ap = await approveVoucher(res.settlementVoucher!.receiptId, ownerMaker);
+    expect(ap.approvalStatus).toBe("APPROVED");
+    const [rc] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, res.settlementVoucher!.receiptId));
+    expect(rc.createdBy).toBe(6);
+    expect(rc.approvedBy).toBe(6); // الأثر التدقيقيّ يبقى كاملاً رغم الاعتماد الذاتيّ.
     const entries = await db()
       .select()
       .from(s.accountingEntries)
       .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
-    expect(entries.length).toBe(0);
+    expect(entries.length).toBe(1);
+    expect(Number(entries[0].amount)).toBe(500000);
   });
 
   it("تسوية صفرية لا تُنشئ سنداً ولا قيداً", async () => {

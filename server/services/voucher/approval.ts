@@ -457,7 +457,11 @@ export interface ApproveVoucherResult {
 
 /** اعتماد سند مُعلَّق (Maker-Checker): يُسجّل الأثر المالي ويُختم بـsignatureHash.
  *
- * عقد المالك: المُعتمِد حساب users نشط وisOwner=true، ومختلف عن المُنشئ بلا استثناء دور.
+ * عقد المالك: المُعتمِد حساب users نشط وisOwner=true — هذا وحده هو الحارس (٣/٩/٢٦).
+ * ⭐ **قرار المالك:** «لا اعتماد ثانٍ بعد المالك؛ المالك أعلى سلطة» — أُزيل شرط «مختلفٌ عن
+ * المُنشئ» الذي كان يمنع مالكاً وحيداً فعّالاً (يُنشئ سنداته ويعتمدها بنفسه) من اعتماد أيّ سندٍ
+ * أنشأه هو شخصياً، رغم وجود مُلّاكٍ آخرين نشطين في النظام لم يكونوا طرفاً في ذلك السند تحديداً.
+ * الاعتمادُ الذاتيّ للمالك يبقى كاملَ الأثر التدقيقيّ: createdBy وapprovedBy يُسجَّلان كما هما.
  * إعادة اعتماد سند APPROVED idempotent: تعيد البصمة بلا أي كتابة أو أثر مالي ثانٍ.
  */
 export async function approveVoucher(
@@ -744,12 +748,9 @@ export async function approveVoucher(
         message: "تغيّر مصدر السند النقدي أثناء الاعتماد — أعد المحاولة",
       });
     }
-    if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
-      });
-    }
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ فوق المالك — أُزيل شرط «غير صانع الطلب».
+    // البوّابة الوحيدة الباقية أعلاه: أن يكون المُعتمِد مالكاً نشطاً فعلاً. createdBy/approvedBy
+    // يبقيان مسجَّلين فيكشف أيّ تقريرٍ الاعتمادَ الذاتيّ إن احتاج أحدٌ مراجعته لاحقاً.
     const systemRequest = parseSystemPaymentRequest(r.internalNote);
     if (
       JSON.stringify(systemRequest) !== JSON.stringify(systemRequestPreview)
@@ -847,15 +848,7 @@ export async function approveVoucher(
           message: "سند القبض الأصلي تغيّر أو لم يعد صالحاً للإلغاء",
         });
       }
-      if (
-        cancellationOriginal.createdBy != null &&
-        Number(cancellationOriginal.createdBy) === actor.userId
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "لا يجوز لمن أنشأ القبض اعتماد إلغائه — يلزم مالك آخر",
-        });
-      }
+      // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ فوق المالك (انظر الشرح أعلى الدالّة).
       cancellationSourceRequest = parseSystemPaymentRequest(
         cancellationOriginal.internalNote,
       );
@@ -2144,13 +2137,7 @@ export async function rejectVoucher(
         message: "السند ملغى — لا يمكن رفضه (الإلغاء أنهى الطلب أصلاً)",
       });
     }
-    if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يجوز رفض سند أنشأته بنفسك — يلزم مالك آخر",
-      });
-    }
-
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ فوق المالك — الرفض كالاعتماد سواء.
     const trimmedReason = reason.trim().slice(0, 500);
     if (!trimmedReason) {
       throw new TRPCError({

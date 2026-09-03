@@ -776,9 +776,8 @@ export async function approveWorkOrderCancellationRefund(
     if (!refund || !refund.internalNote?.startsWith("WORK_ORDER_CUSTOMER_REFUND:")) {
       throw new TRPCError({ code: "NOT_FOUND", message: "طلب رد عربون أمر الشغل غير موجود" });
     }
-    if (refund.createdBy != null && Number(refund.createdBy) === actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمن أنشأ طلب الرد اعتماده" });
-    }
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — أُزيل شرط «غير صانع الطلب» (كما في
+    // approveVoucher/authorizeExternalTreasuryDisbursement). البوّابة أعلاه (isOwner نشط) تبقى.
     if (refund.status === "COMPLETED" && refund.approvalStatus === "APPROVED") {
       if (refund.referenceNumber !== confirmedReference) {
         throw new TRPCError({ code: "CONFLICT", message: "مرجع تنفيذ الاسترداد لا يطابق الاعتماد السابق" });
