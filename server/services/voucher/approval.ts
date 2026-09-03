@@ -770,18 +770,14 @@ export async function approveVoucher(
     // التصنيفُ يُشتقّ من `systemRequestPreview` لا من `systemRequest` كي يبقى الفحصُ في
     // موضعه الأصليّ بلا إعادة ترتيب؛ وتطابُقُهما مفروضٌ في السطور التالية مباشرةً، وأيُّ
     // اختلافٍ يرمي `CONFLICT` فيتراجع كلُّ شيء — فلا مسارَ يمرّ بتصنيفٍ منحرف.
-    const approveRetainsLegacySelfApproval = voucherApprovalRetainsLegacy(
-      r.direction,
-      systemRequestPreview?.kind ?? null,
-    );
     assertApprover({
       actor: await resolveApprovalActor(tx, actor),
       trigger: voucherApprovalTrigger(r.direction, systemRequestPreview?.kind ?? null),
-      retainLegacy: approveRetainsLegacySelfApproval,
+      retainLegacy: voucherApprovalRetainsLegacy(r.direction, systemRequestPreview?.kind ?? null),
       subject: `سند ${r.voucherNumber}`,
       legacy: () => {
         if (
-          approveRetainsLegacySelfApproval &&
+          voucherApprovalRetainsLegacy(r.direction, systemRequestPreview?.kind ?? null) &&
           r.createdBy != null &&
           Number(r.createdBy) === actor.userId
         ) {
@@ -894,18 +890,14 @@ export async function approveVoucher(
       // صرفٍ يُنتج `IN` على مستندٍ منشور (محوُ أثر). ⭐ قرار المالك (٣/٩/٢٦، الشرح أعلى الدالّة):
       // فصلُ المهام الثاني — منشئُ **القبض الأصليّ** لا يعتمد إلغاءه — أُلغي هنا مباشرةً بلا
       // انتظار علَم `ownerOnlyApproval`.
-      const cancellationRetainsLegacySelfApproval = voucherApprovalRetainsLegacy(
-        r.direction,
-        systemRequest.kind,
-      );
       assertApprover({
         actor: await resolveApprovalActor(tx, actor),
         trigger: voucherApprovalTrigger(r.direction, systemRequest.kind),
-        retainLegacy: cancellationRetainsLegacySelfApproval,
+        retainLegacy: voucherApprovalRetainsLegacy(r.direction, systemRequest.kind),
         subject: `إلغاء سند ${cancellationOriginal.voucherNumber}`,
         legacy: () => {
           if (
-            cancellationRetainsLegacySelfApproval &&
+            voucherApprovalRetainsLegacy(r.direction, systemRequest.kind) &&
             cancellationOriginal!.createdBy != null &&
             Number(cancellationOriginal!.createdBy) === actor.userId
           ) {
@@ -2217,7 +2209,9 @@ export async function rejectVoucher(
       actor: await resolveApprovalActor(tx, actor),
       trigger: null,
       subject: `رفض سند ${r.voucherNumber}`,
-      legacy: () => {},
+      legacy: () => {
+        // القديمُ "لا يجوز رفض سند أنشأته بنفسك — يلزم مالك آخر" أُلغي عمداً (الرفضُ حرّ).
+      },
     });
 
     const trimmedReason = reason.trim().slice(0, 500);
