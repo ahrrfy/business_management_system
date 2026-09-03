@@ -6,6 +6,7 @@ import {
   legacyIdempotencyHash,
   payloadHashMatches,
   recordIdempotencyKey,
+  runWithLegacyHashScope,
   withIdempotency,
 } from "../idempotency";
 import { withTx } from "../tx";
@@ -70,6 +71,28 @@ describe("idempotencyHash — مستقرّ عبر رحلة التخزين في �
     expect(payloadHashMatches(currentA, currentA)).toBe(true);
     expect(payloadHashMatches(currentA, legacyIdempotencyHash({ c: 1 }))).toBe(false);
     expect(payloadHashMatches(currentA, null)).toBe(false);
+  });
+
+  // Codex جولة ٤: المرشّح محلّيٌّ للطلب — طلبٌ متزامن (نطاقٌ آخر) لا يستطيع طرح مرشّح الطلب الجاري
+  // مهما بلغ عدده، ولا يرى مرشّحاته أصلاً.
+  it("النطاق المحلّي للطلب يعزل المرشّحات: تزاحمُ نطاقٍ آخر لا يطرح مرشّح الطلب الجاري", async () => {
+    const mine = { mine: undefined };
+    const current = idempotencyHash({ other0: undefined });
+    await runWithLegacyHashScope(async () => {
+      expect(idempotencyHash(mine)).toBe(current);
+      // «طلبات متزامنة» كثيرة في نطاقاتٍ أخرى بنفس البصمة الحالية وبصماتٍ قديمة مختلفة.
+      await Promise.all(
+        Array.from({ length: 40 }, (_, i) =>
+          runWithLegacyHashScope(async () => {
+            await Promise.resolve();
+            expect(idempotencyHash({ [`other${i}`]: undefined })).toBe(current);
+          }),
+        ),
+      );
+      await Promise.resolve();
+      expect(payloadHashMatches(current, legacyIdempotencyHash(mine))).toBe(true);
+      expect(payloadHashMatches(current, legacyIdempotencyHash({ other7: undefined }))).toBe(false);
+    });
   });
 
   it("سقفُ المرشّحات لكلّ بصمة حالية: الأحدث يبقى والأقدم يُطرَح — لا نموّ بلا حدّ", () => {

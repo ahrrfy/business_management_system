@@ -8,6 +8,7 @@
 // بحمولةٍ مختلفة** (كان يُعيد النتيجة القديمة صامتاً — خطأ عميل/إعادة إرسالٍ ملوَّثة). الـhash قانونيّ
 // (مفاتيح مرتّبة) فإعادةُ الإرسال بنفس المدخل تُنتج نفس الـhash على أي جهاز/ترتيب.
 import { and, eq } from "drizzle-orm";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { idempotencyKeys } from "../../drizzle/schema";
@@ -67,8 +68,21 @@ const LEGACY_HASH_CACHE_LIMIT = 4096;
  * كلُّ البصمات القديمة المحتملة لكلّ بصمةٍ حالية — **مجموعةٌ لا قيمةٌ واحدة** (Codex، جولة ٢): حمولتان
  * مختلفتان قد تتشاركان البصمة الحالية وتختلفان في القديمة (`{a: undefined}` و`{b: undefined}` كلتاهما
  * `{}` بعد التطبيع)، فقيمةٌ واحدة قابلة للاستبدال كانت تُسقط مفتاحاً صالحاً تحت طلبين متزامنين.
+ *
+ * **محلّيةٌ للطلب** (Codex، جولة ٤): المخزنُ الحيّ هو خريطةُ الطلب الجاري (AsyncLocalStorage يفتحها
+ * وسيط Express مبكراً — `runWithLegacyHashScope`)، فلا يستطيع طلبٌ متزامن أن يطرح مرشّح طلبٍ آخر
+ * مهما بلغ التزامن؛ وتموت مع الطلب. الخريطةُ العامّة المحدودة **احتياطٌ** لما يجري خارج طلبٍ
+ * (سكربتات/اختبارات/وظائف الخلفية) فقط.
  */
-const legacyHashesByCurrent = new Map<string, Set<string>>();
+const legacyHashScope = new AsyncLocalStorage<Map<string, Set<string>>>();
+const globalLegacyHashesByCurrent = new Map<string, Set<string>>();
+function legacyHashesByCurrentStore(): Map<string, Set<string>> {
+  return legacyHashScope.getStore() ?? globalLegacyHashesByCurrent;
+}
+/** يفتح نطاقَ مرشّحاتٍ خاصّاً بالطلب الجاري — يُستدعى من وسيط Express لكلّ طلب. */
+export function runWithLegacyHashScope<T>(fn: () => T): T {
+  return legacyHashScope.run(new Map(), fn);
+}
 /**
  * سقفُ المرشّحات لكلّ بصمةٍ حالية (Codex، جولة ٣): حمولاتٌ متطابقة JSON تختلف في مواضع
  * `undefined` (عقد طلب الشراء: ثلاثة حقول nullish × ٢٠٠ سطر) كانت تُنمّي مجموعةً واحدة بلا حدّ.
@@ -77,6 +91,7 @@ const legacyHashesByCurrent = new Map<string, Set<string>>();
 const LEGACY_CANDIDATES_PER_HASH = 8;
 function rememberLegacyHash(current: string, legacy: string): void {
   if (current === legacy) return;
+  const legacyHashesByCurrent = legacyHashesByCurrentStore();
   const existing = legacyHashesByCurrent.get(current);
   if (existing) {
     if (existing.has(legacy)) return;
@@ -106,7 +121,7 @@ export function legacyIdempotencyHash(payload: unknown): string {
 export function payloadHashMatches(currentHash: string, storedHash: string | null | undefined): boolean {
   if (storedHash == null) return false;
   if (currentHash === storedHash) return true;
-  return legacyHashesByCurrent.get(currentHash)?.has(storedHash) ?? false;
+  return legacyHashesByCurrentStore().get(currentHash)?.has(storedHash) ?? false;
 }
 
 /**
