@@ -84,6 +84,7 @@ export function PurchaseReturnGovernanceWorkspace({
   pendingReturns,
   pendingReversals,
   currentUserId,
+  isOwner,
   loadingSources,
   sourcesError,
   onRetrySources,
@@ -105,6 +106,7 @@ export function PurchaseReturnGovernanceWorkspace({
   pendingReturns: GovernanceQueueRow[];
   pendingReversals: GovernanceQueueRow[];
   currentUserId: number | null | undefined;
+  isOwner?: boolean;
   loadingSources: boolean;
   sourcesError?: unknown;
   onRetrySources: () => void;
@@ -307,6 +309,7 @@ export function PurchaseReturnGovernanceWorkspace({
         scope="purchase-return"
         rows={pendingReturns}
         currentUserId={currentUserId}
+        isOwner={isOwner}
         loading={pendingReturnLoading}
         error={pendingReturnError}
         pending={decisionPending}
@@ -318,6 +321,7 @@ export function PurchaseReturnGovernanceWorkspace({
         scope="purchase-return-reversal"
         rows={pendingReversals}
         currentUserId={currentUserId}
+        isOwner={isOwner}
         loading={pendingReversalLoading}
         error={pendingReversalError}
         pending={decisionPending}

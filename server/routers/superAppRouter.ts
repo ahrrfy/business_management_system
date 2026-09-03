@@ -19,7 +19,6 @@ import {
   gte,
   inArray,
   isNull,
-  ne,
   notExists,
   or,
   sql,
@@ -95,8 +94,12 @@ const quietTime = z
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "الوقت يجب أن يكون HH:mm")
   .nullable();
 
-/** نفس سلامة طلب المصروف التي تتطلبها خدمة الاعتماد؛ لا نعرض قراراً سيفشل حتماً عند تنفيذه. */
-function actionableExpenseApprovalWhere(ownerUserId: number) {
+/**
+ * نفس سلامة طلب المصروف التي تتطلبها خدمة الاعتماد؛ لا نعرض قراراً سيفشل حتماً عند تنفيذه.
+ * ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — استثناء صانع الطلب أُلغي (كل مواضع
+ * الاستدعاء الثلاثة تشترط `isOwner` أصلاً قبل استدعاء هذه الدالّة).
+ */
+function actionableExpenseApprovalWhere() {
   return and(
     eq(expenses.status, "PENDING_APPROVAL"),
     eq(expenses.source, "CASH"),
@@ -112,7 +115,6 @@ function actionableExpenseApprovalWhere(ownerUserId: number) {
     isNull(receipts.reservationId),
     isNull(receipts.voucherNumber),
     sql`${expenses.createdBy} IS NOT NULL`,
-    ne(expenses.createdBy, ownerUserId),
     sql`${receipts.branchId} <=> ${expenses.branchId}`,
     sql`${receipts.amount} <=> ${expenses.amount}`,
     sql`${receipts.paymentMethod} <=> ${expenses.paymentMethod}`,
@@ -538,7 +540,7 @@ export const superAppRouter = router({
                 .select({ count: sql<number>`count(*)` })
                 .from(expenses)
                 .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
-                .where(actionableExpenseApprovalWhere(ctx.user.id))
+                .where(actionableExpenseApprovalWhere())
                 .then((rows) => rows[0])
             : Promise.resolve({ count: 0 }),
         ]);
@@ -1737,7 +1739,7 @@ export const superAppRouter = router({
                 })
                 .from(expenses)
                 .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
-                .where(actionableExpenseApprovalWhere(ctx.user.id))
+                .where(actionableExpenseApprovalWhere())
                 .orderBy(desc(expenses.createdAt))
                 .limit(sourceLimit)
             : Promise.resolve([]),
@@ -1845,7 +1847,12 @@ export const superAppRouter = router({
           })),
         ...voucherRows
           .filter(
-            (row) => role === "admin" || Number(row.createdBy) !== ctx.user.id,
+            // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ نشط يرى سنده الخاص
+            // في صندوق الاعتماد ويقرّره بنفسه، لا أن يُخفى عنه.
+            (row) =>
+              role === "admin" ||
+              ctx.user.isOwner === true ||
+              Number(row.createdBy) !== ctx.user.id,
           )
           .map((row) => ({
             kind: "voucher" as const,
@@ -1865,8 +1872,9 @@ export const superAppRouter = router({
               duplicatePolicy: "state_transition_guard" as const,
             },
           })),
+        // ⭐ قرار المالك (٣/٩/٢٦): بلا فلترة صانع الطلب — الاستعلام نفسه (actionableExpenseApprovalWhere)
+        // لا يُنفَّذ إلا لمالكٍ نشط أصلاً (أعلاه)، ولم يعد يستثني منشئ الطلب.
         ...expenseRows
-          .filter((row) => Number(row.createdBy) !== ctx.user.id)
           .map((row) => ({
             kind: "expense" as const,
             id: Number(row.id),
@@ -2098,7 +2106,13 @@ export const superAppRouter = router({
             ),
           )
           .limit(1);
-        if (!row || (role !== "admin" && Number(row.createdBy) === ctx.user.id))
+        // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك.
+        if (
+          !row ||
+          (role !== "admin" &&
+            ctx.user.isOwner !== true &&
+            Number(row.createdBy) === ctx.user.id)
+        )
           return notFound();
         return {
           kind: "voucher" as const,
@@ -2137,7 +2151,7 @@ export const superAppRouter = router({
           .where(
             and(
               eq(expenses.id, input.id),
-              actionableExpenseApprovalWhere(ctx.user.id),
+              actionableExpenseApprovalWhere(),
             ),
           )
           .limit(1);
