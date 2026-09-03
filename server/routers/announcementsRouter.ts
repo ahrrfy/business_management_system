@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { z } from "zod";
 import { ROLES } from "@shared/permissions";
 import {
@@ -17,8 +18,30 @@ import {
   myAnnouncements,
   setAnnouncementActive,
 } from "../services/announcementService";
+import type { AnnouncementManagementScope } from "../services/announcementService";
 
 const roleKeys = ROLES.map((r) => r.key) as [string, ...string[]];
+
+function managementScope(user: {
+  role: string;
+  branchId?: number | null;
+}): AnnouncementManagementScope {
+  const canCrossBranches = user.role === "admin";
+  if (!canCrossBranches && user.branchId == null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر فتح إدارة الإعلانات",
+        why: "الإعلان يُدار بنطاق فرع، وحسابُك بلا فرعٍ مُسنَد فلا يُعرَف نطاقُك",
+        doThis: "اطلب من المدير إسناد فرعٍ لحسابك من شاشة المستخدمين، ثمّ أعد المحاولة",
+      }),
+    });
+  }
+  return {
+    branchId: user.branchId == null ? null : Number(user.branchId),
+    canCrossBranches,
+  };
+}
 
 const createInput = z
   .object({
@@ -51,7 +74,14 @@ export const announcementsRouter = router({
     const crossBranch = ctx.user.role === "admin" || ctx.user.isOwner === true;
     if (!crossBranch) {
       if (ctx.user.branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الحساب" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر نشر الإعلان",
+            why: "غيرُ المدير العامّ يبثّ إلى فرعه وحده، وحسابُك بلا فرعٍ مُسنَد فلا يُعرَف من يصله",
+            doThis: "اطلب من المدير إسناد فرعٍ لحسابك، أو اطلب منه نشرَ الإعلان لكلّ الفروع",
+          }),
+        });
       }
       if (input.audienceType !== "BRANCH" || Number(input.audienceBranchId) !== Number(ctx.user.branchId)) {
         throw new TRPCError({
@@ -85,10 +115,10 @@ export const announcementsRouter = router({
   // القراءة الإدارية: announcements≥READ (يشمل المدقّق).
   list: announcementsReadProcedure
     .input(z.object({ includeInactive: z.boolean().optional(), limit: z.number().int().min(1).max(200).optional() }).optional())
-    .query(({ input }) => listAnnouncements(input)),
+    .query(({ ctx, input }) => listAnnouncements(managementScope(ctx.user), input)),
 
-  get: announcementsReadProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ input }) => {
-    const r = await getAnnouncementWithReaders(input.id);
+  get: announcementsReadProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const r = await getAnnouncementWithReaders(input.id, managementScope(ctx.user));
     if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "الإعلان غير موجود" });
     return r;
   }),
@@ -96,7 +126,7 @@ export const announcementsRouter = router({
   setActive: announcementsManagerProcedure
     .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
-      const found = await setAnnouncementActive(input.id, input.isActive);
+      const found = await setAnnouncementActive(input.id, input.isActive, managementScope(ctx.user));
       if (!found) throw new TRPCError({ code: "NOT_FOUND", message: "الإعلان غير موجود" });
       await logAudit(ctx, {
         action: "announcement.setActive",

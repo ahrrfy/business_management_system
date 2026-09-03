@@ -7,11 +7,16 @@
 //   - SQL خام بأسماء أعمدة DB الفعلية: invoices.status ⇒ العمود `invoiceStatus`،
 //     purchaseOrders.status ⇒ العمود `poStatus` (التحقّق في drizzle/schema.ts).
 //   - الأموال تُعاد نصوصاً (CAST AS CHAR) لتمرّ عبر decimal.js بلا فقد دقّة.
-//   - الشرائح بـDATEDIFF(CURDATE(), DATE(COALESCE(dueDate, invoiceDate))) لـAR
-//     و DATEDIFF(CURDATE(), DATE(orderDate)) لـAP — مرآة الملخّص.
-//   - المتبقّي/فاتورة AR = GREATEST(total - paidAmount - returnedTotal, 0)
-//     المتبقّي/أمر AP = GREATEST(total - paidAmount, 0).
+//   - الشرائح بـDATEDIFF(UTC_DATE(), …) لا CURDATE() — مرآة REP-03 في الملخّص:
+//     الأعمدة مخزّنة بـUTC، وCURDATE() يعطي تاريخ خادم MySQL المحلّي فينزاح الدلو يوماً.
+//     (كان هذا السطر يقول CURDATE() وهو وصفٌ متقادمٌ للشيفرة أدناه.)
+//   - المتبقّي/فاتورة AR = مسند «الرصيد المفتوح» المقصوص من `@shared/predicates/openBalance`
+//     (وضع `COLLECTIBLE`) — لا مكتوباً بيدٍ هنا.
+//   - المتبقّي/أمر AP لا يستعمل ذلك المسند أصلاً: مصدرُه رصيدُ دفتر الأستاذ لكلّ أمر
+//     (`gl.balance` المصفّى من `accountingEntries`) لأنّ `purchaseOrders` بلا `returnedTotal`.
+//     (كان هذا السطر يقول `GREATEST(total - paidAmount, 0)` وهو وصفٌ متقادمٌ للشيفرة أدناه.)
 import { sql } from "drizzle-orm";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
 
@@ -74,6 +79,12 @@ export async function getArApAgingDetail(opts: {
 
   const isAR = opts.side === "AR";
   const branchId = opts.branchId;
+  // مسند AR الواحد (موضعان: عمود `unpaid` وشرط الاستبعاد `> 0`) — كتابتُه مرّتين في استعلامٍ
+  // واحد هي بعينها الطريقة التي ينحرف بها العمودُ عن فلترِه فتظهر صفوفٌ بمتبقٍّ صفر.
+  const openBalance = openBalanceExpr(
+    { total: sql`i.total`, paidAmount: sql`i.paidAmount`, returnedTotal: sql`i.returnedTotal` },
+    "COLLECTIBLE",
+  );
 
   const raw = isAR
     ? rowsOf(
@@ -85,11 +96,11 @@ export async function getArApAgingDetail(opts: {
             DATE_FORMAT(i.invoiceDate, '%Y-%m-%d') AS date,
             DATE_FORMAT(i.dueDate, '%Y-%m-%d') AS dueDate,
             DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) AS daysOverdue,
-            CAST(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) AS CHAR) AS unpaid
+            CAST(${openBalance} AS CHAR) AS unpaid
           FROM invoices i
           LEFT JOIN customers c ON c.id = i.customerId
           WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
-            AND GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) > 0
+            AND ${openBalance} > 0
             ${branchId ? sql`AND i.branchId = ${branchId}` : sql``}
           ORDER BY daysOverdue DESC, i.id DESC
         `),

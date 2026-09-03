@@ -54,6 +54,11 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
   // مرتجعات الشراء الائتمانية (بخلاف AR الذي يستعمل returnedTotal). purchaseOrders لا يحمل
   // returnedTotal، لكن accountingEntries يحمل قيود RETURN (سالبة) وPAYMENT_IN (استرداد نقدي).
   // net_credit_returned = |Σ RETURN| − Σ PAYMENT_IN لكل PO ⇒ CASH يصفَّر (0)، CREDIT يبقى موجباً.
+  // ⛔ ولذلك **لا يُوصَل هذا التقرير بمسند «الرصيد المفتوح»** (`@shared/predicates/openBalance`):
+  // ذاك مسند فاتورةٍ ثلاثيُّ الأعمدة (total − paidAmount − returnedTotal)، والمصدر هنا رصيدُ
+  // دفتر الأستاذ لكلّ أمر (`gl.balance`) بعمودٍ واحد — لأنّ `purchaseOrders` بلا `returnedTotal`.
+  // توحيدُهما شكلاً يُغيّر الرقم معنًى: يُعيد الاعتماد على `paidAmount` الاسميّ ويُسقط المرتجع
+  // الائتمانيّ. والقصُّ عند الصفر يبقى صريحاً بـ`GREATEST(…, 0)` — نظيرُ `COLLECTIBLE` معنًى لا شكلاً.
   const rows = await db.execute(sql`
     SELECT
       s.id AS supplierId,

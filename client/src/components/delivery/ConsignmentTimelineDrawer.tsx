@@ -18,65 +18,11 @@ import {
   CONSIGNMENT_VIEW_CLS,
   deriveConsignmentView,
 } from "@shared/consignmentView";
-
-/** ترجمة أنواع الأحداث للعربية — قاموسٌ قصير مُختصَر يظهر على شارة كلّ حدث. */
-const EVENT_TYPE_AR: Record<string, string> = {
-  DISPATCHED: "أُسنِد",
-  ASSIGNED: "أُسنِد",
-  ACCEPTED: "قبل السائق",
-  PICKED_UP: "التقط الطرد",
-  OUT_FOR_DELIVERY: "خرج للتوصيل",
-  DELIVERED: "سُلِّم",
-  FAILED: "تعذّر التسليم",
-  RETURNED: "استُلم مرتجعاً",
-  CANCELLED: "أُلغي",
-  RETURN_DECLARED: "أعلنت الشركة رجوعه",
-  COUNTER_SETTLED: "سدّده الزبون بالكاونتر",
-  STALE_ESCALATED: "متصعَّد لركوده",
-  REMITTED: "وُرِّد للمكتبة",
-  WRITTEN_OFF: "شُطب عجزه",
-  RECOVERED: "استُرجع مشطوبه",
-  FEE_PAID: "دُفعت أجرته",
-};
-
-/** مصدر السلطة كما يُوسم في payload.source — من أجرى الفعل فعلياً. */
-const SOURCE_AR: Record<string, string> = {
-  COURIER_PORTAL: "بوّابة المندوب",
-  COMPANY_STATEMENT: "كشف الشركة",
-  MANUAL_PROOF: "إثبات يدويّ (بموافقة مدير)",
-  STAFF_HANDOVER: "تسليمُ الموظّف للسائق",
-  STAFF: "قرار موظّف",
-  COUNTER: "قبضٌ كاونتريّ",
-  SYSTEM_STALE_SWEEP: "الكنّاس الدوريّ",
-};
-
-/** ترجمة نوع قيد دفتر التوصيل — مختصر. */
-const LEDGER_ENTRY_AR: Record<string, string> = {
-  COD_ASSIGNED: "تعرّض إسناد",
-  COD_COLLECTED: "تحصيل نقد",
-  COD_REMITTED: "توريدٌ للمكتبة",
-  COD_RELEASED: "تحرير تعرّض",
-  COD_WRITTEN_OFF: "شطب عجز",
-  COD_RECOVERED: "استرداد مشطوب",
-  FEE_EARNED: "استحقاق أجرة",
-  FEE_PAID: "دفع أجرة",
-  FEE_OFFSET: "خصم أجرة",
-  FEE_REFUNDED: "ردّ أجرة",
-};
-
-/** إشارة القيد (± داخل ذمّة الجهة) — يوجّه اللون في السطر. */
-const LEDGER_ENTRY_SIGN: Record<string, 1 | -1> = {
-  COD_ASSIGNED: 1,
-  COD_COLLECTED: 1,
-  COD_REMITTED: -1,
-  COD_RELEASED: -1,
-  COD_WRITTEN_OFF: -1,
-  COD_RECOVERED: 1,
-  FEE_EARNED: -1,
-  FEE_PAID: 1,
-  FEE_OFFSET: 1,
-  FEE_REFUNDED: -1,
-};
+// موجة D6 (٢/٩/٢٦): أربعةُ قواميس كانت مُعرَّفةً هنا — نوعُ الحدث وسلطتُه ونوعُ قيد الدفتر
+// وإشارتُه. نُقلت إلى `@shared` كي يحرسها اختبارٌ ويستهلكها أيُّ قارئٍ ثانٍ لنفس الجدولين
+// (تقريرٌ أو كشفُ جهة) بلا اختراع تسميةٍ موازية.
+import { deliveryEventLabel, deliveryEventSourceLabel } from "@shared/deliveryEventType";
+import { deliveryLedgerEntryLabel, deliveryLedgerEntrySign } from "@shared/deliveryLedgerEntryType";
 
 /** لون النقطة الزمنية بحسب نوع الحدث — يقود العين للأخطر. */
 function eventDot(eventType: string): string {
@@ -243,19 +189,20 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
                 <ol className="space-y-2 border-s ps-4">
                   {q.data.events.map((ev) => {
                     const source = (ev.payload as { source?: string } | null)?.source;
+                    const sourceLabel = deliveryEventSourceLabel(source);
                     const reason = (ev.payload as { reason?: string } | null)?.reason;
                     return (
                       <li key={ev.id} className="relative">
                         <span className={cn("absolute -start-[21px] top-2 size-2.5 rounded-full ring-2 ring-background", eventDot(ev.eventType))} />
                         <div className="rounded-md border bg-card/50 p-2 text-sm">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="font-black">{EVENT_TYPE_AR[ev.eventType] ?? ev.eventType}</span>
+                            <span className="font-black">{deliveryEventLabel(ev.eventType)}</span>
                             <span className="text-[10px] text-muted-foreground" dir="ltr">{fmtDateTime(ev.occurredAt as unknown as string)}</span>
                           </div>
                           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
                             <span>الفاعل: {ev.actorName ?? "النظام"}</span>
-                            {source && SOURCE_AR[source] && (
-                              <span className="rounded bg-muted px-1.5 py-px font-bold">{SOURCE_AR[source]}</span>
+                            {sourceLabel && (
+                              <span className="rounded bg-muted px-1.5 py-px font-bold">{sourceLabel}</span>
                             )}
                             {ev.fromParcelStatus && ev.toParcelStatus && ev.fromParcelStatus !== ev.toParcelStatus && (
                               <span className="text-[10px]" dir="ltr">
@@ -289,11 +236,11 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
                     </thead>
                     <tbody>
                       {q.data.ledger.map((l) => {
-                        const sign = LEDGER_ENTRY_SIGN[l.entryType] ?? 1;
+                        const sign = deliveryLedgerEntrySign(l.entryType);
                         return (
                           <tr key={l.id} className="border-b last:border-0">
                             <td className="p-2 text-[10px] text-muted-foreground" dir="ltr">{fmtDateTime(l.occurredAt as unknown as string)}</td>
-                            <td className="p-2 font-medium">{LEDGER_ENTRY_AR[l.entryType] ?? l.entryType}</td>
+                            <td className="p-2 font-medium">{deliveryLedgerEntryLabel(l.entryType)}</td>
                             <td className={cn("p-2 text-end tabular-nums font-bold", sign > 0 ? "text-[var(--money-positive)]" : "text-[var(--money-negative)]")} dir="ltr">
                               {sign > 0 ? "+" : "−"}{fmt(l.amount)}
                             </td>

@@ -11,6 +11,7 @@ import { sql } from "drizzle-orm";
 import { DELIVERY_AGE_DANGER_HOURS } from "@shared/deliveryAging";
 import { getDb } from "../db";
 import { createTtlCache } from "../lib/ttlCache";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { toDbMoney, money } from "./money";
 import { getStockStatus } from "./reportsInventoryService";
@@ -24,6 +25,19 @@ import {
 import { getAnomalyWatch } from "./reports/anomalyWatch";
 import { getAPAging } from "./reports/apAging";
 import { todayUtcDate, utcTodayStart } from "./businessDay";
+
+/**
+ * أعمدةُ مسند «الرصيد المفتوح» بالاسم المستعار `i` (نمطُ SQL الخامّ في هذا الملفّ) —
+ * `openBalanceExpr` لا تستورد المخطّط عمداً فتقبل أيّ جزءِ SQL، ولذلك تصلح هنا كما تصلح
+ * على جدول drizzle مباشرةً. ملاحظة: `CAST(… AS DECIMAL(15,2))` الذي تُضيفه لا أثرَ له رقمياً
+ * على هذه الأعمدة (`decimal(15,2)` في المخطّط) — هو تثبيتٌ يمنع استنتاج `DOUBLE` حين يمرّ
+ * المسند فوق عمودٍ عابرٍ من انضمامٍ يساريّ أو جدولٍ مشتقّ.
+ */
+const INVOICE_ALIAS_OPEN_BALANCE_COLS = {
+  total: sql`i.total`,
+  paidAmount: sql`i.paidAmount`,
+  returnedTotal: sql`i.returnedTotal`,
+};
 
 function rowsOf(res: unknown): any[] {
   const data = (res as any)?.[0] ?? res;
@@ -140,8 +154,10 @@ async function computeManagementAlerts(opts: {
             WHEN MAX(DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate)))) BETWEEN 31 AND 60 THEN 'd31_60'
             ELSE 'cur'
           END AS bucket,
-          SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)) AS amt
+          SUM(${openBalanceExpr(INVOICE_ALIAS_OPEN_BALANCE_COLS, "COLLECTIBLE")}) AS amt
         FROM invoices i
+        /* ⚠️ قائمةٌ بيضاء أضيقُ من «غير ميتة» (تُسقِط CONFIRMED) — تُرِكت كما هي: توسيعُها
+           يرفع مبالغَ دلاء التقادم ⇒ قرارُ سياسة لا توحيدُ مسند (جرد الانحراف، بند د). */
         WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
           AND i.customerId IS NOT NULL
           ${branchInv}

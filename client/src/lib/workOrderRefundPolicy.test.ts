@@ -66,7 +66,6 @@ describe("سياسة واجهة رد عربون أمر الشغل غير الن�
   it("لا يركّب مكوّن قائمة المالك ولا استعلامه لغير المالك", () => {
     const html = renderToStaticMarkup(createElement(WorkOrderRefundApprovals, {
       isOwner: false,
-      currentUserId: 21,
     }));
     expect(html).toBe("");
   });
@@ -79,7 +78,9 @@ describe("سياسة واجهة رد عربون أمر الشغل غير الن�
     expect(canCancelWorkOrder("cashier", { workorders: "FULL" })).toBe(true);
   });
 
-  it("يفرض SOD في صف المكوّن: المنشئ يرى السبب وزرّه معطّل، والمالك الآخر يستطيع الاعتماد", () => {
+  // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — كل مُشاهدي هذه الشاشة مالكون أصلاً
+  // (ownerProcedure)، فالمالك يعتمد طلبَه هو نفسه بلا تعطيلٍ ولا تحذير.
+  it("لا يعطّل الزرّ ولا يحذّر لأنّ المنشئ نفسه؛ كل مُشاهدي الشاشة مالكون فعلاً", () => {
     const common = {
       row: refundRow(21),
       reference: "BANK-7788",
@@ -88,18 +89,9 @@ describe("سياسة واجهة رد عربون أمر الشغل غير الن�
       onReferenceChange: vi.fn(),
       onSubmit: vi.fn(),
     };
-    const ownHtml = renderToStaticMarkup(createElement(WorkOrderRefundApprovalRow, {
-      ...common,
-      currentUserId: 21,
-    }));
-    const otherHtml = renderToStaticMarkup(createElement(WorkOrderRefundApprovalRow, {
-      ...common,
-      currentUserId: 22,
-    }));
-    expect(ownHtml).toContain("هذا الطلب أنشأه حسابك");
-    expect(ownHtml).toMatch(/<button[^>]*\sdisabled=""/);
-    expect(otherHtml).not.toContain("هذا الطلب أنشأه حسابك");
-    expect(otherHtml).not.toMatch(/<button[^>]*\sdisabled=""/);
+    const html = renderToStaticMarkup(createElement(WorkOrderRefundApprovalRow, common));
+    expect(html).not.toContain("هذا الطلب أنشأه حسابك");
+    expect(html).not.toMatch(/<button[^>]*\sdisabled=""/);
   });
 
   it("يبني حمولة الاعتماد من receipt المكتشف ويطبّع المرجع ولا يقبل مرجعاً ناقصاً", () => {

@@ -13,6 +13,20 @@ import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
 import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
+
+/**
+ * أعمدةُ مسند «الرصيد المفتوح» بالاسم المستعار `i` (نمطُ SQL الخامّ في هذا الملفّ) —
+ * `openBalanceExpr` لا تستورد المخطّط عمداً فتقبل أيّ جزءِ SQL، ولذلك تصلح هنا كما تصلح
+ * على جدول drizzle مباشرةً. ملاحظة: `CAST(… AS DECIMAL(15,2))` الذي تُضيفه لا أثرَ له رقمياً
+ * على هذه الأعمدة (`decimal(15,2)` في المخطّط) — هو تثبيتٌ يمنع استنتاج `DOUBLE` حين يمرّ
+ * المسند فوق عمودٍ عابرٍ من انضمامٍ يساريّ أو جدولٍ مشتقّ.
+ */
+const INVOICE_ALIAS_OPEN_BALANCE_COLS = {
+  total: sql`i.total`,
+  paidAmount: sql`i.paidAmount`,
+  returnedTotal: sql`i.returnedTotal`,
+};
 
 /**
  * قائمة الحالات المُبطَلة كجملة SQL — مشتقّة من الثابت المشترك لا مكتوبةً يدوياً، كي تسري أيّ
@@ -337,7 +351,12 @@ export async function getSalesByDimension(opts: {
         CAST(COALESCE(SUM(i.returnedTotal), 0) AS CHAR) AS returns,
         CAST(COALESCE(SUM(i.total - i.returnedTotal), 0) AS CHAR) AS netSales,
         CAST(COALESCE(SUM(i.paidAmount), 0) AS CHAR) AS paid,
-        CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaid,
+        -- «غير المدفوع» سؤالٌ تحصيليّ ⇒ وضع COLLECTIBLE (مقصوص) — نفسُ الشكل القائم حرفياً.
+        -- ⚠️ والقصُّ هنا ليس تجميلاً: فلترُ هذا التقرير يستبعد المُبطَلة وحدها ويُبقي RETURNED
+        -- عمداً (بيعٌ وقع ثمّ أُرجِع، يظهر في عمود «المرتجعات»)، ورصيدُ المُرتجَعة المفتوح
+        -- يساوي سالبَ المقبوض (≤ 0) ⇒ القصُّ وحده يمنعها من خصم ذمّةِ فاتورةٍ حيّة من «غير
+        -- المدفوع». وضعٌ موقَّعٌ هنا كان سيُنقص الرقم بمقدار ما قُبِض على كلّ فاتورةٍ مُرتجَعة.
+        CAST(COALESCE(SUM(${openBalanceExpr(INVOICE_ALIAS_OPEN_BALANCE_COLS, "COLLECTIBLE")}), 0) AS CHAR) AS unpaid,
         CAST(COALESCE(SUM(COALESCE(ic.cost, i.costTotal)), 0) AS CHAR) AS cost
       FROM invoices i
       LEFT JOIN (
