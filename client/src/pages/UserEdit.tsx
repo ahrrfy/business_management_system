@@ -241,6 +241,14 @@ export default function UserEdit() {
     setPermsOverride(diffFromTemplate(role, newResolved) ?? {});
   }
 
+  // Codex #958: عدّاداتُ تسلسلٍ لإسقاط الردودِ المتأخّرة. لو حرّرَ المستخدمُ الحقلَ من A إلى B
+  // قبل رجوعِ استعلامِ A، كان setEmailError/setEmailChecked يُطبَّق على قيمة B بغير حقٍّ —
+  // فيقفل الحفظَ ببريدٍ صالحٍ أو يمرّر بريداً مأخوذاً حتّى يرفضه الخادم. الحلّ: كلّ نداءٍ يأخذ
+  // رقماً، ولا يُطبّق نتيجتَه إلّا إن كان **الأحدث**، وإن كانت القيمةُ المفحوصةُ لا تزال هي
+  // القيمةَ الحاليّةَ في الحقل.
+  const emailCheckSeqRef = useRef(0);
+  const usernameCheckSeqRef = useRef(0);
+
   async function checkUsernameFn() {
     const v = username.trim().toLowerCase();
     if (!v) { setUsernameError(""); setUsernameChecked(false); return; }
@@ -249,11 +257,18 @@ export default function UserEdit() {
       setUsernameChecked(false);
       return;
     }
+    const seq = ++usernameCheckSeqRef.current;
     try {
       const ok = await utils.users.checkUsername.fetch({ username: v, excludeUserId: userId });
+      // Codex #958: إسقاطُ نتيجةٍ متأخّرةٍ لقيمةٍ لم تعد الأحدث ولا مطابقةً لما في الحقل.
+      if (seq !== usernameCheckSeqRef.current) return;
+      if (v !== username.trim().toLowerCase()) return;
       setUsernameError(ok ? "" : "اسم المستخدم مستخدم مسبقاً.");
       setUsernameChecked(true);
-    } catch { setUsernameChecked(false); }
+    } catch {
+      if (seq !== usernameCheckSeqRef.current) return;
+      setUsernameChecked(false);
+    }
   }
 
   /** نظير checkUsernameFn للبريد — `excludeUserId` يمنع أن يُبلَّغ بريدُ الحساب نفسه «مأخوذاً». */
@@ -261,11 +276,18 @@ export default function UserEdit() {
     const v = email.trim().toLowerCase();
     if (!v) { setEmailError(""); setEmailChecked(false); return; }
     if (!/^\S+@\S+\.\S+$/.test(v)) { setEmailError("بريد إلكتروني غير صالح."); setEmailChecked(false); return; }
+    const seq = ++emailCheckSeqRef.current;
     try {
       const ok = await utils.users.checkEmail.fetch({ email: v, excludeUserId: userId });
+      // Codex #958: نفس الحارس على البريد — لا نُطبّقُ نتيجةَ استعلامٍ لبريدٍ قديم.
+      if (seq !== emailCheckSeqRef.current) return;
+      if (v !== email.trim().toLowerCase()) return;
       setEmailError(ok ? "" : "هذا البريد مستخدم مسبقاً.");
       setEmailChecked(true);
-    } catch { setEmailChecked(false); }
+    } catch {
+      if (seq !== emailCheckSeqRef.current) return;
+      setEmailChecked(false);
+    }
   }
 
   /** توليد اسم مستخدم متاح من الاسم — نفس زرّ شاشة الإضافة. التفرّد يضمنه الخادم لا العميل. */

@@ -229,7 +229,12 @@ export default function CustomerNew() {
   // حارس فقد البيانات عند تحديث/إغلاق التبويب/مغادرة خارجية.
   useUnsavedGuard(isDirty);
 
-  const wa = whatsappLink(whatsapp || phone);
+  // Codex #958: بعد أن يُفرِغ المستخدمُ حقلَ الواتساب صراحةً (`whatsappTouched=true`)،
+  // كان الاحتياطُ إلى `phone` يُبقي على معاينةٍ ورابطٍ لقناةٍ **لن تُحفَظ** — النموذج
+  // يعِد بشيءٍ لا يُنفَّذ. المعاينةُ الآن تعرض ما سيُخزَّن حقاً: `whatsapp` المكتوب،
+  // ولا شيءٌ حين يُفرَّغ عمداً. الاحتياطُ إلى `phone` يبقى فقط قبل أوّل لمس (اقتراحٌ خفيّ).
+  const waSource = whatsappTouched ? whatsapp : whatsapp || phone;
+  const wa = whatsappLink(waSource);
 
   return (
     <div className="space-y-4">
@@ -316,7 +321,7 @@ export default function CustomerNew() {
                 <p className="text-[11px] text-muted-foreground">
                   واتساب:{" "}
                   <a href={wa} target="_blank" rel="noreferrer" className="text-primary underline" dir="ltr">
-                    {displayE164(whatsapp || phone)}
+                    {displayE164(waSource)}
                   </a>
                 </p>
               )}

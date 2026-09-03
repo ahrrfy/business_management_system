@@ -116,6 +116,22 @@ export function useSessionBranchInference(): SessionBranchInference {
         ? me.data.branchId
         : null;
 
+    // Codex #958: فشلُ `branches.list` كان يُطوى صامتاً إلى `[]` فيُعرَض للأدمن/المالك
+    // منتقياً فارغاً بلا سببٍ ولا مسار استعادة، ونماذجُ المصروف والجرد لا تُكمَل. الآن
+    // نُميّز الفشل الحيّ (وليس مجرَّد «لا شيءَ لعرضه») فنُظهره حالةَ خطأٍ صريحةً بمسار إعادة
+    // محاولة. الأدمن/المالك بلا فرعٍ مُسنَد يعتمد على القائمة اعتماداً كاملاً؛ الموظّفُ الذي
+    // له `assignedId` قد يستمرّ بلا اسمٍ (يظهر «فرع #N») لأنّ الاسمَ زخرفٌ لا حاجزٌ للحفظ.
+    if (branchesQ.isLoading) {
+      return emptyInference("loading", null);
+    }
+    const branchesFailed = branchesQ.isError && !branchesQ.data;
+    if (branchesFailed && assignedId == null) {
+      return emptyInference(
+        "error",
+        "تعذّرت قراءةُ قائمة الفروع · شبكةٌ أو خادمٌ لم يستجب · انقر «إعادة المحاولة» أو حدّث الصفحة.",
+      );
+    }
+
     // قائمةُ الفروع للعرض — تُنقّى إلى ما يفهمه `SessionBranch` (id + name فقط) كي لا يعتمد
     // `<InferredField>` على شكلِ صفّ `branches` بأعمدته الكاملة (isActive/type/…) — فتغيّر
     // ذلك الصفّ خادمياً لا يكسر مستهلكاً هنا.
