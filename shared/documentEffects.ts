@@ -78,10 +78,25 @@ export const DOCUMENT_TYPES = [
 
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
-/** نطاقُ العكس: كامل (كلّ الآثار) أو نوعٌ واحد فقط. */
+/**
+ * نطاقُ العكس. حقلان اختياريان يضيّقان الانتقاء:
+ *   - `effectKinds` (في وضع `ONLY`): يقصر العكسَ على أنواعِ آثارٍ محدَّدة. **قائمةٌ فارغة
+ *     في `ONLY` تعني «صفر انتقاء» لا «الكلّ»** — مطابقةٌ لقصد المستدعي الصريح (كأنّه
+ *     صفّى الأنواع ديناميكياً فلم يبقَ شيء)؛ توسيعُها إلى ALL كان يُنتج **عكساً ماليّاً كاملاً
+ *     صامتاً** أمسكه Codex في PR #957. راجع التعليقَ في `reversalEngine.loadPendingApplyEffects`.
+ *   - `operationScopes` (في الوضعَين): يقصر العكسَ على صفوفٍ سُجِّلت بـ`scope` من هذه
+ *     القائمة. الغيابُ = بلا قيدٍ (كلّ الآثار الملحقة بالمستند). ضروريٌّ لأنّ `cancel`
+ *     و`returnService` يكتبان تحت **نفس هويّة `(INVOICE, id, INVENTORY)`** بسلاسل `scope`
+ *     مختلفة («cancel» و«return») — بلا هذا القيد، عكسُ الإلغاء يعكس المرتجعاتِ السابقةَ
+ *     أيضاً (Codex #957).
+ */
 export type ReversalScope =
-  | { kind: "ALL" }
-  | { kind: "ONLY"; effectKinds: readonly DocumentEffectKind[] };
+  | { kind: "ALL"; operationScopes?: readonly string[] }
+  | {
+      kind: "ONLY";
+      effectKinds: readonly DocumentEffectKind[];
+      operationScopes?: readonly string[];
+    };
 
 /** الشكلُ المسطَّح لصفّ `documentEffects` كما يُدخَل/يُقرأ. */
 export interface DocumentEffectRecord {

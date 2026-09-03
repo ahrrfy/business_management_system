@@ -181,6 +181,12 @@ async function loadPendingApplyEffects(
   documentId: number,
   scope: ReversalScope,
 ) {
+  // Codex #957: قائمةُ أنواعٍ فارغةٌ في `ONLY` **قصدٌ صريحٌ بلا انتقاء**، لا فتحةً إلى ALL.
+  // (لو حصل عبر تصفيةٍ ديناميكية) — التوسيعُ الصامت كان يُنفّذ **عكساً ماليّاً كاملاً** ويُرضي
+  // ثابتَ التوازن لأنّه يقلب كلَّ الآثار. نتصرّف كأنّ لا صفوفَ مطابقة قبل مسّ القاعدة.
+  if (scope.kind === "ONLY" && scope.effectKinds.length === 0) {
+    return [];
+  }
   const conditions = [
     eq(documentEffects.documentType, documentType),
     eq(documentEffects.documentId, documentId),
@@ -191,10 +197,21 @@ async function loadPendingApplyEffects(
         AND reverse_child.phase = 'REVERSE'
     )`,
   ];
-  if (scope.kind === "ONLY" && scope.effectKinds.length > 0) {
+  if (scope.kind === "ONLY") {
     conditions.push(
       sql`${documentEffects.effectKind} IN (${sql.join(
         scope.effectKinds.map((k) => sql`${k}`),
+        sql`, `,
+      )})`,
+    );
+  }
+  // Codex #957: يفصل هويّة العكس عندما يشترك مستندان في `(documentType, documentId,
+  // effectKind)` نفسها — كإلغاءٍ يقع بعد مرتجعٍ جزئيّ سابق على نفس الفاتورة (كلاهما
+  // يكتب INVENTORY على INVOICE). بلا هذا القيد، عكسُ الإلغاء يبتلع أثرَ المرتجع أيضاً.
+  if (scope.operationScopes && scope.operationScopes.length > 0) {
+    conditions.push(
+      sql`${documentEffects.scope} IN (${sql.join(
+        scope.operationScopes.map((s) => sql`${s}`),
         sql`, `,
       )})`,
     );
@@ -219,10 +236,22 @@ export async function assertReversalBalancedTx(
   documentId: number,
   scope: ReversalScope,
 ): Promise<void> {
-  const scopeFilter =
-    scope.kind === "ONLY" && scope.effectKinds.length > 0
+  // Codex #957: قائمةُ أنواعٍ فارغة في ONLY لا تُوسَّع صامتاً — نطاقٌ فارغٌ لا يُنتج
+  // عكساً، فليس ثمّة ما يُتحقَّق منه. يوافق سلوك `loadPendingApplyEffects` أعلاه.
+  if (scope.kind === "ONLY" && scope.effectKinds.length === 0) {
+    return;
+  }
+  const kindFilter =
+    scope.kind === "ONLY"
       ? sql`AND effectKind IN (${sql.join(
           scope.effectKinds.map((k) => sql`${k}`),
+          sql`, `,
+        )})`
+      : sql``;
+  const opScopeFilter =
+    scope.operationScopes && scope.operationScopes.length > 0
+      ? sql`AND scope IN (${sql.join(
+          scope.operationScopes.map((s) => sql`${s}`),
           sql`, `,
         )})`
       : sql``;
@@ -234,7 +263,8 @@ export async function assertReversalBalancedTx(
     FROM ${documentEffects}
     WHERE documentType = ${documentType}
       AND documentId   = ${documentId}
-      ${scopeFilter}
+      ${kindFilter}
+      ${opScopeFilter}
     GROUP BY effectKind
     HAVING SUM(signedAmount)   <> 0
         OR SUM(signedQuantity) <> 0

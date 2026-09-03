@@ -278,3 +278,169 @@ describe("reversalEngine — الثابت Σ=0 على نطاقٍ كامل", () =
     expect(rows.length).toBe(2);
   });
 });
+
+// ═══ ملاحظاتُ Codex #957 — ثلاثة أعطابٍ حقيقية أُغلقت ═══
+// (١) `ONLY` بقائمةٍ فارغة كان يفتحُ إلى ALL صامتاً.
+// (٢) `cancel` كان يسجّل أثراً وهمياً للمتغيّرات الخدميّة (`movementId=0` لا يمسّ المخزون).
+// (٣) `cancel` و`returnService` يشتركان في `(INVOICE, id, INVENTORY)` بسلاسل `scope` مختلفة،
+//     فعكسُ الإلغاءِ كان يبتلع أثرَ المرتجع السابق.
+
+describe("محرّك العكس — ملاحظات Codex #957", () => {
+  it("ONLY بقائمةٍ فارغةٍ = صفر انتقاء (لا فتحةَ خفيّةَ إلى ALL)", async () => {
+    await withTx(async (tx) => {
+      await recordEffect(
+        tx,
+        {
+          documentType: "INVOICE",
+          documentId: 95701,
+          effectKind: "PAID_AMOUNT",
+          signedAmount: "500.00",
+          branchId: 1,
+        },
+        ACTOR,
+      );
+      await recordEffect(
+        tx,
+        {
+          documentType: "INVOICE",
+          documentId: 95701,
+          effectKind: "LEDGER_ENTRY",
+          signedAmount: "500.00",
+          branchId: 1,
+        },
+        ACTOR,
+      );
+    });
+    // قبل الإصلاح: قائمةٌ فارغة تفتحُ إلى ALL وتعكسُ الأثرَين. بعده: صفرٌ حتماً.
+    const result = await withTx((tx) =>
+      reverse(
+        tx,
+        "INVOICE",
+        95701,
+        { kind: "ONLY", effectKinds: [] },
+        "قائمةٌ فارغة",
+        ACTOR,
+      ),
+    );
+    expect(result.reversedCount).toBe(0);
+    // والثابتُ يفشل حين يُطلَب على أثرٍ مالٍ لم يُعكَس — لكن مع صفر انتقاء لا يُنفَّذ فحصاً.
+    // نتأكّد أنّ الآثارَ ما زالت قائمةً بلا REVERSE.
+    const rows = await db()
+      .select({ phase: documentEffects.phase })
+      .from(documentEffects)
+      .where(
+        and(
+          eq(documentEffects.documentType, "INVOICE"),
+          eq(documentEffects.documentId, 95701),
+        ),
+      );
+    expect(rows.length).toBe(2);
+    expect(rows.every((r) => r.phase === "APPLY")).toBe(true);
+  });
+
+  it("operationScopes يفصل هويّة العكس بين إلغاءٍ ومرتجعٍ سابق على نفس المستند", async () => {
+    // مرتجعٌ سابق: يُسجَّل تحت scope='return'
+    await withTx(async (tx) => {
+      await recordEffect(
+        tx,
+        {
+          documentType: "INVOICE",
+          documentId: 95704,
+          effectKind: "INVENTORY",
+          effectTable: "inventoryMovements",
+          effectRowId: 111,
+          signedQuantity: 3,
+          scope: "return",
+          branchId: 1,
+        },
+        ACTOR,
+      );
+    });
+    // ثمّ إلغاءٌ لاحق: يُسجَّل تحت scope='cancel'
+    await withTx(async (tx) => {
+      await recordEffect(
+        tx,
+        {
+          documentType: "INVOICE",
+          documentId: 95704,
+          effectKind: "INVENTORY",
+          effectTable: "inventoryMovements",
+          effectRowId: 222,
+          signedQuantity: 5,
+          scope: "cancel",
+          branchId: 1,
+        },
+        ACTOR,
+      );
+    });
+
+    // عكسُ الإلغاءِ فقط — مقيَّداً بـoperationScopes: يجب ألّا يمسّ أثرَ المرتجع.
+    const result = await withTx((tx) =>
+      reverse(
+        tx,
+        "INVOICE",
+        95704,
+        {
+          kind: "ONLY",
+          effectKinds: ["INVENTORY"],
+          operationScopes: ["cancel"],
+        },
+        "عكسُ الإلغاء فقط",
+        ACTOR,
+      ),
+    );
+    expect(result.reversedCount).toBe(1);
+
+    // أثرُ المرتجع يبقى APPLY بلا REVERSE مقابل — هذا كان يفشل قبل الإصلاح.
+    const returnEffects = await db()
+      .select({
+        id: documentEffects.id,
+        phase: documentEffects.phase,
+        scope: documentEffects.scope,
+      })
+      .from(documentEffects)
+      .where(
+        and(
+          eq(documentEffects.documentType, "INVOICE"),
+          eq(documentEffects.documentId, 95704),
+          eq(documentEffects.scope, "return"),
+        ),
+      );
+    expect(returnEffects.length).toBe(1);
+    expect(returnEffects[0].phase).toBe("APPLY");
+
+    // آثارُ الإلغاء = APPLY + REVERSE مقابل.
+    const cancelEffects = await db()
+      .select({ phase: documentEffects.phase })
+      .from(documentEffects)
+      .where(
+        and(
+          eq(documentEffects.documentType, "INVOICE"),
+          eq(documentEffects.documentId, 95704),
+          eq(documentEffects.scope, "cancel"),
+        ),
+      );
+    expect(cancelEffects.length).toBe(2);
+    expect(cancelEffects.filter((r) => r.phase === "APPLY").length).toBe(1);
+    expect(cancelEffects.filter((r) => r.phase === "REVERSE").length).toBe(1);
+
+    // الثابتُ على النطاق المُعكوس (scope='cancel') = صفر — يجب أن يمرّ.
+    await withTx((tx) =>
+      assertReversalBalancedTx(tx, "INVOICE", 95704, {
+        kind: "ONLY",
+        effectKinds: ["INVENTORY"],
+        operationScopes: ["cancel"],
+      }),
+    );
+  });
+
+  it("assertReversalBalancedTx مع ONLY فارغ = عمليّةٌ نائمة (لا كتابةَ ولا خطأ)", async () => {
+    // بلا آثار — مجرّد تأكيد أنّ النطاق الفارغ لا يُنشئ استعلامَ فحصٍ خاطئ.
+    await withTx((tx) =>
+      assertReversalBalancedTx(tx, "INVOICE", 95703, {
+        kind: "ONLY",
+        effectKinds: [],
+      }),
+    );
+  });
+});
