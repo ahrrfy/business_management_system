@@ -198,6 +198,7 @@ export default defineConfig({
       "server/services/__tests__/terminationAdvanceLockOrder.test.ts",
       "server/services/__tests__/payrollAccrualBackend.test.ts",
       "server/services/__tests__/postingProducerCoverage.test.ts",
+      "server/services/advances/__tests__/advances.publicApi.test.ts",
       "server/services/__tests__/voucherDoubleEntry.test.ts",
       "server/services/__tests__/voucherCategoryAccounting.test.ts",
       "server/services/__tests__/voucherCategoryDefaults.test.ts",

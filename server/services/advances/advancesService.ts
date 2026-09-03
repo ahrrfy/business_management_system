@@ -23,20 +23,20 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { advanceSettlements, branches, employeeAdvances, employees, idempotencyKeys, receipts, voucherCategories } from "../../drizzle/schema";
-import type { Tx } from "../db";
-import { extractInsertId } from "../lib/insertId";
-import { money, round2, toDbMoney } from "./money";
-import { requireDb, withTx, type Actor } from "./tx";
-import { getApprovalThreshold } from "./voucher/thresholds";
+import { advanceSettlements, branches, employeeAdvances, employees, idempotencyKeys, receipts, voucherCategories } from "../../../drizzle/schema";
+import type { Tx } from "../../db";
+import { extractInsertId } from "../../lib/insertId";
+import { money, round2, toDbMoney } from "../money";
+import { requireDb, withTx, type Actor } from "../tx";
+import { getApprovalThreshold } from "../voucher/thresholds";
 import {
   createVoucherTx,
   employeeAdvanceReference,
   employeeAdvanceSourceHash,
   type SystemPaymentRequest,
-} from "./voucher/create";
+} from "../voucher/create";
 
-export * from "./payroll/advanceRepayment";
+export * from "../payroll/advanceRepayment";
 
 /** عَتبة السندات (اعتماد ثنائي) — تُعرَض للواجهة عبر بوّابة hr (بوّابة الخزينة لا تلزم هنا).
  *  لا عَتبة مُرفق: المُرفق اختياريّ دائماً (٣١/٧). */

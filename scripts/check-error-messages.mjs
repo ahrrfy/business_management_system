@@ -710,10 +710,25 @@ for (const [file, count] of current) {
   }
 }
 
+/*
+ * ملفّات نُقلت مكانياً بلا تغييرٍ في نصوصها — `origin/main` يحتفظ برصيدها تحت الاسم القديم،
+ * وهذا الفرع يحتفظ به تحت الاسم الجديد. بلا هذه الخريطة يبلّغ المِسنَنة عن ارتفاعٍ زائف على
+ * الاسم الجديد وعن اختفاءٍ على القديم. المدخل صحيحٌ ما دام الرقمُ لم يتغيّر — نقلٌ ميكانيكيّ.
+ * يُشطَب بعد الدمج ودورةِ التنقية التالية.
+ */
+const RENAMES = {
+  // م٣ من برنامج v2 «السهل الممتنع»: تجميع خدمة السلف تحت مجلّدٍ مستقلّ.
+  "server/services/advancesService.ts":
+    "server/services/advances/advancesService.ts",
+  "server/services/voucher/employeeAdvanceCancellation.ts":
+    "server/services/advances/employeeAdvanceCancellation.ts",
+};
+
 const descent = assertMonotonicDescent({
   baselinePath: BASELINE_REL,
   baseline: BASELINE,
   label: "حارس رسائل الخطأ",
+  renames: RENAMES,
 });
 
 /** ملفٌّ نظُف كلّياً ولم يُحذف من الأساس — يترك مساحةً لانتهاكٍ يمرّ صامتاً. */
