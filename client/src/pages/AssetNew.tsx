@@ -3,6 +3,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { InferredBranchField } from "@/components/form/InferredField";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { iqd } from "@/lib/assets/ui";
@@ -125,13 +126,15 @@ export default function AssetNew() {
       <Card>
         <CardHeader><CardTitle className="text-base">التصنيف والموقع والعهدة</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <Label>الفرع</Label>
-            <AppSelect className="h-9" value={form.branchId} onValueChange={(next) => set({ branchId: next })}>
-              <option value="">— اختر الفرع —</option>
-              {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-            </AppSelect>
-          </div>
+          {/* الفرعُ مُستنتَجٌ من الجلسة — الخادمُ يعرف فرعَ المستخدم من `ctx.user.branchId`، فلا
+              نسأله عنه. الأدمن/المالك يرى «تغيير» لعبور الفروع بقصدٍ مشروع. حقلُ الأصل يبقى
+              نصّاً في الحالة لتوافُق حمولة الحفظ (`Number(form.branchId)`) بلا تغيير عقد. */}
+          <InferredBranchField
+            label="الفرع"
+            value={form.branchId ? Number(form.branchId) : null}
+            onChange={(next) => set({ branchId: next != null ? String(next) : "" })}
+            disabled={create.isPending}
+          />
           <div className="space-y-1"><Label>الموقع</Label><Input value={form.location} onChange={(e) => set({ location: e.target.value })} placeholder="مكتب الإدارة" /></div>
           <div className="space-y-1">
             <Label>العهدة (الموظف المسؤول)</Label>

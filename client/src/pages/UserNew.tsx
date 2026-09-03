@@ -1,5 +1,6 @@
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { CredentialsShare } from "@/components/form/CredentialsShare";
 import {
@@ -143,6 +144,40 @@ export default function UserNew() {
           أيضاً EmployeeNew) فيُلَفّ من هنا لا يُعدَّل هو نفسه. */}
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); buildAndSubmit(); }}>
         <AccountFields value={account} onChange={patch} showName showJobData />
+
+        {/* ما تملكه شاشة التعديل ولا تملكه هذه — يُسمّى بدل أن يغيب صامتاً.
+            الغياب الصامت هو ما يجعل المُنشئ يظنّ الشاشة ناقصة، فيبحث عن الحقل حيث لا وجود له. */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">ما يتاح بعد الإنشاء</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-sm text-muted-foreground">
+            <p>
+              الحقول أعلاه هي كل ما يقبله النظام عند الإنشاء. وما يلي لا مقابل له قبل وجود الحساب،
+              فيُدار من «تعديل المستخدم» بعد الحفظ:
+            </p>
+            <ul className="list-disc ps-5 space-y-1">
+              <li>
+                <span className="text-foreground">صفة «مالك النظام»:</span> لا تُمنح عند الإنشاء —
+                يمنحها مالكٌ قائم وحده من شاشة التعديل، فلا يستطيع مديرٌ أن يصنع مالكاً جديداً بنموذجٍ واحد.
+              </li>
+              <li>
+                <span className="text-foreground">إصدار رمز استعادة كلمة المرور:</span> كلمة المرور هنا
+                تُسلَّم مباشرةً في بطاقة المشاركة بعد الحفظ؛ الرمز لاحقاً لمن نسيها.
+              </li>
+              <li>
+                <span className="text-foreground">إبطال الجلسات وتصفير المصادقة الثنائية:</span> لا جلسات
+                ولا مصادقة ثنائية لحسابٍ لم يدخل بعد.
+              </li>
+              <li>
+                <span className="text-foreground">تعطيل الحساب أو حذفه نهائياً:</span> يُنشأ الحساب مفعّلاً،
+                والحذف مشروطٌ بخلوّه من أي نشاط.
+              </li>
+              <li>
+                <span className="text-foreground">لوحة «الأثر الفعليّ» لهذا الحساب:</span> تُقرأ من الحساب
+                المحفوظ. وقبل الحفظ تكفي معاينة «سيرى هذا الحساب» في بطاقة الدور أعلاه.
+              </li>
+            </ul>
+          </CardContent>
+        </Card>
 
         {error && <p className="text-sm text-destructive">{error}</p>}
 

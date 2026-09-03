@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { z } from "zod";
 import { ROLES } from "@shared/permissions";
 import {
@@ -27,7 +28,14 @@ function managementScope(user: {
 }): AnnouncementManagementScope {
   const canCrossBranches = user.role === "admin";
   if (!canCrossBranches && user.branchId == null) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الحساب" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر فتح إدارة الإعلانات",
+        why: "الإعلان يُدار بنطاق فرع، وحسابُك بلا فرعٍ مُسنَد فلا يُعرَف نطاقُك",
+        doThis: "اطلب من المدير إسناد فرعٍ لحسابك من شاشة المستخدمين، ثمّ أعد المحاولة",
+      }),
+    });
   }
   return {
     branchId: user.branchId == null ? null : Number(user.branchId),
@@ -66,7 +74,14 @@ export const announcementsRouter = router({
     const crossBranch = ctx.user.role === "admin" || ctx.user.isOwner === true;
     if (!crossBranch) {
       if (ctx.user.branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الحساب" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر نشر الإعلان",
+            why: "غيرُ المدير العامّ يبثّ إلى فرعه وحده، وحسابُك بلا فرعٍ مُسنَد فلا يُعرَف من يصله",
+            doThis: "اطلب من المدير إسناد فرعٍ لحسابك، أو اطلب منه نشرَ الإعلان لكلّ الفروع",
+          }),
+        });
       }
       if (input.audienceType !== "BRANCH" || Number(input.audienceBranchId) !== Number(ctx.user.branchId)) {
         throw new TRPCError({

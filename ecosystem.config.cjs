@@ -49,6 +49,21 @@ const webTunableKeys = Object.freeze([
   "EVENT_LOOP_MAX_LAG_MS",
   "EVENT_LOOP_CRITICAL_MAX_LAG_MS",
   "EVENT_LOOP_STOREFRONT_MAX_LAG_MS",
+  // ── أعلامُ الطرح (برنامج v2) — `shared/rolloutFlags.ts` هو تعريفها ────────────────────
+  // ⚠️ **لولا إدراجُها هنا لتجمّدت على قيمتها لحظةَ أوّل `pm2 start`** بحكم القاعدة أعلاه:
+  // فمفتاحُ إطفاءٍ لسياسةٍ ماليّة يصير عاجزاً عن الإطفاء، ورجوعٌ طارئ يترك السياسة على
+  // قيمتها السابقة بعد نشرٍ «ناجح» تماماً وبلا أيّ خطأ. أمسكته مراجعةُ Codex على PR #954،
+  // وهو نفسُ ما وقع فعلاً مع `DB_POOL_LIMIT` في ٣١/٨.
+  // والإدراجُ آمنٌ للمفقود: `webTunables` تُدرج الموجودةَ غيرَ الفارغة وحدها،
+  // و`resolveRolloutMode` تُرجع `OFF` عند الغياب — أي «السلوك القائم».
+  "ROLLOUT_COURIER_LEDGER_DERIVED",
+  "ROLLOUT_POS_DELIVERY_MODE",
+  "ROLLOUT_DISPATCH_DEBT_ON_PARTY",
+  "ROLLOUT_OWNER_ONLY_APPROVAL",
+  "ROLLOUT_REVERSAL_ENGINE",
+  "ROLLOUT_AUTO_CLOSE_ON_REFUSAL",
+  "ROLLOUT_REFUND_RAIL_PICKER",
+  "ROLLOUT_NEXT_ACTION",
 ]);
 const webTunables = Object.freeze(
   Object.fromEntries(

@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { eq } from "drizzle-orm";
 import { auditLogs, branchStock, productVariants, products } from "../../drizzle/schema";
 import type { Tx } from "../db";
@@ -137,8 +138,11 @@ export async function postCostRevaluation(
     if (foreignStock) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message:
-          "التكلفة عامّة لكل الفروع، ولهذا الصنف رصيدٌ في فرعٍ آخر — لا يمكن استعادة تكلفته إلّا من الإدارة.",
+        message: appErrorMessage({
+          what: "تعذّر استعادة التكلفة",
+          why: "التكلفة عامّة لكل الفروع، ولهذا الصنف رصيدٌ في فرعٍ آخر — فالاستعادة تُغيّر تقييمَ مخزونٍ لا تراه أنت",
+          doThis: "اطلب من الإدارة تنفيذ الاستعادة — صلاحيتُها وحدها تعبُر الفروع",
+        }),
       });
     }
   }

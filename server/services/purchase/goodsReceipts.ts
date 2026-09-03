@@ -19,8 +19,11 @@ import {
   supplierInvoices,
   suppliers,
 } from "../../../drizzle/schema";
+import { goodsReceiptReversalTrigger } from "@shared/approvalTriggers";
+import { appErrorMessage } from "@shared/errors";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { applyMovement, ensureBranchStockRows } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import { money, round2, toDateStr, toDbMoney } from "../money";
@@ -109,11 +112,22 @@ function requireText(
 ): string {
   const normalized = value?.trim() ?? "";
   if (!normalized)
-    throw new TRPCError({ code: "BAD_REQUEST", message: `${label} مطلوب` });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `تعذّر إتمام العملية: ${label} مطلوب`,
+        why: "الحقل وصل فارغاً — إمّا لم يُملأ في الشاشة وإمّا لم تُرسله الشاشة",
+        doThis: `املأ «${label}» ثمّ أعِد الإرسال؛ وإن لم يكن للحقل مكانٌ في الشاشة فأعِد تحميلها وأبلِغ مسؤول النظام إن تكرّر`,
+      }),
+    });
   if (normalized.length > max) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `${label} يجب ألا يتجاوز ${max} محرفاً`,
+      message: appErrorMessage({
+        what: `تعذّر إتمام العملية: ${label} أطول من المسموح`,
+        why: `الحدّ ${max} محرفاً والمُرسَل ${normalized.length}`,
+        doThis: `اختصر «${label}» إلى ${max} محرفاً فأقلّ ثمّ أعِد الإرسال`,
+      }),
     });
   }
   return normalized;
@@ -125,13 +139,21 @@ function uniquePositiveIds(values: number[], label: string): void {
     if (!Number.isSafeInteger(value) || value <= 0) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `${label} غير صالح`,
+        message: appErrorMessage({
+          what: `تعذّر إتمام العملية: ${label} غير صالح`,
+          why: `المعرّف المُرسَل (${value}) ليس رقماً موجباً — يبدو أنّ الشاشة تحمل قائمةً قديمة`,
+          doThis: "أعِد تحميل الشاشة واختر البنود من جدولها الحالي ثمّ أعِد الإرسال",
+        }),
       });
     }
     if (seen.has(value)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `لا يجوز تكرار ${label}`,
+        message: appErrorMessage({
+          what: `تعذّر إتمام العملية: ${label} مكرَّر`,
+          why: `البند رقم ${value} مُدرَجٌ مرّتين، والبند الواحد يُعالَج في سطرٍ واحد كي لا تُحتسَب كمّيته مرّتين`,
+          doThis: "ادمج السطرين المكرَّرين في سطرٍ واحد بمجموع كمّيتهما ثمّ أعِد الإرسال",
+        }),
       });
     }
     seen.add(value);
@@ -190,11 +212,20 @@ async function lockOrderAndRevision(
       .limit(1)
   )[0];
   if (!po)
-    throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر استلام البضاعة",
+        why: `أمر الشراء رقم ${purchaseOrderId} غير موجود — يبدو أنه حُذف أو أنّ الرابط قديم`,
+        doThis: "افتح الأمر من قائمة المشتريات وأعِد الاستلام منه؛ وإن كان الأمر ملغى فأنشئ أمراً جديداً بالبضاعة الواصلة",
+      }),
+    });
   assertPurchaseBranch(po, actor);
   const supplier = (
     await tx
-      .select({ id: suppliers.id, isActive: suppliers.isActive })
+      // `name` للرسالة وحدها: «المورد غير موجود أو غير نشط» بلا اسمٍ تترك السائق واقفاً
+      // والموظّف يبحث عن أيّ مورّدٍ يقصد النظام قبل أن يعرف من يُفعّله.
+      .select({ id: suppliers.id, isActive: suppliers.isActive, name: suppliers.name })
       .from(suppliers)
       .where(eq(suppliers.id, Number(po.supplierId)))
       .for("update")
@@ -203,13 +234,25 @@ async function lockOrderAndRevision(
   if (!supplier || !supplier.isActive) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "المورد غير موجود أو غير نشط",
+      message: appErrorMessage({
+        what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+        why: supplier
+          ? `مورّد الأمر «${supplier.name}» موقوف، والموقوف لا تُستلَم بضاعته ولا تُحمَّل عليه ذمّة`
+          : `مورّد الأمر (رقم ${Number(po.supplierId)}) لم يعد موجوداً في السجلّ`,
+        doThis: supplier
+          ? "أعِد تفعيل المورّد من صفحة الموردين ثمّ استلم، أو أوقف الاستلام حتى يُحسَم سبب إيقافه"
+          : "أنشئ المورّد من صفحة الموردين وأعِد إصدار أمر شراءٍ عليه — لا تُستلَم بضاعةٌ بلا طرفٍ تُنسَب إليه ذمّتها",
+      }),
     });
   }
   if (po.approvedRevisionId == null) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "لا يمكن الاستلام قبل اعتماد نسخة أمر الشراء",
+      message: appErrorMessage({
+        what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+        why: "لا نسخة معتمَدة للأمر بعد، والاستلام يُقاس على نسخةٍ معتمَدة (كمّياتٍ وأسعاراً) لا على مسوّدة",
+        doThis: "اطلب من المخوَّل اعتماد الأمر من قائمة المشتريات، ثمّ أعِد الاستلام؛ وسجِّل وصول البضاعة على ورقة المورّد ريثما يُعتمَد",
+      }),
     });
   }
   const revision = (
@@ -223,7 +266,11 @@ async function lockOrderAndRevision(
   if (!revision || Number(revision.purchaseOrderId) !== purchaseOrderId) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "نسخة أمر الشراء المعتمدة مفقودة أو لا تخص الأمر",
+      message: appErrorMessage({
+        what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+        why: `النسخة المعتمَدة المسجَّلة على الأمر (رقم ${Number(po.approvedRevisionId)}) مفقودة أو تخصّ أمراً آخر`,
+        doThis: "أعِد اعتماد الأمر ليُثبَّت له نسخةٌ سليمة ثمّ استلم؛ وإن تكرّر الرفض بعد الاعتماد فأبلِغ مسؤول النظام برقم الأمر",
+      }),
     });
   }
   return { po, revision };
@@ -250,13 +297,21 @@ export async function createGoodsReceiptInTx(
   ) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "نسخة أمر الشراء المتوقعة غير صالحة",
+      message: appErrorMessage({
+        what: "تعذّر استلام البضاعة",
+        why: `رقم نسخة الأمر المتوقَّعة (${input.expectedOrderVersion}) غير صالح — لم تُرسله الشاشة كما يجب`,
+        doThis: "أعِد تحميل شاشة الاستلام من صفحة أمر الشراء وأعِد إدخال الكمّيات؛ وإن تكرّر فأبلِغ مسؤول النظام برقم الأمر",
+      }),
     });
   }
   if (!input.lines.length)
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "أضف بند استلام واحداً على الأقل",
+      message: appErrorMessage({
+        what: "تعذّر حفظ إذن الاستلام",
+        why: "لا بند فيه — والإذن مستندٌ يشهد بوصول بضاعةٍ بعينها",
+        doThis: "أضف بند استلام واحداً على الأقل بكمّيته الواصلة ثمّ احفظ",
+      }),
     });
   const maxLines = options.allowPurchaseOrderApproverForAutomaticPosting
     ? 500
@@ -264,9 +319,11 @@ export async function createGoodsReceiptInTx(
   if (input.lines.length > maxLines) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message:
-        `الاستلام الواحد يدعم ${maxLines} بنداً كحد أقصى` +
-        (maxLines === 50 ? "؛ قسّم الإذن الكبير إلى دفعات" : ""),
+      message: appErrorMessage({
+        what: "تعذّر حفظ إذن الاستلام",
+        why: `الإذن الواحد يدعم ${maxLines} بنداً كحدّ أقصى، وأنت ترسل ${input.lines.length}`,
+        doThis: `قسّم الإذن الكبير إلى دفعات (${maxLines} بنداً فأقلّ لكل إذن) واستلمها واحدةً تلو الأخرى على الأمر نفسه`,
+      }),
     });
   }
   uniquePositiveIds(
@@ -286,14 +343,22 @@ export async function createGoodsReceiptInTx(
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "كميات الاستلام يجب أن تكون أعداد أساس صحيحة وغير سالبة",
+          message: appErrorMessage({
+            what: `تعذّر حفظ إذن الاستلام بسبب كمّيات البند رقم ${line.purchaseOrderItemId}`,
+            why: `المقبول ${accepted} والمرفوض ${rejected} — والمطلوب عددان صحيحان غير سالبين ومجموعُهما أكبر من صفر`,
+            doThis: "أدخِل الكمّية المقبولة والمرفوضة بالوحدة الأساس (بلا كسور)، واحذف السطر الذي لم يصل منه شيء بدل تركه صفراً",
+          }),
         });
       }
       const rejectionReason = line.rejectionReason?.trim() || null;
       if (rejected > 0 && !rejectionReason) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "سبب رفض الكمية مطلوب",
+          message: appErrorMessage({
+            what: `تعذّر حفظ إذن الاستلام: البند رقم ${line.purchaseOrderItemId} فيه ${rejected} وحدة مرفوضة بلا سبب`,
+            why: "الكمّية المرفوضة تُردّ إلى المورّد وتُخصَم من ذمّته، فلا تُثبَّت بلا سببٍ مكتوب يشهد به المستند",
+            doThis: "اكتب سبب الرفض في السطر (تلف · نقص · مواصفة مخالفة · تاريخ انتهاء)، أو صفِّر الكمّية المرفوضة إن كانت البضاعة سليمة",
+          }),
         });
       }
       return {
@@ -327,7 +392,11 @@ export async function createGoodsReceiptInTx(
       if (!payloadHashMatches(payloadHash, existing.payloadHash)) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "مفتاح الطلب مستعمل بحمولة استلام مختلفة",
+          message: appErrorMessage({
+            what: `تعذّر حفظ إذن الاستلام — الإذن ${existing.receiptNumber} مُثبَتٌ سلفاً بهذا المفتاح`,
+            why: "المفتاح نفسه أُرسل بكمّياتٍ أو بنودٍ مختلفة عمّا ثُبِّت، والمفتاح الواحد يخصّ إذناً واحداً كي لا تُستلَم البضاعة مرّتين",
+            doThis: `افتح الإذن ${existing.receiptNumber} وراجع ما ثُبِّت فيه؛ ولاستلام كمّيةٍ إضافية أنشئ إذناً جديداً من شاشة الاستلام بدل إعادة إرسال هذا`,
+          }),
         });
       }
       assertPurchaseBranch(existing, actor);
@@ -343,7 +412,11 @@ export async function createGoodsReceiptInTx(
     if (Number(po.version) !== input.expectedOrderVersion) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر أمر الشراء؛ أعد تحميله قبل الاستلام",
+        message: appErrorMessage({
+          what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+          why: `تغيّر الأمر بعد فتح الشاشة (نسختك ${input.expectedOrderVersion} والحالية ${Number(po.version)}) — والاستلام يُقاس على النسخة الحالية`,
+          doThis: "أعِد تحميل شاشة الاستلام، طابِق الكمّيات مع البضاعة الواصلة فعلاً، ثمّ احفظ",
+        }),
       });
     }
     if (
@@ -352,7 +425,11 @@ export async function createGoodsReceiptInTx(
     ) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "الاستلام مسموح للنسخة المعتمدة الحالية فقط",
+        message: appErrorMessage({
+          what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+          why: `شاشتك تستلم على النسخة ${input.purchaseOrderRevisionId} والمعتمَدة الآن هي ${Number(po.approvedRevisionId)} — والاستلام على النسخة المعتمَدة الحالية وحدها`,
+          doThis: "أعِد تحميل الأمر لتظهر النسخة المعتمَدة الحالية بكمّياتها وأسعارها، ثمّ استلم عليها",
+        }),
       });
     }
     if (
@@ -360,9 +437,32 @@ export async function createGoodsReceiptInTx(
         po.status as "CONFIRMED" | "RECEIVED",
       )
     ) {
+      // المخرج يختلف باختلاف الحالة، فلا تكفي تسميةٌ عربية للحالة: المسوّدة تُرسَل وتُعتمَد،
+      // والمُرسَل ينتظر اعتماداً، والملغى لا طريق له إلّا أمرٌ جديد. حالةٌ واحدةٌ = خطوةٌ واحدة.
+      const statusExit: Record<string, { label: string; doThis: string }> = {
+        DRAFT: {
+          label: "مسوّدة",
+          doThis: "أرسِل الأمر إلى المورّد من صفحة الأمر ثمّ اطلب اعتماده من المخوَّل، وبعدها استلم",
+        },
+        SENT: {
+          label: "مُرسَل وينتظر الاعتماد",
+          doThis: "اطلب من المخوَّل اعتماد الأمر من قائمة المشتريات ثمّ أعِد الاستلام",
+        },
+        CANCELLED: {
+          label: "ملغى",
+          doThis: "أنشئ أمر شراءٍ جديداً بالبضاعة الواصلة واعتمِده ثمّ استلم عليه — لا تُستلَم بضاعةٌ على أمرٍ ملغى",
+        },
+      };
+      const exit = statusExit[String(po.status)];
       throw new TRPCError({
         code: "CONFLICT",
-        message: "حالة أمر الشراء لا تسمح بالاستلام",
+        message: appErrorMessage({
+          what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+          why: `حالة الأمر الآن «${exit?.label ?? String(po.status)}»، والاستلام لا يقع إلّا على أمرٍ معتمَد (مؤكَّد أو مُستلَم جزئياً)`,
+          doThis:
+            exit?.doThis ??
+            "أعِد الأمر إلى حالة «مؤكَّد» باعتماده من المخوَّل، ثمّ استلم البضاعة عليه",
+        }),
       });
     }
     const isPurchaseOrderCreator =
@@ -376,13 +476,21 @@ export async function createGoodsReceiptInTx(
     ) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "فصل المهام: منشئ أو معتمد أمر الشراء لا يستلم بضاعته",
+        message: appErrorMessage({
+          what: `لا تستطيع استلام بضاعة أمر الشراء ${po.poNumber} بنفسك`,
+          why: `فصل المهام: أنت ${Number(po.createdBy) === actor.userId ? "منشئ الأمر" : "معتمِد الأمر"}، ومن يطلب البضاعة أو يعتمدها لا يشهد بوصولها`,
+          doThis: "سلّم البضاعة إلى أمين المخزن أو زميلٍ آخر ليُدخِل الاستلام بحضورك، وبقاؤك مع السائق حتى يُثبَّت الإذن",
+        }),
       });
     }
     if (!money(revision.taxAmount).isZero()) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "GRNI الحالي يدعم سياسة الضريبة العراقية الصفرية فقط",
+        message: appErrorMessage({
+          what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+          why: `النسخة المعتمَدة تحمل ضريبة ${money(revision.taxAmount).toFixed(2)}، ومسار الاستلام يدعم سياسة الضريبة العراقية الصفرية فقط (0%)`,
+          doThis: "صفِّر الضريبة في أمر الشراء (عدّله ثمّ أعِد اعتماده) وأدخِل قيمتها في سعر البنود إن كان المورّد يحمّلها، ثمّ استلم البضاعة",
+        }),
       });
     }
 
@@ -406,7 +514,11 @@ export async function createGoodsReceiptInTx(
     if (poItems.length !== revisionItems.length) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "بنود الأمر لا تطابق لقطة النسخة المعتمدة",
+        message: appErrorMessage({
+          what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+          why: `بنود الأمر ${poItems.length} وبنود النسخة المعتمَدة ${revisionItems.length} — تغيّرت بنوده بعد اعتماده، والاستلام يُقاس على لقطة النسخة`,
+          doThis: "أعِد اعتماد الأمر ليُلتقط له لقطةٌ مطابقة لبنوده الحالية، ثمّ استلم عليه",
+        }),
       });
     }
     const revisionByPoItemId = new Map<
@@ -422,7 +534,11 @@ export async function createGoodsReceiptInTx(
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "إسقاط بنود الأمر على النسخة المعتمدة غير متسق",
+          message: appErrorMessage({
+            what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+            why: `بند الأمر رقم ${Number(item.id)} لا يطابق ما في لقطة النسخة المعتمَدة (اختلف الصنف أو الكمّية) — عُدِّل الأمر بعد اعتماده`,
+            doThis: "أعِد اعتماد الأمر ليُلتقط له لقطةٌ مطابقة لبنوده الحالية، ثمّ استلم عليه",
+          }),
         });
       }
       revisionByPoItemId.set(Number(item.id), snapshot);
@@ -462,16 +578,25 @@ export async function createGoodsReceiptInTx(
       if (!item || !snapshot)
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "بند الاستلام لا يخص أمر الشراء",
+          message: appErrorMessage({
+            what: `تعذّر استلام بضاعة أمر الشراء ${po.poNumber}`,
+            why: `أحد أسطر الاستلام (بند رقم ${line.purchaseOrderItemId}) لا يخصّ هذا الأمر — غالباً تغيّرت بنود الأمر بعد فتح الشاشة`,
+            doThis: "أعِد تحميل شاشة الاستلام لتظهر بنود الأمر الحالية، ثمّ أدخِل الكمّيات الواصلة عليها",
+          }),
         });
       const priorAccepted = acceptedByItem.get(line.purchaseOrderItemId) ?? 0;
       if (
         priorAccepted + line.acceptedBaseQuantity >
         Number(snapshot.baseQuantity)
       ) {
+        const remaining = Number(snapshot.baseQuantity) - priorAccepted;
         throw new TRPCError({
           code: "CONFLICT",
-          message: `الكمية المقبولة تتجاوز المعتمد في السطر ${snapshot.lineNo}`,
+          message: appErrorMessage({
+            what: `الكمية المقبولة تتجاوز المعتمد في السطر ${snapshot.lineNo}`,
+            why: `المعتمَد ${Number(snapshot.baseQuantity)} وحدة أساس، والمستلَم سابقاً ${priorAccepted}، فالمتبقّي ${remaining} — وأنت تُدخِل ${line.acceptedBaseQuantity}`,
+            doThis: `أنقص كمّية السطر إلى ${remaining} واستلمها، وأدرِج الزائد الذي وصل فعلاً في أمر شراءٍ جديد أو عدّل الأمر وأعِد اعتماده قبل استلامه`,
+          }),
         });
       }
       return { line, item, snapshot, priorAccepted };
@@ -586,7 +711,11 @@ export async function createGoodsReceiptInTx(
           if (snapshot.usdLineTotal == null)
             throw new TRPCError({
               code: "CONFLICT",
-              message: "لقطة السطر الدولارية مفقودة",
+              message: appErrorMessage({
+                what: `تعذّر استلام السطر ${Number(snapshot.lineNo)} من أمر الشراء ${po.poNumber}`,
+                why: "الأمر بالدولار ولا قيمة دولارية محفوظة لهذا السطر في النسخة المعتمَدة — فلا تُحتسَب ذمّة المورّد بالدولار",
+                doThis: "افتح الأمر وأدخِل سعر السطر بالدولار وأعِد اعتماده، ثمّ استلم البضاعة",
+              }),
             });
           lineUsd = finalResidualCurrencyAmount(
             snapshot.usdLineTotal,
@@ -674,7 +803,11 @@ export async function createGoodsReceiptInTx(
         if (movement.movementId <= 0)
           throw new TRPCError({
             code: "CONFLICT",
-            message: "لا يمكن استلام بند خدمي أو بلا حركة مخزون",
+            message: appErrorMessage({
+              what: `تعذّر استلام السطر رقم ${Number(insertedItems[index]!.lineNo)} من أمر الشراء ${po.poNumber}`,
+              why: "الصنف مصنَّف خِدمة (بلا مخزون) فلا تُكتب له حركةُ إدخال، وإذنُ الاستلام لا يُثبَّت بلا حركة",
+              doThis: "احذف السطر الخِدميّ من الاستلام واستلم البضاعة وحدها؛ وإن كان تصنيفه خطأً فصحّحه من صفحة تعديل المنتج (يلزمه رصيدٌ صفريّ) ثمّ أعِد الاستلام",
+            }),
           });
         await tx
           .update(goodsReceiptItems)
@@ -769,7 +902,11 @@ export async function requestGoodsReceiptReversal(
   if (!input.lines.length)
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "حدد بنداً واحداً على الأقل للعكس",
+      message: appErrorMessage({
+        what: "تعذّر تقديم طلب عكس الاستلام",
+        why: "لم تُحدَّد فيه بنود، وعكس الاستلام يُخرِج كمّيةً بعينها من المخزون",
+        doThis: "علّم البنود التي تريد عكسها من جدول الإذن وأدخِل كمّية كلٍّ منها ثمّ أرسِل الطلب",
+      }),
     });
   uniquePositiveIds(
     input.lines.map((line) => line.goodsReceiptItemId),
@@ -780,7 +917,11 @@ export async function requestGoodsReceiptReversal(
       if (!Number.isSafeInteger(line.baseQuantity) || line.baseQuantity <= 0) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "كمية العكس يجب أن تكون عدداً صحيحاً موجباً",
+          message: appErrorMessage({
+            what: `تعذّر تقديم طلب عكس الاستلام بسبب كمّية البند رقم ${line.goodsReceiptItemId}`,
+            why: `الكمّية يجب أن تكون عدداً صحيحاً موجباً بالوحدة الأساس، والمُرسَل ${line.baseQuantity}`,
+            doThis: "أدخِل الكمّية المراد عكسها بالوحدة الأساس (بلا كسور)، واحذف السطر الذي لا تريد عكس شيءٍ منه",
+          }),
         });
       }
       return {
@@ -809,7 +950,11 @@ export async function requestGoodsReceiptReversal(
       if (!payloadHashMatches(payloadHash, existing.payloadHash))
         throw new TRPCError({
           code: "CONFLICT",
-          message: "مفتاح طلب العكس مستعمل بحمولة مختلفة",
+          message: appErrorMessage({
+            what: "تعذّر تقديم طلب عكس الاستلام",
+            why: `مفتاح الطلب مستعمَلٌ سلفاً لطلب عكسٍ آخر (رقم ${Number(existing.id)}) بكمّياتٍ أو بنودٍ مختلفة`,
+            doThis: "افتح قائمة اعتمادات المشتريات وراجع الطلب القائم؛ ولطلب عكسٍ مختلف ابدأ من شاشة الإذن من جديد بدل إعادة إرسال هذا",
+          }),
         });
       assertPurchaseBranch(existing, actor);
       return { ...existing, idempotentReplay: true as const };
@@ -825,23 +970,39 @@ export async function requestGoodsReceiptReversal(
     if (!receipt)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "إذن الاستلام غير موجود",
+        message: appErrorMessage({
+          what: "تعذّر تقديم طلب عكس الاستلام",
+          why: `إذن الاستلام رقم ${input.goodsReceiptId} غير موجود — يبدو أنّ الرابط قديم`,
+          doThis: "افتح الإذن من قائمة أذون الاستلام واطلب العكس من صفحته",
+        }),
       });
     assertPurchaseBranch(receipt, actor);
     if (receipt.origin !== "NATIVE")
       throw new TRPCError({
         code: "CONFLICT",
-        message: "الإذن التاريخي المجمّع لا يُعكس قبل تفكيكه إلى مستندات أصلية",
+        message: appErrorMessage({
+          what: `تعذّر طلب عكس إذن الاستلام ${receipt.receiptNumber}`,
+          why: "الإذن تاريخيّ مجمَّع (رُحِّل من قبل النظام) ولا يحمل مستنداً أصلياً واحداً يُعكَس عليه",
+          doThis: "صحّح الفرق بتسوية مخزونٍ معتمَدة أو بمرتجع شراءٍ على المورّد، ولا تنتظر عكساً لهذا الإذن",
+        }),
       });
     if (Number(receipt.version) !== input.expectedReceiptVersion)
       throw new TRPCError({
         code: "CONFLICT",
-        message: "تغيّر إذن الاستلام؛ أعد تحميله",
+        message: appErrorMessage({
+          what: `تعذّر طلب عكس إذن الاستلام ${receipt.receiptNumber}`,
+          why: `تغيّر الإذن بعد فتح الشاشة (نسختك ${input.expectedReceiptVersion} والحالية ${Number(receipt.version)}) — غالباً عُكِس منه شيءٌ للتوّ`,
+          doThis: "أعِد تحميل الإذن، راجع ما بقي مقبولاً في كل سطر، ثمّ اطلب العكس على المتبقّي وحده",
+        }),
       });
     if (receipt.status === "REVERSED")
       throw new TRPCError({
         code: "CONFLICT",
-        message: "إذن الاستلام معكوس بالكامل",
+        message: appErrorMessage({
+          what: `تعذّر طلب عكس إذن الاستلام ${receipt.receiptNumber}`,
+          why: "الإذن معكوسٌ بالكامل سلفاً، فلا تبقى فيه كمّيةٌ تُعكَس",
+          doThis: "افتح أمر الشراء وراجع الكمّيات المتبقّية عليه؛ ولإخراج بضاعةٍ عادت للمورّد بعد استلامها استعمل مرتجع الشراء لا عكس الإذن",
+        }),
       });
     const items = await tx
       .select()
@@ -860,7 +1021,11 @@ export async function requestGoodsReceiptReversal(
     if (items.length !== lines.length)
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "أحد بنود العكس لا يخص إذن الاستلام",
+        message: appErrorMessage({
+          what: `تعذّر طلب عكس إذن الاستلام ${receipt.receiptNumber}`,
+          why: `طلبتَ عكس ${lines.length} بنداً ولم يُوجَد منها في هذا الإذن إلّا ${items.length} — أحد البنود يخصّ إذناً آخر`,
+          doThis: "أعِد تحميل الإذن واختر بنوده من جدوله نفسه، ثمّ أعِد إرسال الطلب",
+        }),
       });
     const itemById = new Map(
       items.map((item) => [Number(item.id), item] as const),
@@ -874,7 +1039,14 @@ export async function requestGoodsReceiptReversal(
       if (line.baseQuantity > available)
         throw new TRPCError({
           code: "CONFLICT",
-          message: "كمية العكس تتجاوز المقبول المتاح",
+          message: appErrorMessage({
+            what: `كمية العكس تتجاوز المقبول المتاح في السطر ${Number(item.lineNo)} من إذن الاستلام ${receipt.receiptNumber}`,
+            why: `المقبول ${Number(item.acceptedBaseQuantity)} وحدة أساس، وعُكِس منه ${Number(item.reversedBaseQuantity)} ورُدّ للمورّد ${Number(item.returnedBaseQuantity)}، فالمتاح للعكس ${available} — وأنت تطلب ${line.baseQuantity}`,
+            doThis:
+              available > 0
+                ? `أنقص كمّية السطر إلى ${available} وأعِد إرسال الطلب`
+                : "لم يبقَ في هذا السطر ما يُعكَس — أخرِجه من الطلب، ولإرجاع بضاعةٍ إلى المورّد استعمل مرتجع الشراء",
+          }),
         });
     }
     const inserted = await tx.insert(goodsReceiptReversalRequests).values({
@@ -925,7 +1097,11 @@ export async function decideGoodsReceiptReversal(
     if (!preview)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "طلب العكس غير موجود",
+        message: appErrorMessage({
+          what: "تعذّر حسم طلب عكس الاستلام",
+          why: `الطلب رقم ${input.requestId} غير موجود — يبدو أنه حُذف أو أنّ الشاشة تحمل قائمةً قديمة`,
+          doThis: "أعِد تحميل قائمة اعتمادات المشتريات واحسم الطلب من صفّه الحالي",
+        }),
       });
     const receiptPreview = (
       await tx
@@ -937,7 +1113,11 @@ export async function decideGoodsReceiptReversal(
     if (!receiptPreview)
       throw new TRPCError({
         code: "NOT_FOUND",
-        message: "إذن الاستلام غير موجود",
+        message: appErrorMessage({
+          what: "تعذّر حسم طلب عكس الاستلام",
+          why: `إذن الاستلام المرتبط بالطلب (رقم ${Number(preview.goodsReceiptId)}) لم يعد موجوداً`,
+          doThis: "ارفض الطلب وأبلِغ مسؤول النظام برقم الطلب ورقم الإذن — لا يُعتمَد عكسٌ على مستندٍ مفقود",
+        }),
       });
     const { po } = await lockOrderAndRevision(
       tx,
@@ -968,7 +1148,11 @@ export async function decideGoodsReceiptReversal(
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "طلب العكس حُسم بقرار مختلف",
+          message: appErrorMessage({
+            what: `تعذّر حسم طلب عكس إذن الاستلام ${receipt.receiptNumber}`,
+            why: `الطلب حُسم سلفاً بقرارٍ مختلف (حالته الآن ${request.status === "APPROVED" ? "معتمَد" : "مرفوض"}) — ولا يُحسَم الطلب مرّتين`,
+            doThis: "أعِد تحميل قائمة الاعتمادات لترى القرار المُثبَت؛ ولتصحيحه اطلب عكساً جديداً بمستنده",
+          }),
         });
       }
       return {
@@ -978,19 +1162,39 @@ export async function decideGoodsReceiptReversal(
       };
     }
     if (request.status !== "PENDING")
-      throw new TRPCError({ code: "CONFLICT", message: "طلب العكس غير معلّق" });
-    if (
-      Number(request.requestedBy) === actor.userId ||
-      Number(receipt.createdBy) === actor.userId ||
-      Number(receipt.postedBy) === actor.userId ||
-      Number(po.createdBy) === actor.userId ||
-      Number(po.approvedBy) === actor.userId
-    ) {
       throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "فصل المهام: منفذ الاستلام أو منشئ الطلب/الأمر لا يعتمد العكس",
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `تعذّر حسم طلب عكس إذن الاستلام ${receipt.receiptNumber}`,
+          why: `الطلب لم يعد معلّقاً (حالته ${request.status === "APPROVED" ? "معتمَد" : "مرفوض"}) — حسمه زميلٌ آخر قبلك`,
+          doThis: "أعِد تحميل قائمة الاعتمادات لترى من حسمه ومتى؛ وإن كان القرار خاطئاً فاطلب عكساً جديداً بمستنده",
+        }),
       });
-    }
+    // عكسُ الاستلام محوُ أثرٍ مُثبَت: `applyMovement` باتّجاه OUT (إخراجُ مخزونٍ أُدخل) +
+    // قيدٌ عكسيّ يمحو التزام GRNI. ⇒ المالك حصراً. والرفضُ حرٌّ — لا يكتب شيئاً ماليّاً.
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: goodsReceiptReversalTrigger(input.action),
+      subject: `عكس استلام ${receipt.receiptNumber}`,
+      legacy: () => {
+        if (
+          Number(request.requestedBy) === actor.userId ||
+          Number(receipt.createdBy) === actor.userId ||
+          Number(receipt.postedBy) === actor.userId ||
+          Number(po.createdBy) === actor.userId ||
+          Number(po.approvedBy) === actor.userId
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: `لا تستطيع اعتماد عكس إذن الاستلام ${receipt.receiptNumber}`,
+              why: "فصل المهام: أنت طرفٌ في المستند نفسه (طلبتَ العكس أو نفّذتَ الاستلام أو أنشأتَ أمر الشراء أو اعتمدتَه)، ومن صنع الأثر لا يمحوه",
+              doThis: "أحِل الطلب إلى المدير أو مالك الحساب ليعتمده، وسيبقى معلّقاً في قائمة اعتمادات المشتريات حتى يُحسَم",
+            }),
+          });
+        }
+      },
+    });
     const decidedAt = new Date();
     if (input.action === "REJECT") {
       await tx
@@ -1096,7 +1300,12 @@ export async function decideGoodsReceiptReversal(
       if (Number(row.requestItem.baseQuantity) > available)
         throw new TRPCError({
           code: "CONFLICT",
-          message: "لا يمكن عكس كمية خُصصت لفاتورة مورد أو لم تعد متاحة",
+          message: appErrorMessage({
+            what: `تعذّر اعتماد عكس السطر ${Number(row.receiptItem.lineNo)} من إذن الاستلام ${receipt.receiptNumber}`,
+            why: `المتاح للعكس الآن ${available} وحدة أساس والمطلوب ${Number(row.requestItem.baseQuantity)} — خُصِّص جزءٌ منه لفاتورة مورّدٍ أو رُدَّ أو عُكِس بعد تقديم الطلب`,
+            doThis:
+              "ارفض هذا الطلب واطلب عكساً جديداً بالكمّية المتاحة فعلاً؛ وإن كانت الكمّية مفوترةً على المورّد فعالجها بمرتجع شراءٍ لا بعكس الإذن",
+          }),
         });
     }
     const variantIds = requestedItems.map((row) =>
@@ -1183,7 +1392,11 @@ export async function decideGoodsReceiptReversal(
       if (movement.movementId <= 0)
         throw new TRPCError({
           code: "CONFLICT",
-          message: "تعذر إنشاء حركة عكس المخزون",
+          message: appErrorMessage({
+            what: `تعذّر اعتماد عكس السطر ${Number(row.receiptItem.lineNo)} من إذن الاستلام ${receipt.receiptNumber}`,
+            why: "لم تُكتب حركة إخراجٍ للصنف — صُنِّف خِدمةً بعد استلامه، والخدمة بلا مخزونٍ يُخرَج منه",
+            doThis: "أعِد تصنيف الصنف صنفاً مخزنياً من صفحة تعديل المنتج ثمّ أعِد اعتماد الطلب؛ وإن تعذّر فارفض الطلب وصحّح الرصيد بتسويةٍ معتمَدة",
+          }),
         });
       await tx.insert(goodsReceiptReversalItems).values({
         reversalId,
@@ -1296,7 +1509,11 @@ export async function getGoodsReceipt(goodsReceiptId: number, actor: Actor) {
       if (!receipt)
         throw new TRPCError({
           code: "NOT_FOUND",
-          message: "إذن الاستلام غير موجود",
+          message: appErrorMessage({
+            what: "تعذّر فتح إذن الاستلام",
+            why: `الإذن رقم ${goodsReceiptId} غير موجود — يبدو أنّ الرابط قديم أو أنّ الإذن يخصّ فرعاً آخر`,
+            doThis: "ارجع إلى قائمة أذون الاستلام وافتح الإذن من صفّه هناك",
+          }),
         });
       assertPurchaseBranch(receipt, actor);
       const items = await tx
@@ -1320,7 +1537,14 @@ export async function listGoodsReceipts(
   actor: Actor,
 ) {
   if (actor.role !== "admin" && actor.branchId !== input.branchId)
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك عرض فرع آخر" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "لا يمكنك عرض أذون استلام فرع آخر",
+        why: `الطلب يخصّ الفرع رقم ${input.branchId} وأنت مُسنَدٌ إلى الفرع رقم ${actor.branchId ?? "غير محدَّد"}`,
+        doThis: "بدّل الفرع في الشاشة إلى فرعك، أو اطلب من المدير عرض أذون الفرع الآخر (عبورُ الفروع له وحده)",
+      }),
+    });
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 200);
   return withTx(
     (tx) =>
@@ -1346,7 +1570,14 @@ export async function listPendingGoodsReceiptReversals(
   actor: Actor,
 ) {
   if (actor.role !== "admin" && actor.branchId !== branchId)
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك عرض فرع آخر" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "لا يمكنك عرض طلبات عكس الاستلام في فرع آخر",
+        why: `الطلب يخصّ الفرع رقم ${branchId} وأنت مُسنَدٌ إلى الفرع رقم ${actor.branchId ?? "غير محدَّد"}`,
+        doThis: "بدّل الفرع في الشاشة إلى فرعك، أو اطلب من المدير مراجعة طلبات الفرع الآخر (عبورُ الفروع له وحده)",
+      }),
+    });
   return withTx(
     (tx) =>
       tx

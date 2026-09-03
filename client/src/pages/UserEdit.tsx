@@ -17,7 +17,7 @@ import { fmtDateTime } from "@/lib/date";
 import { describeUserAgent } from "@/lib/userAgent";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { AlertTriangle, Check, Copy, Monitor } from "lucide-react";
+import { AlertTriangle, Check, Copy, Monitor, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
@@ -44,6 +44,26 @@ function toDateInput(d: unknown): string {
   } catch {
     return "";
   }
+}
+
+/**
+ * هل يُعطِّل «بلا فرع» هذا الحساب فعلياً؟
+ *
+ * ⚠️ **عمداً لا يطابق `BRANCH_WARN_ROLES` في `AccountFields.tsx`** — وذاك خطأٌ لا مرجع:
+ * نصُّه يَعِد بوصولٍ إلى كل الفروع بينما الخادم يمنع الوصولَ كلَّه، وقائمةُ الخمسة فيه تفوت
+ * مدير الفرع والمحاسب والمدقّق ومندوب التوصيل والمستخدم العام. نُطابق هنا الخادمَ لا الشاشةَ
+ * الأخرى: التطابق لا يُنسَخ به خطأ.
+ *
+ * ⭐ **والمرجع هو قاعدةُ الحفظ لا قاعدةُ التشغيل** — أمسكت المراجعة العدائية الخلطَ بينهما:
+ * `assertUserBranchAssignmentTx` ([`userService.ts`](../../../server/services/userService.ts))
+ * **يرفض الحفظ** بـ`BAD_REQUEST` على `role !== "admin"` وحدها، **بلا بند `isOwner`**. فإضافةُ
+ * `&& !isOwner` هنا كانت تُسكِت التحذيرَ في حالةٍ قابلةٍ للبلوغ: `normalizeOwnerAuthority`
+ * ([`server/context.ts`](../../../server/context.ts)) يرفع الدور إلى `admin` **في الذاكرة فقط**
+ * ولا يكتبه في `users.role`. ⇒ مديرٌ مُنِح صفةَ «مالك النظام» ثمّ مُسِح فرعُه كان يرى **صفر
+ * تحذير** ثمّ يصطدم برفضٍ غير مُفسَّر — وهو نفسُ صنف العلّة التي جاءت هذه الشريحة تُغلقه.
+ */
+function branchlessBreaksAccount(role: RoleKey): boolean {
+  return role !== "admin";
 }
 
 /** فروق الصلاحيات عن قالب الدور — تُعرض فوق المصفوفة (مطابق لشاشة الإضافة). */
@@ -87,6 +107,11 @@ export default function UserEdit() {
   const [username, setUsername] = useState("");
   const [usernameError, setUsernameError] = useState("");
   const [usernameChecked, setUsernameChecked] = useState(false);
+  // فحص توفّر البريد كان في شاشة الإضافة وحدها؛ فتعديلُ البريد إلى بريدٍ مأخوذ لا يُكتشف إلا
+  // برسالة خادمٍ بعد الضغط على «حفظ» — بعد أن كتب المستخدم النموذج كلّه. حالةٌ عرضية بحتة
+  // (خارج بصمة isDirty كنظيرتها للاسم) فلا تُنذر بفقد بيانات.
+  const [emailError, setEmailError] = useState("");
+  const [emailChecked, setEmailChecked] = useState(false);
   const [role, setRole] = useState<RoleKey>("cashier");
   const [customRoleId, setCustomRoleId] = useState<number | null>(null);
   const [branchId, setBranchId] = useState<string>("");
@@ -216,6 +241,14 @@ export default function UserEdit() {
     setPermsOverride(diffFromTemplate(role, newResolved) ?? {});
   }
 
+  // Codex #958: عدّاداتُ تسلسلٍ لإسقاط الردودِ المتأخّرة. لو حرّرَ المستخدمُ الحقلَ من A إلى B
+  // قبل رجوعِ استعلامِ A، كان setEmailError/setEmailChecked يُطبَّق على قيمة B بغير حقٍّ —
+  // فيقفل الحفظَ ببريدٍ صالحٍ أو يمرّر بريداً مأخوذاً حتّى يرفضه الخادم. الحلّ: كلّ نداءٍ يأخذ
+  // رقماً، ولا يُطبّق نتيجتَه إلّا إن كان **الأحدث**، وإن كانت القيمةُ المفحوصةُ لا تزال هي
+  // القيمةَ الحاليّةَ في الحقل.
+  const emailCheckSeqRef = useRef(0);
+  const usernameCheckSeqRef = useRef(0);
+
   async function checkUsernameFn() {
     const v = username.trim().toLowerCase();
     if (!v) { setUsernameError(""); setUsernameChecked(false); return; }
@@ -224,17 +257,62 @@ export default function UserEdit() {
       setUsernameChecked(false);
       return;
     }
+    const seq = ++usernameCheckSeqRef.current;
     try {
       const ok = await utils.users.checkUsername.fetch({ username: v, excludeUserId: userId });
+      // Codex #958: إسقاطُ نتيجةٍ متأخّرةٍ لقيمةٍ لم تعد الأحدث ولا مطابقةً لما في الحقل.
+      if (seq !== usernameCheckSeqRef.current) return;
+      if (v !== username.trim().toLowerCase()) return;
       setUsernameError(ok ? "" : "اسم المستخدم مستخدم مسبقاً.");
       setUsernameChecked(true);
-    } catch { setUsernameChecked(false); }
+    } catch {
+      if (seq !== usernameCheckSeqRef.current) return;
+      setUsernameChecked(false);
+    }
+  }
+
+  /** نظير checkUsernameFn للبريد — `excludeUserId` يمنع أن يُبلَّغ بريدُ الحساب نفسه «مأخوذاً». */
+  async function checkEmailFn() {
+    const v = email.trim().toLowerCase();
+    if (!v) { setEmailError(""); setEmailChecked(false); return; }
+    if (!/^\S+@\S+\.\S+$/.test(v)) { setEmailError("بريد إلكتروني غير صالح."); setEmailChecked(false); return; }
+    const seq = ++emailCheckSeqRef.current;
+    try {
+      const ok = await utils.users.checkEmail.fetch({ email: v, excludeUserId: userId });
+      // Codex #958: نفس الحارس على البريد — لا نُطبّقُ نتيجةَ استعلامٍ لبريدٍ قديم.
+      if (seq !== emailCheckSeqRef.current) return;
+      if (v !== email.trim().toLowerCase()) return;
+      setEmailError(ok ? "" : "هذا البريد مستخدم مسبقاً.");
+      setEmailChecked(true);
+    } catch {
+      if (seq !== emailCheckSeqRef.current) return;
+      setEmailChecked(false);
+    }
+  }
+
+  /** توليد اسم مستخدم متاح من الاسم — نفس زرّ شاشة الإضافة. التفرّد يضمنه الخادم لا العميل. */
+  async function fillSuggestedUsername() {
+    const base = name.trim();
+    if (!base) { setUsernameError("أدخل الاسم أولاً ليُشتقّ منه اسم المستخدم."); return; }
+    try {
+      const res = await utils.users.suggestUsername.fetch({ name: base });
+      if (res.username) {
+        setUsername(res.username);
+        setUsernameError("");
+        setUsernameChecked(true);
+      } else {
+        setUsernameError("تعذّر اقتراح اسم مستخدم تلقائياً — أدخله يدوياً أو استخدم البريد الإلكتروني.");
+      }
+    } catch {
+      setUsernameError("تعذّر الاتصال لاقتراح اسم المستخدم — أدخله يدوياً.");
+    }
   }
 
   function submit() {
     setError(""); setDone("");
     if (!name.trim()) return setError("الاسم مطلوب.");
     if (usernameError) return setError(usernameError);
+    if (emailError) return setError(emailError);
     const emailV = email.trim().toLowerCase();
     const usernameV = username.trim().toLowerCase();
     if (!emailV && !usernameV) return setError("يجب إبقاء بريد إلكتروني أو اسم مستخدم واحد على الأقل.");
@@ -299,6 +377,23 @@ export default function UserEdit() {
 
   const roleInfo = ROLES.find((r) => r.key === role);
   const customCount = Object.keys(permsOverride).length;
+  // الدور المخصّص يحمل دوراً أساساً (baseRole) في العمود نفسه، والخادم يقيس عليه — فالفحص على
+  // `role` صحيحٌ في الحالتين.
+  /**
+   * ⭐ الدورُ الفعّال = `baseRole` الدورِ المخصّص المختار، لا `role` المخزَّن على الحساب.
+   *
+   * أمسكت مراجعةُ Codex الفرقَ: `handleRoleChange` يضبط `customRoleId` وحده ويترك `role`
+   * على قيمته القديمة، فمديرٌ (`admin`) بلا فرعٍ يُحوَّل إلى دورٍ مخصّص كان **يرى صفر
+   * تحذير** — لأنّ الفحص يقيس على `admin` الباقية. والخادم `updateUser` يحلّ `baseRole`
+   * الحقيقيّ للدور المختار **قبل** فرض إسناد الفرع، والأدوارُ المخصّصة لا تحمل `admin`
+   * أساساً ⇒ الحفظ يسقط بالرسالة نفسها التي تدّعي هذه الشاشة التنبّؤ بها.
+   */
+  const effectiveRole: RoleKey = customRoleId
+    ? ((customRoles.find((r: { id: number }) => Number(r.id) === customRoleId) as
+        | { baseRole?: string }
+        | undefined)?.baseRole as RoleKey) ?? role
+    : role;
+  const branchBlocks = branchId === "" && branchlessBreaksAccount(effectiveRole);
 
   if (!userId) return <div className="p-6 text-center text-muted-foreground">معرّف مستخدم غير صالح.</div>;
   if (detail.isLoading) return <LoadingState message="جارٍ تحميل بيانات المستخدم…" />;
@@ -373,7 +468,14 @@ export default function UserEdit() {
             <Input id="name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="username">اسم المستخدم (للدخول)</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="username">اسم المستخدم (للدخول)</Label>
+              {/* نظير زرّ شاشة الإضافة — حسابٌ قديم بلا اسم مستخدم كان يلزمه اختراعُ اسمٍ يدوياً
+                  ثمّ انتظارُ رفض التفرّد من الخادم. */}
+              <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2 gap-1" onClick={() => void fillSuggestedUsername()}>
+                <Zap aria-hidden className="size-3.5" /> توليد تلقائي
+              </Button>
+            </div>
             <Input
               id="username" dir="ltr" value={username}
               onChange={(e) => { setUsername(e.target.value); setUsernameChecked(false); setUsernameError(""); }}
@@ -386,7 +488,15 @@ export default function UserEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="email">البريد الإلكتروني <span className="text-muted-foreground font-normal">(اختياري)</span></Label>
-            <Input id="email" dir="ltr" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@alroya.local" />
+            <Input
+              id="email" dir="ltr" value={email}
+              onChange={(e) => { setEmail(e.target.value); setEmailChecked(false); setEmailError(""); }}
+              onBlur={() => void checkEmailFn()}
+              placeholder="user@alroya.local"
+              className={emailError ? "border-destructive" : emailChecked && !emailError ? "border-[var(--status-active)]" : ""}
+            />
+            {emailError && <p className="text-[11px] text-destructive">{emailError}</p>}
+            {emailChecked && !emailError && email.trim() && <p className="text-[11px] text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />البريد متاح</p>}
           </div>
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
@@ -420,10 +530,21 @@ export default function UserEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>
-            <AppSelect id="branch" value={branchId} onValueChange={(next) => setBranchId(next)}>
+            <AppSelect
+              id="branch"
+              className={`h-9 ${branchBlocks ? "border-[var(--sem-warn)]" : ""}`}
+              value={branchId}
+              onValueChange={(next) => setBranchId(next)}
+            >
               <option value="">— بلا فرع —</option>
               {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>)}
             </AppSelect>
+            {branchBlocks && (
+              <p className="text-[11px] text-[var(--sem-warn)] inline-flex items-start gap-1">
+                <AlertTriangle aria-hidden className="size-3.5 mt-px shrink-0" />
+                <span>هذا الدور لا يعبر الفروع: الحفظ سيُرفض برسالة «الحساب غير الإداري يجب أن يرتبط بفرع». اختر فرعاً قبل الحفظ.</span>
+              </p>
+            )}
           </div>
           {/* مالك النظام (isOwner): يظهر فقط للمالك الحالي (حارس تصعيد الصلاحيات). المالك يتجاوز
               كل اعتماد ثنائي على السندات ويحتفظ بدور admin. */}
@@ -444,6 +565,31 @@ export default function UserEdit() {
               </p>
             </div>
           )}
+
+          {/* حقلان يملكهما نموذج الإضافة ولا يقبلهما `users.update` — يُعرضان للقراءة بسببهما
+              المكتوب بدل أن يغيبا صامتَين، فالغياب الصامت هو ما يجعل الشاشة تبدو ناقصة. */}
+          <div className="space-y-1 md:col-span-2 border-t pt-3">
+            <Label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                className="size-4"
+                checked={!!(u as { mustChangePassword?: boolean }).mustChangePassword}
+                disabled
+                readOnly
+                aria-describedby="user-mustchange-lock"
+              />
+              <span className="text-muted-foreground">إلزام تغيير كلمة المرور عند أول دخول</span>
+            </Label>
+            <p id="user-mustchange-lock" className="text-[11px] text-muted-foreground">
+              يُرفَع عند إنشاء الحساب وحده، ويُخفَض تلقائياً حين يستهلك المستخدمُ رمزَ الاستعادة
+              ويختار كلمته. ولا يرفعه حفظُ هذا النموذج ولا إصدارُ رمزٍ جديد، لأنّ رفعه بلا كلمةٍ
+              جديدةٍ يُغيَّر إليها يُلزم بتغييرٍ لا سبيل إليه.
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              ولا حقلَ لكلمة المرور في هذه الشاشة: المدير لا يختار كلمة مستخدمٍ آخر ولا يراها — يصدر
+              له رمزاً أحادي الاستخدام من البطاقة نفسها ويختارها المستخدم بنفسه.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
@@ -481,7 +627,14 @@ export default function UserEdit() {
         </CardHeader>
         <CardContent>
           {customRoleId ? (
-            <p className="text-sm text-muted-foreground">صلاحيات الدور المخصّص محفوظة في تعريفه — عدّلها من شاشة «الأدوار والصلاحيات».</p>
+            // المصفوفة تختفي عمداً (الصلاحيات محفوظة في تعريف الدور لا فرقاً فوقه) — لكنّ السطر
+            // كان يسمّي الشاشة بلا رابطٍ إليها، فيصير بابَ خروجٍ مسدوداً. الرابط يقصد الدور بعينه.
+            <p className="text-sm text-muted-foreground">
+              صلاحيات الدور المخصّص محفوظة في تعريفه لا في هذا الحساب — تعديلها هنا كان سيغيّرها لكل
+              مَن يحمله.{" "}
+              <Link className="text-primary underline" href={`/roles/${customRoleId}/edit`}>افتح تعريف الدور لتعديل صلاحياته</Link>
+              ، أو أسنِد للحساب دوراً من «أدوار النظام» أعلاه لتظهر المصفوفة الفردية.
+            </p>
           ) : (
             <>
               <PermDiffSummary role={role} override={permsOverride} />

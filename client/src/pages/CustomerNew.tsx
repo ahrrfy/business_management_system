@@ -10,11 +10,15 @@ import { FormError } from "@/components/form/FormError";
 import { PageHeader } from "@/components/PageHeader";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
-import { fmt } from "@/lib/money";
+import { confirm } from "@/lib/confirm";
+// `fmtAr` لا `fmt`: هي صيغة العرض في شاشتَي العملاء الأخريَين (القائمة وبطاقة التعديل)، فالرصيد
+// الواحد يُقرأ متطابقاً أينما ظهر. و`fmt` تحشو منزلتَين دائماً (500,000.00) وهو ضجيجٌ على دينارٍ
+// لا فئة فيه أصغر من ٢٥٠. كلتاهما لاتينية الأرقام؛ الفارق كان في الحشو لا في الترقيم.
+import { fmtAr as fmt, moneyInput } from "@/lib/money";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -24,14 +28,17 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
  *
  * تصميم:
  *  - بطاقات بيضاء، grid عمودان، RTL، الخط Cairo (موروث). ترويسة PageHeader موحّدة.
- *  - ٣ أرقام هاتف دولية (E.164). لا بريد إلكتروني.
+ *  - ٣ أرقام هاتف دولية (E.164) + حقل واتساب مستقلّ. لا بريد إلكتروني.
  *  - شارات حيّة: «الرئيسي» على أول رقم، تنويه واتساب.
  *  - نوع العميل يقترح فئة السعر تلقائياً (حكومي→حكومي، تاجر→جملة) قابلاً للتجاوز.
  *  - سقف الائتمان صريح بثلاثة أوضاع (نقدي فقط / سقف محدّد / بلا سقف)، محصور بالمدير.
  *  - اختصارات: Ctrl+S حفظ، Esc إلغاء. شريط أزرار ثابت أسفل الشاشة.
  *
  * العقد: ينادي `customers.create`. سقف الائتمان: "0"=نقدي فقط، null=بلا حدّ، رقم=سقف.
- * (الكاشير محجوب عن الحقل؛ الخادم يثبّته "0".) الواتساب = الهاتف الرئيسي تلقائياً.
+ * (الكاشير محجوب عن الحقل؛ الخادم يثبّته "0".) الواتساب يتبع الهاتف الرئيسي حتى يُلمَس الحقل.
+ *
+ * تماثلها مع `CustomerEdit` مقيسٌ نصّاً في `__tests__/customerFormParity.test.ts`: نفس الحقول،
+ * ونفس صيغة عرض المال، ونفس مسار المغادرة المحروس بتأكيد. الفوارق الباقية مقصودة ومبرَّرة هناك.
  */
 
 const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"] as const;
@@ -52,9 +59,6 @@ function suggestedTier(t: CustomerType): PriceTier {
   return "RETAIL";
 }
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
 export default function CustomerNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
@@ -66,6 +70,11 @@ export default function CustomerNew() {
   const [phone, setPhone] = useState("");
   const [phone2, setPhone2] = useState("");
   const [phone3, setPhone3] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
+  // الواتساب كان يُرسَل ضمنياً = الهاتف الرئيسي بلا حقلٍ يعرضه، بينما شاشة التعديل تعرضه حقلاً
+  // مستقلاً ⇒ رقمٌ يظهر عند التعديل ولم يره أحدٌ عند الإنشاء. صار ظاهراً هنا **متتبِّعاً** للهاتف
+  // الرئيسي حتى يُلمَس، فالحمولة لمن لم يلمسه هي حمولة الأمس نفسها.
+  const [whatsappTouched, setWhatsappTouched] = useState(false);
   const [customerType, setCustomerType] = useState<CustomerType>("فرد");
   const [defaultPriceTier, setDefaultPriceTier] = useState<PriceTier>("RETAIL");
   const [tierTouched, setTierTouched] = useState(false);
@@ -78,6 +87,19 @@ export default function CustomerNew() {
   const [openingDir, setOpeningDir] = useState<"OWED_TO_US" | "OWED_BY_US">("OWED_TO_US");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
+
+  /** لقطة الحقول القابلة للتحرير — نفس القائمة وترتيبها في `CustomerEdit` (تماثلٌ مقيس). */
+  function dirtySnapshot(): string {
+    return JSON.stringify([
+      name, phone, phone2, phone3, whatsapp, customerType, defaultPriceTier,
+      city, district, address, creditMode, creditLimit, notes, openingAmount, openingDir,
+    ]);
+  }
+  // لقطة البداية تُلتقَط عند أول تصيير: شاشة الإضافة لا تنتظر خادماً، فالحالة الابتدائية هي
+  // مرجعُها الصحيح (نظير لقطة الخادم في التعديل) ⇒ لا تحذير كاذب على شاشةٍ لم تُلمَس.
+  const initialSnapshotRef = useRef<string | null>(null);
+  if (initialSnapshotRef.current == null) initialSnapshotRef.current = dirtySnapshot();
+  const isDirty = dirtySnapshot() !== initialSnapshotRef.current;
 
   // dup-detect (٦/٧): مفتاح idempotency — UUID واحد لكل فتح للنموذج. إعادة الإرسال بنفس المفتاح
   // (نقر مزدوج/انقطاع شبكة وإعادة محاولة) تعيد العميل نفسه من الخادم بدل إنشاء صفٍّ مكرّر.
@@ -121,6 +143,12 @@ export default function CustomerNew() {
     },
   });
 
+  /** الهاتف الرئيسي يقود رقم الواتساب ما لم يُدخِل المستخدم رقماً مختلفاً صراحةً. */
+  function onPhoneChange(v: string) {
+    setPhone(v);
+    if (!whatsappTouched) setWhatsapp(v);
+  }
+
   /** تغيير النوع: يقترح فئة السعر ما لم يعدّلها المستخدم يدوياً. */
   function onTypeChange(v: CustomerType) {
     setCustomerType(v);
@@ -161,7 +189,7 @@ export default function CustomerNew() {
       phone: phone.trim() || null,
       phone2: phone2.trim() || null,
       phone3: phone3.trim() || null,
-      whatsapp: phone.trim() || null,
+      whatsapp: whatsapp.trim() || null,
       address: address.trim() || null,
       city: city.trim() || null,
       district: district.trim() || null,
@@ -176,33 +204,50 @@ export default function CustomerNew() {
     });
   }
 
-  // اختصارات: Ctrl+S حفظ، Esc إلغاء (نظير نموذج السند).
+  /** Esc/إلغاء: مغادرة مباشرة إن لم يُدخَل شيء، وإلا تأكيدٌ صريح (نظير `CustomerEdit`).
+   *  المغادرة داخل SPA لا تُطلق `beforeunload`، فحارس التبويب وحده كان يترك نموذجاً معبَّأً
+   *  يضيع بضغطة Esc واحدة بلا سؤال. */
+  async function handleCancel() {
+    if (isDirty) {
+      const ok = await confirm({
+        variant: "warning",
+        title: "تجاهل البيانات المدخلة؟",
+        description: "لديك بيانات عميل غير محفوظة. إن غادرت الآن ستضيع.",
+        confirmText: "تجاهل ومغادرة",
+      });
+      if (!ok) return;
+    }
+    navigate("/customers");
+  }
+
+  // اختصارات: Ctrl+S حفظ، Esc إلغاء (بتأكيدٍ إن كان النموذج معبَّأً) — نظير نموذج السند.
   useSaveShortcuts({
     onSave: submit,
-    onCancel: () => navigate("/customers"),
+    onCancel: () => void handleCancel(),
     enabled: !create.isPending,
   });
-  useUnsavedGuard(
-    name.trim() !== "" ||
-      phone.trim() !== "" ||
-      phone2.trim() !== "" ||
-      phone3.trim() !== "" ||
-      city.trim() !== "" ||
-      district.trim() !== "" ||
-      address.trim() !== "" ||
-      notes.trim() !== "" ||
-      openingAmount.trim() !== "",
-  );
+  // حارس فقد البيانات عند تحديث/إغلاق التبويب/مغادرة خارجية.
+  useUnsavedGuard(isDirty);
 
-  const wa = whatsappLink(phone);
+  // Codex #958: بعد أن يُفرِغ المستخدمُ حقلَ الواتساب صراحةً (`whatsappTouched=true`)،
+  // كان الاحتياطُ إلى `phone` يُبقي على معاينةٍ ورابطٍ لقناةٍ **لن تُحفَظ** — النموذج
+  // يعِد بشيءٍ لا يُنفَّذ. المعاينةُ الآن تعرض ما سيُخزَّن حقاً: `whatsapp` المكتوب،
+  // ولا شيءٌ حين يُفرَّغ عمداً. الاحتياطُ إلى `phone` يبقى فقط قبل أوّل لمس (اقتراحٌ خفيّ).
+  const waSource = whatsappTouched ? whatsapp : whatsapp || phone;
+  const wa = whatsappLink(waSource);
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="إضافة عميل"
         description="سجّل عميلاً جديداً ببياناته وفئة سعره وسقف ائتمانه."
-        backHref="/customers"
-        backLabel="رجوع للقائمة"
+        actions={
+          // زرّ لا رابط: يمرّ بنفس تأكيد Esc (handleCancel) — نقرة الفأرة لا تتجاوز تحذير فقد البيانات.
+          // نتركه في `actions` (لا `backHref`) لأنّه يستدعي تأكيداً قبل الرجوع؛ backHref رابطٌ مباشر يتخطّاه.
+          <button type="button" onClick={() => void handleCancel()} className="text-sm text-muted-foreground hover:underline">
+            رجوع للقائمة
+          </button>
+        }
       />
 
       <div className="grid gap-4 lg:grid-cols-2 items-start">
@@ -245,30 +290,41 @@ export default function CustomerNew() {
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            ٣ أرقام بصيغة دولية لدعم واتساب. الرقم الأول هو الرئيسي ويُستعمل للواتساب افتراضياً.
+            ٣ أرقام بصيغة دولية لدعم واتساب. الرقم الأول هو الرئيسي، ورقم الواتساب يتبعه ما لم تدخل غيره.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
               <Label htmlFor="ph1">
                 الهاتف ١ <span className="text-[10px] text-primary mr-1">رئيسي</span>
               </Label>
-              <IntlPhoneInput id="ph1" value={phone} onChange={setPhone} />
-              {wa && (
-                <p className="text-[11px] text-muted-foreground">
-                  واتساب:{" "}
-                  <a href={wa} target="_blank" rel="noreferrer" className="text-primary underline" dir="ltr">
-                    {displayE164(phone)}
-                  </a>
-                </p>
-              )}
+              <IntlPhoneInput id="ph1" value={phone} onChange={onPhoneChange} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="ph2">الهاتف ٢</Label>
               <IntlPhoneInput id="ph2" value={phone2} onChange={setPhone2} />
             </div>
-            <div className="space-y-1 md:col-span-2">
+            <div className="space-y-1">
               <Label htmlFor="ph3">الهاتف ٣</Label>
               <IntlPhoneInput id="ph3" value={phone3} onChange={setPhone3} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="whatsapp">واتساب</Label>
+              <IntlPhoneInput
+                id="whatsapp"
+                value={whatsapp}
+                onChange={(v) => {
+                  setWhatsappTouched(true);
+                  setWhatsapp(v);
+                }}
+              />
+              {wa && (
+                <p className="text-[11px] text-muted-foreground">
+                  واتساب:{" "}
+                  <a href={wa} target="_blank" rel="noreferrer" className="text-primary underline" dir="ltr">
+                    {displayE164(waSource)}
+                  </a>
+                </p>
+              )}
             </div>
           </div>
         </CardContent>
@@ -438,12 +494,14 @@ export default function CustomerNew() {
               />
             </div>
             <div className="md:col-span-2">
-              {openingAmount.trim() && Number(openingAmount) > 0 ? (
+              {/* ممنوع `Number()` على مبلغ. و`D()` **ترمي** على مُدخَلٍ جزئيٍّ مشروع («.» عند كتابة
+                  «.5») والرميُ هنا **داخل التصيير** ⇒ شاشةٌ بيضاء؛ فالقراءة بـ`moneyInput`. */}
+              {moneyInput(openingAmount).greaterThan(0) ? (
                 <p className="text-[11px] text-[var(--sem-warn)]">
                   سيُسجَّل قيد رصيد افتتاحي:{" "}
                   {openingDir === "OWED_TO_US"
-                    ? `«لنا على العميل» ${fmt(openingAmount)} د.ع (يبدأ رصيده مديناً لنا).`
-                    : `«للعميل علينا» ${fmt(openingAmount)} د.ع (يبدأ رصيده دائناً — كدفعة مقدّمة).`}{" "}
+                    ? `«لنا على العميل» ${fmt(moneyInput(openingAmount).toFixed(2))} د.ع (يبدأ رصيده مديناً لنا).`
+                    : `«للعميل علينا» ${fmt(moneyInput(openingAmount).toFixed(2))} د.ع (يبدأ رصيده دائناً — كدفعة مقدّمة).`}{" "}
                   يظهر فوراً في كشف حساب العميل والأعمار.
                 </p>
               ) : (
@@ -462,9 +520,7 @@ export default function CustomerNew() {
         <Button onClick={submit} disabled={create.isPending} title="Ctrl+S">
           {create.isPending ? ACTION_LABELS.saving : "حفظ العميل"}
         </Button>
-        <Link href="/customers">
-          <Button variant="outline" title="Esc">إلغاء</Button>
-        </Link>
+        <Button variant="outline" title="Esc" onClick={() => void handleCancel()}>إلغاء</Button>
       </div>
     </div>
   );
