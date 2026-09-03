@@ -9,6 +9,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import {
   accountingEntries,
   deliveryConsignments,
@@ -53,7 +54,11 @@ function assertBranchAssigned(branchId: unknown, operation: string): void {
   if (!Number.isInteger(n) || n <= 0) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `لا فرع مسند لعملية ${operation} — اختر الفرع صراحةً قبل تنفيذها`,
+      message: appErrorMessage({
+        what: `تعذّر تنفيذ عملية ${operation}`,
+        why: `لا فرعَ مُسنَداً للعملية (المُرسَل ${String(branchId)})؛ المال لا يُقيَّد على فرعٍ وهميّ — الرفض هنا أرخص من مطاردة قيودٍ يتيمة`,
+        doThis: "اختر الفرع صراحةً من قائمة الفروع في أعلى الشاشة، ثمّ أعد تنفيذ العملية",
+      }),
     });
   }
 }
@@ -81,13 +86,26 @@ export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryT
         ) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمل لتسوية عهدة مختلفة",
+            message: appErrorMessage({
+              what: "تعذّر تسجيل تسوية العهدة",
+              why: "مفتاح الطلب مستعمل لتسوية عهدة مختلفة (جهة أو مبلغ أو فرع)، وإتمامه يعني تنفيذ تسويتين بهويّةٍ واحدة",
+              doThis: "حدّث شاشة «تسوية المناديب» ليُولَّد مفتاح طلبٍ جديد، ثمّ أعد إدخال التسوية",
+            }),
           });
         }
         return { receiptId: existingId, idempotentReplay: true as const };
       }
     }
-    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
+    if (amount.lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل تسوية العهدة",
+          why: `المبلغ يجب أن يكون موجباً، والقيمة المُرسَلة ${amount.toString()}`,
+          doThis: "أدخل مبلغاً موجباً في «مبلغ التسوية» ثمّ أعد الحفظ",
+        }),
+      });
+    }
     const resolvedCash = await shiftIdForCashTx(
       tx,
       { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role },
@@ -101,19 +119,39 @@ export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryT
       shiftId: resolvedCash.shiftId,
     });
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
-    if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    if (!party) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل تسوية العهدة",
+          why: `جهة التوصيل رقم ${input.partyId} غير موجودة أو أُزيلت`,
+          doThis: "افتح شاشة «مناديب التوصيل» واختر جهةً موجودة، أو أنشئ الجهة أوّلاً",
+        }),
+      });
+    }
     if (input.clientRequestId) {
       const replayAfterLock = await checkIdempotency(tx, "delivery.settle", input.clientRequestId, payloadHash);
       if (replayAfterLock != null) return { receiptId: replayAfterLock, idempotentReplay: true as const };
     }
     const balance = round2(money(party.currentBalance));
     if (party.branchId != null && Number(party.branchId) !== Number(input.branchId)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع التسوية" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل تسوية العهدة",
+          why: `جهة التوصيل تخصّ فرعاً آخر (فرع ${party.branchId}) لا فرع التسوية (${input.branchId})؛ التسوية على فرعٍ آخر تُشوّه أرباح كلا الفرعين`,
+          doThis: "افتح شاشة التسوية من فرع الجهة، أو اختر جهةً تخصّ فرع التسوية",
+        }),
+      });
     }
     if (amount.gt(balance)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `مبلغ التسوية (${amount.toFixed(2)}) يتجاوز عهدة المندوب القائمة (${balance.toFixed(2)})`,
+        message: appErrorMessage({
+          what: "تعذّر تسجيل تسوية العهدة",
+          why: `مبلغ التسوية (${amount.toFixed(2)}) يتجاوز عهدة المندوب القائمة (${balance.toFixed(2)})`,
+          doThis: "خفّض المبلغ حتى يساوي العهدة الحاليّة أو أقلّ منها، وإن كان المندوب أوصل مالاً زائداً فاطلب من المدير مراجعة رصيده",
+        }),
       });
     }
     // حوكمة ٩/٨ — التسوية الحرّة على العهدة السائبة فقط: نقدُ إرساليةٍ مفتوحة يُستلَم حصراً من
@@ -125,7 +163,11 @@ export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryT
     if (amount.gt(loose)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `المبلغ يتجاوز العهدة السائبة (${loose.toFixed(2)}) — ${backed.toFixed(2)} من العهدة مرتبطة بإرساليات مفتوحة تُسوَّى من شاشة «تسوية المناديب» (توريد بالإرسالية) كي تُقيَّد فواتيرها`,
+        message: appErrorMessage({
+          what: "تعذّر تسجيل تسوية العهدة",
+          why: `المبلغ (${amount.toFixed(2)}) يتجاوز العهدة السائبة (${loose.toFixed(2)}) — ${backed.toFixed(2)} من عهدة الجهة مرتبطة بإرساليات مفتوحة، وتصفيتها هنا تُبقي فواتيرها غير مسدَّدة وذمم عملائها قائمة`,
+          doThis: "افتح شاشة «تسوية المناديب» ثمّ زرّ «توريد بالإرسالية» لتُقيَّد كل فاتورةٍ بمبلغها؛ والباقي السائب يُسوَّى من هذا الزرّ",
+        }),
       });
     }
 
@@ -198,12 +240,23 @@ function normalizedWriteOffEvidence(input: WriteOffInput): {
   const evidenceNote = input.evidenceNote?.trim() || null;
   const attachmentUrl = input.attachmentUrl?.trim() || null;
   if (reason.length < 3) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الشطب مطلوب (٣ أحرف على الأقل)." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر شطب عهدة COD",
+        why: `سبب الشطب يجب أن يكون 3 أحرف على الأقل، والقيمة المُرسَلة ${reason.length} حرفاً`,
+        doThis: "اكتب سبباً واضحاً للشطب (مثلاً: «المندوب أقرّ بضياع النقد») في «سبب الشطب»، ثمّ أعد الحفظ",
+      }),
+    });
   }
   if (!evidenceNote && !attachmentUrl) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "يلزم إثبات وصفي أو رابط مرفق قبل شطب عهدة COD.",
+      message: appErrorMessage({
+        what: "تعذّر شطب عهدة COD",
+        why: "شطبُ العهدة يلزمه إثباتٌ موثَّق: وصف الإثبات فارغ ورابط المرفق فارغ معاً",
+        doThis: "اكتب وصف الإثبات (بلاغ/محضر/إقرار) أو ألصق رابط المرفق، ثمّ أعد الحفظ",
+      }),
     });
   }
   const evidence = [evidenceNote ? `إثبات: ${evidenceNote}` : null, attachmentUrl ? `مرفق: ${attachmentUrl}` : null]
@@ -224,7 +277,14 @@ async function assertWriteOffSegregation(
 ): Promise<void> {
   if (consignment) {
     if (consignment.dispatchedBy != null && Number(consignment.dispatchedBy) === actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "من أرسل الإرسالية لا يعتمد شطب عهدتها (فصل مهام)." });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر شطب عهدة الإرسالية",
+          why: "أنت من أرسل الإرسالية للمندوب، وفصل المهام يمنعك من اعتماد شطب عهدةٍ أرسلتها بنفسك",
+          doThis: "اطلب من مدير التوصيل أو المالك اعتماد الشطب من شاشة «طلبات شطب عهدة COD»",
+        }),
+      });
     }
     const [eventByActor] = await tx
       .select({ id: deliveryEvents.id })
@@ -240,7 +300,11 @@ async function assertWriteOffSegregation(
     if (eventByActor) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "من أثبت التسليم أو التحصيل لهذه الإرسالية لا يعتمد شطب عهدتها (فصل مهام).",
+        message: appErrorMessage({
+          what: "تعذّر شطب عهدة الإرسالية",
+          why: "أنت من أثبت التسليم أو التحصيل لهذه الإرسالية، وفصل المهام يمنع من أثبت الحدث من اعتماد شطب عهدتها",
+          doThis: "اطلب من مدير التوصيل أو المالك اعتماد الشطب من شاشة «طلبات شطب عهدة COD»",
+        }),
       });
     }
     const [ledgerByActor] = await tx
@@ -257,7 +321,11 @@ async function assertWriteOffSegregation(
     if (ledgerByActor) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "من سجّل تحصيل/توريد عهدة الإرسالية لا يعتمد شطبها (فصل مهام).",
+        message: appErrorMessage({
+          what: "تعذّر شطب عهدة الإرسالية",
+          why: "أنت من سجّل قيداً على عهدة هذه الإرسالية (تحصيل/توريد)، وفصل المهام يمنع من سجّل القيد من اعتماد شطبها",
+          doThis: "اطلب من مدير التوصيل أو المالك اعتماد الشطب من شاشة «طلبات شطب عهدة COD»",
+        }),
       });
     }
     const [remittanceByActor] = await tx
@@ -274,7 +342,11 @@ async function assertWriteOffSegregation(
     if (remittanceByActor) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "مستلم توريد الإرسالية لا يعتمد شطب عهدتها (فصل مهام).",
+        message: appErrorMessage({
+          what: "تعذّر شطب عهدة الإرسالية",
+          why: "أنت من استلم توريدَ هذه الإرسالية، وفصل المهام يمنع مستلم التوريد من اعتماد شطب عهدتها",
+          doThis: "اطلب من مدير التوصيل أو المالك اعتماد الشطب من شاشة «طلبات شطب عهدة COD»",
+        }),
       });
     }
     return;
@@ -305,7 +377,11 @@ async function assertWriteOffSegregation(
   if (looseLedgerByActor || settlementByActor) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "من حصّل/ورّد/سوّى العهدة السائبة لا يعتمد شطبها (فصل مهام).",
+      message: appErrorMessage({
+        what: "تعذّر شطب العهدة السائبة",
+        why: "أنت من حصّل أو ورّد أو سوّى العهدة السائبة لهذه الجهة، وفصل المهام يمنع من مسّها من اعتماد شطبها",
+        doThis: "اطلب من مدير التوصيل أو المالك اعتماد الشطب من شاشة «طلبات شطب عهدة COD»",
+      }),
     });
   }
 }
@@ -328,7 +404,11 @@ export async function writeOffDeliveryShortfallInTx(
   if (actor.role !== "admin" && options.controlRequestAuthorized !== true) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "شطب عهدة COD يتطلب سلطة المالك/الأدمن.",
+      message: appErrorMessage({
+        what: "تعذّر شطب عهدة COD",
+        why: "شطب عهدة COD مباشرةً محصورٌ بالمالك/الأدمن، ولمن دونهما مسارُ طلبٍ يعتمده مدير التوصيل",
+        doThis: "افتح شاشة «طلبات شطب عهدة COD» وأنشئ طلباً بمبلغه وسببه، ثمّ ينفّذه مدير التوصيل أو المالك",
+      }),
     });
   }
   assertBranchAssigned(input.branchId, "شطب العجز");
@@ -350,14 +430,48 @@ export async function writeOffDeliveryShortfallInTx(
       if (existingId != null) return { partyId: input.partyId, idempotentReplay: true as const };
     }
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
-    if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
-    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
+    if (!party) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر شطب عهدة COD",
+          why: `جهة التوصيل رقم ${input.partyId} غير موجودة أو أُزيلت`,
+          doThis: "افتح شاشة «مناديب التوصيل» واختر جهةً موجودة",
+        }),
+      });
+    }
+    if (amount.lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر شطب عهدة COD",
+          why: `مبلغ الشطب يجب أن يكون موجباً، والقيمة المُرسَلة ${amount.toString()}`,
+          doThis: "أدخل مبلغاً موجباً في «مبلغ الشطب» ثمّ أعد الحفظ",
+        }),
+      });
+    }
     // ٩/٨ — اتساق الفرع (مرآة settle/remit): خسارة الشطب كانت تقع على فرع الفاعل ولو خصّت
     // الجهةُ فرعاً آخر ⇒ أرباح الفروع المقارنة تكذب بلا أيّ انحراف في رصيد الجهة يكشفها.
     if (party.branchId != null && Number(party.branchId) !== Number(input.branchId)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع الشطب" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر شطب عهدة COD",
+          why: `جهة التوصيل تخصّ فرعاً آخر (فرع ${party.branchId}) لا فرع الشطب (${input.branchId})؛ خسارة الشطب على فرعٍ آخر تُشوّه أرباح كلا الفرعين`,
+          doThis: "افتح الشطب من فرع الجهة، أو اختر جهةً تخصّ فرع الشطب",
+        }),
+      });
     }
-    if (amount.gt(round2(money(party.currentBalance)))) throw new TRPCError({ code: "BAD_REQUEST", message: "الشطب يتجاوز العهدة القائمة" });
+    if (amount.gt(round2(money(party.currentBalance)))) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر شطب عهدة COD",
+          why: `الشطب (${amount.toFixed(2)}) يتجاوز عهدة الجهة القائمة (${round2(money(party.currentBalance)).toFixed(2)})؛ لا نشطب مالاً لا يوجد أصلاً`,
+          doThis: "خفّض مبلغ الشطب حتى يساوي العهدة أو أقلّ منها",
+        }),
+      });
+    }
     await options.beforeApply?.(party);
 
     let invoiceId: number | null = null;
@@ -366,24 +480,71 @@ export async function writeOffDeliveryShortfallInTx(
       // كاملةً (عهدة/فاتورة/إرسالية) وإلا بقيت الإرسالية زومبي في شاشة التوريد تقبل توريداً
       // لاحقاً يقلب الرصيد سالباً ويُبقي خسارة الشطب مقيَّدة عن دينارٍ وصل (مراجعة عدائية ٩/٨).
       const cn = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, Number(input.consignmentId))).for("update").limit(1))[0];
-      if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
-      if (Number(cn.partyId) !== Number(input.partyId)) throw new TRPCError({ code: "BAD_REQUEST", message: "الإرسالية لجهة أخرى" });
-      if (Number(cn.branchId) !== Number(input.branchId)) throw new TRPCError({ code: "BAD_REQUEST", message: "الإرسالية تخصّ فرعاً آخر" });
+      if (!cn) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر شطب عهدة الإرسالية",
+            why: `الإرسالية رقم ${input.consignmentId} غير موجودة أو أُزيلت`,
+            doThis: "افتح شاشة «تسوية المناديب» واختر إرساليةً موجودة",
+          }),
+        });
+      }
+      if (Number(cn.partyId) !== Number(input.partyId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر شطب عهدة الإرسالية",
+            why: `الإرسالية مسجَّلة على جهةٍ أخرى (جهة ${cn.partyId}) لا الجهة المُختارة (${input.partyId})`,
+            doThis: "اختر إرساليةً تخصّ نفس الجهة، أو غيّر الجهة لتطابق إرساليتها",
+          }),
+        });
+      }
+      if (Number(cn.branchId) !== Number(input.branchId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر شطب عهدة الإرسالية",
+            why: `الإرسالية تخصّ فرعاً آخر (فرع ${cn.branchId}) لا فرع الشطب (${input.branchId})`,
+            doThis: "افتح الشطب من فرع الإرسالية، أو اختر إرساليةً تخصّ نفس الفرع",
+          }),
+        });
+      }
       if (cn.parcelStatus !== "DELIVERED" || (cn.moneyStatus !== "UNSETTLED" && cn.moneyStatus !== "PARTIAL")) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن شطب ${cn.consignmentNumber} قبل إثبات التسليم الفعلي أو بعد إغلاقها المالي` });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: `تعذّر شطب عهدة الإرسالية ${cn.consignmentNumber}`,
+            why: `الإرسالية إمّا قبل إثبات التسليم الفعلي (parcelStatus=${cn.parcelStatus}) أو بعد إغلاقها المالي (moneyStatus=${cn.moneyStatus})؛ الشطب لعجزٍ مثبت التسليم لا لإرساليةٍ في الطريق`,
+            doThis: "أثبت تسليم الإرسالية أوّلاً من شاشة «التوصيل»، أو راجع حالتها الماليّة قبل الشطب",
+          }),
+        });
       }
       await assertWriteOffSegregation(tx, input, actor, cn);
       const remaining = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
       if (!amount.eq(remaining)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `شطب الإرسالية ${cn.consignmentNumber} يكون بكامل متبقّيها (${remaining.toFixed(2)}) — المُحصَّل جزئياً يُورَّد أولاً من شاشة التسوية`,
+          message: appErrorMessage({
+            what: `تعذّر شطب عهدة الإرسالية ${cn.consignmentNumber}`,
+            why: `شطب الإرسالية يكون بكامل متبقّيها (${remaining.toFixed(2)})؛ المُرسَل ${amount.toFixed(2)} لا يطابقه`,
+            doThis: "غيّر المبلغ إلى كامل المتبقّي، أو إن كان المندوب حصّل جزءاً وأتلف الباقي، ورّد المُحصَّل أوّلاً من «تسوية المناديب» ثمّ اشطب المتبقّي",
+          }),
         });
       }
       invoiceId = Number(cn.invoiceId);
       // الفاتورة تُقيَّد بالمبلغ (الزبون دفع للمندوب — ذمّته تُبرَّأ) والخسارة على المكتبة.
       const inv = (await tx.select({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal, customerId: invoices.customerId }).from(invoices).where(eq(invoices.id, invoiceId)).for("update").limit(1))[0];
-      if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });
+      if (!inv) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر شطب عهدة الإرسالية",
+            why: `فاتورة الإرسالية رقم ${invoiceId} غير موجودة أو أُزيلت (خللٌ في ربط الإرسالية بمستند بيعها)`,
+            doThis: "راجع المدير أو مدير النظام (admin) لإصلاح ربط الإرسالية بفاتورتها",
+          }),
+        });
+      }
       // «الحزام الثاني» (مراجعة عدائية ٩/٨ — مرآة remittance.ts حرفياً): codAmount لُقط لحظة
       // الإرسال وقد ينحرف عن الفاتورة الحيّة (مرتجع جزئي قبل الإسناد، أو تسديد كاونتري سابق
       // لحارس sales.pay). القيد المالي (paidAmount/ذمّة العميل/الخسارة) يُسقَف بمتبقّي الفاتورة
@@ -489,7 +650,11 @@ export async function writeOffDeliveryShortfallInTx(
       if (amount.gt(loose)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `المبلغ يتجاوز العهدة السائبة (${loose.toFixed(2)}) — عجز إرساليةٍ بعينها يُشطَب موجَّهاً باختيار الإرسالية كي تُقفَل وتُقيَّد فاتورتها`,
+          message: appErrorMessage({
+            what: "تعذّر شطب العهدة المجمَّع",
+            why: `المبلغ (${amount.toFixed(2)}) يتجاوز العهدة السائبة (${loose.toFixed(2)})؛ الشطب المجمَّع يمسّ العهدة السائبة فقط، وعجزُ إرساليةٍ بعينها يُخفَى هنا فتبقى فاتورتها مفتوحة وذمّة عميلها قائمة`,
+            doThis: "اختر الإرسالية المحدَّدة من قائمة الإرساليات وأنشئ الشطب موجَّهاً إليها، فتُقفَل هي وتُقيَّد فاتورتها",
+          }),
         });
       }
       await assertWriteOffSegregation(tx, input, actor, null);
@@ -550,7 +715,16 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
       const existingId = await checkIdempotency(tx, "delivery.recoverWriteoff", input.clientRequestId, payloadHash);
       if (existingId != null) return { receiptId: existingId, idempotentReplay: true as const };
     }
-    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
+    if (amount.lte(0)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استرداد العجز المشطوب",
+          why: `المبلغ يجب أن يكون موجباً، والقيمة المُرسَلة ${amount.toString()}`,
+          doThis: "أدخل مبلغاً موجباً في «المبلغ المستردّ» ثمّ أعد الحفظ",
+        }),
+      });
+    }
     const resolvedCash = await shiftIdForCashTx(
       tx,
       { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role },
@@ -564,13 +738,29 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
       shiftId: resolvedCash.shiftId,
     });
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
-    if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    if (!party) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر استرداد العجز المشطوب",
+          why: `جهة التوصيل رقم ${input.partyId} غير موجودة أو أُزيلت`,
+          doThis: "افتح شاشة «مناديب التوصيل» واختر جهةً موجودة",
+        }),
+      });
+    }
     if (input.clientRequestId) {
       const replayAfterLock = await checkIdempotency(tx, "delivery.recoverWriteoff", input.clientRequestId, payloadHash);
       if (replayAfterLock != null) return { receiptId: replayAfterLock, idempotentReplay: true as const };
     }
     if (party.branchId != null && Number(party.branchId) !== Number(input.branchId)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع الاسترداد" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر استرداد العجز المشطوب",
+          why: `جهة التوصيل تخصّ فرعاً آخر (فرع ${party.branchId}) لا فرع الاسترداد (${input.branchId})؛ الاسترداد يُسجَّل على فرع الشطب الأصليّ ليعكس الخسارة على نفس الفرع`,
+          doThis: "افتح الاسترداد من فرع الشطب الأصليّ، أو راجع المدير لتحديد فرع الشطب",
+        }),
+      });
     }
     // السقف = صافي **الخسارة المشطوبة** تاريخياً (Σ cost − Σ استرداداتها) **على نفس الفرع** — لا
     // يُستردّ ما لم يُشطَب، وعكسُ الخسارة يقع على الفرع الذي حملها أصلاً (مراجعة عدائية ٩/٨: جهة
@@ -597,7 +787,11 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
     if (amount.gt(writtenOffNet)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `المبلغ يتجاوز صافي الخسارة المشطوبة لهذه الجهة على هذا الفرع (${writtenOffNet.toFixed(2)}) — الاسترداد يُسجَّل على فرع الشطب الأصلي`,
+        message: appErrorMessage({
+          what: "تعذّر استرداد العجز المشطوب",
+          why: `المبلغ (${amount.toFixed(2)}) يتجاوز صافي الخسارة المشطوبة لهذه الجهة على هذا الفرع (${writtenOffNet.toFixed(2)})؛ لا نستردّ ما لم يُخسَر أصلاً على هذا الفرع`,
+          doThis: "خفّض المبلغ حتى يساوي صافي الخسارة المشطوبة أو أقلّ، أو نفّذ الاسترداد على فرع الشطب الأصليّ",
+        }),
       });
     }
 
