@@ -23,6 +23,8 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
 
+import { appErrorMessage } from "@shared/errors";
+
 import { documentEffects, type InsertDocumentEffect } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -132,7 +134,11 @@ export async function reverse(
   if (!reason || !reason.trim()) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "سببُ العكس مطلوب — لا عكسَ صامتاً",
+      message: appErrorMessage({
+        what: "سببُ العكس مطلوب",
+        why: "كلّ عكسٍ ماليٍّ يلزمه سببٌ موثَّق كي يظهر في سجلّ التدقيق — لا عكسَ صامتاً",
+        doThis: "أدخل سبباً صريحاً في حقل «سبب العكس» ثمّ أعد المحاولة",
+      }),
     });
   }
 
