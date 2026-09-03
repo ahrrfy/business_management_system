@@ -173,7 +173,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:122"
+      "loc": "server/routers/announcementsRouter.ts:152"
     },
     {
       "surface": "trpc",
@@ -190,7 +190,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:50"
+      "loc": "server/routers/announcementsRouter.ts:73"
     },
     {
       "surface": "trpc",
@@ -207,7 +207,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/announcementsRouter.ts:90"
+      "loc": "server/routers/announcementsRouter.ts:120"
     },
     {
       "surface": "trpc",
@@ -224,7 +224,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/announcementsRouter.ts:86"
+      "loc": "server/routers/announcementsRouter.ts:116"
     },
     {
       "surface": "trpc",
@@ -241,7 +241,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:117"
+      "loc": "server/routers/announcementsRouter.ts:147"
     },
     {
       "surface": "trpc",
@@ -258,7 +258,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:111"
+      "loc": "server/routers/announcementsRouter.ts:141"
     },
     {
       "surface": "trpc",
@@ -275,7 +275,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:96"
+      "loc": "server/routers/announcementsRouter.ts:126"
     },
     {
       "surface": "trpc",
@@ -2077,7 +2077,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/catalogAnomaliesRouter.ts:275"
+      "loc": "server/routers/catalogAnomaliesRouter.ts:265"
     },
     {
       "surface": "trpc",
