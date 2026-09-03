@@ -54,6 +54,7 @@ import {
   MATERIALIZED_RECEIPT_STATUSES,
 } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
+import { recordEffect } from "../reversalEngine"; // ق٧: ربطٌ ظلّيّ لمحرّك العكس (شريحة ٠٣٢٩)
 import { userNameSnapshot } from "../userSnapshot";
 import { nextVoucherNumber } from "../voucher/helpers";
 import { classifyGiftPosting } from "./giftPosting";
@@ -406,7 +407,7 @@ export async function cancelSaleInTx(
     for (const vid of sortedVariantIds) {
       const qty = aggregated.get(vid)!;
       if (qty <= 0) continue;
-      await applyMovement(tx, {
+      const mv = await applyMovement(tx, {
         variantId: vid,
         branchId: Number(inv.branchId),
         baseQuantity: qty,
@@ -416,6 +417,30 @@ export async function cancelSaleInTx(
         createdBy: actor.userId,
         notes: "إلغاء فاتورة بيع — إرجاع كامل البضاعة للمخزون",
       });
+      // Codex #957: `applyMovement` يتخطّى المتغيّرات الخدميّة صراحةً ويُرجع
+      // `{ movementId: 0 }` بلا تغييرٍ في المخزون (`inventoryService.ts` ~١٩٥). تسجيلُ
+      // أثرٍ بكمّيةٍ موجبة ومرجعِ صفٍّ `null` كان يبني **أثراً وهمياً** يُطالبه العاكس لاحقاً
+      // بحسمٍ من المخزون لم يحدث. الحلّ: نحترمُ سلوكَ `applyMovement` — لا حركةَ ⇒ لا أثر.
+      if (!mv.movementId) continue;
+      // ═══ ق٧ — ربطٌ ظلّيّ (شريحة ٠٣٢٩): سجلٌّ ماديٌّ لأثرِ إعادة البضاعة إلى المخزون
+      //  عند الإلغاء. يعمل بجانب التنفيذ اليدويّ القائم ولا يستبدله. صفٌّ APPLY لأنّه أثرٌ
+      //  حقيقيٌّ يقع الآن؛ لو أُلغي الإلغاءُ يوماً، محرّكُ العكس سيكتب صفَّ REVERSE مقابل.
+      await recordEffect(
+        tx,
+        {
+          documentType: "INVOICE",
+          documentId: input.invoiceId,
+          effectKind: "INVENTORY",
+          effectTable: "inventoryMovements",
+          effectRowId: mv.movementId || null,
+          signedQuantity: qty,
+          branchId: Number(inv.branchId),
+          reason: "sale.cancel — إرجاع كامل البضاعة",
+          scope: "cancel",
+          payloadJson: { variantId: vid, movementType: "RETURN" },
+        },
+        actor,
+      );
     }
 
     // ═══ ٥) عكس التزام المودِع لبضاعة الأمانة (mirror returnService §٥ حاصرة ١) ═══
