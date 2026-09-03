@@ -34,7 +34,6 @@ import {
   decidePurchaseRequisitionControl,
   getPurchaseControlSettings,
   getPurchaseOrderControlRequest,
-  getPurchaseOrderRevision,
   getPurchaseOrderRevisionDiff,
   getPurchaseRequisition,
   listPendingPurchaseOrderControls,
@@ -55,11 +54,9 @@ import {
   canSeeCostForUser,
   purchasesManagerProcedure,
   purchasesReadProcedure,
-  purchasesWarehouseProcedure,
   router,
 } from "../trpc";
 
-const method = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
 /**
  * دفعةُ المورّد **لحظة الاستلام**: نقديّة فقط — العقد الخادميّ يرفض غيرها منذ أوّل سطر في
  * `receivePurchase` («الدفع غير النقدي للمورد يتطلب سند صرف موثقاً بمرجع الأداة المالية»)،
@@ -449,53 +446,6 @@ export const purchaseRouter = router({
       return res;
     }),
 
-  receive: purchasesWarehouseProcedure
-    .input(
-      z.object({
-        purchaseOrderId: z.number().int().positive(),
-        lines: z
-          .array(
-            z.object({
-              purchaseOrderItemId: z.number().int().positive(),
-              receivedBaseQuantity: z.number().int().positive(),
-            }),
-          )
-          .min(1)
-          .superRefine((lines, ctx) => {
-            const seen = new Set<number>();
-            lines.forEach((line, index) => {
-              if (seen.has(line.purchaseOrderItemId)) {
-                ctx.addIssue({
-                  code: z.ZodIssueCode.custom,
-                  path: [index, "purchaseOrderItemId"],
-                  message: "لا يجوز تكرار بند أمر الشراء في الاستلام نفسه",
-                });
-              }
-              seen.add(line.purchaseOrderItemId);
-            });
-          }),
-        payment: z
-          .object({
-            amount: positiveMoneyString,
-            method: supplierPaymentMethod,
-          })
-          .optional(),
-        // طريقة دفع مصروف الشحن/الكمرك (لشركة النقل، لا للمورّد). الافتراضي نقديّ.
-        shippingPaymentMethod: method.optional(),
-        shippingPaymentReference: z.string().trim().min(1).max(50).optional(),
-        shippingCardLastFour: z
-          .string()
-          .regex(/^\d{4}$/)
-          .optional(),
-        shippingBeneficiarySupplierId: z.number().int().positive().nullish(),
-        shippingBeneficiaryName: z.string().trim().min(2).max(200).nullish(),
-        shippingEvidenceReference: z.string().trim().min(2).max(191).nullish(),
-        // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
-        clientRequestId: z.string().min(1).max(80),
-      }),
-    )
-    .mutation(() => assertLegacyPurchaseWritePathDisabled("purchases.receive")),
-
   /**
    * تسديد أمر شراءٍ بعد استلامه — الفجوة التي كانت تُبقي الشراء الآجل بلا مسار إقفال
    * (البيع يملك `sales.pay`؛ الشراء لا نظير له، فكلّ سدادٍ لاحق يخرج لسند صرفٍ عامّ لا
@@ -583,6 +533,7 @@ export const purchaseRouter = router({
         decisionKey: z.string().trim().min(1).max(120),
         approve: z.boolean(),
         reason: z.string().trim().min(3).max(500),
+        confirmedFullReceipt: z.boolean().optional(),
       }),
     )
     .mutation(({ input, ctx }) =>
@@ -685,27 +636,6 @@ export const purchaseRouter = router({
         });
       }
       return listPurchaseOrderRevisions(input.purchaseOrderId, {
-        userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId ?? 0),
-        role: ctx.user.role,
-      });
-    }),
-
-  revision: purchasesReadProcedure
-    .input(
-      z.object({
-        purchaseOrderId: z.number().int().positive(),
-        revisionId: z.number().int().positive(),
-      }),
-    )
-    .query(({ input, ctx }) => {
-      if (!canSeeCostForUser(ctx.user)) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "تفاصيل مراجعة أمر الشراء تحتوي تكاليف محجوبة عن صلاحيتك",
-        });
-      }
-      return getPurchaseOrderRevision(input, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,

@@ -596,17 +596,14 @@ export const superAppRouter = router({
       if (input.moduleKey === "purchases") {
         const [row] = await db
           .select({
-            count: sql<number>`count(*)`,
-            total: sql<string>`coalesce(sum(${purchaseOrders.total} - ${purchaseOrders.paidAmount}), 0)`,
+            count: sql<number>`sum(case when ${purchaseOrders.status} in ('DRAFT', 'SENT', 'CONFIRMED') then 1 else 0 end)`,
+            total: sql<string>`coalesce(sum(case when ${purchaseOrders.status} <> 'CANCELLED' then greatest(${purchaseOrders.total} - ${purchaseOrders.paidAmount}, 0) else 0 end), 0)`,
           })
           .from(purchaseOrders)
           .where(
-            and(
-              inArray(purchaseOrders.status, ["DRAFT", "SENT", "CONFIRMED"]),
-              scopedBranchId == null
-                ? undefined
-                : eq(purchaseOrders.branchId, scopedBranchId),
-            ),
+            scopedBranchId == null
+              ? undefined
+              : eq(purchaseOrders.branchId, scopedBranchId),
           );
         return {
           moduleKey: input.moduleKey,

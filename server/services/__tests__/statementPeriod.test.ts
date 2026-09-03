@@ -284,7 +284,7 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
       decisionKey: `statement-po-approve:${randomUUID()}`,
       approve: true,
       reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
-    }, owner);
+    }, owner, { legacyConfirmOnly: true });
   }
 
   /** أمر شراء مؤكَّد + استلام (+ دفعة اختيارية). الإجمالي = qty × unitPrice. */

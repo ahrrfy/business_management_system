@@ -50,10 +50,10 @@ export async function checkIdempotency(
   operation: string,
   clientRequestId: string | null | undefined,
   payloadHash?: string | null,
-  options?: { requireStoredHash?: boolean },
+  options?: { requireStoredHash?: boolean; forUpdate?: boolean },
 ): Promise<number | null> {
   if (!clientRequestId) return null;
-  const rows = await tx
+  const query = tx
     .select({
       refId: idempotencyKeys.refId,
       payloadHash: idempotencyKeys.payloadHash,
@@ -64,8 +64,12 @@ export async function checkIdempotency(
         eq(idempotencyKeys.operation, operation),
         eq(idempotencyKeys.clientRequestId, clientRequestId),
       ),
-    )
-    .limit(1);
+    );
+  // `FOR UPDATE` هو current read في InnoDB: يفيد عند إعادة الفحص بعد انتظار قفل المصدر، لأن
+  // القراءة العادية داخل REPEATABLE READ قد تبقى على snapshot يسبق التزام الطلب المتزامن الأول.
+  const rows = options?.forUpdate
+    ? await query.for("update").limit(1)
+    : await query.limit(1);
   const row = rows[0];
   if (!row) return null;
   if (

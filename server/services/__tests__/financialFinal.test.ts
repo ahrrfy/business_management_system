@@ -67,7 +67,7 @@ async function approvePurchaseOrder(purchaseOrderId: number, expectedVersion: nu
     decisionKey: `financial-final-approve:${randomUUID()}`,
     approve: true,
     reason: "راجعت المورد والكميات والأسعار واعتمدت الاستلام",
-  }, { userId: 2, branchId: 1, role: "manager" });
+  }, { userId: 2, branchId: 1, role: "manager" }, { legacyConfirmOnly: true });
 }
 
 beforeEach(async () => {

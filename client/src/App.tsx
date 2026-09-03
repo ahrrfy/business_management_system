@@ -89,11 +89,8 @@ const ProductContentDrafts = lazy(() => import("@/pages/ProductContentDrafts"));
 const ProductImageStudio = lazy(() => import("@/pages/ProductImageStudio"));
 const StudioCampaignsManager = lazy(() => import("@/pages/StudioCampaignsManager"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
-const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
 const PurchaseEdit = lazy(() => import("@/pages/PurchaseEdit"));
 const PurchaseOrderDetail = lazy(() => import("@/pages/PurchaseOrderDetail"));
-const PurchaseGoodsReceipts = lazy(() => import("@/pages/PurchaseGoodsReceipts"));
-const PurchaseSupplierInvoices = lazy(() => import("@/pages/PurchaseSupplierInvoices"));
 const PurchaseReturnsGovernance = lazy(() => import("@/pages/PurchaseReturnsGovernance"));
 const SupplierPaymentsGovernance = lazy(() => import("@/pages/SupplierPaymentsGovernance"));
 const PurchaseChargesGovernance = lazy(() => import("@/pages/PurchaseChargesGovernance"));
@@ -390,15 +387,16 @@ export default function App() {
       <Route path="/purchase-returns"><Redirect to="/purchases?tab=returns" /></Route>
       <Route path="/purchases"><Shell><RequireRole roles={["manager", "purchasing", "warehouse", "accountant", "auditor"]} module="purchases" level="READ"><PurchasesHub /></RequireRole></Shell></Route>
       <Route path="/purchases/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseNew /></RequireRole></Shell></Route>
-      <Route path="/purchases/:id/receive"><Shell><RequireRole roles={["manager", "purchasing", "warehouse"]} module="purchases" level="FULL"><PurchaseReceive /></RequireRole></Shell></Route>
+      {/* توافق روابط قديمة فقط: لا توجد عملية استلام مستقلة؛ الاعتماد النهائي يرحّل الفاتورة كاملة. */}
+      <Route path="/purchases/:id/receive">{(params) => <Redirect to={`/purchases/${params.id}`} />}</Route>
       <Route path="/purchases/:id/edit"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseEdit /></RequireRole></Shell></Route>
-      <Route path="/purchases/goods-receipts"><Shell><RequireRole roles={["manager", "purchasing", "warehouse"]} module="purchases" level="FULL"><PurchaseGoodsReceipts /></RequireRole></Shell></Route>
-      <Route path="/purchases/supplier-invoices"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseSupplierInvoices /></RequireRole></Shell></Route>
+      <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
+      <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
       <Route path="/purchases/returns-governance"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/integrity"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseIntegrityCases /></RequireRole></Shell></Route>
-      {/* بعد /purchases/new و/:id/receive و/:id/edit عمداً: مسارٌ عامّ لا يبتلع الأخصّ منه. */}
+      {/* بعد المسارات الأخصّ عمداً: مسارٌ عامّ لا يبتلعها. */}
       <Route path="/purchases/:id"><Shell><RequireRole module="purchases" level="READ"><PurchaseOrderDetail /></RequireRole></Shell></Route>
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
       <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>

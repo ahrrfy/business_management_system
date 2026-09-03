@@ -100,6 +100,7 @@ async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchase
       reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
     },
     { userId: 2, branchId: 1, role: "manager" },
+    { legacyConfirmOnly: true },
   );
 }
 

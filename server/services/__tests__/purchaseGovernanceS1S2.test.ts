@@ -52,15 +52,44 @@ async function reset() {
 }
 
 async function seed() {
-  await db().insert(schema.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
-  await db().insert(schema.users).values([
-    { id: 1, openId: "po-gov-creator", name: "المنشئ", role: "manager", loginMethod: "local", branchId: 1 },
-    { id: 2, openId: "po-gov-a1", name: "المعتمد الأول", role: "manager", loginMethod: "local", branchId: 1 },
-    { id: 3, openId: "po-gov-a2", name: "المعتمد الثاني", role: "manager", loginMethod: "local", branchId: 1 },
-  ]);
-  await db().insert(schema.suppliers).values({ id: 1, name: "مورد الاختبار", currentBalance: "0" });
+  await db()
+    .insert(schema.branches)
+    .values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
+  await db()
+    .insert(schema.users)
+    .values([
+      {
+        id: 1,
+        openId: "po-gov-creator",
+        name: "المنشئ",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+      },
+      {
+        id: 2,
+        openId: "po-gov-a1",
+        name: "المعتمد الأول",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+      },
+      {
+        id: 3,
+        openId: "po-gov-a2",
+        name: "المعتمد الثاني",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+      },
+    ]);
+  await db()
+    .insert(schema.suppliers)
+    .values({ id: 1, name: "مورد الاختبار", currentBalance: "0" });
   await db().insert(schema.products).values({ id: 1, name: "ورق" });
-  await db().insert(schema.productVariants).values({ id: 1, productId: 1, sku: "PAPER", costPrice: "0" });
+  await db()
+    .insert(schema.productVariants)
+    .values({ id: 1, productId: 1, sku: "PAPER", costPrice: "0" });
   await db().insert(schema.productUnits).values({
     id: 1,
     variantId: 1,
@@ -70,7 +99,14 @@ async function seed() {
   });
 }
 
-async function createDraft(key: string, allocations?: Array<{ lineNo: number; requisitionItemId: number; allocatedBaseQuantity: number }>) {
+async function createDraft(
+  key: string,
+  allocations?: Array<{
+    lineNo: number;
+    requisitionItemId: number;
+    allocatedBaseQuantity: number;
+  }>,
+) {
   return createPurchaseOrder(
     {
       supplierId: 1,
@@ -78,7 +114,9 @@ async function createDraft(key: string, allocations?: Array<{ lineNo: number; re
       clientRequestId: key,
       revisionReason: "إنشاء أمر شراء للاختبار",
       requisitionAllocations: allocations,
-      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
+      ],
     },
     creator,
   );
@@ -95,7 +133,12 @@ describe("S1 — مراجعات وقرارات أمر الشراء", () => {
     const revisions = await db()
       .select()
       .from(schema.purchaseOrderRevisions)
-      .where(eq(schema.purchaseOrderRevisions.purchaseOrderId, created.purchaseOrderId));
+      .where(
+        eq(
+          schema.purchaseOrderRevisions.purchaseOrderId,
+          created.purchaseOrderId,
+        ),
+      );
     expect(revisions).toHaveLength(1);
     expect(created.revisionId).toBe(Number(revisions[0].id));
 
@@ -106,7 +149,14 @@ describe("S1 — مراجعات وقرارات أمر الشراء", () => {
           expectedVersion: created.version - 1,
           revisionReason: "تعديل متعارض",
           supplierId: 1,
-          items: [{ variantId: 1, productUnitId: 1, quantity: "11", unitPrice: "100.00" }],
+          items: [
+            {
+              variantId: 1,
+              productUnitId: 1,
+              quantity: "11",
+              unitPrice: "100.00",
+            },
+          ],
         },
         creator,
       ),
@@ -118,7 +168,14 @@ describe("S1 — مراجعات وقرارات أمر الشراء", () => {
         expectedVersion: created.version,
         revisionReason: "زيادة الكمية المطلوبة",
         supplierId: 1,
-        items: [{ variantId: 1, productUnitId: 1, quantity: "11", unitPrice: "100.00" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            quantity: "11",
+            unitPrice: "100.00",
+          },
+        ],
       },
       creator,
     );
@@ -137,13 +194,21 @@ describe("S1 — مراجعات وقرارات أمر الشراء", () => {
       },
       creator,
     );
-    const [before] = await db().select().from(schema.purchaseOrders).where(eq(schema.purchaseOrders.id, created.purchaseOrderId));
+    const [before] = await db()
+      .select()
+      .from(schema.purchaseOrders)
+      .where(eq(schema.purchaseOrders.id, created.purchaseOrderId));
     expect(before.status).toBe("SENT");
     expect(before.approvedRevisionId).toBeNull();
 
     await expect(
       decidePurchaseOrderControl(
-        { requestId: submitted.requestId, decisionKey: "po-self-decision", approve: true, reason: "اعتماد ذاتي" },
+        {
+          requestId: submitted.requestId,
+          decisionKey: "po-self-decision",
+          approve: true,
+          reason: "اعتماد ذاتي",
+        },
         creator,
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -154,14 +219,26 @@ describe("S1 — مراجعات وقرارات أمر الشراء", () => {
       approve: true,
       reason: "راجعت الكميات والأسعار والمورّد",
     };
-    await expect(decidePurchaseOrderControl(decision, firstApprover)).resolves.toMatchObject({
+    await expect(
+      decidePurchaseOrderControl(decision, firstApprover, {
+        legacyConfirmOnly: true,
+      }),
+    ).resolves.toMatchObject({
       status: "APPROVED",
       orderStatus: "CONFIRMED",
       idempotent: false,
     });
-    await expect(decidePurchaseOrderControl(decision, firstApprover)).resolves.toMatchObject({ idempotent: true });
     await expect(
-      decidePurchaseOrderControl({ ...decision, reason: "قرار مختلف" }, firstApprover),
+      decidePurchaseOrderControl(decision, firstApprover, {
+        legacyConfirmOnly: true,
+      }),
+    ).resolves.toMatchObject({ idempotent: true });
+    await expect(
+      decidePurchaseOrderControl(
+        { ...decision, reason: "قرار مختلف" },
+        firstApprover,
+        { legacyConfirmOnly: true },
+      ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
@@ -211,14 +288,26 @@ describe("S1 — مراجعات وقرارات أمر الشراء", () => {
     );
     await expect(
       decidePurchaseOrderControl(
-        { requestId: submitted.requestId, decisionKey: "po-emergency-same-approver", approve: true, reason: "اعتماد نهائي" },
+        {
+          requestId: submitted.requestId,
+          decisionKey: "po-emergency-same-approver",
+          approve: true,
+          reason: "اعتماد نهائي",
+          confirmedFullReceipt: true,
+        },
         firstApprover,
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
       decidePurchaseOrderControl(
-        { requestId: submitted.requestId, decisionKey: "po-emergency-second-approver", approve: true, reason: "اعتماد ثان مستقل" },
+        {
+          requestId: submitted.requestId,
+          decisionKey: "po-emergency-second-approver",
+          approve: true,
+          reason: "اعتماد ثان مستقل",
+        },
         secondApprover,
+        { legacyConfirmOnly: true },
       ),
     ).resolves.toMatchObject({ orderStatus: "CONFIRMED" });
   });
@@ -236,12 +325,31 @@ describe("S1 — مراجعات وقرارات أمر الشراء", () => {
       },
       creator,
     );
-    expect((await db().select().from(schema.purchaseOrders).where(eq(schema.purchaseOrders.id, created.purchaseOrderId)))[0].status).toBe("DRAFT");
+    expect(
+      (
+        await db()
+          .select()
+          .from(schema.purchaseOrders)
+          .where(eq(schema.purchaseOrders.id, created.purchaseOrderId))
+      )[0].status,
+    ).toBe("DRAFT");
     await decidePurchaseOrderControl(
-      { requestId: request.requestId, decisionKey: "po-cancel-decision", approve: true, reason: "تحققت من إلغاء العرض" },
+      {
+        requestId: request.requestId,
+        decisionKey: "po-cancel-decision",
+        approve: true,
+        reason: "تحققت من إلغاء العرض",
+      },
       firstApprover,
     );
-    expect((await db().select().from(schema.purchaseOrders).where(eq(schema.purchaseOrders.id, created.purchaseOrderId)))[0].status).toBe("CANCELLED");
+    expect(
+      (
+        await db()
+          .select()
+          .from(schema.purchaseOrders)
+          .where(eq(schema.purchaseOrders.id, created.purchaseOrderId))
+      )[0].status,
+    ).toBe("CANCELLED");
   });
 });
 
@@ -252,7 +360,14 @@ describe("S2 — طلبات الشراء والتخصيص", () => {
         branchId: 1,
         purpose: "تغطية احتياج الورق اليومي",
         clientRequestId: "req-create-1",
-        items: [{ variantId: 1, productUnitId: 1, requestedBaseQuantity: 10, justification: "الرصيد أقل من الحد" }],
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            requestedBaseQuantity: 10,
+            justification: "الرصيد أقل من الحد",
+          },
+        ],
       },
       creator,
     );
@@ -267,22 +382,55 @@ describe("S2 — طلبات الشراء والتخصيص", () => {
     );
     await expect(
       decidePurchaseRequisitionControl(
-        { requestId: submitted.requestId, decisionKey: "req-self", approve: true, reason: "اعتماد ذاتي" },
+        {
+          requestId: submitted.requestId,
+          decisionKey: "req-self",
+          approve: true,
+          reason: "اعتماد ذاتي",
+        },
         creator,
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await decidePurchaseRequisitionControl(
-      { requestId: submitted.requestId, decisionKey: "req-approve", approve: true, reason: "الاحتياج مؤيد" },
+      {
+        requestId: submitted.requestId,
+        decisionKey: "req-approve",
+        approve: true,
+        reason: "الاحتياج مؤيد",
+      },
       firstApprover,
     );
-    const [item] = await db().select().from(schema.purchaseRequisitionItems).where(eq(schema.purchaseRequisitionItems.requisitionId, requisition.requisitionId));
+    const [item] = await db()
+      .select()
+      .from(schema.purchaseRequisitionItems)
+      .where(
+        eq(
+          schema.purchaseRequisitionItems.requisitionId,
+          requisition.requisitionId,
+        ),
+      );
     await expect(
-      createDraft("po-over-allocation", [{ lineNo: 1, requisitionItemId: Number(item.id), allocatedBaseQuantity: 11 }]),
+      createDraft("po-over-allocation", [
+        {
+          lineNo: 1,
+          requisitionItemId: Number(item.id),
+          allocatedBaseQuantity: 11,
+        },
+      ]),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(
-      createDraft("po-valid-allocation", [{ lineNo: 1, requisitionItemId: Number(item.id), allocatedBaseQuantity: 10 }]),
+      createDraft("po-valid-allocation", [
+        {
+          lineNo: 1,
+          requisitionItemId: Number(item.id),
+          allocatedBaseQuantity: 10,
+        },
+      ]),
     ).resolves.toMatchObject({ status: "DRAFT" });
-    const [after] = await db().select().from(schema.purchaseRequisitionItems).where(eq(schema.purchaseRequisitionItems.id, item.id));
+    const [after] = await db()
+      .select()
+      .from(schema.purchaseRequisitionItems)
+      .where(eq(schema.purchaseRequisitionItems.id, item.id));
     expect(Number(after.orderedBaseQuantity)).toBe(10);
   });
 });

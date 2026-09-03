@@ -77,7 +77,7 @@ async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchase
     decisionKey: `f7-po-approve:${randomUUID()}`,
     approve: true,
     reason: "راجعت المورد والكميات والأسعار واعتمدت أمر التدقيق",
-  }, { userId: 6, branchId: 1, role: "manager" });
+  }, { userId: 6, branchId: 1, role: "manager" }, { legacyConfirmOnly: true });
 }
 
 beforeEach(async () => { await reset(); await seed(); });

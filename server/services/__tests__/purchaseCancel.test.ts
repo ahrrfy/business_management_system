@@ -24,11 +24,25 @@ async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const t of [
-    "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
-    "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations",
-    "purchaseOrderRevisionItems", "purchaseOrderRevisions",
-    "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices",
-    "productUnits", "productVariants", "products", "suppliers", "branches", "users",
+    "idempotencyKeys",
+    "accountingEntries",
+    "receipts",
+    "inventoryMovements",
+    "purchaseOrderEvents",
+    "purchaseOrderControlRequests",
+    "purchaseOrderRequisitionAllocations",
+    "purchaseOrderRevisionItems",
+    "purchaseOrderRevisions",
+    "purchaseOrderItems",
+    "purchaseOrders",
+    "branchStock",
+    "productPrices",
+    "productUnits",
+    "productVariants",
+    "products",
+    "suppliers",
+    "branches",
+    "users",
   ]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
   }
@@ -37,15 +51,44 @@ async function reset() {
 
 async function seed() {
   const d = db();
-  await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
+  await d
+    .insert(s.branches)
+    .values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
-    { id: 9, openId: "purchase-reviewer", name: "مراجع مستقل", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+    {
+      id: 1,
+      openId: "t",
+      name: "admin",
+      role: "admin",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: 9,
+      openId: "purchase-reviewer",
+      name: "مراجع مستقل",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+      isOwner: true,
+    },
   ]);
-  await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+  await d
+    .insert(s.suppliers)
+    .values({ id: 1, name: "مورد", currentBalance: "0" });
   await d.insert(s.products).values({ id: 1, name: "ورق" });
-  await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "P-1", costPrice: "0.00" });
-  await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+  await d
+    .insert(s.productVariants)
+    .values({ id: 1, productId: 1, sku: "P-1", costPrice: "0.00" });
+  await d
+    .insert(s.productUnits)
+    .values({
+      id: 1,
+      variantId: 1,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    });
 }
 
 beforeEach(async () => {
@@ -53,14 +96,28 @@ beforeEach(async () => {
   await seed();
 });
 
-async function makeConfirmedPO(qty = 10, unitPrice = "5.00"): Promise<{ purchaseOrderId: number; itemId: number }> {
+async function makeConfirmedPO(
+  qty = 10,
+  unitPrice = "5.00",
+): Promise<{ purchaseOrderId: number; itemId: number }> {
   const po = await createPurchaseOrder(
-    { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
+    {
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
+      status: "DRAFT",
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice },
+      ],
+    },
     actor,
   );
   await approvePurchaseOrder(po, actor);
   const item = (
-    await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
+    await db()
+      .select()
+      .from(s.purchaseOrderItems)
+      .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
   )[0];
   return { purchaseOrderId: po.purchaseOrderId, itemId: Number(item.id) };
 }
@@ -69,44 +126,62 @@ async function approvePurchaseOrder(
   po: Awaited<ReturnType<typeof createPurchaseOrder>>,
   creatorActor: { userId: number; branchId: number; role?: string },
 ) {
-  const submitted = await submitPurchaseOrderForApproval({
-    purchaseOrderId: po.purchaseOrderId,
-    expectedVersion: po.version,
-    reason: "إرسال أمر اختبار الإلغاء للمراجعة المستقلة",
-    requestKey: `purchase-cancel-submit:${randomUUID()}`,
-  }, creatorActor);
-  await decidePurchaseOrderControl({
-    requestId: submitted.requestId,
-    decisionKey: `purchase-cancel-approve:${randomUUID()}`,
-    approve: true,
-    reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
-  }, { userId: 9, branchId: 1, role: "manager" });
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار الإلغاء للمراجعة المستقلة",
+      requestKey: `purchase-cancel-submit:${randomUUID()}`,
+    },
+    creatorActor,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `purchase-cancel-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+    },
+    { userId: 9, branchId: 1, role: "manager" },
+    { legacyConfirmOnly: true },
+  );
 }
 
 async function cancelGoverned(purchaseOrderId: number) {
-  const [po] = await db().select({
-    version: s.purchaseOrders.version,
-    revisionId: s.purchaseOrders.currentRevisionId,
-  }).from(s.purchaseOrders).where(eq(s.purchaseOrders.id, purchaseOrderId));
-  const request = await requestPurchaseOrderControl({
-    purchaseOrderId,
-    revisionId: po?.revisionId ?? null,
-    expectedVersion: Number(po?.version ?? 1),
-    kind: "CANCEL_ORDER",
-    requestKey: `purchase-cancel-request:${randomUUID()}`,
-    reason: "إلغاء أمر الشراء بعد مراجعة عدم وجود استلام أو دفعات",
-  }, actor);
-  const decided = await decidePurchaseOrderControl({
-    requestId: request.requestId,
-    decisionKey: `purchase-cancel-decision:${randomUUID()}`,
-    approve: true,
-    reason: "تحققت من سلامة الإلغاء واعتمدته",
-  }, { userId: 9, branchId: 1, role: "manager" });
+  const [po] = await db()
+    .select({
+      version: s.purchaseOrders.version,
+      revisionId: s.purchaseOrders.currentRevisionId,
+    })
+    .from(s.purchaseOrders)
+    .where(eq(s.purchaseOrders.id, purchaseOrderId));
+  const request = await requestPurchaseOrderControl(
+    {
+      purchaseOrderId,
+      revisionId: po?.revisionId ?? null,
+      expectedVersion: Number(po?.version ?? 1),
+      kind: "CANCEL_ORDER",
+      requestKey: `purchase-cancel-request:${randomUUID()}`,
+      reason: "إلغاء أمر الشراء بعد مراجعة عدم وجود استلام أو دفعات",
+    },
+    actor,
+  );
+  const decided = await decidePurchaseOrderControl(
+    {
+      requestId: request.requestId,
+      decisionKey: `purchase-cancel-decision:${randomUUID()}`,
+      approve: true,
+      reason: "تحققت من سلامة الإلغاء واعتمدته",
+    },
+    { userId: 9, branchId: 1, role: "manager" },
+  );
   return { status: decided.orderStatus, purchaseOrderId };
 }
 
 const countRows = async (table: any): Promise<number> => {
-  const r = await db().select({ n: sql<number>`COUNT(*)` }).from(table);
+  const r = await db()
+    .select({ n: sql<number>`COUNT(*)` })
+    .from(table);
   return Number(r[0]?.n ?? 0);
 };
 
@@ -118,7 +193,12 @@ describe("إلغاء أمر شراء لم يُستلم", () => {
     expect(res.status).toBe("CANCELLED");
     expect(res.purchaseOrderId).toBe(purchaseOrderId);
 
-    const po = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, purchaseOrderId)))[0];
+    const po = (
+      await db()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, purchaseOrderId))
+    )[0];
     expect(po.status).toBe("CANCELLED");
 
     // قلب حالة خالص — لا أثر مالي/مخزني.
@@ -126,7 +206,9 @@ describe("إلغاء أمر شراء لم يُستلم", () => {
     expect(await countRows(s.inventoryMovements)).toBe(0);
     expect(await countRows(s.receipts)).toBe(0);
     // AP لم يتحرّك.
-    const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    const sup = (
+      await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
+    )[0];
     expect(sup.currentBalance).toBe("0.00");
   });
 });
@@ -135,30 +217,50 @@ describe("حواجز الإلغاء", () => {
   it("أمر استُلم منه جزئياً ⇒ الإلغاء يُرفض BAD_REQUEST", async () => {
     const { purchaseOrderId, itemId } = await makeConfirmedPO(10);
     await receivePurchase(
-      { purchaseOrderId, lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 4 }] },
+      {
+        purchaseOrderId,
+        lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 4 }],
+      },
       actor,
     );
-    await expect(cancelGoverned(purchaseOrderId)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(cancelGoverned(purchaseOrderId)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
     // الحالة بقيت CONFIRMED (استلام جزئي).
-    const po = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, purchaseOrderId)))[0];
+    const po = (
+      await db()
+        .select()
+        .from(s.purchaseOrders)
+        .where(eq(s.purchaseOrders.id, purchaseOrderId))
+    )[0];
     expect(po.status).toBe("CONFIRMED");
   });
 
   it("إلغاء مزدوج ⇒ الثاني يُرفض BAD_REQUEST", async () => {
     const { purchaseOrderId } = await makeConfirmedPO();
     await cancelGoverned(purchaseOrderId);
-    await expect(cancelGoverned(purchaseOrderId)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(cancelGoverned(purchaseOrderId)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
   });
 
   it("أمر غير موجود ⇒ NOT_FOUND", async () => {
-    await expect(cancelGoverned(99999)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(cancelGoverned(99999)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
   });
 
   it("استلام على أمر CANCELLED يبقى مرفوضاً (انحدار)", async () => {
     const { purchaseOrderId, itemId } = await makeConfirmedPO();
     await cancelGoverned(purchaseOrderId);
     await expect(
-      receivePurchase({ purchaseOrderId, lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 1 }] }, actor),
+      receivePurchase(
+        {
+          purchaseOrderId,
+          lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 1 }],
+        },
+        actor,
+      ),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     // لا أثر: لا حركة مخزون ولا قيد.
     expect(await countRows(s.inventoryMovements)).toBe(0);
@@ -168,23 +270,57 @@ describe("حواجز الإلغاء", () => {
 
 describe("SOD-06: اعتماد الشراء بفصل المهام (مُستلِم ≠ مُنشئ)", () => {
   it("موظّف غير-أدمن يَستلم أمراً أنشأه بنفسه ⇒ FORBIDDEN؛ مُستلِم مختلف ⇒ يُقبَل", async () => {
-    await db().insert(s.users).values({ id: 2, openId: "wh", name: "مخزن", role: "warehouse", loginMethod: "local" });
+    await db()
+      .insert(s.users)
+      .values({
+        id: 2,
+        openId: "wh",
+        name: "مخزن",
+        role: "warehouse",
+        loginMethod: "local",
+      });
     const wh = { userId: 2, branchId: 1, role: "warehouse" };
     const po = await createPurchaseOrder(
-      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }] },
+      {
+        supplierId: 1,
+        branchId: 1,
+        taxRatePercent: "0",
+        status: "DRAFT",
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" },
+        ],
+      },
       wh,
     );
     await approvePurchaseOrder(po, wh);
-    const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+    const item = (
+      await db()
+        .select()
+        .from(s.purchaseOrderItems)
+        .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
+    )[0];
 
     // نفس المُنشئ (غير أدمن) يُحاول الاستلام ⇒ مرفوض.
     await expect(
-      receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 }] }, wh),
+      receivePurchase(
+        {
+          purchaseOrderId: po.purchaseOrderId,
+          lines: [
+            { purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 },
+          ],
+        },
+        wh,
+      ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     // مُستلِم مختلف (أدمن user 1) ⇒ يُقبَل.
     const res = await receivePurchase(
-      { purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 }] },
+      {
+        purchaseOrderId: po.purchaseOrderId,
+        lines: [
+          { purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 },
+        ],
+      },
       actor,
     );
     expect(res.fullyReceived).toBe(true);
@@ -193,7 +329,10 @@ describe("SOD-06: اعتماد الشراء بفصل المهام (مُستلِ�
   it("الأدمن يُنشئ ويَستلم بنفسه ⇒ يُقبَل (استثناء الأدمن)", async () => {
     const { purchaseOrderId, itemId } = await makeConfirmedPO(10);
     const res = await receivePurchase(
-      { purchaseOrderId, lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 10 }] },
+      {
+        purchaseOrderId,
+        lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 10 }],
+      },
       actor,
     );
     expect(res.fullyReceived).toBe(true);

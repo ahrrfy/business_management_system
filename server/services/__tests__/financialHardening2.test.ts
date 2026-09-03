@@ -140,7 +140,7 @@ async function createApprovedPurchaseOrder(unitPrice: string) {
     decisionKey: `hardening2-po-approve:${randomUUID()}`,
     approve: true,
     reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
-  }, owner);
+  }, owner, { legacyConfirmOnly: true });
   return po;
 }
 
@@ -411,7 +411,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
     expect(unconsumed.consumedAt).toBeNull();
   });
 
-  it("purchases.receive مغلق وgoodsReceipts.create يعيد نفس الاستلام لنفس clientRequestId", async () => {
+  it("purchases.receive وgoodsReceipts.create محذوفان ولا ينشئان استلاماً منفصلاً", async () => {
     await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
     const po = await createApprovedPurchaseOrder("5.00");
     const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
@@ -419,7 +419,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
       purchaseOrderId: po.purchaseOrderId,
       lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 5 }],
       clientRequestId: "legacy-recv-key-1",
-    })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    })).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     const [approvedOrder] = await db().select().from(s.purchaseOrders)
       .where(eq(s.purchaseOrders.id, po.purchaseOrderId));
@@ -430,19 +430,17 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
       lines: [{ purchaseOrderItemId: Number(poItem.id), acceptedBaseQuantity: 5 }],
       clientRequestId: "recv-key-1",
     };
-    const first = await warehouseCaller().goodsReceipts.create(input);
-    const replay = await warehouseCaller().goodsReceipts.create(input);
-    expect(Number(replay.id)).toBe(first.goodsReceiptId);
-    expect(replay.idempotentReplay).toBe(true);
-    expect(await db().select().from(s.goodsReceipts)).toHaveLength(1);
-    expect(await db().select().from(s.goodsReceiptItems)).toHaveLength(1);
+    await expect(warehouseCaller().goodsReceipts.create(input))
+      .rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(await db().select().from(s.goodsReceipts)).toHaveLength(0);
+    expect(await db().select().from(s.goodsReceiptItems)).toHaveLength(0);
     expect((await db().select().from(s.inventoryMovements)).filter((m) => m.movementType === "IN",
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect((await db().select().from(s.accountingEntries)).filter((e) =>
-      e.entryType === "ADJUST" && e.dedupeKey === `GRNI:RECEIPT:${first.goodsReceiptId}`,
+      e.entryType === "ADJUST" && e.dedupeKey?.startsWith("GRNI:RECEIPT:"),
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(sup.currentBalance).toBe("0.00"); // GRNI لا ينشئ AP قبل فاتورة المورد.
   });

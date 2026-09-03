@@ -96,7 +96,7 @@ object PurchasingMappers {
         total = row.nullableText("total"), paidAmount = row.nullableText("paidAmount"), shippingCost = row.nullableText("shippingCost"),
         customsCost = row.nullableText("customsCost"), agreedCurrency = row.enum("agreedCurrency", Currency.IQD),
         usdTotal = row.nullableText("usdTotal"), paidUsd = row.nullableText("paidUsd"), returnedUsd = row.nullableText("returnedUsd"),
-        agreedRate = row.nullableText("agreedRate"), status = row.enum("status", PurchaseStatus.UNKNOWN),
+        agreedRate = row.nullableText("agreedRate"), status = row.enum("status", PurchaseStatus.UNKNOWN), version = row.int("version"),
     )
 }
 

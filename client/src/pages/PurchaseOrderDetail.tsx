@@ -8,7 +8,7 @@ import { fmtDate } from "@/lib/date";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
-import { Banknote, PackageCheck, Pencil } from "lucide-react";
+import { Banknote, Pencil } from "lucide-react";
 import { Link, useParams } from "wouter";
 import { PurchaseOrderGovernance } from "@/components/purchases/PurchaseOrderGovernance";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -101,8 +101,7 @@ function Field({
  *
  * سدّ رابطٍ مكسور: «سجلّ المشتريات» و«دفتر الأستاذ» يربطان رقم الأمر بـ`/purchases/:id`
  * وكان المسار غير معرَّف في App.tsx ⇒ صفحة فارغة عند كل نقرة (تدقيق ١٧/٧، السطر ٣٤١).
- * لم يُوجَّه الرابط إلى `/purchases/:id/receive` لأنّ تلك شاشة **إجراء** لأمين المخزن،
- * بينما قارئ الأستاذ محاسبٌ/مدقّق — التوجيه إليها يخلط الأدوار ويصدّ من لا يملك الاستلام.
+ * الاعتماد النهائي هو إجراء الاستلام والترحيل نفسه؛ لا توجد شاشة استلام مستقلة.
  *
  * التكلفة محجوبة خادمياً لغير أدواتها (`purchases.get` يُفرغ الأسعار والإجماليات إلى null)
  * ⇒ الشاشة تعرض «—» بلا منطق حجبٍ عميليّ موازٍ.
@@ -116,7 +115,7 @@ export default function PurchaseOrderDetail() {
   );
   const me = trpc.auth.me.useQuery();
 
-  const canReceive = hasModuleAccess(
+  const canEdit = hasModuleAccess(
     me.data?.role ?? "",
     (
       me.data as
@@ -173,9 +172,6 @@ export default function PurchaseOrderDetail() {
             .toString(),
         )
       : positiveDiff(d.total, d.paidAmount);
-  // الاستلام مقصورٌ على CONFIRMED: `receivePurchase` يرفض كل ما عداها (purchase/receive.ts:180)
-  // ⇒ إظهار الزرّ لمسوّدةٍ أو أمرٍ مُرسَل يقود المستخدم إلى رفضٍ حتميّ بعد ملء النموذج.
-  const openForReceiving = d.status === "CONFIRMED";
   // التعديل ممكن ما لم يبدأ الأثر الفعليّ: أمرٌ نهائيّ، أو استُلم منه سطر، أو حمل دفعة.
   // نفس حرّاس `updatePurchaseOrder` — والخادم هو الحكم النهائيّ.
   const openForEditing =
@@ -189,21 +185,13 @@ export default function PurchaseOrderDetail() {
       <PageHeader
         title={`أمر شراء ${d.poNumber ?? `#${d.id}`}`}
         actions={
-          canReceive && (openForEditing || openForReceiving) ? (
+          canEdit && openForEditing ? (
             <div className="flex items-center gap-2">
               {openForEditing ? (
                 <Button asChild size="sm" variant="outline">
                   <Link href={`/purchases/${d.id}/edit`}>
                     <Pencil aria-hidden className="size-4" />
                     تعديل
-                  </Link>
-                </Button>
-              ) : null}
-              {openForReceiving ? (
-                <Button asChild size="sm">
-                  <Link href={`/purchases/goods-receipts?purchaseOrderId=${d.id}`}>
-                    <PackageCheck aria-hidden className="size-4" />
-                    إنشاء إذن استلام
                   </Link>
                 </Button>
               ) : null}
@@ -245,7 +233,7 @@ export default function PurchaseOrderDetail() {
       </Card>
 
       {/* بعد cutover، الدفع يُخصَّص إلى فاتورة مورد مرحّلة لا إلى أمر الشراء مباشرةً. */}
-      {canReceive &&
+      {canEdit &&
       d.status !== "CANCELLED" &&
       remaining != null &&
       remaining.gt(0) ? (

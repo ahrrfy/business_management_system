@@ -46,7 +46,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "productStudio", href: "/catalog/image-studio", label: "استوديو المنتجات", description: "صور المنتجات والكتالوج", section: 4, icon: Images, roles: ["admin", "manager", "print_operator", "auditor"], module: "productStudio" },
   { id: "contentDrafts", href: "/products/content-drafts", label: "مسودّات المحتوى", description: "مراجعة المحتوى المولّد للمنتجات", section: 4, icon: Sparkles, roles: ["admin", "manager"], module: "products" },
   { id: "inventory", href: "/inventory", label: "المخزون والبضاعة", description: "الأرصدة والتسويات", section: 2, icon: Boxes },
-  { id: "purchases", href: "/purchases", label: "المشتريات", description: "أوامر الشراء والاستلام", section: 2, icon: Package, module: "purchases" },
+  { id: "purchases", href: "/purchases", label: "المشتريات", description: "الفواتير والاعتمادات والترحيل التلقائي", section: 2, icon: Package, module: "purchases" },
   { id: "suppliers", href: "/suppliers", label: "الموردون", description: "إدارة الموردين وذممهم", section: 2, icon: Building2 },
   { id: "gifts", href: "/gifts", label: "الهدايا والمجانيات", description: "الحوافز والهدايا المجانية", section: 2, icon: Gift, roles: ["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"], module: "gifts" },
   { id: "digitalCards", href: "/digital-cards", label: "البطاقات الرقمية", description: "مخزون وتسليم البطاقات", section: 2, icon: WalletCards, roles: ["admin", "manager", "accountant", "auditor"], module: "digital_cards" },

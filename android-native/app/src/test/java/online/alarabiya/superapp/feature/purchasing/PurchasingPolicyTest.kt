@@ -28,14 +28,13 @@ class PurchasingPolicyTest {
     }
 
     @Test
-    fun `warehouse full access may receive and manage suppliers but not create order`() {
+    fun `explicit full access follows the server module override`() {
         val policy = policy("warehouse", 4, "FULL", "FULL")
 
-        assertFalse(policy.canWriteOrders)
-        assertTrue(policy.canReceiveOrders)
+        assertTrue(policy.canWriteOrders)
         assertTrue(policy.canWriteSuppliers)
         assertTrue(policy.canReadReminders)
-        assertFalse(policy.canReadReturns)
+        assertTrue(policy.canReadReturns)
     }
 
     @Test
@@ -43,7 +42,6 @@ class PurchasingPolicyTest {
         val policy = policy("purchasing", null, "FULL", "FULL")
 
         assertFalse(policy.canWriteOrders)
-        assertFalse(policy.canReceiveOrders)
         assertFalse(policy.canWriteReturns)
         assertFalse(policy.canWriteReminders)
     }
@@ -52,12 +50,13 @@ class PurchasingPolicyTest {
     fun `order transitions depend on server state`() {
         val policy = policy("manager", 1, "FULL", "FULL")
         val draft = order(PurchaseStatus.DRAFT)
+        val sent = order(PurchaseStatus.SENT)
         val confirmed = order(PurchaseStatus.CONFIRMED)
 
         assertTrue(policy.canConfirm(draft))
-        assertFalse(policy.canReceive(draft))
-        assertTrue(policy.canReceive(confirmed))
-        assertTrue(policy.canCancel(confirmed))
+        assertFalse(policy.canConfirm(confirmed))
+        assertTrue(policy.canCancel(sent))
+        assertFalse(policy.canCancel(confirmed))
     }
 
     private fun policy(role: String, branch: Long?, purchases: String, suppliers: String) = PurchasingCapabilities.fromBootstrap(

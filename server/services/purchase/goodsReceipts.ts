@@ -228,9 +228,19 @@ async function lockOrderAndRevision(
   return { po, revision };
 }
 
-export async function createGoodsReceipt(
+export async function createGoodsReceiptInTx(
+  tx: Tx,
   input: CreateGoodsReceiptInput,
   actor: Actor,
+  options: {
+    /**
+     * Internal-only bridge for the atomic invoice-posting facade. The outer
+     * purchase-order approval is the independent checker, so its approver may
+     * materialize the deterministic GRN in the same transaction. This never
+     * permits the purchase-order creator to receive their own order.
+     */
+    allowPurchaseOrderApproverForAutomaticPosting?: boolean;
+  } = {},
 ) {
   const requestKey = requireText(input.clientRequestId, "مفتاح الطلب", 120);
   if (
@@ -247,11 +257,15 @@ export async function createGoodsReceipt(
       code: "BAD_REQUEST",
       message: "أضف بند استلام واحداً على الأقل",
     });
-  if (input.lines.length > 50) {
+  const maxLines = options.allowPurchaseOrderApproverForAutomaticPosting
+    ? 500
+    : 50;
+  if (input.lines.length > maxLines) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message:
-        "الاستلام الواحد يدعم 50 بنداً كحد أقصى؛ قسّم الإذن الكبير إلى دفعات",
+        `الاستلام الواحد يدعم ${maxLines} بنداً كحد أقصى` +
+        (maxLines === 50 ? "؛ قسّم الإذن الكبير إلى دفعات" : ""),
     });
   }
   uniquePositiveIds(
@@ -300,7 +314,7 @@ export async function createGoodsReceipt(
   });
   const payloadHash = sha256(canonical);
 
-  return withTx(async (tx) => {
+  const executeInExistingTransaction = async () => {
     const existing = (
       await tx
         .select()
@@ -350,10 +364,14 @@ export async function createGoodsReceipt(
         message: "حالة أمر الشراء لا تسمح بالاستلام",
       });
     }
+    const isPurchaseOrderCreator =
+      po.createdBy != null && Number(po.createdBy) === actor.userId;
+    const isPurchaseOrderApprover =
+      po.approvedBy != null && Number(po.approvedBy) === actor.userId;
     if (
-      [po.createdBy, po.approvedBy].some(
-        (id) => id != null && Number(id) === actor.userId,
-      )
+      isPurchaseOrderCreator ||
+      (isPurchaseOrderApprover &&
+        !options.allowPurchaseOrderApproverForAutomaticPosting)
     ) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -730,7 +748,15 @@ export async function createGoodsReceipt(
       fullyReceived,
       idempotentReplay: false as const,
     };
-  });
+  };
+  return executeInExistingTransaction();
+}
+
+export async function createGoodsReceipt(
+  input: CreateGoodsReceiptInput,
+  actor: Actor,
+) {
+  return withTx((tx) => createGoodsReceiptInTx(tx, input, actor));
 }
 
 export async function requestGoodsReceiptReversal(
