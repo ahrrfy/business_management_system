@@ -1354,7 +1354,7 @@ export default function StocktakeReview() {
                 onClick={() => void approveSelectedItems()}
               >
                 {approveItems.isPending
-                  ? "جارٍ الاعتماد…"
+                  ? ACTION_LABELS.approving
                   : `اعتماد المحدد مرحلياً (${nf(selectedReady.length)})`}
               </Button>
             </div>

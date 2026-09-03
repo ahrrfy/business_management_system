@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { DataTable } from "@/components/data-table/DataTable";
+import { PageHeader } from "@/components/PageHeader";
 import { AlertTriangle, CheckCircle2, CopyIcon, XCircle } from "lucide-react";
 import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -410,12 +411,21 @@ function CompaniesDashboard() {
   return (
     <div dir="rtl" className="min-h-screen bg-background p-6">
       <div className="mx-auto max-w-4xl space-y-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-extrabold">إدارة المنصّة — الشركات</h1>
-          <Button variant="outline" onClick={() => logout.mutate()} disabled={logout.isPending}>
-            تسجيل الخروج
-          </Button>
-        </div>
+        {/* رأسُ صفحةٍ حقيقيّ ⇒ `PageHeader` هو مصدرُ `h1` الوحيد (نمطٌ موحَّد + وصف + منطقة إجراءات)
+            بدل `h1` يدويٍّ بنمطٍ خاصّ بجانب زرٍّ في `justify-between`.
+            `homeHref={null}`: هذه الشاشة على مسارٍ منفصلٍ تماماً عن AppLayout بمصادقةٍ خاصّة بها
+            (كوكي/JWT المنصّة — لا تمنح وصولاً لبيانات أيّ شركة)، فرابطُ «الرئيسية» إلى `/` يقذف
+            مديرَ المنصّة إلى تطبيق الشركة حيث لا جلسةَ له = مخرجٌ مسدود لا اختصار. */}
+        <PageHeader
+          title="إدارة المنصّة — الشركات"
+          description="الشركات المسجَّلة وطلبات التوفير وسجلّ التدقيق — إدارةٌ على مستوى المنصّة، منفصلةٌ عن بيانات أيّ شركة."
+          homeHref={null}
+          actions={
+            <Button variant="outline" onClick={() => logout.mutate()} disabled={logout.isPending}>
+              تسجيل الخروج
+            </Button>
+          }
+        />
 
         <Card>
           <CardHeader>

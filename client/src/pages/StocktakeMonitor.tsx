@@ -514,7 +514,7 @@ export default function StocktakeMonitor() {
                 }
                 onClick={() => void onForceReview()}
               >
-                {forceReview.isPending ? "جارٍ الإغلاق…" : "إنهاء العدّ والانتقال للمراجعة"}
+                {forceReview.isPending ? ACTION_LABELS.closing : "إنهاء العدّ والانتقال للمراجعة"}
               </Button>
             )}
           </>
@@ -1064,7 +1064,7 @@ export default function StocktakeMonitor() {
               disabled={cancelSession.isPending}
               onClick={() => cancelSession.mutate({ sessionId, reason: cancelReason.trim() || undefined })}
             >
-              {cancelSession.isPending ? "جارٍ الإلغاء…" : "تأكيد إلغاء الجلسة"}
+              {cancelSession.isPending ? ACTION_LABELS.cancelling : "تأكيد إلغاء الجلسة"}
             </Button>
           </DialogFooter>
         </DialogContent>

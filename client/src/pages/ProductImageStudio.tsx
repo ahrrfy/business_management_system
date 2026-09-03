@@ -7,6 +7,7 @@ import { StudioImageDiscoveryPanel } from "@/components/product-studio/StudioIma
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1365,8 +1366,11 @@ export default function ProductImageStudio() {
             </p>
             {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل حقلَ «الحصّة اليومية»
                 يُطلق `setBranchBudget.mutate` عند `onBlur` — `DataTable` أداةُ عرضٍ فتبقى هذه
-                خامّةً عن قصد. */}
-            <div className="overflow-x-auto">
+                خامّةً عن قصد. لكنّ قشرتها مشتركة: `ScrollTableShell` بدل `overflow-x-auto`
+                اليدوية، فتلتصق الترويسة حين يطول جدول الفروع. `bordered=false` لأنّ البطاقة
+                تُؤطّره أصلاً ولا حدَّ في الأصل، و`showColumnVisibility` معطَّل لأنّ الحصّة قرارٌ
+                لا يُتَّخذ إلّا باستهلاك اليوم بجانبه — إخفاءُ عمودٍ هنا يُنتج قراراً أعمى. */}
+            <ScrollTableShell bordered={false} showColumnVisibility={false}>
               <table className="w-full min-w-[32rem] text-sm">
                 <thead>
                   <tr className="text-right text-xs text-muted-foreground">
@@ -1408,7 +1412,7 @@ export default function ProductImageStudio() {
                   )}
                 </tbody>
               </table>
-            </div>
+            </ScrollTableShell>
           </CardContent>
         </Card>
       )}

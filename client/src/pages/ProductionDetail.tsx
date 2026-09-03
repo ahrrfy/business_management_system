@@ -13,6 +13,7 @@ import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Printer } from "lucide-react";
 import { Link, useRoute } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /**
  * سطرُ مستند الإنتاج (مدخلاً كان أو مخرجاً). `production.get` يعود `any` في هذه الشاشة،
@@ -200,7 +201,7 @@ export default function ProductionDetail() {
       {isManager && doc.status !== "CANCELLED" && (
         <div>
           <Button variant="destructive" onClick={onCancel} disabled={cancel.isPending}>
-            {cancel.isPending ? "جارٍ الإلغاء…" : "إلغاء المستند (يعكس المخزون)"}
+            {cancel.isPending ? ACTION_LABELS.cancelling : "إلغاء المستند (يعكس المخزون)"}
           </Button>
         </div>
       )}

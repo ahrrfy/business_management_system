@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
@@ -387,8 +388,12 @@ export default function CashRemediation() {
 
                 {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل `AppSelect` لتصنيف
                     المحاكاة يكتب في حالة `selections` المحلّية (و`disabled` مشتقٌّ من الصفّ نفسه)
-                    — `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. */}
-                <div className="overflow-x-auto rounded-md border">
+                    — `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد.
+                    لكن قشرتَها مشتركة: `ScrollTableShell` تتولّى التمرير والترويسة اللاصقة بدل
+                    حاوية يدوية. `showColumnVisibility` معطَّل لأنّ إخفاء عمودٍ هنا يُربك ولا يفيد
+                    (المحاكاة قرارٌ يُتَّخذ بالاقتراح والأدلّة الناقصة معاً). و`bordered` باقٍ على
+                    أصله: الحاوية داخل `CardContent` بحشوةٍ فلا يلتصق حدّها بحدّ البطاقة. */}
+                <ScrollTableShell showColumnVisibility={false}>
                   <table className="w-full min-w-[1200px] text-sm">
                     <thead className="bg-muted/60 text-right">
                       <tr>
@@ -431,7 +436,7 @@ export default function CashRemediation() {
                       {!shift.outflows.length && <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا توجد حركات OUT في الوردية.</td></tr>}
                     </tbody>
                   </table>
-                </div>
+                </ScrollTableShell>
               </CardContent>
             </Card>
           ))}

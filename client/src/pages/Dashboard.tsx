@@ -12,6 +12,7 @@ import { APPLICATION_MODULES, type ApplicationModule } from "@/lib/moduleRegistr
 import { ROLE_LABEL } from "@/lib/roles";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Banknote, CalendarDays, MapPin, ReceiptText, RefreshCw, ShoppingCart } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
    مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
@@ -669,7 +670,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
     ? fmtAr(Number(metrics.data.overdueAR.total))
     : "";
   const overdueUnit = metrics.isLoading
-    ? "جارٍ التحديث"
+    ? ACTION_LABELS.refreshing
     : metricsUnavailable
       ? "حاول مجدداً"
     : overdueCount > 0
@@ -693,7 +694,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           {
             label: "مبيعات اليوم",
             value: todaySalesValue,
-            unit: metrics.isLoading ? "جارٍ التحديث" : todaySalesUnavailable ? "حاول مجدداً" : "د.ع",
+            unit: metrics.isLoading ? ACTION_LABELS.refreshing : todaySalesUnavailable ? "حاول مجدداً" : "د.ع",
             copyText: metrics.isLoading || todaySalesUnavailable
               ? ""
               : `مبيعات اليوم: ${fmtAr(todaySales?.total ?? 0)} د.ع`,
@@ -703,7 +704,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           {
             label: "فواتير اليوم",
             value: todayInvoicesValue,
-            unit: metrics.isLoading ? "جارٍ التحديث" : todaySalesUnavailable ? "حاول مجدداً" : "فاتورة",
+            unit: metrics.isLoading ? ACTION_LABELS.refreshing : todaySalesUnavailable ? "حاول مجدداً" : "فاتورة",
             copyText: metrics.isLoading || todaySalesUnavailable
               ? ""
               : `فواتير اليوم: ${fmtAr(todaySales?.invoiceCount ?? 0)} فاتورة`,
@@ -720,7 +721,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
             label: "مبيعات أمس مقابل المعدّل",
             value: metrics.isLoading ? "—" : pulseUnavailable ? "غير متاح" : fmtAr(Number(pulse?.yesterday ?? 0)),
             unit: metrics.isLoading
-              ? "جارٍ التحديث"
+              ? ACTION_LABELS.refreshing
               : pulseUnavailable
                 ? "حاول مجدداً"
               : `${pulseArrow} ${fmtAr(Math.abs(pulse!.changePct))}٪ عن المعدّل`,
@@ -736,7 +737,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
       ? [{
           label: "الوردية الحالية",
           value: shift.isLoading ? "—" : shift.isError ? "غير متاح" : shiftLabel,
-          unit: shift.isLoading ? "جارٍ التحديث" : shift.isError ? "حاول مجدداً" : shiftSince,
+          unit: shift.isLoading ? ACTION_LABELS.refreshing : shift.isError ? "حاول مجدداً" : shiftSince,
           copyText: shift.isLoading || shift.isError
             ? ""
             : shift.data
@@ -749,7 +750,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
     {
       label: "مخزون منخفض",
       value: lowStockValue,
-      unit: metrics.isLoading ? "جارٍ التحديث" : metricsUnavailable ? "حاول مجدداً" : "منتج",
+      unit: metrics.isLoading ? ACTION_LABELS.refreshing : metricsUnavailable ? "حاول مجدداً" : "منتج",
       copyText: metrics.isLoading || metricsUnavailable
         ? ""
         : `مخزون منخفض: ${fmtAr(metrics.data?.lowStockCount ?? 0)} منتج`,
@@ -786,7 +787,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           {
             label: "جرد بانتظار المراجعة",
             value: stk.isLoading ? "—" : stk.isError ? "غير متاح" : fmtAr(stk.data?.review ?? 0),
-            unit: stk.isLoading ? "جارٍ التحديث" : stk.isError ? "حاول مجدداً" : stk.data?.counting ? `${fmtAr(stk.data.counting)} قيد العدّ` : "جلسة",
+            unit: stk.isLoading ? ACTION_LABELS.refreshing : stk.isError ? "حاول مجدداً" : stk.data?.counting ? `${fmtAr(stk.data.counting)} قيد العدّ` : "جلسة",
             copyText: stk.isLoading || stk.isError
               ? ""
               : `جرد بانتظار المراجعة: ${fmtAr(stk.data?.review ?? 0)} جلسة${
