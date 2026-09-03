@@ -70,11 +70,79 @@ function assertIsTransaction(tx: unknown): asserts tx is Tx {
 }
 
 /**
+ * Codex #963 P2: يفحص الحمولةَ قبل تخزينها ويرفض قيماً **يبتلعها** `JSON.stringify` صامتاً:
+ *   • `undefined` في مفتاح كائن ⇒ يُحذف الحقل نهائياً.
+ *   • `Function`/`Symbol` كقيمة ⇒ يُحذف الحقل نهائياً.
+ *   • `NaN`/`±Infinity` ⇒ تُحوَّل إلى `null` (الاستعادةُ تصير خطأً صامتاً).
+ * ابتلاعُ أيٍّ من هذه يخرق عقدَ اللقطة الكامل (§٦ ق٨: «كاملاً أو لا شيء»)، فنرفضها.
+ */
+function assertPayloadLossless(payload: unknown, path = "$"): void {
+  if (payload === null || payload === undefined) {
+    if (payload === undefined && path === "$") {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل لقطة",
+          why: "الحمولة الجذرية `undefined` — JSON.stringify ينتج `undefined` بلا حقل",
+          doThis: "مرّر كائناً أو مصفوفةً، ولو فارغَين",
+        }),
+      });
+    }
+    return;
+  }
+  const t = typeof payload;
+  if (t === "number") {
+    if (!Number.isFinite(payload as number)) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل لقطة",
+          why: `قيمة عددية غير منتهية عند ${path} — JSON يحوّلها إلى \`null\` صامتاً`,
+          doThis: "استعمل Decimal أو نصّاً للأعداد الحسّاسة، وتحقّق من مصدرها قبل التمرير",
+        }),
+      });
+    }
+    return;
+  }
+  if (t === "function" || t === "symbol" || t === "bigint") {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل لقطة",
+        why: `قيمة من نوع ${t} عند ${path} — JSON يبتلعها أو يرمي`,
+        doThis: "حوّلها إلى نصٍّ أو رقم قبل التمرير",
+      }),
+    });
+  }
+  if (t !== "object") return;
+  // Date/Decimal لهما .toJSON — نُبقيهما.
+  if (payload instanceof Date || (payload as { toJSON?: unknown }).toJSON) return;
+  if (Array.isArray(payload)) {
+    payload.forEach((v, i) => assertPayloadLossless(v, `${path}[${i}]`));
+    return;
+  }
+  for (const [k, v] of Object.entries(payload as Record<string, unknown>)) {
+    if (v === undefined) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل لقطة",
+          why: `الحقل ${path}.${k} = undefined — JSON.stringify يحذفه من اللقطة`,
+          doThis: "استعمل `null` صراحةً بدلاً من `undefined`، أو أزل الحقل من المصدر",
+        }),
+      });
+    }
+    assertPayloadLossless(v, `${path}.${k}`);
+  }
+}
+
+/**
  * يحوّل الحمولةَ إلى JSON آمنٍ للتخزين — يفرض المرورَ عبر `JSON.stringify/parse` كي
  * تُحلّ `Date.toJSON()` (ISO) و`Decimal.toJSON()` (سلسلة نصّية) قبل الكتابة، ويرفض
- * قيمةً غير قابلةٍ للتحويل (دورةٌ مرجعية، BigInt خامّ) بدل ابتلاعها.
+ * قيمةً غير قابلةٍ للتحويل (دورةٌ مرجعية، BigInt خامّ) **أو** قيمةً يبتلعها JSON صامتاً.
  */
 function normalizePayload(payload: unknown): unknown {
+  assertPayloadLossless(payload);
   try {
     return JSON.parse(JSON.stringify(payload));
   } catch (err) {
@@ -249,12 +317,20 @@ export async function readVersion(
  *
  * لماذا callback لا استيراد مباشر: كي لا نجرّ دورةَ استيرادٍ بين `versioning/` وكلّ
  * خدمة كتابة (customerService/productUpdate/…) — القرارُ **مَن ينفّذ** يبقى للمستدعي.
+ *
+ * Codex #963 P2 (تعليقان):
+ *  ① يستقبل `reason` صراحةً كي يستطيع المستدعي أن يُلحقه باللقطة الجديدة التي يكتبها.
+ *     كان يُهدَر خفيةً قبل.
+ *  ② يُرجع `{ updated: boolean }` كدليلٍ **قابلٍ للتحقّق** أنّ الاستعادةَ فعلت شيئاً.
+ *     `restoreToVersion` يرفض `updated=false` بـ`INTERNAL_SERVER_ERROR` كي لا يُبلَّغ الموظّف
+ *     بنجاحٍ لم يقع (callback فارغٌ أو مقيَّدٌ بحرّاسٍ يمنعان الكتابة).
  */
 export type RestoreApply = (
   tx: Tx,
   payload: unknown,
   actor: Actor,
-) => Promise<void>;
+  restoreReason: string,
+) => Promise<{ updated: boolean }>;
 
 export interface RestoreToVersionInput {
   entityType: string;
@@ -291,7 +367,22 @@ export async function restoreToVersion(
     input.versionNumber,
   );
 
-  await input.applyRestore(tx, version.payloadJson, actor);
+  const restoreReason = (input.reason ?? "").trim() || `استعادة إلى الإصدار ${input.versionNumber}`;
+
+  // Codex #963 P2: `applyRestore` صار عقدُه `{ updated: boolean }` — نرفض ادّعاء استعادةٍ لم
+  // تكتب. المُنفّذُ (customerService مثلاً) يُقفل بـ`snapshotBeforeUpdate` قبل الكتابة ثمّ
+  // يستدعي `updateEntity(...)` ويُعيد `{ updated: rows.affected > 0 }`.
+  const result = await input.applyRestore(tx, version.payloadJson, actor, restoreReason);
+  if (!result.updated) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: appErrorMessage({
+        what: "تعذّرت الاستعادة",
+        why: "دالّةُ التطبيق لم تُبلِّغ عن أيّ صفٍّ محدَّث — قد يكون هناك حارسٌ منع الكتابة",
+        doThis: "افتح الكيان الآن وتحقّق من حالتِه، وابلغ المدير إن لم تظهر الاستعادة",
+      }),
+    });
+  }
 
   return { restoredFromVersion: input.versionNumber };
 }

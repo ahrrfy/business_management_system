@@ -170,11 +170,16 @@ describe("snapshotBeforeUpdate — الحالات الحاكمة", () => {
     );
 
     let receivedPayload: unknown = null;
+    let receivedReason: string = "";
     const applyRestore = async (
       _tx: Parameters<typeof snapshotBeforeUpdate>[0],
       payload: unknown,
+      _actor: Parameters<typeof snapshotBeforeUpdate>[2],
+      restoreReason: string,
     ) => {
       receivedPayload = payload;
+      receivedReason = restoreReason;
+      return { updated: true };
     };
 
     const res = await withTx((tx) =>
@@ -192,10 +197,10 @@ describe("snapshotBeforeUpdate — الحالات الحاكمة", () => {
 
     expect(res.restoredFromVersion).toBe(1);
     expect(receivedPayload).toEqual({ name: "الحالة القديمة", version: "old" });
+    expect(receivedReason).toBe("استعادة إلى الإصدار 1");
   });
 
   it("restoreToVersion على إصدارٍ غير موجود يرمي NOT_FOUND", async () => {
-    // لا لقطات = لا إصدار
     await expect(
       withTx((tx) =>
         restoreToVersion(
@@ -204,12 +209,65 @@ describe("snapshotBeforeUpdate — الحالات الحاكمة", () => {
             entityType: "widget",
             entityId: 88,
             versionNumber: 3,
-            applyRestore: async () => {},
+            applyRestore: async () => ({ updated: true }),
           },
           ACTOR,
         ),
       ),
     ).rejects.toThrow(/الإصدار|غير موجود/);
+  });
+
+  it("Codex #963: restoreToVersion يرفض applyRestore الذي يُبلّغ updated=false", async () => {
+    await withTx((tx) =>
+      snapshotBeforeUpdate(
+        tx,
+        { entityType: "widget", entityId: 77, payloadJson: { v: 1 }, reason: "lقطة" },
+        ACTOR,
+      ),
+    );
+    await expect(
+      withTx((tx) =>
+        restoreToVersion(
+          tx,
+          {
+            entityType: "widget",
+            entityId: 77,
+            versionNumber: 1,
+            applyRestore: async () => ({ updated: false }),
+          },
+          ACTOR,
+        ),
+      ),
+    ).rejects.toThrow(/تعذّرت الاستعادة/);
+  });
+
+  it("Codex #963: تسجيل لقطة يرفض حمولةً فيها undefined صريح", async () => {
+    await expect(
+      withTx((tx) =>
+        snapshotBeforeUpdate(
+          tx,
+          {
+            entityType: "widget",
+            entityId: 99,
+            payloadJson: { name: "x", ghost: undefined as unknown as string },
+            reason: "اختبار",
+          },
+          ACTOR,
+        ),
+      ),
+    ).rejects.toThrow(/يحذفه من اللقطة|undefined/);
+  });
+
+  it("Codex #963: تسجيل لقطة يرفض NaN/Infinity كأعداد", async () => {
+    await expect(
+      withTx((tx) =>
+        snapshotBeforeUpdate(
+          tx,
+          { entityType: "widget", entityId: 91, payloadJson: { qty: NaN }, reason: "اختبار" },
+          ACTOR,
+        ),
+      ),
+    ).rejects.toThrow(/غير منتهية/);
   });
 
   it("readVersion يرمي NOT_FOUND عند طلب إصدارٍ خارج النطاق", async () => {
