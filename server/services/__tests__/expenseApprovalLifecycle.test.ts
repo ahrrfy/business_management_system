@@ -619,7 +619,7 @@ describe("دورة اعتماد المصروفات", () => {
     ).toBe(true);
   });
 
-  it("غير المالك والمالك المعطل لا يستطيعان الرفض، والمالك المنشئ لا يعتمد نفسه", async () => {
+  it("غير المالك والمالك المعطل لا يستطيعان الرفض، والمالك المنشئ يعتمد ويرفض نفسه (قرار المالك ٣/٩/٢٦)", async () => {
     const request = await pendingExpense();
     await expect(
       rejectExpense(
@@ -645,7 +645,7 @@ describe("دورة اعتماد المصروفات", () => {
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
-    const selfRequest = await createExpense(
+    const selfApproveRequest = await createExpense(
       {
         branchId: 1,
         category: "RENT",
@@ -656,11 +656,22 @@ describe("دورة اعتماد المصروفات", () => {
       ownerA,
     );
     await expect(
-      approveExpense(selfRequest.expenseId, ownerA),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      approveExpense(selfApproveRequest.expenseId, ownerA),
+    ).resolves.toMatchObject({ status: "ACTIVE" });
+
+    const selfRejectRequest = await createExpense(
+      {
+        branchId: 1,
+        category: "RENT",
+        amount: "500000.00",
+        paymentMethod: "TRANSFER",
+        description: "طلب أنشأه المالك — يسحبه بنفسه",
+      },
+      ownerA,
+    );
     await expect(
-      rejectExpense(selfRequest.expenseId, ownerA, "طلب ذاتي"),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      rejectExpense(selfRejectRequest.expenseId, ownerA, "طلب ذاتي"),
+    ).resolves.toMatchObject({ status: "REJECTED" });
   });
 
   it("اعتمادان متزامنان يصنعان أثراً مالياً واحداً فقط", async () => {
@@ -829,7 +840,7 @@ describe("دورة اعتماد المصروفات", () => {
     expect(report.byPayee).toHaveLength(0);
   });
 
-  it("طلب المصروف يظهر كنوع مستقل للمالك ولا يتسرّب كسند عام", async () => {
+  it("طلب المصروف يظهر كنوع مستقل للمالك (بمن فيهم طلبه هو نفسه، قرار المالك ٣/٩/٢٦) ولا يتسرّب كسند عام", async () => {
     const request = await pendingExpense();
     const caller = appRouter.createCaller({
       req: { headers: {} },
@@ -867,7 +878,7 @@ describe("دورة اعتماد المصروفات", () => {
       .set({ direction: "IN" })
       .where(eq(s.receipts.id, Number(driftedRequest.receiptId)));
 
-    const inbox = await caller.superApp.approvalInbox({ limit: 1, offset: 0 });
+    const inbox = await caller.superApp.approvalInbox({ limit: 10, offset: 0 });
     expect(
       inbox.some(
         (item) =>
@@ -881,18 +892,25 @@ describe("دورة اعتماد المصروفات", () => {
           item.kind === "expense" && Number(item.id) === request.expenseId,
       ),
     ).toBe(true);
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — طلب المالك نفسه يظهر له الآن،
+    // بخلاف driftedRequest المستبعَد لسببٍ غير متعلّق (اتّجاه إيصاله ممسوخٌ إلى IN).
+    expect(
+      inbox.some(
+        (item) =>
+          item.kind === "expense" && Number(item.id) === selfRequest.expenseId,
+      ),
+    ).toBe(true);
     expect(
       inbox.some(
         (item) =>
           item.kind === "expense" &&
-          (Number(item.id) === selfRequest.expenseId ||
-            Number(item.id) === driftedRequest.expenseId),
+          Number(item.id) === driftedRequest.expenseId,
       ),
     ).toBe(false);
     const pulse = await caller.superApp.modulePulse({ moduleKey: "treasury" });
     expect(
       pulse.metrics.find((metric) => metric.key === "expense-approvals")?.value,
-    ).toBe(1);
+    ).toBe(2);
     await expect(
       caller.superApp.approvalDetail({
         kind: "expense",

@@ -291,6 +291,22 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
     expect(wo.status).toBe(reopen ? "READY" : "CANCELLED");
   });
 
+  // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — المالك يُصدر طلب عكس التسليم بنفسه (بصفته
+  // المُراجع الثاني لعكس التسليم) ثمّ يعتمد سند ردّ العربون الناتج بنفسه أيضاً.
+  it("المالك مراجعٌ لعكس التسليم ومعتمِدٌ لردّ العربون معاً ⇒ ينفَّذ (لا اعتماد ثانٍ بعد المالك)", async () => {
+    const order = await deliveredOrder({ key: "owner-self-approve", deposit: "10000.00", depositMethod: "CARD" });
+    await approveReverse(order.workOrderId, false, OWNER);
+    const pending = (await db().select().from(s.receipts).where(and(eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "PENDING"))))[0]!;
+    expect(pending.createdBy).toBe(OWNER.userId);
+    const approved = await approveWorkOrderCancellationRefund(Number(pending.id), OWNER, "CARD-SELF", {
+      user: { id: OWNER.userId, branchId: null } as never,
+      req: undefined as never,
+    });
+    expect(approved.status).toBe("COMPLETED");
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, order.invoiceId)))[0]!;
+    expect(invoice.paidAmount).toBe("0.00");
+  });
+
   it("زبون عابر مدفوع نقداً له مسار رد كامل بلا ذمة وهمية", async () => {
     const order = await deliveredOrder({ key: "walk-in", atDelivery: "30000.00", customerId: null });
     await approveReverse(order.workOrderId);
