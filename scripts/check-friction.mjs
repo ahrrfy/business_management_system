@@ -123,10 +123,16 @@ export function detectOpenBalancePredicate(source) {
   return hits.filter((h) => /-/.test(h)).length;
 }
 
-/** D3 — إجراءُ قرارٍ في راوتر (اعتماد/رفض/حسم). */
+/**
+ * D3 — إجراءُ قرارٍ في راوتر (اعتماد/رفض/حسم).
+ *
+ * ⚠️ **`approve: z.boolean()` حقلُ zod لا إجراء** — والنمطُ الأوّل كان يبتلعه فيعدّ
+ * موضعَين وهميَّين في `purchaseRouter.ts` وحدَه (وهما داخل خطّ الأساس الأصليّ ٧٥).
+ * حارسٌ يعدّ ما ليس علّةً يُنتج مقياساً لا يُصدَّق، فيُتجاوَز. لذلك يُستثنى `z.` صراحةً.
+ */
 export function detectDecisionProcedures(source) {
   const src = stripComments(source);
-  const re = /^\s{2,}(approve|reject|decide)([A-Z]\w*)?\s*:\s*[A-Za-z_$]/gm;
+  const re = /^\s{2,}(approve|reject|decide)([A-Z]\w*)?\s*:\s*(?!z\s*\.)[A-Za-z_$]/gm;
   return [...src.matchAll(re)].map((x) => `${x[1]}${x[2] ?? ""}`);
 }
 
@@ -197,6 +203,7 @@ function collect() {
   // ── D2 · D3 · D7 · D8 — الخادم
   const serverRoot = path.join(REPO_ROOT, "server");
   const registered = loadRegisteredDecisions();
+  const routerKeys = routerKeyByFile();
   for (const file of walk(serverRoot, /\.ts$/)) {
     const rel = relOf(file);
     const src = readFileSync(file, "utf8");
@@ -204,7 +211,11 @@ function collect() {
     bump("D2", rel, detectOpenBalancePredicate(src));
 
     if (rel.startsWith("server/routers/")) {
-      const decisions = detectDecisionProcedures(src).filter((d) => !registered.has(d));
+      // المطابقةُ بالزوج: إجراءٌ في راوترٍ لا مفتاحَ له في البرميل يبقى غيرَ مُسجَّل
+      // (`routerKey` غيرُ معرَّف ⇒ المفتاح لا يطابق شيئاً) — وهو الصواب: راوترٌ خارج
+      // البرميل لا يصله طلبٌ أصلاً، فوجودُ قرارٍ فيه إمّا شيفرةٌ ميتة أو تسجيلٌ ناقص.
+      const routerKey = routerKeys.get(rel);
+      const decisions = detectDecisionProcedures(src).filter((d) => !registered.has(`${routerKey}:${d}`));
       bump("D3", rel, decisions.length);
       bump("D7", rel, detectRequiredBranchId(src));
     }
@@ -251,14 +262,84 @@ function collect() {
   return { current, axisTotals };
 }
 
-/** أسماءُ إجراءات القرار المُسجَّلة في سجلّ القرارات (فارغةٌ ما دام السجلّ غير موجود). */
+/**
+ * خريطةُ ملفِّ الراوتر ⇐ مفتاحه في البرميل (`server/routers/purchaseRouter.ts` ⇐ `purchases`).
+ * تُقرأ من `server/routers.ts` نفسِه: سطرُ الاستيراد يربط المتغيّر بالملفّ، ومدخلُ الكائن
+ * يربط المتغيّر بالمفتاح. ⛔ ولا تُشتقّ بقصّ «Router» من الاسم — `purchaseRouter` مفتاحُه
+ * `purchases` لا `purchase`، فالاشتقاق يُنتج مفاتيحَ لا وجودَ لها فيصير كلُّ شيءٍ غيرَ مُسجَّل.
+ */
+export function routerKeyByFile() {
+  const out = new Map();
+  const mounts = [];
+  const files = [path.join(REPO_ROOT, "server/routers.ts")];
+  const routersDir = path.join(REPO_ROOT, "server/routers");
+  if (existsSync(routersDir)) files.push(...walk(routersDir, /\.ts$/));
+
+  for (const p of files) {
+    if (!existsSync(p)) continue;
+    const rel = relOf(p);
+    if (rel.includes("__tests__")) continue;
+    const src = stripComments(readFileSync(p, "utf8"));
+    const dir = path.posix.dirname(rel.split(path.sep).join("/"));
+
+    // ⚠️ الأقواس تحمل أكثر من اسمٍ أحياناً (`{ voucherRouter, voucherCategoryRouter }`)
+    // — ونمطُ الاسم الواحد كان يُسقط الملفَّ كلَّه فيصير «بلا مفتاح» ⇒ إنذارٌ كاذب.
+    const varToFile = new Map();
+    for (const m of src.matchAll(/import\s*\{([^}]+)\}\s*from\s*["'](\.[^"']*)["']/g)) {
+      const target = path.posix.normalize(path.posix.join(dir, m[2])) + ".ts";
+      for (const raw of m[1].split(",")) {
+        const name = raw.trim().split(/\s+as\s+/).pop().trim();
+        if (name) varToFile.set(name, target);
+      }
+    }
+    // مفتاحُ التركيب المحلّيّ هو ما يستعمله السجلّ (`cashVariance` لا `treasury.cashVariance`)،
+    // ولذلك نمسح الراوترات المتداخلة كما نمسح البرميل: `cashVarianceRouter` مُركَّبٌ داخل
+    // `treasuryRouter` ولا يظهر في `server/routers.ts` إطلاقاً.
+    for (const m of src.matchAll(/^\s+(\w+)\s*:\s*(\w+)\s*,?\s*$/gm)) {
+      const file = varToFile.get(m[2]);
+      if (file) mounts.push({ parent: rel.split(path.sep).join("/"), child: file, key: m[1] });
+    }
+  }
+
+  // ⭐ **المسارُ الكامل لا المفتاح المحلّيّ**: `salesRouter` مُركَّبٌ مرّتين — مرّةً في الجذر
+  // (`sales`) ومرّةً داخل البطاقات الرقمية (`digitalCards.sales`). فمفتاحٌ محلّيٌّ باسم
+  // `sales` يُطابق الاثنين، وهي عينُ الفضفاضة التي نُغلقها. الجذرُ `server/routers.ts`.
+  const byParent = new Map();
+  for (const m of mounts) {
+    if (!byParent.has(m.parent)) byParent.set(m.parent, []);
+    byParent.get(m.parent).push(m);
+  }
+  const seen = new Set();
+  const descend = (parentRel, prefix) => {
+    if (seen.has(parentRel)) return; // حلقةٌ في التركيب — نقف بدل أن ندور
+    seen.add(parentRel);
+    for (const m of byParent.get(parentRel) ?? []) {
+      const full = prefix ? `${prefix}.${m.key}` : m.key;
+      if (!out.has(m.child)) out.set(m.child, full);
+      descend(m.child, full);
+    }
+    seen.delete(parentRel);
+  };
+  descend("server/routers.ts", "");
+  return out;
+}
+
+/**
+ * أزواجُ (مفتاحُ الراوتر · اسمُ الإجراء) المُسجَّلة في سجلّ القرارات.
+ *
+ * ⭐ **كانت المطابقةُ بالاسم المجرَّد فكانت تكذب** (٣/٩/٢٦): تسجيلُ `"approve"` مرّةً واحدة
+ * يُرضي الحارسَ عن **كلّ** `approve` في **كلّ** راوتر — وهي ثلاثةَ عشرَ موضعاً بقراراتٍ
+ * مختلفة تماماً. فيبلغ `D3` صفرَه بينما إجراءُ قرارٍ جديدٌ باسمٍ عامّ يمرّ بلا إنذار.
+ * ومقياسٌ يبلغ صفرَه بمطابقةٍ فضفاضة **أسوأ من غيابه**: يُعلن نصراً ويُطفئ الانتباه.
+ * والسجلُّ يحمل `procedure: { router, name }` أصلاً — فلا عذرَ للمطابقة المجرَّدة.
+ */
 function loadRegisteredDecisions() {
   const p = path.join(REPO_ROOT, DECISION_REGISTRY_REL);
   if (!existsSync(p)) return new Set();
   const src = stripComments(readFileSync(p, "utf8"));
-  return new Set([...src.matchAll(/["'`](approve|reject|decide)([A-Z]\w*)?["'`]/g)].map(
-    (x) => `${x[1]}${x[2] ?? ""}`,
-  ));
+  // النقطةُ مقبولةٌ في المفتاح: المسارُ الكامل هو ما يُميّز `digitalCards.sales` عن `sales`.
+  const pairRe = /router\s*:\s*["'`]([\w.]+)["'`]\s*,\s*name\s*:\s*["'`](\w+)["'`]/g;
+  return new Set([...src.matchAll(pairRe)].map((x) => `${x[1]}:${x[2]}`));
 }
 
 const AXIS_LABEL = {

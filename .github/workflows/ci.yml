@@ -309,6 +309,10 @@ jobs:
       # على دينٍ قائمٍ لا علاقةَ له به. يُشدَّد إلى `check:friction:strict` في الموجة ٩.
       - name: مقياس الاحتكاك (تقرير — لا يحجب)
         run: pnpm check:friction
+      # سجلّ الأتمتة (§٣ من خطة v2): كلّ انتقالِ حالةٍ يُصرّح AUTO بدليلٍ مُسمّى أو
+      # MANUAL بمبرّرِ حكمٍ بشريّ. ⛔ ولا يدّعي قياسَ جودة النصّ — الطولُ مقياسُ وجودٍ لا جودة.
+      - name: حارِس سجلّ الأتمتة (AUTO بدليل · MANUAL بمبرّر)
+        run: pnpm check:automation-registry
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: اختبار عقود النشر والبناء الآمنة

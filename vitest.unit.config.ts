@@ -272,6 +272,10 @@ export default defineConfig({
       "server/tenancy/__tests__/tenantPoolPolicy.test.ts",
       "shared/attendanceHours.test.ts",
       "shared/hr.test.ts",
+      // برنامج v2 (٣/٩/٢٦) — سجلّاتٌ نقيّة بلا قاعدة بيانات: لا تُشغَّل حتى تُسجَّل هنا.
+      "shared/nextAction.test.ts",
+      "shared/automationRegistry.test.ts",
+      "shared/decisionRegistry.test.ts",
       "server/services/__tests__/attendancePay.test.ts",
       "server/services/__tests__/dayHours.test.ts",
       "scripts/__tests__/auditPayrollReadOnly.test.ts",
