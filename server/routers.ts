@@ -17,6 +17,7 @@ import { digitalCardsRouter } from "./routers/digitalCardsRouter";
 import { giftsRouter } from "./routers/giftsRouter";
 import { branchRouter } from "./routers/branchRouter";
 import { workOrderRouter } from "./routers/workOrderRouter";
+import { refundRailsRouter } from "./routers/refundRailsRouter";
 import { customerRouter } from "./routers/customerRouter";
 import { customerNoteRouter } from "./routers/customerNoteRouter";
 import { arRemindersRouter } from "./routers/arRemindersRouter";
@@ -126,6 +127,10 @@ export const appRouter = router({
   gifts: giftsRouter,
   branches: branchRouter,
   workOrders: workOrderRouter,
+  // <RefundRailPicker> — بوّابةٌ واحدة أمام تمهيدات الردّ المتخصّصة (م٢ ق١٠، ٣/٩/٢٦).
+  // تُلغي «ثمانية سلوكيات في ثمانية مواضع» بتوحيد الاستفتاء: الشاشة تعرف نوع المستند
+  // ومعرّفه، والخادم يفتي بأربعة أسئلة (هل نقد؟ كم؟ من أيّ فرع؟ ما القوائم المتاحة؟).
+  refundRails: refundRailsRouter,
   workOrderDesignApproval: workOrderDesignApprovalRouter,
   customers: customerRouter,
   customerNotes: customerNoteRouter,

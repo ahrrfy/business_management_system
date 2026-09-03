@@ -1,16 +1,16 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1210,
+    "trpcTotal": 1211,
     "byKind": {
       "mutation": 633,
-      "query": 577
+      "query": 578
     },
     "byAuthority": {
       "module-gate": 618,
       "module-map": 379,
       "admin": 67,
-      "none": 52,
+      "none": 53,
       "raw-role": 34,
       "self-assignment": 23,
       "owner": 11,
@@ -21,12 +21,12 @@
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 574,
+      "LOW": 575,
       "MEDIUM": 467,
       "HIGH": 169
     },
     "byModule": {
-      "(none)": 185,
+      "(none)": 186,
       "reports": 100,
       "hr": 100,
       "store": 95,
@@ -69,15 +69,15 @@
       "ADMIN_ONLY": 71,
       "RAW_ROLE_GATE": 44,
       "UNAUTHENTICATED": 37,
-      "READ_WITHOUT_MODULE_GATE": 29,
+      "READ_WITHOUT_MODULE_GATE": 30,
       "WRITE_WITHOUT_MODULE_GATE": 23,
       "HANDLER_ROLE_CHECK": 6
     },
     "expressRoutes": 21,
     "expressMounts": 12,
     "jobs": 25,
-    "routerFiles": 105,
-    "proposedPermissions": 1011,
+    "routerFiles": 106,
+    "proposedPermissions": 1012,
     "proposedDomains": {
       "treasury": 107,
       "hr": 106,
@@ -120,7 +120,8 @@
       "nativepush": 3,
       "audit": 2,
       "digitalcards/subscriptions": 1,
-      "search": 1
+      "search": 1,
+      "refundrails": 1
     }
   },
   "endpoints": [
@@ -173,7 +174,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:122"
+      "loc": "server/routers/announcementsRouter.ts:137"
     },
     {
       "surface": "trpc",
@@ -190,7 +191,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:50"
+      "loc": "server/routers/announcementsRouter.ts:65"
     },
     {
       "surface": "trpc",
@@ -207,7 +208,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/announcementsRouter.ts:90"
+      "loc": "server/routers/announcementsRouter.ts:105"
     },
     {
       "surface": "trpc",
@@ -224,7 +225,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/announcementsRouter.ts:86"
+      "loc": "server/routers/announcementsRouter.ts:101"
     },
     {
       "surface": "trpc",
@@ -241,7 +242,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:117"
+      "loc": "server/routers/announcementsRouter.ts:132"
     },
     {
       "surface": "trpc",
@@ -258,7 +259,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:111"
+      "loc": "server/routers/announcementsRouter.ts:126"
     },
     {
       "surface": "trpc",
@@ -275,7 +276,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:96"
+      "loc": "server/routers/announcementsRouter.ts:111"
     },
     {
       "surface": "trpc",
@@ -2077,7 +2078,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/catalogAnomaliesRouter.ts:275"
+      "loc": "server/routers/catalogAnomaliesRouter.ts:265"
     },
     {
       "surface": "trpc",
@@ -14015,6 +14016,23 @@
     },
     {
       "surface": "trpc",
+      "router": "refundRailsRouter",
+      "proposedPermission": "refundrails.refund_rail.preflight",
+      "name": "preflight",
+      "kind": "query",
+      "procedure": "protectedProcedure",
+      "authority": "none",
+      "module": "",
+      "level": "",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "READ_WITHOUT_MODULE_GATE",
+      "loc": "server/routers/refundRailsRouter.ts:25"
+    },
+    {
+      "surface": "trpc",
       "router": "reportsRouter",
       "proposedPermission": "reports.report.abc_analysis",
       "name": "abcAnalysis",
@@ -20921,7 +20939,7 @@
       "method": "GET",
       "path": "/healthz",
       "file": "server/index.ts",
-      "line": 410,
+      "line": 415,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -20932,7 +20950,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 428,
+      "line": 433,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -20943,7 +20961,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 585,
+      "line": 590,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -20954,7 +20972,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 593,
+      "line": 598,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -20965,7 +20983,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 613,
+      "line": 618,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -20976,7 +20994,7 @@
       "method": "MOUNT",
       "path": "/api/print",
       "file": "server/index.ts",
-      "line": 628,
+      "line": 633,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -20987,7 +21005,7 @@
       "method": "MOUNT",
       "path": "/api/img",
       "file": "server/index.ts",
-      "line": 634,
+      "line": 639,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -20998,7 +21016,7 @@
       "method": "MOUNT",
       "path": "/api/backups",
       "file": "server/index.ts",
-      "line": 651,
+      "line": 656,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -21009,7 +21027,7 @@
       "method": "MOUNT",
       "path": "/api/wa/media",
       "file": "server/index.ts",
-      "line": 655,
+      "line": 660,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -21020,7 +21038,7 @@
       "method": "MOUNT",
       "path": "/api/hr/applicant-cv",
       "file": "server/index.ts",
-      "line": 659,
+      "line": 664,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -21031,7 +21049,7 @@
       "method": "MOUNT",
       "path": "/api/studio",
       "file": "server/index.ts",
-      "line": 664,
+      "line": 669,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -21042,7 +21060,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks",
       "file": "server/index.ts",
-      "line": 688,
+      "line": 693,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -21053,7 +21071,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks/company/:companyCode",
       "file": "server/index.ts",
-      "line": 689,
+      "line": 694,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -21074,7 +21092,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 802
+      "line": 807
     },
     {
       "kind": "interval",
