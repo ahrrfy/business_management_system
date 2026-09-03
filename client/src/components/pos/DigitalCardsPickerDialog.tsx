@@ -1,924 +1,176 @@
-// نافذة «الكروت والاشتراكات» داخل نقطة البيع (ش٥).
-// تعرض السعر فقط — الخادم لا يرسل تكلفةً ولا هامشاً ولا رصيد محفظة أصلاً (posCards.ts).
-// الضغط على بطاقة يؤكّد سعرها من الخادم ثم يضيف **مثيلاً مستقلاً** للسلة بمفتاح سطر خاص،
-// لأن بيع كرتين من الفئة نفسها يحتاج مرجعَي تنفيذ منفصلين (§٨.٣).
+// سلة مزوّد واحدة؛ مرجع واحد مع بقاء كل بطاقة مثيلاً مستقلاً.
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { D, fmtAr, moneyInput } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { digitalSaleReferenceLabel, normalizeDigitalSaleReference } from "@shared/digitalSale";
-import { CreditCard, GraduationCap, Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  StudentDetailsDialog,
-  type StudentSnapshot,
-  type SubscriptionSaleCapture,
-} from "./StudentDetailsDialog";
+import { ACTION_LABELS } from "@shared/actionLabels";
+import { digitalOfferingDescription, normalizeDigitalSaleReference } from "@shared/digitalSale";
+import { CreditCard, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { StudentDetailsDialog, type StudentSnapshot } from "./StudentDetailsDialog";
 
 export type PosCard = RouterOutputs["digitalCards"]["pos"]["listCards"][number];
 export type ConfirmedCard = RouterOutputs["digitalCards"]["pos"]["confirmCard"];
-export type DigitalSaleCapture = { providerReference: string; student?: StudentSnapshot };
-
+export type DigitalBasketCapture = {
+  providerBasketKey: string;
+  providerReference: string;
+  lines: { card: ConfirmedCard; student?: StudentSnapshot }[];
+};
+type DraftLine = { key: string; card: PosCard; quantity: number; student?: StudentSnapshot };
 const C = {
-  bg: "var(--pos-bg)",
-  card: "var(--pos-card)",
-  border: "var(--pos-border)",
-  muted: "var(--pos-muted)",
-  mutedFg: "var(--pos-muted-fg)",
-  fg: "var(--pos-fg)",
-  primary: "var(--pos-primary)",
-  primaryFg: "var(--pos-primary-fg)",
-  primarySoft: "var(--pos-primary-soft)",
-  amber: "var(--pos-amber)",
-  amberSoft: "var(--pos-amber-soft)",
-  danger: "var(--pos-danger)",
-  overlay: "var(--pos-overlay)",
+  bg: "var(--pos-bg)", card: "var(--pos-card)", border: "var(--pos-border)",
+  muted: "var(--pos-muted)", mutedFg: "var(--pos-muted-fg)", fg: "var(--pos-fg)",
+  primary: "var(--pos-primary)", primaryFg: "var(--pos-primary-fg)", overlay: "var(--pos-overlay)",
 } as const;
+const field: CSSProperties = { minHeight: 42, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px 10px", background: C.card, color: C.fg, fontFamily: "inherit" };
+const button: CSSProperties = { ...field, cursor: "pointer", fontWeight: 700 };
+const primary: CSSProperties = { ...button, background: C.primary, color: C.primaryFg, borderColor: C.primary };
+const cell: CSSProperties = { padding: "8px 10px", borderBottom: `1px solid ${C.border}`, textAlign: "start" };
 
-type Category = "FAVORITES" | "TELECOM" | "GLOBAL" | "EDUCATIONAL" | "ALL";
-
-const TABS: { key: Category; label: string }[] = [
-  { key: "FAVORITES", label: "الأكثر استخداماً" },
-  { key: "TELECOM", label: "اتصالات" },
-  { key: "GLOBAL", label: "عالمية" },
-  { key: "EDUCATIONAL", label: "تعليمية" },
-  { key: "ALL", label: "الكل" },
-];
-
-const fmt = (n: number) =>
-  n.toLocaleString("en-US", { maximumFractionDigits: 0 });
-
-export function DigitalCardsPickerDialog({
-  open,
-  branchId,
-  offline,
-  onClose,
-  onPick,
-  existingReferences = [],
-}: {
-  open: boolean;
-  branchId: number;
-  /** أثناء الانقطاع لا بيع رقميّ إطلاقاً — الشبكة والأسعار تأتيان من الخادم حصراً. */
-  offline: boolean;
-  onClose: () => void;
-  onPick: (card: ConfirmedCard, capture: DigitalSaleCapture) => void;
+export function DigitalCardsPickerDialog({ open, branchId, offline, onClose, onPickBasket, existingReferences = [], existingCardCount = 0 }: {
+  open: boolean; branchId: number; offline: boolean; onClose: () => void;
+  onPickBasket: (basket: DigitalBasketCapture) => void;
   existingReferences?: { providerId: number; providerReference: string }[];
+  existingCardCount?: number;
 }) {
-  // لا نبدأ بـ«الأكثر استخداماً»: فهو يعرض العروض الموسومة كمفضلة فقط،
-  // فيجعل الكروت/الاشتراكات المفعّلة ذات السعر المنشور تبدو مختفية للكاشير.
-  // تبويب المفضلة يبقى اختصاراً اختيارياً بعد أن تظهر كل العروض المتاحة أولاً.
-  const [category, setCategory] = useState<Category>("ALL");
   const [providerId, setProviderId] = useState<number | null>(null);
-  const [q, setQ] = useState("");
-  const [debouncedQ, setDebouncedQ] = useState("");
-  const [confirming, setConfirming] = useState<PosCard | null>(null);
+  const [search, setSearch] = useState("");
+  const [draft, setDraft] = useState<DraftLine[]>([]);
   const [providerReference, setProviderReference] = useState("");
-  /** الكرت المؤكَّد سعره والمنتظِر بيانات الطالب (اشتراك تعليميّ) — §٨.٣. */
-  const [awaitingStudent, setAwaitingStudent] = useState<ConfirmedCard | null>(
-    null,
-  );
-  const searchRef = useRef<HTMLInputElement>(null);
-  // لا يكفي إغلاق النافذة بصرياً: طلب تأكيد السعر قد يكون ما زال في الطريق.
-  // كل إلغاء يزيد هذا العداد كي لا تضيف استجابة متأخرة بطاقةً إلى السلة.
-  const pickRequestRef = useRef(0);
-
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedQ(q), 200);
-    return () => clearTimeout(t);
-  }, [q]);
-
-  useEffect(() => {
-    if (open) {
-      setCategory("ALL");
-      setProviderId(null);
-      setQ("");
-      setDebouncedQ("");
-      setConfirming(null);
-      setProviderReference("");
-      setAwaitingStudent(null);
-      setReporting(null);
-      setReportShare("");
-      setReportNotes("");
-      setTimeout(() => searchRef.current?.focus(), 40);
-    }
-  }, [open]);
-
-  const list = trpc.digitalCards.pos.listCards.useQuery(
-    {
-      branchId,
-      category,
-      providerId: providerId ?? undefined,
-      q: debouncedQ || undefined,
-    },
-    {
-      enabled: open && !offline,
-      staleTime: 0,
-      refetchOnMount: "always",
-      refetchOnWindowFocus: true,
-    },
-  );
-
-  const utils = trpc.useUtils();
+  const [awaitingStudent, setAwaitingStudent] = useState<PosCard | null>(null);
   const [picking, setPicking] = useState(false);
-
-  // بلاغ «سعر الجهاز مختلف» (§٧.٥): الكاشير يرى شاشة جهاز المزوّد فيلاحظ تغيّر الحصة قبل المدير.
-  // البلاغ **لا يغيّر سعراً** — يفتح قراراً لدى المدير في تبويب «أسعار اليوم».
   const [reporting, setReporting] = useState<PosCard | null>(null);
   const [reportShare, setReportShare] = useState("");
   const [reportNotes, setReportNotes] = useState("");
-  const reportMut = trpc.digitalCards.pricing.reportMismatch.useMutation({
-    onSuccess: () => {
-      setReporting(null);
-      setReportShare("");
-      setReportNotes("");
-      notify.ok(
-        "أُرسل البلاغ للمدير",
-        "السعر الحاليّ لم يتغيّر — البيع يستمرّ به حتى يُعتمد.",
-      );
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  const cards = list.data ?? [];
-  // قائمة المزوّدين تُبنى من نتيجة «كل المزوّدين» كي لا تختفي الأزرار بمجرّد التصفية بأحدهم.
-  const allForBranch = trpc.digitalCards.pos.listCards.useQuery(
-    { branchId, category: "ALL" },
-    {
-      enabled: open && !offline,
-      staleTime: 0,
-      refetchOnMount: "always",
-      refetchOnWindowFocus: true,
-    },
-  );
+  // الإغلاق وتبديل الفرع والانقطاع تُبطل الرد المتأخر؛ لا إضافة جزئية.
+  const requestRef = useRef(0);
+  const busyRef = useRef(false);
+  const utils = trpc.useUtils();
+  useEffect(() => {
+    requestRef.current += 1; busyRef.current = false; setPicking(false);
+    if (open) {
+      setProviderId(null); setSearch(""); setDraft([]); setProviderReference("");
+      setAwaitingStudent(null); setReporting(null); setReportShare(""); setReportNotes("");
+    }
+    return () => { requestRef.current += 1; };
+  }, [open, branchId]);
+  useEffect(() => {
+    if (offline) { requestRef.current += 1; busyRef.current = false; setPicking(false); setAwaitingStudent(null); }
+  }, [offline]);
+  const list = trpc.digitalCards.pos.listCards.useQuery({ branchId, category: "ALL" },
+    { enabled: open && !offline, staleTime: 0, refetchOnMount: "always", refetchOnWindowFocus: true });
   const providers = useMemo(() => {
     const seen = new Map<number, string>();
-    for (const c of allForBranch.data ?? [])
-      seen.set(c.providerId, c.providerName);
+    for (const card of list.data ?? []) seen.set(card.providerId, card.providerName);
     return Array.from(seen, ([id, name]) => ({ id, name }));
-  }, [allForBranch.data]);
-
-  function cancelConfirm() {
-    pickRequestRef.current += 1;
-    setPicking(false);
-    setConfirming(null);
-    setProviderReference("");
+  }, [list.data]);
+  const cards = (list.data ?? []).filter((card) => card.providerId === providerId && card.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  const quantity = draft.reduce((n, line) => n + line.quantity, 0);
+  const total = draft.reduce((sum, line) => sum.plus(D(line.card.sellPrice ?? 0).times(line.quantity)), D(0));
+  const reportMut = trpc.digitalCards.pricing.reportMismatch.useMutation({
+    onSuccess: () => { setReporting(null); notify.ok("أُرسل البلاغ للمدير", "السعر الحاليّ لم يتغيّر حتى يُعتمد."); },
+    onError: (error) => notify.err(error),
+  });
+  function close() {
+    requestRef.current += 1; busyRef.current = false; setPicking(false); setAwaitingStudent(null); onClose();
   }
-
-  function dismissPicker() {
-    cancelConfirm();
-    setAwaitingStudent(null);
-    onClose();
+  function add(card: PosCard, student?: StudentSnapshot) {
+    if (busyRef.current || offline || quantity + existingCardCount >= 50 || card.providerId !== providerId || card.availability !== "READY") return;
+    if (card.requiresStudentData && !student) { setAwaitingStudent(card); return; }
+    setDraft((previous) => {
+      if (previous.reduce((count, line) => count + line.quantity, existingCardCount) >= 50) return previous;
+      const existing = !student && previous.find((line) => line.card.offeringId === card.offeringId && !line.student);
+      return existing ? previous.map((line) => line.key === existing.key ? { ...line, quantity: line.quantity + 1 } : line)
+        : [...previous, { key: crypto.randomUUID(), card, quantity: 1, student }];
+    });
   }
-
-  async function validateReference(card: Pick<PosCard, "offeringId" | "providerId" | "offeringType">, raw: string): Promise<string | null> {
-    const normalized = normalizeDigitalSaleReference(raw);
-    if (!normalized) {
-      notify.err(`${digitalSaleReferenceLabel(card.offeringType)} مطلوب قبل الإضافة للسلة`);
-      return null;
-    }
-    if (existingReferences.some((r) => r.providerId === card.providerId && normalizeDigitalSaleReference(r.providerReference).toLocaleLowerCase("en") === normalized.toLocaleLowerCase("en"))) {
-      notify.err("هذا الرقم موجود في السلة للمزوّد نفسه");
-      return null;
-    }
+  async function addBasket() {
+    if (busyRef.current || offline || !draft.length || providerId == null) return;
+    const reference = normalizeDigitalSaleReference(providerReference);
+    if (!reference) return notify.err("رقم عملية المزوّد مطلوب قبل إضافة السلة");
+    if (existingReferences.some((r) => r.providerId === providerId && normalizeDigitalSaleReference(r.providerReference).toLocaleLowerCase("en") === reference.toLocaleLowerCase("en"))) return notify.err("رقم العملية موجود في سلة أخرى للمزوّد نفسه");
+    busyRef.current = true; setPicking(true);
+    const request = ++requestRef.current;
     try {
-      const checked = await utils.client.digitalCards.pos.validateReference.query({
-        branchId,
-        offeringId: card.offeringId,
-        providerReference: normalized,
-      });
-      return checked.providerReference;
-    } catch (e) {
-      notify.err(e);
-      return null;
-    }
-  }
-
-  async function confirmAndAdd(card: PosCard) {
-    if (picking) return;
-    const requestId = ++pickRequestRef.current;
-    setPicking(true);
-    try {
-      // السعر يُعاد تأكيده من الخادم لحظة الإضافة — لا نثق بما عُرض قبل ثوانٍ.
-      const fresh = await utils.client.digitalCards.pos.confirmCard.query({
-        branchId,
-        offeringId: card.offeringId,
-      });
-      // أُلغيت النافذة أو عملية التأكيد أثناء انتظار الخادم؛ لا تغيّر السلة بعدها.
-      if (requestId !== pickRequestRef.current) return;
-      if (fresh.requiresStudentData) {
-        // تأكيد السعر ثم بيانات الطالب ثم الإضافة (لا يُضاف سطرٌ تعليميّ بلا بياناته).
-        setConfirming(null);
-        setAwaitingStudent(fresh);
-        return;
+      const fresh = new Map<number, ConfirmedCard>();
+      for (const line of draft) {
+        if (!fresh.has(line.card.offeringId)) fresh.set(line.card.offeringId, await utils.client.digitalCards.pos.confirmCard.query({ branchId, offeringId: line.card.offeringId }));
+        if (request !== requestRef.current) return;
       }
-      const checkedReference = await validateReference(fresh, providerReference);
-      if (!checkedReference || requestId !== pickRequestRef.current) return;
-      onPick(fresh, { providerReference: checkedReference });
-      setConfirming(null);
-      setProviderReference("");
-      onClose();
-    } catch (e) {
-      if (requestId === pickRequestRef.current) notify.err(e);
-    } finally {
-      if (requestId === pickRequestRef.current) setPicking(false);
-    }
+      if (draft.some((line) => !D(line.card.sellPrice ?? 0).eq(fresh.get(line.card.offeringId)!.sellPrice))) {
+        setDraft((previous) => previous.map((line) => ({ ...line, card: fresh.get(line.card.offeringId)! })));
+        notify.warn("تغيّرت أسعار بعض البطاقات", "راجِع الأسعار والإجمالي المحدّثين ثم أضف السلة مجدداً."); return;
+      }
+      if (draft.some((line) => fresh.get(line.card.offeringId)!.providerId !== providerId || (fresh.get(line.card.offeringId)!.requiresStudentData && !line.student))) {
+        notify.err("تغيّرت بيانات البطاقة؛ احذفها من السلة وأعد إضافتها ببياناتها الحالية."); return;
+      }
+      const checked = await utils.client.digitalCards.pos.validateReference.query({ branchId, offeringId: draft[0].card.offeringId, providerReference: reference });
+      if (request !== requestRef.current) return;
+      onPickBasket({ providerBasketKey: crypto.randomUUID(), providerReference: checked.providerReference,
+        lines: draft.flatMap((line) => Array.from({ length: line.quantity }, () => ({ card: fresh.get(line.card.offeringId)!, student: line.student }))) });
+      close();
+    } catch (error) { if (request === requestRef.current) notify.err(error); }
+    finally { if (request === requestRef.current) { busyRef.current = false; setPicking(false); } }
   }
-
   if (!open) return null;
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="الكروت والاشتراكات"
-      onKeyDownCapture={(e) => {
-        if (!["F2", "F3", "F4", "F9", "F12"].includes(e.key)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        e.nativeEvent.stopImmediatePropagation();
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !confirming && !reporting)
-          dismissPicker();
-      }}
-      onKeyDown={(e) => {
-        if (e.key !== "Escape") return;
-        e.stopPropagation();
-        if (reporting) setReporting(null);
-        else if (confirming) cancelConfirm();
-        else dismissPicker();
-      }}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: C.overlay,
-        zIndex: 60,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: "min(1100px, 100%)",
-          maxHeight: "min(88vh, 900px)",
-          background: C.bg,
-          border: `1px solid ${C.border}`,
-          borderRadius: 14,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          boxShadow: "0 24px 64px rgba(0,0,0,.35)",
-        }}
-      >
-        {/* الرأس */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            padding: "12px 16px",
-            borderBottom: `1px solid ${C.border}`,
-            background: C.card,
-          }}
-        >
-          <CreditCard aria-hidden size={20} color={C.primary} />
-          <span style={{ fontWeight: 800, fontSize: 17, color: C.fg }}>
-            الكروت والاشتراكات
-          </span>
-          <div style={{ flex: 1 }} />
-          <button
-            onClick={dismissPicker}
-            aria-label="إغلاق"
-            style={{
-              width: 40,
-              height: 40,
-              border: "none",
-              background: "none",
-              cursor: "pointer",
-              color: C.mutedFg,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <X aria-hidden size={20} />
-          </button>
-        </div>
-
-        {offline ? (
-          <div
-            style={{
-              padding: 40,
-              textAlign: "center",
-              color: C.mutedFg,
-              fontSize: 15,
-            }}
-          >
-            البيع الرقميّ يحتاج اتصالاً بالخادم — السعر والتنفيذ لا يُعملان دون
-            اتصال.
-          </div>
-        ) : (
-          <>
-            {/* البحث + التبويبات + مرشّح المزوّد */}
-            <div
-              style={{
-                padding: "10px 16px",
-                display: "flex",
-                flexDirection: "column",
-                gap: 10,
-                borderBottom: `1px solid ${C.border}`,
-              }}
-            >
-              <div style={{ position: "relative" }}>
-                <Search
-                  aria-hidden
-                  size={17}
-                  style={{
-                    position: "absolute",
-                    insetInlineStart: 12,
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    color: C.mutedFg,
-                  }}
-                />
-                <input
-                  ref={searchRef}
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder="ابحث باسم الكرت أو المزوّد…"
-                  aria-label="بحث في الكروت"
-                  style={{
-                    width: "100%",
-                    height: 44,
-                    paddingInlineStart: 38,
-                    paddingInlineEnd: 12,
-                    border: `1.5px solid ${C.border}`,
-                    borderRadius: 10,
-                    background: C.card,
-                    color: C.fg,
-                    fontSize: 15,
-                    fontFamily: "inherit",
-                  }}
-                />
-              </div>
-
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {TABS.map((t) => (
-                  <button
-                    key={t.key}
-                    onClick={() => setCategory(t.key)}
-                    style={{
-                      height: 38,
-                      padding: "0 14px",
-                      borderRadius: 9,
-                      cursor: "pointer",
-                      fontFamily: "inherit",
-                      fontSize: 14,
-                      fontWeight: 700,
-                      border: `1.5px solid ${category === t.key ? C.primary : C.border}`,
-                      background: category === t.key ? C.primary : C.card,
-                      color: category === t.key ? C.primaryFg : C.fg,
-                    }}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-
-              {providers.length > 1 && (
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 6,
-                    flexWrap: "wrap",
-                    alignItems: "center",
-                  }}
-                >
-                  <span style={{ fontSize: 12.5, color: C.mutedFg }}>
-                    المزوّد:
-                  </span>
-                  <button
-                    onClick={() => setProviderId(null)}
-                    style={{
-                      height: 32,
-                      padding: "0 12px",
-                      borderRadius: 8,
-                      cursor: "pointer",
-                      fontFamily: "inherit",
-                      fontSize: 13,
-                      border: `1px solid ${providerId == null ? C.primary : C.border}`,
-                      background: providerId == null ? C.primarySoft : C.card,
-                      color: C.fg,
-                    }}
-                  >
-                    الكل
-                  </button>
-                  {providers.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() =>
-                        setProviderId(providerId === p.id ? null : p.id)
-                      }
-                      style={{
-                        height: 32,
-                        padding: "0 12px",
-                        borderRadius: 8,
-                        cursor: "pointer",
-                        fontFamily: "inherit",
-                        fontSize: 13,
-                        border: `1px solid ${providerId === p.id ? C.primary : C.border}`,
-                        background:
-                          providerId === p.id ? C.primarySoft : C.card,
-                        color: C.fg,
-                      }}
-                    >
-                      {p.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* الشبكة */}
-            <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
-              {list.isLoading && (
-                <div
-                  style={{ textAlign: "center", color: C.mutedFg, padding: 30 }}
-                >
-                  جارٍ التحميل…
-                </div>
-              )}
-              {list.isError && (
-                <div
-                  role="alert"
-                  style={{
-                    textAlign: "center",
-                    color: C.danger,
-                    padding: 30,
-                    fontSize: 14.5,
-                  }}
-                >
-                  <div>
-                    تعذّر تحميل الكروت والاشتراكات. تحقّق من الاتصال وصلاحية
-                    المستخدم ثم أعد المحاولة.
-                  </div>
-                  <button
-                    onClick={() => {
-                      void list.refetch();
-                      void allForBranch.refetch();
-                    }}
-                    disabled={list.isFetching}
-                    style={{
-                      marginTop: 12,
-                      height: 38,
-                      padding: "0 14px",
-                      borderRadius: 8,
-                      border: `1px solid ${C.danger}`,
-                      background: C.card,
-                      color: C.danger,
-                      cursor: list.isFetching ? "not-allowed" : "pointer",
-                      fontFamily: "inherit",
-                      fontWeight: 700,
-                    }}
-                  >
-                    إعادة المحاولة
-                  </button>
-                </div>
-              )}
-              {!list.isLoading && !list.isError && cards.length === 0 && (
-                <div
-                  style={{
-                    textAlign: "center",
-                    color: C.mutedFg,
-                    padding: 30,
-                    fontSize: 14.5,
-                  }}
-                >
-                  {debouncedQ
-                    ? "لا نتائج مطابقة."
-                    : "لا بطاقات متاحة في هذا القسم لهذا الفرع."}
-                </div>
-              )}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))",
-                  gap: 12,
-                }}
-              >
-                {cards.map((card) => {
-                  const ready = card.availability === "READY";
-                  return (
-                    <button
-                      key={card.offeringId}
-                      onClick={() => {
-                        if (!ready) return;
-                        setProviderReference("");
-                        setConfirming(card);
-                      }}
-                      disabled={!ready}
-                      style={{
-                        textAlign: "start",
-                        padding: 12,
-                        borderRadius: 12,
-                        fontFamily: "inherit",
-                        border: `1.5px solid ${ready ? C.border : C.amber}`,
-                        background: ready ? C.card : C.amberSoft,
-                        cursor: ready ? "pointer" : "not-allowed",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 6,
-                        minHeight: 118,
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                        }}
-                      >
-                        {card.offeringType === "EDUCATIONAL_SUBSCRIPTION" && (
-                          <GraduationCap
-                            aria-hidden
-                            size={15}
-                            color={C.primary}
-                          />
-                        )}
-                        <span
-                          style={{
-                            fontSize: 11.5,
-                            color: C.mutedFg,
-                            fontWeight: 600,
-                          }}
-                        >
-                          {card.providerName}
-                        </span>
-                      </div>
-                      <span
-                        style={{
-                          fontSize: 15,
-                          fontWeight: 800,
-                          color: C.fg,
-                          lineHeight: 1.3,
-                        }}
-                      >
-                        {card.name}
-                      </span>
-                      <div style={{ flex: 1 }} />
-                      {ready ? (
-                        <span
-                          style={{
-                            fontSize: 20,
-                            fontWeight: 900,
-                            color: C.fg,
-                            direction: "ltr",
-                          }}
-                        >
-                          {fmt(Number(card.sellPrice))}
-                        </span>
-                      ) : (
-                        <span
-                          style={{
-                            fontSize: 12.5,
-                            fontWeight: 800,
-                            color: "#241900",
-                            background: C.amber,
-                            borderRadius: 6,
-                            padding: "3px 8px",
-                            alignSelf: "flex-start",
-                          }}
-                        >
-                          {card.availability === "NO_PRICE"
-                            ? "لا سعر منشور"
-                            : "السعر يحتاج تحديثاً"}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* تأكيد السعر */}
-      {confirming && (
-        <div
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: C.overlay,
-            zIndex: 61,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-          }}
-        >
-          <div
-            style={{
-              width: "min(400px, 100%)",
-              background: C.bg,
-              border: `1px solid ${C.border}`,
-              borderRadius: 14,
-              padding: 20,
-              display: "flex",
-              flexDirection: "column",
-              gap: 14,
-            }}
-          >
-            <span style={{ fontSize: 16, fontWeight: 800, color: C.fg }}>
-              تأكيد إضافة الكرت
-            </span>
-            <div
-              style={{
-                background: C.muted,
-                borderRadius: 10,
-                padding: 14,
-                display: "flex",
-                flexDirection: "column",
-                gap: 6,
-              }}
-            >
-              <span style={{ fontSize: 15, fontWeight: 700, color: C.fg }}>
-                {confirming.name}
-              </span>
-              <span style={{ fontSize: 12.5, color: C.mutedFg }}>
-                {confirming.providerName}
-              </span>
-              <span
-                style={{
-                  fontSize: 26,
-                  fontWeight: 900,
-                  color: C.fg,
-                  direction: "ltr",
-                }}
-              >
-                {fmt(Number(confirming.sellPrice))}{" "}
-                <span
-                  style={{ fontSize: 13, fontWeight: 600, color: C.mutedFg }}
-                >
-                  د.ع
-                </span>
-              </span>
-            </div>
-            {confirming.requiresStudentData && (
-              <span style={{ fontSize: 12.5, color: C.mutedFg }}>
-                ستدخل رقم الاشتراك واسم الطالب وهاتفه في خطوة واحدة بسيطة.
-              </span>
-            )}
-            {!confirming.requiresStudentData && (
-              <label style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 13, fontWeight: 800, color: C.fg }}>
-                {digitalSaleReferenceLabel(confirming.offeringType)}
-                <input
-                  value={providerReference}
-                  onChange={(e) => setProviderReference(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void confirmAndAdd(confirming); } }}
-                  maxLength={120}
-                  placeholder="امسح الرقم أو اكتبه"
-                  dir="ltr"
-                  autoFocus
-                  style={{ height: 48, padding: "0 12px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.card, color: C.fg, fontSize: 16, fontWeight: 800, fontFamily: "inherit", outline: "none" }}
-                />
-                <span style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 500 }}>
-                  يُحفظ للمطابقة مع تقرير جهاز المزوّد؛ لا يوجد تحقق خارجي.
-                </span>
-              </label>
-            )}
-            <button
-              onClick={() => {
-                setReporting(confirming);
-                setConfirming(null);
-              }}
-              style={{
-                alignSelf: "flex-start",
-                border: "none",
-                background: "none",
-                padding: 0,
-                cursor: "pointer",
-                fontFamily: "inherit",
-                fontSize: 12.5,
-                fontWeight: 700,
-                color: C.primary,
-                textDecoration: "underline",
-              }}
-            >
-              سعر الجهاز مختلف؟ أبلِغ المدير
-            </button>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={cancelConfirm}
-                style={{
-                  flex: 1,
-                  height: 46,
-                  borderRadius: 10,
-                  border: `1.5px solid ${C.border}`,
-                  background: C.card,
-                  color: C.fg,
-                  fontFamily: "inherit",
-                  fontSize: 15,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                إلغاء
-              </button>
-              <button
-                autoFocus
-                onClick={() => void confirmAndAdd(confirming)}
-                disabled={picking}
-                style={{
-                  flex: 1,
-                  height: 46,
-                  borderRadius: 10,
-                  border: "none",
-                  background: picking ? C.muted : C.primary,
-                  color: picking ? C.mutedFg : C.primaryFg,
-                  fontFamily: "inherit",
-                  fontSize: 15,
-                  fontWeight: 800,
-                  cursor: picking ? "not-allowed" : "pointer",
-                }}
-              >
-                {picking ? "جارٍ الحفظ…" : confirming.requiresStudentData ? "متابعة" : "حفظ وإضافة للسلة"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* بلاغ تغيّر سعر المزوّد — يفتح قراراً لدى المدير ولا يمسّ السعر النافذ. */}
-      {reporting && (
-        <div
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: C.overlay,
-            zIndex: 61,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-          }}
-        >
-          <div
-            style={{
-              width: "min(420px, 100%)",
-              background: C.bg,
-              border: `1px solid ${C.border}`,
-              borderRadius: 14,
-              padding: 20,
-              display: "flex",
-              flexDirection: "column",
-              gap: 14,
-            }}
-          >
-            <span style={{ fontSize: 16, fontWeight: 800, color: C.fg }}>
-              بلاغ تغيّر سعر المزوّد
-            </span>
-            <span style={{ fontSize: 13, color: C.mutedFg, lineHeight: 1.6 }}>
-              {reporting.name} — أدخِل المبلغ الذي يخصمه{" "}
-              <strong>جهاز المزوّد</strong> فعلاً الآن. البلاغ لا يغيّر سعر
-              البيع؛ يراه المدير في «أسعار اليوم» فيعتمده أو يرفضه.
-            </span>
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              <label
-                style={{ fontSize: 13, fontWeight: 700, color: C.fg }}
-                htmlFor="dc-report-share"
-              >
-                حصة المزوّد على الجهاز
-              </label>
-              <input
-                id="dc-report-share"
-                value={reportShare}
-                onChange={(e) =>
-                  setReportShare(e.target.value.replace(/[^\d.]/g, ""))
-                }
-                inputMode="decimal"
-                dir="ltr"
-                autoFocus
-                style={{
-                  width: "100%",
-                  height: 46,
-                  padding: "0 12px",
-                  borderRadius: 10,
-                  border: `1.5px solid ${C.border}`,
-                  background: C.card,
-                  color: C.fg,
-                  fontSize: 16,
-                  fontFamily: "inherit",
-                  outline: "none",
-                }}
-              />
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              <label
-                style={{ fontSize: 13, fontWeight: 700, color: C.fg }}
-                htmlFor="dc-report-notes"
-              >
-                ملاحظة (اختياري)
-              </label>
-              <input
-                id="dc-report-notes"
-                value={reportNotes}
-                onChange={(e) => setReportNotes(e.target.value)}
-                dir="auto"
-                style={{
-                  width: "100%",
-                  height: 46,
-                  padding: "0 12px",
-                  borderRadius: 10,
-                  border: `1.5px solid ${C.border}`,
-                  background: C.card,
-                  color: C.fg,
-                  fontSize: 15,
-                  fontFamily: "inherit",
-                  outline: "none",
-                }}
-              />
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={() => {
-                  setReporting(null);
-                  setReportShare("");
-                  setReportNotes("");
-                }}
-                style={{
-                  flex: 1,
-                  height: 46,
-                  borderRadius: 10,
-                  border: `1.5px solid ${C.border}`,
-                  background: C.card,
-                  color: C.fg,
-                  fontFamily: "inherit",
-                  fontSize: 15,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                إلغاء
-              </button>
-              <button
-                disabled={reportMut.isPending}
-                onClick={() => {
-                  if (!reporting) return;
-                  if (!reportShare || Number(reportShare) <= 0)
-                    return notify.err("أدخِل المبلغ الظاهر على الجهاز");
-                  reportMut.mutate({
-                    branchId,
-                    offeringId: reporting.offeringId,
-                    reportedProviderShare: reportShare,
-                    notes: reportNotes.trim() || null,
-                  });
-                }}
-                style={{
-                  flex: 1,
-                  height: 46,
-                  borderRadius: 10,
-                  border: "none",
-                  background: reportMut.isPending ? C.muted : C.primary,
-                  color: reportMut.isPending ? C.mutedFg : C.primaryFg,
-                  fontFamily: "inherit",
-                  fontSize: 15,
-                  fontWeight: 800,
-                  cursor: reportMut.isPending ? "not-allowed" : "pointer",
-                }}
-              >
-                {reportMut.isPending ? "جارٍ الإرسال…" : "إرسال البلاغ"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* بيانات الطالب للاشتراك التعليميّ — لا كتابة في القاعدة، لقطةٌ تُحمَل في سطر السلة (ش٦). */}
-      <StudentDetailsDialog
-        open={awaitingStudent != null}
-        cardName={awaitingStudent?.name ?? ""}
-        onCancel={() => setAwaitingStudent(null)}
-        onConfirm={(capture: SubscriptionSaleCapture) => {
-          if (!awaitingStudent) return;
-          void (async () => {
-            if (picking) return;
-            setPicking(true);
-            try {
-              const checkedReference = await validateReference(awaitingStudent, capture.providerReference);
-              if (!checkedReference) return;
-              onPick(awaitingStudent, { providerReference: checkedReference, student: capture.student });
-              setAwaitingStudent(null);
-              onClose();
-            } finally {
-              setPicking(false);
-            }
-          })();
-        }}
-      />
+  return <div role="dialog" aria-modal="true" aria-label="الكروت والاشتراكات" dir="rtl"
+    onKeyDownCapture={(event) => { if (["F2", "F3", "F4", "F9", "F12"].includes(event.key)) { event.preventDefault(); event.stopPropagation(); event.nativeEvent.stopImmediatePropagation(); } }}
+    onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); if (reporting) setReporting(null); else if (awaitingStudent) setAwaitingStudent(null); else close(); } }}
+    style={{ position: "fixed", inset: 0, zIndex: 60, background: C.overlay, display: "grid", placeItems: "center", padding: 16 }}>
+    <div style={{ width: "min(1100px, 100%)", maxHeight: "92vh", overflowY: "auto", background: C.bg, color: C.fg, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+      <header style={{ display: "flex", alignItems: "center", gap: 10, padding: 16, borderBottom: `1px solid ${C.border}` }}><CreditCard aria-hidden size={20} /><strong style={{ flex: 1 }}>الكروت والاشتراكات — سلة المزوّد</strong><button style={button} aria-label="إغلاق" onClick={close}><X aria-hidden size={18} /></button></header>
+      {offline ? <p style={{ padding: 24 }}>البيع الرقميّ يحتاج اتصالاً بالخادم — أعد الاتصال لإكمال السلة.</p> : <div style={{ padding: 16, display: "grid", gap: 14 }}>
+        <label style={{ display: "grid", gap: 6 }}>المزوّد
+          <AppSelect value={providerId == null ? "" : String(providerId)} onValueChange={(value) => setProviderId(value ? Number(value) : null)} disabled={draft.length > 0 || picking} style={field}>
+            <option value="">اختر المزوّد أولاً</option>{providers.map((provider) => <option key={provider.id} value={String(provider.id)}>{provider.name}</option>)}
+          </AppSelect>
+          {draft.length > 0 && <small style={{ color: C.mutedFg }}>كل سلة تخص مزوّداً واحداً. أضف هذه السلة ثم افتح سلة جديدة للمزوّد الآخر.</small>}
+        </label>
+        <input aria-label="بحث في الكروت" placeholder="ابحث باسم الكرت أو الاشتراك…" value={search} onChange={(event) => setSearch(event.target.value)} style={field} />
+        {list.isLoading && <p>{ACTION_LABELS.loading}</p>}
+        {list.isError && <div role="alert">تعذّر تحميل البطاقات. تحقّق من الاتصال والصلاحية. <button style={button} onClick={() => void list.refetch()}>إعادة المحاولة</button></div>}
+        {!list.isLoading && !list.isError && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 8, maxHeight: 260, overflowY: "auto" }}>
+          {cards.map((card) => <div key={card.offeringId} style={{ border: `1px solid ${C.border}`, borderRadius: 6, padding: 12, display: "grid", gap: 6, background: C.card }}>
+            <strong>{card.name}</strong><small>{digitalOfferingDescription(card)}</small>
+            <span>{card.sellPrice == null ? "لا سعر منشور" : `${fmtAr(card.sellPrice)} د.ع`}</span>
+            <button style={primary} disabled={picking || quantity + existingCardCount >= 50 || card.availability !== "READY"} onClick={() => add(card)}>{card.availability === "READY" ? "إضافة" : card.availability === "NO_PRICE" ? "لا سعر منشور" : "السعر يحتاج تحديثاً"}</button>
+            <button style={{ ...button, minHeight: 30, padding: 4, fontSize: 12 }} onClick={() => { setReporting(card); setReportShare(""); setReportNotes(""); }}>سعر الجهاز مختلف؟</button>
+          </div>)}
+          {!cards.length && <p style={{ color: C.mutedFg }}>{providerId == null ? "اختر المزوّد لعرض بطاقاته واشتراكاته." : "لا بطاقات مطابقة متاحة لهذا المزوّد."}</p>}
+        </div>}
+        <section aria-label="البطاقات المختارة" style={{ border: `1px solid ${C.border}`, borderRadius: 6, overflow: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+            <thead style={{ background: C.muted }}><tr><th style={cell}>البطاقة / الاشتراك</th><th style={cell}>الكمية</th><th style={cell}>سعر البيع</th><th style={cell}>الإجمالي</th><th style={cell}></th></tr></thead>
+            <tbody>{draft.map((line) => <tr key={line.key}>
+              <td style={cell}><strong>{line.card.name}</strong><small style={{ display: "block" }}>{digitalOfferingDescription(line.card)}</small>{line.student && <small style={{ display: "block" }}>{line.student.studentName} · <span dir="ltr">{line.student.studentPhone}</span></small>}</td>
+              <td style={cell}>{line.student ? <span title="أضف اشتراكاً آخر لإدخال بيانات طالب آخر">1</span> : <input aria-label={`كمية ${line.card.name}`} type="number" min={1} max={50 - existingCardCount} value={line.quantity} disabled={picking} onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isInteger(value) && value > 0 && quantity - line.quantity + value + existingCardCount <= 50) setDraft((previous) => previous.map((item) => item.key === line.key ? { ...item, quantity: value } : item));
+              }} style={{ ...field, width: 76 }} />}</td>
+              <td style={cell}>{fmtAr(line.card.sellPrice ?? 0)}</td><td style={cell}>{fmtAr(D(line.card.sellPrice ?? 0).times(line.quantity).toFixed(2))}</td>
+              <td style={cell}><button style={button} disabled={picking} aria-label={`حذف ${line.card.name}`} onClick={() => setDraft((previous) => previous.filter((item) => item.key !== line.key))}><X aria-hidden size={16} /></button></td>
+            </tr>)}{!draft.length && <tr><td colSpan={5} style={cell}>أضف البطاقات وحدّد الكميات؛ رقم العملية واحد لهذه السلة.</td></tr>}</tbody>
+          </table>
+        </section>
+        <label style={{ display: "grid", gap: 5 }}>رقم عملية المزوّد لهذه السلة
+          <input value={providerReference} disabled={picking} onChange={(event) => setProviderReference(event.target.value)} maxLength={120} placeholder="امسح أو اكتب رقم العملية الخارجية" dir="ltr" style={field} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void addBasket(); } }} />
+          <small style={{ color: C.mutedFg }}>مرجع واحد لجميع بطاقات السلة، للمطابقة مع جهاز المزوّد. لا يوجد تحقق من منصته.</small>
+        </label>
+        <small style={{ color: C.mutedFg }}>الحد الأقصى 50 بطاقة في الفاتورة؛ المضاف سابقاً: {existingCardCount}.</small>
+        <footer style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}><strong style={{ flex: 1 }}>{quantity} بطاقة · الإجمالي {fmtAr(total.toFixed(2))} د.ع</strong><button style={button} onClick={close}>إلغاء</button><button style={primary} disabled={picking || !draft.length || !providerReference.trim()} onClick={() => void addBasket()}>{picking ? ACTION_LABELS.verifying : "إضافة السلة إلى الفاتورة"}</button></footer>
+      </div>}
     </div>
-  );
+    {reporting && <div role="dialog" aria-modal="true" aria-label="بلاغ تغيّر سعر المزوّد" style={{ position: "fixed", inset: 0, zIndex: 62, background: C.overlay, display: "grid", placeItems: "center", padding: 16 }}>
+      <div style={{ width: "min(440px, 100%)", background: C.bg, color: C.fg, padding: 20, borderRadius: 8, display: "grid", gap: 12 }}>
+        <strong>بلاغ تغيّر سعر المزوّد — {reporting.name}</strong><p>أدخل المبلغ الذي يخصمه جهاز المزوّد. البلاغ لا يغيّر سعر البيع حتى يعتمد المدير السعر.</p>
+        <label>حصة المزوّد على الجهاز<MoneyInput value={reportShare} onChange={setReportShare} style={field} /></label><label>ملاحظة (اختياري)<input value={reportNotes} onChange={(event) => setReportNotes(event.target.value)} style={{ ...field, width: "100%" }} /></label>
+        <div style={{ display: "flex", gap: 8 }}><button style={button} onClick={() => setReporting(null)}>إلغاء</button><button style={primary} disabled={reportMut.isPending} onClick={() => {
+          if (!moneyInput(reportShare).gt(0)) return notify.err("أدخل المبلغ الظاهر على الجهاز");
+          reportMut.mutate({ branchId, offeringId: reporting.offeringId, reportedProviderShare: reportShare, notes: reportNotes.trim() || null });
+        }}>{reportMut.isPending ? ACTION_LABELS.sending : "إرسال البلاغ"}</button></div>
+      </div>
+    </div>}
+    <StudentDetailsDialog open={awaitingStudent != null} cardName={awaitingStudent?.name ?? ""} onCancel={() => setAwaitingStudent(null)} onConfirm={(student) => { if (awaitingStudent) add(awaitingStudent, student); setAwaitingStudent(null); }} />
+  </div>;
 }

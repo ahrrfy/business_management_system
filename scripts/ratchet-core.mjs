@@ -58,9 +58,15 @@ export function baselineTotal(baseline) {
 /**
  * يفرض أنّ خطّ الأساس المُلتزَم لم يرتفع عن `origin/main`.
  *
+ * `renames`: خريطةٌ اختيارية `{ oldPath: newPath }` لملفّاتٍ نُقلت في هذا الفرع.
+ * المقارنة بالمفتاح تعمى عن التسمية: ملفٌّ نُقل يبدو للحارس كـ«ملفٍّ جديدٍ برصيدٍ ٢٤»
+ * وكـ«ملفٍّ اختفى» — فيبلّغ عن ارتفاعٍ زائفٍ لأنّ نظيرَه في `origin/main` تحت الاسم القديم.
+ * تُنقَل قيمةُ `mainBaseline[oldPath]` إلى `mainBaseline[newPath]` قبل المقارنة، فيتّبعُ
+ * تاريخُ الملفّ اسمَه الجديد. النقلُ الميكانيكيّ يمرّ؛ رفعُ الانتهاك الحقيقيّ يبقى ممنوعاً.
+ *
  * @returns {{ ok: boolean, skipped: boolean, message: string, delta: number }}
  */
-export function assertMonotonicDescent({ baselinePath, baseline, label }) {
+export function assertMonotonicDescent({ baselinePath, baseline, label, renames }) {
   const mainBaseline = readBaselineFromMain(baselinePath);
   if (!mainBaseline) {
     return {
@@ -69,6 +75,19 @@ export function assertMonotonicDescent({ baselinePath, baseline, label }) {
       delta: 0,
       message: `ℹ️  ${label}: تُخطّيت مقارنة المِسنَنة (لا origin/main محلياً). شغّل: git fetch origin main`,
     };
+  }
+
+  if (renames && typeof renames === "object") {
+    for (const [oldPath, newPath] of Object.entries(renames)) {
+      if (
+        typeof newPath === "string" &&
+        Object.prototype.hasOwnProperty.call(mainBaseline, oldPath) &&
+        !Object.prototype.hasOwnProperty.call(mainBaseline, newPath)
+      ) {
+        mainBaseline[newPath] = mainBaseline[oldPath];
+        delete mainBaseline[oldPath];
+      }
+    }
   }
 
   const before = baselineTotal(mainBaseline);

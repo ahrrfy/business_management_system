@@ -39,6 +39,7 @@ export interface PosCard {
   providerName: string;
   offeringType: string;
   requiresStudentData: boolean;
+  subscriptionDurationDays: number | null;
   faceValue: string | null;
   sellPrice: string | null;
   priceVersionId: number | null;
@@ -97,6 +98,7 @@ export async function listCards(
       providerName: suppliers.name,
       offeringType: digitalOfferings.offeringType,
       requiresStudentData: digitalOfferings.requiresStudentData,
+      subscriptionDurationDays: digitalOfferings.subscriptionDurationDays,
       faceValue: digitalOfferings.faceValue,
       cardColorToken: digitalOfferings.cardColorToken,
       priceValidityHours: digitalOfferings.priceValidityHours,
@@ -159,6 +161,7 @@ export async function listCards(
       providerName: r.providerName,
       offeringType: r.offeringType,
       requiresStudentData: r.requiresStudentData,
+      subscriptionDurationDays: r.subscriptionDurationDays,
       faceValue: r.faceValue,
       sellPrice: r.sellPrice,
       priceVersionId: r.priceVersionId != null ? Number(r.priceVersionId) : null,
