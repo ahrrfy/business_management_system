@@ -73,9 +73,34 @@ const SELFTEST_ONLY = process.argv.includes("--selftest");
 /** وضعُ التقرير: يطبع اللوحة ويخرج بـ0 دائماً — للعرض قبل تجميد الأساس. */
 const REPORT_ONLY = process.argv.includes("--report");
 
-const BASELINE = existsSync(BASELINE_PATH)
+/**
+ * Codex #958: خطّ الأساس صار يخزّن **أسماءَ الحقول** وجهتَها (onlyNew/onlyEdit) لا مجرَّد
+ * عدداً. علّةُ ما قبله: `count === allowed` كان يمرّ حتى لو غيّرت الشاشتان **أسماءَ** الحقول
+ * المنحرفة بلا تغيير عددها — بينما القاعدة نفسها تشترط تجميدَ حقولٍ بعينها. الآن أيّ حقلٍ
+ * جديد لم يكن في مجموعة الأساس يُرفَض حتى لو ظلّ العددُ ثابتاً، والمنحسرُ ينفّذُ لأنّه لا
+ * يُنتج حقولاً خارج المجموعة. النسق المدعوم: `{ onlyNew: string[], onlyEdit: string[] }`.
+ * (الرقمُ القديم `{ [stem]: number }` مقبولٌ للقراءة مع تحذيرٍ حتى يُهاجَر بـ--update-baseline.)
+ */
+const RAW_BASELINE = existsSync(BASELINE_PATH)
   ? JSON.parse(readFileSync(BASELINE_PATH, "utf8"))
   : {};
+const LEGACY_STEMS = [];
+/** @type {Record<string,{onlyNew:string[],onlyEdit:string[]}>} */
+const BASELINE = {};
+for (const [stem, val] of Object.entries(RAW_BASELINE)) {
+  if (typeof val === "number") {
+    LEGACY_STEMS.push({ stem, count: val });
+    BASELINE[stem] = { onlyNew: [], onlyEdit: [] };
+  } else if (val && typeof val === "object" && Array.isArray(val.onlyNew) && Array.isArray(val.onlyEdit)) {
+    BASELINE[stem] = { onlyNew: [...val.onlyNew], onlyEdit: [...val.onlyEdit] };
+  } else {
+    throw new Error(`Invalid baseline entry for ${stem}: expected {onlyNew,onlyEdit} or number`);
+  }
+}
+/** خريطةُ الأعداد فقط — نسلّمها لـ`assertMonotonicDescent` كي يبقى منحسِراً على المجموع. */
+const BASELINE_COUNTS = Object.fromEntries(
+  Object.entries(BASELINE).map(([s, d]) => [s, d.onlyNew.length + d.onlyEdit.length]),
+);
 
 // ───────────────────────────── الكواشف (دوالُّ نقيّة) ─────────────────────────────
 
@@ -502,6 +527,33 @@ export default function P() { return <A value={z} />; }
     0,
   );
 
+  // Codex #958: التسربُ الذي كشفه — أساسٌ بالعدد وحده يمرّ حين يُبدَّل حقلٌ بحقل. نُثبت
+  // منطقَ التقاطع الجديد: أيّ حقلٍ في الحاليّ ليس في الأساس = انحرافٌ جديد، بجهته.
+  const baselineMock = { onlyNew: ["a", "b"], onlyEdit: ["x"] };
+  const allowedNew = new Set(baselineMock.onlyNew);
+  const allowedEdit = new Set(baselineMock.onlyEdit);
+  // الحالة ①: تُصلَح ↦ لا انحراف جديد.
+  const shrunk = { onlyNew: ["a"], onlyEdit: ["x"] };
+  eq(
+    "الأساس يقبل حقلاً مُصلَحاً (٢⇒١)",
+    shrunk.onlyNew.filter((f) => !allowedNew.has(f)).length + shrunk.onlyEdit.filter((f) => !allowedEdit.has(f)).length,
+    0,
+  );
+  // الحالة ②: تبديلٌ يبقي العدد ⇒ فشلٌ (كان يمرّ قبل الإصلاح).
+  const swapped = { onlyNew: ["a", "NEW_FIELD"], onlyEdit: ["x"] };
+  eq(
+    "الأساس يرفض حقلاً جديداً حتى لو ظلّ العدد كما هو",
+    swapped.onlyNew.filter((f) => !allowedNew.has(f)),
+    ["NEW_FIELD"],
+  );
+  // الحالة ③: قلبُ الجهة (كان onlyEdit فصار onlyNew) ⇒ فشل.
+  const flipped = { onlyNew: ["a", "b", "x"], onlyEdit: [] };
+  eq(
+    "الأساس يرفض قلبَ جهةِ الحقل (خرج من التعديل ودخل الإنشاء)",
+    flipped.onlyNew.filter((f) => !allowedNew.has(f)),
+    ["x"],
+  );
+
   if (fails.length > 0) {
     console.error("✗ الاختبار الذاتيّ لحارس تناظر النموذج فشل:\n");
     for (const f of fails) console.error(`  ${f}`);
@@ -519,37 +571,52 @@ const current = collect();
 
 if (UPDATE) {
   const asObj = Object.fromEntries(
-    [...current.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([stem, d]) => [stem, d.count]),
+    [...current.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([stem, d]) => [
+        stem,
+        { onlyNew: [...d.onlyNew].sort(), onlyEdit: [...d.onlyEdit].sort() },
+      ]),
   );
   writeFileSync(BASELINE_PATH, JSON.stringify(asObj, null, 2) + "\n", "utf8");
   const total = [...current.values()].reduce((s, d) => s + d.count, 0);
-  console.log(`✓ حُدِّث خطّ أساس تناظر النموذج: ${current.size} ثنائية · ${total} انحرافاً مجمَّداً.`);
+  console.log(`✓ حُدِّث خطّ أساس تناظر النموذج: ${current.size} ثنائية · ${total} انحرافاً مجمَّداً (بالأسماء).`);
   printDashboard(current);
   process.exit(0);
 }
 
 const findings = [];
 for (const [stem, diff] of current) {
-  const allowed = BASELINE[stem] ?? 0;
-  if (diff.count <= allowed) continue;
-  const detail = [
-    diff.onlyNew.length > 0 ? `الإنشاء وحده: ${diff.onlyNew.join(" · ")}` : null,
-    diff.onlyEdit.length > 0 ? `التعديل وحده: ${diff.onlyEdit.join(" · ")}` : null,
-  ]
-    .filter(Boolean)
-    .join(" | ");
-  findings.push(
-    allowed === 0
-      ? `${displayOf(stem)}: ${diff.count} حقلاً غير متناظر (الأساس ٠) ⇒ ${detail}`
-      : `${displayOf(stem)}: ${diff.count} (الأساس ${allowed}، +${diff.count - allowed}) ⇒ ${detail}`,
-  );
+  const allowed = BASELINE[stem] ?? { onlyNew: [], onlyEdit: [] };
+  const allowedNew = new Set(allowed.onlyNew);
+  const allowedEdit = new Set(allowed.onlyEdit);
+  // Codex #958: انحرافٌ جديدٌ = حقلٌ في الحاليّ ليس في الأساس، بجهته. الحقلُ الذي أُصلح
+  // ثمّ عاد بجهةٍ أخرى (خرج من `onlyEdit` ثمّ دخل `onlyNew`) يُلتقَط كذلك.
+  const newDriftNew = diff.onlyNew.filter((f) => !allowedNew.has(f));
+  const newDriftEdit = diff.onlyEdit.filter((f) => !allowedEdit.has(f));
+  if (newDriftNew.length === 0 && newDriftEdit.length === 0) continue;
+  const parts = [];
+  if (newDriftNew.length > 0) parts.push(`الإنشاء وحده (جديد): ${newDriftNew.join(" · ")}`);
+  if (newDriftEdit.length > 0) parts.push(`التعديل وحده (جديد): ${newDriftEdit.join(" · ")}`);
+  const total = newDriftNew.length + newDriftEdit.length;
+  findings.push(`${displayOf(stem)}: ${total} حقلاً جديداً خارج مجموعة الأساس ⇒ ${parts.join(" | ")}`);
 }
 
 const descent = assertMonotonicDescent({
   baselinePath: BASELINE_REL,
-  baseline: BASELINE,
+  baseline: BASELINE_COUNTS,
   label: "تناظر النموذج",
 });
+
+// Codex #958: صيغةُ الأساس القديمة (رقمٌ لكلّ ثنائية) لا تلتقط تبديلَ الحقول؛ ننبّه المشغّل
+// كي يهاجرها بأمرٍ صريح، بلا حجب — الفرقُ ينفَّذ ذرّياً على PR واحد بحسب مستدعي الحارس.
+if (LEGACY_STEMS.length > 0 && !REPORT_ONLY) {
+  console.warn(
+    `⚠️ ${LEGACY_STEMS.length} ثنائية في خطّ الأساس بصيغةٍ قديمة (رقمٌ فقط) — شغّل:\n` +
+      `   node scripts/check-form-parity.mjs --update-baseline\n` +
+      `   لهجرتها إلى الصيغة الجديدة (أسماء الحقول + جهتها).`,
+  );
+}
 
 const stale = Object.keys(BASELINE).filter((s) => !current.has(s));
 

@@ -17065,3 +17065,81 @@ export const commissionRunApprovalRequests = mysqlTable(
 );
 export type CommissionRunApprovalRequest = typeof commissionRunApprovalRequests.$inferSelect;
 export type InsertCommissionRunApprovalRequest = typeof commissionRunApprovalRequests.$inferInsert;
+
+/**
+ * ═══ documentEffects — سجلّ الأثر المستنديّ (القانون ق٧، هجرة 0329) ═══
+ *
+ * جدولٌ إلحاقيّ يوثّق كلّ أثرٍ ماليٍّ (مخزون/قيد/رصيد/عهدة/…) نُفّذ في مستندٍ ما.
+ * المحرّك `server/services/reversalEngine.ts` يقرأ صفوف `phase=APPLY` ويكتب صفوف
+ * `phase=REVERSE` مقابلة في **نفس المعاملة** التي تعكس المستند، وثابته المحروس:
+ *   Σ signedAmount   لكل (documentType,documentId,effectKind) = 0 بعد العكس الكامل.
+ *   Σ signedQuantity لكل (documentType,documentId,effectKind) = 0 بعد العكس الكامل.
+ *
+ * ⚠️ لا FK جامدة على الجداول المُتأثّرة (effectTable/effectRowId مرجعيّان بلا قيدٍ
+ * ضامن) كي لا يُبطل الحذفُ الرجعيّ السجلَّ ولا يُقيّد الاندماج التدريجيّ مع خدماتٍ لا
+ * تعرفه بعد.
+ */
+export const documentEffects = mysqlTable(
+  "documentEffects",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    documentType: varchar("documentType", { length: 40 }).notNull(),
+    documentId: bigint("documentId", { mode: "number" }).notNull(),
+    effectKind: mysqlEnum("effectKind", [
+      "INVENTORY",
+      "LEDGER_ENTRY",
+      "CUSTOMER_BALANCE",
+      "SUPPLIER_BALANCE",
+      "DELIVERY_CUSTODY",
+      "PAID_AMOUNT",
+      "COMMISSION",
+      "DEPOSIT",
+      "COUPON",
+      "GIFT",
+      "INSTALLMENT",
+      "CARD",
+      "CONSIGNMENT",
+      "ROUNDING",
+      "OFFLINE",
+    ]).notNull(),
+    phase: mysqlEnum("phase", ["APPLY", "REVERSE"]).notNull(),
+    effectTable: varchar("effectTable", { length: 64 }),
+    effectRowId: bigint("effectRowId", { mode: "number" }),
+    signedAmount: decimal("signedAmount", { precision: 15, scale: 4 })
+      .default("0")
+      .notNull(),
+    signedQuantity: int("signedQuantity").default(0).notNull(),
+    branchId: bigint("branchId", { mode: "number" }),
+    actorUserId: int("actorUserId"),
+    reversalOfEffectId: bigint("reversalOfEffectId", { mode: "number" }),
+    reason: varchar("reason", { length: 200 }),
+    scope: varchar("scope", { length: 40 }),
+    payloadJson: json("payloadJson"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    reversalFk: foreignKey({
+      columns: [t.reversalOfEffectId],
+      foreignColumns: [t.id],
+      name: "fk_document_effects_reversal_of",
+    }),
+    docIdx: index("idx_document_effects_doc").on(t.documentType, t.documentId),
+    docKindIdx: index("idx_document_effects_doc_kind").on(
+      t.documentType,
+      t.documentId,
+      t.effectKind,
+    ),
+    reversalIdx: index("idx_document_effects_reversal_of").on(
+      t.reversalOfEffectId,
+    ),
+    createdIdx: index("idx_document_effects_created").on(t.createdAt),
+    reversalShape: check(
+      "chk_document_effects_reversal_shape",
+      sql`(${t.phase} = 'APPLY' AND ${t.reversalOfEffectId} IS NULL)
+           OR (${t.phase} = 'REVERSE' AND ${t.reversalOfEffectId} IS NOT NULL)`,
+    ),
+  }),
+);
+
+export type DocumentEffect = typeof documentEffects.$inferSelect;
+export type InsertDocumentEffect = typeof documentEffects.$inferInsert;

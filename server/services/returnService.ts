@@ -20,6 +20,7 @@ import {
 } from "./cash/cashAvailability";
 import { effectiveRefundCap, isSurfacedRefundMethod, loadRefundCaps } from "./returns/refundCaps";
 import { withTx, type Actor } from "./tx";
+import { recordEffect } from "./reversalEngine"; // ق٧: ربطٌ ظلّيّ لمحرّك العكس (شريحة ٠٣٢٩)
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
@@ -781,7 +782,7 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       for (const vid of sortedVariantIds) {
         const qty = aggregated.get(vid)!;
         if (qty <= 0) continue;
-        await applyMovement(tx, {
+        const mv = await applyMovement(tx, {
           variantId: vid,
           branchId: Number(inv.branchId),
           baseQuantity: qty,
@@ -790,6 +791,25 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           referenceId: input.invoiceId,
           createdBy: actor.userId,
         });
+        // ═══ ق٧ — ربطٌ ظلّيّ (شريحة ٠٣٢٩): صفٌّ APPLY يُوثّق دخول البضاعة الفعليّ إلى
+        //  المخزون عند المرتجع. يُستهلَك مستقبلاً في تسويةٍ عكسيّة أو تدقيقٍ ماليّ (تدقيق
+        //  «كلّ دينار له مسار»)، ويعمل بجانب التنفيذ اليدويّ القائم لا بدلاً منه.
+        await recordEffect(
+          tx,
+          {
+            documentType: "INVOICE",
+            documentId: input.invoiceId,
+            effectKind: "INVENTORY",
+            effectTable: "inventoryMovements",
+            effectRowId: mv.movementId || null,
+            signedQuantity: qty,
+            branchId: Number(inv.branchId),
+            reason: "returnService — مرتجع بيع",
+            scope: "return",
+            payloadJson: { variantId: vid, movementType: "RETURN" },
+          },
+          actor,
+        );
       }
     }
 
