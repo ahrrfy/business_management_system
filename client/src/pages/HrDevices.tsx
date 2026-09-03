@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions, type RowAction } from "@/components/list/RowActions";
@@ -60,6 +61,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -684,7 +686,7 @@ export default function HrDevices() {
       hidden: d.enabled,
       gate: { module: "hr", level: "FULL" },
       disabled: del.isPending,
-      disabledReason: "جارٍ الحذف",
+      disabledReason: ACTION_LABELS.deleting,
       onSelect: () => void deleteDevice(d),
     },
   ];
@@ -1389,10 +1391,14 @@ export default function HrDevices() {
           </div>
           {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل `AppSelect` يربط رقمَ
               الجهاز بموظّف ويُطلق `mapUser.mutate` مباشرةً — `DataTable` أداةُ عرضٍ فتبقى هذه
-              خامّةً عن قصد. جدولا الأجهزة والبصمات في الشاشة نفسها محوَّلان أصلاً. */}
-          <div className="max-h-[50vh] overflow-y-auto">
+              خامّةً عن قصد. جدولا الأجهزة والبصمات في الشاشة نفسها محوَّلان أصلاً.
+              القشرة `ScrollTableShell` تحلّ محلّ الحاوية اليدوية: نفس الارتفاع المقصود
+              (`max-h-[50vh]` ليبقى تذييل الحوار ظاهراً)، وترويستُها اللاصقة تُغني عن
+              `sticky top-0` اليدوية على `thead` فحُذفت. `showColumnVisibility` معطَّل لأنّ
+              الأعمدة الأربعة كلّها لازمة للربط (رقمٌ واسمٌ وقوالبُ ومَن يقابله). */}
+          <ScrollTableShell maxHeightClass="max-h-[50vh]" showColumnVisibility={false}>
             <table className="w-full text-sm">
-              <thead className="bg-muted/50 sticky top-0">
+              <thead className="bg-muted/50">
                 <tr>
                   <th className="p-2 text-center">الرقم</th>
                   <th className="p-2">الاسم في الجهاز</th>
@@ -1449,7 +1455,7 @@ export default function HrDevices() {
                 )}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
           <DialogFooter>
             <Button variant="outline" onClick={() => setMapDeviceId(null)}>
               إغلاق

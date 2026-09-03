@@ -550,7 +550,7 @@ export default function GiftsHub() {
                           hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL" || !canApprove,
                           gate: { roles: ["manager"], module: "gifts", level: "FULL" },
                           disabled: approve.isPending,
-                          disabledReason: "جارٍ اعتماد السند",
+                          disabledReason: `${ACTION_LABELS.approving} — السند`,
                           // يفتح حواراً يعرض بنود السند أوّلاً — لا اعتماد مباشر بلا مراجعة.
                           onSelect: () => setApprovingId(Number(r.id)),
                         },
@@ -563,7 +563,7 @@ export default function GiftsHub() {
                           hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL",
                           gate: { module: "gifts", level: "FULL" },
                           disabled: cancelGift.isPending,
-                          disabledReason: "جارٍ الإلغاء",
+                          disabledReason: ACTION_LABELS.cancelling,
                           onSelect: async () => {
                             if (
                               !(await confirmDialog({
@@ -629,7 +629,8 @@ export default function GiftsHub() {
               <DialogFooter>
                 <Button variant="outline" onClick={() => setApprovingId(null)} disabled={approve.isPending}>إلغاء</Button>
                 <Button onClick={() => approvingId != null && approve.mutate({ giftId: approvingId })} disabled={approve.isPending || !approvePreviewQ.data}>
-                  {approve.isPending ? "جارٍ الاعتماد…" : "اعتماد السند"}
+                  {/* القاموس الموحَّد بدل نصٍّ يدويّ — «جارٍ» بألف واحدة وشرطة عمودية عربية في مكانٍ واحد. */}
+                  {approve.isPending ? ACTION_LABELS.approving : "اعتماد السند"}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -754,7 +755,7 @@ export default function GiftsHub() {
                           hidden: row.original.status !== "ACTIVE",
                           gate: { roles: ["manager"], module: "gifts", level: "FULL" },
                           disabled: closeCampaign.isPending,
-                          disabledReason: "جارٍ إغلاق الحملة",
+                          disabledReason: `${ACTION_LABELS.closing} — الحملة`,
                           onSelect: () => closeCampaign.mutate({ campaignId: Number(row.original.id) }),
                         }]}
                       />

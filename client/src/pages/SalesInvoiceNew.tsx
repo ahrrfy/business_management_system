@@ -75,6 +75,7 @@ import {
   type PaymentTerm,
   type PriceTier,
 } from "@/components/invoice";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const INVOICE_TYPE = "SALE" as const;
 
@@ -1158,7 +1159,7 @@ export default function SalesInvoiceNew() {
               onClick={handleApprove}
             >
               {(isCorrection ? reissue.isPending || exchange.isPending : create.isPending)
-                ? "جارٍ الاعتماد…"
+                ? ACTION_LABELS.approving
                 : isCorrection
                   ? "اعتماد وإتمام التصحيح"
                   : "اعتماد وإتمام البيع"}

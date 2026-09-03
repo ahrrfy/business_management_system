@@ -18,9 +18,11 @@ import { Link, useLocation } from "wouter";
 import { Landmark, Truck } from "lucide-react";
 import {
   isWithinPriceDecimals,
+  priceDecimalsFor,
   priceDecimalsMessage,
 } from "@shared/moneyPrecision";
 import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -30,6 +32,7 @@ import {
   hasInvoiceTransfer,
   takeInvoiceItems,
 } from "@/lib/invoiceTransfer";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import {
   ActionButtons,
   BulkPicker,
@@ -40,6 +43,7 @@ import {
   SupplierInvoiceMatch,
   TermsAndNotes,
   TotalsPanel,
+  calcLineTotal,
   calcTotals,
   createInitialState,
   deriveDocumentTotal,
@@ -321,6 +325,14 @@ export default function PurchaseNew() {
     { enabled: state.branchId > 0 && insightItems.length > 0 },
   );
 
+  // اسم المورّد للطباعة: الحالة تحمل المعرّف وحده (`entityId`) بينما ورقةُ أمر الشراء تُسلَّم
+  // باسمٍ لا برقم. المدخل وstaleTime مطابقان لما يستعمله `EntityPicker` بالضبط ⇒ نفس مفتاح
+  // الكاش الذي ملأه المنتقي لحظة الاختيار، فلا طلبَ شبكةٍ إضافيّ بسبب الطباعة.
+  const supplierRow = trpc.suppliers.get.useQuery(
+    { supplierId: state.entityId ?? 0 },
+    { enabled: state.entityId != null, staleTime: 60_000 },
+  );
+
   // حارس فقدان البيانات (نمط CustomerNew/ExpenseNew): dirty عند إدخال فعليّ فقط (مورّد/بنود/شحن/كمرك/ملاحظات)
   // — شاشة فارغة حديثة الفتح لا تُحسب إدخالاً كي لا يظهر تحذير كاذب.
   const isDirty =
@@ -591,14 +603,249 @@ export default function PurchaseNew() {
     create.mutate(buildPayload());
   }
 
+  /**
+   * طباعة مسوّدة أمر الشراء بمستند A4 بهوية النظام بدل `window.print()` الخام (نظير PurchaseEdit).
+   *
+   * الخام كان يطبع الصفحة كما هي: شريط التنقّل والقوائم وحقول الإدخال وشريط الاختصارات مع
+   * البنود، وبلا رسالةٍ حين يحجب المتصفّح النافذة المنبثقة. `printReportDoc` يوحّد الثلاثة.
+   *
+   * فرقُ هذه الشاشة عن توأمها أنّ المستند **مسوّدة لم تُحفَظ**:
+   *   • لا رقمَ أمرٍ ولا حالةً محفوظة. والرقم الظاهر في الرأس مولَّدٌ محلياً بعشوائيّة
+   *     (`generateInvoiceNumber` في المُخفِّض) ولا تُرسله الحمولة أصلاً — الخادم يُرقّم عند
+   *     الحفظ ⇒ طباعتُه تضع على ورقةٍ تُسلَّم رقماً لا يطابق أيّ سجلّ. لذلك `docNum: null`
+   *     والحالة تُصرّح بأنّها مسوّدة.
+   *   • اسم المورّد يُقرأ من `suppliers.get` لأنّ الحالة تحمل معرّفَه وحده، وقد لا يكون مختاراً
+   *     بعد (مسوّدة تُراجَع قبل إسنادها) ⇒ شرطة لا اسمٌ مُلفَّق.
+   *
+   * المحتوى هو المعروض نفسه: أعمدة `ProductTable` في وضع الشراء (باركود · منتج · وحدة · سعر
+   * الشراء · الكمية · الإجمالي · المعادل د.ع للأمر الدولاريّ)، ثمّ لوحة المبالغ، ثمّ تنويه
+   * بطاقة الشحن/الكمرك بنفس شرط ظهوره على الشاشة. وعمود «المخزون» مُقصىً عمداً: رصيدٌ لحظيّ
+   * يشيخ فور الطباعة ولا يخصّ مستند المورّد — طباعتُه تُثبّت رقماً يُقرأ التزاماً وهو ليس كذلك.
+   */
+  function printOrder() {
+    if (state.items.length === 0) {
+      notify.warn("لا توجد بنود لطباعتها.");
+      return;
+    }
+    const usd = state.currency === "USD";
+    const priceSym = usd ? "$" : "د.ع";
+    const rate = safeMoney(state.agreedRate);
+    /*
+     * ⚠️ **لا تُطبَع ورقةٌ دولاريّة بلا سعر تثبيت** (مراجعة Codex على PR #953):
+     * `landed.grand` يُضرب في `rate`، فالصفرُ يُنتج آخرَ سطرٍ في المستند — وهو
+     * السطر العريض الكبير — «التكلفة بالدينار 0.00» تحت إجماليٍّ دولاريٍّ صحيح.
+     * ورقةٌ كهذه لا تبدو ناقصةً بل **مُحوَّلةً بصفر**، وقد تُقرأ التزاماً فعلياً.
+     * ولا مهربَ بطباعة «—» مكانه: `printReportDoc` يُلحق «د.ع» بآخر سطرٍ ثابتاً.
+     * والحجبُ هنا لا يُنشئ قاعدةً جديدة — `validate()` يرفض **الحفظ** بالشرط نفسه
+     * وبالرسالة نفسها؛ فالطباعةُ تتبع المستند لا تسبقه.
+     */
+    if (usd && !rate.gt(0)) {
+      notify.warn("أدخل سعر الصرف المثبت للفاتورة قبل الطباعة.");
+      return;
+    }
+    // نفس شرط عمود «المعادل د.ع» في ProductTable — لا يظهر إلا حيث يظهر على الشاشة.
+    const showIqdEquivalent = usd && rate.gt(0);
+
+    // ⚠️ `fmtAr` يقصّ إلى منزلتين، وسعر الوحدة الدولاريّ أربع (§دقّة سعر الوحدة = دقّة العملة)
+    // ⇒ تنسيقٌ يجمع الآلاف بأرقامٍ لاتينية مع الاحتفاظ بدقّة العملة. القيمة مقرَّبةٌ سلفاً
+    // بـ`toUnitPriceStr` فالتحويل هنا عرضٌ محض لا حساب.
+    // و`safeMoney` **إلزاميّ** لا احتياط: `InlineNumberInput` يمرّر «» و«.» أثناء الكتابة
+    // ⇒ `D()` الخام يرمي، وطباعةٌ ترمي أثناء تحرير سعرٍ تُسقط المحرّر وتُضيّع مسوّدةً كاملةً
+    // غير محفوظة — و`window.print()` التي نستبدلها لم تكن تفعل ذلك.
+    const priceDp = priceDecimalsFor(state.currency);
+    const fmtPrice = (v: string) =>
+      Number(
+        toUnitPriceStr(safeMoney(v).toString(), state.currency),
+      ).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: priceDp });
+
+    const rows = state.items.map((l) => {
+      const lineTotal = calcLineTotal(l);
+      return {
+        barcode: l.barcode ?? "—",
+        name: l.name,
+        unit: l.unit || "—",
+        /*
+         * ⚠️ **`l.price` لا `costBase || price`** (مراجعة Codex على PR #953): خليّةُ
+         * الشاشة تعرض `costBase || price`، لكنّ `calcLineTotal` والحمولةَ المُرسَلة
+         * يقرآن `l.price` وحده. وهما يفترقان في مسارٍ واحدٍ حقيقيّ: أمرٌ مُولَّدٌ من
+         * طلبِ شراءٍ يُملأ بـ`price = estimatedUnitPrice` و`costBase = costPriceBase`
+         * (أعلاه) ⇒ سطرٌ **لم يُحرَّر بعد** يحمل قيمتين مختلفتين. (وأيُّ تحريرٍ
+         * للخليّة يكتب الحقلين معاً فيتطابقان — لذلك لا يظهر الفرق عادةً.)
+         * وطباعةُ `costBase` عندئذٍ تُخرج ورقةً **حسابُها لا يستقيم**: السعر × الكمية
+         * ≠ الإجمالي المطبوع، وتُبلِّغ المورّدَ سعراً غير الذي سيُحاسَب عليه.
+         * المستند يلتزم السعر النافذ: `l.price`.
+         */
+        price: fmtPrice(l.price),
+        qty: fmtAr(safeMoney(String(l.qty)).toString()),
+        total: fmtAr(lineTotal),
+        iqd: showIqdEquivalent
+          ? fmtAr(round2(D(lineTotal).times(rate)).toFixed(2))
+          : "",
+      };
+    });
+
+    // ملخّص المبالغ = لوحة `TotalsPanel` المعروضة سطراً بسطر (بعملة الأمر)، يليها بطاقة
+    // الدولار حين تظهر. شريط الإجمالي الأخير في `docSummary` يكتب «د.ع» ثابتاً ⇒ آخر عنصرٍ
+    // يجب أن يكون ديناريّاً دائماً: للأمر الدولاريّ هو «التكلفة بالدينار» من بطاقة الدولار.
+    /*
+     * ⚠️ **الأرقام من `docTotals` لا `totals`** (مراجعة Codex على PR #953): الدالّتان
+     * تختلفان في **ترتيب التقريب**. `calcTotals` تجمع السطور خامّةً ثمّ تُقرّب مرّة،
+     * و`deriveDocumentTotal` تُقرّب **كلّ سطرٍ** ثمّ تجمع — وهو ترتيبُ الخادم نفسه
+     * (ولذلك يقرأ `landed` أعلاه `docTotals.subtotal` صراحةً).
+     * والصفوفُ المطبوعة تُبنى بـ`calcLineTotal` أي مُقرَّبةً سطراً سطراً ⇒ لو أُخذ
+     * الملخّصُ من `calcTotals` لَما جمعت الصفوفُ المطبوعة إلى مجموعها المطبوع.
+     * مثال حيّ: سطران بسعرٍ دولاريٍّ من أربع منازل (3.4566 × 7) يطبع كلٌّ منهما
+     * 24.20 — والمجموع 48.40 محفوظاً، بينما `calcTotals` تعطي 48.39.
+     * فالورقةُ تُخالف نفسها **وتُخالف ذمّةَ المورّد المحفوظة** بفلسٍ لا يُفسَّر.
+     * (والصفوف تُطابق `grossSubtotal` بالضبط: عمودُ الخصم محجوبٌ في وضع الشراء
+     * — `showDiscountCol = !isPurchase` — فـ`calcLineTotal` = السعر × الكمية.)
+     */
+    const summary = [
+      { label: `المجموع الفرعي (${priceSym})`, value: fmtAr(docTotals.grossSubtotal) },
+      ...(D(docTotals.discount).gt(0)
+        ? [
+            {
+              label: `خصم فاتورة المورّد (${priceSym})`,
+              value: `− ${fmtAr(docTotals.discount)}`,
+            },
+          ]
+        : []),
+      ...(D(docTotals.tax).gt(0)
+        ? [
+            {
+              label: `الضريبة (${fmtAr(state.taxRatePercent || "0")}%) (${priceSym})`,
+              value: fmtAr(docTotals.tax),
+            },
+          ]
+        : []),
+      ...(usd
+        ? [
+            {
+              label: "الإجمالي النهائي ($)",
+              value: `${fmtAr(docTotals.total)} $`,
+            },
+            ...(rate.gt(0)
+              ? [
+                  {
+                    label: "سعر التثبيت",
+                    value: `${fmtAr(state.agreedRate)} د.ع/$`,
+                  },
+                ]
+              : []),
+          ]
+        : []),
+      {
+        label: usd ? "التكلفة بالدينار" : "الإجمالي النهائي",
+        value: fmtAr(landed.grand.toFixed(2)),
+        bold: true,
+        large: true,
+      },
+    ];
+
+    const branchName =
+      (branches.data ?? []).find((b) => b.id === state.branchId)?.name ?? "—";
+
+    const orderFields = [
+      // لم يُحفَظ بعد ⇒ لا رقمَ ولا حالةَ مستند. الشرطة والتصريح أصدق من رقمٍ محلّيٍّ عابر.
+      { label: "رقم الأمر", value: "—" },
+      { label: "الحالة", value: "مسوّدة لم تُحفَظ بعد" },
+      // الفرع قابلٌ للتبديل في هذه الشاشة وحدها (يحدّد ترقيم الأمر وعزله) ⇒ يظهر في الورقة.
+      { label: "الفرع", value: branchName },
+      { label: "العملة", value: usd ? "دولار أمريكي" : "دينار عراقي" },
+      ...(usd && rate.gt(0)
+        ? [{ label: "سعر التثبيت", value: `${fmtAr(state.agreedRate)} د.ع/$` }]
+        : []),
+      // التسوية تُرسَل في الحمولة (`settlementType`) وتُقرّر هل يُنشأ طلب صرفٍ عند كل استلام —
+      // من يراجع المسوّدة ورقياً يقرّرها كما يقرّر المبالغ، فإخفاؤها يُخفي نصف القرار.
+      {
+        label: "التسوية",
+        value:
+          state.paymentTerms === "CASH"
+            ? "نقدي عند كل استلام"
+            : "آجل على المورّد",
+      },
+      ...(safeMoney(shippingCost).gt(0)
+        ? [
+            {
+              label: "الشحن (خارج الإجمالي)",
+              value: `${fmtAr(shippingCost)} د.ع`,
+            },
+          ]
+        : []),
+      ...(safeMoney(customsCost).gt(0)
+        ? [
+            {
+              label: "الكمرك (خارج الإجمالي)",
+              value: `${fmtAr(customsCost)} د.ع`,
+            },
+          ]
+        : []),
+      ...(state.notes.trim()
+        ? [{ label: "ملاحظات", value: state.notes.trim() }]
+        : []),
+      ...((state.terms ?? "").trim()
+        ? [{ label: "الشروط والأحكام", value: (state.terms ?? "").trim() }]
+        : []),
+    ];
+
+    printReportDoc({
+      title: "أمر شراء (مسوّدة)",
+      docNum: null,
+      docDate: fmtDate(state.date),
+      // نفس تنويه بطاقة الشحن/الكمرك وبنفس شرط ظهوره على الشاشة بالضبط.
+      note:
+        landed.hasLanded && landed.hasBase
+          ? "الشحن والكمرك لا يُضافان إلى ذمّة المورّد ولا إلى تكلفة الصنف — يُسجَّلان مصروف نقلٍ على الشركة لحظة الاستلام."
+          : undefined,
+      meta: [
+        {
+          title: "معلومات المورد",
+          fields: [{ label: "الاسم", value: supplierRow.data?.name ?? "—" }],
+        },
+        { title: "تفاصيل الأمر", fields: orderFields },
+      ],
+      columns: [
+        { key: "barcode", label: "الباركود", width: "24mm", align: "center" },
+        { key: "name", label: "المنتج" },
+        { key: "unit", label: "الوحدة", width: "16mm", align: "center" },
+        {
+          key: "price",
+          label: `سعر الشراء ${priceSym}`,
+          width: "24mm",
+          align: "left",
+        },
+        { key: "qty", label: "الكمية", width: "16mm", align: "center" },
+        {
+          key: "total",
+          label: `الإجمالي ${priceSym}`,
+          width: "26mm",
+          align: "left",
+          bold: true,
+        },
+        ...(showIqdEquivalent
+          ? [
+              {
+                key: "iqd",
+                label: "المعادل د.ع",
+                width: "26mm",
+                align: "left" as const,
+              },
+            ]
+          : []),
+      ],
+      rows,
+      summary,
+      orientation: showIqdEquivalent ? "landscape" : "portrait",
+    });
+  }
+
   function handleAction(kind: InvoiceActionKind) {
     switch (kind) {
       case "save":
         handleSubmit();
         return;
       case "print":
-        // اطبع المسوّدة الحالية (المتصفّح) — الطباعة المعتمدة من شاشة الاستلام.
-        window.print();
+        printOrder();
         return;
       case "duplicate":
         if (!state.items.length) return notify.warn("لا توجد محتويات لنسخها.");
@@ -651,10 +898,10 @@ export default function PurchaseNew() {
         if (!create.isPending) handleSubmit();
         return;
       }
-      // F9 ⇒ طباعة
+      // F9 ⇒ طباعة مستند أمر الشراء (لا الصفحة كما هي).
       if (e.key === "F9") {
         e.preventDefault();
-        window.print();
+        printOrder();
         return;
       }
       // F12 ⇒ تفريغ السلة وإعادة تهيئة (يحفظ الفرع)
@@ -679,8 +926,19 @@ export default function PurchaseNew() {
     return () => window.removeEventListener("keydown", onKey);
     // landed-cost: shippingCost/customsCost حالة محلّية خارج state ⇒ يجب إدراجها في التبعيّات وإلّا
     // قرأ حفظُ F4 قيمةً قديمة (الإغلاق مُلتقَط عند آخر تشغيل للـeffect) فيُسقط الشحن/الكمرك بصمت.
+    // ولنفس السبب يلزم بيانا المورّد والفروع: كلاهما يصل **بعد** تبدّل الحالة (طلب شبكة يتلوّ
+    // اختيار المورّد)، فبدونهما تطبع F9 «—» في اسم مورّدٍ مختارٍ فعلاً — وهو صمتٌ يُقرأ إسناداً
+    // ناقصاً على ورقةٍ تُسلَّم.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bulkOpen, create.isPending, state, shippingCost, customsCost]);
+  }, [
+    bulkOpen,
+    create.isPending,
+    state,
+    shippingCost,
+    customsCost,
+    supplierRow.data,
+    branches.data,
+  ]);
 
   /* ─── render ───────────────────────────────────────────────────── */
   const meta = INVOICE_TYPES[INVOICE_TYPE];

@@ -35,6 +35,7 @@ import {
   AlertTriangle,
   CheckCircle2,
 } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 const SOURCE_AR: Record<string, string> = {
@@ -419,7 +420,7 @@ export default function CardAccount() {
               </Button>
               <Button variant="outline" size="sm" onClick={onExport} disabled={exporting || !mv || mv.count === 0}>
                 <Download aria-hidden className="size-4" />
-                {exporting ? "جارٍ التصدير…" : "تصدير"}
+                {exporting ? ACTION_LABELS.exporting : "تصدير"}
               </Button>
             </div>
           </div>

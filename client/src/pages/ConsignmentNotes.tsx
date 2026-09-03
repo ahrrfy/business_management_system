@@ -9,6 +9,7 @@ import { FilterField } from "@/components/list/FilterField";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
@@ -450,22 +451,28 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
             </div>
             {/* أسطر السند — شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل حقلَ
                 الكمية وزرَّ حذف السطر يكتبان في حالة `lines` المحلّية قبل الحفظ؛ `DataTable`
-                أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. */}
+                أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. لكنّ قشرتها مشتركة: `ScrollTableShell`
+                تحبس الأسطر بارتفاعٍ مقيَّد بترويسةٍ لاصقة، فلا يدفع سندٌ طويل شريطَ الحفظ
+                خارج الشاشة ولا تغيب أسماء الأعمدة عند إدخال الكميات. `bordered=false` لأنّ
+                البطاقة تُؤطّرها أصلاً (ولا حدَّ في الأصل)، و`showColumnVisibility` معطَّل:
+                الأعمدة الأربعة اتجاهٌ ومنتجٌ وكميةٌ وحذف — لا معنى لإخفاء أيٍّ منها. */}
             {lines.length > 0 && (
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr><th className="p-2">الاتجاه</th><th className="p-2">المنتج</th><th className="p-2">الكمية</th><th className="p-2"></th></tr></thead>
-                <tbody>
-                  {lines.map((l) => (
-                    <tr key={l.key} className="border-t">
-                      <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", l.direction === "IN" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]")}>{l.direction === "IN" ? "إيداع" : "سحب"}</span></td>
-                      <td className="p-2">{l.label}</td>
-                      {/* المخزون بالوحدة الأساس عدد صحيح (§٥) — يُرفَض إدخال كسور من الأصل. */}
-                      <td className="p-2 w-28"><Input dir="ltr" inputMode="numeric" value={l.quantity} onChange={(e) => setLines((ls) => ls.map((x) => x.key === l.key ? { ...x, quantity: e.target.value.replace(/[^\d]/g, "") } : x))} className="h-8" /></td>
-                      <td className="p-2"><button type="button" onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))} aria-label="حذف"><X aria-hidden className="size-4 text-muted-foreground hover:text-destructive" /></button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <ScrollTableShell bordered={false} showColumnVisibility={false}>
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50"><tr><th className="p-2">الاتجاه</th><th className="p-2">المنتج</th><th className="p-2">الكمية</th><th className="p-2"></th></tr></thead>
+                  <tbody>
+                    {lines.map((l) => (
+                      <tr key={l.key} className="border-t">
+                        <td className="p-2"><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-bold", l.direction === "IN" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]")}>{l.direction === "IN" ? "إيداع" : "سحب"}</span></td>
+                        <td className="p-2">{l.label}</td>
+                        {/* المخزون بالوحدة الأساس عدد صحيح (§٥) — يُرفَض إدخال كسور من الأصل. */}
+                        <td className="p-2 w-28"><Input dir="ltr" inputMode="numeric" value={l.quantity} onChange={(e) => setLines((ls) => ls.map((x) => x.key === l.key ? { ...x, quantity: e.target.value.replace(/[^\d]/g, "") } : x))} className="h-8" /></td>
+                        <td className="p-2"><button type="button" onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))} aria-label="حذف"><X aria-hidden className="size-4 text-muted-foreground hover:text-destructive" /></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </ScrollTableShell>
             )}
           </CardContent>
         </Card>

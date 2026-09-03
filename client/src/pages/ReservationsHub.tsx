@@ -43,6 +43,7 @@ import {
   reservationConversionErrorClosesDialog,
   type ReservationAvailabilitySnapshot,
 } from "@/lib/reservationConversionGuard";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -837,7 +838,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
             <Button variant="outline" onClick={() => { setCancelTarget(null); setCancelReason(""); }} disabled={cancel.isPending}>تراجع</Button>
             <Button variant="destructive" onClick={submitCancel} disabled={cancel.isPending}>
               <Trash2 className="size-4 me-1" aria-hidden />
-              {cancel.isPending ? "جارٍ الإلغاء…" : "تأكيد الإلغاء"}
+              {cancel.isPending ? ACTION_LABELS.cancelling : "تأكيد الإلغاء"}
             </Button>
           </DialogFooter>
         </DialogContent>
