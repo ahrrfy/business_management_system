@@ -19,6 +19,13 @@
 // (`rounded-lg|xl|2xl`) وحدّاً (`border`) وخلفيةَ بطاقة (`bg-card`) — وهو ما يجعل الـ`div`
 // بطاقةً بصرياً. (لا نمسك `rounded-md` وحدها ولا `bg-muted`: ليستا بطاقةً، ونُنتج إيجابياتٍ كاذبة.)
 //
+//
+// ⚠️ **ولّد خطّ الأساس بعد دمج `origin/main` لا قبله** (درسٌ كلّف دورةَ CI كاملة، ٢/٩/٢٦):
+// حدث `pull_request` يفحص **نتيجةَ الدمج** (`refs/pull/N/merge`) لا رأسَ فرعك. فخطُّ أساسٍ
+// وُلّد على فرعٍ متأخّرٍ عن `main` يقيس شجرةً لا وجودَ لها عند CI: مرّ هذا الحارس محلياً
+// بـ٧٦ ثمّ سقط في CI على `Returns.tsx` (٢ مقابل ١) — والبطاقةُ الثانية جاءت من `main`
+// نفسه، لا من الـPR. القاعدة: `git fetch origin main && git merge origin/main` **ثمّ**
+// `--update-baseline`. وتنطبق على كلّ حارسٍ ذي خطّ أساسٍ لكلّ ملفّ، لا هذا وحده.
 // التحديث بعد الترحيل: node scripts/check-raw-card.mjs --update-baseline
 
 import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";

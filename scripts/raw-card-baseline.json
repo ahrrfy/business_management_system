@@ -17,7 +17,7 @@
   "client/src/pages/Reception.tsx": 10,
   "client/src/pages/Recruitment.tsx": 1,
   "client/src/pages/ReservationsHub.tsx": 1,
-  "client/src/pages/Returns.tsx": 1,
+  "client/src/pages/Returns.tsx": 2,
   "client/src/pages/SalesInvoiceNew.tsx": 2,
   "client/src/pages/StocktakeCountSheets.tsx": 2,
   "client/src/pages/StocktakeReport.tsx": 1,
