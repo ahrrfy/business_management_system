@@ -56,7 +56,7 @@ function assertBranchAssigned(branchId: unknown, operation: string): void {
       code: "BAD_REQUEST",
       message: appErrorMessage({
         what: `تعذّر تنفيذ عملية ${operation}`,
-        why: `لا فرعَ مُسنَداً للعملية (المُرسَل ${String(branchId)})؛ المال لا يُقيَّد على فرعٍ وهميّ — الرفض هنا أرخص من مطاردة قيودٍ يتيمة`,
+        why: `لا فرع مسند للعملية (المُرسَل ${String(branchId)})؛ المال لا يُقيَّد على فرعٍ وهميّ — الرفض هنا أرخص من مطاردة قيودٍ يتيمة`,
         doThis: "اختر الفرع صراحةً من قائمة الفروع في أعلى الشاشة، ثمّ أعد تنفيذ العملية",
       }),
     });
