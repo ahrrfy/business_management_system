@@ -18,7 +18,7 @@ import {
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { escLike } from "../../lib/sqlLike";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { requireDb, withTx, type Actor } from "../tx";
 import {
   assertExactReplay,
@@ -210,7 +210,7 @@ export async function createSalesOpportunity(
         .limit(1);
       if (replay) {
         if (
-          replay.createHash !== payloadHash ||
+          !payloadHashMatches(payloadHash, replay.createHash) ||
           Number(replay.createdBy) !== actor.userId
         ) {
           throw new TRPCError({
@@ -266,7 +266,7 @@ export async function createSalesOpportunity(
           .limit(1);
         if (
           !raced ||
-          raced.createHash !== payloadHash ||
+          !payloadHashMatches(payloadHash, raced.createHash) ||
           Number(raced.createdBy) !== actor.userId
         )
           throw error;
@@ -319,7 +319,7 @@ export async function convertLeadToOpportunity(
         .limit(1);
       if (replay) {
         if (
-          replay.createHash !== payloadHash ||
+          !payloadHashMatches(payloadHash, replay.createHash) ||
           Number(replay.createdBy) !== actor.userId ||
           Number(replay.leadId) !== input.leadId
         ) {

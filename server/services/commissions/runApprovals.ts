@@ -9,7 +9,7 @@ import {
 import { isDupEntry } from "@shared/errorMap.ar";
 import type { Tx } from "../../db";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { requireDb, type Actor, withTx } from "../tx";
 import { approveRunInTx, type ApproveResult } from "./runs";
 
@@ -56,7 +56,7 @@ function exactRequestReplay(
   payloadHash: string,
   actor: Actor,
 ): boolean {
-  return row.payloadHash === payloadHash && Number(row.requestedBy) === actor.userId;
+  return payloadHashMatches(payloadHash, row.payloadHash) && Number(row.requestedBy) === actor.userId;
 }
 
 function exactRequestIntentReplay(

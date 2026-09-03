@@ -63,22 +63,39 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
  * إلى قبولٍ صامت.
  */
 const LEGACY_HASH_CACHE_LIMIT = 4096;
-const legacyHashByCurrent = new Map<string, string>();
+/**
+ * كلُّ البصمات القديمة المحتملة لكلّ بصمةٍ حالية — **مجموعةٌ لا قيمةٌ واحدة** (Codex، جولة ٢): حمولتان
+ * مختلفتان قد تتشاركان البصمة الحالية وتختلفان في القديمة (`{a: undefined}` و`{b: undefined}` كلتاهما
+ * `{}` بعد التطبيع)، فقيمةٌ واحدة قابلة للاستبدال كانت تُسقط مفتاحاً صالحاً تحت طلبين متزامنين.
+ */
+const legacyHashesByCurrent = new Map<string, Set<string>>();
 function rememberLegacyHash(current: string, legacy: string): void {
   if (current === legacy) return;
-  if (legacyHashByCurrent.size >= LEGACY_HASH_CACHE_LIMIT) {
-    const oldest = legacyHashByCurrent.keys().next().value;
-    if (oldest !== undefined) legacyHashByCurrent.delete(oldest);
+  const existing = legacyHashesByCurrent.get(current);
+  if (existing) {
+    existing.add(legacy);
+    return;
   }
-  legacyHashByCurrent.set(current, legacy);
+  if (legacyHashesByCurrent.size >= LEGACY_HASH_CACHE_LIMIT) {
+    const oldest = legacyHashesByCurrent.keys().next().value;
+    if (oldest !== undefined) legacyHashesByCurrent.delete(oldest);
+  }
+  legacyHashesByCurrent.set(current, new Set([legacy]));
 }
 /** البصمة بالصيغة القديمة (قبل ٣/٩/٢٦) — للاختبارات ولتوثيق الجسر؛ لا يستعملها مسارٌ حيّ للكتابة. */
 export function legacyIdempotencyHash(payload: unknown): string {
   return sha256(canonicalJson(payload));
 }
-/** هل يفسَّر عدمُ التطابق بأنّ المخزَّن بصمةٌ قديمة لنفس الحمولة؟ */
-function matchesLegacyHash(currentHash: string, storedHash: string): boolean {
-  return legacyHashByCurrent.get(currentHash) === storedHash;
+/**
+ * المقارنة الموحَّدة لبصمة حمولةٍ مخزَّنة مع البصمة الحالية لنفس الطلب: تطابقٌ مباشر، أو بصمةٌ قديمة
+ * (ما قبل ٣/٩/٢٦) **لنفس الحمولة**. تُستعمل في `checkIdempotency` وفي كلّ موضع replay يقارن
+ * `payloadHash` مباشرةً (طلبات التحكّم/المشتريات/الأنبوب البيعيّ…) — وإلّا رُفض بعد النشر
+ * تكرارُ طلبٍ التزم قبله بحمولةٍ فيها undefined/Date، بـCONFLICT بدل replay.
+ */
+export function payloadHashMatches(currentHash: string, storedHash: string | null | undefined): boolean {
+  if (storedHash == null) return false;
+  if (currentHash === storedHash) return true;
+  return legacyHashesByCurrent.get(currentHash)?.has(storedHash) ?? false;
 }
 
 /**
@@ -146,8 +163,7 @@ export async function checkIdempotency(
   if (
     payloadHash != null &&
     row.payloadHash != null &&
-    row.payloadHash !== payloadHash &&
-    !matchesLegacyHash(payloadHash, row.payloadHash)
+    !payloadHashMatches(payloadHash, row.payloadHash)
   ) {
     throw new TRPCError({
       code: "CONFLICT",

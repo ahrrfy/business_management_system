@@ -8,7 +8,7 @@ import {
 } from "../../../drizzle/schema";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { requireDb, type Actor, withTx } from "../tx";
 import {
@@ -93,7 +93,7 @@ function exactRequestReplay(
   payloadHash: string,
   actor: Actor,
 ): boolean {
-  return row.payloadHash === payloadHash && Number(row.requestedBy) === actor.userId;
+  return payloadHashMatches(payloadHash, row.payloadHash) && Number(row.requestedBy) === actor.userId;
 }
 
 function decisionHash(input: DeliveryWriteOffDecisionInput, decision: "APPROVE" | "REJECT", note: string | null) {

@@ -4,6 +4,7 @@ import {
   checkIdempotency,
   idempotencyHash,
   legacyIdempotencyHash,
+  payloadHashMatches,
   recordIdempotencyKey,
   withIdempotency,
 } from "../idempotency";
@@ -54,6 +55,21 @@ describe("idempotencyHash — مستقرّ عبر رحلة التخزين في �
     const at = new Date("2026-09-03T00:00:00.000Z");
     expect(idempotencyHash({ at })).toBe(idempotencyHash({ at: at.toISOString() }));
     expect(idempotencyHash({ at })).not.toBe(idempotencyHash({ at: new Date("2026-09-04T00:00:00.000Z") }));
+  });
+
+  // Codex جولة ٢: حمولتان تتشاركان البصمة الحالية وتختلفان في القديمة — الجسر يحتفظ بكلتيهما، فطلبان
+  // متزامنان لا يُسقط أحدهما مفتاح الآخر؛ والمقارنة الموحَّدة تخدم مواضع replay المباشرة أيضاً.
+  it("payloadHashMatches: تطابق مباشر أو بصمة قديمة لنفس الحمولة — وكلّ المرشّحات القديمة تُحفَظ", () => {
+    const a = { a: undefined };
+    const b = { b: undefined };
+    const currentA = idempotencyHash(a);
+    const currentB = idempotencyHash(b);
+    expect(currentA).toBe(currentB); // كلتاهما {} بعد التطبيع
+    expect(payloadHashMatches(currentA, legacyIdempotencyHash(a))).toBe(true);
+    expect(payloadHashMatches(currentB, legacyIdempotencyHash(b))).toBe(true);
+    expect(payloadHashMatches(currentA, currentA)).toBe(true);
+    expect(payloadHashMatches(currentA, legacyIdempotencyHash({ c: 1 }))).toBe(false);
+    expect(payloadHashMatches(currentA, null)).toBe(false);
   });
 
   it("متّجه مثبَّت: قيمة JSON خالصة تحتفظ ببصمتها القديمة — البصمات المخزَّنة قبل الإصلاح تبقى صالحة", () => {

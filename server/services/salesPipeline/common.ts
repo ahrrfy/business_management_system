@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { invoices, quotations } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, toDbMoney } from "../money";
+import { payloadHashMatches } from "../idempotency";
 
 export function normalizePipelineKey(
   value: string,
@@ -205,7 +206,7 @@ export function assertExactReplay(
   actorUserId: number,
 ): void {
   if (
-    row.payloadHash !== payloadHash ||
+    !payloadHashMatches(payloadHash, row.payloadHash) ||
     Number(row.actorUserId) !== actorUserId
   ) {
     throw new TRPCError({

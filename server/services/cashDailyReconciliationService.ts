@@ -31,6 +31,7 @@ import {
 import {
   checkIdempotency,
   idempotencyHash,
+  payloadHashMatches,
   recordIdempotencyKey,
 } from "./idempotency";
 import { extractInsertId } from "../lib/insertId";
@@ -97,7 +98,7 @@ async function checkReopenIdempotencyCurrentTx(
       message: "معرّف طلب إعادة الفتح قديم ولا يملك بصمة قابلة للتحقق",
     });
   }
-  if (row.payloadHash !== payloadHash) {
+  if (!payloadHashMatches(payloadHash, row.payloadHash)) {
     throw new TRPCError({
       code: "CONFLICT",
       message: "طلب إعادة فتح بنفس المعرّف لكن بسبب أو نسخة مختلفة",
@@ -129,7 +130,7 @@ async function checkDailyCountIdempotencyCurrentTx(
       .limit(1)
   )[0];
   if (!row) return null;
-  if (row.payloadHash == null || row.payloadHash !== payloadHash) {
+  if (row.payloadHash == null || !payloadHashMatches(payloadHash, row.payloadHash)) {
     throw new TRPCError({
       code: "CONFLICT",
       message: "معرّف طلب الجرد مستعمل لحمولة مختلفة أو قديمة بلا بصمة",

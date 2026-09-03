@@ -51,6 +51,7 @@ import { shiftIdForCashTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
+import { payloadHashMatches } from "../idempotency";
 
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 
@@ -326,7 +327,7 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
     const replay = (await tx.select().from(purchaseReturnRequests).where(eq(purchaseReturnRequests.requestKey, requestKey)).limit(1))[0];
     if (replay) {
       assertPurchaseBranch(replay, actor);
-      if (replay.payloadHash !== payloadHash) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة مرتجع مختلفة" });
+      if (!payloadHashMatches(payloadHash, replay.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة مرتجع مختلفة" });
       return { requestId: Number(replay.id), status: replay.status, idempotent: true as const };
     }
     const invoice = (await tx.select().from(supplierInvoices).where(eq(supplierInvoices.id, input.supplierInvoiceId)).for("update").limit(1))[0];
@@ -444,7 +445,7 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
       )[0];
       if (!raced) throw error;
       assertPurchaseBranch(raced, actor);
-      if (raced.payloadHash !== payloadHash) {
+      if (!payloadHashMatches(payloadHash, raced.payloadHash)) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح الطلب مستعمل بحمولة مرتجع مختلفة",
@@ -675,7 +676,7 @@ export async function requestPurchaseReturnReversal(input: RequestPurchaseReturn
   const payloadHash = sha256(canonical);
   return withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseReturnReversalRequests).where(eq(purchaseReturnReversalRequests.requestKey, requestKey)).limit(1))[0];
-    if (replay) { assertPurchaseBranch(replay, actor); if (replay.payloadHash !== payloadHash) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة عكس مختلفة" }); return { requestId: Number(replay.id), status: replay.status, idempotent: true as const }; }
+    if (replay) { assertPurchaseBranch(replay, actor); if (!payloadHashMatches(payloadHash, replay.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة عكس مختلفة" }); return { requestId: Number(replay.id), status: replay.status, idempotent: true as const }; }
     const purchaseReturn = (await tx.select().from(purchaseReturns).where(eq(purchaseReturns.id, input.purchaseReturnId)).for("update").limit(1))[0];
     if (!purchaseReturn) throw new TRPCError({ code: "NOT_FOUND", message: "مرتجع الشراء غير موجود" });
     assertPurchaseBranch(purchaseReturn, actor); assertExpectedVersion(Number(purchaseReturn.version), input.expectedReturnVersion, "مرتجع الشراء");

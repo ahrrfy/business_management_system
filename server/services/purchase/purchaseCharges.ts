@@ -38,6 +38,7 @@ import { withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { assertExpectedVersion, assertIndependentPurchaseReviewer } from "./returnGovernance";
+import { payloadHashMatches } from "../idempotency";
 
 const ACCRUABLE_ROLES = new Set<AccountRole>(["RENT", "UTILITIES", "OPERATING_EXPENSE", "DELIVERY_EXPENSE", "OTHER_EXPENSE"]);
 const EXPENSE_ROLES = new Set<AccountRole>([
@@ -179,7 +180,7 @@ export async function createPurchaseCharge(input: CreatePurchaseChargeInput, act
   const payloadHash = sha256(canonical); const evidenceHash = sha256(stableCanonical({ type: input.evidenceType, reference: evidenceReference }));
   return withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseCharges).where(eq(purchaseCharges.clientRequestId, clientRequestId)).limit(1))[0];
-    if (replay) { assertPurchaseBranch(replay, actor); if (replay.payloadHash !== payloadHash) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بمصروف مختلف" }); return { purchaseChargeId: Number(replay.id), status: replay.status, idempotent: true as const }; }
+    if (replay) { assertPurchaseBranch(replay, actor); if (!payloadHashMatches(payloadHash, replay.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بمصروف مختلف" }); return { purchaseChargeId: Number(replay.id), status: replay.status, idempotent: true as const }; }
     assertPurchaseBranch({ branchId: input.branchId }, actor);
     const account = (await tx.select().from(accounts).where(eq(accounts.id, input.expenseAccountId)).for("update").limit(1))[0];
     if (!account) throw new TRPCError({ code: "NOT_FOUND", message: "حساب المصروف غير موجود" });
@@ -210,7 +211,7 @@ export async function requestPurchaseChargeControl(input: RequestPurchaseChargeC
   const canonical = stableCanonical({ purchaseChargeId: input.purchaseChargeId, expectedChargeVersion: input.expectedChargeVersion, kind: input.kind, evidenceReference, reason }); const payloadHash = sha256(canonical);
   return withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseChargeControlRequests).where(eq(purchaseChargeControlRequests.requestKey, requestKey)).limit(1))[0];
-    if (replay) { assertPurchaseBranch(replay, actor); if (replay.payloadHash !== payloadHash) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة مختلفة" }); return { requestId: Number(replay.id), status: replay.status, idempotent: true as const }; }
+    if (replay) { assertPurchaseBranch(replay, actor); if (!payloadHashMatches(payloadHash, replay.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة مختلفة" }); return { requestId: Number(replay.id), status: replay.status, idempotent: true as const }; }
     const charge = (await tx.select().from(purchaseCharges).where(eq(purchaseCharges.id, input.purchaseChargeId)).for("update").limit(1))[0];
     if (!charge) throw new TRPCError({ code: "NOT_FOUND", message: "مصروف الشراء غير موجود" }); assertPurchaseBranch(charge, actor); assertExpectedVersion(Number(charge.version), input.expectedChargeVersion, "مصروف الشراء");
     if ((input.kind === "POST" && charge.status !== "DRAFT") || (input.kind === "REVERSE" && charge.status !== "POSTED")) throw new TRPCError({ code: "CONFLICT", message: "حالة المصروف لا تسمح بهذه العملية" });
