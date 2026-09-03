@@ -129,7 +129,15 @@ async function workOrderWithDeposit(branchId: number, shiftId: number, deposit: 
   return workOrderId;
 }
 
-const RECEPTION_STAFF: RefundRailActor = { userId: 2, branchId: 1, role: "cashier" };
+// قالب `cashier` صار يمنح `treasury: "READ"` (٢/٩/٢٦ سياسة الاستقبال الهجين)، فلا يعود
+// كاشيراً «بلا treasury» تلقائياً. نُلغي بـ`permissionsOverride` لنُبقي قصدَ الاختبار:
+// «موظّفٌ عنده workorders لكن بلا treasury:READ» — نموذجٌ حيّ (مدير مبيعات، مثلاً).
+const RECEPTION_STAFF: RefundRailActor = {
+  userId: 2,
+  branchId: 1,
+  role: "cashier",
+  permissionsOverride: { treasury: "NONE" } as unknown as RefundRailActor["permissionsOverride"],
+};
 const OTHER_BRANCH_STAFF: RefundRailActor = { userId: 3, branchId: 2, role: "cashier" };
 const ADMIN: RefundRailActor = { userId: 1, branchId: 1, role: "admin", isOwner: true };
 const MANAGER_B1: RefundRailActor = { userId: 4, branchId: 1, role: "manager" };
@@ -258,9 +266,13 @@ describe("خدمةُ روافد الردّ الموحَّدة — العزلُ �
       ),
     );
     expect(res.branchId).toBe(1);
-    // بلا فاتورةٍ محصَّلة، لا نقدَ يخرج من مسار الاسترجاع.
-    expect(res.needsCashDrawer).toBe(false);
-    expect(res.estimatedCashOut).toBe("0.00");
+    // Codex #960 P1: REVERSE_DELIVERY لا يقبل رافدَ الخزينة (فعلُه بخطّة ردٍّ لكلّ إيصال) —
+    // مهما كان `needsCashDrawer`، خدمتُنا تُحجب treasuryCash صراحةً، فيستحيل تأكيدُ اختيارٍ
+    // لن يُنفَّذ. مقياسُ الاختبار الآن على هذا الثابت، لا على قيمةٍ من دفتر الدفع الأصليّ
+    // (`workOrderRefundPreflight` يقرّر needsCashDrawer بحسب حسابه الداخليّ، وقد يتغيّر —
+    // العقدُ الثابتُ هنا: خزينةٌ محجوبةٌ في REVERSE_DELIVERY).
+    expect(res.treasuryCash).toBeNull();
+    expect(res.treasurySufficient).toBe(false);
   });
 
   it("⑧  التوزيع: CONSIGNMENT_RETURN لإرساليةٍ غير موجودة ⇒ NOT_FOUND بمصطلحها", async () => {
