@@ -26,9 +26,32 @@ function canonicalJson(v: unknown): string {
   );
 }
 
-/** hash حمولة قانونيّ (sha256 hex، ٦٤ محرفاً) — ثابتٌ عبر إعادة الإرسال، مستقلٌّ عن ترتيب المفاتيح. */
+/**
+ * يُطبّع القيمة إلى **وثيقة JSON** — أي ما سيُخزَّن فعلاً في عمود `json()` ويُقرأ منه.
+ *
+ * ⭐ الجذر (٣/٩/٢٦، بلاغ الإنتاج «حمولة الطلب لا تطابق بصمتها المحفوظة»): كلّ مستهلكٍ يحسب
+ * البصمة على كائن JS الخامّ ثمّ يخزّن الحمولة بـ`JSON.stringify` ويتحقّق لاحقاً على ما قرأه.
+ * تلك الرحلة **تُسقط المفاتيح ذات `undefined`** وتحوّل `Date` إلى نصّ ISO، بينما كان
+ * `canonicalJson` يُصدر `"key":null` للمفتاح `undefined` — و`undefined` يصل من الواجهة كما هو
+ * عبر superjson ويبقى بعد zod (`resolution: undefined` في كلّ مرتجع بيعٍ لعميلٍ مسجَّل، أو
+ * `refund: undefined` للعابر) ⇒ بصمةُ الإنشاء ≠ بصمةُ المخزَّن، فالطلب يُرفض عند الاعتماد بلا
+ * مخرج. التطبيع أوّلاً يضمن `hash(x) ≡ hash(parse(stringify(x)))` **بالبناء**، ولا يغيّر بصمة
+ * أيّ قيمة JSON خالصة (بلا undefined ولا Date) — فالبصمات المخزَّنة للحمولات السليمة تبقى صالحة
+ * (يحرسه متّجهٌ مثبَّت في `idempotencyFramework.test.ts`). الصفوف المعلَّقة التي خُتمت قبل
+ * الإصلاح تُعاد ختمها مرّةً عند النشر: `scripts/repair-control-request-payload-hashes.ts`.
+ */
+function toJsonDocument(value: unknown): unknown {
+  if (value === undefined) return null;
+  const text = JSON.stringify(value);
+  return text === undefined ? null : JSON.parse(text);
+}
+
+/**
+ * hash حمولة قانونيّ (sha256 hex، ٦٤ محرفاً) — ثابتٌ عبر إعادة الإرسال، مستقلٌّ عن ترتيب المفاتيح،
+ * **ومستقرٌّ عبر رحلة التخزين في عمود JSON** (انظر `toJsonDocument`).
+ */
 export function idempotencyHash(payload: unknown): string {
-  return createHash("sha256").update(canonicalJson(payload)).digest("hex");
+  return createHash("sha256").update(canonicalJson(toJsonDocument(payload))).digest("hex");
 }
 
 /** إن كان clientRequestId مُستهلَكاً سابقاً يُرجع refId الأول؛ وإلّا null. (توافقٌ خلفيّ — بلا فحص hash.) */

@@ -18,6 +18,46 @@ describe("idempotencyHash — قانونيّ ومستقرّ", () => {
   });
 });
 
+/**
+ * بلاغ الإنتاج ٣/٩/٢٦ «حمولة الطلب لا تطابق بصمتها المحفوظة»: كلّ مستهلكٍ يبصم كائن JS الخامّ ثمّ
+ * يخزّنه في عمود JSON (`JSON.stringify`) ويتحقّق على ما قرأه. `undefined` يصل من الواجهة عبر
+ * superjson ويبقى بعد zod، وكان يُبصَم `"key":null` بينما التخزين يُسقطه ⇒ بصمتان مختلفتان.
+ */
+describe("idempotencyHash — مستقرّ عبر رحلة التخزين في عمود JSON", () => {
+  const stored = (v: unknown) => JSON.parse(JSON.stringify(v));
+
+  it("مفتاح بقيمة undefined = غيابه = ما بعد التخزين (حمولة مرتجع البيع حرفياً)", () => {
+    const fromWire = {
+      lines: [{ invoiceItemId: 1, baseQuantity: 1 }],
+      refund: undefined,
+      resolution: undefined,
+      restock: true,
+    };
+    expect(idempotencyHash(fromWire)).toBe(idempotencyHash(stored(fromWire)));
+    expect(idempotencyHash(fromWire)).toBe(
+      idempotencyHash({ lines: [{ invoiceItemId: 1, baseQuantity: 1 }], restock: true }),
+    );
+    // null قيمةٌ حقيقية تُخزَّن وتُقرأ — تبقى مميّزةً عن الغياب.
+    expect(idempotencyHash({ a: 1, b: undefined })).not.toBe(idempotencyHash({ a: 1, b: null }));
+    // متداخلاً أيضاً (refund.shiftId: undefined).
+    const nested = { refund: { amount: "10.00", method: "CASH", shiftId: undefined } };
+    expect(idempotencyHash(nested)).toBe(idempotencyHash(stored(nested)));
+  });
+
+  it("Date تُبصَم كنصّ ISO كما تُخزَّن — وتاريخان مختلفان بصمتان مختلفتان", () => {
+    const at = new Date("2026-09-03T00:00:00.000Z");
+    expect(idempotencyHash({ at })).toBe(idempotencyHash({ at: at.toISOString() }));
+    expect(idempotencyHash({ at })).not.toBe(idempotencyHash({ at: new Date("2026-09-04T00:00:00.000Z") }));
+  });
+
+  it("متّجه مثبَّت: قيمة JSON خالصة تحتفظ ببصمتها القديمة — البصمات المخزَّنة قبل الإصلاح تبقى صالحة", () => {
+    // sha256 لـ {"a":1,"b":[1,2]} كما كانت الدالّة القديمة تُنتجه حرفياً.
+    expect(idempotencyHash({ b: [1, 2], a: 1 })).toBe(
+      "8baa73198470c7bb4c3ce142a8fd651affc0310d878bb9bd159e37a573fb4874",
+    );
+  });
+});
+
 describe("withIdempotency / checkIdempotency — DB", () => {
   const op = "test.idem";
 
@@ -65,5 +105,14 @@ describe("withIdempotency / checkIdempotency — DB", () => {
   it("بلا clientRequestId ⇒ لا فحص (null)", async () => {
     const got = await withTx((tx) => checkIdempotency(tx, op, null, idempotencyHash({ a: 1 })));
     expect(got).toBeNull();
+  });
+
+  // هجرة 0328 (بلاغ الإنتاج ٣/٩/٢٦): عرض العمود = عقد الراوترات (١٢٠) لا ٦٤ — مفتاح قرار الشاشة
+  // `purchase-decision-PURCHASE_ORDER-<id>-approve-<uuid>` كان يسقط هنا بـER_DATA_TOO_LONG.
+  it("مفتاح بطول ١٢٠ محرفاً يُسجَّل ويُقرأ", async () => {
+    const k = (`purchase-decision-PURCHASE_ORDER-${Date.now()}-approve-` + "0123456789abcdef".repeat(8)).slice(0, 120);
+    expect(k).toHaveLength(120);
+    await withTx((tx) => recordIdempotencyKey(tx, op, k, 120, null));
+    expect(await withTx((tx) => checkIdempotency(tx, op, k))).toBe(120);
   });
 });

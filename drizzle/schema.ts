@@ -8334,7 +8334,14 @@ export const idempotencyKeys = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     operation: varchar("operation", { length: 40 }).notNull(), // مثل "sale.pay" / "sale.return" / "purchase.receive"
-    clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
+    /**
+     * ١٢٠ لا ٦٤ (هجرة 0328، ٣/٩/٢٦): عقودُ الراوترات والخدمات تقبل المفتاح حتى ١٢٠ محرفاً
+     * (`decisionKey`/`requestKey` `.max(120)`، وأعمدة goodsReceipts/supplierInvoices/purchaseCharges
+     * ١٢٠) بينما كان هذا العمود وحده ٦٤ ⇒ مفتاحُ قرار الشاشة
+     * `purchase-decision-PURCHASE_ORDER-<id>-approve-<uuid>` (~٨٠) يمرّ كلَّ الطبقات ثمّ يسقط هنا
+     * بـER_DATA_TOO_LONG فيُرفض اعتمادُ فاتورة الشراء ورفضُها معاً على الإنتاج.
+     */
+    clientRequestId: varchar("clientRequestId", { length: 120 }).notNull(),
     refId: bigint("refId", { mode: "number" }).notNull(), // المعرّف الناتج (إيصال/استرداد/استلام)
     // hash الحمولة القانونيّ (sha256، #٥): يكشف «نفس المفتاح بحمولةٍ مختلفة» ⇒ CONFLICT. nullable
     // للتوافق الخلفيّ (صفوف/مسارات بلا hash تبقى تُعيد refId المخزّن كالسابق).

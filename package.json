@@ -93,6 +93,7 @@
     "company:new": "node scripts/company-new.mjs",
     "platform-admin:new": "node scripts/platform-admin-new.mjs",
     "admin:recover": "tsx scripts/recover-last-admin.ts",
+    "repair:control-request-hashes": "tsx scripts/repair-control-request-payload-hashes.ts",
     "db:migrate:all-companies": "node scripts/migrate-all-companies.mjs",
     "coord": "node scripts/coord.mjs",
     "coord:claim": "node scripts/coord.mjs claim",
