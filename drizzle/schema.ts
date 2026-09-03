@@ -1996,7 +1996,7 @@ export const invoiceItems = mysqlTable(
     // المدفوعة» يبقى سارياً، والهدية خارج وعاء العمولة تلقائياً (الوعاء يفلتر SALE/RETURN).
     isGift: boolean("isGift").default(false).notNull(),
     // product-content-governance (0251): الاسم الذي طُبع/اعتمد لحظة البيع، لا يتغير مع تحديث الكتالوج.
-    itemNameSnapshot: varchar("itemNameSnapshot", { length: 255 }),
+    itemNameSnapshot: varchar("itemNameSnapshot", { length: 512 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({

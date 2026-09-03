@@ -1,4 +1,12 @@
 -- 0332: provider baskets and durable mixed checkout. Expand-compatible, no historical rewrites.
+-- Preserve full 255-character catalog names plus card value/type/duration on invoices.
+SET @name_length = (SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoiceItems' AND COLUMN_NAME = 'itemNameSnapshot');
+SET @sql = IF(@name_length < 512, 'ALTER TABLE `invoiceItems` MODIFY COLUMN `itemNameSnapshot` VARCHAR(512) NULL', 'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+--> statement-breakpoint
+
 SET @exists = (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'digitalSaleIntents' AND COLUMN_NAME = 'checkoutSnapshot');
 SET @sql = IF(@exists = 0, 'ALTER TABLE `digitalSaleIntents` ADD COLUMN `checkoutSnapshot` JSON NULL', 'SELECT 1');
 PREPARE stmt FROM @sql;
@@ -50,4 +58,3 @@ SET @sql = IF(IFNULL(@basket_expression, 0) = 0,
 PREPARE stmt FROM @sql;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
-
