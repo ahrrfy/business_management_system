@@ -836,12 +836,17 @@ export async function decideSupplierPayment(
     )[0]!;
     // سدادُ المورّد **خروجُ مال**، وهذه البوّابة هي التفويض الوحيد له: إيصال OUT مكتمل
     // بـcashBucket + حارسُ توفّرٍ + قفلُ مصدر النقد. ⇒ المالك حصراً.
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — كما في السندات (voucher/approval.ts)
+    // بلا انتظار علَم ownerOnlyApproval؛ التفصيل هناك.
+    const supplierPaymentApprover = await resolveApprovalActor(tx, actor);
     assertApprover({
-      actor: await resolveApprovalActor(tx, actor),
+      actor: supplierPaymentApprover,
       trigger: supplierPaymentTrigger(input.action),
       subject: `سداد مورّد (طلب ${input.requestId})`,
-      legacy: () =>
-        assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId),
+      legacy: () => {
+        if (supplierPaymentApprover.isOwner) return;
+        assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId);
+      },
     });
     if (request.status !== "PENDING") {
       if (request.decisionKey === decisionKey && request.decisionHash === hash)
@@ -1445,12 +1450,16 @@ export async function decideSupplierPaymentRefund(
     )[0]!;
     // استردادُ السداد **محوُ أثر**: عكسٌ جبريٌّ سطراً بسطر للدفع — إيصال IN مقابل OUT،
     // وPAYMENT_IN مقابل PAYMENT_OUT، ورصيدُ المورّد يعود، والفاتورة تعود OPEN.
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
+    const supplierPaymentRefundApprover = await resolveApprovalActor(tx, actor);
     assertApprover({
-      actor: await resolveApprovalActor(tx, actor),
+      actor: supplierPaymentRefundApprover,
       trigger: supplierPaymentRefundTrigger(input.action),
       subject: `استرداد سداد (طلب ${input.requestId})`,
-      legacy: () =>
-        assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId),
+      legacy: () => {
+        if (supplierPaymentRefundApprover.isOwner) return;
+        assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId);
+      },
     });
     if (request.status !== "PENDING") {
       if (request.decisionKey === decisionKey && request.decisionHash === hash)
