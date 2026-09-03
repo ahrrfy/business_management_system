@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 const readPage = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 const readRouter = (name: string) =>
   readFileSync(new URL(`../../../../server/routers/${name}`, import.meta.url), "utf8");
+const readHrComponent = (name: string) =>
+  readFileSync(new URL(`../../components/hr/${name}`, import.meta.url), "utf8");
 
 /**
  * العقد الحاكم: **إنهاء الخدمة له مسارٌ واحد** — إجراء `promotions` بـMaker-Checker
@@ -134,5 +136,22 @@ describe("عقد نيّة الإنهاء المحمولة في الرابط", ()
   it("useSearch تفاعليّ ⇒ يعمل الرابط بلا remount", () => {
     expect(page).toContain("const search = useSearch();");
     expect(page).toContain('from "wouter"');
+  });
+});
+
+describe("عقد إخفاء أدوات أجهزة الحضور عند تعطيل الجسر", () => {
+  it("يخفي تبويب الأجهزة فقط عند bridgeStatus.enabled=false المؤكدة", () => {
+    const hub = readPage("HrHub.tsx");
+    expect(hub).toContain("trpc.hrDevices.bridgeStatus.useQuery");
+    expect(hub).toContain("bridge.data?.enabled === false");
+    expect(hub).toContain('tab.value !== "devices"');
+    expect(hub).not.toMatch(/!bridge\.data\?\.enabled/);
+  });
+
+  it("يخفي بطاقة ربط الموظف بالشروط نفسها ولا يخفيها أثناء التحميل", () => {
+    const card = readHrComponent("DeviceLinkCard.tsx");
+    expect(card).toContain("trpc.hrDevices.bridgeStatus.useQuery");
+    expect(card).toContain("if (bridge.data?.enabled === false) return null;");
+    expect(card).not.toMatch(/if \(!bridge\.data\?\.enabled\)/);
   });
 });

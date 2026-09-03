@@ -3,7 +3,28 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { auditLogs, branchStock, productVariants, products } from "../../drizzle/schema";
 import type { Tx } from "../db";
-import { money } from "./money";
+import { canCrossBranches } from "../lib/branchAuthority";
+import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
+import { postEntry } from "./ledgerService";
+import { money, round2 } from "./money";
+
+type CostRevaluationActor = {
+  userId: number;
+  branchId?: number | null;
+  role?: string | null;
+  isOwner?: boolean | null;
+};
+
+/**
+ * A catalog-anomaly row is immutable source evidence for an exact reversal. Unlike a
+ * free-form catalog edit, it may post the owned-stock value delta directly because the
+ * old/new pair and the source id are already recorded and the reversal is independently
+ * audited. Other callers stay fail-closed and must use the maker/checker request flow.
+ */
+export type GovernedCostRevaluationSource = {
+  kind: "CATALOG_ANOMALY_REVERT";
+  anomalyLogId: number;
+};
 
 /**
  * Manual catalog cost edits are not a documented inventory-revaluation source.
@@ -27,8 +48,9 @@ export async function postCostRevaluation(
   variantId: number,
   oldCost: string | number | Decimal | null | undefined,
   newCost: string | number | Decimal | null | undefined,
-  actor: { userId: number; branchId?: number | null },
+  actor: CostRevaluationActor,
   reason?: string | null,
+  governedSource?: GovernedCostRevaluationSource,
 ): Promise<void> {
   const delta = money(newCost ?? 0).minus(money(oldCost ?? 0));
 
@@ -49,7 +71,7 @@ export async function postCostRevaluation(
     throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
   }
   const rows = await tx
-    .select({ quantity: branchStock.quantity })
+    .select({ branchId: branchStock.branchId, quantity: branchStock.quantity })
     .from(branchStock)
     .where(eq(branchStock.variantId, variantId))
     .for("update");
@@ -71,7 +93,8 @@ export async function postCostRevaluation(
   // تدقيق ٢٧/٧ (تكملة H3/H4 تحت WAVG): أثرٌ **مُدقَّقٌ مُهيكَل** لتغيير التكلفة اليدويّ (قبل/بعد) على
   // حقلٍ ماليٍّ حسّاس. يُكتَب **داخل المعاملة** فيرتدّ التعديلُ إن فشل
   // السجلّ (ضابطٌ حاكمٌ لا يجوز نجاحه بلا أثر)، ويسبق فحص الأمانة كي يُدقَّق تعديلُ «حصّة المودِع» أيضاً
-  // (وإن استُثني من قيد إعادة التقييم). الاستدعاء محصورٌ بمساري التعديل اليدويّ لا بتحديث WAVG الآليّ.
+  // (وإن استُثني من قيد إعادة التقييم). الاستدعاء محصورٌ بمساري التعديل اليدويّ وعكس سجلّ
+  // شذوذٍ موثّق، لا بتحديث WAVG الآليّ.
   //  • branchId: فرعُ الفاعل — كي تظهر هذه السجلّات تحت فلتر الفرع في auditRouter.list (Codex).
   //  • reason: سبب تغيير التكلفة الإلزاميّ للتغيّرات الكبيرة (assertCostChangeReasonOrThrow) — يُلتقَط
   //    هنا كي يكون السجلّ مكتفياً بذاته (لا يلزم تقاطعُه مع سجلّ product.update).
@@ -89,9 +112,11 @@ export async function postCostRevaluation(
   // فتعديل «حصّة المودِع» ليس إعادة تقييمٍ لأصلٍ لدينا ⇒ لا قيد (وإلّا سطرُ ربح/خسارةٍ بلا أصلٍ مقابل).
   if (pv.isConsignment) return;
 
-  // وجود أي رصيد غير صفري يعني أن تعديل التكلفة سيغيّر أصل المخزون بلا مستند محاسبي مصنّف.
-
-  if (rows.some((row) => Number(row.quantity ?? 0) !== 0)) {
+  // وجود أي رصيد غير صفري يعني أن تعديل التكلفة سيغيّر أصل المخزون. التعديل اليدوي يبقى
+  // مغلقاً؛ المصدر الموثّق الوحيد هنا هو عكس سجلّ شذوذ بعينه، فيُرحّل فرق القيمة لكل فرع.
+  const stockedRows = rows.filter((row) => Number(row.quantity ?? 0) !== 0);
+  if (stockedRows.length === 0) return;
+  if (!governedSource) {
     // `reason` is free audit text, not an accounting purpose or a controlled
     // counter-account. Treating every upward edit as revenue and every downward
     // edit as loss manufactures P&L without source evidence. Receipt/WAVG and
@@ -102,6 +127,54 @@ export async function postCostRevaluation(
       code: "PRECONDITION_FAILED",
       message:
         "لا تُعدَّل تكلفة صنفٍ مملوك له رصيد من هنا: تغييرها يحرّك أصل المخزون بلا قيدٍ مقابل. استعمل «إعادة تقييم التكلفة» من شاشة المخزون (غرضٌ محاسبيّ + سببٌ مكتوب + اعتماد مديرٍ ثانٍ)، أو استلامَ شراءٍ إن كانت التكلفة تتغيّر بشراءٍ فعليّ.",
+    });
+  }
+
+  if (!canCrossBranches(actor)) {
+    const foreignStock = stockedRows.some(
+      (row) => Number(row.branchId) !== Number(actor.branchId),
+    );
+    if (foreignStock) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message:
+          "التكلفة عامّة لكل الفروع، ولهذا الصنف رصيدٌ في فرعٍ آخر — لا يمكن استعادة تكلفته إلّا من الإدارة.",
+      });
+    }
+  }
+
+  for (const row of stockedRows) {
+    const valueDelta = round2(delta.times(Number(row.quantity)));
+    if (valueDelta.isZero()) continue;
+    const gain = valueDelta.isPositive();
+    const absoluteDelta = valueDelta.abs();
+    const postingSourceComponents = gain
+      ? { roleDebits: { INVENTORY: absoluteDelta }, roleCredits: { OTHER_REVENUE: absoluteDelta } }
+      : { roleDebits: { LOSSES: absoluteDelta }, roleCredits: { INVENTORY: absoluteDelta } };
+
+    await postEntry(tx, {
+      entryType: "ADJUST",
+      branchId: Number(row.branchId),
+      cost: valueDelta.neg(),
+      profit: valueDelta,
+      amount: money(0),
+      dedupeKey: `COST_REVAL:ANOMALY_REVERT:${governedSource.anomalyLogId}:${row.branchId}`,
+      notes: `عكس شذوذ تكلفة #${governedSource.anomalyLogId} — ${reason?.trim() || "استعادة تكلفة سابقة"}`,
+      createdBy: actor.userId,
+      postingIntent: gain
+        ? createPostingIntent(
+          "ADJUST_INVENTORY_GAIN",
+          "ADJUST",
+          [debitLine("INVENTORY", absoluteDelta), creditLine("OTHER_REVENUE", absoluteDelta)],
+          postingSourceComponents,
+        )
+        : createPostingIntent(
+          "ADJUST_INVENTORY_LOSS",
+          "ADJUST",
+          [debitLine("LOSSES", absoluteDelta), creditLine("INVENTORY", absoluteDelta)],
+          postingSourceComponents,
+        ),
+      postingSourceComponents,
     });
   }
 }

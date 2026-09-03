@@ -9,12 +9,19 @@ const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
 const ReportsTools = lazy(() => import("@/pages/ReportsTools"));
 const CommissionLeaderboard = lazy(() => import("@/pages/CommissionLeaderboard"));
 
+// مرآة reportViewerProcedure: قائمة الأدوار القالبية + فتحٌ إضافي بمنح reports الصريح.
+const REPORT_VIEWER_GATE: NonNullable<HubTab["gate"]> = {
+  roles: ["manager", "accountant", "auditor"],
+  module: "reports",
+  level: "READ",
+};
+
 const TABS: HubTab[] = [
-  { value: "overview", label: "النظرة العامة", gate: { roles: ["admin", "manager", "accountant", "auditor"] }, Component: ReportsOverview },
+  { value: "overview", label: "النظرة العامة", gate: REPORT_VIEWER_GATE, Component: ReportsOverview },
   // لوحة الإنجاز (العمولات) — بوّابة الخادم reportViewerProcedure (مرآة gate الواجهة هنا).
-  { value: "commission-board", label: "لوحة الإنجاز", gate: { roles: ["admin", "manager", "accountant", "auditor"] }, Component: CommissionLeaderboard },
+  { value: "commission-board", label: "لوحة الإنجاز", gate: REPORT_VIEWER_GATE, Component: CommissionLeaderboard },
   { value: "catalog", label: "كل التقارير", Component: ReportsCenter },
-  { value: "tools", label: "أدوات المحاسب", gate: { roles: ["admin", "manager", "accountant"] }, Component: ReportsTools },
+  { value: "tools", label: "أدوات المحاسب", gate: REPORT_VIEWER_GATE, Component: ReportsTools },
 ];
 
 export default function ReportsHub() {

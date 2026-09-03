@@ -218,21 +218,11 @@ export const catalogAnomaliesRouter = router({
                CASE
                  WHEN pal.changeKind <> 'cost' THEN 0
                  WHEN pal.createdAt < DATE_SUB(NOW(), INTERVAL ${COST_CHANGE_REVERT_WINDOW_DAYS} DAY) THEN 0
-                 WHEN p.isConsignment = TRUE THEN 1
-                 WHEN EXISTS (
-                   SELECT 1 FROM branchStock bs
-                   WHERE bs.variantId = pal.variantId AND bs.quantity <> 0
-                 ) THEN 0
                  ELSE 1
                END AS directRevertAllowed,
                CASE
                  WHEN pal.changeKind <> 'cost' THEN 'NON_COST'
                  WHEN pal.createdAt < DATE_SUB(NOW(), INTERVAL ${COST_CHANGE_REVERT_WINDOW_DAYS} DAY) THEN 'EXPIRED'
-                 WHEN p.isConsignment = TRUE THEN NULL
-                 WHEN EXISTS (
-                   SELECT 1 FROM branchStock bs
-                   WHERE bs.variantId = pal.variantId AND bs.quantity <> 0
-                 ) THEN 'STOCK_ON_HAND'
                  ELSE NULL
                END AS revertBlockReason
         FROM priceAnomalyLog pal
@@ -267,8 +257,8 @@ export const catalogAnomaliesRouter = router({
 
   /**
    * **L3.5:** استعادة قيمة سابقة من `priceAnomalyLog` عبر خدمةٍ ذرية تمرّ بحارس حوكمة
-   * `costPrice`. صفريّ الرصيد يُستعاد مع تدقيق قبل/بعد؛ وذو المخزون يُوجَّه لمسار طلب إعادة
-   * التقييم كي لا يتجاوز القيد أو حارس الفترة. الحدود:
+   * `costPrice`. صفريّ الرصيد يُستعاد مع تدقيق قبل/بعد؛ وذو المخزون يولّد قيد إعادة تقييم
+   * لكل فرع عبر محرك القيود وحارس الفترة، في المعاملة نفسها. الحدود:
    *  - يعمل خلال ٣٠ يوماً من التغيير فقط.
    *  - لا يعمل إن كان الصفّ مُعاداً مسبقاً.
    */
@@ -278,6 +268,8 @@ export const catalogAnomaliesRouter = router({
       revertCatalogCostChange(input.logId, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
         ipAddress:
           (ctx.req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
           ctx.req?.ip ??

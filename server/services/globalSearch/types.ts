@@ -55,7 +55,7 @@ export function classifyQuery(raw: string): { kind: SearchKind; query: string } 
 
 export type GlobalSearchInput = {
   query: string;
-  /** فرع المستخدم؛ null = elevated (admin/manager) يبحث عبر الفروع. */
+  /** فرع المستخدم؛ null صالح فقط للمالك/الأدمن المطبَّع ذي صلاحية عبور الفروع. */
   branchId: number | null;
   role: string;
   /** فروق صلاحيات الدور المخصّص (يُحلّ إلى خريطة وحدات؛ يُحكم وصول الموظفين به). */

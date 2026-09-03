@@ -16,7 +16,7 @@ import { postCostRevaluation } from "../costRevaluation";
 import { money, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 
-type RevertActor = Pick<Actor, "userId"> & {
+type RevertActor = Pick<Actor, "userId" | "role" | "isOwner"> & {
   branchId?: Actor["branchId"] | null;
   ipAddress?: string | null;
 };
@@ -68,8 +68,9 @@ async function lockChangeLog(tx: Tx, logId: number): Promise<CostChangeLogRow> {
 }
 
 /**
- * يستعيد تكلفة صنفٍ صفريّ الرصيد فقط. وجود مخزون يمرّ عبر `postCostRevaluation` فيُرفض
- * fail-closed برسالة مسار الطلب/الاعتماد؛ فلا زرّ تدقيقٍ يستطيع تجاوز القيد أو حارس الفترة.
+ * يستعيد التكلفة السابقة من أثرٍ غير قابل للتعديل. إن وُجد مخزون مملوك، يرحّل
+ * `postCostRevaluation` فرق القيمة لكل فرع عبر `postEntry` وحارس الفترة؛ وتبقى الاستعادة
+ * والتدقيق وحالة الشذوذ والقيود في المعاملة نفسها.
  */
 export async function revertCatalogCostChange(
   logId: number,
@@ -89,6 +90,7 @@ export async function revertCatalogCostChange(
       restoredCost,
       actor,
       reason,
+      { kind: "CATALOG_ANOMALY_REVERT", anomalyLogId: logId },
     );
 
     await tx
