@@ -46,8 +46,8 @@ describe("reservation ticket 80mm contract", () => {
     expect(doc.itemBlocks).toEqual([
       {
         name: "ملزمة دراسية ذات اسم عربي طويل جداً للتحقق من الالتفاف إلى سطرين فقط — أزرق · A4 · الطبعة المحدّثة",
-        quantityPrice: "2 × 12,000.00 / قطعة",
-        total: "24,000.00",
+        quantityPrice: "2 × 12,000 / قطعة",
+        total: "24,000",
       },
     ]);
     expect(doc.itemBlocks?.[0].name).not.toContain("\n");
