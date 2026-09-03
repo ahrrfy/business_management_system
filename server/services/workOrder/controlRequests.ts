@@ -13,7 +13,7 @@ import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
 import {
@@ -138,7 +138,7 @@ function exactRequestReplay(
   return Number(row.workOrderId) === input.workOrderId
     && row.requestType === input.requestType
     && Number(row.baseVersion) === input.baseVersion
-    && row.payloadHash === payloadHash
+    && payloadHashMatches(payloadHash, row.payloadHash)
     && row.reason === reason
     && Number(row.requestedBy) === actor.userId;
 }

@@ -13,7 +13,7 @@ import { getAsset } from "./queries";
 import { createSystemPaymentRequestTx } from "../voucher/create";
 import { fixedAssetAccrualRecognition } from "../accounting/accrualPosting";
 import { createAccrualObligationTx, transitionAccrualObligationTx } from "../accounting/accrualObligations";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 
 /** الرمز التالي AST-#### — قراءة مرتّبة تحت قفل FOR UPDATE تُضيّق السباق، وقيد UNIQUE هو الحارس النهائي. */
 async function nextAssetCode(tx: Tx): Promise<string> {
@@ -92,7 +92,7 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
       .for("update")
       .limit(1);
     if (existing) {
-      if (existing.requestPayloadHash !== requestPayloadHash) {
+      if (!payloadHashMatches(requestPayloadHash, existing.requestPayloadHash)) {
         throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: مفتاح إنشاء الأصل استُعمل ببيانات مختلفة" });
       }
       return Number(existing.id);

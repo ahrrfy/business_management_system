@@ -13,6 +13,7 @@ import type { Tx } from "../../db";
 import {
   checkIdempotency,
   idempotencyHash,
+  payloadHashMatches,
   recordIdempotencyKey,
 } from "../idempotency";
 import { money } from "../money";
@@ -149,7 +150,7 @@ async function requestPurchaseOrderControlTx(
     .limit(1);
   if (existing) {
     if (
-      existing.payloadHash !== payloadHash ||
+      !payloadHashMatches(payloadHash, existing.payloadHash) ||
       Number(existing.purchaseOrderId) !== input.purchaseOrderId ||
       existing.kind !== input.kind
     ) {

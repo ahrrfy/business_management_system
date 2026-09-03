@@ -73,6 +73,7 @@ import { studioExportRouter } from "./routes/studioExportRouter";
 import { tenancyMiddleware } from "./tenancy/expressMiddleware";
 import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
+import { runWithLegacyHashScope } from "./services/idempotency";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
 import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
 import { assertStorefrontOrderingReadiness } from "./services/storefrontTurnstile";
@@ -213,6 +214,10 @@ async function startServer() {
       autoLogging: { ignore: (req) => req.url?.startsWith("/assets") ?? false },
     }),
   );
+
+  // نطاقُ مرشّحات البصمة القديمة لكلّ طلب (idempotency.ts، ٣/٩/٢٦): يجعل جسرَ البصمات ما قبل
+  // الإصلاح محلّياً للطلب فلا يطرح طلبٌ متزامن مرشّحَ طلبٍ آخر، ويموت مع الطلب.
+  app.use((_req, _res, next) => runWithLegacyHashScope(next));
 
   // حماية رؤوس HTTP. CSP مُفعَّل مع استثناء style-src unsafe-inline لـTailwind/SPA.
   // في وضع التطوير: 'unsafe-inline' + 'unsafe-eval' مطلوبان لـVite HMR و source maps.

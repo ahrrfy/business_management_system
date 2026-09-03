@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { idempotencyHash } from "../idempotency";
 import { createSale } from "../saleService";
 import {
   approveSalesControlRequest,
@@ -175,5 +176,45 @@ describe("حوكمة عمليات البيع الحرجة", () => {
     expect(commands[0].replacementInvoiceId).not.toBe(created.invoiceId);
     expect(commands[0].settlementKind).toBe("CUSTOMER_CREDIT");
     expect(commands[0].deltaAmount).toBe("2000.00");
+  });
+});
+
+/**
+ * بلاغ الإنتاج ٣/٩/٢٦: كلّ مرتجع بيعٍ مطلوبٍ من شاشة ReturnComposer كان يُرفض عند الاعتماد بـ
+ * «حمولة الطلب لا تطابق بصمتها المحفوظة». الراوتر يمرّر `{ ...payload }` وفيه `refund: undefined`
+ * و`resolution: undefined` (يصلان حرفياً عبر superjson ويبقيان بعد zod)؛ البصمةُ حُسبت عليهما
+ * `null` بينما عمودُ JSON أسقطهما ⇒ بصمةُ الإنشاء ≠ بصمةُ المخزَّن، ولا مخرجَ للطلب. الاختبار
+ * يُرسل الحمولة كما تصل فعلاً ويُثبت أنّ الاعتماد ينفّذ المرتجع.
+ */
+describe("بصمة حمولة طلب التحكّم مستقرّة عبر التخزين", () => {
+  it("حمولة فيها مفاتيح undefined كما يرسلها الراوتر تُعتمد وتُنفَّذ", async () => {
+    const created = await sale();
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, created.invoiceId));
+    const requested = await requestSalesControl({
+      requestKey: "ret-undefined-keys",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_RETURN",
+      reason: "رفض الزبون للمنتج",
+      payload: {
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 5 }],
+        refund: undefined,
+        resolution: undefined,
+        restock: true,
+      },
+    }, CASHIER);
+    expect(requested.status).toBe("PENDING");
+
+    const stored = (
+      await db().select().from(s.salesControlRequests).where(eq(s.salesControlRequests.id, Number(requested.id)))
+    )[0];
+    // المخزَّن بلا المفتاحين — وبصمتُه المخزَّنة تُعاد إنتاجها من المخزَّن نفسه.
+    expect(Object.keys(stored.payload as Record<string, unknown>).sort()).toEqual(["lines", "restock"]);
+    expect(idempotencyHash(stored.payload)).toBe(stored.payloadHash);
+
+    const approved = await approveSalesControlRequest(Number(requested.id), MANAGER);
+    expect("request" in approved && approved.request.status).toBe("APPROVED");
+    expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity)).toBe(100);
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0];
+    expect(Number(inv.returnedTotal ?? 0)).toBeGreaterThan(0);
   });
 });
