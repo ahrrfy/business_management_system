@@ -14,6 +14,8 @@ export default defineConfig({
     include: [
       "client/src/lib/moneyInput.test.ts",
       "shared/expenseLabels.test.ts",
+      "shared/digitalSale.test.ts",
+      "client/src/lib/printing/digitalReceiptLines.test.ts",
       "shared/cashReceiptSourceDocument.test.ts",
       "shared/negativeCashDiagnosis.test.ts",
       "client/src/lib/printing/couponCard.test.ts",
@@ -198,6 +200,7 @@ export default defineConfig({
       "server/services/__tests__/terminationAdvanceLockOrder.test.ts",
       "server/services/__tests__/payrollAccrualBackend.test.ts",
       "server/services/__tests__/postingProducerCoverage.test.ts",
+      "server/services/advances/__tests__/advances.publicApi.test.ts",
       "server/services/__tests__/voucherDoubleEntry.test.ts",
       "server/services/__tests__/voucherCategoryAccounting.test.ts",
       "server/services/__tests__/voucherCategoryDefaults.test.ts",
