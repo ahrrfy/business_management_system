@@ -26,6 +26,7 @@ import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { priceTierLabel, sourceTypeLabel } from "@/lib/labels";
 import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { paymentMethodCompact, isUnifiedPaymentMethod } from "@shared/terms";
 import { notify } from "@/lib/notify";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
@@ -97,10 +98,22 @@ const STATUS_CLS: Record<string, string> = {
   RETURNED: "badge-stock-out",
   CONFIRMED: "bg-muted text-muted-foreground",
 };
-const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
-  COD: "تحصيل مندوب", RETURN: "مرتجع", OPENING_ADJ: "تصحيح افتتاحي",
+/**
+ * وصلُ برنامج v2 §٦ ق٦ (٤/٩/٢٦): طرقُ الدفع من `shared/terms.ts` مباشرة — كان قاموساً
+ * محلّياً بستّة مفاتيح لطريقة الدفع + ثلاثةُ رموزٍ خاصّة بهذه الشاشة (COD/RETURN/OPENING_ADJ).
+ * الأخيرةُ تبقى محلّياً لأنّها ليست طرقَ دفعٍ في `receipts.paymentMethod` بل رموزُ سطرٍ في
+ * هذا الكشف — لا نظيرَ لها في `terms.ts` بحكم التصميم. حارس `check:vocabulary`.
+ */
+const STATEMENT_ROW_KIND_LABEL: Record<string, string> = {
+  COD: "تحصيل مندوب",
+  RETURN: "مرتجع",
+  OPENING_ADJ: "تصحيح افتتاحي",
 };
+function statementMethodLabel(v: string | null | undefined): string {
+  if (v && STATEMENT_ROW_KIND_LABEL[v]) return STATEMENT_ROW_KIND_LABEL[v];
+  if (isUnifiedPaymentMethod(v)) return paymentMethodCompact(v);
+  return v ?? "—";
+}
 
 /*
  * §٥ + REP-06: المتبقّي = total − (المدفوع + المُرتجَع) بدقّة Decimal (لا Number float).
@@ -231,8 +244,8 @@ const stmtPaymentColumns: ColumnDef<StmtPaymentRow, unknown>[] = [
   {
     id: "paymentMethod",
     header: "طريقة الدفع",
-    accessorFn: (p) => METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod,
-    cell: ({ row }) => <span className="text-xs">{METHOD_LABEL[row.original.paymentMethod] ?? row.original.paymentMethod}</span>,
+    accessorFn: (p) => statementMethodLabel(p.paymentMethod),
+    cell: ({ row }) => <span className="text-xs">{statementMethodLabel(row.original.paymentMethod)}</span>,
   },
   stmtMoneyCol<StmtPaymentRow>("amount", "المبلغ", (p) => p.amount),
   {

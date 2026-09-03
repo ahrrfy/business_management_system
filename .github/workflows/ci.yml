@@ -313,6 +313,10 @@ jobs:
       # MANUAL بمبرّرِ حكمٍ بشريّ. ⛔ ولا يدّعي قياسَ جودة النصّ — الطولُ مقياسُ وجودٍ لا جودة.
       - name: حارِس سجلّ الأتمتة (AUTO بدليل · MANUAL بمبرّر)
         run: pnpm check:automation-registry
+      # المفردات الموحّدة (§٦ ق٦ + §٤ D6 من خطة v2): قاموسُ طريقة الدفع أو القناة يجب أن
+      # يأتي من `shared/terms.ts` — الاتّحاد الواحد. مسننةٌ تنازلية على `client/src/**`.
+      - name: حارِس المفردات الموحّدة (طريقة الدفع + القناة)
+        run: pnpm check:vocabulary
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: اختبار عقود النشر والبناء الآمنة
