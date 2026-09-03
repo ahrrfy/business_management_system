@@ -816,6 +816,7 @@
 "trpc","recruitmentRouter","vacancyList","hr.recruitment.vacancy_list","query","hrRead","module-map","hr","READ","","none","LOW","قراءة","NO_BRANCH_SCOPE|LOCAL_GATE","server/routers/recruitmentRouter.ts:158"
 "trpc","recruitmentRouter","vacancyPublish","hr.recruitment.vacancy_publish","mutation","hrWrite","module-map","hr","FULL","","none","MEDIUM","كتابة","NO_BRANCH_SCOPE|LOCAL_GATE","server/routers/recruitmentRouter.ts:206"
 "trpc","recruitmentRouter","vacancyUpdate","hr.recruitment.vacancy_update","mutation","hrWrite","module-map","hr","FULL","","none","MEDIUM","كتابة","NO_BRANCH_SCOPE|LOCAL_GATE","server/routers/recruitmentRouter.ts:188"
+"trpc","refundRailsRouter","preflight","treasury.refund_rail.preflight","query","refundReadProcedure","module-map","treasury","READ","","none","LOW","قراءة","NO_BRANCH_SCOPE|LOCAL_GATE","server/routers/refundRailsRouter.ts:30"
 "trpc","reportsRouter","abcAnalysis","reports.report.abc_analysis","query","reportsBranchScoped","module-gate","reports","READ","manager|accountant|auditor","asserted","LOW","قراءة","","server/routers/reportsRouter.ts:1011"
 "trpc","reportsRouter","anomalyWatch","reports.report.anomaly_watch","query","reportsBranchScoped","module-gate","reports","READ","manager|accountant|auditor","asserted","LOW","قراءة","","server/routers/reportsRouter.ts:175"
 "trpc","reportsRouter","apAging","reports.report.ap_aging","query","reportsBranchScoped","module-gate","reports","READ","manager|accountant|auditor","asserted","LOW","قراءة","","server/routers/reportsRouter.ts:337"

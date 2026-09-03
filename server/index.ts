@@ -616,17 +616,17 @@ async function startServer() {
   const tenancy = tenancyMiddleware();
 
   app.use("/api/trpc", tenancy);
-  // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ سطح هجوم batch محدّد. خفّضناه من 50 إلى 20
-  // لأن الواجهة الفعلية لا تتجاوز ~10 نداءات متوازية، والـ20 احتياطٌ مريح.
+  // الاستعلامات تُنقل بـPOST لتفادي حد عنوان Nginx؛ وmaxBatchSize يحدّ سطح هجوم batch إلى 20.
+  // هذا يغيّر وسيلة نقل query فقط؛ نوع الإجراء وصلاحياته لا يتغيّران.
   app.use(
     "/api/trpc",
     createExpressMiddleware({
       router: appRouter,
       createContext,
+      allowMethodOverride: true,
       maxBatchSize: 20,
     }),
   );
-
   // جسر الطباعة الصامتة (خارج tRPC): يستقبل بايتات ESC/POS من العميل ويرسلها للطابعة محلياً.
   // محمي بالمصادقة (كوكي الجلسة) + csrfGuard (فحص Origin) — دفاع عميق فوق sameSite:"strict"
   // لأن /raw و /test يغيّران الحالة (طباعة فعلية + قد يُشغّلان copy للمشاركة).
