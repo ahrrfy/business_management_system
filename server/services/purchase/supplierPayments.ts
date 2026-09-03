@@ -840,7 +840,7 @@ export async function decideSupplierPayment(
     // بلا انتظار علَم ownerOnlyApproval؛ التفصيل هناك.
     const supplierPaymentApprover = await resolveApprovalActor(tx, actor);
     assertApprover({
-      actor: supplierPaymentApprover,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: supplierPaymentTrigger(input.action),
       subject: `سداد مورّد (طلب ${input.requestId})`,
       legacy: () => {
@@ -1453,7 +1453,7 @@ export async function decideSupplierPaymentRefund(
     // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
     const supplierPaymentRefundApprover = await resolveApprovalActor(tx, actor);
     assertApprover({
-      actor: supplierPaymentRefundApprover,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: supplierPaymentRefundTrigger(input.action),
       subject: `استرداد سداد (طلب ${input.requestId})`,
       legacy: () => {

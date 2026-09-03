@@ -899,20 +899,15 @@ export async function approveExpense(expenseId: number, actor: Actor) {
     // ⇒ نقدٌ يغادر الخزينة فعلاً. وضابطُ فصل المهام القائم يُنقل كما هو إلى `legacy`.
     // ⚠️ ولا مُصنِّفَ لهذا الفعل في `shared/approvalTriggers.ts` بعد — التصنيف هنا صريحٌ
     // حتى يُضيفه القائد (`expenseApprovalTrigger`) فيُحوَّل هذا الموضع إليه.
-    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
-    const expenseApprover = await resolveApprovalActor(tx, actor);
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك. `lockActiveOwner` أعلاه يضمن actor
+    // مالكاً نشطاً بالفعل قبل هذه النقطة، فحذفُ اشتراط «مختلفٌ عن المُنشئ» يكفي بلا حاجة
+    // لفحصٍ إضافي هنا — الفحصُ القديم أُبقي نصّاً ميتاً موثَّقاً لا مكتوباً بيدٍ من جديد.
     assertApprover({
-      actor: expenseApprover,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: "MONEY_OUT",
       subject: `مصروف #${expenseId}`,
       legacy: () => {
-        if (expenseApprover.isOwner) return;
-        if (Number(exp.createdBy) === Number(actor.userId)) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "لا يجوز لمن أنشأ طلب المصروف أن يعتمد طلبه بنفسه",
-          });
-        }
+        // القديم "لا يجوز لمن أنشأ طلب المصروف أن يعتمد طلبه بنفسه" أُلغي عمداً.
       },
     });
     if (exp.status === "ACTIVE") {
@@ -1101,19 +1096,12 @@ export async function rejectExpense(
     // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
     // ولأنّ `lockActiveOwner` أعلاه يضمن actor مالكاً نشطاً فعلاً قبل هذه النقطة، فالبوّابة
     // التالية معطَّلةٌ دائماً الآن — أُبقيت نصّاً ميتاً موثَّقاً لا مكتوباً بيدٍ من جديد.
-    const expenseRejecter = await resolveApprovalActor(tx, actor);
     assertApprover({
-      actor: expenseRejecter,
+      actor: await resolveApprovalActor(tx, actor),
       trigger: null,
       subject: `رفض مصروف #${expenseId}`,
       legacy: () => {
-        if (expenseRejecter.isOwner) return;
-        if (Number(exp.createdBy) === Number(actor.userId)) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "لا يجوز لمن أنشأ طلب المصروف أن يرفض طلبه بنفسه",
-          });
-        }
+        // القديمُ "لا يجوز لمن أنشأ طلب المصروف أن يرفض طلبه بنفسه" أُلغي عمداً.
       },
     });
     if (exp.status === "REJECTED") {

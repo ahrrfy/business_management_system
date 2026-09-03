@@ -499,7 +499,7 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
     // اعتمادُ المرتجع محوُ أثرٍ مُثبَت: applyMovement بـOUT + قيدٌ منشور + إنقاصُ رصيد المورّد.
     // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
     const purchaseReturnApprover = await resolveApprovalActor(tx, actor);
-    assertApprover({ actor: purchaseReturnApprover, trigger: purchaseReturnTrigger(input.action), subject: `مرتجع شراء (طلب ${input.requestId})`, legacy: () => { if (purchaseReturnApprover.isOwner) return; assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId); } });
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseReturnTrigger(input.action), subject: `مرتجع شراء (طلب ${input.requestId})`, legacy: () => { if (purchaseReturnApprover.isOwner) return; assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId); } });
     if (request.status !== "PENDING") {
       if (request.decisionKey === key && request.decisionHash === hash) {
         const existingReturn = request.status === "APPROVED"
@@ -733,7 +733,7 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
     // فيُنقص expectedCash وZ-report. ⇒ المالك حصراً.
     // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
     const purchaseReturnReversalApprover = await resolveApprovalActor(tx, actor);
-    assertApprover({ actor: purchaseReturnReversalApprover, trigger: purchaseReturnReversalTrigger(input.action), subject: `عكس مرتجع شراء (طلب ${input.requestId})`, legacy: () => { if (purchaseReturnReversalApprover.isOwner) return; assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId); } });
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseReturnReversalTrigger(input.action), subject: `عكس مرتجع شراء (طلب ${input.requestId})`, legacy: () => { if (purchaseReturnReversalApprover.isOwner) return; assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId); } });
     if (request.status !== "PENDING") { if (request.decisionKey === key && request.decisionHash === hash) return { requestId: input.requestId, status: request.status, reversalId: null, idempotent: true as const }; throw new TRPCError({ code: "CONFLICT", message: "حُسم طلب العكس مسبقاً" }); }
     if (input.action === "REJECT") { await tx.update(purchaseReturnReversalRequests).set({ status: "REJECTED", pendingGuard: null, reviewedBy: actor.userId, reviewedAt: new Date(), reviewReason, decisionKey: key, decisionHash: hash }).where(eq(purchaseReturnReversalRequests.id, input.requestId)); return { requestId: input.requestId, status: "REJECTED" as const, reversalId: null, idempotent: false as const }; }
     const purchaseReturn = lockedReturn;
