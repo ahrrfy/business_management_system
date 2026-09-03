@@ -1213,10 +1213,9 @@ export default function Expenses() {
         kind: "approve" as const,
         icon: CircleCheck,
         label: "اعتماد وصرف",
-        hidden:
-          r.status !== "PENDING_APPROVAL" ||
-          !canApprove ||
-          Number(r.createdBy) === Number(me.data?.id),
+        // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — canApprove أصلاً يشترط
+        // isOwner، فاستثناءُ صانع الطلب هنا كان يحجب الاعتماد الذاتي المسموح به خادمياً.
+        hidden: r.status !== "PENDING_APPROVAL" || !canApprove,
         disabled: approve.isPending || reject.isPending,
         disabledReason: "توجد عملية اعتماد قيد التنفيذ",
         onSelect: () =>
@@ -1243,10 +1242,7 @@ export default function Expenses() {
         icon: Ban,
         label: "رفض الطلب",
         variant: "destructive" as const,
-        hidden:
-          r.status !== "PENDING_APPROVAL" ||
-          !canApprove ||
-          Number(r.createdBy) === Number(me.data?.id),
+        hidden: r.status !== "PENDING_APPROVAL" || !canApprove,
         disabled: approve.isPending || reject.isPending,
         disabledReason: "توجد عملية اعتماد قيد التنفيذ",
         onSelect: () => {

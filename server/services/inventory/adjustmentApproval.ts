@@ -6,6 +6,7 @@
 // إلا admin) فيُطبَّق `setStock` + قيد ADJUST (نفس منطق المسار المباشر السابق). الرفض بلا أثر.
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
+import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
@@ -64,13 +65,22 @@ function validateAttachmentUrl(url: string): void {
   if (!/^data:image\/(jpeg|jpg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "مرفق الإثبات يجب أن يكون صورةً مضغوطةً (JPEG/PNG/WebP/GIF) بصيغة data URL.",
+      message: appErrorMessage({
+        what: "تعذّر حفظ مرفق الإثبات — الصيغة غير مقبولة (JPEG/PNG/WebP/GIF بصيغة data URL)",
+        why: "الشاشة ترسل الصور مضمَّنة data URL لا روابطَ خارجية، والمُرسَل ليس صورةً مدعومة بهذه الصيغة",
+        doThis: "اختر صورةً بامتداد JPG/PNG/WebP/GIF من زرّ المرفق، وتجنّب لصق روابطَ خارجية",
+      }),
     });
   }
   if (trimmed.length > MAX_ATTACHMENT_BYTES) {
+    const maxMb = Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024));
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `حجم المرفق يتجاوز الحدّ الأقصى (${Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024))}MB بعد الترميز). اضغط الصورة أو التقطها بدقّة أقلّ.`,
+      message: appErrorMessage({
+        what: "تعذّر حفظ مرفق الإثبات",
+        why: `حجم المرفق (${trimmed.length} حرفاً بعد الترميز) يتجاوز السقف ${maxMb}MB`,
+        doThis: "اضغط الصورة أو أعد التقاطها بدقّةٍ أقلّ، ثمّ أعد الإرسال",
+      }),
     });
   }
 }
@@ -114,7 +124,14 @@ export interface RequestAdjustmentInput {
 function assertRequesterBranch(branchId: number, actor: Actor): void {
   if (actor.role === "admin") return;
   if (actor.branchId == null || Number(actor.branchId) !== Number(branchId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن طلب تسوية مخزون لفرعٍ آخر" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر فتح طلب تسوية المخزون",
+        why: `الطلب موجَّه لفرعٍ آخر (${branchId}) لا فرعك (${actor.branchId ?? "غير محدَّد"})، ومدير الفرع محظور من العبور بين الفروع`,
+        doThis: "افتح الطلب من فرعه الأصليّ، أو اطلب من المالك/الأدمن معالجته",
+      }),
+    });
   }
 }
 
@@ -126,13 +143,24 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
   const reason = input.reason ?? null;
   const attachmentUrl = input.attachmentUrl?.trim() || null;
   if (reason != null && !ADJUSTMENT_REASONS.includes(reason)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "سببُ التسوية غير معروف." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر فتح طلب تسوية المخزون",
+        why: `سبب التسوية «${reason}» غير مسجَّل في قائمة الأسباب المعتمَدة`,
+        doThis: `اختر سبباً من القائمة الرسميّة: ${ADJUSTMENT_REASONS.join("، ")}`,
+      }),
+    });
   }
   if (attachmentUrl) validateAttachmentUrl(attachmentUrl);
   if (reason != null && ATTACHMENT_REQUIRED_REASONS.has(reason) && !attachmentUrl) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `السبب «${reason}» يستلزم مرفقَ إثبات بصريّ (صورة) — أضِفه ثمّ أعد الإرسال.`,
+      message: appErrorMessage({
+        what: "تعذّر فتح طلب تسوية المخزون",
+        why: `السبب «${reason}» من الأسباب الحسّاسة (تالف/فقد/سرقة) ويستلزم مرفقَ إثبات بصريّ`,
+        doThis: "التقط صورةً واضحة للصنف/الحدث وألصقها من زرّ المرفق، ثمّ أعد الإرسال",
+      }),
     });
   }
   // ⭐ Idempotency على مستوى الطلب (P2-#1): إعادةُ الشاشة إرسالَ نفس العملية (نقر مضاعف، انقطاعُ شبكة)
@@ -152,7 +180,14 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
     : null;
   return withTx(async (tx) => {
     if (!Number.isInteger(input.targetQuantity) || input.targetQuantity < 0) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب تسوية المخزون",
+          why: `الرصيد المستهدف يجب أن يكون صحيحاً غير سالب، والمُرسَل ${input.targetQuantity}`,
+          doThis: "أدخل رصيداً مستهدفاً صحيحاً (بلا كسور) وموجباً أو صفراً في «الكمية المستهدفة»، ثمّ أعد الإرسال",
+        }),
+      });
     }
     if (clientRequestId) {
       const existing = await checkIdempotency(tx, ADJUSTMENT_REQUEST_OPERATION, clientRequestId, payloadHash);
@@ -172,20 +207,47 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
         .where(eq(productVariants.id, input.variantId))
         .limit(1)
     )[0];
-    if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
+    if (!v) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب تسوية المخزون",
+          why: `المتغيّر رقم ${input.variantId} غير موجود أو أُزيل`,
+          doThis: "اختر صنفاً/متغيّراً موجوداً من قائمة المنتجات، أو أنشئ المنتج أوّلاً",
+        }),
+      });
+    }
     if (v.isConsignment) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "بضاعة الأمانة لا تُسوّى بطلب تعديل مخزون — استعمل سندات الأمانة أو الجرد الدوري",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب تسوية المخزون",
+          why: "الصنف بضاعة أمانة، وبضاعة الأمانة لا تُسوّى بطلب تعديل مخزون",
+          doThis: "استعمل «سندات الأمانة» (وارد/صادر) أو «الجرد الدوري» للأمانة من شاشة «الأمانة»",
+        }),
       });
     }
     // C2 (مراجعة عدائية): مرآة حراس setStock عند الطلب — لا نُنشئ طلباً يستحيل اعتماده (البكج يُرفَض عند
     // الاعتماد فيبقى معلَّقاً للأبد؛ الخِدميّ لا مخزون له). البكج يُسوَّى بمكوّناته لا مباشرةً.
     if (await isBundleVariant(tx, input.variantId)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُسوَّى مخزون بكجٍ مباشرةً — سوِّ مكوّناته" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب تسوية المخزون",
+          why: "الصنف بكج (مركّب) لا مخزون ذاتيّ له، فتسويةُ مخزونه مباشرةً بلا معنى",
+          doThis: "سوِّ مخزون مكوّنات البكج فرداً فرداً من شاشة «الجرد/التسوية»، وطاقةُ البكج تُشتقّ منها تلقائياً",
+        }),
+      });
     }
     if (await isServiceVariant(tx, input.variantId)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج الخِدميّ لا مخزون له — لا تُسوَّى كميّته" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب تسوية المخزون",
+          why: "الصنف خدميّ (بلا مخزون)، فتسويةُ كمّيته بلا معنى",
+          doThis: "استعمل هذه التسوية للأصناف المخزنية فقط، وللأصناف الخدميّة عدّل السعر أو الوصف من «تعديل المنتج»",
+        }),
+      });
     }
     // C1 (مراجعة عدائية): لقطة الرصيد الحاليّ لحظة الطلب — يُكشَف بها الانحراف عند الاعتماد.
     const cur = (
@@ -218,10 +280,24 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
 /** يفرض SOD-04 (المُعتمِد ≠ المُنشئ إلا admin) + عزل الفرع (غير admin يعتمد فرعه فقط). */
 function assertIndependentInventoryReviewer(r: { createdBy: number | null; branchId: number }, actor: Actor, verb: string): void {
   if (actor.role !== "admin" && r.createdBy != null && Number(r.createdBy) === actor.userId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: `لا يجوز ${verb} تسويةٍ طلبتها بنفسك — يلزم مدير آخر (فصل المهام).` });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: `تعذّر ${verb} تسوية المخزون`,
+        why: `أنت من طلبتها بنفسك، وفصل المهام (SOD-04) يمنعك من ${verb} تسويةٍ فتحتها بنفسك`,
+        doThis: `اطلب من مديرٍ آخر أو من المالك ${verb} التسوية من شاشة «طلبات تسوية المخزون»`,
+      }),
+    });
   }
   if (actor.role !== "admin" && actor.branchId != null && Number(r.branchId) !== Number(actor.branchId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: `لا يمكن ${verb} تسوية فرعٍ آخر` });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: `تعذّر ${verb} تسوية المخزون`,
+        why: `التسوية مسجَّلة على فرعٍ آخر (${r.branchId}) لا فرعك (${actor.branchId})، ومدير الفرع محظور من العبور بين الفروع`,
+        doThis: `افتح التسوية من فرعها الأصليّ، أو اطلب من المالك/الأدمن ${verb}ها`,
+      }),
+    });
   }
 }
 
@@ -234,9 +310,25 @@ export async function approveStockAdjustment(
     const r = (
       await tx.select().from(stockAdjustmentRequests).where(eq(stockAdjustmentRequests.id, id)).for("update").limit(1)
     )[0];
-    if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التسوية غير موجود" });
+    if (!r) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد تسوية المخزون",
+          why: `طلب التسوية رقم ${id} غير موجود أو أُزيل`,
+          doThis: "افتح شاشة «طلبات تسوية المخزون» واختر طلباً قائماً من القائمة الحاليّة",
+        }),
+      });
+    }
     if (r.status !== "PENDING_APPROVAL") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "طلب التسوية ليس في انتظار الموافقة" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد تسوية المخزون",
+          why: `الطلب ليس في انتظار الموافقة — حالته الحاليّة ${r.status}`,
+          doThis: "حدّث شاشة «طلبات تسوية المخزون» لترى الحالة الحاليّة، وإن لزمت تسويةٌ أخرى افتح طلباً جديداً",
+        }),
+      });
     }
     assertApprover({
       actor: await resolveApprovalActor(tx, actor),
@@ -262,7 +354,11 @@ export async function approveStockAdjustment(
     if (liveQty !== Number(r.expectedQuantity)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: `تغيّر المخزون منذ الطلب (كان ${r.expectedQuantity}، الآن ${liveQty}) — أعد الطلب بالرصيد الحاليّ`,
+        message: appErrorMessage({
+          what: "تعذّر اعتماد تسوية المخزون",
+          why: `تغيّر المخزون منذ الطلب (كان ${r.expectedQuantity}، الآن ${liveQty})؛ اعتماده يمحو حركاتٍ بينهما ويُرحّل ربحاً/خسارةً وهميّة`,
+          doThis: "ارفض الطلب وافتح طلباً جديداً بالرصيد الحاليّ من شاشة «طلبات تسوية المخزون»",
+        }),
       });
     }
     // ترتيب القفل الحاكم مع الشراء/WAVG: productVariants ثم branchStock. نحجز لقطة التكلفة حتى
@@ -280,12 +376,23 @@ export async function approveStockAdjustment(
         .limit(1)
     )[0];
     if (!variant) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد تسوية المخزون",
+          why: `المتغيّر رقم ${r.variantId} غير موجود أو أُزيل بعد إنشاء الطلب`,
+          doThis: "ارفض الطلب مع سببٍ صريح، ثم افتح طلباً جديداً على صنفٍ قائم",
+        }),
+      });
     }
     if (variant.isConsignment) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "بضاعة الأمانة لا تُعتمد كتسوية مخزون — ارفض الطلب واستعمل سندات الأمانة أو الجرد الدوري",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد تسوية المخزون",
+          why: "الصنف صار بضاعة أمانة بعد إنشاء الطلب، وبضاعة الأمانة لا تُعتمَد كتسوية مخزون",
+          doThis: "ارفض الطلب واستعمل «سندات الأمانة» (وارد/صادر) أو «الجرد الدوري» للأمانة من شاشة «الأمانة»",
+        }),
       });
     }
     // تدقيق ١١/٨ (H3): أثناء نافذة الافتتاح، تسوية صنفٍ **غير مُفتتَح** = تثبيت رصيدٍ افتتاحيّ ⇒ مسار
@@ -316,14 +423,22 @@ export async function approveStockAdjustment(
       if (noteData.cost == null) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "طلب التسوية قديم ولا يحتوي لقطة تكلفة موثّقة — ارفضه وأنشئ طلباً جديداً",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد تسوية المخزون",
+            why: "طلب التسوية قديم ولا يحمل لقطةً موثَّقة لتكلفة الصنف وقت الطلب، فلا يمكن التحقّق من ثبات التكلفة",
+            doThis: "ارفض الطلب مع سببٍ صريح، ثم افتح طلباً جديداً من شاشة «طلبات تسوية المخزون» (تُحفَظ فيه لقطة التكلفة تلقائياً)",
+          }),
         });
       }
       const liveCost = money(variant.costPrice ?? "0").toFixed(2);
       if (liveCost !== noteData.cost) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: `تغيّرت تكلفة الصنف منذ الطلب (كانت ${noteData.cost}، الآن ${liveCost}) — أعد الطلب لتثبيت القيمة الصحيحة`,
+          message: appErrorMessage({
+            what: "تعذّر اعتماد تسوية المخزون",
+            why: `تغيّرت تكلفة الصنف منذ الطلب (كانت ${noteData.cost}، الآن ${liveCost})؛ اعتماده يُرحّل ربحاً/خسارةً بقيمةٍ لم تكن قائمةً وقت الطلب`,
+            doThis: "ارفض الطلب وافتح طلباً جديداً بالتكلفة الحاليّة من شاشة «طلبات تسوية المخزون»",
+          }),
         });
       }
       const adjustValue = money(noteData.cost).times(stockRes.delta);
@@ -384,13 +499,38 @@ export async function rejectStockAdjustment(id: number, actor: Actor, reason: st
     const r = (
       await tx.select().from(stockAdjustmentRequests).where(eq(stockAdjustmentRequests.id, id)).for("update").limit(1)
     )[0];
-    if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التسوية غير موجود" });
+    if (!r) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر رفض تسوية المخزون",
+          why: `طلب التسوية رقم ${id} غير موجود أو أُزيل`,
+          doThis: "افتح شاشة «طلبات تسوية المخزون» واختر طلباً قائماً من القائمة الحاليّة",
+        }),
+      });
+    }
     if (r.status !== "PENDING_APPROVAL") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "طلب التسوية ليس في انتظار الموافقة" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر رفض تسوية المخزون",
+          why: `الطلب ليس في انتظار الموافقة — حالته الحاليّة ${r.status}`,
+          doThis: "حدّث شاشة «طلبات تسوية المخزون» لترى القرار الحاليّ",
+        }),
+      });
     }
     assertIndependentInventoryReviewer({ createdBy: r.createdBy != null ? Number(r.createdBy) : null, branchId: Number(r.branchId) }, actor, "رفض");
     const trimmed = reason.trim().slice(0, 500);
-    if (!trimmed) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الرفض مطلوب (للسجل التدقيقي)" });
+    if (!trimmed) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر رفض تسوية المخزون",
+          why: "سبب الرفض إلزاميّ للسجل التدقيقيّ ولم يصل سببٌ مكتوب",
+          doThis: "اكتب سبباً واضحاً للرفض في «سبب الرفض» ثم أعد الإرسال",
+        }),
+      });
+    }
     await tx.update(stockAdjustmentRequests).set({
       status: "REJECTED",
       approvedBy: actor.userId,

@@ -156,8 +156,8 @@ export default function Payroll() {
   const isApproved = run?.status === "approved";
   const isPaid = run?.status === "paid";
   const busy = generate.isPending || approve.isPending || cancel.isPending;
+  // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ نشط يعتمد استحقاقه بنفسه.
   const isOwner = me.data?.isOwner === true;
-  const independentOwner = isOwner && Number(me.data?.id ?? 0) !== Number(run?.createdBy ?? 0);
   const openSalaryObligations = (run?.obligations ?? []).filter((obligation) =>
     obligation.kind === "SALARY_NET" &&
     Number(obligation.revisionNo) === Number(run?.revisionNo ?? -1) &&
@@ -512,7 +512,7 @@ export default function Payroll() {
           <div className="flex-1" />
           {isDraft && (
             <>
-              <Button variant="outline" size="sm" title={!independentOwner ? "الاعتماد محصور بمالك نشط مستقل عن منشئ المسيّر" : undefined} onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد استحقاق رواتب ${run.period}`, description: "سيُثبّت مصروف الفترة والتزامات الصافي والضريبة والضمان ونهاية الخدمة بتاريخ نهاية الشهر، بلا حركة نقدية. تُقفل البنود وتُحفظ بصمات السياسة واللقطة.", confirmText: "اعتماد الاستحقاق" }))) return; approve.mutate({ id: Number(run.id) }); }} disabled={busy || !independentOwner}>
+              <Button variant="outline" size="sm" title={!isOwner ? "الاعتماد محصور بحساب مالك نشط" : undefined} onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد استحقاق رواتب ${run.period}`, description: "سيُثبّت مصروف الفترة والتزامات الصافي والضريبة والضمان ونهاية الخدمة بتاريخ نهاية الشهر، بلا حركة نقدية. تُقفل البنود وتُحفظ بصمات السياسة واللقطة.", confirmText: "اعتماد الاستحقاق" }))) return; approve.mutate({ id: Number(run.id) }); }} disabled={busy || !isOwner}>
                 <Check className="size-4" /> اعتماد الاستحقاق
               </Button>
               <Button variant="outline" size="sm" className="text-destructive" onClick={async () => { if (!(await confirmDelete({ description: `حذف مسوّدة رواتب ${run.period} وكل بنودها (${run.employeeCount} موظف) نهائياً؟` }))) return; cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>

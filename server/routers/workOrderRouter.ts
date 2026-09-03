@@ -46,6 +46,8 @@ import { verifyManagerApproval } from "./saleRouter";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
+import { nextActionTerminalReason } from "@shared/nextAction";
+import { deriveWorkOrderNextActionFromRow } from "../services/nextActionDerivation";
 import { setWorkOrderDesign } from "../services/workOrder/design";
 import { maySeeDrawerCash as sharedMaySeeDrawerCash } from "@shared/workOrderControlAuthority";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersDirectCancelProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
@@ -871,6 +873,11 @@ export const workOrderRouter = router({
           invoiceTotal: invoices.total,
           invoiceReturnedTotal: invoices.returnedTotal,
           hasDelivery: workOrders.hasDelivery,
+          // م٢ ق١١ (٣/٩/٢٦): مصدرا اشتقاق «الخطوة التالية» — إشارةُ الفنّيّ داخل المرحلة
+          // ("جاهز/محجوز/عادي") وسببُ التعطّل حين تكون الإشارة `BLOCKED`. كانا يظهران في
+          // list وحده فتحسبهما رقاقةُ التفاصيل من قواميسَ محلّية.
+          kanbanState: workOrders.kanbanState,
+          blockedReason: workOrders.blockedReason,
           deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
           deliveryCost: workOrders.deliveryCost,
@@ -1021,6 +1028,26 @@ export const workOrderRouter = router({
       createdAt: wo.createdAt instanceof Date ? wo.createdAt : new Date(wo.createdAt),
       branchId: wo.branchId,
     }).qrPayload;
+
+    /**
+     * م٢ ق١١ — «الخطوة التالية». `blockingTaskLabel` يقرأ عنوانَ المهمّة الحاجزة الحقيقيّة
+     * من الاستعلام أعلاه فيسري نصُّها إلى `blockedBy` مباشرةً بدل صياغةٍ محلّية تفوّت السبب.
+     * الحقل اختياريّ — لا يكسر مستهلكي `workOrders.get` القدامى.
+     */
+    const nextAction = deriveWorkOrderNextActionFromRow({
+      workOrderId: wo.id,
+      status: wo.status,
+      assignedToUserId: wo.assignedTo,
+      hasDelivery: Boolean(wo.hasDelivery),
+      consignmentId: deliveryInfo.consignmentId ?? null,
+      courierDeliveredAt: deliveryInfo.courierDeliveredAt ?? null,
+      kanbanState: wo.kanbanState,
+      blockedReason: wo.blockedReason,
+      blockingTaskLabel: blockingTask?.title ?? null,
+    });
+    const nextActionReason =
+      nextAction == null ? nextActionTerminalReason("WORK_ORDER", wo.status) : null;
+
     // §٧ تكلفة: نُخفي materialsCost/laborCost/unitCost عن غير المرتفعين (defense-in-depth).
     // نُبقي شكل الـtype ثابتاً (null بدلاً من حذف الحقول) لئلا تنكسر شاشة التفاصيل.
     if (!canSeeCostForUser(ctx.user)) {
@@ -1035,9 +1062,11 @@ export const workOrderRouter = router({
         blockingTask,
         siblings,
         qrPayload,
+        nextAction,
+        nextActionReason,
       };
     }
-    return { ...wo, ...deliveryInfo, materials, images, blockingTask, siblings, qrPayload };
+    return { ...wo, ...deliveryInfo, materials, images, blockingTask, siblings, qrPayload, nextAction, nextActionReason };
   }),
 
   /**

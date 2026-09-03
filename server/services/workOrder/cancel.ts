@@ -964,16 +964,8 @@ export async function approveWorkOrderCancellationRefund(
         }),
       });
     }
-    if (refund.createdBy != null && Number(refund.createdBy) === actor.userId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: appErrorMessage({
-          what: "تعذّر اعتماد ردّ عربون أمر الشغل",
-          why: "أنت من أنشأ طلب الردّ هذا، وفصلُ المهام يمنع أن يعتمد الشخصُ طلبَه — فالاعتماد مراجعةٌ لا توقيعٌ على النفس",
-          doThis: "اعرض الطلب على مالكٍ آخر ليعتمده؛ وإن كنت المالك الوحيد فاطلب من موظّف الاستقبال إنشاء الطلب ثمّ اعتمِده أنت",
-        }),
-      });
-    }
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — أُزيل شرط «غير صانع الطلب» (كما في
+    // approveVoucher/authorizeExternalTreasuryDisbursement). البوّابة أعلاه (isOwner نشط) تبقى.
     if (refund.status === "COMPLETED" && refund.approvalStatus === "APPROVED") {
       if (refund.referenceNumber !== confirmedReference) {
         throw new TRPCError({
