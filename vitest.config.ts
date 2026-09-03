@@ -12,7 +12,19 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["server/**/*.test.ts", "client/src/**/*.test.ts", "shared/**/*.test.ts"],
+    // ⭐ **`.tsx` ضمن النطاق** (٣/٩/٢٦): كان النطاق `*.test.ts` وحدها، و`test:unit` ليست
+    // خطوةً في CI ⇒ **٢٨ ملفَّ `*.test.tsx` خارج كلّ مراقبة**، وقد شاخ أحدُها فعلاً وبقي
+    // أحمرَ على `main` بصمتٍ تامّ (`purchaseOrderApprovalUi`). واختبارٌ لا يُشغَّل ليس
+    // اختباراً بل توثيقٌ يشيخ. قيسَ الأثرُ قبل التوسيع: ٢٧ من ٢٨ تمرّ، والساقطُ أُصلح
+    // في نفس الـPR — فالتوسيعُ لا يُدخِل احمراراً موروثاً.
+    include: [
+      "server/**/*.test.ts",
+      "client/src/**/*.test.ts",
+      "shared/**/*.test.ts",
+      "server/**/*.test.tsx",
+      "client/src/**/*.test.tsx",
+      "shared/**/*.test.tsx",
+    ],
     setupFiles: ["./server/services/__tests__/__setup__.ts"],
     testTimeout: 30000,
     hookTimeout: 120000,
