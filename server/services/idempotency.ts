@@ -91,18 +91,22 @@ export function runWithLegacyHashScope<T>(fn: () => T): T {
 const LEGACY_CANDIDATES_PER_HASH = 8;
 function rememberLegacyHash(current: string, legacy: string): void {
   if (current === legacy) return;
-  const legacyHashesByCurrent = legacyHashesByCurrentStore();
+  // داخل نطاق طلبٍ لا طرحَ أبداً (Codex، جولة ٥): دفعةُ tRPC الواحدة (حتى ٢٠ إجراءً متزامناً) تتشارك
+  // نطاق الطلب، فأيُّ سقفٍ فيه قد يطرح مرشّحَ إجراءٍ ما زال ينتظر قاعدته. النطاق محدودٌ بعمر
+  // الطلب وبعدد حمولاته أصلاً؛ السقفان يخصّان الخريطة العامّة الاحتياطية وحدها.
+  const scoped = legacyHashScope.getStore();
+  const legacyHashesByCurrent = scoped ?? globalLegacyHashesByCurrent;
   const existing = legacyHashesByCurrent.get(current);
   if (existing) {
     if (existing.has(legacy)) return;
-    if (existing.size >= LEGACY_CANDIDATES_PER_HASH) {
+    if (!scoped && existing.size >= LEGACY_CANDIDATES_PER_HASH) {
       const oldest = existing.values().next().value;
       if (oldest !== undefined) existing.delete(oldest);
     }
     existing.add(legacy);
     return;
   }
-  if (legacyHashesByCurrent.size >= LEGACY_HASH_CACHE_LIMIT) {
+  if (!scoped && legacyHashesByCurrent.size >= LEGACY_HASH_CACHE_LIMIT) {
     const oldest = legacyHashesByCurrent.keys().next().value;
     if (oldest !== undefined) legacyHashesByCurrent.delete(oldest);
   }

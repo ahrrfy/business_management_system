@@ -95,7 +95,17 @@ describe("idempotencyHash — مستقرّ عبر رحلة التخزين في �
     });
   });
 
-  it("سقفُ المرشّحات لكلّ بصمة حالية: الأحدث يبقى والأقدم يُطرَح — لا نموّ بلا حدّ", () => {
+  // Codex جولة ٥: دفعة tRPC واحدة = طلب HTTP واحد = نطاق واحد لعشرين إجراءً متزامناً ⇒ داخل النطاق لا طرح.
+  it("داخل نطاق الطلب لا يُطرَح أيّ مرشّح مهما كثرت الإجراءات المتزامنة في الدفعة", async () => {
+    await runWithLegacyHashScope(async () => {
+      const payloads = Array.from({ length: 30 }, (_, i) => ({ [`batch${i}`]: undefined }));
+      const current = idempotencyHash(payloads[0]);
+      for (const p of payloads) expect(idempotencyHash(p)).toBe(current);
+      for (const p of payloads) expect(payloadHashMatches(current, legacyIdempotencyHash(p))).toBe(true);
+    });
+  });
+
+  it("سقفُ المرشّحات لكلّ بصمة حالية (الخريطة العامّة خارج أيّ طلب): الأحدث يبقى والأقدم يُطرَح", () => {
     // ٣٠ حمولة كلّها {} بعد التطبيع لكن ببصمات قديمة مختلفة (مفتاح undefined مختلف كلّ مرّة).
     const payloads = Array.from({ length: 30 }, (_, i) => ({ [`k${i}`]: undefined }));
     const current = idempotencyHash(payloads[0]);
